@@ -14,6 +14,7 @@ vi.mock('../../services/api', () => ({
 }));
 
 import * as api from '../../services/api';
+import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -64,5 +65,32 @@ describe('HostBulkBar — selection scope', () => {
     expect(screen.getByText(`${BULK_SELECT_CAP.toLocaleString()} selected`)).toBeInTheDocument();
     expect(screen.getByText(/bulk actions stop there/)).toBeInTheDocument();
     expect(screen.queryByText(/Every host matching/)).not.toBeInTheDocument();
+  });
+});
+
+// A roster that failed to load was turned into an empty list: the Assign menu
+// offered nobody (or "No members") with nothing to say why.
+describe('HostBulkBar — the Assign menu when the members could not be loaded', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetProjectMembersCache();
+    mocked.listHostTags.mockResolvedValue([]);
+  });
+
+  it('says it could not load them, and Retry fills the same menu', async () => {
+    const user = userEvent.setup();
+    mocked.listProjectMembers.mockRejectedValueOnce(new Error('503'));
+    renderBar(2);
+    await user.click(screen.getByRole('button', { name: /Assign/ }));
+    const retry = await screen.findByRole('menuitem', { name: /members could not be loaded\. Retry/ });
+    expect(screen.queryByText('No members')).not.toBeInTheDocument();
+
+    mocked.listProjectMembers.mockResolvedValue([
+      { id: 9, project_id: 1, user_id: 77, username: 'ben', full_name: 'Ben Okafor', role: 'analyst', created_at: '' },
+    ]);
+    await user.click(retry);
+    expect(await screen.findByRole('menuitem', { name: 'Ben Okafor' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /could not be loaded/ })).not.toBeInTheDocument();
+    expect(mocked.listProjectMembers).toHaveBeenCalledTimes(2);
   });
 });

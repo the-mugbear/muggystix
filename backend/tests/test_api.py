@@ -251,26 +251,36 @@ class TestHostsAPI:
         assert payload["total_notes"] == 1
         assert payload["notes"][0]["host_id"] == host.id
 
-    def test_enqueue_agent_package_report(self, client, test_project):
-        """Agent-package export enqueues an async report job (the generation +
-        ZIP contents are verified in test_report_jobs.py against the service)."""
+    def test_enqueue_inventory_json(self, client, test_project):
+        """The inventory JSON enqueues a report job (the generation and the
+        file's contents are verified in test_report_jobs.py against the
+        service).  ``report_type`` is stored: it decides whether the
+        project-wide roll-ups follow the hosts."""
         resp = client.post(
             f"/api/v1/projects/{test_project.id}/reports/jobs",
-            params={"format": "agent-package"},
+            params={"format": "json"},
         )
         assert resp.status_code == 202, resp.text
         body = resp.json()
         assert body["status"] == "queued"
-        assert body["format"] == "agent-package"
+        assert (body["format"], body["report_type"]) == ("json", "comprehensive")
 
-    def test_enqueue_markdown_bundle_report(self, client, test_project):
-        """Markdown-bundle export enqueues an async report job."""
         resp = client.post(
             f"/api/v1/projects/{test_project.id}/reports/jobs",
-            params={"format": "markdown-bundle", "report_type": "comprehensive"},
+            params={"format": "json", "report_type": "inventory"},
         )
         assert resp.status_code == 202, resp.text
-        assert resp.json()["format"] == "markdown-bundle"
+        assert resp.json()["report_type"] == "inventory"
+
+    def test_enqueue_report_rejects_the_retired_bundles(self, client, test_project):
+        """The agent package and the Markdown bundle were retired with
+        "Export hosts" (owner, 2026-10-07)."""
+        for fmt in ("agent-package", "markdown-bundle"):
+            resp = client.post(
+                f"/api/v1/projects/{test_project.id}/reports/jobs",
+                params={"format": fmt, "report_type": "comprehensive"},
+            )
+            assert resp.status_code == 422, resp.text
 
     def test_enqueue_report_rejects_sync_format(self, client, test_project):
         """csv/html are sync-streamed, not enqueueable — the job endpoint rejects them."""

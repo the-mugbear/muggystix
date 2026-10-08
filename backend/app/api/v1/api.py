@@ -14,6 +14,8 @@ from app.api.v1.endpoints import (
     agent_browse, agent_recon,
     # v2.436.0 — agent evidence records + proposals (agent side / reviewer side).
     agent_proposals, proposals, host_tests,
+    # v2.457.0 — remediation tracking (project admins).
+    remediation,
     # v2.64.0 — fourth agent surface: read-only interactive assist.
     # `agent_assist` = X-API-Key surface (agent calls these).
     # `assist` = JWT surface (operator starts/ends sessions, lists them).
@@ -79,6 +81,10 @@ api_router.include_router(notifications.router, prefix="/notifications", tags=["
                           dependencies=[Depends(require_password_changed)])
 api_router.include_router(portfolio.router, prefix="/portfolio", tags=["portfolio"],
                           dependencies=[Depends(require_password_changed)])
+# v2.461.0 — the installation's remediation settings and the cross-project
+# follow-up reads (global admins: every project; others: the ones they admin).
+api_router.include_router(remediation.account_router, tags=["remediation"],
+                          dependencies=[Depends(require_password_changed)])
 # v2.377.0 — the administrators' programme dashboard.  The GLOBAL admin gate
 # is router-level so no endpoint added here later can forget it.
 api_router.include_router(oversight.router, prefix="/oversight", tags=["oversight"],
@@ -104,6 +110,7 @@ api_router.include_router(system_metrics.router, prefix="/system", tags=["system
 # surface and cannot be forgotten on a new endpoint.
 _agent_operator_access = [Depends(enforce_agent_operator_access)]
 api_router.include_router(host_tests.agent_router, prefix="/agent", tags=["agent-host-tests"], dependencies=_agent_operator_access)
+api_router.include_router(remediation.agent_router, prefix="/agent", tags=["agent-remediation"], dependencies=_agent_operator_access)
 
 api_router.include_router(
     agent_browse.router, prefix="/agent", tags=["agent-browse"],
@@ -213,6 +220,7 @@ project_router.include_router(findings_bulk.router, prefix="", tags=["findings-b
 project_router.include_router(findings.router, prefix="", tags=["findings"])
 project_router.include_router(proposals.router, prefix="", tags=["proposals"])
 project_router.include_router(host_tests.router, prefix="", tags=["host-tests"])
+project_router.include_router(remediation.router, prefix="", tags=["remediation"])
 # v2.386.0 — scanner observations by issue, and their bulk promotion.
 project_router.include_router(scanner_observations.router, prefix="", tags=["scanner-observations"])
 project_router.include_router(host_tags.router, prefix="/hosts", tags=["host-tags"])

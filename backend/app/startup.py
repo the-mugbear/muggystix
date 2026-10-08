@@ -99,6 +99,25 @@ def _housekeeping_leader(key: int):
 EXPIRED_SESSION_CLEANUP_INTERVAL_SECONDS = 3600  # 1 hour
 
 
+def _reap_expired_sessions():
+    """One pass: ``(user sessions reaped, agent sessions lapsed)``, or None
+    when another worker holds the lock."""
+    from app.core.security import cleanup_expired_sessions
+    from app.services.agent_session_service import lapse_expired_agent_sessions
+
+    with _housekeeping_leader(_LEADER_LOCK_EXPIRED_SESSIONS) as db:
+        if db is None:
+            return None
+        reaped = cleanup_expired_sessions(db)
+        # v2.283.0 — assist sessions rode the same "expired means done" idea
+        # and had nothing enforcing it: only the End button ever changed
+        # their status, so the operator's "active sessions" list accumulated
+        # dead ones forever.  Same pass rather than a third task: one hourly
+        # sweep, one advisory lock, one place to look when reaping misbehaves.
+        lapsed = lapse_expired_agent_sessions(db)
+        return reaped, lapsed
+
+
 async def expired_session_cleanup_loop() -> None:
     """Background task: periodically reap expired UserSession rows.
 
@@ -106,27 +125,20 @@ async def expired_session_cleanup_loop() -> None:
     but not incorrect — `cleanup_expired_sessions` only marks rows whose
     `revoked_at IS NULL`, so concurrent reapers can't double-revoke).
     """
-    from app.core.security import cleanup_expired_sessions
-    from app.services.agent_session_service import lapse_expired_agent_sessions
-
     while True:
         try:
             await asyncio.sleep(EXPIRED_SESSION_CLEANUP_INTERVAL_SECONDS)
-            with _housekeeping_leader(_LEADER_LOCK_EXPIRED_SESSIONS) as db:
-                if db is None:
-                    continue  # another worker is the leader this pass
-                reaped = cleanup_expired_sessions(db)
-                # v2.283.0 — assist sessions rode the same "expired means
-                # done" idea and had nothing enforcing it: only the End
-                # button ever changed their status, so the operator's
-                # "active sessions" list accumulated dead ones forever.
-                # Same loop rather than a third task: one hourly sweep, one
-                # advisory lock, one place to look when reaping misbehaves.
-                lapsed = lapse_expired_agent_sessions(db)
-                if reaped:
-                    logger.info("Reaped %d expired user sessions", reaped)
-                if lapsed:
-                    logger.info("Lapsed %d expired agent sessions", lapsed)
+            # In a thread, like the retention pass below: taking a pooled
+            # connection can wait DB_POOL_TIMEOUT, and a loop that waits
+            # answers nothing — /health included.
+            result = await asyncio.to_thread(_reap_expired_sessions)
+            if result is None:
+                continue  # another worker is the leader this pass
+            reaped, lapsed = result
+            if reaped:
+                logger.info("Reaped %d expired user sessions", reaped)
+            if lapsed:
+                logger.info("Lapsed %d expired agent sessions", lapsed)
         except asyncio.CancelledError:
             raise
         except Exception:

@@ -663,6 +663,17 @@ const ParseErrors: React.FC = () => {
                                 </Link>
                               </p>
                             )}
+                          </TableCell>
+                          <TableCell className="min-w-0">
+                            <BreakableName
+                              as="p"
+                              name={item.original_filename}
+                              title={item.original_filename}
+                              className="font-mono text-caption"
+                            />
+                            {/* Under the filename, the one wide column: in the
+                                128px Status column the reason was cut after
+                                four words. */}
                             {reason && (
                               <p
                                 className="mt-xxs line-clamp-2 break-words text-caption text-muted-foreground"
@@ -672,14 +683,6 @@ const ParseErrors: React.FC = () => {
                                 {reason}
                               </p>
                             )}
-                          </TableCell>
-                          <TableCell className="min-w-0">
-                            <BreakableName
-                              as="p"
-                              name={item.original_filename}
-                              title={item.original_filename}
-                              className="font-mono text-caption"
-                            />
                           </TableCell>
                           {/* `truncate` doesn't work directly on a
                               display:table-cell — text must live in a

@@ -30,6 +30,7 @@ from app.db.models_findings import Finding, FindingHost, FindingSource, FindingS
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.services.engagement_metrics_service import join_judged, observation_judged_on_host
 from app.services.finding_service import FindingService
+from app.services.host_query_common import escape_like
 from app.services.misconfig_checks import KIND_INFORMATIONAL, KIND_MISCONFIGURATION, KIND_VULNERABILITY
 
 # Most issues one promotion call may name, and most hosts one issue may list.
@@ -217,8 +218,11 @@ def list_issues(
         title.label("title"), cve.label("cve_id"),
     )
     if search and search.strip():
-        like = f"%{search.strip()}%"
-        query = query.filter(or_(Vulnerability.title.ilike(like), Vulnerability.cve_id.ilike(like)))
+        # Escaped like every other search: "100%" and "a_b" are text.
+        like = f"%{escape_like(search.strip())}%"
+        query = query.filter(or_(
+            Vulnerability.title.ilike(like, escape="\\"), Vulnerability.cve_id.ilike(like, escape="\\"),
+        ))
     # v2.415.0 — kind: a catalog check's rows all carry it (its issue key is
     # the check); otherwise the issue's severity decides.
     info_rank = _RANK[VulnerabilitySeverity.INFO]

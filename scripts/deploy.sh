@@ -1389,6 +1389,7 @@ case $DEPLOY_CHOICE in
             print_success "Deployment complete!"
             prune_after_deploy
             print_pending_data_repairs
+            print_tunable_settings
         elif [[ "$wait_rc" -eq 2 ]]; then
             echo ""
             print_error "The backend is not staying up — the boot migration (or startup) failed."
@@ -1524,6 +1525,7 @@ case $DEPLOY_CHOICE in
         echo ""
 
         check_ssl_status
+        print_tunable_settings
         ;;
 
     3)

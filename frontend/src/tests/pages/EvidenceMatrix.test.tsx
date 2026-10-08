@@ -243,7 +243,7 @@ describe('Evidence — whether the vulnerability scan authenticated', () => {
     );
     // The number is there to support a judgment, and all three stay "assessed".
     expect(line).toHaveTextContent('weaker evidence');
-    expect(line).toHaveTextContent('All three count as assessed.');
+    expect(line).toHaveTextContent('all three count as assessed.');
     const href = (name: RegExp) => within(line).getByRole('link', { name }).getAttribute('href');
     expect(href(/300 credentialed/)).toBe('/hosts?q=vulnscan%3Acredentialed');
     expect(href(/40 not credentialed/)).toBe('/hosts?q=vulnscan%3Auncredentialed');

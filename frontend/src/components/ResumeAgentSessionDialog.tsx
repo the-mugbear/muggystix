@@ -42,6 +42,7 @@ import {
   type ResumeAgentSessionResponse,
 } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
+import { formatTimestamp } from '../utils/relativeTime';
 import AgentSessionCredentials, { KeyHandoffFooter } from './AgentSessionCredentials';
 
 export interface ResumeAgentSessionDialogProps {
@@ -52,14 +53,7 @@ export interface ResumeAgentSessionDialogProps {
   onResumed?: () => void;
 }
 
-const fmtTime = (iso?: string | null): string => {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-};
+const fmtTime = (iso?: string | null): string => formatTimestamp(iso);
 
 /** The line the operator gives a reconnected agent. Short on purpose: the
  *  agent already holds the full prompt or the MCP tools; it needs to know

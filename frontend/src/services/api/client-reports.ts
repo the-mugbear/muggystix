@@ -5,6 +5,7 @@
  * download with downloadReportJob); an issued report's files download here.
  */
 import { api, p } from './client';
+import { saveBlob } from '../../utils/download';
 import type { ReportJob } from '../api';
 
 export type ClientReportKind = 'full' | 'addendum';
@@ -113,6 +114,9 @@ export interface ReportTemplate {
   formats: ClientReportFormat[];
   assets?: ReportTemplateAsset[];
   images?: ReportTemplateImages;
+  /** `contact` = the remediation list prepared for one contact: its files are
+   *  managed here like any template's, but no client report is created with it. */
+  kind?: 'client' | 'contact';
 }
 
 export interface ReportFile {
@@ -327,25 +331,11 @@ export const saveReportProfile = async (body: Omit<ReportProfile, 'updated_at'>)
  *  is the frozen one, so its SHA-256 is the one the report prints. */
 export const downloadClientReportScope = async (id: number, filename: string): Promise<void> => {
   const response = await api.get(`${base()}/${id}/scope.csv`, { responseType: 'blob' });
-  const url = window.URL.createObjectURL(new Blob([response.data], { type: 'text/csv' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  window.URL.revokeObjectURL(url);
-  document.body.removeChild(a);
+  saveBlob(new Blob([response.data], { type: 'text/csv' }), filename);
 };
 
 /** Save an issued report's file (authenticated blob → browser download). */
 export const downloadClientReportFile = async (id: number, file: ReportFile): Promise<void> => {
   const response = await api.get(`${base()}/${id}/files/${file.format}`, { responseType: 'blob' });
-  const url = window.URL.createObjectURL(new Blob([response.data], { type: file.media_type }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = file.filename;
-  document.body.appendChild(a);
-  a.click();
-  window.URL.revokeObjectURL(url);
-  document.body.removeChild(a);
+  saveBlob(new Blob([response.data], { type: file.media_type }), file.filename);
 };

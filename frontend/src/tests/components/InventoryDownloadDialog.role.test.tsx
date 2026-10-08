@@ -2,11 +2,12 @@
  * Review 2026-10-01 R32 — a report job's Retry / Cancel / Dismiss are a
  * project analyst's, or the person's who asked for the job.  A viewer or
  * auditor does not get them on someone else's job.
+ *
+ * (Written against the "Export hosts" dialog; the rule is the job routes',
+ * so it moved with the job list to the "Download inventory" dialog.)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render as rtlRender, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
-import type { ReactElement } from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
 
 const role = vi.hoisted(() => ({ value: 'auditor' as string }));
 vi.mock('../../contexts/AuthContext', () => ({
@@ -17,23 +18,20 @@ vi.mock('../../contexts/ProjectContext', () => ({
 }));
 vi.mock('../../hooks/useVisibilityPoll', () => ({ useVisibilityPoll: vi.fn() }));
 vi.mock('../../services/api', () => ({
-  generateHostsReport: vi.fn(),
-  enqueueReportJob: vi.fn(),
-  getReportJob: vi.fn(),
+  downloadInventoryCsv: vi.fn(),
+  enqueueInventoryJson: vi.fn(),
   downloadReportJob: vi.fn(),
   listReportJobs: vi.fn(),
-  getReportLimits: vi.fn().mockResolvedValue({ in_memory_host_cap: 2000, streamed_host_cap: 50000, per_format: {} }),
   dismissReportJob: vi.fn(),
   retryReportJob: vi.fn(),
   cancelReportJob: vi.fn(),
 }));
 
-import ReportsDialog from '../../components/ReportsDialog';
+import InventoryDownloadDialog from '../../components/InventoryDownloadDialog';
 import * as api from '../../services/api';
 
-const render = (ui: ReactElement) => rtlRender(ui, { wrapper: MemoryRouter });
 const job = (id: number, status: string, requestedBy: number | null | undefined) => ({
-  id, project_id: 1, format: 'html', report_type: 'comprehensive', status, truncated: false,
+  id, project_id: 1, format: 'json', report_type: 'comprehensive', status,
   created_at: '2026-10-01T00:00:00Z', ...(requestedBy === undefined ? {} : { requested_by_id: requestedBy }),
 });
 const jobs = (requestedBy: number | null | undefined) =>
@@ -41,14 +39,14 @@ const jobs = (requestedBy: number | null | undefined) =>
     job(1, 'failed', requestedBy), job(2, 'queued', requestedBy), job(3, 'completed', requestedBy),
   ]);
 const open = async () => {
-  render(<ReportsDialog open onClose={vi.fn()} filters={{}} totalHosts={10} />);
-  await screen.findByText('Recent reports');
+  render(<InventoryDownloadDialog open onClose={vi.fn()} filters={{}} totalHosts={10} />);
+  await screen.findByText('Recent JSON downloads');
   await waitFor(() => expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(1));
 };
 
 beforeEach(() => { role.value = 'auditor'; });
 
-describe('ReportsDialog — whose report job it is', () => {
+describe('InventoryDownloadDialog — whose report job it is', () => {
   it('hides Retry, Cancel and Dismiss from an auditor on a job someone else requested', async () => {
     jobs(99);
     await open();
@@ -114,4 +112,15 @@ describe('ReportsDialog — whose report job it is', () => {
       expect(screen.getAllByRole('button', { name: /Dismiss report job/ })).toHaveLength(3);
     },
   );
+
+  // R34 — a refused Dismiss is said, and a refused Retry says the server's words.
+  it('says a refusal instead of doing nothing', async () => {
+    jobs(7);
+    (api.dismissReportJob as ReturnType<typeof vi.fn>).mockRejectedValue(Object.assign(new Error('403'), {
+      response: { status: 403, data: { detail: 'Insufficient project role. Required: analyst (or the person who requested this export).' } },
+    }));
+    await open();
+    screen.getByRole('button', { name: 'Dismiss report job 3' }).click();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Insufficient project role/);
+  });
 });

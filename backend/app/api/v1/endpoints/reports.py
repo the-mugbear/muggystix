@@ -1,5 +1,4 @@
-from typing import List, Optional, Dict
-from pydantic import BaseModel
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -15,7 +14,7 @@ from app.db.models import ReportJob
 # endpoints (and existing test imports of `from ...reports import ReportGenerator`)
 # keep working.
 from app.services.report_generator import ReportGenerator
-from app.services.report_job_service import STREAMED_REPORT_FORMATS, ReportJobService
+from app.services.report_job_service import PAGE_OWNED_REPORT_TYPES, ReportJobService
 from app.schemas.schemas import ReportJobSchema
 from app.services.csv_utils import csv_safe as _csv_safe, safe_csv_row as _safe_csv_row  # noqa: F401
 import logging
@@ -24,7 +23,15 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Reports package + egress project data (and jobs mutate shared queue state).
+# What this router serves (the HTML host report, the agent package and the
+# Markdown bundle were retired with "Export hosts", owner 2026-10-07):
+#   - the inventory CSV, streamed (``/hosts/csv``);
+#   - the inventory JSON, a report job (``POST /jobs?format=json``);
+#   - the systemic executive briefing (``/systemic.html``);
+#   - the report-job routes, which client-report previews also poll and
+#     download through.
+#
+# Downloads egress project data (and jobs mutate shared queue state).
 # Same policy as /export: VIEWERs are read-only-inventory and cannot pull
 # reports; AUDITOR and above may. Gate the whole router — every route is under
 # /projects/{project_id}, so the role check reads project_id from the path.
@@ -45,64 +52,25 @@ def generate_hosts_csv_report(
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Generate CSV report of hosts based on filters"""
+    """The host inventory as CSV — one row per host matching the filters,
+    streamed."""
     # A streamed export: its queries run after the response has started and
     # cover every matching host — exempt from the API statement timeout
     # (review 2026-10-01 R23), which is for interactive requests.
     disable_statement_timeout(db)
     # The full filter context (incl. has_exploit_available, has_test_execution,
     # has_web_interface, tech, tags, subnet_labels, assigned_to) — derived from
-    # the shared HostFilterParams so reports can never narrow to fewer filters
-    # than the visible /hosts list.  None-stripped for the html/agent/markdown
-    # generators that display the applied filters.
+    # the shared HostFilterParams so a download can never narrow to fewer
+    # filters than the visible /hosts list.
     filter_kwargs = {k: v for k, v in filters.as_builder_kwargs().items() if v is not None}
 
     generator = ReportGenerator(db, current_user, project_id=project.id)
-    # Stream the inventory over a chunked cursor — no host cap, bounded memory,
-    # so a project with >cap hosts still gets a complete CSV.
+    # Stream the inventory over a chunked cursor — no host cap, bounded memory.
     filename = f"hosts_inventory_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     return StreamingResponse(
         generator.iter_inventory_csv(filter_kwargs),
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
-
-@router.get("/hosts/html")
-def generate_hosts_html_report(
-    filters: HostFilterParams = Depends(),
-    report_type: str = Query(
-        "comprehensive",
-        pattern="^(inventory|comprehensive)$",
-        description="'comprehensive' (full security report: findings + hotspots + host detail) or 'inventory' (concise host list, no project-wide roll-ups).",
-    ),
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    """Generate HTML report of hosts based on filters"""
-    # Streamed, like the CSV: exempt from the API statement timeout (R23).
-    disable_statement_timeout(db)
-    # The full filter context (incl. has_exploit_available, has_test_execution,
-    # has_web_interface, tech, tags, subnet_labels, assigned_to) — derived from
-    # the shared HostFilterParams so reports can never narrow to fewer filters
-    # than the visible /hosts list.  None-stripped for the html/agent/markdown
-    # generators that display the applied filters.
-    filter_kwargs = {k: v for k, v in filters.as_builder_kwargs().items() if v is not None}
-
-    generator = ReportGenerator(db, current_user, project_id=project.id)
-    # Stream the dossiers chunk-by-chunk so peak memory ≈ one chunk even at the
-    # high cap.  Resolve ids + truncation first: the StreamingResponse flushes
-    # headers (incl. X-Report-Truncated) before the body.
-    host_ids = generator.resolve_html_host_ids(filter_kwargs)
-    filename = f"hosts_{report_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-
-    return StreamingResponse(
-        generator.iter_html_report(host_ids, report_type, filter_kwargs),
-        media_type="text/html",
-        headers={
-            "Content-Disposition": f"attachment; filename={filename}",
-            "X-Report-Truncated": "true" if generator.report_truncated else "false",
-        },
     )
 
 
@@ -118,8 +86,8 @@ def generate_systemic_executive_report(
 ):
     """Lightweight executive systemic report (standalone HTML).
 
-    The estate-wide systemic patterns + site/subnet hotspots only — no per-host
-    dossiers — as a self-contained HTML file for sharing at a high-level
+    The estate-wide systemic patterns + site/subnet hotspots only — nothing
+    per host — as a self-contained HTML file for sharing at a high-level
     meeting.  Project-wide (no host filters); the systemic payload is bounded,
     so this renders synchronously rather than via the async report-job
     pipeline."""
@@ -137,31 +105,34 @@ def generate_systemic_executive_report(
 
 
 # ---------------------------------------------------------------------------
-# Async report jobs.  The heavy in-memory formats (pdf / json / agent-package /
-# markdown-bundle) build the whole document in worker memory, so they run on the
-# dedicated report worker instead of this request thread: the dialog enqueues a
-# job, polls its status, then downloads the artifact.  CSV + HTML above stream
-# synchronously (memory-safe) and are NOT enqueued.
+# Report jobs.  The inventory JSON carries every matching host's full record,
+# so it is written by the dedicated report worker instead of this request
+# thread: the dialog enqueues a job, polls its status, then downloads the
+# artifact.  The CSV above streams synchronously and is NOT enqueued.
 # ---------------------------------------------------------------------------
 
-# PDF removed in v2.196.1 (slow + degraded WeasyPrint render of the screen-oriented
-# dossier HTML; the interactive HTML report is the functional handover).
-_ASYNC_FORMAT_PATTERN = "^(json|agent-package|markdown-bundle)$"
+# The one host download that is a job.  (Client-report renders are jobs too;
+# they are enqueued by the Reports page's own routes, never here.)
+_ASYNC_FORMAT_PATTERN = "^json$"
 
 
 @router.post("/jobs", response_model=ReportJobSchema, status_code=202)
 def enqueue_report_job(
-    format: str = Query(..., pattern=_ASYNC_FORMAT_PATTERN, description="Async export format."),
+    format: str = Query(..., pattern=_ASYNC_FORMAT_PATTERN, description="The download's format: json."),
     filters: HostFilterParams = Depends(),
-    report_type: str = Query("comprehensive", pattern="^(inventory|comprehensive)$"),
+    report_type: str = Query(
+        "comprehensive", pattern="^(inventory|comprehensive)$",
+        description="'comprehensive' adds the project-wide findings, hotspots and systemic "
+                    "roll-ups after the hosts; 'inventory' is the hosts alone.",
+    ),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Enqueue an async report-generation job (returns it in ``queued`` state).
+    """Enqueue the inventory JSON download (returns the job in ``queued`` state).
 
     The same full filter context the visible /hosts list uses — derived from the
-    shared HostFilterParams so a report can never narrow to fewer filters — is
+    shared HostFilterParams so a download can never narrow to fewer filters — is
     stored on the job and replayed on the worker.  Poll ``GET /reports/jobs/{id}``
     and download via ``GET /reports/jobs/{id}/download`` once ``completed``.
     """
@@ -179,42 +150,6 @@ def enqueue_report_job(
     return job
 
 
-class ReportLimits(BaseModel):
-    """Effective host caps per export format for THIS deployment, so the export
-    dialog can state the real number before the user waits for a report
-    (the frontend used to hardcode the streamed cap for every format while
-    the worker applied the much lower in-memory one to JSON/zip)."""
-    in_memory_host_cap: int
-    streamed_host_cap: int
-    # format -> cap; None means the format streams the full set uncapped.
-    per_format: Dict[str, Optional[int]]
-
-
-# Formats the worker builds whole-in-memory (bounded by the in-memory cap).
-# Mirrors ReportJobService._render; a new async format must be listed here.
-_IN_MEMORY_FORMATS = ("markdown-bundle",)
-
-
-@router.get("/limits", response_model=ReportLimits)
-def report_limits():
-    """Per-format host caps.  csv, json and the agent package stream every
-    matching host; html streams up to the streamed cap; the markdown bundle
-    is capped at the in-memory cap."""
-    per_format: Dict[str, Optional[int]] = {
-        "csv": None,
-        "html": ReportGenerator.MAX_REPORT_HOSTS,
-    }
-    for fmt in STREAMED_REPORT_FORMATS:
-        per_format[fmt] = None
-    for fmt in _IN_MEMORY_FORMATS:
-        per_format[fmt] = ReportGenerator.MAX_INMEMORY_REPORT_HOSTS
-    return ReportLimits(
-        in_memory_host_cap=ReportGenerator.MAX_INMEMORY_REPORT_HOSTS,
-        streamed_host_cap=ReportGenerator.MAX_REPORT_HOSTS,
-        per_format=per_format,
-    )
-
-
 @router.get("/jobs", response_model=List[ReportJobSchema])
 def list_report_jobs(
     limit: int = Query(20, ge=1, le=100),
@@ -224,12 +159,13 @@ def list_report_jobs(
 ):
     """Recent report jobs for this project (newest first), excluding dismissed.
     Client-report renders (``report_type='client'``) belong to the Reports
-    page, not this export tray."""
+    page and a contact's remediation list (``'remediation'``) to the
+    Remediation page — not this list of inventory downloads."""
     return (
         db.query(ReportJob)
         .filter(
             ReportJob.project_id == project.id, ReportJob.dismissed_at.is_(None),
-            ReportJob.report_type != "client",
+            ReportJob.report_type.notin_(PAGE_OWNED_REPORT_TYPES),
         )
         .order_by(ReportJob.created_at.desc())
         .limit(limit)
@@ -279,7 +215,6 @@ def download_report_job(
         path=job.result_path,
         media_type=job.media_type or "application/octet-stream",
         filename=job.result_filename or f"report_{job.id}",
-        headers={"X-Report-Truncated": "true" if job.truncated else "false"},
     )
 
 

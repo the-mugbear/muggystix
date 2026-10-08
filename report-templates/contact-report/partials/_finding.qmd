@@ -1,0 +1,71 @@
+<# One finding, in full — the original template's finding layout: "Title
+   (Severity)", score and vector, affected systems, description with its
+   steps to reproduce and evidence, recommendations, references.  Expects `f`
+   and the page-wide `counter`; `in_appendix` (optional) drops the headings
+   one level.  The sub-headings are numbered like the original's
+   (4.1.1 Affected system(s), 4.1.2 Description, 4.1.2.1 Steps to reproduce),
+   and every evidence image is "Figure N: …" counted through the report —
+   by _bluestick/fields.lua, in the order a reader meets them, because an
+   author may place an image INSIDE a written section (an "evidence:" image
+   reference in the Markdown), where Jinja never sees it.
+   Under Evidence, the test results that confirmed the finding come first
+   (partials/_confirmations.qmd), then the screenshots no section places:
+   f.evidence holds only those, f.images every image marked "In report". #>
+<% set h2 = "###" if (in_appendix is defined and in_appendix) else "##" %>
+<% set h3 = h2 ~ "#" %>
+<% set h4 = h3 ~ "#" %>
+<< h2|safe >> << f.title >> (<< f.severity_label >>) {#finding-<< f.id >>}
+
+| Reference | CVSS score | Vector | Status |
+|:------------|:------------|:----------------------------------------|:----------------|
+| << f.ref >> | << "%.1f"|format(f.cvss_score) if f.cvss_score is not none else "Not scored" >> | << f.cvss_vector or "—" >> | << f.status_note or "Confirmed" >> |
+
+<< h3|safe >> Affected system(s)
+
+<% if f.affected %>
+<% with rows = f.affected %><% include "partials/_affected.qmd" %><% endwith %>
+<% else %>
+Not specific to a host.
+<% endif %>
+
+<< h3|safe >> Description
+<< md(f, "description") >>
+<% if f.impact or f.severity != "info" %>
+<< h4|safe >> Impact
+<< md(f, "impact") >>
+<% endif %>
+<< h4|safe >> Steps to reproduce
+<< md(f, "steps_to_reproduce") >>
+<< h4|safe >> Evidence / proof of concept
+<# .get(): a report issued before test results were carried has no such list. #>
+<% set confirmations = f.get("confirmations") or [] %>
+<% if confirmations %>
+<% include "partials/_confirmations.qmd" %>
+<% endif %>
+<% if f.evidence %>
+<% for e in f.evidence %>
+<< image(e) >>
+<% endfor %>
+<% elif confirmations or f.get("images") %>
+<# The test results above, or the screenshots placed in the text, are the
+   evidence: nothing more is owed here. #>
+<% else %>
+
+No evidence attached.
+
+<% endif %>
+
+<< h3|safe >> Recommendations
+<< md(f, "recommendation") >>
+<% if f.references %>
+<< h3|safe >> References
+<< md(f, "references") >>
+<% endif %>
+<% if f.corroboration %>
+
+*Observed by << f.corroboration|join(", ") >>.*
+
+<% endif %>
+
+{{< pagebreak >}}
+

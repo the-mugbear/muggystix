@@ -36,6 +36,7 @@ import {
 import { formatApiError } from '../utils/apiErrors';
 import { copyToClipboard, downloadTextFile } from '../utils/clipboard';
 import { useToast } from '../contexts/ToastContext';
+import { cn } from '../utils/cn';
 import { safeFallback } from '../utils/uiStyles';
 import { useProject } from '../contexts/ProjectContext';
 import { useProjectRole } from '../hooks/useProjectRole';
@@ -204,18 +205,18 @@ const Patterns: React.FC = () => {
   );
   const outliers = useMemo(() => data?.segment_outliers ?? [], [data]);
   const profiles = useMemo(() => data?.diagnostic_profiles ?? [], [data]);
+  const groupingFamilies = useMemo(() => families.filter((f) => f.conditions.length > 1), [families]);
   const estateWide = conditions.filter((c) => c.classification === 'estate_wide');
   const recurring = conditions.filter((c) => c.classification !== 'isolated');
+  // "Mixed" names no question (the combination itself is in Together): the
+  // column is shown only when some subnet's combination raises one.
+  const anyQuestion = profiles.some((d) => d.root_cause.kind !== 'mixed');
 
   return (
     <div className="space-y-md p-md md:p-lg">
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
           <h1 className="text-page-title">Patterns</h1>
-          <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
-            Which weaknesses recur across the in-scope estate — the ones that suggest a shared cause worth raising with the
-            people who run it.
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-xs">
           {/* The briefing is a report (`/reports/systemic.html`, AUDITOR on the
@@ -268,7 +269,7 @@ const Patterns: React.FC = () => {
             </PostureMeasure>
             <PostureMeasure label="Estate-wide weaknesses" value={estateWide.length.toLocaleString()}
               info="A weakness is estate-wide when it affects a meaningful share of in-scope hosts AND spans most sites (or the whole estate in a single-site project) — likely an organisation-level gap.">
-              {estateWide.length ? 'Marked first under Weaknesses' : 'none reach most of the estate'}
+              {estateWide.length ? 'Listed first under Weaknesses' : 'none reach most of the estate'}
             </PostureMeasure>
             <PostureMeasure label="Recurring weaknesses" value={recurring.length.toLocaleString()}
               info="Weaknesses seen on more than a handful of hosts: estate-wide plus recurring (systemic but confined). Isolated ones are listed but not counted here.">
@@ -280,13 +281,15 @@ const Patterns: React.FC = () => {
             </PostureMeasure>
           </div>
 
-          {families.length > 0 && <FamiliesSection families={families} />}
-          {conditions.length > 0 && <WeaknessesSection conditions={conditions} />}
+          {/* A family of ONE weakness is that weakness's row again (same hosts,
+              same reach): only families that group several are listed, and a
+              lone weakness carries its family's hypothesis on its own row. */}
+          {groupingFamilies.length > 0 && <FamiliesSection families={groupingFamilies} />}
+          {conditions.length > 0 && <WeaknessesSection conditions={conditions} families={families} />}
 
           {outliers.length > 0 && (
             <PostureSection title={<>Subnets that stand out
-              <InfoTip text="Issue density = condition incidences ÷ hosts in the subnet, compared with the median across every scoped subnet. Flagged at 2× the median (or, when the median is 0, above an absolute floor)." /></>}
-              description="Issues per host well above the estate's own median — worth a look even when the range is small.">
+              <InfoTip text="Issues per host well above the estate's own median — worth a look even when the range is small. Issue density = condition incidences ÷ hosts in the subnet, compared with the median across every scoped subnet. Flagged at 2× the median (or, when the median is 0, above an absolute floor)." /></>}>
               <table className="w-full border-collapse text-metadata" style={{ tableLayout: 'fixed' }}>
                 <thead>
                   <tr className="text-left text-caption text-muted-foreground">
@@ -322,14 +325,14 @@ const Patterns: React.FC = () => {
           {profiles.length > 0 && (
             <PostureSection title={<>What co-occurs, by subnet
               <InfoTip text="Which conditions appear together within a subnet, and the question that raises — e.g. only end-of-life systems → how is OS lifecycle handled here? A deliberate legacy enclave, different asset roles or uneven scan depth can produce the same signature: a lead to check, not a conclusion." /></>}
-              description="A subnet's combination of weaknesses, and the question it raises.">
+>
               <table className="w-full border-collapse text-metadata" style={{ tableLayout: 'fixed' }}>
                 <thead>
                   <tr className="text-left text-caption text-muted-foreground">
                     <th className="w-[20%] pb-xxs pr-md font-medium">Subnet</th>
                     <th className="w-[14%] pb-xxs pr-md font-medium">Site</th>
-                    <th className="w-[26%] pb-xxs pr-md font-medium">Together</th>
-                    <th className="pb-xxs font-medium">Worth checking</th>
+                    <th className={cn('pb-xxs pr-md font-medium', anyQuestion && 'w-[26%]')}>Together</th>
+                    {anyQuestion && <th className="pb-xxs font-medium">Worth checking</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -343,12 +346,18 @@ const Patterns: React.FC = () => {
                         {safeFallback(d.site, 'unassigned')}
                       </td>
                       <td className="py-xs pr-md"><ConditionLinks keys={d.conditions} cidr={d.cidr} /></td>
-                      <td className="py-xs text-caption text-foreground">
-                        <span className="line-clamp-3 break-words" title={d.root_cause.text}>
-                          <span className="font-medium">{ROOT_CAUSE_LABEL[d.root_cause.kind] ?? d.root_cause.kind}: </span>
-                          {d.root_cause.text}
-                        </span>
-                      </td>
+                      {anyQuestion && (
+                        <td className="py-xs text-caption text-foreground">
+                          {d.root_cause.kind === 'mixed' ? (
+                            <span className="text-muted-foreground">—</span>
+                          ) : (
+                            <span className="line-clamp-3 break-words" title={d.root_cause.text}>
+                              <span className="font-medium">{ROOT_CAUSE_LABEL[d.root_cause.kind] ?? d.root_cause.kind}: </span>
+                              {d.root_cause.text}
+                            </span>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -395,7 +404,7 @@ const PatternsLead: React.FC<{
 const FamiliesSection: React.FC<{ families: SystemicFamily[] }> = ({ families }) => (
   <PostureSection title={<>Pattern families
     <InfoTip text="Weaknesses grouped into program-level families. Each shows how many in-scope hosts the family affects, how far it spreads, the likely shared cause (a hypothesis) and the program-level control that would address it. Worst-first by spread." /></>}
-    description="The weaknesses grouped by what they have in common — each with a cause to test and the control that would fix it at the source.">
+>
     <table className="w-full border-collapse text-metadata" style={{ tableLayout: 'fixed' }}>
       <thead>
         <tr className="text-left text-caption text-muted-foreground">
@@ -439,29 +448,37 @@ const FamiliesSection: React.FC<{ families: SystemicFamily[] }> = ({ families })
   </PostureSection>
 );
 
-const WeaknessesSection: React.FC<{ conditions: SystemicCondition[] }> = ({ conditions }) => (
+const WeaknessesSection: React.FC<{ conditions: SystemicCondition[]; families: SystemicFamily[] }> = ({ conditions, families }) => {
+  // The spread badge tells rows apart; when every row has the same spread it
+  // tells nothing (the lead and the measures already say it).
+  const mixedSpread = new Set(conditions.map((c) => c.classification)).size > 1;
+  const loneFamily = new Map(
+    families.filter((f) => f.conditions.length === 1).map((f) => [f.conditions[0], f] as const),
+  );
+  return (
   <PostureSection title={<>Weaknesses
     <InfoTip text="Every recurring weakness and how far it spreads. Hosts = affected in-scope hosts and their share of the estate; Reach = distinct subnets and sites. Estate-wide = a large share of hosts across most sites; Recurring = systemic but confined; Isolated = a handful of incidents." /></>}
-    description="Each weakness on its own, estate-wide ones first, with the action that addresses it.">
+>
     <table className="w-full border-collapse text-metadata" style={{ tableLayout: 'fixed' }}>
       <thead>
         <tr className="text-left text-caption text-muted-foreground">
           <th className="w-[30%] pb-xxs pr-md font-medium">Weakness</th>
           <th className="w-[12%] pb-xxs pr-md text-right font-medium">Hosts</th>
           <th className="w-[14%] pb-xxs pr-md font-medium">Reach</th>
-          <th className="pb-xxs font-medium">Recommended action</th>
+          <th className="pb-xxs font-medium">Hypothesis → action</th>
         </tr>
       </thead>
       <tbody>
         {conditions.map((c) => {
           const href = conditionHostsHref(c.key);
           const spread = spreadOf(c);
+          const hypothesis = loneFamily.get(c.key)?.root_cause_hypothesis;
           return (
             <tr key={c.key} className="border-t border-border/60 align-top" data-spread={c.classification}>
               <td className="py-xs pr-md">
                 <div className="flex min-w-0 items-center gap-xs">
                   <span className="min-w-0 truncate font-medium text-foreground" title={c.label}>{c.label}</span>
-                  <Badge variant={spread.variant} className="shrink-0">{spread.label}</Badge>
+                  {mixedSpread && <Badge variant={spread.variant} className="shrink-0">{spread.label}</Badge>}
                 </div>
                 <span className="block truncate text-caption text-muted-foreground" title={`${c.family_label ?? ''} — ${c.vector}`}>
                   {c.family_label ? `${c.family_label} · ` : ''}{c.vector}
@@ -477,6 +494,9 @@ const WeaknessesSection: React.FC<{ conditions: SystemicCondition[] }> = ({ cond
                 {plural(c.subnet_spread, 'subnet')}<br />{plural(c.site_spread, 'site')}
               </td>
               <td className="py-xs text-caption text-foreground">
+                {hypothesis && (
+                  <p className="mb-xxs line-clamp-2 break-words text-muted-foreground" title={hypothesis}>{hypothesis}</p>
+                )}
                 <span className="line-clamp-3 break-words" title={c.recommended_action}>{safeFallback(c.recommended_action, '—')}</span>
               </td>
             </tr>
@@ -485,6 +505,7 @@ const WeaknessesSection: React.FC<{ conditions: SystemicCondition[] }> = ({ cond
       </tbody>
     </table>
   </PostureSection>
-);
+  );
+};
 
 export default Patterns;

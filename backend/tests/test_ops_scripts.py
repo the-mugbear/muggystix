@@ -740,6 +740,55 @@ def test_restore_without_the_typed_confirmation_changes_nothing(project):
 
 
 # ---------------------------------------------------------------------------
+# The settings a deploy ends by showing (2026-10-08)
+# ---------------------------------------------------------------------------
+
+def _settings(out: str) -> dict:
+    """{NAME: (value, source)} from the readout."""
+    rows = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0].isupper() and parts[2].startswith("("):
+            rows[parts[0]] = (parts[1], parts[2].strip("()"))
+    return rows
+
+
+def test_a_deploy_ends_by_showing_the_settings_in_force_and_where_each_comes_from(project):
+    """An operator is told to change these after a look at the host's logs;
+    the deploy shows them — the value in .env, else the default read from
+    where it is defined, never a number repeated in the script."""
+    (project.root / "docker-compose.yml").write_text(
+        "services:\n  worker:\n    mem_limit: ${WORKER_MEM_LIMIT:-4g}\n"
+        "  db:\n    command: -c shared_buffers=${PG_SHARED_BUFFERS:-256MB}\n"
+    )
+    (project.root / ".env.example").write_text(
+        "# Seconds one import may run.\n# INGESTION_JOB_TIMEOUT=1800\n"
+        "# Sized for NESSUS (INGESTION_RETAIN_FILES_DAYS=99) in prose is not a default.\n"
+    )
+    env = project.root / ".env"
+    env.write_text(env.read_text() + "WORKER_MEM_LIMIT=8g\n")
+
+    result = project.run("deploy.sh", stdin="1\n", env={"BACKUP_KEEP": "25"})
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert out.index("Deployment complete") < out.index("Settings you can tune")
+    rows = _settings(out)
+    assert rows["WORKER_MEM_LIMIT"] == ("8g", ".env")
+    assert rows["PG_SHARED_BUFFERS"] == ("256MB", "default")       # docker-compose.yml
+    assert rows["INGESTION_JOB_TIMEOUT"] == ("1800", "default")    # .env.example's commented line
+    assert rows["BACKUP_KEEP"] == ("25", "environment")
+    assert rows["DEPLOY_HEALTH_TIMEOUT"] == ("10", "environment")  # the harness sets it
+    assert rows["MIN_FREE_GB"] == ("0", "environment")
+    assert rows["INGESTION_RETAIN_FILES_DAYS"] == ("built-in", "default")
+    # Nothing that is a secret is ever in the readout.
+    assert "a-real-secret" not in out
+    assert not [name for name in rows if "SECRET" in name or "PASSWORD" in name or "KEY" in name]
+    # (That every name shown has a default this repository defines is pinned
+    # where the repository root can be read: frontend/src/tests/tunableSettings.test.ts.)
+
+
+# ---------------------------------------------------------------------------
 # Every script still parses
 # ---------------------------------------------------------------------------
 

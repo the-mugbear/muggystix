@@ -19,7 +19,6 @@ import { Check, Loader2, Pencil, X } from 'lucide-react';
 
 import type { Proposal } from '../../services/api';
 import { ProposalDecision, useProposalDecision } from '../../hooks/useProposalDecision';
-import { shortClient } from '../../utils/proposalEvents';
 import { cn } from '../../utils/cn';
 import { formatRelativeTime, formatTimestamp } from '../../utils/relativeTime';
 import { Badge } from '../ui/badge';
@@ -77,8 +76,10 @@ export const ProposalSource: React.FC<{ pr: Proposal }> = ({ pr }) => {
   if (pr.source === 'llm_draft') {
     return <span>Drafted in BlueStick by {pr.proposed_by ?? 'someone'}{model}{when && ` · ${when}`}</span>;
   }
+  // The client (and its version) is on hover: session, operator, model and
+  // age are what a reviewer compares drafts by.
   return (
-    <span>
+    <span title={pr.agent_client ? `Client: ${pr.agent_client}` : undefined}>
       {pr.agent_session_id != null ? (
         <Link to={`/agent-sessions/${pr.agent_session_id}`} className="text-info hover:underline">
           Agent session #{pr.agent_session_id}
@@ -86,7 +87,6 @@ export const ProposalSource: React.FC<{ pr: Proposal }> = ({ pr }) => {
       ) : 'An agent session'}
       {pr.proposed_by && <> ({pr.proposed_by}&apos;s)</>}
       {model}
-      {pr.agent_client && <> · <span title={pr.agent_client}>{shortClient(pr.agent_client)}</span></>}
       {when && ` · ${when}`}
     </span>
   );

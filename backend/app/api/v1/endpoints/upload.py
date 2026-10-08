@@ -137,6 +137,11 @@ async def upload_scan_file(
         if in_project is None:
             raise HTTPException(status_code=404, detail="Scan batch not found in this project")
 
+    # The database shares this disk: a file that would not leave room is
+    # refused (507) rather than written.
+    from app.services.queue_metrics_service import ensure_room_for_upload
+    ensure_room_for_upload(file.size)
+
     try:
         job = await ingestion_service.create_job(
             db=db,

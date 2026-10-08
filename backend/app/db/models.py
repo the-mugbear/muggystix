@@ -11,7 +11,7 @@ Key changes:
 
 import enum
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, Index, func, JSON, BigInteger, Enum as SQLEnum, text
-from sqlalchemy.orm import relationship, backref
+from sqlalchemy.orm import relationship, backref, deferred
 from app.db.session import Base
 
 
@@ -901,8 +901,9 @@ class IngestionJob(Base):
     # committed port is always named here; cleared when the job completes and
     # when the attempt's leftovers are deleted.  Never read by a page or a
     # count.  A plain JSON array of ints — ~1 MB for the ~100k ports a 1 GB
-    # file can create.
-    in_progress_created_port_ids = Column(JSON(none_as_null=True), nullable=True)
+    # file can create.  Deferred: loading a job (the heartbeat, the Scans
+    # page's poll) must not bring the list with it.
+    in_progress_created_port_ids = deferred(Column(JSON(none_as_null=True), nullable=True))
     # An agent's upload (POST /agent/uploads) carries the agent session that
     # sent it (v2.433.0).  Null for an operator's upload.
     agent_session_id = Column(
@@ -974,9 +975,9 @@ class IngestionJob(Base):
 
 
 class ReportJob(Base):
-    """An async report-generation job — the heavy export formats (PDF, JSON,
-    markdown-bundle, agent-package) build the whole document in memory, so they
-    run on a dedicated background worker instead of the API request thread.
+    """An async report-generation job — the host inventory's JSON download and
+    the client report's renders run on a dedicated background worker instead
+    of the API request thread.
 
     Mirrors IngestionJob's queue lifecycle (queued → processing → completed /
     failed) and dead-letter columns (retry_count / last_error / last_heartbeat)
@@ -992,8 +993,8 @@ class ReportJob(Base):
     requested_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     # What to generate.
-    format = Column(String(32), nullable=False)        # json | markdown-bundle | agent-package
-    report_type = Column(String(20), nullable=False, default="comprehensive")  # comprehensive | inventory
+    format = Column(String(32), nullable=False)        # json | report-* (a client report's render)
+    report_type = Column(String(20), nullable=False, default="comprehensive")  # comprehensive | inventory | client
     filters = Column(JSON, default=dict)               # build_filtered_host_query kwargs
 
     status = Column(String, nullable=False, default="queued")  # queued, processing, completed, failed
@@ -1005,8 +1006,10 @@ class ReportJob(Base):
     result_filename = Column(String, nullable=True)
     media_type = Column(String, nullable=True)
     file_size = Column(BigInteger, nullable=True)
-    # Mirrors X-Report-Truncated: the filter matched more than the host cap and
-    # this artifact is the capped subset.
+    # No longer written or read: it flagged an artifact capped at a host
+    # limit, and the capped formats (the HTML host report, the Markdown
+    # bundle) were retired with "Export hosts".  The column stays until a
+    # migration drops it.
     truncated = Column(Boolean, nullable=False, default=False, server_default="false")
 
     # Dead-letter / liveness (mirror IngestionJob).

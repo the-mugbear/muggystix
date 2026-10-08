@@ -246,6 +246,105 @@ stack_start_staged() {
     return 0
 }
 
+# ------------------------------------------------------------------
+# print_tunable_settings
+#
+# The settings an operator is most often told to change after a look at a
+# host's logs (memory, Postgres sizing, timeouts, retention), each with the
+# value in force and where it comes from — so that they are known to exist
+# before a problem asks for them.  Read-only; never prints a secret (the list
+# below is the whole of what is shown).
+#
+# The value: .env, else — for the settings the SCRIPTS read — the shell's
+# environment, else the default.  The default is read from where it is
+# defined (docker-compose.yml's or a script's ``${NAME:-default}``, else the
+# commented ``# NAME=value`` line of .env.example), never repeated here, so
+# it cannot drift.  A default that cannot be found is said to be built in.
+# ------------------------------------------------------------------
+TUNABLE_SETTINGS=(
+    "Memory"
+    "BACKEND_MEM_LIMIT|API container memory limit"
+    "WORKER_MEM_LIMIT|import worker memory limit (raise for Nessus files over 2 GB)"
+    "REPORT_WORKER_MEM_LIMIT|report worker memory limit"
+    "Database (PostgreSQL)"
+    "PG_SHARED_BUFFERS|Postgres cache; about a quarter of the host's RAM on a dedicated host"
+    "PG_EFFECTIVE_CACHE_SIZE|what the planner assumes the OS caches"
+    "PG_WORK_MEM|memory per sort or hash, per query step"
+    "PG_MAINTENANCE_WORK_MEM|memory for index builds (boot migrations)"
+    "PG_MAX_CONNECTIONS|must exceed UVICORN_WORKERS x (DB_POOL_SIZE + DB_MAX_OVERFLOW) plus the two workers"
+    "PG_LOG_MIN_DURATION_MS|statements slower than this are logged"
+    "API"
+    "UVICORN_WORKERS|API worker processes"
+    "DB_POOL_SIZE|connections each API worker keeps"
+    "DB_MAX_OVERFLOW|extra connections each API worker may open"
+    "API_STATEMENT_TIMEOUT_MS|a page's query is cancelled after this (503)"
+    "SLOW_REQUEST_MS|requests slower than this are logged as SLOW"
+    "Imports"
+    "MAX_FILE_SIZE|largest scan upload, bytes (nginx allows 2 GB; the lower wins)"
+    "MAX_REQUEST_BODY_BYTES|largest other request body, bytes"
+    "INGESTION_JOB_TIMEOUT|seconds one import may run"
+    "INGESTION_ORPHAN_CUTOFF_MULTIPLIER|a silent import is declared dead after this many timeouts"
+    "INGESTION_RETAIN_FILES_DAYS|days an imported file is kept for re-processing"
+    "Reports"
+    "REPORT_RENDER_TIMEOUT_SECONDS|seconds one report render may run"
+    "REPORT_WORKER_STOP_GRACE|keep above the render timeout"
+    "Deploy, logs and backups"
+    "DEPLOY_HEALTH_TIMEOUT|seconds a deploy waits for the backend (covers the boot migration)"
+    "BACKEND_HEALTH_START_PERIOD|how long Docker calls the backend 'starting'"
+    "BACKEND_STOP_GRACE|time a request in flight gets to finish on a rebuild"
+    "MIN_FREE_GB|free disk a deploy asks for before it builds"
+    "LOG_MAX_SIZE|size of one container log file"
+    "LOG_MAX_FILE|log files kept per container"
+    "BACKUP_KEEP|database backups kept (0 = all)"
+    "BACKUP_WARN_DAYS|status.sh warns when the newest backup is older"
+)
+
+# The default of $1 where it is defined, or nothing.
+_tunable_default() {
+    local name="$1" found="" file
+    for file in docker-compose.yml scripts/*.sh; do
+        [[ -f "$file" ]] || continue
+        found="$(grep -o "\${${name}:-[^}]*}" "$file" 2>/dev/null | head -n 1)"
+        if [[ -n "$found" ]]; then
+            found="${found#*:-}"
+            printf '%s\n' "${found%\}}"
+            return 0
+        fi
+    done
+    if [[ -f .env.example ]]; then
+        grep -E "^# ?${name}=[^ ]+$" .env.example 2>/dev/null | head -n 1 | cut -d= -f2-
+    fi
+}
+
+print_tunable_settings() {
+    local entry name what value source default
+    echo ""
+    print_info "Settings you can tune (value in force; change one in .env, then run option 1 again):"
+    for entry in "${TUNABLE_SETTINGS[@]}"; do
+        if [[ "$entry" != *"|"* ]]; then
+            echo "  $entry"
+            continue
+        fi
+        name="${entry%%|*}"
+        what="${entry#*|}"
+        default="$(_tunable_default "$name")"
+        value="$(_stack_env_val "$name")"
+        if [[ -n "$value" ]]; then
+            source=".env"
+        elif [[ -n "${!name:-}" && "${!name}" != "$default" ]]; then
+            # (A script that already applied its own default has the variable
+            # set to it: that is still the default.)
+            value="${!name}"
+            source="environment"
+        else
+            value="${default:-built-in}"
+            source="default"
+        fi
+        printf '    %-36s %-14s %-12s %s\n' "$name" "$value" "($source)" "$what"
+    done
+    echo "  Every setting, with its explanation: .env.example"
+}
+
 # What to type when a migration seems stuck (printed by the callers' "still
 # starting" branch; README "Upgrading" carries the same text).
 print_migration_stall_help() {

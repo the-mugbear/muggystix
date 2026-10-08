@@ -422,6 +422,48 @@ def project_engagement(
 
 
 # ---------------------------------------------------------------------------
+# Remediation tracking (v2.458.0)
+# ---------------------------------------------------------------------------
+
+REMEDIATION_STATES = ("open", "closed", "deferred")
+
+
+def remediation_counts(db: Session, project_ids: Iterable[int]) -> Dict[int, Dict[str, object]]:
+    """Findings on hosts by where the fix stands, per project — EMPTY unless
+    the INSTALLATION turned remediation tracking on
+    (``remediation_policy``; v2.461.0, it was a per-project opt-in before).
+    An installation used to write reports never sees a remediation number.
+
+    The counts are the Remediation page's own (``remediation_service``), so a
+    project's Oversight row always equals its page: the three statuses, and
+    the deadline states of the open rows (``overdue``, ``due_soon``,
+    ``on_track``, ``not_assigned``, ``no_deadline``).  A finding nobody was
+    assigned has no deadline, so a project that tracks nothing reads as "not
+    assigned", never as overdue.  They are the current state: no period and
+    no tester applies to them.
+
+    Beside them: ``closed_measured`` and ``days_to_close_total`` (how long
+    closed rows took), ``closed_late`` / ``closed_with_deadline`` (closed
+    after the deadline frozen at close, out of those that had one) — see
+    ``remediation_service.durations_by_project``.
+    """
+    from app.services import remediation_policy, remediation_service
+
+    ids = list(dict.fromkeys(project_ids))
+    policy = remediation_policy.load(db)
+    if not ids or not policy.enabled:
+        return {}
+    today = datetime.now(timezone.utc).date()
+    states = remediation_service.state_counts_by_project(db, ids, policy, today)
+    durations = remediation_service.durations_by_project(db, ids, today)
+    # The overdue rows by severity and by how late they are (v2.462.0).
+    overdue = remediation_service.overdue_breakdown_by_project(db, ids, policy, today)
+    return {pid: {**remediation_service._status_counts(states[pid]), **states[pid], **durations[pid],
+                  **overdue[pid]}
+            for pid in ids}
+
+
+# ---------------------------------------------------------------------------
 # Activity in a window
 # ---------------------------------------------------------------------------
 

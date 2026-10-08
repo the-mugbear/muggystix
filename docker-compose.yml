@@ -135,6 +135,10 @@ services:
     # the long tail (UVICORN_WORKERS × per-worker state).  Override
     # via BACKEND_MEM_LIMIT in .env.
     mem_limit: ${BACKEND_MEM_LIMIT:-2g}
+    # Docker's default is 10 s, then SIGKILL: a rebuild cut any request still
+    # in flight (an upload being written, a long export).  uvicorn stops
+    # accepting on SIGTERM and exits as soon as the open requests finish.
+    stop_grace_period: ${BACKEND_STOP_GRACE:-30s}
     # Backend is only accessible via the nginx reverse proxy on the Docker network.
     # Uncomment the line below for direct backend access during debugging:
     # ports:
@@ -147,8 +151,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
-      APP_VERSION: ${APP_VERSION:-2.456.0}
-      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.334.5}
+      APP_VERSION: ${APP_VERSION:-2.463.0}
+      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.342.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -241,7 +245,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.456.0}
+      APP_VERSION: ${APP_VERSION:-2.463.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -271,8 +275,9 @@ services:
         INSTALL_DEV:
     logging: *default-logging
     restart: unless-stopped
-    # Sized for an in-memory PDF/zip build of a capped report; bump
-    # REPORT_WORKER_MEM_LIMIT in .env if you raise REPORT_MAX_HOSTS.
+    # Sized for a Quarto render (pandoc + deno) beside the streamed inventory
+    # JSON; raise REPORT_WORKER_MEM_LIMIT in .env if client reports with many
+    # images are killed while rendering.
     mem_limit: ${REPORT_WORKER_MEM_LIMIT:-2g}
     # `exec`: python is PID 1 and receives SIGTERM (see the worker above).
     command: ["sh", "-c", "mkdir -p /app/uploads/report_artifacts /app/uploads/client_reports 2>/dev/null; exec python -m app.report_worker"]
@@ -296,7 +301,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.456.0}
+      APP_VERSION: ${APP_VERSION:-2.463.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
       # One sequential loop — a small pool protects the Postgres
       # max_connections budget (4 API workers + ingestion worker + this).
@@ -319,12 +324,12 @@ services:
         REACT_APP_API_URL: ${REACT_APP_API_URL:-https://localhost}
         # Keep this fallback in sync with the APP_VERSION defaults above
         # (lines 49 + 87) and with platform_version.json's "backend".
-        BACKEND_VERSION: ${APP_VERSION:-2.456.0}
+        BACKEND_VERSION: ${APP_VERSION:-2.463.0}
         # CR4-8 — the build context is just frontend/, so platform_version.json
         # isn't visible during the Docker build; pass the frontend version in
         # so generate-build-info.js stamps the right version (shown under About BlueStick).  Keep in
         # sync with platform_version.json's "frontend".
-        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.334.5}
+        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.342.0}
         # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         # Passed only when set; the Dockerfile holds the pinned defaults.

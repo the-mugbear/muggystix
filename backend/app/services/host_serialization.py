@@ -81,7 +81,7 @@ def _serialize_note(note: AnnotationModel) -> Annotation:
         pinned=bool(note.pinned),
         # v2.434.1 (acceptance run H3) — left out, so the schema's "user"
         # default labelled every agent note human-written in the host page,
-        # the dossier export and reports.
+        # the host record downloads and reports.
         actor_type=note.actor_type or "user",
         # If this thread root has been promoted, surface the finding id so the
         # UI shows a "promoted" badge + link (and can warn on re-promote).

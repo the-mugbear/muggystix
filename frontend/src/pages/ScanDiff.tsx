@@ -28,6 +28,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Separator } from '../components/ui/separator';
+import { formatTimestamp } from '../utils/relativeTime';
 import {
   Select,
   SelectContent,
@@ -60,7 +61,7 @@ const Delta: React.FC<{ delta: number }> = ({ delta }) => {
 };
 
 const scanLabel = (s: { id: number; filename: string; created_at?: string | null }): string => {
-  const when = s.created_at ? new Date(s.created_at).toLocaleString() : '';
+  const when = formatTimestamp(s.created_at, '');
   return `#${s.id} · ${s.filename}${when ? ` · ${when}` : ''}`;
 };
 
@@ -83,7 +84,7 @@ const SideCard: React.FC<{ label: string; side: ScanDiffResponse['scan_a'] }> = 
       </p>
       {side.created_at && (
         <p className="text-caption text-muted-foreground">
-          {new Date(side.created_at).toLocaleString()}
+          {formatTimestamp(side.created_at)}
         </p>
       )}
       <Separator />

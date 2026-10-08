@@ -907,8 +907,9 @@ class IngestionJobSchema(BaseModel):
 
 
 class ReportJobSchema(BaseModel):
-    """An async report-generation job (PDF/JSON/zip bundle) — status the dialog
-    polls, plus the artifact metadata once completed."""
+    """An async report-generation job (the inventory JSON, or a client
+    report's render) — status the page polls, plus the artifact metadata once
+    completed."""
     id: int
     project_id: int
     format: str
@@ -922,7 +923,6 @@ class ReportJobSchema(BaseModel):
     result_filename: Optional[str] = None
     media_type: Optional[str] = None
     file_size: Optional[int] = None
-    truncated: bool = False
     retry_count: Optional[int] = None
     last_error: Optional[str] = None
     last_heartbeat: Optional[datetime] = None

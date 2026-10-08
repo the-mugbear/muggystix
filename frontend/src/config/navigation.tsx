@@ -79,7 +79,13 @@ export interface NavPage {
   hub?: HubId;
   /** Command-palette presentation; omit for sidebar-only pages. */
   palette?: PalettePresentation;
+  /** Listed only on an installation that turned this feature on
+   *  (`hooks/useRemediationPolicy`); the route itself stays declared. */
+  feature?: NavFeature;
 }
+
+/** Features an installation opts into in System settings. */
+export type NavFeature = 'remediation';
 
 export interface HubDef {
   id: HubId;
@@ -178,6 +184,15 @@ export const NAV_PAGES: NavPage[] = [
     palette: { Icon: Gauge, keywords: ['metrics', 'programme', 'program', 'manager', 'testers'], order: 0 },
   },
   {
+    // 5.340.0 — remediation deadlines across the projects the reader
+    // administers (every project for a global admin).  `viewer` because the
+    // server decides per project; its sidebar entry sits under Portfolio in
+    // Layout.tsx.  Only where the installation tracks remediation.
+    id: 'remediation-deadlines', path: '/remediation-deadlines', label: 'Remediation deadlines',
+    requiredRole: 'viewer', feature: 'remediation',
+    palette: { Icon: FileText, keywords: ['remediation', 'overdue', 'deadline', 'follow up', 'contact', 'all projects'], order: 0.5 },
+  },
+  {
     id: 'operations', path: '/operations', label: 'Operations', requiredRole: 'viewer',
     palette: { Icon: Sparkles, order: 1 },
   },
@@ -222,6 +237,15 @@ export const NAV_PAGES: NavPage[] = [
     // `auditor`: the server's floor for every client-report read.
     id: 'reports', path: '/reports', label: 'Reports', requiredRole: 'auditor', hub: 'findings',
     palette: { Icon: FileText, keywords: ['report', 'deliverable', 'addendum', 'client', 'docx'], order: 4.5 },
+  },
+  {
+    // 5.335.0 — who each finding on each host was assigned to, its deadline
+    // and where the fix stands.  `auditor`: the server's floor for its reads
+    // (writes are the project admin's, and the page hides them from everyone
+    // else).  5.340.0 — listed only where the installation tracks remediation.
+    id: 'remediation', path: '/remediation', label: 'Remediation', requiredRole: 'auditor', hub: 'findings',
+    feature: 'remediation',
+    palette: { Icon: FileText, keywords: ['remediation', 'owner', 'contact', 'assigned', 'deadline', 'overdue', 'fix', 'tracking'], order: 4.6 },
   },
   // Posture hub — the analytical roll-up + its drill-downs. Tab order here is
   // the strip order: Posture (landing) | Insights | Systemic.
@@ -352,6 +376,7 @@ export interface HubChild {
   label: string;
   path: string;
   requiredRole: string;
+  feature?: NavFeature;
 }
 
 export interface Hub {
@@ -375,6 +400,7 @@ export interface NavCommand {
   requiredRole: string;
   Icon: IconComponent;
   keywords?: string[];
+  feature?: NavFeature;
 }
 
 /** Sidebar hubs with their child tab strips, derived from the manifest. */
@@ -388,6 +414,7 @@ export const HUBS: Hub[] = HUB_DEFS.map((hub) => ({
     label: p.label,
     path: p.path,
     requiredRole: p.requiredRole,
+    feature: p.feature,
   })),
   defaultChildPath: hub.defaultChildPath,
   ownedPaths: hub.ownedPaths ?? [],
@@ -424,7 +451,7 @@ export function resolveActiveHub(pathname: string): Hub | null {
  * reading material used from every project.
  */
 const CROSS_PROJECT_PREFIXES = [
-  '/portfolio', '/oversight', '/administration', '/settings/projects', '/system-settings',
+  '/portfolio', '/oversight', '/remediation-deadlines', '/administration', '/settings/projects', '/system-settings',
   '/profile', '/llm-settings', '/reference', '/tool-reference', '/default-credentials',
 ];
 
@@ -483,6 +510,7 @@ export const NAV_COMMANDS: NavCommand[] = NAV_PAGES
     requiredRole: p.requiredRole,
     Icon: p.palette.Icon,
     keywords: p.palette.keywords,
+    feature: p.feature,
   }));
 
 /** Map of path → required role for every page in the manifest. */

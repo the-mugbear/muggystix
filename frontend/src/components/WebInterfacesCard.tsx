@@ -12,7 +12,7 @@ import {
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
 import { latestObservations } from '../utils/latestObservations';
 import { webObservedAt } from '../utils/portEndpoints';
-import { formatRelativeTime } from '../utils/relativeTime';
+import { formatRelativeTime, formatTimestamp } from '../utils/relativeTime';
 import ScreenshotLightbox from './ScreenshotLightbox';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -208,8 +208,8 @@ const whenTitle = (row: WebInterface): string | undefined => {
   if (!at) return undefined;
   const scan = row.scan_filename ? ` · ${row.scan_filename}` : '';
   return row.observed_at_basis === 'scan'
-    ? `Observed ${new Date(at).toLocaleString()} (the scan's own time) · scan #${row.scan_id}${scan}`
-    : `Imported ${new Date(at).toLocaleString()} — the tool recorded no scan time, so this is when the file was uploaded, not when the site was seen · scan #${row.scan_id}${scan}`;
+    ? `Observed ${formatTimestamp(at)} (the scan's own time) · scan #${row.scan_id}${scan}`
+    : `Imported ${formatTimestamp(at)} — the tool recorded no scan time, so this is when the file was uploaded, not when the site was seen · scan #${row.scan_id}${scan}`;
 };
 
 const statusVariant = (

@@ -1,9 +1,10 @@
-"""Report worker — generates async report jobs (JSON / zip bundles).
+"""Report worker — runs the report jobs: the host inventory's JSON download
+and the client report's Quarto renders.
 
 Run as:  ``python -m app.report_worker``
 
-A dedicated background worker so heavy report rendering (large ZIP bundles)
-never competes with ingestion on the same process.  It claims
+A dedicated background worker so a large download or a render never competes
+with ingestion on the same process.  It claims
 queued ``report_jobs`` via ``SELECT … FOR UPDATE SKIP LOCKED``, writes the
 artifact to the shared report-artifacts dir, and the backend's download endpoint
 streams it.  Shares the LISTEN/poll/reconnect/heartbeat loop with the ingestion

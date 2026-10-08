@@ -1,6 +1,6 @@
 # BlueStick AI Agent Guide
 
-**Prompt version:** 4.10.0 · **Verified against:** backend 2.456.0 (2026-10-07)
+**Prompt version:** 4.14.0 · **Verified against:** backend 2.463.0 (2026-10-08)
 
 > **Version & compatibility (read this).** The number that matters is the **Prompt version** above — stamped live from the running deployment when this guide is fetched, and identical to the `prompt_version` in your instructions block (echoed on every `/context` response). If the two **match**, your prompt and this guide are the same contract — proceed; if they **differ**, the deployment changed mid-session, so **re-fetch this guide and prefer it**. Ignore the "Verified against backend X" stamp for compatibility — it's a different numbering scheme and won't equal the Prompt version.
 
@@ -574,6 +574,60 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | PATCH | `/agent/host-tests/{test_id}` | Change `status`, `tester_summary`, `dismissed_reason` or `assigned_to_id`, with the `expected_revision` you read; 409 when the test changed since. MCP `host_tests_update` |
 
 The result of a test is an evidence record — `POST /agent/evidence` with `host_test_id` (Common endpoints, above).
+
+<!-- agents:end -->
+
+<!-- agents:section tags="shared" -->
+
+### Remediation tracking endpoints (reads: operator is a project auditor; writes: a project admin)
+
+Who was told about a finding **on a host**, and where the fix stands: a contact (`contact_email`, `contact_name`), a `team` (the group that owns the fix — free text, at most 100 characters), `notified_on`, a `status` of `open` / `closed` / `deferred`, and `closed_on`. One row is one finding on one host — the same finding can have a different contact and status on each host. This is the client's progress as a project admin recorded it. It is **not** the assessor's conclusion (`finding_status` and `endpoint_status` on the same row): neither moves the other, and you never change one because of the other.
+
+**Remediation tracking is the installation's choice.** Where it has not been turned on, every endpoint below answers `404` "Remediation tracking is not enabled on this installation." That is an answer, not an error to work around: tell the operator the installation does not track remediation (a global administrator turns it on in System settings) and do not retry.
+
+**Deadlines.** Where it is on, each open finding on a host has a deadline: the day it was assigned (`notified_on`) plus the installation's days for the finding's severity. The server derives it — **never compute or set a deadline yourself**; report the `due_on`, `days_left` and `state` the server returns. A row's `state` is one of:
+
+| `state` | Meaning |
+|---------|---------|
+| `overdue` | Open, and the deadline has passed (`days_left` is negative). |
+| `due_soon` | Open, and the deadline is today or inside the installation's "due soon" window. |
+| `on_track` | Open, with a deadline further away. |
+| `not_assigned` | Open, with no assigned date: no clock is running, so it is never overdue. |
+| `no_deadline` | Open, and the installation sets no deadline for this severity. |
+| `deferred` | Recorded as deferred: the clock is stopped. |
+| `closed` | Recorded as closed; `due_on` is the deadline it was closed against and `closed_days_late` how many days after it (0 = on time, null = it had none). |
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/agent/remediation` | The rows: `status`, `state` (repeat it for several), `severity`, `contact` (part of an address or name), `unassigned`, `host_id`, `finding_id`, `team` (exactly this team; case does not matter), `overdue_band` (`1-7` / `8-30` / `31-90` / `90+` — only overdue rows that many days past their deadline), `no_follow_up_days` (1–365 — only overdue and due-soon rows nobody recorded a follow-up for in that many days, or ever), `group` (`host` / `finding` / `contact` / `due` / `team` — the order; `due` puts the longest overdue first), `limit` (≤200), `offset`. Returns `{items, total, has_more, status_counts, state_counts, severity_counts, overdue_ages, not_followed_up, not_followed_up_days, as_of}`; `state_counts` and `status_counts` cover the whole selection, before the `state` / `status` filter. Over the same selection: `severity_counts` is `{severity: {overdue, due_soon}}`, counted before the `severity` filter; `overdue_ages` is the overdue rows by days past the deadline (`1-7`, `8-30`, `31-90`, `90+`); `not_followed_up` is the overdue and due-soon rows with no follow-up recorded in `not_followed_up_days` days (the `no_follow_up_days` you sent, else the installation's "due soon" window). Each item carries the `finding_host_id` a write takes, and `team`, `state`, `due_on`, `days_left`, `closed_days_late`, `last_follow_up_on`. MCP `remediation_list` |
+| GET | `/agent/remediation/contacts` | The contacts in use, the one with the most overdue first: `total`, `open`, `overdue`, `due_soon`, `on_track`, `deferred`, `closed` counts and `last_follow_up_on` (the last day anyone recorded following up about a row still at risk). MCP `remediation_contacts` |
+| GET | `/agent/remediation/teams` | The teams that own fixes, the one with the most overdue first: `team`, `total`, `open`, `overdue`, `due_soon`, `on_track`, `deferred`, `closed` and how many `contacts` each has. The last entry, `team: null`, is the rows with a contact and no team. MCP `remediation_teams` |
+| GET | `/agent/remediation/trend` | Whether the backlog is shrinking. `days` (7–730, default 90). `daily`: the counts by deadline state recorded each day (`day`, `overdue`, `due_soon`, `on_track`, `not_assigned`, `deferred`, `closed`). `closed_by_month`: rows closed per month over the last twelve months as `on_time`, `late` or `no_deadline`. MCP `remediation_trend` |
+| GET | `/agent/remediation/follow-up` | `contact_email` (the exact address, from the contacts read). That contact's overdue and due-soon rows (`items`) and `text`, a plain-text message listing them for the operator to send. The server sends nothing. MCP `remediation_follow_up` |
+| POST | `/agent/remediation/follow-up` | Record that the operator followed up: `{contact_email, followed_up_on?, note?, finding_host_ids?}`. One timeline entry per row and `last_follow_up_on` on each; a row already followed up that day is left alone. MCP `remediation_record_follow_up` |
+| POST | `/agent/remediation/contact-report` | Queue ONE contact's remediation list as a document: `{contact_email, format?}` (`contact-docx` or `contact-html`). Operator must be a project admin. It writes an entry on each of the contact's hosts' timelines, so call it only when the operator asks for the document. No MCP tool. |
+| GET | `/agent/remediation/contact-report/{job_id}` · `…/download` | Poll until `ready` is true, then download the file with curl. `error` says why a failed one failed. |
+| GET | `/agent/remediation/hosts/{host_id}/events` | The host's timeline: field changes (`field`, `from`, `to`), recorded follow-ups (`kind: follow_up`) and notes, each with `occurred_at` (when it happened) and `recorded_at`. MCP `remediation_timeline` |
+| POST | `/agent/remediation/apply` | Set fields on up to 500 findings on hosts: `{rows: [...], dry_run?, overwrite?, agent_model?}`. MCP `remediation_apply` |
+| POST | `/agent/remediation/events` | Add a note to a host's timeline: `{host_id, body, finding_host_id?, occurred_at?, request_key?}`. MCP `remediation_add_note` |
+| PATCH / DELETE | `/agent/remediation/events/{event_id}` | Edit or remove a note your operator wrote. A recorded change or follow-up cannot be edited (409). |
+
+**Following up with a contact.** Read who needs it (`GET /agent/remediation/contacts`), then that contact's message (`GET /agent/remediation/follow-up?contact_email=…`) and show the operator the `text` — they send it, by their own mail or chat; you send nothing. **Record the follow-up (`POST /agent/remediation/follow-up`) only after the operator says the message was sent**, never when the text was merely produced. These reads cover this project only; the cross-project deadlines page has no agent read.
+
+**Answering "where do we stand?"** Use the counts the list returns rather than paging and counting yourself: `severity_counts` (overdue and due soon per severity), `overdue_ages` (how late the overdue rows are) and `not_followed_up` (at-risk rows nobody is chasing). To name the rows behind a number, send its filter — `state` + `severity`, `overdue_band`, or `no_follow_up_days` — and read `total`. For "which team is behind?" read `GET /agent/remediation/teams`; set a row's team with `team` in `POST /agent/remediation/apply` (an explicit `null` clears it).
+
+**Reading the trend.** `daily` holds only the days the server recorded: **a day that is absent was not recorded — it is not zero**, and nothing exists before the installation began tracking. Say when the history starts (the first `day`) and never fill a gap or describe a period you have no rows for. `closed_by_month` comes from the closed rows themselves, so it can reach back further than `daily`; `no_deadline` rows were closed with no deadline to judge them by — they are neither on time nor late.
+
+**Filling it in from a file the operator holds** (a spreadsheet, a CSV). Nothing is uploaded — you read the file where it is and send ids:
+
+1. Read the rows that exist (`GET /agent/remediation`, paging by `offset` until `has_more` is false) and the findings they belong to.
+2. Match each source row to **exactly one** finding, and to the host it names. A row you cannot match with confidence is **not written**: list those rows for the operator and say why. Never pick the closest title.
+3. Build one `rows` entry per source row: `finding_host_id`, or `finding_id` with `host_id`. `finding_id` alone means **every host of that finding** — use it only when the source really gives one contact for all of them. Send only the fields the source has; a field you leave out is untouched, an explicit `null` clears it.
+4. Call with `"dry_run": true` and show the operator the `summary` (targets, changed, unchanged, conflicts) before anything is written.
+5. A **conflict** is a field someone already set to a different value. It is left alone. Send `"overwrite": true` only when the operator, having seen the conflicts, tells you to replace them.
+6. Send the same call without `dry_run`. A source comment becomes a `notes` entry — give each a `request_key` that is stable for that source row (so a re-run does not add it twice) and `occurred_at` when the source dates it.
+
+The whole call is planned before anything is written: one row that names nothing in this project, two rows that name the same finding on the same host, a `closed_on` on a row whose status is not (and is not becoming) `closed`, or one `request_key` carrying two different notes refuses all of it (422, with the row numbers) — the dry run refuses the same way. Send `closed_on` only together with `status: "closed"`, or for a row that is already closed. A `request_key` identifies ONE note about ONE finding on a host: never reuse a key for another finding or other text.
 
 <!-- agents:end -->
 

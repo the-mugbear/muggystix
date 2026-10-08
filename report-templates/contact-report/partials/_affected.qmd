@@ -1,0 +1,22 @@
+<# The affected systems.  Expects `rows` (a list of endpoints).
+
+   Up to `detail_max` systems: one row each, with name, port and note.
+
+   More than that printed as one narrow column running for pages (the Name,
+   Port and Note cells are mostly empty), so a long list is set FOUR ACROSS:
+   each cell an address, with its port when the finding is on one port.  A
+   system the finding reaches by an in-scope NAME, or that carries a note
+   (Remediated), keeps a row of its own in the table underneath, because
+   that is information a cell has no room for.  The host's display name is
+   not printed in the compact form.
+
+   The row line ends with << "" >> on purpose: a line that ends in a block
+   tag loses its newline (trim_blocks), which would join the table's rows. #>
+<# In a contact's list every system carries the deadline of this finding on
+   it, so each keeps a row of its own however many there are (the report's
+   four-across form has no room for a date). #>
+| System | Name | Port | Due | Deadline |
+|:------------------|:--------------------------|:----------|:-----------|:------------------|
+<% for e in rows %>
+| << e.address >> | << e.name or e.hostname or "" >> | << e.port or "" >> | << e.get("due_on") or "" >> | << e.get("deadline") or e.state or "" >> |
+<% endfor %>

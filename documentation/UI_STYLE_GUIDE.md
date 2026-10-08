@@ -665,8 +665,8 @@ gate anything; keep `hasPermission('admin')` for instance-wide surfaces
 - **Getting data out is auditor.**  Every export and report route is AUDITOR
   on the server (`/export`, `/reports`, `/client-reports`, `/hosts/tool-ready`,
   `/names/export`), so their controls follow `canExport`: the Hosts page's
-  "Export targets" / "Export hosts" (and the `?reports=1` link, which opens a
-  tray that reads `/reports/jobs` at once), "Create briefing" on Posture,
+  "Export targets" / "Download inventory" (and the `?reports=1` link, which
+  opens that dialog, and it reads `/reports/jobs` at once), "Create briefing" on Posture,
   Patterns and a Segments site, the Scope and Names exports.  A copy or
   download of what the page already shows (Patterns' "Copy summary" / JSON)
   is not an export.
@@ -785,6 +785,66 @@ and the page was "confusing". The rules:
 - **One decision path** (`hooks/useProposalDecision`): every place a proposal is
   decided uses it, and "Accept and edit" can start from the draft or from the
   current text.
+
+### 44. A page explains itself once (2026-10-08)
+
+The UX walkthrough of 2026-10-08 found most data pages saying what they are
+three or four times before the data: a subtitle, a lead, a caption under the
+lead, a description under every section heading, a legend under every table —
+beside an (i) that already held the same words.
+
+- **Subtitle or lead, never both.** A page with a lead sentence (the one with
+  the numbers) has no subtitle under its title. A page with no lead may keep
+  one line.
+- **At most one line under a section heading**, and only when it says something
+  about THIS data (what is still empty, how many are waiting). What the section
+  *is*, how a figure is derived, and every "X, not Y" caveat go on the heading's
+  `InfoTip`. A caveat is never deleted to save space — it moves.
+- **A lead does not restate the strip under it.** The strip carries the counts
+  as links; the lead says the one thing to act on (Scope: the hosts outside
+  every scope, not the three counts again).
+- **Nothing is said three times.** An empty state says "nothing here" once,
+  with its action — the lead and the section description do not also say it
+  (Agent Sessions did). A number shown in a heading is not repeated inside its
+  bar and again in a legend.
+- **What is true of every row is not printed on every row** (§8's queue rule,
+  applied to placeholders and badges): an empty cell is a muted dash with the
+  words on `title` / `sr-only` ("No contact yet" filled 44 rows); a badge that
+  every row carries is dropped; a column that says the same thing on every row
+  is not rendered.
+- **Two tables never list the same rows.** A group of one is its member: list
+  it once and carry the group's extra fact on that row (Patterns: a family of
+  one weakness).
+
+### 45. What could not be loaded is said, and a reader keeps their place (2026-10-07)
+
+From the codebase review of 2026-10-07 (5.339.0).
+
+- **A picker whose options failed to load says so, with Retry** — never "No
+  members" or an empty list. Project members come from the one cached loader,
+  `hooks/useProjectMembers` (`useProjectRoster` → `{members, status, retry}`);
+  `components/MembersLoadError` is the message. Do not call
+  `listProjectMembers()` from a page.
+- **A count that could not be read is not another filter's count.** When a
+  summary request fails, its numbers are cleared and the page says they could
+  not be counted (Scans); the previous filter's figures never stay on screen.
+- **A reader keeps their place.** A paged list keeps its page in the URL
+  (`?page=`, omitted for 1) and rows-per-page as a per-viewer preference
+  (`localStorage`, or `?per=`); a filter or sort change still returns to
+  page 1. A narrowing that came from the URL (`?host=`, `?finding=`) is always
+  shown as a removable chip naming what it narrows to.
+- **Unsaved writing is guarded.** An editor holding text the reader typed uses
+  `hooks/useDiscardGuard`; an expired session returns to where the reader was
+  (`utils/loginReturn` — only a path inside the app is honoured).
+- **A startup check that fails for a reason other than "not signed in" does
+  not sign the reader out.** Only a 401 ends a session.
+- **One helper each, guard-tested:** a file save goes through `utils/download`
+  (`saveBlob`, `filenameFromContentDisposition`); an absolute moment through
+  `formatTimestamp`. An export's error is `formatApiError`, never the raw
+  "Request failed with status code 403".
+- **A surface that stays mounted across records** (the host inspector, a
+  timeline sheet) checks every async completion is still for the record on
+  screen — saves by the id they were sent for, reads by request generation.
 
 ## Final Rule
 If a UI change looks correct only with fixture data, it is not finished.

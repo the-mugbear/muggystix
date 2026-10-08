@@ -10,6 +10,7 @@
 import axios from 'axios';
 
 import { getApiBaseUrl } from '../../utils/apiUrl';
+import { loginUrlFrom } from '../../utils/loginReturn';
 
 const API_BASE_URL = getApiBaseUrl();
 
@@ -44,7 +45,7 @@ api.interceptors.response.use(
       localStorage.removeItem('auth_user');
       // Redirect to login page (guard against infinite loop if already on /login)
       if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
+        window.location.href = loginUrlFrom(window.location.pathname, window.location.search);
       }
     }
     // Backend returns 403 with detail "password_change_required" when the

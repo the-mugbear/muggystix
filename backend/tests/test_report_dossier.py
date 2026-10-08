@@ -1,11 +1,16 @@
-"""Host-centric dossier report — the correlated per-host record.
+"""The correlated per-host record — what the inventory JSON's ``hosts`` and
+the agents' ``report-context.ndjson`` carry.
 
-The comprehensive report is host-first: one consolidated dossier per host that
-pulls together canonical findings (with their resolved source row + per-host
-status), untriaged scanner observations, test findings (evidence records whose
-outcome is ``finding`` — the dataset key is still ``execution_findings``),
-tester summaries (``HostTest.tester_summary``), and notes.  These tests pin the assembly (``_build_export_context`` +
-``_build_host_export_record``) and the per-format caps.
+One consolidated record per host pulls together canonical findings (with their
+resolved source row + per-host status), untriaged scanner observations, test
+findings (evidence records whose outcome is ``finding`` — the dataset key is
+still ``execution_findings``), tester summaries (``HostTest.tester_summary``),
+and notes.  These tests pin the assembly (``_build_export_context`` +
+``_build_host_export_record``) and the inventory CSV's formula guard.
+
+The HTML host report that rendered this record as "dossiers", and the Markdown
+bundle's CSVs, were retired with "Export hosts" (owner, 2026-10-07); the file
+keeps its name.
 """
 
 from unittest.mock import MagicMock
@@ -88,7 +93,7 @@ def test_dossier_record_correlates_every_source(db_session, test_project, test_u
 
     gen = _gen(db_session, test_project.id, test_user.id)
     ctx = gen._build_export_context([host])
-    rec = gen._build_host_export_record(host, ctx, {})
+    rec = gen._build_host_export_record(host, ctx)
 
     # Canonical finding with per-host status + resolved scanner source detail.
     assert [c["title"] for c in rec["canonical_findings"]] == ["Promoted RCE"]
@@ -145,7 +150,7 @@ def test_a_test_finding_cited_by_a_finding_is_marked_promoted(db_session, test_p
     db_session.commit()
 
     gen = _gen(db_session, test_project.id, test_user.id)
-    rec = gen._build_host_export_record(host, gen._build_export_context([host]), {})
+    rec = gen._build_host_export_record(host, gen._build_export_context([host]))
     detail = rec["canonical_findings"][0]["source_detail"]
     assert (detail["kind"], detail["tool"], detail["command"], detail["findings_summary"]) == (
         "execution", "hydra", "hydra -l admin", "admin/admin works",
@@ -155,44 +160,53 @@ def test_a_test_finding_cited_by_a_finding_is_marked_promoted(db_session, test_p
     assert "exec_result_id" not in rec["canonical_findings"][0]
 
 
-def test_test_findings_csv_names_tool_and_label_and_neutralizes_formulas(
+def test_the_inventory_csv_neutralizes_formulas_in_every_text_cell(
     db_session, test_project, test_user,
 ):
-    """``execution_findings.csv`` carries what an AGENT wrote (tool, command,
-    summary) and a person's label, so every cell goes through the formula
-    guard.  Replaces the execution-report CSV cases that went with
-    ``ExportService`` in v2.442.0."""
+    """The inventory CSV carries what a SCANNED HOST or an imported file said
+    (hostname, OS, service name, scan file name) and what a person typed (a
+    tag), so every cell goes through the formula guard.
+
+    Ported from the Markdown bundle's ``execution_findings.csv`` case when
+    the bundle was retired (owner, 2026-10-07) — which had itself replaced
+    the execution-report CSV cases that went with ``ExportService`` in
+    v2.442.0.  The inventory CSV is the one CSV the host downloads still
+    write; the guard must not go with the files that happened to test it."""
     import csv
     import io
 
-    host = models.Host(project_id=test_project.id, ip_address="10.55.0.7", state="up",
-                       hostname="=HYPERLINK(\"http://attacker.tld\")")
+    scan = models.Scan(project_id=test_project.id, filename="@scan.xml")
+    db_session.add(scan)
+    db_session.flush()
+    host = models.Host(
+        project_id=test_project.id, ip_address="10.55.0.7", state="up",
+        hostname="=HYPERLINK(\"http://attacker.tld\")", os_name="+os()", os_family="-family",
+        last_updated_scan_id=scan.id,
+    )
     db_session.add(host)
     db_session.flush()
-    test = HostTest(
-        project_id=test_project.id, host_id=host.id, tool="curl", description="d", rationale="r",
-        priority="high", status="done", label="@label", source="agent",
-        request_key="csv-1", request_hash="2" * 64,
-    )
-    db_session.add(test)
-    db_session.flush()
-    db_session.add(EvidenceRecord(
-        project_id=test_project.id, host_id=host.id, host_test_id=test.id, tool="=tool()",
-        command="+attacker_payload(1)", outcome="finding", summary="-malicious_thing()",
+    db_session.add(models.Port(
+        host_id=host.id, port_number=80, protocol="tcp", state="open", service_name="=svc()",
     ))
+    tag = models.HostTag(project_id=test_project.id, name="@tag")
+    db_session.add(tag)
+    db_session.flush()
+    db_session.add(models.HostTagAssignment(host_id=host.id, tag_id=tag.id))
     db_session.commit()
 
     gen = _gen(db_session, test_project.id, test_user.id)
-    rec = gen._build_host_export_record(host, gen._build_export_context([host]), {})
-    rows = list(csv.reader(io.StringIO(gen._generate_execution_findings_csv([rec]))))
-    assert rows[0] == ["IP Address", "Hostname", "Tool", "Label", "Promoted", "Command", "Summary"]
-    assert rows[1][0] == "10.55.0.7"
-    assert rows[1][1].startswith("'=")
-    assert rows[1][2].startswith("'=")
-    assert rows[1][3].startswith("'@")
-    assert rows[1][4] == "no"
-    assert rows[1][5].startswith("'+")
-    assert rows[1][6].startswith("'-")
+    rows = list(csv.reader(io.StringIO("".join(gen.iter_inventory_csv({})))))
+    assert rows[0] == ReportGenerator.INVENTORY_CSV_HEADER
+    row = dict(zip(rows[0], rows[1]))
+    assert row["IP Address"] == "10.55.0.7"
+    assert row["Hostname"].startswith("'=")
+    assert row["OS Name"].startswith("'+")
+    assert row["OS Family"].startswith("'-")
+    assert row["Services"].startswith("'=")
+    assert row["Tags"].startswith("'@")
+    assert row["Scan File"].startswith("'@")
+    # A number stays a number: the guard prefixes text, it does not quote counts.
+    assert row["Total Ports"] == "1"
 
 
 def test_a_row_judged_through_its_issue_is_not_untriaged(db_session, test_project, test_user):
@@ -224,7 +238,7 @@ def test_a_row_judged_through_its_issue_is_not_untriaged(db_session, test_projec
 
     gen = _gen(db_session, test_project.id, test_user.id)
     ctx = gen._build_export_context([a, b])
-    record_b = gen._build_host_export_record(b, ctx, {})
+    record_b = gen._build_host_export_record(b, ctx)
     assert record_b["untriaged_vulnerabilities"] == []
     assert gen._inventory_finding_counts([b.id])[b.id]["promoted_vuln_ids"] == {rows["10.56.0.2"].id}
 
@@ -235,67 +249,57 @@ def test_a_row_judged_through_its_issue_is_not_untriaged(db_session, test_projec
     assert on_b["vuln_id"] == rows["10.56.0.1"].id
     assert on_b["vulnerability_ids"] == [rows["10.56.0.2"].id]
     assert on_b["vulnerability_ids"] == [v["id"] for v in record_b["vulnerabilities"]]
-    (on_a,) = gen._build_host_export_record(a, ctx, {})["canonical_findings"]
+    (on_a,) = gen._build_host_export_record(a, ctx)["canonical_findings"]
     assert on_a["vulnerability_ids"] == [rows["10.56.0.1"].id]
 
 
-def test_inmemory_cap_is_wired_and_not_above_the_streamed_cap():
-    """The in-memory cap must be a real, applied limit — not dead config.
+def test_no_host_cap_setting_is_left_to_tune():
+    """The capped formats are gone (the HTML host report, the Markdown
+    bundle), so there is no cap an operator could set and nothing reads one:
+    a setting that did nothing is what this file used to guard against
+    (``test_inmemory_cap_is_wired…``).  The CSV and the JSON stream every
+    matching host."""
+    from app.core.config import settings
 
-    This previously asserted ``INMEMORY < MAX``, which held trivially (2000 vs
-    50000) while nothing actually passed the in-memory value as a cap: when the
-    JSON/bundle formats moved onto the report worker they took the full
-    ``MAX_REPORT_HOSTS`` instead, so the setting an operator could tune did
-    nothing.  The meaningful invariants now are that it is bounded by the
-    streamed cap and that the worker genuinely applies it.
-    """
-    assert ReportGenerator.MAX_INMEMORY_REPORT_HOSTS <= ReportGenerator.MAX_REPORT_HOSTS
-
-    import inspect
-    from app.services.report_job_service import ReportJobService
-
-    src = inspect.getsource(ReportJobService)
-    assert "MAX_INMEMORY_REPORT_HOSTS" in src, (
-        "the report worker must cap in-memory formats with "
-        "MAX_INMEMORY_REPORT_HOSTS, or the setting is dead config again"
-    )
+    assert not hasattr(settings, "REPORT_MAX_HOSTS")
+    assert not hasattr(settings, "REPORT_MAX_INMEMORY_HOSTS")
+    assert not hasattr(ReportGenerator, "MAX_REPORT_HOSTS")
+    assert not hasattr(ReportGenerator, "MAX_INMEMORY_REPORT_HOSTS")
 
 
-def test_report_metadata_reports_the_cap_that_actually_applied(
-    db_session, test_project, test_user
-):
-    """host_cap in the export metadata must reflect the cap used for THIS run.
+def test_a_json_finding_names_the_host_records_it_is_on(db_session, test_project, test_user):
+    """The comprehensive JSON's ``findings[].affected`` carries the host ids
+    of the records beside it, and each of those records carries the finding
+    — the two-way link the HTML report drew as anchors, kept as data."""
+    import io
+    import json
 
-    Both metadata blocks used to hard-code a constant, so the JSON export
-    advertised host_cap=2000 while 50000 had applied — telling a consumer the
-    wrong thing about where truncation could have happened.
-    """
-    gen = ReportGenerator(db_session, test_user, project_id=test_project.id)
-    gen.get_hosts_for_report({}, cap=7)
-    assert gen.applied_host_cap == 7
-
-
-def test_html_report_renders_dossier_and_cross_links(db_session, test_project, test_user):
-    """The HTML report renders a host dossier anchored #host-{id} and a findings
-    index whose rows are anchored #finding-{id} and link to the host."""
     host = models.Host(project_id=test_project.id, ip_address="10.55.0.9", state="up")
-    db_session.add(host)
+    other = models.Host(project_id=test_project.id, ip_address="10.55.0.10", state="down")
+    db_session.add_all([host, other])
     db_session.flush()
     finding = Finding(project_id=test_project.id, title="Weak TLS", severity="medium",
                       status="open", source="manual")
     db_session.add(finding)
     db_session.flush()
-    db_session.add(FindingHost(finding_id=finding.id, host_id=host.id, host_status="open"))
+    db_session.add_all([
+        FindingHost(finding_id=finding.id, host_id=host.id, host_status="open"),
+        FindingHost(finding_id=finding.id, host_id=other.id, host_status="open"),
+    ])
     db_session.commit()
+    host_id, finding_id = host.id, finding.id
 
-    gen = _gen(db_session, test_project.id, test_user.id)
-    html = gen.generate_html_report([host], filters={})
-    assert f'id="host-{host.id}"' in html
-    assert f'id="finding-{finding.id}"' in html
-    # The index links the finding to the host dossier, and the dossier links back.
-    assert f'href="#host-{host.id}"' in html
-    assert f'href="#finding-{finding.id}"' in html
-    assert 'host-dossiers' in html
+    # Narrowed to the host that is up: the finding is on two hosts, one of
+    # which is in this download.
+    out = io.BytesIO()
+    _gen(db_session, test_project.id, test_user.id).write_json_report({"state": "up"}, "comprehensive", out)
+    data = json.loads(out.getvalue())
+    (record,) = data["hosts"]
+    (listed,) = data["findings"]
+    assert record["host_id"] == host_id
+    assert listed["id"] == finding_id and listed["host_count"] == 2
+    assert listed["affected"] == [{"ip": "10.55.0.9", "host_id": host_id}]
+    assert [c["finding_id"] for c in record["canonical_findings"]] == [finding_id]
 
 
 def test_dossier_scope_has_three_states(db_session, test_project, test_user):
@@ -329,11 +333,10 @@ def test_dossier_scope_has_three_states(db_session, test_project, test_user):
     SubnetCorrelationService(db_session).correlate_all_hosts_to_subnets(project_id=test_project.id)
     db_session.commit()
 
-    from app.services.report_generator import _scope_label
     gen = _gen(db_session, test_project.id, test_user.id)
     hosts = [in_subnet, via_name, outside]
     ctx = gen._build_export_context(hosts)
-    recs = {h.ip_address: gen._build_host_export_record(h, ctx, {})["scope"] for h in hosts}
+    recs = {h.ip_address: gen._build_host_export_record(h, ctx)["scope"] for h in hosts}
 
     assert recs["10.77.0.5"]["status"] == "in_scope"
     assert recs["10.77.0.5"]["in_scope"] and not recs["10.77.0.5"]["via_name"]
@@ -342,6 +345,7 @@ def test_dossier_scope_has_three_states(db_session, test_project, test_user):
     assert recs["203.0.113.20"]["out_of_scope"] is False
     assert recs["203.0.113.99"]["status"] == "out_of_scope"
     assert recs["203.0.113.99"]["out_of_scope"] is True
-    assert [_scope_label(recs[ip]) for ip in ("10.77.0.5", "203.0.113.20", "203.0.113.99")] == [
-        "in-scope", "in-scope via name", "out-of-scope",
-    ]
+    # Exactly one of the three flags per host (the bundle's ``_scope_label``
+    # printed them as one word; the record is what remains).
+    for scope_block in recs.values():
+        assert [scope_block["in_scope"], scope_block["via_name"], scope_block["out_of_scope"]].count(True) == 1

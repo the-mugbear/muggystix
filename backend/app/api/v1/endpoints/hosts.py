@@ -1414,8 +1414,9 @@ def get_hosts_by_scan_v2(
         )
         query = query.filter(models.Host.id.in_(port_host_ids))
 
-    # Apply pagination and return
-    hosts = query.offset(skip).limit(limit).all()
+    # Apply pagination and return.  Ordered: OFFSET over an unordered join
+    # can repeat a host on one page and miss it on the next.
+    hosts = query.order_by(models.Host.id).offset(skip).limit(limit).all()
     return hosts
 
 

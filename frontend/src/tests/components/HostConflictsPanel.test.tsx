@@ -111,6 +111,33 @@ describe('HostConflictsPanel', () => {
     expect(screen.getByText('weight 95')).toBeInTheDocument();
   });
 
+  // Each side's detection method and its weight came with the record and were
+  // shown nowhere: "which is right?" had to be answered by opening both scans.
+  it('says how each side was detected, and its weight when the record has one', () => {
+    renderPanel([entry({
+      previous_method: 'os_detection', previous_confidence: 95,
+      new_method: 'smb_banner', new_confidence: null,
+    })]);
+    const [row] = within(screen.getByRole('region', { name: 'Operating system' })).getAllByRole('listitem');
+    const held = within(row).getByText('via os_detection · weight 95');
+    expect(held.className).toContain('truncate');
+    expect(held).toHaveAttribute('title', expect.stringContaining('via os_detection · weight 95'));
+    // No weight recorded: the method alone, never "weight null".
+    expect(within(row).getByText('via smb_banner')).toBeInTheDocument();
+    expect(row.textContent).not.toMatch(/null|undefined/);
+  });
+
+  it('adds nothing for a record with no method and no weight, and truncates a long method', () => {
+    const LONG = 'm'.repeat(200);
+    renderPanel([entry(), entry({ id: 2, new_value: 'Solaris', new_method: LONG })]);
+    const rows = within(screen.getByRole('region', { name: 'Operating system' })).getAllByRole('listitem');
+    expect(rows[0].textContent).not.toMatch(/via |weight/);
+    const method = within(rows[1]).getByText(`via ${LONG}`);
+    expect(method.className).toMatch(/truncate/);
+    expect(method.className).toMatch(/max-w-/);
+    expect(method).toHaveAttribute('title', `via ${LONG}`);
+  });
+
   it('keptSide is null when the current value is unknown', () => {
     expect(keptSide(entry({ current_value: null }))).toBeNull();
     expect(keptSide(entry({ current_value: 'Windows 11' }))).toBe('new');

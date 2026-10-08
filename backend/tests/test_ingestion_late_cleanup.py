@@ -582,6 +582,42 @@ def test_the_reaper_cleans_a_cancelled_job_whose_worker_died_after_the_cancel(
     assert job_row(db_session, job_id).in_progress_scan_id is None
 
 
+def test_the_sweep_leaves_a_job_that_was_retried_and_claimed_after_it_was_listed(
+    db_session, test_project, tmp_path, monkeypatch,
+):
+    """Review 2026-10-07 (two or more workers): the sweep lists failed jobs,
+    then works through them.  A job retried and re-claimed in between is
+    ``processing`` and its pointer may name the NEW attempt's live scan —
+    which the sweep deleted, because it re-read the pointer and not the
+    status."""
+    from sqlalchemy import update
+
+    pid = test_project.id
+    worker = IngestionService()
+    job_id = queue_file(db_session, pid, nmap_file(tmp_path, 250))
+    with on_heartbeat(worker, 2, kill_worker):
+        run_until_killed(db_session, worker)
+    db_session.commit()
+    assert IngestionService().cancel_job(job_id) is True
+    _age_heartbeat(db_session, job_id)
+    scans = all_scan_ids(db_session)
+    assert len(scans) == 1
+
+    real = worker._discard_dead_attempt_scan
+
+    def another_worker_claims_it_first(db, listed_job_id, **kwargs):
+        db.execute(
+            update(models.IngestionJob).where(models.IngestionJob.id == listed_job_id)
+            .values(status="processing", started_at=datetime.now(timezone.utc))
+        )
+        db.commit()
+        return real(db, listed_job_id, **kwargs)
+
+    monkeypatch.setattr(worker, "_discard_dead_attempt_scan", another_worker_claims_it_first)
+    worker.reap_orphaned_jobs()
+    assert all_scan_ids(db_session) == scans    # the live attempt's scan is untouched
+
+
 # ---------------------------------------------------------------------------
 # M2 — host history written ahead of every heartbeat
 # ---------------------------------------------------------------------------

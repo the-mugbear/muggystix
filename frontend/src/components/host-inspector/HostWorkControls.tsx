@@ -15,12 +15,12 @@ import {
   bulkTagHosts,
   bulkUnassignHosts,
   listHostTags,
-  listProjectMembers,
   type HostAssignee,
   type HostTagInfo,
   type HostTagWithCount,
-  type ProjectMember,
 } from '../../services/api';
+import { useProjectRoster } from '../../hooks/useProjectMembers';
+import { MEMBERS_LOAD_ERROR } from '../MembersLoadError';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
@@ -64,7 +64,9 @@ export const AssigneeControl: React.FC<CommonProps & { assignees: HostAssignee[]
 }) => {
   const { user } = useAuth();
   const { busy, run } = useRun(onChanged);
-  const [members, setMembers] = useState<ProjectMember[] | null>(null);
+  // Asked for when the menu is first opened; shared with every other picker.
+  const [wanted, setWanted] = useState(false);
+  const roster = useProjectRoster({ enabled: wanted });
   const names = assignees.map((a) => a.name).join(', ');
   const mine = assignees.some((a) => a.user_id === user?.id);
 
@@ -77,9 +79,7 @@ export const AssigneeControl: React.FC<CommonProps & { assignees: HostAssignee[]
         <span className="text-muted-foreground">unassigned</span>
       )}
       {canEdit && (
-        <DropdownMenu onOpenChange={(open) => {
-          if (open && members === null) listProjectMembers().then(setMembers).catch(() => setMembers([]));
-        }}>
+        <DropdownMenu onOpenChange={(open) => { if (open) setWanted(true); }}>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="sm" className="h-6 shrink-0 px-xs text-caption" disabled={busy}
               aria-label="Assign this host">
@@ -93,8 +93,14 @@ export const AssigneeControl: React.FC<CommonProps & { assignees: HostAssignee[]
                 Assign to me
               </DropdownMenuItem>
             )}
-            {members === null && <DropdownMenuItem disabled>Loading members…</DropdownMenuItem>}
-            {(members ?? [])
+            {roster.status === 'loading' && <DropdownMenuItem disabled>Loading members…</DropdownMenuItem>}
+            {roster.status === 'error' && (
+              // Stays open: the retry fills this same menu.
+              <DropdownMenuItem onSelect={(e) => { e.preventDefault(); roster.retry(); }}>
+                {MEMBERS_LOAD_ERROR} Retry
+              </DropdownMenuItem>
+            )}
+            {roster.members
               .filter((m) => m.user_id !== user?.id && !assignees.some((a) => a.user_id === m.user_id))
               .map((m) => {
                 const name = m.full_name || m.username || `User #${m.user_id}`;

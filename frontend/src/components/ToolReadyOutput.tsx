@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { copyToClipboard as copyText } from '../utils/clipboard';
+import { downloadTextFile } from '../utils/download';
+import { formatApiError } from '../utils/apiErrors';
 import { Code, Copy, Download, Loader2 } from 'lucide-react';
 import { getToolReadyOutput, ToolReadyResult } from '../services/api';
 import { Alert, AlertDescription } from './ui/alert';
@@ -90,7 +92,7 @@ export default function ToolReadyOutput({
       setResult(await getToolReadyOutput(selectedFormat, apiFilters));
     } catch (err) {
       console.error('Error generating tool output:', err);
-      setError(err instanceof Error ? err.message : 'Failed to generate output');
+      setError(formatApiError(err, 'Failed to generate output'));
     } finally {
       setLoading(false);
     }
@@ -109,15 +111,7 @@ export default function ToolReadyOutput({
     const selectedFormatInfo = TOOL_FORMATS.find((f) => f.value === selectedFormat);
     const extension = selectedFormat === 'json' ? 'json' : 'txt';
     const filename = `${selectedFormatInfo?.label.toLowerCase() || selectedFormat}-targets.${extension}`;
-    const blob = new Blob([output], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadTextFile(filename, output);
   };
 
   const selectedFormatInfo = TOOL_FORMATS.find((f) => f.value === selectedFormat);

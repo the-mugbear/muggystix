@@ -143,6 +143,8 @@ const isShortName = (row: Pick<NameRow, 'fqdn' | 'kind'>) => row.kind !== 'wildc
 // Addresses shown per row before "+N more" (all of them are in the title and
 // the detail sheet); an address itself is never truncated.
 const ADDRESSES_SHOWN = 3;
+/** Refused scope entries listed after an import; the rest are counted. */
+const SCOPE_REFUSED_SHOWN = 10;
 
 const sortEvidence = (evidence: Record<string, number>): Array<[string, number]> =>
   Object.entries(evidence).sort(([a], [b]) => {
@@ -233,6 +235,8 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onOpenChange, onImpor
   const [includeSub, setIncludeSub] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<NameImportResponse | null>(null);
+  // Entries the import refused for the scope list.
+  const scopeRefused = result?.scope_invalid ?? [];
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
@@ -270,6 +274,8 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onOpenChange, onImpor
       const parts = [`${res.names_created} new`, `${res.names_existing} already known`];
       if (res.invalid_count) parts.push(`${res.invalid_count} rejected`);
       if (res.scope_domains_added) parts.push(`${res.scope_domains_added} added to scope`);
+      if (res.scope_domains_updated) parts.push(`${res.scope_domains_updated} widened to include subdomains`);
+      if (res.scope_invalid?.length) parts.push(`${res.scope_invalid.length} not added to scope`);
       toast.success(`Imported: ${parts.join(', ')}`);
       onImported();
     } catch (err: unknown) {
@@ -356,7 +362,28 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onOpenChange, onImpor
                   {result.scope_domains_added > 0 && (
                     <Badge variant="info">{result.scope_domains_added} added to scope</Badge>
                   )}
+                  {result.scope_domains_updated > 0 && (
+                    <Badge variant="info" title="Scope entries that already existed and now also cover their subdomains">
+                      {result.scope_domains_updated} widened to include subdomains
+                    </Badge>
+                  )}
+                  {scopeRefused.length > 0 && (
+                    <Badge variant="warning">{scopeRefused.length} not added to scope</Badge>
+                  )}
                 </div>
+                {scopeRefused.length > 0 && (
+                  <div className="mt-xs min-w-0 text-caption text-muted-foreground">
+                    <p>Not added to scope:</p>
+                    <ul className="font-mono">
+                      {scopeRefused.slice(0, SCOPE_REFUSED_SHOWN).map((line) => (
+                        <li key={line} className="truncate" title={line}>{line}</li>
+                      ))}
+                    </ul>
+                    {scopeRefused.length > SCOPE_REFUSED_SHOWN && (
+                      <p>+{(scopeRefused.length - SCOPE_REFUSED_SHOWN).toLocaleString()} more</p>
+                    )}
+                  </div>
+                )}
                 {result.invalid.length > 0 && (
                   <ul className="mt-xs max-h-40 overflow-y-auto font-mono text-caption text-muted-foreground">
                     {result.invalid.map((line) => (
@@ -760,8 +787,8 @@ const Names: React.FC = () => {
         <div className="min-w-0 flex-1">
           <h1 className="text-page-title font-semibold">Names</h1>
           <p className="text-metadata text-muted-foreground">
-            Every name this engagement knows about — domain names and short host names — resolved or not.
-            Addresses shown are what uploaded evidence says — BlueStick never resolves anything itself.
+            Domain names and short host names, resolved or not. Addresses are what uploaded evidence
+            says — BlueStick never resolves anything itself.
           </p>
         </div>
         {canEdit && (

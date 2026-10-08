@@ -520,12 +520,9 @@ describe('Operations page', () => {
       const plain = lead.cloneNode(true) as HTMLElement;
       plain.querySelectorAll('a').forEach((a) => a.remove());
       expect(plain.textContent?.match(/\d+/g)).toBeNull();
-      // One line of caption.
-      const caption = screen.getByText(/^A decision is a finding under investigation or a proposal waiting for you/);
-      expect(caption).toHaveTextContent(
-        'A decision is a finding under investigation or a proposal waiting for you; tests on hosts you review are listed with those hosts, not counted as assigned to you.',
-      );
-      expect(caption.textContent?.length).toBeLessThan(200);
+      // What "a decision" counts is on the lead's (i), not a caption line.
+      expect(screen.queryByText(/^A decision is a finding under investigation/)).toBeNull();
+      expect(within(lead).getByRole('button', { name: 'What counts as a decision' })).toBeInTheDocument();
 
       // A link switches the tab, with its filter.
       fireEvent.click(within(lead).getByRole('link', { name: '15 tests are free to claim' }));

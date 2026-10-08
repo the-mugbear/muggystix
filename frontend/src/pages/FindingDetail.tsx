@@ -7,7 +7,7 @@
  * inline, and status/owner are editable in place. The place My Work,
  * reports, and notifications link a finding to.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT, SEVERITY_LABEL } from '../utils/severity';
 import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ExternalLink, Loader2, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
@@ -28,9 +28,10 @@ import {
   removeFindingEndpoint,
   addFindingHosts,
   getHostNotes,
-  listProjectMembers,
   NoteAttachment,
 } from '../services/api';
+import { useProjectRoster } from '../hooks/useProjectMembers';
+import MembersLoadError from '../components/MembersLoadError';
 import MessageBubble from '../components/MessageBubble';
 import FindingReportTextCard, { missingReportText } from '../components/FindingReportTextCard';
 import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
@@ -45,6 +46,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useFindingImages } from '../hooks/useFindingImages';
 import { useConfirm } from '../hooks/useConfirm';
+import { useDiscardGuard } from '../hooks/useDiscardGuard';
+import { useLatestRequest } from '../hooks/useLatestRequest';
 import { formatApiError } from '../utils/apiErrors';
 import { DetailSkeleton } from '../components/PageSkeleton';
 import { Badge } from '../components/ui/badge';
@@ -63,6 +66,7 @@ import {
 import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
 import { safeFallback } from '../utils/uiStyles';
+import { cn } from '../utils/cn';
 import { STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates } from '../utils/findingStatus';
 import { RETURN_PARAM, safeFindingsReturn } from '../utils/findingsReturn';
 
@@ -97,11 +101,23 @@ const FindingDetail: React.FC = () => {
   // Triage is a project analyst's (R32): a viewer or auditor reads the page.
   const { canWrite: canManage } = useProjectRole();
   const [confirmDialog, confirm] = useConfirm();
+  // Unsaved report text: the page's Back asks first (the card guards reload
+  // and its own Cancel).
+  const reportTextDirty = useRef(false);
+  const noteReportTextDirty = useCallback((dirty: boolean) => { reportTextDirty.current = dirty; }, []);
+  const { confirmLeave, confirmEl: leaveDialog } = useDiscardGuard(
+    () => reportTextDirty.current,
+    'The report text you changed has not been saved. Leave anyway?',
+  );
+  const backToFindings = () => {
+    if (!reportTextDirty.current) { navigate(returnTo); return; }
+    void confirmLeave().then((ok) => { if (ok) navigate(returnTo); });
+  };
 
   const [finding, setFinding] = useState<Finding | null>(null);
   // Project roster for the owner picker — accountability for driving the
-  // finding to closure (distinct from a host's review analyst).
-  const [members, setMembers] = useState<ProjectMember[]>([]);
+  // finding to closure (distinct from a host's review analyst).  Loaded
+  // below, for analyst+ only — viewers can't reassign.
   const [history, setHistory] = useState<FindingStatusHistoryEntry[]>([]);
   // M2 — history is ancillary: it loads with its own state and never gates
   // the finding itself.
@@ -154,43 +170,47 @@ const FindingDetail: React.FC = () => {
 
   // Background refresh after an edit: content stays mounted; a failed refresh
   // keeps what is on screen and says so rather than blanking the page.
+  // Both refreshes share one lane: an older read never lands over a newer one.
+  const runRefresh = useLatestRequest();
+  const reread = useCallback(
+    () => runRefresh(() => Promise.all([getFinding(id), getFindingHistory(id)])),
+    [id, runRefresh],
+  );
+
   const refresh = useCallback(async (what: 'status' | 'severity') => {
     setRefreshing(what);
-    try {
-      const [f, h] = await Promise.all([getFinding(id), getFindingHistory(id)]);
-      setFinding(f);
-      setHistory(h);
+    const r = await reread();
+    if (r.stale) return;
+    if (r.ok) {
+      setFinding(r.value[0]);
+      setHistory(r.value[1]);
       setHistoryError(null);
-    } catch (err) {
-      toast.warning(formatApiError(err, 'Saved, but the page could not refresh — reload to see the change.'));
-    } finally {
-      setRefreshing(null);
+    } else {
+      toast.warning(formatApiError(r.error, 'Saved, but the page could not refresh — reload to see the change.'));
     }
-  }, [id, toast]);
+    setRefreshing(null);
+  }, [reread, toast]);
 
   // An accepted proposal changed the finding (text, an endpoint): re-read it
   // and its history quietly.
   const refreshAfterProposal = useCallback(async () => {
-    try {
-      const [f, h] = await Promise.all([getFinding(id), getFindingHistory(id)]);
-      setFinding(f);
-      setHistory(h);
-    } catch {
+    const r = await reread();
+    if (r.stale) return;
+    if (r.ok) {
+      setFinding(r.value[0]);
+      setHistory(r.value[1]);
+    } else {
       toast.warning('Accepted, but the page could not refresh — reload to see the change.');
     }
-  }, [id, toast]);
+    // The read that superseded a status / severity refresh has landed.
+    setRefreshing(null);
+  }, [reread, toast]);
 
   useEffect(() => { void loadFinding(); void loadHistory(); }, [loadFinding, loadHistory]);
 
   // Roster for the owner picker (analyst+ only — viewers can't reassign).
-  useEffect(() => {
-    if (!canManage) return;
-    let cancelled = false;
-    listProjectMembers()
-      .then((m) => { if (!cancelled) setMembers(m); })
-      .catch(() => { /* picker degrades to current owner only */ });
-    return () => { cancelled = true; };
-  }, [canManage]);
+  const roster = useProjectRoster({ enabled: canManage });
+  const members = roster.members;
 
   const memberLabel = (m: ProjectMember) => m.full_name || m.username || `User ${m.user_id}`;
 
@@ -453,7 +473,8 @@ const FindingDetail: React.FC = () => {
 
   return (
     <div className="p-md md:p-lg">
-      <Button variant="ghost" size="sm" onClick={() => navigate(returnTo)} className="mb-sm">
+      {leaveDialog}
+      <Button variant="ghost" size="sm" onClick={backToFindings} className="mb-sm">
         <ArrowLeft className="size-4" aria-hidden /> Findings
       </Button>
 
@@ -564,6 +585,7 @@ const FindingDetail: React.FC = () => {
                   ))}
                 </SelectContent>
               </Select>
+              {roster.status === 'error' && <MembersLoadError onRetry={roster.retry} />}
               {user?.id != null && finding.owner_id !== user.id && (
                 <Button variant="ghost" size="sm" className="h-7 px-xs text-caption"
                   onClick={() => void handleOwner(user.id)}>
@@ -607,8 +629,7 @@ const FindingDetail: React.FC = () => {
         // v5.225.0 — the finding's status is the issue's; each endpoint keeps
         // its own, so "Confirmed" here never means every host.
         description={<>
-          The status above is the issue&apos;s ({STATUS_LABEL[finding.status]}). Each endpoint
-          below has its own state
+          The status above is the issue&apos;s; each endpoint has its own
           {endpointSummary ? <>: <span className="text-foreground">{endpointSummary}</span></> : ' — all still present'}.
         </>}
         actions={canManage ? (
@@ -665,6 +686,7 @@ const FindingDetail: React.FC = () => {
         drafts={proposals.textByField}
         canDecide={canManage}
         onProposalDecided={proposalDecided}
+        onDirtyChange={noteReportTextDirty}
         agentAction={(
           <AgentTaskButton
             variant="ghost"
@@ -743,14 +765,23 @@ const FindingDetail: React.FC = () => {
             <ul className="flex flex-col gap-sm">
               {history.map((r) => (
                 <li key={r.id} className="border-l-2 border-border pl-sm">
-                  <div className="text-metadata">
-                    <span className="text-muted-foreground">{histLabel(r.from_status)}</span>
-                    {' → '}<span className="font-medium">{histLabel(r.to_status)}</span>
-                  </div>
+                  {/* An endpoint change is recorded on the finding's history
+                      with the finding's status unchanged: "Confirmed →
+                      Confirmed" said nothing — the summary names the change. */}
+                  {r.from_status !== r.to_status || !r.summary ? (
+                    <div className="text-metadata">
+                      <span className="text-muted-foreground">{histLabel(r.from_status)}</span>
+                      {' → '}<span className="font-medium">{histLabel(r.to_status)}</span>
+                    </div>
+                  ) : null}
                   <div className="text-caption text-muted-foreground">
                     {safeFallback(r.changed_by_name, 'Unknown')} · {formatTimestamp(r.created_at)}
                   </div>
-                  {r.summary && <p className="mt-xxs whitespace-pre-wrap text-caption">{r.summary}</p>}
+                  {r.summary && (
+                    <p className={cn('mt-xxs whitespace-pre-wrap', r.from_status === r.to_status ? 'text-metadata' : 'text-caption')}>
+                      {r.summary}
+                    </p>
+                  )}
                 </li>
               ))}
             </ul>

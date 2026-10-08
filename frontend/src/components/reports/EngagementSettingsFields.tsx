@@ -10,6 +10,8 @@ import { Plus, Trash2, Users } from 'lucide-react';
 
 import { getProjectReportTeam, type EngagementSettings, type ProjectMember } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
+import type { ProjectMembersStatus } from '../../hooks/useProjectMembers';
+import MembersLoadError from '../MembersLoadError';
 import { formatApiError } from '../../utils/apiErrors';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -30,6 +32,10 @@ interface Props {
   value: EngagementSettings;
   onChange: (next: EngagementSettings) => void;
   members: ProjectMember[];
+  /** How the member list stands (`useProjectRoster`): a failed load is said,
+   *  never shown as a project with no members. */
+  membersStatus?: ProjectMembersStatus;
+  onRetryMembers?: () => void;
   /** Whoever is signed in. A global admin can work on a project without being
    *  a member of it, so the member list alone left them nobody to pick. */
   currentUser?: { id: number; name: string } | null;
@@ -47,7 +53,8 @@ interface Props {
 const memberName = (m: ProjectMember) => m.full_name || m.username || `User ${m.user_id}`;
 
 const EngagementSettingsFields: React.FC<Props> = ({
-  value, onChange, members, currentUser, disabled: busy, readOnly = false, idPrefix,
+  value, onChange, members, membersStatus = 'ready', onRetryMembers, currentUser, disabled: busy, readOnly = false,
+  idPrefix,
 }) => {
   const disabled = busy || readOnly;
   const set = <K extends keyof EngagementSettings>(key: K, v: EngagementSettings[K]) =>
@@ -128,7 +135,8 @@ const EngagementSettingsFields: React.FC<Props> = ({
         ))}
         {!readOnly && (
         <div className="flex flex-wrap items-center gap-xs">
-          {members.length === 0 && !disabled && (
+          {membersStatus === 'error' && onRetryMembers && <MembersLoadError onRetry={onRetryMembers} />}
+          {membersStatus === 'ready' && members.length === 0 && !disabled && (
             <span className="text-caption text-muted-foreground">
               Nobody is a member of this project yet, so there is no one to pick — add people by name, or add members in{' '}
               <Link to="/project-settings" className="text-info hover:underline">Project settings</Link>.

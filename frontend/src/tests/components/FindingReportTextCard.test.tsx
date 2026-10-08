@@ -383,3 +383,66 @@ describe('FindingReportTextCard — drafts waiting (5.334.0)', () => {
     await waitFor(() => expect(onProposalDecided).toHaveBeenCalledWith(expect.objectContaining({ status: 'accepted' })));
   });
 });
+
+// Unsaved report text asks before it is dropped: the editor kept its draft in
+// state with no guard, so a reload, a tab close or Cancel lost it silently.
+describe('FindingReportTextCard — unsaved text is guarded', () => {
+  const written = {
+    id: 42, title: 'Weak TLS',
+    report_text: {
+      description: 'TLS 1.0 is accepted.', impact: 'Downgrade.', recommendation: 'Disable it.', references: null,
+      steps_to_reproduce: null, cvss_vector: null, cvss_score: null, cvss_score_from_vector: false,
+    },
+  } as never;
+
+  const unload = () => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+
+  it('asks before a reload or a tab close only while the editor holds a change', () => {
+    const onDirtyChange = vi.fn();
+    render(<FindingReportTextCard finding={written} canEdit onSaved={vi.fn()} onDirtyChange={onDirtyChange} />);
+    expect(unload()).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
+    // Open but untouched: nothing to lose.
+    expect(unload()).toBe(false);
+    fireEvent.change(screen.getByLabelText('Impact'), { target: { value: 'Downgrade to a broken cipher.' } });
+    expect(unload()).toBe(true);
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    // Put back as it was: clean again.
+    fireEvent.change(screen.getByLabelText('Impact'), { target: { value: 'Downgrade.' } });
+    expect(unload()).toBe(false);
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('Cancel with a change asks first, keeps the text on "no" and drops it on Discard', async () => {
+    render(<FindingReportTextCard finding={written} canEdit onSaved={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
+    fireEvent.change(screen.getByLabelText('Impact'), { target: { value: 'Rewritten.' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    const ask = await screen.findByRole('dialog');
+    expect(within(ask).getByText('Discard unsaved work?')).toBeInTheDocument();
+    fireEvent.click(within(ask).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByLabelText('Impact')).toHaveValue('Rewritten.');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Discard' }));
+    await waitFor(() => expect(screen.queryByLabelText('Impact')).not.toBeInTheDocument());
+    expect(updateFinding).not.toHaveBeenCalled();
+    expect(unload()).toBe(false);
+  });
+
+  it('a saved editor leaves nothing to guard', async () => {
+    updateFinding.mockResolvedValue(written);
+    render(<FindingReportTextCard finding={written} canEdit onSaved={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
+    fireEvent.change(screen.getByLabelText('Impact'), { target: { value: 'Rewritten.' } });
+    fireEvent.click(screen.getByRole('button', { name: /Save report text/ }));
+    await waitFor(() => expect(screen.queryByLabelText('Impact')).not.toBeInTheDocument());
+    expect(unload()).toBe(false);
+  });
+});

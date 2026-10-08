@@ -6,6 +6,7 @@
  * risky services) that surfaces "lack of IT management".  Worst-first.
  */
 import { api, p } from './client';
+import { filenameFromContentDisposition, saveBlob } from '../../utils/download';
 import { buildHostsUrl } from '../../utils/drilldownLinks';
 
 export interface SeverityCounts {
@@ -272,14 +273,8 @@ export const gridCellHostsHref = (
 export const downloadSystemicReport = async (site?: string | null): Promise<void> => {
   const qs = site ? `?site=${encodeURIComponent(site)}` : '';
   const response = await api.get(`${p()}/reports/systemic.html${qs}`, { responseType: 'blob' });
-  const url = window.URL.createObjectURL(new Blob([response.data], { type: 'text/html' }));
-  const a = document.createElement('a');
-  a.href = url;
-  const cd = response.headers['content-disposition'] as string | undefined;
-  const match = cd?.match(/filename="?([^"]+)"?/i);
-  a.download = match?.[1] || `systemic_insights_${new Date().toISOString().split('T')[0]}.html`;
-  document.body.appendChild(a);
-  a.click();
-  window.URL.revokeObjectURL(url);
-  document.body.removeChild(a);
+  saveBlob(new Blob([response.data], { type: 'text/html' }), filenameFromContentDisposition(
+    response.headers['content-disposition'] as string | undefined,
+    `systemic_insights_${new Date().toISOString().split('T')[0]}.html`,
+  ));
 };

@@ -36,10 +36,12 @@ import {
   updateFinding,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { useDiscardGuard } from '../hooks/useDiscardGuard';
 import { formatApiError } from '../utils/apiErrors';
 import { announceProposalsChanged } from '../utils/proposalEvents';
 import type { MarkdownImages } from '../utils/reportImages';
 import { Button } from './ui/button';
+import { InfoTip } from './ui/info-tip';
 import PostureSection from './posture/PostureSection';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -106,13 +108,16 @@ interface Props {
   canDecide?: boolean;
   /** A draft was accepted or rejected. */
   onProposalDecided?: (updated: Proposal) => void;
+  /** The editor holds text that is not saved (or no longer does) — for the
+   *  page's own Back button. */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 const NO_DRAFTS = new Map<string, Proposal[]>();
 
 const FindingReportTextCard: React.FC<Props> = ({
   finding, canEdit, canPropose = canEdit, onSaved, onDrafted, startEditing = false, agentAction, images,
-  drafts = NO_DRAFTS, canDecide = false, onProposalDecided,
+  drafts = NO_DRAFTS, canDecide = false, onProposalDecided, onDirtyChange,
 }) => {
   const toast = useToast();
   const text = finding.report_text;
@@ -131,6 +136,18 @@ const FindingReportTextCard: React.FC<Props> = ({
       return untouched ? null : d;
     });
   }, [drafts, text]);
+  // Unsaved text asks before a reload, a tab close or Cancel drops it.
+  const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(toDraft(text));
+  const { confirmLeave, confirmEl } = useDiscardGuard(
+    () => dirty,
+    'The report text you changed has not been saved. Discard it?',
+  );
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+  const cancel = () => {
+    if (!dirty) { setDraft(null); return; }
+    void confirmLeave().then((ok) => { if (ok) setDraft(null); });
+  };
   // Opened from an empty section: put the caret in that section.
   const [focusField, setFocusField] = useState<string | null>(null);
   useEffect(() => {
@@ -224,18 +241,28 @@ const FindingReportTextCard: React.FC<Props> = ({
     // v5.294.0 (UX review) — a section over a thin rule, not a bordered card
     // (UI_STYLE_GUIDE §7). The wrapper keeps the ref the ?edit= link scrolls to.
     <div className="mb-md" ref={cardRef}>
+      {confirmEl}
       <PostureSection
-        title={<span>Report text</span>}
-        description={<>
-          What the client report says about this finding. Written in Markdown; shown as the report prints it.
-          {images && ' An image ticked “In report” can be placed in a section (Insert image); the rest print under Evidence.'}
-          {missing.length > 0 && (
-            <> Still empty: <span className="text-foreground">{missing.join(', ')}</span>.</>
-          )}
-          {waiting > 0 && (
-            <> <span className="text-info">{waiting === 1 ? '1 draft is' : `${waiting} drafts are`} waiting for review in the sections below.</span></>
-          )}
-        </>}
+        title={(
+          <>
+            <span>Report text</span>
+            <InfoTip
+              label="About report text"
+              text={`What the client report says about this finding. Written in Markdown; shown as the report prints it.${images ? ' An image ticked “In report” can be placed in a section (Insert image); the rest print under Evidence.' : ''}`}
+            />
+          </>
+        )}
+        // Only what is specific to THIS finding is said under the heading.
+        description={missing.length > 0 || waiting > 0 ? (
+          <>
+            {missing.length > 0 && (
+              <>Still empty: <span className="text-foreground">{missing.join(', ')}</span>.{' '}</>
+            )}
+            {waiting > 0 && (
+              <span className="text-info">{waiting === 1 ? '1 draft is' : `${waiting} drafts are`} waiting for review in the sections below.</span>
+            )}
+          </>
+        ) : undefined}
         actions={canEdit || canPropose ? (
           <>
             {canPropose && agentAction}
@@ -310,7 +337,7 @@ const FindingReportTextCard: React.FC<Props> = ({
               <Button type="submit" size="sm" disabled={saving}>
                 {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save report text
               </Button>
-              <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(null)} disabled={saving}>
+              <Button type="button" variant="ghost" size="sm" onClick={cancel} disabled={saving}>
                 Cancel
               </Button>
             </div>

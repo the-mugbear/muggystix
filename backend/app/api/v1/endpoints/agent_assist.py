@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, literal, or_, select
+from sqlalchemy import func, literal, or_, select, tuple_
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload, Query as SAQuery
 
 from app.db.session import disable_statement_timeout, get_db, is_statement_timeout
@@ -429,12 +429,18 @@ def _iter_assist_hosts_ndjson(db: Session, query: SAQuery, operator_id=None):
     materialising the whole ORM result set (mirrors the recon download valve).
     """
     _PAGE = 500
-    offset = 0
-    ordered = query.order_by(models.Host.ip_address)
+    # Keyset, not OFFSET: page N of an OFFSET stream re-reads and re-sorts
+    # the N-1 pages before it (160 pages at 80k hosts).
+    ordered = query.order_by(models.Host.ip_address, models.Host.id)
+    last = None
     while True:
-        hosts = ordered.offset(offset).limit(_PAGE).all()
+        page = ordered if last is None else ordered.filter(
+            tuple_(models.Host.ip_address, models.Host.id) > tuple_(literal(last[0]), literal(last[1]))
+        )
+        hosts = page.limit(_PAGE).all()
         if not hosts:
             break
+        last = (hosts[-1].ip_address, hosts[-1].id)
         host_ids = [h.id for h in hosts]
         port_counts, vuln_map = batch_host_enrichment(db, host_ids)
         follow_map = _operator_follow_map(db, host_ids, operator_id)
@@ -443,7 +449,6 @@ def _iter_assist_hosts_ndjson(db: Session, query: SAQuery, operator_id=None):
             yield json.dumps(_host_to_brief_dict(h, port_counts, vuln_map, follow_map, exploit_maps)) + "\n"
         if len(hosts) < _PAGE:
             break
-        offset += _PAGE
         # Detach the page so the session doesn't accumulate every host.
         db.expunge_all()
 
@@ -1587,20 +1592,19 @@ def list_assist_findings(
         project_id=session.project_id, status=status, source=source,
         host_id=host_id, unowned=unowned, owner_id=owner_id, search=search,
     )
-    # ``Finding.hosts`` is plain lazy (review 2026-10-01 C2); this route reads
-    # every endpoint of every row for its distinct-address count, so it names
-    # the load.
     rows, total = svc.list_findings(
-        **filters, severity=severity, limit=limit, offset=offset, with_endpoints=True,
+        **filters, severity=severity, limit=limit, offset=offset,
     )
     counts = svc.severity_counts(**filters)
+    # Counted in SQL: a finding on 30,000 hosts is two numbers and ten
+    # addresses here, not 30,000 endpoint rows and their hosts.
+    spread = svc.address_summaries([f.id for f in rows], sample=10)
 
     findings = []
     for f in rows:
-        endpoint_rows = [fh for fh in (f.hosts or []) if fh.host]
         # v2.343.2 — a finding row per named endpoint (two vhosts on one IP)
         # is two endpoints on ONE host; count hosts as distinct addresses.
-        host_ips = sorted({fh.host.ip_address for fh in endpoint_rows})
+        on = spread[f.id]
         findings.append(
             AssistProjectFinding(
                 id=f.id,
@@ -1609,13 +1613,13 @@ def list_assist_findings(
                 status=f.status,
                 source=f.source,
                 owner_username=f.owner.username if f.owner else None,
-                host_count=len(host_ips),
-                endpoint_count=len(endpoint_rows),
+                host_count=on["host_count"],
+                endpoint_count=on["endpoint_count"],
                 # Capped: a finding on 400 hosts should not spend the agent's
                 # context proving it. The count above is the answer; the sample
                 # is for naming one.
-                hosts=host_ips[:10],
-                hosts_truncated=len(host_ips) > 10,
+                hosts=on["sample"],
+                hosts_truncated=on["host_count"] > 10,
             )
         )
     return AssistFindingsPage(total=total, severity_counts=counts, findings=findings)

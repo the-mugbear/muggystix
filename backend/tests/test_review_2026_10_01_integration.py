@@ -135,7 +135,6 @@ def test_a_report_job_says_who_requested_it(client, db_session, test_project, te
 
 STREAMED = [
     ("jwt", "/reports/hosts/csv"),
-    ("jwt", "/reports/hosts/html"),
     ("jwt", "/names/export"),
     ("jwt", "/names/export?format=csv"),
     ("agent", "/assist/hosts.ndjson"),

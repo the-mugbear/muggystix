@@ -179,7 +179,7 @@ describe('ScannerObservations', () => {
     await screen.findByText('SMB Signing not required');
     const slot = screen.getByTestId('observations-bulk-slot');
     const slotClass = slot.className;
-    expect(slot).toHaveTextContent('Select issues to promote them to findings');
+    expect(slot).toHaveTextContent('Tick issues to promote them to findings');
     const table = screen.getByRole('table');
     const precedingBefore = table.closest('.overflow-x-auto')!.parentElement!.children.length;
 

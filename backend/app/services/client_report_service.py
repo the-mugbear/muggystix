@@ -401,11 +401,11 @@ def finding_image_attachments(
     (``annotations.finding_id``) or on its source-note thread (the
     ``evidence_annotation_id`` root and its replies).  ``marked_only`` keeps
     only files marked for the report (``include_in_report``): the client
-    report passes True; the host report and the drafter's captions pass False
-    (their unmarked images are a parked decision — it is this one argument).
+    report passes True; the drafter's captions and ``report_images.attachments_of``
+    pass False (they need every image of the finding, ticked or not).
 
-    ONE statement per ``_ID_CHUNK`` findings (review 2026-10-01 R16): the
-    host report and the drafter each ran two queries per finding."""
+    ONE statement per ``_ID_CHUNK`` findings (review 2026-10-01 R16): a
+    caller once ran two queries per finding."""
     pairs = [(fid, root) for fid, root in findings if fid is not None]
     out: Dict[int, List[Tuple[NoteAttachment, Optional[str]]]] = defaultdict(list)
     for start in range(0, len(pairs), _ID_CHUNK):

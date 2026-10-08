@@ -409,6 +409,33 @@ def test_delete_partial_scan_removes_only_what_that_scan_created(db_session, tes
     assert sorted(p[0] for p in ports) == [22]
 
 
+def test_a_host_with_a_remediation_note_is_kept(db_session, test_project, test_user):
+    """Review 2026-10-07: a remediation note needs only a host, and its
+    foreign key cascades — a failed import took the admin's note with the
+    host it had created."""
+    from app.db.models_remediation import RemediationEvent
+
+    pid = test_project.id
+    partial = _scan(db_session, pid, "partial.xml")
+    dedup = HostDeduplicationService(db_session)
+    untouched = dedup.find_or_create_host("10.51.0.1", partial.id, {"state": "up"}, project_id=pid)
+    noted = dedup.find_or_create_host("10.51.0.2", partial.id, {"state": "up"}, project_id=pid)
+    db_session.add(RemediationEvent(
+        project_id=pid, host_id=noted.id, kind="note", body="Owner is the plant team",
+        author_id=test_user.id, occurred_at=datetime.now(timezone.utc),
+    ))
+    db_session.commit()
+    assert untouched.id != noted.id
+
+    removed = delete_partial_scan(db_session, partial.id)
+    db_session.commit()
+    db_session.expire_all()
+
+    assert removed["hosts"] == 1
+    assert host_ips(db_session, pid) == ["10.51.0.2"]
+    assert db_session.query(RemediationEvent).filter_by(project_id=pid).count() == 1
+
+
 # ---------------------------------------------------------------------------
 # R3 — Nessus across a commit batch
 # ---------------------------------------------------------------------------

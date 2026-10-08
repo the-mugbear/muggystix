@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { flushSync } from 'react-dom';
 import { createAuthLogger } from '../utils/logger';
 import { accountChangedElsewhere, reloadForAccountChange } from '../utils/authSession';
+import { returnPathAfterLogin } from '../utils/loginReturn';
 import api, { setCurrentProjectId } from '../services/api';
 
 interface User {
@@ -193,12 +194,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setUser(response.data);
       timer();
     } catch (error: unknown) {
-      // 401 is handled by the axios interceptor (clears auth + redirects)
+      // Only a 401 says the session is gone.  A 502/503 or a network error
+      // (a deploy, a restart) says nothing about it: keep the stored session
+      // already in state and let later requests decide.
+      const rejected = (error as { response?: { status?: number } })?.response?.status === 401;
       authLogger.error('Token verification failed', {
         error: error instanceof Error ? error.message : String(error),
-        action: 'clearing_auth_data'
+        action: rejected ? 'clearing_auth_data' : 'keeping_stored_session'
       });
-      clearAuthData();
+      if (rejected) clearAuthData();
       timer();
     }
   };
@@ -230,10 +234,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       // (deterministic, instead of waiting for a gated call to 403).
       navigate('/force-2fa-setup', { replace: true });
     } else {
-      const from = location.state?.from?.pathname || '/';
-      navigate(from, { replace: true });
+      navigate(returnPathAfterLogin(location), { replace: true });
     }
-  }, [authLogger, location.state, navigate]);
+  }, [authLogger, location, navigate]);
 
   const verify2fa = useCallback(async (challengeToken: string, code: string) => {
     const timer = authLogger.timer('2FA verify');

@@ -47,7 +47,10 @@ logger = logging.getLogger(__name__)
 # report's stored PDF, from before, still downloads: files are served by row.
 PREVIEW_FORMATS = {"report-html": "html", "report-docx": "docx", "report-qmd": "qmd"}
 ISSUE_FORMAT = "report-issue"
-CLIENT_JOB_FORMATS = tuple(PREVIEW_FORMATS) + (ISSUE_FORMAT,)
+# One contact's remediation list (``remediation_report``; kept literal so
+# neither module imports the other at import time).
+CONTACT_JOB_FORMATS = ("contact-html", "contact-docx")
+CLIENT_JOB_FORMATS = tuple(PREVIEW_FORMATS) + (ISSUE_FORMAT,) + CONTACT_JOB_FORMATS
 
 
 def _slug(text: Optional[str]) -> str:
@@ -146,6 +149,11 @@ def run_client_job(db: Session, job: ReportJob) -> Optional[Tuple[bytes, str, st
     """Render one client-report job.  Returns ``(bytes, media_type, filename)``
     for a preview (the worker stores it as the job's artifact), ``None`` for
     an issue render (its files are stored with the report)."""
+    if job.format in CONTACT_JOB_FORMATS:
+        # v2.463.0 — one contact's remediation list: a template of another
+        # kind on the same renderer, with no report row behind it.
+        from app.services import remediation_report
+        return remediation_report.run_job(db, job)
     report_id = (job.filters or {}).get("report_id")
     report = db.get(Report, report_id) if report_id else None
     if report is None or report.project_id != job.project_id:

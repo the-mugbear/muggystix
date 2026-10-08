@@ -59,35 +59,29 @@ def get_dashboard_stats(
     total_scans = db.query(func.count(models.Scan.id)).filter(
         models.Scan.project_id == project.id
     ).scalar() or 0
-    total_hosts = db.query(func.count(func.distinct(models.Host.ip_address))).filter(
-        models.Host.project_id == project.id
-    ).scalar() or 0
-    total_ports = (
-        db.query(func.count(models.Port.id))
+    # One pass over the project's hosts and one over its ports (review
+    # 2026-10-07): total and "up" / "open" were separate scans of the same
+    # rows.  No DISTINCT on the address — it is unique in a project
+    # (``uq_project_ip``).
+    total_hosts, up_hosts = db.query(
+        func.count(models.Host.id),
+        func.coalesce(func.sum(case((models.Host.state == 'up', 1), else_=0)), 0),
+    ).filter(models.Host.project_id == project.id).one()
+    total_ports, open_ports = (
+        db.query(
+            func.count(models.Port.id),
+            func.coalesce(func.sum(case((models.Port.state == 'open', 1), else_=0)), 0),
+        )
         .join(models.Host, models.Port.host_id == models.Host.id)
         .filter(models.Host.project_id == project.id)
-        .scalar() or 0
+        .one()
     )
+    total_hosts, up_hosts = int(total_hosts or 0), int(up_hosts or 0)
+    total_ports, open_ports = int(total_ports or 0), int(open_ports or 0)
     total_subnets = (
         db.query(func.count(models.Subnet.id))
         .join(models.Scope, models.Subnet.scope_id == models.Scope.id)
         .filter(models.Scope.project_id == project.id)
-        .scalar() or 0
-    )
-
-    # Get overall up hosts and open ports counts
-    up_hosts = db.query(func.count(func.distinct(models.Host.ip_address))).filter(
-        models.Host.project_id == project.id,
-        models.Host.state == 'up',
-    ).scalar() or 0
-
-    open_ports = (
-        db.query(func.count(models.Port.id))
-        .join(models.Host, models.Port.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == project.id,
-            models.Port.state == 'open',
-        )
         .scalar() or 0
     )
 

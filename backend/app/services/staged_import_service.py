@@ -275,6 +275,12 @@ def start_staged_job(
     return started
 
 
+# (job id, storage path) of finished jobs whose file this process has seen
+# gone — see ``expire_retained_files``.  Per process: a restarted worker
+# checks each once more.
+_files_known_gone: set = set()
+
+
 def retention_window() -> timedelta:
     from app.core.config import settings
     return timedelta(days=max(int(getattr(settings, "INGESTION_RETAIN_FILES_DAYS", 7)), 0))
@@ -309,8 +315,16 @@ def expire_retained_files(db: Session, *, now: Optional[datetime] = None) -> int
         )
     )
     removed = 0
-    candidate_ids = [jid for (jid,) in db.query(IngestionJob.id).filter(expired).all()]
-    for job_id in candidate_ids:
+    # The rows stay for ever, so "finished and past the window" only grows:
+    # a job whose file this process has already seen gone is not locked and
+    # looked at again every minute.  (A retried job's file is kept by the
+    # retry, which never re-creates a removed one.)
+    candidates = [
+        (jid, path)
+        for jid, path in db.query(IngestionJob.id, IngestionJob.storage_path).filter(expired).all()
+        if (jid, path) not in _files_known_gone
+    ]
+    for job_id, known_path in candidates:
         # Each file goes while its row is LOCKED, with the predicate
         # re-checked under the lock.  Deleting from a snapshot read raced a
         # retry: the retry (which checks the file exists under this same row
@@ -326,10 +340,21 @@ def expire_retained_files(db: Session, *, now: Optional[datetime] = None) -> int
             .populate_existing()
             .one_or_none()
         )
-        if job is not None and file_retained(job):
-            shutil.rmtree(Path(job.storage_path).parent, ignore_errors=True)
-            if not Path(job.storage_path).exists():
-                removed += 1
+        if job is not None:
+            if file_retained(job):
+                shutil.rmtree(Path(job.storage_path).parent, ignore_errors=True)
+                if Path(job.storage_path).exists():
+                    # Tried again next sweep; said, because a sweep that
+                    # cannot delete is how the uploads disk fills unnoticed.
+                    logger.warning(
+                        "Could not remove the retained file of ingestion job %s (%s)",
+                        job_id, job.storage_path,
+                    )
+                else:
+                    removed += 1
+                    _files_known_gone.add((job_id, known_path))
+            else:
+                _files_known_gone.add((job_id, known_path))
         db.commit()  # release the row lock before the next job
     return removed
 

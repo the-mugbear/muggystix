@@ -100,7 +100,7 @@ describe('Scopes page — Posture layout (v5.269.0)', () => {
   it('opens with one sentence of where the hosts stand', async () => {
     renderPage();
     expect(await screen.findByText(
-      '27 of 29 hosts are inside scoped subnets; 1 reached only through an in-scope name; 1 outside every scope.',
+      '1 of 29 hosts is outside every scope — confirm whether it is in scope.',
     )).toBeInTheDocument();
   });
 
@@ -288,6 +288,10 @@ describe('scopeLead', () => {
   it('is clear when nothing is out of scope, neutral before anything is declared', () => {
     expect(scopeLead({ ...coverage, out_of_scope_hosts: 0, name_reachable_hosts: 0 })).toEqual({
       sentence: '27 of 29 hosts are inside scoped subnets.', tone: 'clear',
+    });
+    // The strip has the counts; the lead names only what is left to decide.
+    expect(scopeLead({ ...coverage, out_of_scope_hosts: 0, name_reachable_hosts: 2 })).toEqual({
+      sentence: 'No host is outside the scope; 2 are reached only through an in-scope name.', tone: 'clear',
     });
     expect(scopeLead({ ...coverage, total_subnets: 0, total_domains: 0 }).tone).toBe('neutral');
     expect(scopeLead({ ...coverage, total_hosts: 0 }).sentence)

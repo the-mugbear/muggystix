@@ -17,6 +17,7 @@ import { Button } from './ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { safeFallback } from '../utils/uiStyles';
+import { formatTimestamp } from '../utils/relativeTime';
 
 const label = (s: string | null) => (s ? (STATUS_LABEL as Record<string, string>)[s] ?? s : '—');
 
@@ -68,7 +69,7 @@ export const FindingHistoryButton: React.FC<{ findingId: number }> = ({ findingI
                   <span className="font-medium text-foreground">{label(r.to_status)}</span>
                 </div>
                 <div className="text-caption text-muted-foreground">
-                  {safeFallback(r.changed_by_name, 'Unknown')} · {new Date(r.created_at).toLocaleString()}
+                  {safeFallback(r.changed_by_name, 'Unknown')} · {formatTimestamp(r.created_at)}
                 </div>
                 {r.summary && <p className="mt-xxs whitespace-pre-wrap text-caption">{r.summary}</p>}
               </li>

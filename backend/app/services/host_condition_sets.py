@@ -26,7 +26,7 @@ is no judgment to drift; this module owns the shared ``CLEARTEXT_PORTS`` const.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, Optional, Set, Tuple
+from typing import Collection, Dict, Optional, Set, Tuple
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -44,7 +44,16 @@ from app.services.subnet_insight_service import _EPOCH, _is_weak_user, _normaliz
 CLEARTEXT_PORTS = {21, 23, 110, 143}
 
 
-def eol_os_host_ids(db: Session, project_id: int) -> Set[int]:
+def _only(query, column, host_ids: Optional[Collection[int]]):
+    """``host_ids`` narrows a set function to those hosts (a page being
+    labelled); None is the whole project.  The judgment is per host, so the
+    answer for a host is the same either way."""
+    return query if host_ids is None else query.filter(column.in_(list(host_ids)))
+
+
+def eol_os_host_ids(
+    db: Session, project_id: int, host_ids: Optional[Collection[int]] = None,
+) -> Set[int]:
     """Hosts whose ``os_name`` matches the end-of-life OS catalog.
 
     Match the EOL regex catalog against the project's DISTINCT ``os_name``
@@ -54,7 +63,7 @@ def eol_os_host_ids(db: Session, project_id: int) -> Set[int]:
     large estates when ``has:eol`` / Systemic Insights hit it.
     """
     distinct_os = (
-        db.query(models.Host.os_name)
+        _only(db.query(models.Host.os_name), models.Host.id, host_ids)
         .filter(
             models.Host.project_id == project_id,
             models.Host.os_name.isnot(None),
@@ -68,7 +77,7 @@ def eol_os_host_ids(db: Session, project_id: int) -> Set[int]:
         return set()
     return {
         hid
-        for (hid,) in db.query(models.Host.id)
+        for (hid,) in _only(db.query(models.Host.id), models.Host.id, host_ids)
         .filter(
             models.Host.project_id == project_id,
             models.Host.os_name.in_(eol_names),
@@ -110,7 +119,8 @@ def cleartext_host_ids(db: Session, project_id: int) -> Set[int]:
 
 
 def cert_issue_host_ids(
-    db: Session, project_id: int, now: Optional[datetime] = None
+    db: Session, project_id: int, now: Optional[datetime] = None,
+    *, host_ids: Optional[Collection[int]] = None,
 ) -> Set[int]:
     """Hosts whose LATEST cert observation per (host, url) is expired or
     self-signed.
@@ -122,13 +132,13 @@ def cert_issue_host_ids(
     now = now or datetime.now(timezone.utc)
     cert_latest: Dict[Tuple[int, Optional[str]], Tuple] = {}
     for hid, url, not_after, self_signed, last_seen in (
-        db.query(
+        _only(db.query(
             WebInterface.host_id,
             WebInterface.url,
             WebInterface.cert_not_after,
             WebInterface.cert_self_signed,
             WebInterface.last_seen,
-        )
+        ), WebInterface.host_id, host_ids)
         .filter(
             WebInterface.project_id == project_id,
             WebInterface.host_id.isnot(None),
@@ -150,7 +160,9 @@ def cert_issue_host_ids(
     return out
 
 
-def weak_tls_host_ids(db: Session, project_id: int) -> Set[int]:
+def weak_tls_host_ids(
+    db: Session, project_id: int, host_ids: Optional[Collection[int]] = None,
+) -> Set[int]:
     """Hosts whose LATEST TLS observation per (host, url) offers a weak protocol
     (SSLv2 / SSLv3 / TLS 1.0 / TLS 1.1).
 
@@ -159,12 +171,12 @@ def weak_tls_host_ids(db: Session, project_id: int) -> Set[int]:
     not enumerated) never counts."""
     latest: Dict[Tuple[int, Optional[str]], Tuple] = {}
     for hid, url, weak, last_seen in (
-        db.query(
+        _only(db.query(
             WebInterface.host_id,
             WebInterface.url,
             WebInterface.tls_weak_protocol,
             WebInterface.last_seen,
-        )
+        ), WebInterface.host_id, host_ids)
         .filter(
             WebInterface.project_id == project_id,
             WebInterface.host_id.isnot(None),
@@ -179,7 +191,9 @@ def weak_tls_host_ids(db: Session, project_id: int) -> Set[int]:
     return {hid for (hid, _url), (_ls, weak) in latest.items() if weak}
 
 
-def weak_auth_host_ids(db: Session, project_id: int) -> Set[int]:
+def weak_auth_host_ids(
+    db: Session, project_id: int, host_ids: Optional[Collection[int]] = None,
+) -> Set[int]:
     """Hosts where the LATEST NetExec observation per (host, proto, port) is a
     successful guest / anonymous / null-session login.
 
@@ -188,14 +202,14 @@ def weak_auth_host_ids(db: Session, project_id: int) -> Set[int]:
     """
     nxc_latest: Dict[Tuple[int, Optional[str], Optional[int]], Tuple] = {}
     for hid, proto, port, auth_success, username, discovered_at in (
-        db.query(
+        _only(db.query(
             NetexecResult.host_id,
             NetexecResult.protocol,
             NetexecResult.port,
             NetexecResult.auth_success,
             NetexecResult.username,
             NetexecResult.discovered_at,
-        )
+        ), NetexecResult.host_id, host_ids)
         .join(models.Host, NetexecResult.host_id == models.Host.id)
         # Only login results: a banner / listing row says nothing about auth
         # and must not become the "latest" observation (v2.388.1).

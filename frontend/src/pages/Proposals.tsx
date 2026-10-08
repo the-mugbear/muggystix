@@ -24,7 +24,7 @@ import { ListPage, useListQuery } from '../hooks/useListQuery';
 import { formatApiError } from '../utils/apiErrors';
 import { isPageShortcutEvent } from '../utils/keyboard';
 import { announceProposalsChanged } from '../utils/proposalEvents';
-import PostureMeasure from '../components/posture/PostureMeasure';
+import { FilterChips } from '../components/operations/QueueParts';
 import PostureSection from '../components/posture/PostureSection';
 import ProposalItem, { REJECT_NOTE_PLACEHOLDER } from '../components/proposals/ProposalItem';
 import { Button } from '../components/ui/button';
@@ -252,6 +252,7 @@ const Proposals: React.FC = () => {
   const pending = (scope === 'mine' ? summary?.pending_mine : summary?.pending) ?? 0;
   const byKind = (scope === 'mine' ? summary?.by_kind_mine : summary?.by_kind) ?? {};
   const pendingShown = (items ?? []).filter((p) => p.status === 'pending').length;
+  const kindChips = status === 'pending' && summary != null && sessionId == null;
   // What the bulk buttons will act on, said on the buttons themselves.
   const bulkScope = pendingShown > PROPOSAL_BULK_MAX
     ? `the first ${PROPOSAL_BULK_MAX} of ${pendingShown} shown`
@@ -272,17 +273,6 @@ const Proposals: React.FC = () => {
               </>}
         </p>
       </div>
-
-      {summary && (
-        <div className="grid grid-cols-2 gap-y-md lg:grid-cols-5 lg:divide-x lg:divide-border">
-          {KINDS.map((k) => (
-            <PostureMeasure key={k.kind} label={k.label} value={byKind[k.kind] ?? 0} info={k.info}
-              to={`/proposals?kind=${k.kind}${scope ? `&scope=${scope}` : ''}`} toLabel="Show them">
-              pending
-            </PostureMeasure>
-          ))}
-        </div>
-      )}
 
       <PostureSection
         title={<span>{status === 'pending' ? 'Waiting for a decision' : `${status[0].toUpperCase()}${status.slice(1)}`}</span>}
@@ -312,20 +302,38 @@ const Proposals: React.FC = () => {
               {STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
             </SelectContent>
           </Select>
-          <Label htmlFor="proposal-kind" className="shrink-0">Kind</Label>
-          <Select value={kind ?? 'all'} onValueChange={(v) => setParam('kind', v === 'all' ? undefined : v)}>
-            <SelectTrigger id="proposal-kind" className="h-8 w-52"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Every kind</SelectItem>
-              {KINDS.map((k) => <SelectItem key={k.kind} value={k.kind}>{k.label}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          {/* The pending counts are known per kind, so there the kinds are
+              chips with their counts (they were five measures above a Kind
+              select saying the same thing); another status has no counts. */}
+          {!kindChips && (
+            <>
+              <Label htmlFor="proposal-kind" className="shrink-0">Kind</Label>
+              <Select value={kind ?? 'all'} onValueChange={(v) => setParam('kind', v === 'all' ? undefined : v)}>
+                <SelectTrigger id="proposal-kind" className="h-8 w-52"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Every kind</SelectItem>
+                  {KINDS.map((k) => <SelectItem key={k.kind} value={k.kind}>{k.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </>
+          )}
           {sessionId != null && (
             <Button size="sm" variant="ghost" onClick={() => setParam('agent_session_id', undefined)}>
               Session #{sessionId} <X className="size-4" aria-hidden />
             </Button>
           )}
         </div>
+
+        {kindChips && (
+          <FilterChips<ProposalKind>
+            label="Filter by kind"
+            allLabel="All"
+            allCount={KINDS.reduce((sum, k) => sum + (byKind[k.kind] ?? 0), 0)}
+            chips={KINDS.map((k) => ({ key: k.kind, label: k.label, count: byKind[k.kind] ?? 0, title: k.info }))}
+            selected={kind ?? null}
+            onSelect={(k) => setParam('kind', k ?? undefined)}
+          />
+        )}
 
         {error && items !== null && (
           // A failed re-read keeps the rows it could not refresh.

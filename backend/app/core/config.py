@@ -131,42 +131,12 @@ class Settings:
     AGENT_SESSION_MAX_LIFETIME_HOURS: int = int(
         os.getenv("AGENT_SESSION_MAX_LIFETIME_HOURS", "168")
     )
-    # Max hosts a single in-memory report (PDF/HTML/JSON, agent/markdown zips)
-    # may materialize — protects worker memory.  Raised from the old hard-coded
-    # 10k now that the cap is surfaced (truncation banner/flag/header) instead
-    # of silently dropping rows.  The streaming CSV inventory ignores this and
-    # exports the full filtered set.
-    REPORT_MAX_HOSTS: int = int(os.getenv("REPORT_MAX_HOSTS", "50000"))
-    # Cap for the *in-memory* report formats (JSON, the agent/markdown zip
-    # bundles) which build the whole document in memory at once — a full
-    # per-host dossier is far heavier than an inventory row.  The streamed HTML
-    # uses REPORT_MAX_HOSTS and the streamed CSV ignores the cap entirely.
-    #
-    # v2.232.0 wired this setting back up after it had become dead config, but
-    # defaulted it to REPORT_MAX_HOSTS to "preserve shipped behaviour".  That
-    # preserved a value that was never safe.  Measured v2.235.0 against the
-    # JSON dossier path: ~0.072 MB/host of Python allocation (40 hosts → 2.9 MB
-    # peak via tracemalloc, which counts object allocation only — real RSS is
-    # higher, and a production host with many vulns/notes/ports is heavier than
-    # this dev fixture).  Extrapolated:
-    #
-    #     2,000 hosts  →  ~144 MB      comfortable under a 2 GB worker
-    #    50,000 hosts  →  ~3.5 GB      exceeds REPORT_WORKER_MEM_LIMIT (2 GB)
-    #
-    # So the default returns to 2,000.  Truncation is not silent — the report
-    # carries ``truncated`` and ``host_cap`` and the HTML/CSV paths are
-    # chunk-streamed with no cap at all — so a conservative default costs a
-    # visible banner on huge exports rather than lost data, while the previous
-    # value cost an OOM.  Raise it deliberately alongside
-    # REPORT_WORKER_MEM_LIMIT, not by accident.
-    #
-    # v2.394.0 — JSON and the agent package now stream to disk and ignore this
-    # cap; it bounds only the markdown bundle.
-    REPORT_MAX_INMEMORY_HOSTS: int = int(
-        os.getenv("REPORT_MAX_INMEMORY_HOSTS", "2000")
-    )
-    # Chunk size for the streaming CSV inventory cursor (hosts hydrated +
-    # serialized per batch, bounding peak memory regardless of total rows).
+    # Chunk size for the host inventory downloads (the streamed CSV, the JSON
+    # the report worker writes, the agents' report-context.ndjson): hosts are
+    # hydrated + serialized this many at a time, which bounds peak memory
+    # whatever the total.  There is no host cap: REPORT_MAX_HOSTS and
+    # REPORT_MAX_INMEMORY_HOSTS bounded the HTML host report and the Markdown
+    # bundle, which were retired with "Export hosts", and are no longer read.
     REPORT_STREAM_CHUNK: int = int(os.getenv("REPORT_STREAM_CHUNK", "500"))
 
     # CORS origins - read from environment variable, fall back to localhost
@@ -185,6 +155,10 @@ class Settings:
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", os.path.join(os.getcwd(), "uploads"))
     MAX_FILE_SIZE: int = int(os.getenv("MAX_FILE_SIZE", str(1024 * 1024 * 1024)))  # 1GB default
     UPLOAD_CHUNK_SIZE: int = int(os.getenv("UPLOAD_CHUNK_SIZE", str(5 * 1024 * 1024)))  # 5MB chunks
+    # Every request body except a scan upload (core/body_limit.py).  32 MB
+    # holds the largest legitimate JSON body — an evidence record's 5 MB of
+    # output, fully escaped — with room to spare.
+    MAX_REQUEST_BODY_BYTES: int = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(32 * 1024 * 1024)))
     INGESTION_STORAGE_DIR: str = os.getenv(
         "INGESTION_STORAGE_DIR",
         os.path.join(os.getcwd(), "uploads", "ingestion_queue")
@@ -216,6 +190,11 @@ class Settings:
         os.path.join(os.getcwd(), "report-templates")
     )
     REPORT_DEFAULT_TEMPLATE: str = os.getenv("REPORT_DEFAULT_TEMPLATE", "pentest")
+    # The template one contact's remediation list is printed with (v2.463.0):
+    # a folder under report-templates/ whose template.json says
+    # "kind": "contact".  The shipped one is a copy of the penetration test
+    # report's.
+    REMEDIATION_REPORT_TEMPLATE: str = os.getenv("REMEDIATION_REPORT_TEMPLATE", "contact-report")
     # One Quarto render (one format) may take at most this long.
     REPORT_RENDER_TIMEOUT_SECONDS: int = int(os.getenv("REPORT_RENDER_TIMEOUT_SECONDS", "300"))
     # v2.91.1 (code review NEW F) — INGESTION_WORKERS setting removed.

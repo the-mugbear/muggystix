@@ -96,9 +96,12 @@ def _load_for_change(db: Session, project: Project, report_id: int) -> Report:
     return report
 
 
-def _template_or_422(name: Optional[str]) -> templates.ReportTemplate:
+def _template_or_422(name: Optional[str], client: bool = False) -> templates.ReportTemplate:
+    """``client=True`` where a client report takes the template (a project's
+    default, a new draft, a draft's change): a contact's remediation list is
+    not one.  The template FILES routes take any kind."""
     try:
-        return templates.get_template(name)
+        return templates.client_template(name) if client else templates.get_template(name)
     except templates.TemplateError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -184,7 +187,10 @@ def _live_issue_job(db: Session, report: Report) -> bool:
 
 @router.get("/templates", response_model=List[ReportTemplateOut])
 def list_report_templates():
-    return [ReportTemplateOut(**t.as_dict()) for t in templates.list_templates()]
+    """Every template, each with its ``kind``: the page's choosers offer the
+    ``client`` ones; its template-files section lists them all, so an admin
+    restyles the contact's remediation list like any other."""
+    return [ReportTemplateOut(**t.as_dict()) for t in templates.list_templates(kind=None)]
 
 
 @router.get("/templates/problems", response_model=List[ReportTemplateProblemOut])
@@ -349,7 +355,7 @@ def put_report_profile(
     """The engagement details every NEW report starts from.  Existing drafts
     keep their own copy; issued reports never change."""
     if body.template:
-        _template_or_422(body.template)
+        _template_or_422(body.template, client=True)
     profile = ClientReportService(db).get_profile(project.id)
     if profile is None:
         profile = ReportProfile(project_id=project.id)
@@ -414,7 +420,7 @@ def create_report(
     template_name = body.template or (profile.template if profile else None) or templates.default_template_name()
     if not template_name:
         raise HTTPException(status_code=422, detail="No report templates are installed (report-templates/ is empty or not mounted).")
-    _template_or_422(template_name)
+    _template_or_422(template_name, client=True)
     baseline = None
     if body.kind == ReportKind.ADDENDUM:
         baseline = _issued_baseline(db, project, body.baseline_report_id)
@@ -472,7 +478,7 @@ def update_report(
             raise HTTPException(status_code=422, detail="A report needs a title.")
         report.title = title[:255]
     if "template" in sent and body.template:
-        _template_or_422(body.template)
+        _template_or_422(body.template, client=True)
         report.template = body.template
     if "baseline_report_id" in sent:
         if report.kind != ReportKind.ADDENDUM:

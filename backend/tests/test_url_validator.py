@@ -49,6 +49,22 @@ class TestSchemeEnforcement:
         with pytest.raises(ValueError, match="hostname"):
             require_public_http_url("http://")
 
+    @pytest.mark.parametrize("url", [
+        "http://10.0.0.5:8500/v1/kv/x?y=",
+        "http://10.0.0.5:8500/v1?",
+        "http://10.0.0.5:11434/#",
+        "http://10.0.0.5:11434/base#frag",
+    ])
+    def test_a_base_url_cannot_swallow_the_appended_path(self, url):
+        """Review 2026-10-07: the caller appends ``/api/tags`` and the like; a
+        query or fragment would turn that into the caller's own request."""
+        with pytest.raises(ValueError, match="query string or a fragment"):
+            require_public_http_url(url, allow_private=True)
+
+    def test_credentials_in_the_url_are_refused(self):
+        with pytest.raises(ValueError, match="username or password"):
+            require_public_http_url("http://user:pw@10.0.0.5:11434/", allow_private=True)
+
 
 class TestForbiddenNetworks:
     """Every forbidden range in the validator should reject URLs that

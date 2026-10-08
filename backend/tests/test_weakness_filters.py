@@ -99,3 +99,57 @@ def test_rows_and_detail_carry_the_flags(client, db_session, test_project):
     detail = client.get(f"/api/v1/projects/{test_project.id}/hosts/{hosts['10.9.1.1'].id}").json()
     assert detail["weakness_flags"] == ["smb_unsigned"]
     assert detail["weakness_labels"] == {"smb_unsigned": "SMB signing not required"}
+
+
+def test_labelling_a_page_reads_only_its_hosts_and_agrees_with_the_filter(db_session, test_project, test_user):
+    """Review 2026-10-07: four flags resolve an id set in Python.  Labelling
+    one host pulled every web and login row of the project; now the set
+    queries are narrowed to the hosts being labelled — with the same answer
+    the filter gives."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import event
+
+    from app.db.models_confidence import NetexecResult
+    from app.services.host_query import host_weakness_flags
+
+    scan = models.Scan(filename="w", tool_name="httpx", project_id=test_project.id)
+    db_session.add(scan)
+    db_session.flush()
+    hosts = []
+    for n in range(3):
+        h = models.Host(project_id=test_project.id, ip_address=f"10.9.2.{n + 1}", state="up",
+                        os_name="Windows Server 2008 R2")
+        db_session.add(h)
+        db_session.flush()
+        hosts.append(h)
+        db_session.add(models.WebInterface(
+            scan_id=scan.id, project_id=test_project.id, host_id=h.id, source="httpx",
+            url=f"https://10.9.2.{n + 1}/", tls_weak_protocol=True,
+            cert_not_after=datetime.now(timezone.utc) - timedelta(days=3),
+        ))
+        db_session.add(NetexecResult(scan_id=scan.id, host_id=h.id, protocol="smb", port=445,
+                                     auth_success=True, username="guest"))
+    db_session.commit()
+    expected = ["eol", "weak_auth", "cert_issue", "weak_tls"]
+
+    statements = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    engine = db_session.get_bind().engine
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        flags = host_weakness_flags(db_session, test_user, test_project.id, [hosts[0].id])
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+
+    assert sorted(flags[hosts[0].id]) == sorted(expected)
+    set_reads = [s for s in statements
+                 if s.startswith(("SELECT web_interfaces.", "SELECT netexec_results."))]
+    assert len(set_reads) == 3
+    assert all("host_id IN" in s for s in set_reads), set_reads
+    # The filter (no narrowing) names the same hosts.
+    for flag in expected:
+        assert _ips(db_session, test_user, test_project, weaknesses=flag) == {h.ip_address for h in hosts}

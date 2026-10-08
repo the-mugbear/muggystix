@@ -179,9 +179,6 @@ const Segments: React.FC = () => {
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
           <h1 className="text-page-title">Segments</h1>
-          <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
-            Which sites and subnets need attention first — ranked worst-first, with every part of the ranking shown.
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-xs">
           <Button size="sm" variant="outline" onClick={handleCopyMarkdown} disabled={loading || !subnetData?.adopted}

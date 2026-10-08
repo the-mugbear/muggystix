@@ -789,6 +789,16 @@ AGENT_READ_ROLE_OVERRIDES = {
     ("GET", "/assist/client-reports"): ProjectRole.AUDITOR,
     ("GET", "/assist/client-reports/{report_id}"): ProjectRole.AUDITOR,
     ("GET", "/assist/client-reports/{report_id}/files/{fmt}"): ProjectRole.AUDITOR,
+    # v2.457.0 — remediation tracking is read by auditors, as on its page
+    # (writes need a project admin: `remediation.agent_admin`).
+    ("GET", "/remediation"): ProjectRole.AUDITOR,
+    ("GET", "/remediation/contacts"): ProjectRole.AUDITOR,
+    ("GET", "/remediation/follow-up"): ProjectRole.AUDITOR,
+    ("GET", "/remediation/teams"): ProjectRole.AUDITOR,
+    ("GET", "/remediation/contact-report/{job_id}"): ProjectRole.AUDITOR,
+    ("GET", "/remediation/contact-report/{job_id}/download"): ProjectRole.AUDITOR,
+    ("GET", "/remediation/trend"): ProjectRole.AUDITOR,
+    ("GET", "/remediation/hosts/{host_id}/events"): ProjectRole.AUDITOR,
     # v2.441.0 — the report's complete scope file: the Reports page's read floor.
     ("GET", "/assist/client-reports/{report_id}/scope.csv"): ProjectRole.AUDITOR,
 }

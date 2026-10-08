@@ -135,3 +135,50 @@ def test_backlog_warning_disabled_when_both_zero(db_session, test_project, monke
     for _ in range(5):
         _ingestion(db_session, test_project.id, status="queued")
     assert qms.warn_if_ingestion_backlog_high(db_session) is None
+
+
+# --- Disk space between deploys (review 2026-10-07) --------------------------
+
+_GB = 1024 ** 3
+
+
+def test_low_disk_is_warned_about_from_the_worker_but_not_every_minute(monkeypatch):
+    from app.services import queue_metrics_service as qms
+
+    monkeypatch.setattr(qms, "_last_disk_warning", None)
+    monkeypatch.setattr(qms, "disk_snapshot", lambda path=None: {
+        "total_bytes": 100 * _GB, "free_bytes": 2 * _GB, "low": True})
+    assert qms.warn_if_disk_low()["free_bytes"] == 2 * _GB
+    assert qms.warn_if_disk_low() is None          # said once; not again within the interval
+    monkeypatch.setattr(qms, "_last_disk_warning", None)
+    monkeypatch.setattr(qms, "disk_snapshot", lambda path=None: {
+        "total_bytes": 100 * _GB, "free_bytes": 60 * _GB, "low": False})
+    assert qms.warn_if_disk_low() is None
+
+
+def test_an_upload_that_would_not_leave_room_is_refused(client, db_session, test_project, monkeypatch):
+    from app.services import queue_metrics_service as qms
+
+    xml = b'<?xml version="1.0"?>\n<nmaprun scanner="nmap"></nmaprun>\n'
+    url = f"/api/v1/projects/{test_project.id}/upload/"
+
+    def free(n):
+        return lambda path=None: {"total_bytes": 100 * _GB, "free_bytes": n, "low": True}
+
+    monkeypatch.setattr(qms, "disk_snapshot", free(qms.DISK_UPLOAD_RESERVE_BYTES // 2))
+    refused = client.post(url, files={"file": ("a.xml", xml, "text/xml")}, data={"stage": "true"})
+    assert refused.status_code == 507, refused.text
+    assert "free disk space" in refused.json()["detail"]
+    assert db_session.query(models.IngestionJob).count() == 0
+
+    key = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={}).json()["api_key"]
+    agent = client.post("/api/v1/agent/uploads", files={"file": ("a.xml", xml, "text/xml")},
+                        headers={"X-API-Key": key})
+    assert agent.status_code == 507, agent.text
+
+    # A disk that cannot be read refuses nothing; neither does one with room.
+    for snapshot in (lambda path=None: None, free(50 * _GB)):
+        monkeypatch.setattr(qms, "disk_snapshot", snapshot)
+        ok = client.post(url, files={"file": ("a.xml", xml, "text/xml")},
+                         data={"stage": "true", "allow_duplicate": "true"})
+        assert ok.status_code == 200, ok.text

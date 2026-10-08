@@ -225,25 +225,30 @@ class TestExportEndpoints:
         response = client.get(f"/api/v1/projects/{test_project.id}/export/scope/999")
         assert response.status_code == 404
 
-    # The heavy formats are async jobs now (v2.196.0): the inline GET routes were
-    # removed — enqueue via POST /reports/jobs and poll/download.
-    def test_hosts_agent_package_enqueues(self, client, test_project):
+    # The inventory JSON is an async job (v2.196.0): enqueue via POST
+    # /reports/jobs and poll/download.  It is the only host download that is
+    # one — the agent package and the Markdown bundle were retired with
+    # "Export hosts" (owner, 2026-10-07).
+    def test_hosts_inventory_json_enqueues(self, client, test_project):
         response = client.post(
             f"/api/v1/projects/{test_project.id}/reports/jobs",
-            params={"format": "agent-package"},
+            params={"format": "json"},
         )
         assert response.status_code == 202, response.text
         body = response.json()
         assert body["status"] == "queued"
-        assert body["format"] == "agent-package"
+        assert body["format"] == "json"
+        # The job's wire shape: what the dialog and the Reports page read.
+        assert {"id", "project_id", "format", "report_type", "status", "requested_by_id",
+                "result_filename", "error_message", "created_at"} <= set(body)
 
-    def test_hosts_markdown_bundle_enqueues(self, client, test_project):
-        response = client.post(
-            f"/api/v1/projects/{test_project.id}/reports/jobs",
-            params={"format": "markdown-bundle"},
-        )
-        assert response.status_code == 202, response.text
-        assert response.json()["format"] == "markdown-bundle"
+    def test_hosts_retired_bundles_are_refused(self, client, test_project):
+        for fmt in ("agent-package", "markdown-bundle"):
+            response = client.post(
+                f"/api/v1/projects/{test_project.id}/reports/jobs",
+                params={"format": fmt},
+            )
+            assert response.status_code == 422, response.text
 
 
 # ================================================================== #

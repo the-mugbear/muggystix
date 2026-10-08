@@ -1496,7 +1496,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "has no status and is not how work is recorded — a check you ran is "
             "evidence (record_evidence), a check to run is a host test "
             "(host_tests_propose). Notes are stamped agent-authored and appear in "
-            "the operator's UI and in host report exports; mark inferences as "
+            "the operator's UI and in the host inventory's JSON download; mark inferences as "
             "inferences."
         ),
         "method": "POST",
@@ -1654,6 +1654,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
 # is no second contract to drift (pydantic only — still no DB import here).
 # ---------------------------------------------------------------------------
 from app.schemas.host_test_schemas import HostTestBatch, HostTestUpdate  # noqa: E402
+from app.schemas.remediation_schemas import (  # noqa: E402
+    ApplyBody as RemediationApply, FollowUpBody as RemediationFollowUp, NoteCreate as RemediationNote,
+)
 
 _HOST_TEST_ID = {
     "type": "integer", "minimum": 1,
@@ -1751,6 +1754,227 @@ TOOLS["host_tests_update"] = {
     "input_schema": _update_schema,
 }
 
+# v2.457.0 — remediation tracking: who was told about a finding on a host and
+# where the fix stands.  The page's contract (`endpoints/remediation.py`).
+_remediation_apply_schema = RemediationApply.model_json_schema()
+_remediation_note_schema = RemediationNote.model_json_schema()
+_REMEDIATION_STATES = ["overdue", "due_soon", "on_track", "not_assigned", "no_deadline", "deferred", "closed"]
+_remediation_follow_up_schema = RemediationFollowUp.model_json_schema()
+_PAGE_PROPS = {
+    "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+    "offset": {"type": "integer", "minimum": 0},
+}
+
+TOOLS["remediation_list"] = {
+    "description": (
+        "Remediation tracking, one row per finding ON A HOST: the contact who "
+        "was told (`contact_email`, `contact_name`), `notified_on`, the "
+        "contact's progress `status` (open, closed, deferred) and `closed_on`. "
+        "The same finding can have a different contact and status on each "
+        "host. This is the client's progress as a project admin recorded it — "
+        "it is NOT the assessor's conclusion (`finding_status`, "
+        "`endpoint_status` on the same row), and neither moves the other. "
+        "Each row also carries where it stands against its DEADLINE: `state` "
+        "(overdue, due_soon, on_track, not_assigned — nobody was given a date, "
+        "so no clock runs —, no_deadline — the severity has no timeline —, "
+        "deferred, closed), `due_on`, `days_left` (negative once overdue), "
+        "`closed_days_late` and `last_follow_up_on`. The deadline is the "
+        "assigned date (`notified_on`) plus this installation's days for the "
+        "finding's severity; it is derived, never set. "
+        "Filter by `state` (one or several), `status`, `severity`, `contact` "
+        "(part of an address or a name), `unassigned` (no contact yet), "
+        "`host_id` or `finding_id`; `state_counts` and `status_counts` cover "
+        "the whole selection and `total` the rows returned by the filter. "
+        "Over the same selection: `severity_counts` (overdue and due soon per "
+        "severity), `overdue_ages` (overdue rows by days past the deadline: "
+        "1-7, 8-30, 31-90, 90+; filter with `overdue_band`) and "
+        "`not_followed_up` (at-risk rows nobody followed up in "
+        "`not_followed_up_days`; list them with `no_follow_up_days`). Each row "
+        "has a `team` (the group that owns the fix; filter with `team`). "
+        "`group=due` orders by deadline, the longest overdue first. Each "
+        "row's `finding_host_id` is what remediation_apply takes. Needs an "
+        "operator who is a project auditor. Answers 404 on an installation "
+        "that has not turned remediation tracking on."
+    ),
+    "method": "GET",
+    "path": "/api/v1/agent/remediation",
+    "query_params": ["status", "state", "severity", "team", "overdue_band", "no_follow_up_days",
+                     "contact", "unassigned", "host_id", "finding_id", "group", "limit", "offset"],
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "enum": ["open", "closed", "deferred"]},
+            "state": {"type": "array", "items": {"type": "string", "enum": _REMEDIATION_STATES},
+                      "description": "Where the row stands against its deadline; several are OR-ed."},
+            "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
+            "team": {"type": "string", "minLength": 1, "maxLength": 100,
+                     "description": "Exactly this team (case does not matter)."},
+            "overdue_band": {"type": "string", "enum": ["1-7", "8-30", "31-90", "90+"],
+                             "description": "Only overdue rows this many days past their deadline."},
+            "no_follow_up_days": {"type": "integer", "minimum": 1, "maximum": 365,
+                                  "description": "Only overdue and due-soon rows nobody recorded a "
+                                                 "follow-up for in this many days (or ever)."},
+            "contact": {"type": "string", "minLength": 1, "maxLength": 254,
+                        "description": "Part of a contact's address or name."},
+            "unassigned": {"type": "boolean", "description": "Only rows with no contact."},
+            "host_id": {"type": "integer", "minimum": 1},
+            "finding_id": {"type": "integer", "minimum": 1},
+            "group": {"type": "string", "enum": ["host", "finding", "contact", "due", "team"],
+                      "description": "The order of the rows (default host; due = by deadline)."},
+            **_PAGE_PROPS,
+        },
+        "additionalProperties": False,
+    },
+}
+TOOLS["remediation_contacts"] = {
+    "description": (
+        "The remediation contacts in use in this project, the one with the "
+        "most overdue first: each with how many findings on hosts they have "
+        "(`total`, `open`, `closed`, `deferred`), how those stand against "
+        "their deadlines (`overdue`, `due_soon`, `on_track`) and the last day "
+        "anyone recorded following up with them about a row still at risk "
+        "(`last_follow_up_on`). Read it before writing, to use an address "
+        "exactly as it is already recorded, and to see who needs chasing."
+    ),
+    "method": "GET",
+    "path": "/api/v1/agent/remediation/contacts",
+    "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+}
+TOOLS["remediation_teams"] = {
+    "description": (
+        "The teams that own fixes in this project, the one with the most "
+        "overdue first: each with its findings on hosts (`total`, `open`, "
+        "`overdue`, `due_soon`, `on_track`, `deferred`, `closed`) and how many "
+        "`contacts` it has. `team: null` is the rows with a contact and no "
+        "team. Set a row's team with remediation_apply (`team`)."
+    ),
+    "method": "GET",
+    "path": "/api/v1/agent/remediation/teams",
+    "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+}
+TOOLS["remediation_trend"] = {
+    "description": (
+        "Whether the remediation backlog is shrinking: `daily` — the counts "
+        "by deadline state recorded each day since this installation began "
+        "tracking (a day nobody recorded is absent, not zero) — and "
+        "`closed_by_month` — closed rows per month as `on_time`, `late` or "
+        "`no_deadline`. `days` is how far back the daily counts go (default 90)."
+    ),
+    "method": "GET",
+    "path": "/api/v1/agent/remediation/trend",
+    "query_params": ["days"],
+    "input_schema": {
+        "type": "object",
+        "properties": {"days": {"type": "integer", "minimum": 7, "maximum": 730}},
+        "additionalProperties": False,
+    },
+}
+TOOLS["remediation_follow_up"] = {
+    "description": (
+        "What to say to ONE remediation contact: their overdue and due-soon "
+        "findings on hosts (`items`, the longest overdue first) and `text`, a "
+        "plain-text message listing them, for the operator to send — the "
+        "server sends nothing. Give the contact's address exactly "
+        "(`contact_email`, from remediation_contacts)."
+    ),
+    "method": "GET",
+    "path": "/api/v1/agent/remediation/follow-up",
+    "query_params": ["contact_email"],
+    "input_schema": {
+        "type": "object",
+        "properties": {"contact_email": {"type": "string", "minLength": 3, "maxLength": 254}},
+        "required": ["contact_email"],
+        "additionalProperties": False,
+    },
+}
+TOOLS["remediation_record_follow_up"] = {
+    "description": (
+        "Record that the operator followed up with a contact about their "
+        "overdue and due-soon findings on hosts: one immutable timeline entry "
+        "per row and the day on each row (`last_follow_up_on`). Call it only "
+        "AFTER the operator says the message was sent. A row already followed "
+        "up on that day is left alone, so a repeat records nothing twice. "
+        "`finding_host_ids` narrows it to some of the contact's at-risk rows. "
+        "Needs an operator who is a project admin."
+    ),
+    "method": "POST",
+    "path": "/api/v1/agent/remediation/follow-up",
+    "body_params": list(_remediation_follow_up_schema["properties"]),
+    "input_schema": _remediation_follow_up_schema,
+    "idempotent": True,
+}
+TOOLS["remediation_timeline"] = {
+    "description": (
+        "A host's remediation timeline, newest first: every change to a "
+        "tracked field (`field`, `from`, `to`), every recorded follow-up "
+        "(`kind: follow_up`) and every note, with who "
+        "recorded it, when it happened (`occurred_at`) and when it was "
+        "recorded (`recorded_at`). `finding_host_id` narrows it to one finding "
+        "on the host."
+    ),
+    "method": "GET",
+    "path": "/api/v1/agent/remediation/hosts/{host_id}/events",
+    "path_params": ["host_id"],
+    "query_params": ["finding_host_id", "limit", "offset"],
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            **HOST_ID_PROP,
+            "finding_host_id": {"type": "integer", "minimum": 1},
+            **_PAGE_PROPS,
+        },
+        "required": ["host_id"],
+        "additionalProperties": False,
+    },
+}
+TOOLS["remediation_apply"] = {
+    "description": (
+        "Set remediation tracking fields on findings on hosts — typically "
+        "from a spreadsheet or CSV the operator holds, which you read locally "
+        "(nothing is uploaded). Needs an operator who is a project admin. "
+        "Each row names its target by `finding_host_id` (from "
+        "remediation_list), or by `finding_id` with `host_id`; `finding_id` "
+        "alone means EVERY host of that finding, so use it only when the "
+        "source really assigns one contact to all of them. Send only the "
+        "fields the source gives; a field you leave out is not touched and an "
+        "explicit null clears it. Match each source row to exactly one "
+        "finding yourself, from what you read: a row you cannot match is "
+        "reported to the operator and left out, never guessed. ALWAYS call "
+        "with `dry_run: true` first and show the operator the summary — "
+        "targets, changed, unchanged, conflicts. A conflict is a field "
+        "someone already set to a different value: it is left alone unless "
+        "the operator tells you to replace it, and only then do you send "
+        "`overwrite: true`. A row's `notes` become timeline entries (give "
+        "each a `request_key` so a re-run does not add them twice, and "
+        "`occurred_at` when the source dates them; one key is one note — never "
+        "two different texts). `closed_on` goes only with `status: closed`, or "
+        "on a row already closed. The whole call is planned before anything "
+        "is written, and a dry run refuses what the real call would refuse; "
+        "at most 500 findings on hosts per call."
+    ),
+    "method": "POST",
+    "path": "/api/v1/agent/remediation/apply",
+    "body_params": list(_remediation_apply_schema["properties"]),
+    "input_schema": _remediation_apply_schema,
+    # The field changes converge on a retry; a note sent without a
+    # request_key is added again.
+    "idempotent": False,
+}
+TOOLS["remediation_add_note"] = {
+    "description": (
+        "Add a note to a host's remediation timeline (\"contacted the owner, "
+        "will respond on Friday\"), optionally about one finding on that host "
+        "(`finding_host_id`). `occurred_at` is when it happened, if not now. "
+        "With a `request_key`, repeating the call returns the stored note. "
+        "Needs an operator who is a project admin."
+    ),
+    "method": "POST",
+    "path": "/api/v1/agent/remediation/events",
+    "body_params": list(_remediation_note_schema["properties"]),
+    "input_schema": _remediation_note_schema,
+    "additive": True,
+}
+
 # v2.337.0 — a single project session sees every tool, so nothing gates
 # ``tools/list`` any more.  What remains is a PRESENTATION grouping for the MCP
 # reference page (which kind of work a tool belongs to), and v2.338.0 derives
@@ -1763,6 +1987,7 @@ _KIND_BY_PREFIX = (
     ("assist_", _ASSIST),
     ("scope_", _SCOPE),
     ("host_tests_", _TESTING),
+    ("remediation_", _ASSIST),
 )
 
 

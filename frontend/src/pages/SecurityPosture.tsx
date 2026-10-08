@@ -143,10 +143,6 @@ const SecurityPosture: React.FC = () => {
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
           <h1 className="text-page-title">Security Posture</h1>
-          <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
-            The assessment so far — the security condition, where weaknesses concentrate, and the
-            highest-leverage next action. Every number is explainable and links to the detail.
-          </p>
         </div>
         <div className="flex flex-col items-end gap-xs">
           <div className="flex items-center gap-xs">

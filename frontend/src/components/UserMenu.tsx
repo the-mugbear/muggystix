@@ -16,6 +16,7 @@ import {
 import { Avatar, AvatarFallback } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
+import { formatTimestamp } from '../utils/relativeTime';
 import {
   Dialog,
   DialogContent,
@@ -203,7 +204,7 @@ const UserMenu: React.FC = () => {
             </div>
             <div>
               <dt className="text-caption text-muted-foreground">Build timestamp</dt>
-              <dd>{new Date(buildTime).toLocaleString()}</dd>
+              <dd>{formatTimestamp(buildTime, buildTime)}</dd>
             </div>
             <div>
               <dt className="text-caption text-muted-foreground">Git commit</dt>

@@ -59,7 +59,11 @@ fi
 
 # Check production instance
 print_header "Production Instance Status"
-if $DC ps | grep -q "networkmapper.*Up"; then
+# Asked of compose, not grepped for by name: the containers are named after
+# the folder (or COMPOSE_PROJECT_NAME), which is not "networkmapper" on a host
+# installed anywhere else — the check then said "not running" and skipped
+# every probe below.
+if [ -n "$($DC ps --status running -q 2>/dev/null)" ]; then
     print_success "Production instance is running"
     # The backend container port is NOT published (its ports block in
     # docker-compose.yml is commented out) and it serves plain HTTP, so
@@ -144,6 +148,16 @@ else
 fi
 echo
 
+# The settings an operator can tune, with the values in force (the same
+# readout a deploy ends with).
+if [[ -f "$SCRIPT_DIR/stack-lib.sh" ]]; then
+    print_header "Settings"
+    # shellcheck source=stack-lib.sh
+    source "$SCRIPT_DIR/stack-lib.sh"
+    print_tunable_settings
+    echo
+fi
+
 # Show available scripts
 print_header "Available Management Scripts"
 echo "Deployment Scripts:"
@@ -164,16 +178,21 @@ echo "Production Instance:"
 echo "  Start:  $DC up -d"
 echo "  Stop:   $DC down"
 echo "  Logs:   $DC logs -f"
-echo "  Reset:  $DC down -v && $DC up -d"
 echo
 
 # Show disk usage
 print_header "Resource Usage"
 echo "Docker containers:"
-docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "(networkmapper|NAMES)"
+$DC ps -a --format "table {{.Name}}\t{{.Service}}\t{{.Status}}" 2>/dev/null || $DC ps -a
 echo
-echo "Docker volumes:"
-docker volume ls | grep -E "(networkmapper|postgres)"
+COMPOSE_PROJECT="$($DC ps -a --format '{{.Project}}' 2>/dev/null | head -n 1)"
+if [ -n "$COMPOSE_PROJECT" ]; then
+    echo "Docker volumes:"
+    docker volume ls --filter "label=com.docker.compose.project=$COMPOSE_PROJECT"
+    echo
+fi
+echo "Disk (this folder's filesystem — uploads, and usually the database and Docker):"
+df -h . | sed 's/^/  /'
 echo
 
 print_info "For detailed logs: ./scripts/collect-logs.sh"

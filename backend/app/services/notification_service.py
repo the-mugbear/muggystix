@@ -504,9 +504,9 @@ class NotificationService:
     def notify_report_job_finished(self, job) -> Optional[Notification]:
         """Tell the requester their async report finished (completed or failed).
 
-        Heavy exports run on the report worker and the export dialog no longer
-        has to stay open for them, so completion needs a signal that outlives
-        the dialog.  One notification per terminal transition, to the
+        The inventory JSON is written by the report worker and the download
+        dialog does not have to stay open for it, so completion needs a signal
+        that outlives the dialog.  One notification per terminal transition, to the
         requester only; ``source_type='report_job'`` + ``source_id`` is what
         the Activity page deep-links to the export tray with.  Best-effort —
         the worker wraps this so a notification failure never fails the job.
@@ -520,8 +520,6 @@ class NotificationService:
         if job.status == "completed":
             title = f"Report ready: {job.result_filename or f'{kind} ({fmt})'}"
             body = f"{kind} · {fmt}"
-            if getattr(job, "truncated", False):
-                body += " · truncated to the host cap"
             ntype = "report_ready"
         else:
             title = f"Report failed: {kind} ({fmt})"

@@ -32,7 +32,7 @@ import { formatApiError } from '../../utils/apiErrors';
 import { buildHostsUrl } from '../../utils/drilldownLinks';
 import { isPageShortcutEvent } from '../../utils/keyboard';
 import { TIER_QUERY, UNTOUCHED_QUERY, fromOperationsQueue } from '../../utils/operationsQueue';
-import { formatRelativeTime } from '../../utils/relativeTime';
+import { formatRelativeTime, formatTimestamp } from '../../utils/relativeTime';
 import { runLimited } from '../../utils/runLimited';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
@@ -246,7 +246,7 @@ export const UntouchedQueueSection: React.FC<UntouchedQueueSectionProps> = ({
                   `${row.tier_label}: ${why}`,
                   !row.next_action.generic ? row.next_action.text : null,
                   sources ? `Reported by ${sources}.` : null,
-                  row.evidence.last_seen ? `Last observed ${new Date(row.evidence.last_seen).toLocaleString()}.` : null,
+                  row.evidence.last_seen ? `Last observed ${formatTimestamp(row.evidence.last_seen)}.` : null,
                 ].filter(Boolean).join(' — ');
                 return (
                   <TableRow

@@ -18,7 +18,7 @@ import { Link } from 'react-router-dom';
 import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
 
 import type { ConflictHistoryEntry, HostConflict } from '../../services/api';
-import { formatRelativeTime } from '../../utils/relativeTime';
+import { formatRelativeTime, formatTimestamp } from '../../utils/relativeTime';
 import { Badge } from '../ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 
@@ -78,6 +78,25 @@ const Value: React.FC<{ value: string | null; kept: boolean }> = ({ value, kept 
   </span>
 );
 
+/** How a side's value was detected, and the weight that method carries —
+ *  shown only when the record has them (the dedup service records neither). */
+const Method: React.FC<{ method: string | null; weight: number | null }> = ({ method, weight }) => {
+  const text = [method ? `via ${method}` : null, weight != null ? `weight ${weight}` : null]
+    .filter(Boolean).join(' · ');
+  if (!text) return null;
+  return (
+    <>
+      <span className="text-muted-foreground"> · </span>
+      <span
+        className="inline-block max-w-[14rem] truncate align-bottom text-muted-foreground"
+        title={weight != null ? `${text} — ${SOURCE_WEIGHT_TITLE}` : text}
+      >
+        {text}
+      </span>
+    </>
+  );
+};
+
 export interface HostConflictsPanelProps {
   id: string;
   conflictCount: number;
@@ -110,14 +129,16 @@ const HostConflictsPanel: React.FC<HostConflictsPanelProps> = ({
           <Value value={entry.previous_value} kept={kept === 'previous'} />
           <span className="text-muted-foreground"> · </span>
           <ScanRef id={entry.previous_scan_id} filename={entry.previous_scan_filename} />
+          <Method method={entry.previous_method} weight={entry.previous_confidence} />
         </span>
         <span className="min-w-0">
           <Value value={entry.new_value} kept={kept === 'new'} />
           <span className="text-muted-foreground"> · </span>
           <ScanRef id={entry.new_scan_id} filename={entry.new_scan_filename} />
+          <Method method={entry.new_method} weight={entry.new_confidence} />
         </span>
         <span className="text-muted-foreground sm:text-right"
-          title={entry.resolved_at ? new Date(entry.resolved_at).toLocaleString() : undefined}>
+          title={entry.resolved_at ? formatTimestamp(entry.resolved_at) : undefined}>
           {formatRelativeTime(entry.resolved_at, { fallback: 'time unknown' })}
         </span>
       </li>
@@ -221,7 +242,7 @@ const HostConflictsPanel: React.FC<HostConflictsPanelProps> = ({
                         {' — '}{c.scan_type} · {c.data_source || 'unknown source'} via {c.method || 'default'}
                         {' · '}
                         <Link to={`/scans/${c.scan_id}`} className="text-primary hover:underline">scan #{c.scan_id}</Link>
-                        <span className="text-muted-foreground" title={c.updated_at ? new Date(c.updated_at).toLocaleString() : undefined}>
+                        <span className="text-muted-foreground" title={c.updated_at ? formatTimestamp(c.updated_at) : undefined}>
                           {' · recorded '}{formatRelativeTime(c.updated_at, { fallback: 'time unknown' })}
                         </span>
                       </span>

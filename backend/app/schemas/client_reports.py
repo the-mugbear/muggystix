@@ -108,6 +108,9 @@ class ReportTemplateOut(BaseModel):
     # What the template declares it prints of a finding's images
     # (`template.json` → `images`): `{"fields": [...], "trailing": bool}`.
     images: Optional[Dict[str, Any]] = None
+    # `client` (a client report's template) or `contact` (the remediation
+    # list prepared for one contact — never chosen for a client report).
+    kind: str = "client"
 
 
 ReportTemplateAssetOut.model_rebuild()

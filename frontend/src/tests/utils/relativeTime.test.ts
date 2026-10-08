@@ -122,3 +122,31 @@ describe('formatDate', () => {
     expect(formatDate('nope', '')).toBe('');
   });
 });
+
+// `formatTimestamp` is THE absolute format.  Sixteen places still printed the
+// browser's default ("9/11/2026, 2:19:37 PM") through a bare
+// `new Date(x).toLocaleString()`; none may come back.  (A NUMBER's
+// `toLocaleString()` is a different thing and is not matched.)
+describe('no page formats a moment by hand', () => {
+  it('nothing outside utils/relativeTime calls new Date(…).toLocaleString()', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const SRC = path.resolve(__dirname, '../..');
+    const files = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) return entry.name === 'tests' ? [] : files(full);
+      return /\.tsx?$/.test(entry.name) ? [full] : [];
+    });
+    const offenders = files(SRC)
+      .filter((file) => /new Date\([^)]*\)\.toLocaleString\(\)/.test(fs.readFileSync(file, 'utf8')))
+      .map((file) => path.relative(SRC, file));
+    expect(offenders).toEqual([]);
+  });
+
+  it('a moment reads the same wherever it is shown, and a missing one is a dash', () => {
+    const at = '2026-09-18T22:20:37Z';
+    expect(formatTimestamp(at)).toBe(new Date(at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
+    expect(formatTimestamp(null)).toBe('—');
+    expect(formatTimestamp('not a date', 'not a date')).toBe('not a date');
+  });
+});

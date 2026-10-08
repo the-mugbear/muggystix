@@ -183,7 +183,7 @@ describe('Names page — screenshot review (v5.288.0)', () => {
     expect(screen.getByRole('button', { name: /^Wildcard\s*1$/ })).toBeInTheDocument();
     expect(within(screen.getByRole('table')).getByText('wildcard')).toBeInTheDocument();
     expect(screen.getByText('short name')).toBeInTheDocument();
-    expect(screen.getByText(/Every name this engagement knows about/)).toBeInTheDocument();
+    expect(screen.getByText(/Domain names and short host names/)).toBeInTheDocument();
     expect(screen.queryByText(/Every FQDN/)).toBeNull();
   });
 
@@ -210,5 +210,64 @@ describe('Names page — screenshot review (v5.288.0)', () => {
     await screen.findByText('portal.example-corp.com');
     expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
     expect(screen.getByText('1–100 of 250')).toBeInTheDocument();
+  });
+});
+
+// The import answers with two more scope facts the dialog never showed:
+// entries WIDENED to include subdomains, and entries the scope list refused.
+describe('Names — what an import did to the scope list', () => {
+  const answer = (over: Record<string, unknown> = {}) => ({
+    names_created: 2, names_existing: 1, wildcards: 0, observations_recorded: 3, invalid_count: 0, invalid: [],
+    scope_domains_added: 1, scope_domains_updated: 0, scope_invalid: [], ...over,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    role = 'analyst';
+    mocked.listNames.mockResolvedValue({ items: [row], total: 1, skip: 0, limit: 50 });
+    mocked.getNamesSummary.mockResolvedValue({ total: 1, unresolved: 1, resolved: 0, in_scope: 1, wildcards: 0 });
+  });
+
+  const importList = async () => {
+    renderAt('/names');
+    fireEvent.click(await screen.findByRole('button', { name: /Import names/ }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Names to import'), { target: { value: 'a.acme.com\nb.acme.com' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Import 2$/ }));
+    await waitFor(() => expect(mocked.importNames).toHaveBeenCalled());
+    return dialog;
+  };
+
+  it('says how many entries were widened and how many were not added, naming the refused ones', async () => {
+    const LONG = `${'x'.repeat(200)}.example.com`;
+    mocked.importNames.mockResolvedValue(answer({ scope_domains_updated: 3, scope_invalid: ['10.0.0.1', LONG] }));
+    const dialog = await importList();
+    expect(await within(dialog).findByText('3 widened to include subdomains')).toBeInTheDocument();
+    expect(within(dialog).getByText('2 not added to scope')).toBeInTheDocument();
+    expect(within(dialog).getByText('10.0.0.1')).toBeInTheDocument();
+    const long = within(dialog).getByText(LONG);
+    expect(long.className).toContain('truncate');
+    expect(long).toHaveAttribute('title', LONG);
+    expect(toastMock.success).toHaveBeenCalledWith(
+      'Imported: 2 new, 1 already known, 1 added to scope, 3 widened to include subdomains, 2 not added to scope',
+    );
+  });
+
+  it('lists at most ten refused entries and counts the rest', async () => {
+    const refused = Array.from({ length: 14 }, (_, i) => `bad-${i + 1}`);
+    mocked.importNames.mockResolvedValue(answer({ scope_invalid: refused }));
+    const dialog = await importList();
+    expect(await within(dialog).findByText('14 not added to scope')).toBeInTheDocument();
+    expect(within(dialog).getByText('bad-10')).toBeInTheDocument();
+    expect(within(dialog).queryByText('bad-11')).not.toBeInTheDocument();
+    expect(within(dialog).getByText('+4 more')).toBeInTheDocument();
+  });
+
+  it('says neither when the import widened and refused nothing', async () => {
+    mocked.importNames.mockResolvedValue(answer());
+    const dialog = await importList();
+    expect(await within(dialog).findByText('1 added to scope')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/widened|not added to scope/)).not.toBeInTheDocument();
+    expect(toastMock.success).toHaveBeenCalledWith('Imported: 2 new, 1 already known, 1 added to scope');
   });
 });

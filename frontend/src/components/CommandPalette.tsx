@@ -31,6 +31,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useRoleGate } from '../hooks/useProjectRole';
 import { useProject } from '../contexts/ProjectContext';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useRemediationPolicy } from '../hooks/useRemediationPolicy';
 import {
   getFinding,
   getHosts,
@@ -57,6 +58,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
   const { logout } = useAuth();
   // Project-scoped entries follow the PROJECT role, admin ones the account's.
   const allowed = useRoleGate();
+  const { enabled: remediationEnabled } = useRemediationPolicy();
   const { projects, currentProject, selectProject } = useProject();
   const { themeName, setThemeName, availableThemes } = useAppTheme();
   const [search, setSearch] = useState('');
@@ -173,8 +175,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
   }, [debouncedSearch, open]);
 
   const navItems = useMemo(
-    () => NAV_COMMANDS.filter((entry) => allowed(entry.requiredRole)),
-    [allowed],
+    () => NAV_COMMANDS.filter((entry) => allowed(entry.requiredRole) && (!entry.feature || remediationEnabled)),
+    [allowed, remediationEnabled],
   );
 
   const showResourceGroups = debouncedSearch.trim().length >= 2;

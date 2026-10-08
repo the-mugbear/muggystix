@@ -30,6 +30,39 @@ export interface OversightSeverityRate {
   low: number | null;
 }
 
+/** Findings on hosts by where the fix stands — null unless the INSTALLATION
+ *  tracks remediation (5.340.0; it was a per-project opt-in). */
+export interface OversightRemediation {
+  open: number;
+  closed: number;
+  deferred: number;
+  /** The open rows by deadline state; they add up to `open`. */
+  overdue?: number;
+  due_soon?: number;
+  on_track?: number;
+  not_assigned?: number;
+  no_deadline?: number;
+  /** Days past the deadline of the most overdue open row; null when none is. */
+  longest_overdue_days?: number | null;
+  /** The overdue rows by severity and by days past the deadline. */
+  overdue_critical?: number;
+  overdue_high?: number;
+  overdue_medium?: number;
+  overdue_low?: number;
+  overdue_info?: number;
+  overdue_age_1_7?: number;
+  overdue_age_8_30?: number;
+  overdue_age_31_90?: number;
+  overdue_age_90_plus?: number;
+  /** Mean days from assigned to closed over the `closed_measured` closed
+   *  rows that carry both dates; null when there is none. */
+  avg_days_to_close?: number | null;
+  closed_measured?: number;
+  /** Closed after the deadline frozen at close, of those that had one. */
+  closed_late?: number;
+  closed_with_deadline?: number;
+}
+
 export interface OversightProjectRow {
   id: number;
   name: string;
@@ -55,6 +88,9 @@ export interface OversightProjectRow {
    *  non-false-positive finding endpoint at that severity. */
   defect_rate: OversightSeverityRate;
   last_scan_at: string | null;
+  /** Findings on hosts by where the fix stands (the Remediation page's own
+   *  counts). Null unless the project opted in; always the current state. */
+  remediation?: OversightRemediation | null;
   // Selected period
   targets_added: number;
   reviews_concluded: number;
@@ -119,6 +155,13 @@ export interface OversightSummary {
     defect_targets: OversightSeverity;
     defect_rate: OversightSeverityRate;
   };
+  /** Null when no selected project opted in. */
+  remediation?: (OversightRemediation & {
+    projects: number;
+    /** The installation's timeline: days per severity (null = no deadline). */
+    days?: Record<string, number | null>;
+    due_soon_days?: number;
+  }) | null;
 }
 
 export interface OversightAttention {

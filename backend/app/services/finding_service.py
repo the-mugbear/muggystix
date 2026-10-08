@@ -917,18 +917,14 @@ class FindingService:
         search: Optional[str] = None,
         limit: int = 100, offset: int = 0,
         sort: Optional[str] = None, sort_dir: Optional[str] = None,
-        with_endpoints: bool = False,
     ):
         """One page of findings and the filtered total.
 
         Endpoints are NOT loaded (review 2026-10-01 C2): a widespread issue has
         thousands, and a list row shows a count and a handful.  A caller that
-        lists rows takes :meth:`endpoint_summaries` for the page's ids;
-        ``with_endpoints`` is for the caller that really reads every endpoint
-        of every row."""
+        lists rows takes :meth:`endpoint_summaries` (the page) or
+        :meth:`address_summaries` (the agents' list) for the page's ids."""
         options = [selectinload(Finding.owner), selectinload(Finding.created_by)]
-        if with_endpoints:
-            options.append(selectinload(Finding.hosts).selectinload(FindingHost.host))
         q = (
             self.db.query(Finding)
             .options(*options)
@@ -1014,6 +1010,54 @@ class FindingService:
             .order_by(ranked.c.finding_id, ranked.c.rn)
         ):
             out[row.finding_id]["preview"].append(row)
+        return out
+
+    def address_summaries(self, finding_ids: Sequence[int], *, sample: int = 10) -> Dict[int, dict]:
+        """How many hosts a finding is on, for a page of findings in two
+        statements: ``{finding_id: {"host_count", "endpoint_count",
+        "sample"}}`` — distinct addresses, endpoint rows on a host, and up to
+        ``sample`` of the addresses (lowest first).  The agents' list reads
+        this; it used to load every endpoint and its ``Host`` to count them
+        (review 2026-10-07)."""
+        ids = list(finding_ids)
+        out: Dict[int, dict] = {
+            fid: {"host_count": 0, "endpoint_count": 0, "sample": []} for fid in ids
+        }
+        if not ids:
+            return out
+        for fid, hosts, endpoints in (
+            self.db.query(
+                FindingHost.finding_id,
+                func.count(func.distinct(Host.ip_address)),
+                func.count(FindingHost.id),
+            )
+            .join(Host, Host.id == FindingHost.host_id)
+            .filter(FindingHost.finding_id.in_(ids))
+            .group_by(FindingHost.finding_id)
+        ):
+            out[fid]["host_count"] = int(hosts)
+            out[fid]["endpoint_count"] = int(endpoints)
+        if sample <= 0:
+            return out
+        addresses = (
+            select(FindingHost.finding_id.label("finding_id"), Host.ip_address.label("ip"))
+            .join(Host, Host.id == FindingHost.host_id)
+            .where(FindingHost.finding_id.in_(ids))
+            .distinct()
+            .subquery()
+        )
+        ranked = select(
+            addresses.c.finding_id, addresses.c.ip,
+            func.row_number().over(
+                partition_by=addresses.c.finding_id, order_by=addresses.c.ip,
+            ).label("rn"),
+        ).subquery()
+        for fid, ip in self.db.execute(
+            select(ranked.c.finding_id, ranked.c.ip).where(ranked.c.rn <= sample)
+        ):
+            out[fid]["sample"].append(ip)
+        for row in out.values():
+            row["sample"].sort()
         return out
 
     def severity_counts(

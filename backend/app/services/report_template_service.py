@@ -62,6 +62,10 @@ _SKIP_DIRS = {"_output", ".quarto", "__pycache__", ".git"}
 _SKIP_SUFFIXES = ("_files",)
 
 
+#: What a template is for; see ``ReportTemplate.kind``.
+TEMPLATE_KINDS = ("client", "contact")
+
+
 class TemplateError(ValueError):
     pass
 
@@ -91,6 +95,13 @@ class ReportTemplate:
     # measured from a fill (``printed_parts``).
     image_fields: tuple = REPORT_TEXT_FIELDS
     image_trailing: bool = True
+    # What the template is FOR (v2.463.0), from template.json → "kind":
+    # ``client`` (the default) is a client report — chosen for a draft, issued,
+    # frozen; ``contact`` is the remediation list prepared for one contact —
+    # rendered on demand, never issued, and never one a client report can be
+    # created with.  Both are listed on the Reports page, where an admin
+    # manages a template's files (logo, Word styles).
+    kind: str = "client"
 
     @property
     def images(self) -> dict:
@@ -104,6 +115,7 @@ class ReportTemplate:
             "scope_domains_inline_max": self.scope_domains_inline_max,
             "evidence_records": self.evidence_records,
             "images": self.images,
+            "kind": self.kind,
         }
 
     def missing_required_assets(self) -> List[dict]:
@@ -161,12 +173,18 @@ def _load(folder: Path) -> ReportTemplate:
             )
         cutoffs[key] = value
     image_fields, image_trailing = _image_declaration(folder.name, data.get("images"))
+    kind = data.get("kind", "client")
+    if kind not in TEMPLATE_KINDS:
+        raise TemplateError(
+            f"{folder.name}: template.json: kind must be one of {', '.join(TEMPLATE_KINDS)} "
+            "(left out, the template is a client report)."
+        )
     return ReportTemplate(
         name=folder.name, path=folder, title=str(data.get("title") or folder.name),
         description=str(data.get("description") or ""), entry=entry, formats=formats,
         postprocess=post, assets=assets,
         evidence_records=data.get("evidence_records") is True,
-        image_fields=image_fields, image_trailing=image_trailing, **cutoffs,
+        image_fields=image_fields, image_trailing=image_trailing, kind=kind, **cutoffs,
     )
 
 
@@ -268,7 +286,11 @@ def image_declaration_problem(template: ReportTemplate, dataset: dict) -> Option
     return f"{template.name}: template.json: images does not match {template.entry}: {'; '.join(differences)}."
 
 
-def list_templates() -> List[ReportTemplate]:
+def list_templates(kind: Optional[str] = "client") -> List[ReportTemplate]:
+    """The templates of one kind — the client-report templates by default, so
+    nothing that chooses a client report's template is offered a contact's
+    remediation list.  ``kind=None`` lists every template (the Reports page's
+    template files)."""
     root = templates_root()
     if not root.is_dir():
         return []
@@ -276,9 +298,11 @@ def list_templates() -> List[ReportTemplate]:
     for folder in sorted(p for p in root.iterdir() if p.is_dir() and _NAME.match(p.name)):
         if (folder / "template.json").is_file():
             try:
-                out.append(_load(folder))
+                template = _load(folder)
             except TemplateError:
                 continue
+            if kind is None or template.kind == kind:
+                out.append(template)
     return out
 
 
@@ -319,6 +343,15 @@ def get_template(name: Optional[str]) -> ReportTemplate:
     if not folder.is_dir() or not (folder / "template.json").is_file():
         raise TemplateError(f"There is no report template called '{name}'.")
     return _load(folder)
+
+
+def client_template(name: Optional[str]) -> ReportTemplate:
+    """The named CLIENT-report template; a template of another kind is not
+    one a client report can be created with."""
+    template = get_template(name)
+    if template.kind != "client":
+        raise TemplateError(f"'{template.name}' is not a client-report template.")
+    return template
 
 
 def default_template_name() -> Optional[str]:

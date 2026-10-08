@@ -137,6 +137,8 @@ const Operations = lazy(() => import('./pages/Operations'));
 const Findings = lazy(() => import('./pages/Findings'));
 const FindingDetail = lazy(() => import('./pages/FindingDetail'));
 const Reports = lazy(() => import('./pages/Reports'));
+const Remediation = lazy(() => import('./pages/Remediation'));
+const RemediationDeadlines = lazy(() => import('./pages/RemediationDeadlines'));
 const ReportDetail = lazy(() => import('./pages/ReportDetail'));
 
 /** A renamed path: go to the new one with the same query string and hash. */
@@ -365,6 +367,17 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="auditor">
                             <Reports />
+                          </ProtectedRoute>
+                        }
+                      />
+                      {/* Remediation tracking reads are AUDITOR on the server
+                          (remediation.py); its writes are the project admin's
+                          and the page hides them from everyone else. */}
+                      <Route
+                        path="/remediation"
+                        element={
+                          <ProtectedRoute requiredRole="auditor">
+                            <Remediation />
                           </ProtectedRoute>
                         }
                       />
@@ -616,6 +629,17 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <PortfolioDashboard />
+                          </ProtectedRoute>
+                        }
+                      />
+                      {/* Remediation deadlines across the reader's projects:
+                          the server decides which projects (the ones they
+                          administer; all for a global admin). */}
+                      <Route
+                        path="/remediation-deadlines"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <RemediationDeadlines />
                           </ProtectedRoute>
                         }
                       />

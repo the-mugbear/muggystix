@@ -24,6 +24,7 @@ import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import QueueHealthCard from '../components/QueueHealthCard';
 import AuditLogViewer from '../components/AuditLogViewer';
+import RemediationSettingsSection from '../components/remediation/RemediationSettingsSection';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import { personInitials } from '../utils/people';
 import { Button } from '../components/ui/button';
@@ -388,6 +389,11 @@ const SystemSettings: React.FC = () => {
           ingestion or report worker silently breaks every user's uploads and
           exports, and until now nothing in the UI surfaced it. */}
       <QueueHealthCard />
+
+      {/* The installation's one remediation switch and timelines.  Directly
+          under worker health (5.341.0): below the user table it took a long
+          scroll to find. */}
+      <RemediationSettingsSection />
 
       <PostureSection
         title={<>User management{!loading && <SectionCount>{users.length}</SectionCount>}</>}

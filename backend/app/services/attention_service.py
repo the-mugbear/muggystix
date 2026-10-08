@@ -271,7 +271,7 @@ def compute_site_attention(db: Session, project_id: int) -> Dict[str, Any]:
         if is_unassigned:
             action = {"kind": "assign", "text": f"{len(host_ids)} host{'' if len(host_ids) == 1 else 's'} not assigned to a site."}
         elif unowned > 0:
-            action = {"kind": "triage", "text": f"{unowned} active finding{'' if unowned == 1 else 's'} unowned."}
+            action = {"kind": "triage", "text": f"Assign an owner to {unowned} active finding{'' if unowned == 1 else 's'}."}
         elif by_sev["critical"] > 0:
             action = {"kind": "remediate", "text": f"{by_sev['critical']} critical open."}
         elif coverage_gap:

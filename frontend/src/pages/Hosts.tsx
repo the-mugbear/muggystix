@@ -54,7 +54,7 @@ import {
   useHostColumns,
   type HostFilterPivot,
 } from '../components/hosts/useHostColumns';
-import ReportsDialog from '../components/ReportsDialog';
+import InventoryDownloadDialog from '../components/InventoryDownloadDialog';
 import ToolReadyOutput from '../components/ToolReadyOutput';
 import { ListPageSkeleton } from '../components/PageSkeleton';
 import { InlineLoader } from '../components/ui/inline-loader';
@@ -73,6 +73,9 @@ import {
   type HostSortOption,
   type SavedHostFilterState,
 } from '../utils/hostFiltersFromUrl';
+import {
+  HOSTS_PAGE_PARAM, HOSTS_PAGE_SIZES, hostsPageFromUrl, readHostsPageSize, writeHostsPageSize,
+} from '../utils/hostsPaging';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import {
@@ -178,9 +181,9 @@ export default function Hosts() {
   // admins too, but the per-project role isn't surfaced here, so we gate the
   // UI on global admin (the common case) — non-admins simply don't see it.
   const canSetProjectDefault = hasPermission('admin');
-  // Both exports are AUDITOR on the server (`/hosts/tool-ready`, the whole
-  // `/reports` router): a project viewer is not offered them, and the
-  // export tray — which reads `/reports/jobs` and `/reports/limits` as it
+  // Both are AUDITOR on the server (`/hosts/tool-ready`, the whole `/reports`
+  // router): a project viewer is not offered "Export targets" or "Download
+  // inventory", and the download dialog — which reads `/reports/jobs` as it
   // opens — is never opened for one (style guide §40).
   const { canExport } = useProjectRole();
   // Name of the project-default view currently applied (drives the banner);
@@ -209,6 +212,8 @@ export default function Hosts() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<HostFilterOptions>({});
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
   const [filterData, setFilterData] = useState<HostFilterData | null>(null);
   // Surfaced inline near the filter panel when the cascading filter
   // metadata call fails — previously the failure was console-only, so
@@ -220,13 +225,14 @@ export default function Hosts() {
   // (see the deferred fetch below), so without this flag an analyst can't tell
   // a still-loading combobox ("No ports seen yet.") from genuinely empty data.
   const [filterDataLoading, setFilterDataLoading] = useState(true);
-  const [reportsDialogOpen, setReportsDialogOpen] = useState(false);
-  // `?reports=1` (the report-finished notification's deep link) opens the
-  // export tray; the job itself is listed there from the API, so no id
-  // plumbing is needed beyond opening the dialog.
+  const [inventoryDialogOpen, setInventoryDialogOpen] = useState(false);
+  // `?reports=1` (the "JSON is ready" notification's deep link; the parameter
+  // keeps its name so links already sent still work) opens the download
+  // dialog; the job itself is listed there from the API, so no id plumbing is
+  // needed beyond opening the dialog.
   useEffect(() => {
     if (canExport && new URLSearchParams(location.search).get('reports') === '1') {
-      setReportsDialogOpen(true);
+      setInventoryDialogOpen(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.search, canExport]);
@@ -258,7 +264,8 @@ export default function Hosts() {
   const [sortBy, setSortBy] = useState<HostSortOption>('critical_desc');
   const [vulnError, setVulnError] = useState(false);
   const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(25);
+  // Remembered per viewer; the page itself is in the URL (utils/hostsPaging).
+  const [rowsPerPage, setRowsPerPage] = useState(readHostsPageSize);
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
   const rowSelectionRef = useRef(rowSelection);
   rowSelectionRef.current = rowSelection;
@@ -579,6 +586,7 @@ export default function Hosts() {
       } catch { /* ignore */ }
     }
     setFilters(initialFilters);
+    setPage(hostsPageFromUrl(urlParams));
     setIsInitialized(true);
   }, [isInitialized, location.search]);
 
@@ -832,12 +840,13 @@ export default function Hosts() {
         sp.set(key, String(value));
       }
     });
+    if (page > 0) sp.set(HOSTS_PAGE_PARAM, String(page + 1));
     const search = sp.toString();
     const timer = setTimeout(() => {
       navigate({ search: search ? `?${search}` : '' }, { replace: true });
     }, 400);
     return () => clearTimeout(timer);
-  }, [buildHostQueryContext, isInitialized, navigate]);
+  }, [buildHostQueryContext, isInitialized, navigate, page]);
 
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -981,9 +990,13 @@ export default function Hosts() {
   // fly through hosts reviewing each in the side-sheet without the mouse.
   const [cursorIndex, setCursorIndex] = useState(-1);
 
-  const openInspector = (hostId: number) => {
+  // Stable, so the column definitions that hold it are not rebuilt on every
+  // render — and it reads the filters through a ref set during render, so a
+  // cell that kept an earlier copy still saves the list context of NOW (the
+  // v4.7.5 stale-callback bug, see useHostColumns' dependency note).
+  const openInspector = useCallback((hostId: number) => {
     if (typeof window !== 'undefined') {
-      const { followFilter: ff, onlyWithNotes: own, ...filtersOnly } = filters;
+      const { followFilter: ff, onlyWithNotes: own, ...filtersOnly } = filtersRef.current;
       const stateToPersist = {
         filters: filtersOnly,
         followFilter: ff ?? 'all',
@@ -992,7 +1005,7 @@ export default function Hosts() {
       sessionStorage.setItem(projectScopedKey('hostFiltersState'), JSON.stringify(stateToPersist));
     }
     setInspectedHostId(hostId);
-  };
+  }, []);
 
   // "Open standalone" inside the side-sheet — passes the same navState
   // that the old direct-navigate flow used, so the standalone page's
@@ -1205,13 +1218,15 @@ export default function Hosts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hosts, inspectedHostId, loading, cursorIndex, page, totalHosts, rowsPerPage]);
 
-  const applyFollowUpdate = (hostId: number, followInfo: HostFollowInfo | null) => {
+  const applyFollowUpdate = useCallback((hostId: number, followInfo: HostFollowInfo | null) => {
     setHosts((previous) =>
       previous.map((host) => (host.id === hostId ? { ...host, follow: followInfo } : host)),
     );
-  };
+  }, []);
 
-  const handleFollowChange = async (hostId: number, status: FollowStatus | 'none') => {
+  // Stable for the column definitions (see openInspector); it reads nothing
+  // that changes between renders.
+  const handleFollowChange = useCallback(async (hostId: number, status: FollowStatus | 'none') => {
     setUpdatingHostId(hostId);
     try {
       if (status === 'none') {
@@ -1233,7 +1248,8 @@ export default function Hosts() {
     } finally {
       setUpdatingHostId(null);
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast is stable
+  }, [applyFollowUpdate]);
 
   // -------------------------------------------------------------------------
   // Active-filter chips (derived from current filter state).
@@ -1289,9 +1305,12 @@ export default function Hosts() {
 
 
   useEffect(() => {
+    // Not before the first read: the total is unknown then, and the page
+    // restored from the URL would be thrown back to the first.
+    if (loading || !hasFetchedOnceRef.current) return;
     const maxPage = Math.max(Math.ceil(totalHosts / rowsPerPage) - 1, 0);
     if (page > maxPage) setPage(maxPage);
-  }, [page, rowsPerPage, totalHosts]);
+  }, [page, rowsPerPage, totalHosts, loading]);
 
   // -------------------------------------------------------------------------
   // DataTable columns — extracted to useHostColumns hook (v2.43.0 — MONO-1).
@@ -1391,7 +1410,7 @@ export default function Hosts() {
   });
 
   // Memoize: buildHostQueryContext() returns a fresh object each call, so
-  // calling it inline on every render handed ReportsDialog / ToolReadyOutput
+  // calling it inline on every render handed InventoryDownloadDialog / ToolReadyOutput
   // / HostBulkBar a new prop reference every render, breaking their memo and
   // re-running their effects.  One stable reference per filter/page change.
   const exportQueryContext = useMemo(buildHostQueryContext, [buildHostQueryContext]);
@@ -1422,8 +1441,8 @@ export default function Hosts() {
         <div>
           <h1 className="text-page-title">Hosts</h1>
         </div>
-        {/* Both exports are secondary: the page's work is triage in the
-            table, so no header button is filled as the primary action. */}
+        {/* Both are secondary: the page's work is triage in the table, so
+            no header button is filled as the primary action. */}
         {canExport && (
         <div className="flex flex-col gap-xs sm:flex-row sm:items-center">
           <Button
@@ -1436,11 +1455,11 @@ export default function Hosts() {
           </Button>
           <Button
             variant="outline"
-            onClick={() => setReportsDialogOpen(true)}
+            onClick={() => setInventoryDialogOpen(true)}
             disabled={loading || totalHosts === 0 || showingStaleResults}
           >
             <Download className="size-4" aria-hidden />
-            Export hosts
+            Download inventory
           </Button>
         </div>
         )}
@@ -1903,8 +1922,10 @@ export default function Hosts() {
               pageSize={rowsPerPage}
               totalCount={totalHosts}
               onPageChange={setPage}
+              pageSizeOptions={HOSTS_PAGE_SIZES}
               onPageSizeChange={(size) => {
                 setRowsPerPage(size);
+                writeHostsPageSize(size);
                 setPage(0);
               }}
             />
@@ -1912,9 +1933,9 @@ export default function Hosts() {
         </>
       )}
 
-      <ReportsDialog
-        open={canExport && reportsDialogOpen}
-        onClose={() => setReportsDialogOpen(false)}
+      <InventoryDownloadDialog
+        open={canExport && inventoryDialogOpen}
+        onClose={() => setInventoryDialogOpen(false)}
         filters={exportQueryContext}
         totalHosts={totalHosts}
       />

@@ -25,7 +25,8 @@ This module decides, for every caller:
 * that an agent's proposed section only references images of that finding
   (``check_references``).
 
-The host report (``report_generator``) does not use any of this.
+The host inventory downloads (``report_generator``) carry no images and do not
+use any of this.
 """
 from __future__ import annotations
 

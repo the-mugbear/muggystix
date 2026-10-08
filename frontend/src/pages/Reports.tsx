@@ -8,6 +8,7 @@
  * Posture layout: a lead sentence, then sections over thin rules.
  */
 import React, { useCallback, useEffect, useState } from 'react';
+import { isClientTemplate } from '../utils/reportTemplates';
 import { Link, useNavigate } from 'react-router-dom';
 import { Download, FilePlus2, Loader2, Pencil, RefreshCw } from 'lucide-react';
 
@@ -15,7 +16,6 @@ import {
   ClientReport,
   ClientReportKind,
   ClientReportList,
-  ProjectMember,
   ReportProfile,
   ReportTemplate,
   ReportTemplateProblem,
@@ -23,7 +23,6 @@ import {
   downloadClientReportFile,
   getReportProfile,
   listClientReports,
-  listProjectMembers,
   listReportTemplateProblems,
   listReportTemplates,
   saveReportProfile,
@@ -34,11 +33,12 @@ import TimeAgo from '../components/TimeAgo';
 import { Input } from '../components/ui/input';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
+import { useProjectRoster } from '../hooks/useProjectMembers';
 import { formatApiError } from '../utils/apiErrors';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import PostureLead from '../components/posture/PostureLead';
 import EngagementSettingsFields, { cleanSettings } from '../components/reports/EngagementSettingsFields';
-import TemplateImages, { assetCountLabel } from '../components/reports/TemplateImages';
+import TemplateImages, { assetCountLabel, missingRequiredAssets } from '../components/reports/TemplateImages';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Label } from '../components/ui/label';
@@ -52,12 +52,13 @@ import { safeFallback } from '../utils/uiStyles';
 
 const day = (iso: string | null) => formatDate(iso);
 
-/** "Draft #12 · started 23 Sep 2026, 14:05 · template default" — what sets
+/** "started 23 Sep 2026, 14:05 · template default" — what sets
  *  apart drafts that share a title (v5.288.0). The time is there because two
  *  drafts are often started the same day. */
 export const draftMeta = (r: Pick<ClientReport, 'id' | 'created_at' | 'template'>): string => {
   const started = formatTimestamp(r.created_at, null);
-  return [`Draft #${r.id}`, started ? `started ${started}` : null, r.template ? `template ${r.template}` : null]
+  // The draft's number is the row's first cell; it is not said again here.
+  return [started ? `started ${started}` : null, r.template ? `template ${r.template}` : null]
     .filter(Boolean)
     .join(' · ');
 };
@@ -358,7 +359,7 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   const [draft, setDraft] = useState<ReportProfile | null>(null);
   const [templates, setTemplates] = useState<ReportTemplate[]>([]);
   const [problems, setProblems] = useState<ReportTemplateProblem[]>([]);
-  const [members, setMembers] = useState<ProjectMember[]>([]);
+  const roster = useProjectRoster({ enabled: canEdit });
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -367,7 +368,6 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
     Promise.all([getReportProfile(), listReportTemplates()])
       .then(([p, t]) => { if (!cancelled) { setProfile(p); setTemplates(t); } })
       .catch((err) => { if (!cancelled) setError(formatApiError(err, 'Could not load the report defaults.')); });
-    if (canEdit) listProjectMembers().then((m) => { if (!cancelled) setMembers(m); }).catch(() => {});
     // Only an administrator can put a folder on the server, so only they are
     // told which ones could not be offered.
     if (isAdmin) listReportTemplateProblems().then((p) => { if (!cancelled) setProblems(p); }).catch(() => {});
@@ -422,14 +422,15 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
       )}
       {draft && (
         <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); void save(); }}>
-          <EngagementSettingsFields idPrefix="profile" value={draft} members={members} currentUser={currentUser}
+          <EngagementSettingsFields idPrefix="profile" value={draft} members={roster.members}
+            membersStatus={roster.status} onRetryMembers={roster.retry} currentUser={currentUser}
             disabled={saving} onChange={(next) => setDraft({ ...draft, ...next })} />
           <div className="w-72 max-w-full space-y-xxs">
             <Label htmlFor="profile-template">Template</Label>
             <Select value={draft.template ?? ''} onValueChange={(v) => setDraft({ ...draft, template: v })} disabled={saving}>
               <SelectTrigger id="profile-template"><SelectValue placeholder="Choose a template" /></SelectTrigger>
               <SelectContent>
-                {templates.map((t) => <SelectItem key={t.name} value={t.name}>{t.title}</SelectItem>)}
+                {templates.filter(isClientTemplate).map((t) => <SelectItem key={t.name} value={t.name}>{t.title}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -471,7 +472,7 @@ const TemplatesSection: React.FC<{
   return (
     <PostureSection
       title={<>Templates<SectionCount>{templates.length} installed</SectionCount></>}
-      description="New reports use the default, set above; each draft can choose another. A template's own files (logo, Word styles…) are listed with it."
+      description="Open a template for its own files (logo, Word styles…)."
     >
       {templates.length === 0 ? (
         <p className="text-caption text-destructive">No report templates are installed, so no report can be rendered.</p>
@@ -480,7 +481,9 @@ const TemplatesSection: React.FC<{
           {ordered.map((t) => {
             const count = assetCountLabel(t);
             return (
-              <details key={t.name} open={t.name === defaultName || templates.length === 1} className="group py-sm first:pt-0">
+              // Closed unless something is missing that blocks a report: the
+              // asset guidance is set-up reading, and this page is for reports.
+              <details key={t.name} open={missingRequiredAssets(t).length > 0} className="group py-sm first:pt-0">
                 <summary className="flex min-w-0 cursor-pointer flex-wrap items-baseline gap-x-xs gap-y-xxs">
                   <span className="break-words font-medium">{t.title}</span>
                   {t.name === defaultName && <Badge variant="info">Default</Badge>}

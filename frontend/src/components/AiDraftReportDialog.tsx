@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { copyToClipboard } from '../utils/clipboard';
+import { downloadTextFile } from '../utils/download';
 import { useNavigate } from 'react-router-dom';
 import {
   Bot,
@@ -164,15 +165,7 @@ const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ open, onClose
 
   const handleDownload = () => {
     if (!draft) return;
-    const blob = new Blob([draft], { type: 'text/markdown' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `ai-draft-report_${new Date().toISOString().split('T')[0]}.md`;
-    document.body.appendChild(a);
-    a.click();
-    window.URL.revokeObjectURL(url);
-    document.body.removeChild(a);
+    downloadTextFile(`ai-draft-report_${new Date().toISOString().split('T')[0]}.md`, draft, 'text/markdown');
   };
 
   const noProviders = providersLoaded && !providersError && providers.length === 0;

@@ -1,0 +1,181 @@
+<#
+  BlueStick — ONE CONTACT'S REMEDIATION LIST, in the penetration test
+  report's format.
+
+  This folder began as a copy of ../pentest and is yours to change in the same
+  ways (Word styles, logo, title page image — Reports page → template files).
+  template.json says "kind": "contact": it is filled when a project admin
+  prepares a contact's document on the Remediation page, and is never offered
+  for a client report.
+
+  What differs from the report: the project information, executive summary
+  and scope are replaced by a short front part — who the list is for, what is
+  past or near its deadline, one line per finding — and every affected system
+  carries the deadline of that finding on it (partials/_affected.qmd).  Each
+  finding is printed exactly as the report prints it: description, impact,
+  steps, evidence, recommendation.  A missing section prints nothing here
+  (the report prints a TODO for its author; this reader is not the author).
+
+  The data is a client report's, narrowed to the contact, plus:
+    report.contact       name (may be empty) and email
+    report.as_of         the day the deadlines were worked out
+    remediation          overdue, due_soon, due_soon_days, open, closed,
+                         not_listed, timeline (the deadlines in words)
+    each finding         deadline — its most urgent one, in words
+    each affected system deadline, due_on, deadline_state, assigned_on, team
+
+  The original template's notes follow.
+
+  Follows the original template's sections: Project Information (details,
+  penetration testers, distribution list), Executive Summary (summary of
+  findings, severity count with remediation timeline), System Description
+  (networks, domains, applications, thick clients, other targets), Findings
+  (one section each), Appendix (informational findings, disclaimer).
+
+  BlueStick fills this Jinja template, then Quarto renders it.  Its delimiters
+  never clash with Quarto (so this comment spells them out in words):
+    statements   less-than percent  …  percent greater-than
+    values       two less-thans     …  two greater-thans
+    comments     less-than hash     …  hash greater-than
+  A printed value is ESCAPED: text from the database always reads as text.
+  Never print a value inside `code` or a code block (escapes are not undone
+  there), and never in the YAML front matter — Quarto expands shortcodes in
+  metadata even when escaped; use `bluestick-meta` (below) instead.
+  Helpers (print them like a value):
+    md(f, "description", todo="…")  a finding's written Markdown, filled in by
+                                    _bluestick/fields.lua from data.json; when
+                                    empty, the highlighted TODO instead
+    md("executive_summary", todo="…")  the same for a top-level field
+    todo("…")                       a highlighted "TODO: …" — every gap in
+                                    the report is one, so a reviewer can
+                                    search the document for TODO
+    image(e)                        an evidence image (e from f.evidence — the
+                                    images no written section places), as a
+                                    numbered figure.  An image the author
+                                    placed in a section prints inside that
+                                    md() field, numbered in the same count
+    code(c, "command")              a command line or tool output, verbatim
+                                    (c from f.confirmations) — the only way
+                                    to print either
+    asset("logo")                   the path of one of this template's own
+                                    images (template.json → assets) when its
+                                    file is installed, else empty — wrap it in
+                                    an if so the layout is unchanged without it
+    plain(v)                        a date, number or reference, unescaped (checked)
+  Reusable parts are INCLUDES (partials/), not macros: a macro's result is
+  printed like a value and would be escaped.
+  sample-data.json shows the data; `make html` renders it.
+#>
+---
+# Never print database text in this YAML: Quarto expands shortcodes in
+# metadata even when escaped.  bluestick-meta names the DATA instead, and
+# _bluestick/fields.lua sets these keys from it as plain text.
+title: "Security assessment report"
+bluestick-meta:
+  title: report.title
+  subtitle: report.heading
+# (The team is listed under Penetration testers.  `author` cannot be set this
+# way: Quarto builds its title block from authors before this filter runs.)
+date: << plain(report.date) >>
+number-sections: true
+engine: markdown
+filters:
+  - quarto
+  - _bluestick/fields.lua
+  - filters/spacers.lua
+format:
+  html:
+    toc: true
+    toc-title: "Table of Contents"
+    toc-location: body
+    toc-depth: 2
+    theme: cosmo
+    fontsize: 11pt
+    page-layout: article
+    embed-resources: true
+    # No formula is ever typeset, so no math library is ever loaded: the
+    # report makes no request from the reader's browser.  (Written text is
+    # read without math; this is the layer under that.)
+    html-math-method: plain
+    include-in-header:
+      - text: |
+          <style>
+          table { width: 100%; }
+          td, th { vertical-align: top; }
+          img { border: 1px solid #555; padding: 2px; }
+          pre, pre code { white-space: pre-wrap; overflow-wrap: anywhere; }
+          img.bs-logo { border: none; padding: 0; max-width: 2in; height: auto; }
+          mark.bs-todo { background: #ffe066; color: #1a1a1a; padding: 0 .25em; }
+          div[data-custom-style="Table Caption"] { text-align: center; font-weight: bold; margin: 1.25em 0 .35em; }
+          div[data-custom-style="Table Caption"] p { margin: 0; }
+          figure figcaption, .figure-caption { text-align: center !important; }
+          </style>
+<# The template's own images (template.json → assets) are the one thing
+   printed here: asset() returns a path from the manifest, validated to plain
+   path characters, or '' when the file is not installed — then the key is
+   left out and the layout is unchanged. #>
+<% if asset("logo") %>
+    include-before-body:
+      - text: |
+          <p class="bs-logo-wrap"><img class="bs-logo" src="<< asset("logo") >>" alt="Logo"></p>
+<% endif %>
+  docx:
+    reference-doc: reference.docx
+    toc: true
+    toc-title: "Table of Contents"
+    toc-depth: 2
+# No PDF format: the Word report carries the design and exports to PDF.
+---
+
+{{< pagebreak >}}
+
+<# Numbered captions: every table caption counts up through the whole report
+   (partials/_table_caption.qmd).  Figures are numbered by the filter
+   (_bluestick/fields.lua), which sees the images placed in written text. #>
+<% set counter = namespace(table=0) %>
+<% set contact = report.get("contact") or {} %>
+<% set summary = remediation if remediation is defined and remediation else {} %>
+# Remediation list
+
+<% with caption = "Prepared for" %><% include "partials/_table_caption.qmd" %><% endwith %>
+<# An empty header row makes a table without one. #>
+| | |
+|:---------------|:--|
+| Contact | << contact.get("name") or contact.get("email") or "" >><% if contact.get("name") and contact.get("email") %> (<< contact.email >>)<% endif %> |
+| Project | << project.name >> |
+| As of | << report.get("as_of") or report.date >> |
+<% if summary %>
+| Past the deadline | << summary.overdue >> |
+| Due within << summary.due_soon_days >> days | << summary.due_soon >> |
+| Open in all | << summary.open >><% if summary.closed %> (<< summary.closed >> already reported fixed, not listed)<% endif %> |
+<% if summary.get("timeline") %>
+| Deadlines | << summary.timeline >>, counted from the day a finding was assigned |
+<% endif %>
+<% endif %>
+
+<% if findings %>
+<% with caption = "Findings assigned to you" %><% include "partials/_table_caption.qmd" %><% endwith %>
+| Ref | Finding | Severity | Systems | Most urgent |
+|:------|:--------------------------------------|:-----------|:---------|:--------------------|
+<% for f in findings %>
+| << f.ref >> | [<< f.title >>](#finding-<< f.id >>) | << f.severity_label >> | << f.affected|length >> | << f.get("deadline") or "" >> |
+<% endfor %>
+
+<% if summary.get("not_listed") %>
+<< summary.not_listed >> more assigned to you <% if summary.not_listed == 1 %>is<% else %>are<% endif %> still being investigated and <% if summary.not_listed == 1 %>is<% else %>are<% endif %> not in this document.
+
+<% endif %>
+{{< pagebreak >}}
+
+# Findings
+
+<% for f in findings %>
+<% include "partials/_finding.qmd" %>
+<% endfor %>
+<% else %>
+Nothing assigned to you is open in this project.
+
+<% endif %>
+## Disclaimer
+
+This list reflects what was found during the assessment and what has been recorded about its remediation as of the date above. Systems change, and issues may exist that were not found.

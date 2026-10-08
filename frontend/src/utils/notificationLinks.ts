@@ -32,6 +32,13 @@ export const notificationHref = (n: Linkable): string | null => {
     if (n.host_id) return `/hosts/${n.host_id}#host-detail-proposed-tests`;
     return '/operations';
   }
+  // A remediation deadline alert (5.340.0): the cross-project list, narrowed
+  // to the alert's project (`source_id`) and state — it opens whichever
+  // project the reader has selected, archived ones included.
+  if (n.source_type === 'remediation_overdue' || n.source_type === 'remediation_due_soon') {
+    const state = n.source_type === 'remediation_overdue' ? 'overdue' : 'due_soon';
+    return `/remediation-deadlines?state=${state}${n.source_id ? `&project=${n.source_id}` : ''}`;
+  }
   if (n.source_type === 'scan' && n.source_id) return `/hosts?scan_ids=${n.source_id}`;
   if (n.source_type === 'report_job' && n.source_id) return `/hosts?reports=1&job=${n.source_id}`;
   if (n.source_type === 'note' && n.finding_id && n.source_id) return `/findings/${n.finding_id}#note-${n.source_id}`;

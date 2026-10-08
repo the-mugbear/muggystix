@@ -161,6 +161,56 @@ def disk_snapshot(path: Optional[str] = None) -> Optional[dict]:
     }
 
 
+# What an upload must leave free after it is written: the worker parses into
+# the database on the same disk, and Postgres PANICs when it cannot extend.
+DISK_UPLOAD_RESERVE_BYTES = 1024 ** 3
+# The low-disk WARNING repeats at most this often (the hook runs every minute).
+DISK_WARN_INTERVAL_SECONDS = 1800
+_last_disk_warning: Optional[float] = None
+
+
+def warn_if_disk_low() -> Optional[dict]:
+    """Log a WARNING when the uploads disk is low (review 2026-10-07): the
+    check ran only at deploy time and on the admin metrics page, so a disk
+    filling between deploys said nothing until Postgres stopped.  Called from
+    the worker's periodic hook.  Returns the snapshot when it warned."""
+    import time
+
+    global _last_disk_warning
+    snapshot = disk_snapshot()
+    if not snapshot or not snapshot["low"]:
+        return None
+    now = time.monotonic()
+    if _last_disk_warning is not None and now - _last_disk_warning < DISK_WARN_INTERVAL_SECONDS:
+        return None
+    _last_disk_warning = now
+    logger.warning(
+        "Disk space is low on the uploads volume: %.1f GB free of %.1f GB. Imports and the "
+        "database share it — free space (old backups, Docker build cache) or lower "
+        "INGESTION_RETAIN_FILES_DAYS.",
+        snapshot["free_bytes"] / 1024 ** 3, snapshot["total_bytes"] / 1024 ** 3,
+    )
+    return snapshot
+
+
+def ensure_room_for_upload(size: Optional[int]) -> None:
+    """Refuse an upload (507) that would not leave ``DISK_UPLOAD_RESERVE_BYTES``
+    free.  A disk that cannot be read refuses nothing."""
+    from fastapi import HTTPException
+
+    snapshot = disk_snapshot()
+    if snapshot is None:
+        return
+    if snapshot["free_bytes"] - int(size or 0) < DISK_UPLOAD_RESERVE_BYTES:
+        raise HTTPException(
+            status_code=507,
+            detail=(
+                "The server does not have enough free disk space to accept this file "
+                f"({snapshot['free_bytes'] / 1024 ** 3:.1f} GB free). Ask an administrator to free space."
+            ),
+        )
+
+
 def warn_if_ingestion_backlog_high(db: Session) -> Optional[dict]:
     """Log a WARNING when the ingestion queue is steadily backing up.
 

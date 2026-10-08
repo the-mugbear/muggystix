@@ -116,7 +116,9 @@ describe('navigation manifest', () => {
   it('the IA the UX review settled on (v5.294.0)', () => {
     const tabs = (id: string) => HUBS.find((h) => h.id === id)!.children.map((c) => c.label);
     expect(tabs('inventory')).toEqual(['Hosts', 'Names', 'Scans', 'Ingestion Results', 'Scope']);
-    expect(tabs('findings')).toEqual(['Findings', 'Reports']);
+    // 5.335.0 — Remediation: who was told about each finding on each host and
+    // where the fix stands (the owner's request, 2026-10-07), after the report.
+    expect(tabs('findings')).toEqual(['Findings', 'Reports', 'Remediation']);
     // v5.312.0 — Agent Runs became Agent Sessions. 5.313.0 — the agent session
     // is how work starts (no plan approval), so it leads the hub and is its
     // default.

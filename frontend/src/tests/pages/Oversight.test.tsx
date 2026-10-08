@@ -11,9 +11,16 @@ const dashboardMock = vi.fn();
 vi.mock('../../services/api', () => ({
   getOversightDashboard: (...a: unknown[]) => dashboardMock(...a),
 }));
+// The projects the reader can switch to, and the switch itself.
+const projectCtx = vi.hoisted(() => ({ projects: [] as Array<{ id: number; name: string }>, selectProject: vi.fn() }));
 vi.mock('../../contexts/ProjectContext', () => ({
-  useProject: () => ({ projects: [], selectProject: vi.fn() }),
+  useProject: () => projectCtx,
 }));
+const navigateMock = vi.hoisted(() => vi.fn());
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  return { ...actual, useNavigate: () => navigateMock };
+});
 
 import Oversight from '../../pages/Oversight';
 
@@ -357,5 +364,79 @@ describe('Oversight — severity basis and growth keyboard', () => {
     expect(buildOversightSummary(withFp(1) as never, opts)).toMatch(/closed \(1 false positive excluded\)/);
     // The tester's project count is where they test, never a 0 beside reviews.
     expect(none).toMatch(/Ana Tester: .* across 2 projects/);
+  });
+});
+
+describe('Oversight — remediation deadlines, where the installation tracks them (5.340.0)', () => {
+  it('says nothing about remediation on an installation that did not opt in', async () => {
+    dashboardMock.mockReset().mockResolvedValue(response);
+    await renderPage();
+    expect(screen.queryByText(/remediation/i)).not.toBeInTheDocument();
+  });
+
+  const tracked = {
+    ...response,
+    summary: { ...response.summary, remediation: {
+      open: 1240, closed: 9, deferred: 1, projects: 3,
+      overdue: 1234, due_soon: 1, on_track: 2, not_assigned: 3, no_deadline: 0,
+      longest_overdue_days: 41, avg_days_to_close: 43.3, closed_measured: 3, closed_late: 2, closed_with_deadline: 5,
+      days: { critical: 30, high: 30, medium: 90, low: 120, info: null }, due_soon_days: 7,
+    } },
+  };
+
+  it('leads with what is overdue and due soon, each number opening its list', async () => {
+    dashboardMock.mockReset().mockResolvedValue(tracked);
+    await renderPage();
+    const overdue = screen.getByRole('link', { name: 'Overdue findings on hosts — view' });
+    expect(overdue).toHaveTextContent((1234).toLocaleString());
+    expect(overdue).toHaveAttribute('href', '/remediation-deadlines?state=overdue');
+    expect(screen.getByRole('link', { name: 'Findings on hosts due soon — view' }))
+      .toHaveAttribute('href', '/remediation-deadlines?state=due_soon');
+    expect(screen.getByRole('link', { name: 'Findings on hosts not assigned — view' }))
+      .toHaveAttribute('href', '/remediation-deadlines?state=not_assigned');
+    expect(screen.getByText('the longest by 41 days')).toBeInTheDocument();
+    expect(screen.getByText('within 7 days')).toBeInTheDocument();
+    expect(screen.getByText('of 5 closed with a deadline')).toBeInTheDocument();
+    expect(screen.getByText(/over 3 closed with both dates/)).toBeInTheDocument();
+    // The rows live on one page; Oversight does not list the projects again.
+    expect(screen.queryByRole('table', { name: 'Remediation by project' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'By project and by contact' })).toHaveAttribute('href', '/remediation-deadlines');
+  });
+
+  it('prints a dash, never a zero, where nothing can be measured', async () => {
+    dashboardMock.mockReset().mockResolvedValue({
+      ...tracked,
+      summary: { ...tracked.summary, remediation: {
+        ...tracked.summary.remediation, overdue: 0, longest_overdue_days: null, avg_days_to_close: null,
+        closed_measured: 0, closed_late: 0, closed_with_deadline: 0,
+      } },
+    });
+    await renderPage();
+    expect(screen.getByText('nothing closed with a deadline yet')).toBeInTheDocument();
+    expect(screen.getByText('no closed finding has both dates')).toBeInTheDocument();
+    expect(screen.queryByText(/the longest by/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^0 days/)).not.toBeInTheDocument();
+  });
+});
+
+describe('Oversight — overdue by severity and by how late (5.341.0)', () => {
+  it('says which severities are overdue and how many are more than 30 days late', async () => {
+    dashboardMock.mockReset().mockResolvedValue({
+      ...response,
+      summary: { ...response.summary, remediation: {
+        open: 20, closed: 0, deferred: 0, projects: 3, overdue: 7, due_soon: 1, on_track: 9, not_assigned: 3, no_deadline: 0,
+        longest_overdue_days: 110, avg_days_to_close: null, closed_measured: 0, closed_late: 0, closed_with_deadline: 0,
+        overdue_critical: 2, overdue_high: 0, overdue_medium: 5, overdue_low: 0, overdue_info: 0,
+        overdue_age_1_7: 3, overdue_age_8_30: 1, overdue_age_31_90: 2, overdue_age_90_plus: 1,
+        days: { critical: 30, high: 30, medium: 90, low: 120, info: null }, due_soon_days: 7,
+      } },
+    });
+    await renderPage();
+    expect(screen.getByText('2 critical · 5 medium')).toBeInTheDocument();
+    expect(screen.getByText('the longest by 110 days')).toBeInTheDocument();
+    const late = screen.getByRole('link', { name: 'Findings on hosts more than 30 days overdue — view' });
+    expect(late).toHaveTextContent('3');
+    expect(late).toHaveAttribute('href', '/remediation-deadlines?band=31-90');
+    expect(screen.getByText('1 of them over 90 days')).toBeInTheDocument();
   });
 });

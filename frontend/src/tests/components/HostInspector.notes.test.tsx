@@ -3,7 +3,7 @@
  * written for, and a failed screenshot upload is kept for retry against the
  * note that was created rather than silently dropped.
  */
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -25,6 +25,7 @@ const hostFixture = (id: number) => ({
 const api = vi.hoisted(() => ({
   createAnnotation: vi.fn(),
   uploadNoteAttachment: vi.fn(),
+  followHost: vi.fn(),
 }));
 
 vi.mock('../../services/api', () => ({
@@ -37,7 +38,7 @@ vi.mock('../../services/api', () => ({
   getHostFollowers: vi.fn().mockResolvedValue([]),
   recordHostView: vi.fn().mockResolvedValue(undefined),
   listProjectMembers: vi.fn().mockResolvedValue([]),
-  followHost: vi.fn(), unfollowHost: vi.fn(), assignHost: vi.fn(), unassignHost: vi.fn(),
+  followHost: api.followHost, unfollowHost: vi.fn(), assignHost: vi.fn(), unassignHost: vi.fn(),
   createNote: vi.fn(), updateAnnotation: vi.fn(), deleteAnnotation: vi.fn(),
   createAnnotation: api.createAnnotation,
   uploadNoteAttachment: api.uploadNoteAttachment,
@@ -200,5 +201,64 @@ describe('HostInspector note composer — draft bound to host, recoverable attac
     await waitFor(() => expect(api.uploadNoteAttachment).toHaveBeenCalledTimes(3));
     expect(api.uploadNoteAttachment).toHaveBeenLastCalledWith(1, 77, fileA);
     expect(api.createAnnotation).toHaveBeenCalledTimes(2);
+  });
+});
+
+// The inspector stays mounted while the queue moves on: a save that answers
+// after the reader left its host must change nothing on the host now shown.
+describe('HostInspector — a late completion is for the host it was sent for', () => {
+  beforeEach(() => {
+    api.createAnnotation.mockReset();
+    api.followHost.mockReset();
+    Object.values(toastMock).forEach((m) => m.mockReset());
+  });
+
+  it('a review status saved for the host just left does not mark the host now shown', async () => {
+    let answer!: (v: unknown) => void;
+    api.followHost.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    const onFollowChange = vi.fn();
+    const { rerender } = render(<MemoryRouter><HostInspector hostId={1} onFollowChange={onFollowChange} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText('10.0.0.1')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /Start review/ }));
+    expect(api.followHost).toHaveBeenCalledWith(1, 'in_review', undefined);
+
+    rerender(<MemoryRouter><HostInspector hostId={2} onFollowChange={onFollowChange} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText('10.0.0.2')).toBeInTheDocument());
+    // The new host's controls are its own: not held by the other host's save.
+    expect(screen.getByRole('button', { name: /Start review/ })).toBeEnabled();
+
+    const saved = { status: 'in_review', host_id: 1 };
+    await act(async () => { answer(saved); });
+    // Host 2 is still not reviewed …
+    expect(screen.getByText('Not reviewed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Start review/ })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: /Mark reviewed$/ })).not.toBeInTheDocument();
+    // … and the list's row for host 1 is told what was saved.
+    expect(onFollowChange).toHaveBeenCalledWith(1, saved);
+    expect(onFollowChange).not.toHaveBeenCalledWith(2, expect.anything());
+  });
+
+  it('a reply posted for the host just left is not added to the host now shown', async () => {
+    api.createAnnotation.mockResolvedValueOnce({ id: 70, body: 'first thread', author: 'ana', attachments: [] });
+    const { rerender } = render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText('10.0.0.1')).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Note'), { target: { value: 'first thread' } });
+    fireEvent.click(screen.getByRole('button', { name: /save note/i }));
+    await screen.findByText('first thread');
+
+    let answer!: (v: unknown) => void;
+    api.createAnnotation.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reply to note' }));
+    fireEvent.change(screen.getByPlaceholderText('Write your reply…'), { target: { value: 'late reply' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
+    await waitFor(() => expect(api.createAnnotation).toHaveBeenLastCalledWith(1, { body: 'late reply', parent_id: 70 }));
+
+    rerender(<MemoryRouter><HostInspector hostId={2} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText('10.0.0.2')).toBeInTheDocument());
+    await act(async () => { answer({ id: 71, body: 'late reply', parent_id: 70, author: 'ana', attachments: [] }); });
+    expect(screen.queryByText('late reply')).not.toBeInTheDocument();
+    // The composer on host 2 is usable: the other host's save does not hold it.
+    fireEvent.change(screen.getByLabelText('Note'), { target: { value: 'for host two' } });
+    expect(screen.getByRole('button', { name: /save note/i })).toBeEnabled();
   });
 });

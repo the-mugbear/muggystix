@@ -105,10 +105,13 @@ def run_listen_loop(
     ``poll_one()`` claims and processes one queued job, returning ``True`` if it
     did work (so a backlog drains before we wait) and ``False`` when the queue is
     empty.  ``periodic`` callables (reaper, cleanup) run on a monotonic deadline
-    of ``periodic_every_ticks * poll_interval`` seconds — so they fire on that
-    cadence whether the worker is idle OR continuously draining a full queue,
-    rather than only once the backlog clears.  The heartbeat is rewritten at the
-    top of every cycle and after every job so a backlog drain keeps it fresh.
+    of ``periodic_every_ticks * poll_interval`` seconds, checked BETWEEN jobs —
+    so they fire on that cadence whether the worker is idle or draining a full
+    queue, rather than only once the backlog clears.  They do not run WHILE a
+    job runs: during one long import the reaper, the backlog warning and the
+    sweeps wait for it to end (a wedged job is reported by the API's queue
+    metrics, not from here).  The heartbeat is rewritten at the top of every
+    cycle and after every job so a backlog drain keeps it fresh.
 
     Wrapped in an outer reconnect loop so a Postgres restart / blip doesn't kill
     the worker — DB errors close the connection, log, back off, and retry.

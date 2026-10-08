@@ -365,7 +365,7 @@ def webpath_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     conds = [models.WebPath.path.ilike(f"%{escape_like(v)}%", escape="\\") for v in values if v]
     if not conds:
         return false()
-    return models.Host.id.in_(db.query(models.WebPath.host_id).filter(or_(*conds)))
+    return _host_has(models.WebPath.host_id, or_(*conds))
 
 
 def issue_predicate(db: Session, values: Sequence[str], project_id: int) -> ColumnElement:
@@ -388,6 +388,20 @@ def issue_predicate(db: Session, values: Sequence[str], project_id: int) -> Colu
 def portstate_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     """Host has at least one port in any of the given states."""
     return host_has_port(*port_match_conditions(port_states=list(values)))
+
+
+def _host_has(host_id_column, *conditions: ColumnElement) -> ColumnElement:
+    """The host of the enclosing query has a row in ``host_id_column``'s table
+    meeting ``conditions`` — the correlated ``EXISTS`` of ``host_has_port``,
+    for the other child tables (review 2026-10-07).
+
+    These were ``Host.id IN (SELECT host_id FROM <child> WHERE …)`` with the
+    subquery over EVERY project's rows.  At the top level Postgres turns that
+    into a semi-join; under ``OR`` or ``NOT`` (``NOT path:admin``,
+    ``follow:none``) it ran the subquery whole.  Correlated on the host, it is
+    reached through the outer query's hosts either way.  Same hosts as before:
+    a NULL ``host_id`` never equals a host's id."""
+    return exists().where(host_id_column == models.Host.id, *conditions).correlate(models.Host)
 
 
 def test_label_predicate(project_id: int, labels: Sequence[str]) -> ColumnElement:
@@ -426,37 +440,18 @@ def tech_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
         cast(models.WebInterface.technologies, SAString).ilike(f'%{escape_like(v)}%', escape='\\')
         for v in values
     ]
-    sub = (
-        db.query(models.WebInterface.host_id)
-        .filter(models.WebInterface.host_id.isnot(None), or_(*conditions))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_has(models.WebInterface.host_id, or_(*conditions))
 
 
 def has_web_interface_predicate(db: Session) -> ColumnElement:
     """Host has at least one web interface row."""
-    sub = (
-        db.query(models.WebInterface.host_id)
-        .filter(models.WebInterface.host_id.isnot(None))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_has(models.WebInterface.host_id)
 
 
 def _web_text_predicate(db: Session, column, values: Sequence[str]) -> ColumnElement:
-    """Host has a web interface whose ``column`` ILIKE-matches any value.
-
-    ``host_id`` is nullable on ``web_interfaces`` so the subquery filters
-    it NOT NULL — otherwise ``NOT header:x`` would wrongly drop hosts via
-    the SQL NULL-in-NOT-IN footgun."""
+    """Host has a web interface whose ``column`` ILIKE-matches any value."""
     conditions = [column.ilike(f'%{escape_like(v)}%', escape='\\') for v in values]
-    sub = (
-        db.query(models.WebInterface.host_id)
-        .filter(models.WebInterface.host_id.isnot(None), or_(*conditions))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_has(models.WebInterface.host_id, or_(*conditions))
 
 
 def header_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
@@ -507,21 +502,24 @@ def cleartext_predicate(db: Session) -> ColumnElement:
     return host_has_port(*port_match_conditions(ports=sorted(CLEARTEXT_PORTS), require_open=True))
 
 
-def eol_os_predicate(db: Session, project_id: int) -> ColumnElement:
-    """Host running an end-of-life OS (per the shared EOL catalog)."""
-    ids = eol_os_host_ids(db, project_id)
+def eol_os_predicate(db: Session, project_id: int, only_host_ids=None) -> ColumnElement:
+    """Host running an end-of-life OS (per the shared EOL catalog).
+
+    ``only_host_ids`` (here and on the three predicates like it): the caller
+    is labelling those hosts, so the judgment reads their rows only."""
+    ids = eol_os_host_ids(db, project_id, only_host_ids)
     return models.Host.id.in_(ids) if ids else false()
 
 
-def cert_issue_predicate(db: Session, project_id: int) -> ColumnElement:
+def cert_issue_predicate(db: Session, project_id: int, only_host_ids=None) -> ColumnElement:
     """Host whose latest TLS cert observation is expired or self-signed."""
-    ids = cert_issue_host_ids(db, project_id)
+    ids = cert_issue_host_ids(db, project_id, host_ids=only_host_ids)
     return models.Host.id.in_(ids) if ids else false()
 
 
-def weak_auth_predicate(db: Session, project_id: int) -> ColumnElement:
+def weak_auth_predicate(db: Session, project_id: int, only_host_ids=None) -> ColumnElement:
     """Host where a guest / anonymous / null-session login succeeded."""
-    ids = weak_auth_host_ids(db, project_id)
+    ids = weak_auth_host_ids(db, project_id, only_host_ids)
     return models.Host.id.in_(ids) if ids else false()
 
 
@@ -547,10 +545,10 @@ def writable_share_predicate(db: Session, project_id: int) -> ColumnElement:
     return _netexec_flag_predicate(db, project_id, NetexecResult.writable_share)
 
 
-def weak_tls_predicate(db: Session, project_id: int) -> ColumnElement:
+def weak_tls_predicate(db: Session, project_id: int, only_host_ids=None) -> ColumnElement:
     """Host whose latest TLS observation offers a weak protocol (SSLv2/SSLv3/
     TLS 1.0/1.1)."""
-    ids = weak_tls_host_ids(db, project_id)
+    ids = weak_tls_host_ids(db, project_id, only_host_ids)
     return models.Host.id.in_(ids) if ids else false()
 
 
@@ -816,12 +814,7 @@ def has_plan_entry_predicate(db: Session, project_id: int) -> ColumnElement:
 
 def tag_predicate_by_id(db: Session, tag_ids: Sequence[int]) -> ColumnElement:
     """Host carries any of the given tag IDs (OR)."""
-    sub = (
-        db.query(models.HostTagAssignment.host_id)
-        .filter(models.HostTagAssignment.tag_id.in_(list(tag_ids)))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_has(models.HostTagAssignment.host_id, models.HostTagAssignment.tag_id.in_(list(tag_ids)))
 
 
 def tag_predicate_by_name(db: Session, names: Sequence[str], project_id: int) -> ColumnElement:
@@ -875,13 +868,11 @@ def site_predicate(db: Session, names: Sequence[str]) -> ColumnElement:
     site its subnets belong to — deliberately broader than the single
     ``primary_site`` shown in the list, so the filter never hides a host that
     legitimately belongs to the selected site through one of its ranges."""
-    sub = (
-        db.query(models.HostSubnetMapping.host_id)
-        .join(models.Subnet, models.Subnet.id == models.HostSubnetMapping.subnet_id)
-        .filter(models.Subnet.site.in_(names))
-        .distinct()
+    return _host_has(
+        models.HostSubnetMapping.host_id,
+        models.Subnet.id == models.HostSubnetMapping.subnet_id,
+        models.Subnet.site.in_(names),
     )
-    return models.Host.id.in_(sub)
 
 
 def site_none_predicate(db: Session, project_id: int) -> ColumnElement:
@@ -959,8 +950,7 @@ def follow_predicate(db: Session, status: str, current_user: User) -> ColumnElem
     """
     review_states = (FollowStatus.IN_REVIEW.value, FollowStatus.REVIEWED.value)
     if status == "none":
-        touched = db.query(HostFollow.host_id).filter(HostFollow.status.in_(review_states))
-        return models.Host.id.notin_(touched)
+        return ~_host_has(HostFollow.host_id, HostFollow.status.in_(review_states))
     if status in ("in_review", "in_review_any"):
         in_review = db.query(HostFollow.host_id).filter(
             HostFollow.status == FollowStatus.IN_REVIEW.value

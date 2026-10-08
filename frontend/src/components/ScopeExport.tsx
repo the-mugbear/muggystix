@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { copyToClipboard as copyText } from '../utils/clipboard';
+import { downloadTextFile } from '../utils/download';
+import { formatApiError } from '../utils/apiErrors';
 import { Copy, Download, FolderTree, Loader2 } from 'lucide-react';
 import { getScopeHostList } from '../services/api';
 import { Alert, AlertDescription } from './ui/alert';
@@ -60,7 +62,7 @@ export default function ScopeExport({ open, onClose, scopeId, scopeName }: Scope
       setOutput(result);
     } catch (err) {
       console.error('Error fetching scope hosts:', err);
-      setError(err instanceof Error ? err.message : 'Failed to fetch scope hosts');
+      setError(formatApiError(err, 'Failed to fetch scope hosts'));
     } finally {
       setLoading(false);
     }
@@ -77,15 +79,7 @@ export default function ScopeExport({ open, onClose, scopeId, scopeName }: Scope
 
   const downloadOutput = () => {
     const safeName = scopeName.replace(/\s+/g, '_').replace(/[/\\]/g, '-').slice(0, 40);
-    const blob = new Blob([output], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${safeName}_hosts.${selectedFormat}`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadTextFile(`${safeName}_hosts.${selectedFormat}`, output);
   };
 
   const entryCount = output

@@ -1,14 +1,17 @@
 """Async report job pipeline — the report worker's service.
 
-Covers the queue lifecycle (create → claim+run → completed artifact) for each
-async format, plus the dead-letter mechanics (failure, stall reaper, expiry
+Covers the queue lifecycle (create → claim+run → completed artifact) for the
+inventory JSON, plus the dead-letter mechanics (failure, stall reaper, expiry
 cleanup).  Runs the service in-process (no worker container needed) against the
 test DB; ``poll_and_run_one`` opens its own ``SessionLocal``, which the conftest
 rebinds onto the test connection.
+
+The agent package and the Markdown bundle were retired with "Export hosts"
+(owner, 2026-10-07): their cases here became "a job that names one fails and
+says so".  The client report's renders run on the same queue and are covered
+in test_client_report_render.py.
 """
-import io
 import json
-import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -28,15 +31,14 @@ def _make_host(db, project_id, ip="10.0.0.5"):
     return host
 
 
-@pytest.mark.parametrize("fmt", ["json", "agent-package", "markdown-bundle"])
-def test_report_job_generates_artifact(fmt, db_session, test_project, test_user):
+def test_report_job_generates_artifact(db_session, test_project, test_user):
     _make_host(db_session, test_project.id)
     db_session.commit()
 
     service = ReportJobService()
     job = service.create_job(
         db_session, project_id=test_project.id, requested_by_id=test_user.id,
-        format=fmt, report_type="comprehensive", filters={},
+        format="json", report_type="comprehensive", filters={},
     )
     assert job.status == "queued"
 
@@ -50,20 +52,38 @@ def test_report_job_generates_artifact(fmt, db_session, test_project, test_user)
     assert done.file_size and done.file_size > 0
     assert done.expires_at is not None
 
-    data = Path(done.result_path).read_bytes()
-    if fmt == "json":
-        payload = json.loads(data)
-        assert "hosts" in payload and payload["hosts"]
-        assert "canonical_findings" in payload["hosts"][0]
-    elif fmt in ("agent-package", "markdown-bundle"):
-        names = set(zipfile.ZipFile(io.BytesIO(data)).namelist())
-        if fmt == "agent-package":
-            assert {"manifest.json", "hosts.ndjson", "findings.json"}.issubset(names)
-        else:
-            assert {"report.md", "vulnerabilities.csv", "canonical_findings.csv"}.issubset(names)
+    assert done.result_filename.startswith("hosts_comprehensive_") and done.result_filename.endswith(".json")
+    assert done.media_type == "application/json"
+    payload = json.loads(Path(done.result_path).read_bytes())
+    assert "hosts" in payload and payload["hosts"]
+    assert "canonical_findings" in payload["hosts"][0]
 
     # Clean up the artifact this test wrote.
     service._remove_artifact(done)
+
+
+@pytest.mark.parametrize("fmt", ["agent-package", "markdown-bundle"])
+def test_a_job_for_a_retired_format_fails_and_says_so(fmt, db_session, test_project, test_user):
+    """A row queued before the bundles were retired (or retried since) is
+    never rendered as something else: it fails, names the format, and leaves
+    no artifact directory behind."""
+    _make_host(db_session, test_project.id)
+    db_session.commit()
+    service = ReportJobService()
+    before = set(service._storage_root.iterdir()) if service._storage_root.exists() else set()
+    job = service.create_job(
+        db_session, project_id=test_project.id, requested_by_id=test_user.id,
+        format=fmt, report_type="comprehensive", filters={},
+    )
+    assert service.poll_and_run_one() is True
+
+    failed = db_session.get(ReportJob, job.id)
+    db_session.refresh(failed)
+    assert failed.status == "failed"
+    assert fmt in failed.error_message and "CSV and JSON" in failed.error_message
+    assert failed.result_path is None
+    after = set(service._storage_root.iterdir()) if service._storage_root.exists() else set()
+    assert after == before
 
 
 def test_report_job_failure_sets_last_error(db_session, test_project, test_user, monkeypatch):
@@ -90,15 +110,13 @@ def test_report_job_failure_sets_last_error(db_session, test_project, test_user,
     assert set(service._storage_root.iterdir()) == before
 
 
-def test_streamed_exports_cover_every_host_across_chunks(db_session, test_project, test_user, monkeypatch):
-    """Review 2026-09-23 B-Ops-6 — JSON and the agent package stopped at
-    REPORT_MAX_INMEMORY_HOSTS (2,000), so a whole engagement could not be
-    exported.  They now stream every matching host, chunk by chunk, and
-    are never truncated; the markdown bundle keeps the in-memory cap."""
+def test_the_json_covers_every_host_across_chunks(db_session, test_project, test_user, monkeypatch):
+    """Review 2026-09-23 B-Ops-6 — the JSON stopped at an in-memory cap of
+    2,000 hosts, so a whole engagement could not be exported.  It streams
+    every matching host, chunk by chunk, and nothing is capped."""
     from app.core.config import settings
     from app.services.report_generator import ReportGenerator
 
-    monkeypatch.setattr(ReportGenerator, "MAX_INMEMORY_REPORT_HOSTS", 2)
     monkeypatch.setattr(settings, "REPORT_STREAM_CHUNK", 2)
     for i in range(5):
         host = _make_host(db_session, test_project.id, ip=f"10.0.1.{i + 1}")
@@ -123,35 +141,43 @@ def test_streamed_exports_cover_every_host_across_chunks(db_session, test_projec
         assert done.status == "completed", done.error_message
         return done
 
+    host_id = host.id
     done = run("json")
-    assert done.truncated is False
     payload = json.loads(Path(done.result_path).read_bytes())
     assert [h["identity"]["ip_address"] for h in payload["hosts"]] == [f"10.0.1.{i}" for i in range(1, 6)]
     assert payload["summary"]["total_hosts"] == 5
     assert payload["summary"]["total_open_ports"] == 5
-    assert payload["summary"]["truncated"] is False
+    assert payload["summary"]["truncated"] is False and payload["summary"]["host_cap"] is None
     assert {"findings", "hotspots", "systemic"} <= set(payload)
-    # Same records and findings the in-memory path (the markdown bundle's)
-    # builds for these hosts.
+    # The chunked path writes the same records the agents' report-context
+    # stream yields for these hosts (one builder, two readers), in one chunk.
     gen = ReportGenerator(db_session, test_user, project_id=test_project.id)
-    old, _artifacts = gen._build_export_dataset(gen.get_hosts_for_report({}, cap=10), {})
+    whole = list(gen.iter_host_records(
+        db_session.query(models.Host.id).filter(models.Host.project_id == test_project.id),
+        chunk_size=50,
+    ))
     roundtrip = lambda v: json.loads(json.dumps(v, default=str))  # noqa: E731
-    assert payload["hosts"] == roundtrip(sorted(old["hosts"], key=lambda h: h["identity"]["ip_address"]))
-    assert payload["findings"] == roundtrip(old["findings"])
+    assert payload["hosts"] == roundtrip(whole)
+    # A script's output is not in the record; ``output_ref`` says it had one.
+    (script,) = payload["hosts"][-1]["host_scripts"]
+    assert script["script_id"] == "smb-os-discovery"
+    assert script["output_ref"] == f"artifacts/hosts/{host_id}/host_scripts/smb-os-discovery.txt"
+    assert "output" not in script
     service._remove_artifact(done)
 
-    done = run("agent-package")
-    assert done.truncated is False
-    bundle = zipfile.ZipFile(Path(done.result_path))
-    lines = bundle.read("hosts.ndjson").decode().splitlines()
-    assert len(lines) == 5
-    manifest = json.loads(bundle.read("manifest.json"))
-    assert manifest["counts"]["hosts"] == 5 and manifest["truncated"] is False
-    assert f"artifacts/hosts/{host.id}/host_scripts/smb-os-discovery.txt" in bundle.namelist()
-    service._remove_artifact(done)
-
-    done = run("markdown-bundle")
-    assert done.truncated is True
+    # ``inventory`` is the hosts alone: no project-wide roll-ups.
+    job = service.create_job(
+        db_session, project_id=test_project.id, requested_by_id=test_user.id,
+        format="json", report_type="inventory", filters={},
+    )
+    assert service.poll_and_run_one() is True
+    done = db_session.get(ReportJob, job.id)
+    db_session.refresh(done)
+    assert done.status == "completed", done.error_message
+    assert done.result_filename.startswith("hosts_inventory_")
+    payload = json.loads(Path(done.result_path).read_bytes())
+    assert payload["report_type"] == "inventory" and len(payload["hosts"]) == 5
+    assert not {"findings", "hotspots", "systemic"} & set(payload)
     service._remove_artifact(done)
 
 
@@ -284,32 +310,17 @@ def test_completion_is_fenced_against_a_reclaimed_lease(
     assert job.result_path is None, "a stale worker published a result over the peer"
 
 
-def test_report_limits_reflect_generator_caps(client, test_project):
-    """GET /reports/limits reports the caps the worker/endpoints actually apply,
-    per format, so the dialog never shows a number the server won't honour."""
-    from app.services.report_generator import ReportGenerator
-    from app.services.report_job_service import ReportJobService
-
-    r = client.get(f"/api/v1/projects/{test_project.id}/reports/limits")
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert set(body) == {"in_memory_host_cap", "streamed_host_cap", "per_format"}
-    assert body["in_memory_host_cap"] == ReportGenerator.MAX_INMEMORY_REPORT_HOSTS
-    assert body["streamed_host_cap"] == ReportGenerator.MAX_REPORT_HOSTS
-    pf = body["per_format"]
-    assert pf["csv"] is None
-    assert pf["html"] == ReportGenerator.MAX_REPORT_HOSTS
-    # The streamed async formats are uncapped; the markdown bundle is built in
-    # memory and listed at the in-memory cap.
-    from app.services.report_job_service import STREAMED_REPORT_FORMATS
-    for fmt in STREAMED_REPORT_FORMATS:
-        assert pf[fmt] is None
-    assert pf["markdown-bundle"] == ReportGenerator.MAX_INMEMORY_REPORT_HOSTS
-    ReportJobService._render  # the renderer it maps onto exists
+def test_a_job_response_does_not_say_truncated(client, db_session, test_project, test_user):
+    """Nothing can be capped any more, so the job no longer carries a flag
+    that could only ever say "no" (``GET /reports/limits`` and the
+    ``X-Report-Truncated`` header went with it)."""
+    job = _job(db_session, test_project.id, "queued", requested_by_id=test_user.id)
+    body = client.get(f"/api/v1/projects/{test_project.id}/reports/jobs/{job.id}").json()
+    assert body["id"] == job.id and "truncated" not in body
 
 
 # ---------------------------------------------------------------------------
-# Completion notification — heavy exports outlive the export dialog, so the
+# Completion notification — the JSON download outlives its dialog, so the
 # requester is told when one finishes.  Fenced: a stale attempt never notifies.
 # ---------------------------------------------------------------------------
 def _report_notifications(db, job_id):

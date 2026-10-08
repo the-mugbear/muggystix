@@ -254,6 +254,97 @@ def test_search_keeps_its_port_subquery_inside_the_project(db_session, test_user
 
 
 # ---------------------------------------------------------------------------
+# Review 2026-10-07 — the other child tables as EXISTS
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def child_estate(db_session, test_project, test_user):
+    """Hosts with a web path, a web interface, a tag, a site and a review —
+    one of each — plus a host with nothing, a web row with NO host, and the
+    same rows in another project."""
+    pid = test_project.id
+    other = _project(db_session, "exists-other")
+    tag_ids = {}
+    for project_id in (pid, other.id):
+        scan = _scan(db_session, project_id, tool="httpx")
+        scope = Scope(project_id=project_id, name="s")
+        tag = models.HostTag(project_id=project_id, name="crown")
+        db_session.add_all([scope, tag])
+        db_session.flush()
+        tag_ids[project_id] = tag.id
+        subnet = Subnet(scope_id=scope.id, cidr="10.7.0.0/24", site="HQ")
+        db_session.add(subnet)
+        db_session.flush()
+        hosts = [_host(db_session, project_id, f"10.7.0.{n}") for n in range(1, 7)]
+        db_session.add(models.WebPath(project_id=project_id, host_id=hosts[0].id, scan_id=scan.id,
+                                      source="ffuf", url="http://10.7.0.1/admin", path="/admin"))
+        db_session.add(models.WebInterface(
+            scan_id=scan.id, project_id=project_id, host_id=hosts[1].id, source="httpx",
+            url="http://10.7.0.2/", server_header="nginx/1.14", technologies=["WordPress"]))
+        db_session.add(models.WebInterface(   # an interface nobody tied to a host
+            scan_id=scan.id, project_id=project_id, host_id=None, source="httpx",
+            url="http://orphan.example/", server_header="nginx/1.14", technologies=["WordPress"]))
+        db_session.add(models.HostTagAssignment(host_id=hosts[2].id, tag_id=tag.id))
+        db_session.add(HostSubnetMapping(host_id=hosts[3].id, subnet_id=subnet.id))
+        db_session.add(HostFollow(host_id=hosts[4].id, user_id=test_user.id,
+                                  status=models.FollowStatus.REVIEWED))
+    db_session.flush()
+    return pid, other.id, tag_ids
+
+
+def _old_in(db, column, *conditions, joins=()):
+    """The predicates as they stood: ``Host.id IN`` an uncorrelated subquery
+    over every project's rows."""
+    sub = db.query(column)
+    for target, on in joins:
+        sub = sub.join(target, on)
+    return models.Host.id.in_(sub.filter(column.isnot(None), *conditions))
+
+
+@pytest.mark.parametrize("name", ["webpath", "tech", "has_web", "header", "tag", "site", "follow_none"])
+def test_child_table_predicates_as_exists_select_what_in_selected(db_session, test_user, child_estate, name):
+    pid, other_id, tag_ids = child_estate
+    WI = models.WebInterface
+    for project_id in (pid, other_id):
+        new, old = {
+            "webpath": (P.webpath_predicate(db_session, ["admin"]),
+                        _old_in(db_session, models.WebPath.host_id, models.WebPath.path.ilike("%admin%"))),
+            "tech": (P.tech_predicate(db_session, ["wordpress"]),
+                     _old_in(db_session, WI.host_id, cast(WI.technologies, String).ilike("%wordpress%"))),
+            "has_web": (P.has_web_interface_predicate(db_session), _old_in(db_session, WI.host_id)),
+            "header": (P.header_predicate(db_session, ["nginx"]),
+                       _old_in(db_session, WI.host_id, WI.server_header.ilike("%nginx%"))),
+            "tag": (P.tag_predicate_by_id(db_session, [tag_ids[project_id]]),
+                    _old_in(db_session, models.HostTagAssignment.host_id,
+                            models.HostTagAssignment.tag_id.in_([tag_ids[project_id]]))),
+            "site": (P.site_predicate(db_session, ["HQ"]),
+                     _old_in(db_session, HostSubnetMapping.host_id, Subnet.site.in_(["HQ"]),
+                             joins=[(Subnet, Subnet.id == HostSubnetMapping.subnet_id)])),
+            "follow_none": (
+                P.follow_predicate(db_session, "none", test_user),
+                ~_old_in(db_session, HostFollow.host_id, HostFollow.status.in_(("in_review", "reviewed")))),
+        }[name]
+        selected = _ids(db_session, project_id, new)
+        assert selected == _ids(db_session, project_id, old), name
+        assert 0 < len(selected) < 6, name     # the fixture really tells hosts apart
+        # … and negated, where NOT IN and NOT EXISTS would part ways.
+        assert _ids(db_session, project_id, ~new) == _ids(db_session, project_id, ~old), name
+
+
+@pytest.mark.parametrize("q", [
+    "NOT path:admin", "path:admin OR port:8080", "NOT tech:wordpress", "NOT has:web",
+    "NOT header:nginx", "follow:none", "NOT site:HQ",
+])
+def test_child_table_filters_never_reach_postgres_as_in_or_not_in(db_session, test_user, child_estate, q):
+    pid, _other, _tags = child_estate
+    query = build_filtered_host_query(db_session, test_user, project_id=pid, q=q).with_entities(models.Host.id)
+    sql = str(query.statement.compile(dialect=db_session.get_bind().dialect))
+    assert "EXISTS (SELECT" in sql, sql
+    assert " IN (SELECT" not in sql, sql
+    query.all()
+
+
+# ---------------------------------------------------------------------------
 # R21 — "untouched" as NOT EXISTS
 # ---------------------------------------------------------------------------
 

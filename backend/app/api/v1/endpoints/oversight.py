@@ -21,7 +21,7 @@ every field below says which.
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -33,9 +33,11 @@ from app.db.models_auth import User
 from app.db.models_project import Project
 from app.db.session import get_db
 from app.services.engagement_metrics_service import (
-    SEVERITIES, SeverityCounts, StateCounts, Window, growth_series, organisation_accounts,
-    period_activity, project_engagement, projects_with_tester, tester_rows,
+    REMEDIATION_STATES, SEVERITIES, SeverityCounts, StateCounts, Window, growth_series,
+    organisation_accounts, period_activity, project_engagement, projects_with_tester,
+    remediation_counts, tester_rows,
 )
+from app.services import remediation_policy
 from app.services.project_signals_service import IN_PROGRESS_STATUSES, project_signals
 
 router = APIRouter()
@@ -62,6 +64,73 @@ class FindingStates(BaseModel):
     under_investigation: int = 0     # open / retest
     confirmed: int = 0
     closed: int = 0                  # accepted risk / remediated
+
+
+class RemediationCounts(BaseModel):
+    """Findings on hosts by where the fix stands (the Remediation page's
+    counts).  Present only on an installation that turned remediation
+    tracking on (v2.461.0 — it was a per-project opt-in)."""
+    open: int = 0
+    closed: int = 0
+    deferred: int = 0
+    # The open rows, by deadline state (they add up to `open`).
+    overdue: int = 0
+    due_soon: int = 0
+    on_track: int = 0
+    not_assigned: int = 0
+    no_deadline: int = 0
+    # Days past the deadline of the most overdue open row; null when none is.
+    longest_overdue_days: Optional[int] = None
+    # The overdue rows by the finding's severity, and by how many days past
+    # the deadline they are; each group adds up to `overdue`.
+    overdue_critical: int = 0
+    overdue_high: int = 0
+    overdue_medium: int = 0
+    overdue_low: int = 0
+    overdue_info: int = 0
+    overdue_age_1_7: int = 0
+    overdue_age_8_30: int = 0
+    overdue_age_31_90: int = 0
+    overdue_age_90_plus: int = 0
+    # Mean days from assigned to closed over the closed rows carrying both
+    # dates (`closed_measured` of them); null when there is none.
+    avg_days_to_close: Optional[float] = None
+    closed_measured: int = 0
+    # Closed after the deadline frozen at close, out of the closed rows that
+    # had a deadline.
+    closed_late: int = 0
+    closed_with_deadline: int = 0
+
+
+class RemediationSummary(RemediationCounts):
+    """The projects of the selection, added up (the longest overdue is the
+    longest of any; the average is over every measured row, not an average of
+    the projects' averages)."""
+    projects: int = 0
+    # The installation's timeline, so the page can say what "overdue" means.
+    days: Dict[str, Optional[int]] = {}
+    due_soon_days: int = 0
+
+
+_REMEDIATION_SUMS = (*REMEDIATION_STATES, "overdue", "due_soon", "on_track", "not_assigned", "no_deadline",
+                     "overdue_critical", "overdue_high", "overdue_medium", "overdue_low", "overdue_info",
+                     "overdue_age_1_7", "overdue_age_8_30", "overdue_age_31_90", "overdue_age_90_plus",
+                     "closed_measured", "closed_late", "closed_with_deadline")
+
+
+def _remediation(c: Dict[str, Any]) -> Dict[str, Any]:
+    n = c["closed_measured"]
+    return {
+        **{k: c[k] for k in (*_REMEDIATION_SUMS, "longest_overdue_days")},
+        "avg_days_to_close": round(c["days_to_close_total"] / n, 1) if n else None,
+    }
+
+
+def _remediation_total(per_project: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
+    rows = list(per_project.values())
+    waits = [c["longest_overdue_days"] for c in rows if c["longest_overdue_days"] is not None]
+    summed = {k: sum(c[k] for c in rows) for k in (*_REMEDIATION_SUMS, "days_to_close_total")}
+    return _remediation({**summed, "longest_overdue_days": max(waits) if waits else None})
 
 
 class SeverityRate(BaseModel):
@@ -103,6 +172,9 @@ class ProjectRow(BaseModel):
     # non-false-positive finding endpoint at that severity (was "defect").
     defect_rate: SeverityRate = SeverityRate()
     last_scan_at: Optional[datetime] = None
+    # Null unless the installation tracks remediation.  Always the current
+    # state: the dates and the tester filter do not apply to it.
+    remediation: Optional[RemediationCounts] = None
     # Selected period
     targets_added: int = 0
     reviews_concluded: int = 0
@@ -171,6 +243,9 @@ class OversightSummary(BaseModel):
     contributors: int
     unattributed_events: int
     severity: SeverityBlock
+    # Null on an installation that does not track remediation, so it sees
+    # nothing about it.
+    remediation: Optional[RemediationSummary] = None
 
 
 class AttentionCounts(BaseModel):
@@ -323,6 +398,7 @@ def get_oversight_dashboard(
     )
     activity, contributors, unattributed = period_activity(db, ids, window, tester_id=tester_id)
     signals = project_signals(db, cohort, now)
+    remediation = remediation_counts(db, ids)
 
     rows: List[ProjectRow] = []
     attention = AttentionCounts()
@@ -364,6 +440,7 @@ def get_oversight_dashboard(
             observations_unjudged=_sev(e.observations_unjudged),
             defect_rate=_rate(defects[p.id].defect_targets, e.hosts_tested),
             last_scan_at=s.last_scan_at,
+            remediation=RemediationCounts(**_remediation(remediation[p.id])) if p.id in remediation else None,
             targets_added=a.targets_added, reviews_concluded=a.reviews_concluded,
             imports=a.imports, contributors=a.contributors,
             attention_reasons=reasons,
@@ -401,6 +478,10 @@ def get_oversight_dashboard(
             observations_unjudged=_sev(tot_unjudged), tested_targets=tot["tested"],
             defect_targets=_sev(tot_defect), defect_rate=_rate(tot_defect, tot["tested"]),
         ),
+        remediation=RemediationSummary(
+            projects=len(remediation), **_remediation_total(remediation),
+            **{k: v for k, v in remediation_policy.load(db).as_dict().items() if k != "enabled"},
+        ) if remediation else None,
     )
 
     names = {p.id: p.name for p in all_projects}

@@ -33,6 +33,7 @@ import { useCanStartAgentSession } from '../hooks/useCanStartAgentSession';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { safeFallback } from '../utils/uiStyles';
 import { formatApiError } from '../utils/apiErrors';
+import { InfoTip } from '../components/ui/info-tip';
 import PostureLead, { LeadTone } from '../components/posture/PostureLead';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
@@ -191,18 +192,14 @@ const SessionsLead: React.FC<{
   // two pages cannot say different things about the same sessions.
   const summary = liveSessionsSummary(live);
   const tone: LeadTone = summary.waiting ? 'warning' : 'neutral';
-  const parts: string[] = [summary.text];
-  if (hygiene && hygiene.lapsed > 0) {
-    parts.push(`${plural(hygiene.lapsed, 'session')} in the last ${windowDays ?? 14} days lapsed without ending.`);
-  }
-  return (
-    <PostureLead
-      tone={tone}
-      restsOn="Live = an agent can use the session's key right now. A session whose key ran out inside its lifetime is resumable by the operator who started it: same session, a new key. Ending a session revokes its key; the tests it proposed and the evidence it recorded stay."
-    >
-      {parts.join(' ')}
-    </PostureLead>
-  );
+  const lapsed = hygiene && hygiene.lapsed > 0
+    ? `${plural(hygiene.lapsed, 'session')} in the last ${windowDays ?? 14} days lapsed without ending.`
+    : null;
+  // Nothing live: the Live now section's empty state says so, once, with the
+  // Start button — the lead keeps only what that state does not say.
+  const parts = [live.length > 0 ? summary.text : null, lapsed].filter(Boolean);
+  if (parts.length === 0) return null;
+  return <PostureLead tone={tone}>{parts.join(' ')}</PostureLead>;
 };
 
 /** v5.219.0 — session hygiene: are sessions exiting cleanly, and are they
@@ -534,11 +531,6 @@ const ProjectActivity: React.FC = () => {
       <div className="flex items-start justify-between gap-sm">
         <div className="min-w-0 flex-1">
           <h1 className="text-page-title">Agent Sessions</h1>
-          <p className="mt-xxs max-w-4xl text-metadata text-muted-foreground">
-            Every session an operator has handed an agent on this project: what is live, the
-            tests each one proposed and the evidence it recorded, and the controls to resume or end it. Open a
-            session for its notes and every call it made.
-          </p>
         </div>
         <div className="flex shrink-0 items-center gap-xs">
           {canStartAgent && <StartSessionButton />}
@@ -565,8 +557,12 @@ const ProjectActivity: React.FC = () => {
       )}
 
       <PostureSection
-        title={<>Live now {live && live.length > 0 && <SectionCount>{live.length}</SectionCount>}</>}
-        description="Active sessions — ones an agent can use now, and ones whose key ran out that their operator can resume."
+        title={(
+          <>
+            Live now {live && live.length > 0 && <SectionCount>{live.length}</SectionCount>}
+            <InfoTip text="Live = an agent can use the session's key right now. A session whose key ran out inside its lifetime is resumable by the operator who started it: same session, a new key. Ending a session revokes its key; the tests it proposed and the evidence it recorded stay." />
+          </>
+        )}
       >
         {liveError && (
           <div className="flex flex-wrap items-center gap-xs">
@@ -588,8 +584,7 @@ const ProjectActivity: React.FC = () => {
             action={canStartAgent ? { to: START_SESSION_PATH, label: 'Start agent session' } : undefined}
           >
             A session lets an agent query this project, upload scans, propose tests on hosts and
-            record what it ran as evidence, with your permissions. It shows here while it runs, with
-            its work and the controls to resume or end it.
+            record what it ran as evidence, with your permissions.
           </PostureEmpty>
         )}
         {live != null && live.length > 0 && (
@@ -634,8 +629,12 @@ const ProjectActivity: React.FC = () => {
       </PostureSection>
 
       <PostureSection
-        title="History"
-        description="One row per session, newest first, with the work it opened. Older rows, from before one session did all the work, open their own pages."
+        title={(
+          <>
+            History
+            <InfoTip text="One row per session, newest first, with the work it opened. Older rows, from before one session did all the work, open their own pages." />
+          </>
+        )}
         actions={(
           <>
             {loading && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}

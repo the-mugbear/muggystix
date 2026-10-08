@@ -221,12 +221,13 @@ describe('Scans — layout', () => {
     renderPage();
     const link = await screen.findByRole('link', { name: /1 failed import needs attention/ });
     expect(link).toHaveAttribute('href', '/parse-errors?status=needs_attention');
-    expect(screen.getByTestId('ingestion-queue')).toHaveTextContent('1 needs attention');
+    // Said once, in the lead: the queue strip does not repeat the figure.
+    expect(screen.getByTestId('ingestion-queue')).not.toHaveTextContent(/needs? attention/);
   });
 
   // Local Network, 2026-09-24: the queue box said "1 failed" (its 25 most
   // recent jobs) while the lead and Ingestion Results said 4 need attention.
-  it('the queue box and the lead give the same needs-attention figure', async () => {
+  it('the queue box never gives a needs-attention figure of its own', async () => {
     api.getScansSummary.mockResolvedValue({
       total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 },
       imports_need_attention: 4, imports_not_imported: 0,
@@ -237,10 +238,8 @@ describe('Scans — layout', () => {
     renderPage();
     await screen.findByRole('link', { name: /4 failed or partial imports need attention/ });
     const queue = screen.getByTestId('ingestion-queue');
-    expect(queue).toHaveTextContent('4 need attention');
+    expect(queue).not.toHaveTextContent(/needs? attention/);
     expect(queue).not.toHaveTextContent('1 failed');
-    expect(within(queue).getByRole('link', { name: '4 need attention' }))
-      .toHaveAttribute('href', '/parse-errors?status=needs_attention');
     expect(queue).toHaveTextContent('Show 1 recent job');
   });
 
@@ -438,5 +437,27 @@ describe('Scans — a failed load', () => {
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('newest.xml')).toBeInTheDocument();
     expect(screen.queryByTestId('history-error')).not.toBeInTheDocument();
+  });
+
+  // A failed summary was only logged: the lead and the tool counts went on
+  // showing the PREVIOUS filter's figures beside the new filter's rows.
+  it('a summary that could not be read is said as not counted, never shown as the previous filter’s counts', async () => {
+    api.getScansSummary.mockResolvedValueOnce({
+      total_scans: 40, total_files: 40, total_hosts: 9, up_hosts: 9, open_services: 12,
+      tool_counts: { NMAP: 40 }, imports_need_attention: 4, imports_not_imported: 0,
+    });
+    api.getScansSummary.mockRejectedValue(new Error('boom'));
+    renderPage();
+    await screen.findByRole('link', { name: /4 failed or partial imports need attention/ });
+    expect(leadText()).toContain('40 files imported');
+
+    fireEvent.change(screen.getByLabelText('Search scan inventory'), { target: { value: 'dmz' } });
+    await waitFor(() => expect(api.getScansSummary).toHaveBeenCalledWith(expect.objectContaining({ search: 'dmz' })));
+    await waitFor(() => expect(leadText()).toMatch(/imported files matching these filters could not be counted/));
+    expect(leadText()).not.toContain('40');
+    expect(leadText()).not.toMatch(/nothing failed/);
+    expect(screen.queryByRole('link', { name: /need attention/ })).not.toBeInTheDocument();
+    // The tool chooser names the tools it knows, with no count.
+    expect(screen.getByRole('combobox', { name: 'Filter scans by tool' })).toHaveTextContent('All tools (—)');
   });
 });

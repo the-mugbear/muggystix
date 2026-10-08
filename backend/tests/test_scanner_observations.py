@@ -87,6 +87,12 @@ def test_min_hosts_and_search_and_severity(client, test_project, estate):
     shared = client.get(_url(test_project), params={"min_hosts": 2}).json()
     assert {r["severity"] for r in shared["items"]} == {"medium", "low"}
     assert client.get(_url(test_project), params={"search": "CVE-2023"}).json()["total"] == 1
+    # A wildcard typed into the search is text (review 2026-10-07): "%" used
+    # to match every issue and "_" any one character.
+    everything = client.get(_url(test_project)).json()["total"]
+    assert everything > 1
+    assert client.get(_url(test_project), params={"search": "%"}).json()["total"] == 0
+    assert client.get(_url(test_project), params={"search": "CVE_2023"}).json()["total"] == 0
     assert client.get(_url(test_project), params={"severity": "low"}).json()["total"] == 1
     assert client.get(_url(test_project), params={"severity": "bogus"}).status_code == 422
 

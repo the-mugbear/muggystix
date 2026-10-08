@@ -53,6 +53,7 @@ vi.mock('../../hooks/useVisibilityPoll', async () => {
 import * as api from '../../services/api';
 import Reports from '../../pages/Reports';
 import ReportDetail from '../../pages/ReportDetail';
+import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -80,7 +81,9 @@ const pdf = { format: 'pdf', filename: 'x-report-01.pdf', media_type: 'applicati
 
 beforeEach(() => {
   vi.clearAllMocks();
-  auth.user = { id: 99, username: 'admin', full_name: 'Administrator', role: 'admin' };
+  // The roster is cached per project for the page's lifetime, not a test's.
+  resetProjectMembersCache();
+  auth.user ={ id: 99, username: 'admin', full_name: 'Administrator', role: 'admin' };
   mocked.listReportTemplates.mockResolvedValue([{ name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx'] }]);
   mocked.getReportProfile.mockResolvedValue({ ...settings, template: 'pentest' });
   mocked.listProjectMembers.mockResolvedValue([]);
@@ -117,7 +120,7 @@ describe('Reports list', () => {
   });
 
   // v5.288.0: three drafts under the default title could not be told apart.
-  it('tells drafts with the same title apart by number, start time and template', async () => {
+  it('tells drafts with the same title apart by start time and template, under their number', async () => {
     const title = 'Demo — security assessment report';
     mocked.listClientReports.mockResolvedValue({
       items: [
@@ -129,9 +132,9 @@ describe('Reports list', () => {
     renderList();
     const a = await screen.findByTestId('draft-meta-12');
     const b = screen.getByTestId('draft-meta-13');
-    expect(a).toHaveTextContent(/^Draft #12 · started .+ · template pentest$/);
-    expect(b).toHaveTextContent(/^Draft #13 · started .+ · template brief$/);
-    expect(a.textContent).not.toBe(b.textContent?.replace('#13', '#12'));
+    expect(a).toHaveTextContent(/^started .+ · template pentest$/);
+    expect(b).toHaveTextContent(/^started .+ · template brief$/);
+    expect(a.textContent).not.toBe(b.textContent);
     // U8: the number leads the row in its own cell, and the line under the
     // title wraps with its whole text on hover instead of being cut.
     expect(screen.getByTestId('draft-number-12')).toHaveTextContent(/^#12$/);

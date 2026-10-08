@@ -254,11 +254,6 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
 
   return (
     <div>
-      <p className="mb-sm text-metadata text-muted-foreground">
-        What the scanners reported, grouped by issue across every host. Promote an issue to record it as a finding — on
-        every host that carries it, or only the hosts you tick under it.
-      </p>
-
       {/* The shared filter row (v5.294.0), as on the Findings view. */}
       <ListFilterBar className="mb-md">
         <ListFilterSearch
@@ -317,7 +312,9 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                 <strong>{plural(chosen.length, 'issue')}</strong> selected · {plural(chosenHosts, 'host')}
               </>
             ) : (
-              <span className="text-muted-foreground">Select issues to promote them to findings</span>
+              <span className="text-muted-foreground">
+                Tick issues to promote them to findings — on every host, or only the hosts you tick under one
+              </span>
             )}
           </span>
           {chosen.length > 0 && (
@@ -422,11 +419,13 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                         </TableCell>
                         <TableCell className="tabular-nums">
                           <p>{plural(issue.host_count, 'host')}</p>
-                          <p className="text-caption text-muted-foreground">
-                            {issue.judged_host_count > 0
-                              ? `${issue.judged_host_count} covered · ${waiting(issue)} not yet judged`
-                              : 'none judged yet'}
-                          </p>
+                          {/* Said only when it tells rows apart: most issues have
+                              no judged host, and the list is of those. */}
+                          {issue.judged_host_count > 0 && (
+                            <p className="text-caption text-muted-foreground">
+                              {issue.judged_host_count} covered · {waiting(issue)} not yet judged
+                            </p>
+                          )}
                           {narrowed && selected.has(key) && (
                             <p className="text-caption text-primary">{narrowed.size} of {issue.host_count} ticked</p>
                           )}

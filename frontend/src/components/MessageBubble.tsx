@@ -16,6 +16,7 @@ import { CornerDownRight } from 'lucide-react';
 import { AgentAuthorBadge } from './AgentAuthorBadge';
 import { TimeAgo } from './TimeAgo';
 import { cn } from '../utils/cn';
+import { formatTimestamp } from '../utils/relativeTime';
 
 export interface MessageBubbleProps {
   /** The viewer wrote it — shown on the right, in the viewer's tint. */
@@ -69,7 +70,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
         <AgentAuthorBadge actorType={actorType ?? undefined} />
         <span className="text-caption text-muted-foreground">
           <TimeAgo value={createdAt} absoluteAfterDays={30} />
-          {edited && <span title={editedAt ? `Edited ${new Date(editedAt).toLocaleString()}` : undefined}> · edited</span>}
+          {edited && <span title={editedAt ? `Edited ${formatTimestamp(editedAt)}` : undefined}> · edited</span>}
         </span>
       </div>
       {!mine && metaControls}

@@ -442,3 +442,21 @@ def test_a_project_subset_stays_admin_only(client, db_session, test_project):
         assert client.get(URL, params={"project_id": [test_project.id]}).status_code == 403
     finally:
         app.dependency_overrides.pop(get_current_user, None)
+
+
+# ---------------------------------------------------------------------------
+# Remediation tracking is the INSTALLATION's choice (v2.461.0).  What Oversight
+# shows once it is on is pinned in test_remediation_deadlines.py.
+# ---------------------------------------------------------------------------
+
+def test_an_installation_that_did_not_opt_in_shows_nothing_about_remediation(client, db_session, test_project):
+    """A team that does not track remediation sees no block and no column
+    value — never its reportable findings counted as 'open'."""
+    host = _host(db_session, test_project, "10.80.0.1")
+    _finding(db_session, test_project, "high", [host])
+    db_session.commit()
+    body = client.get(URL).json()
+    assert body["summary"]["remediation"] is None
+    assert _row(body, test_project.id)["remediation"] is None
+
+

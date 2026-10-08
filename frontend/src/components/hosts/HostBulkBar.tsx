@@ -13,7 +13,6 @@ import ProposeTestsDialog from './ProposeTestsDialog';
 import { describeSelection } from '../../utils/hostSelection';
 import {
   HostTagWithCount,
-  ProjectMember,
   FollowStatus,
   bulkTagHosts,
   bulkAssignHosts,
@@ -21,8 +20,9 @@ import {
   bulkFollowHosts,
   getMatchingHostIds,
   listHostTags,
-  listProjectMembers,
 } from '../../services/api';
+import { useProjectRoster } from '../../hooks/useProjectMembers';
+import { MEMBERS_LOAD_ERROR } from '../MembersLoadError';
 import { useAuth } from '../../contexts/AuthContext';
 import { useProjectRole } from '../../hooks/useProjectRole';
 import { useToast } from '../../contexts/ToastContext';
@@ -125,14 +125,14 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   };
 
   const [tags, setTags] = useState<HostTagWithCount[]>([]);
-  const [members, setMembers] = useState<ProjectMember[]>([]);
+  const roster = useProjectRoster({ enabled: canWrite });
+  const members = roster.members;
   const [checkedTagIds, setCheckedTagIds] = useState<Set<number>>(new Set());
   const [newTagName, setNewTagName] = useState('');
 
   useEffect(() => {
     if (!canWrite) return;  // the pickers these fill are not rendered
     listHostTags().then(setTags).catch(() => setTags([]));
-    listProjectMembers().then(setMembers).catch(() => setMembers([]));
   }, [canWrite]);
 
   // Leaving select-all-matching when the page selection changes keeps the
@@ -366,7 +366,14 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
                   </DropdownMenuItem>
                 );
               })}
-            {members.length === 0 && !user && (
+            {roster.status === 'error' ? (
+              // Stays open: the retry fills this same menu.
+              <DropdownMenuItem onSelect={(e) => { e.preventDefault(); roster.retry(); }}>
+                {MEMBERS_LOAD_ERROR} Retry
+              </DropdownMenuItem>
+            ) : roster.status === 'loading' ? (
+              <DropdownMenuItem disabled>Loading members…</DropdownMenuItem>
+            ) : members.length === 0 && !user && (
               <DropdownMenuItem disabled>No members</DropdownMenuItem>
             )}
             {user && (

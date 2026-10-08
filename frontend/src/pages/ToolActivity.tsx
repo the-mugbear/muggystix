@@ -58,6 +58,7 @@ import {
   TooltipTrigger,
 } from '../components/ui/tooltip';
 import { safeFallback } from '../utils/uiStyles';
+import { formatTimestamp } from '../utils/relativeTime';
 import { ActivityHistogram } from '../components/ActivityHistogram';
 import { PostureSection, SectionCount } from '../components/posture/PostureSection';
 import { useProject } from '../contexts/ProjectContext';
@@ -105,12 +106,7 @@ function localInputToUtcIso(local: string): string {
 }
 
 function fmt(iso: string | null): string {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+  return formatTimestamp(iso);
 }
 
 // Compact `YYYY-MM-DD HH:MM:SS` for table cells.  `toLocaleString()`

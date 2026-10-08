@@ -66,6 +66,57 @@ def test_retention_sweep_removes_old_finished_files_only(client, db_session, tes
     assert retained_until(old) is None
 
 
+def test_the_sweep_looks_at_a_finished_job_once_not_every_minute(client, db_session, test_project):
+    """Review 2026-10-07: the rows stay for ever, so every sweep locked and
+    committed once per job the instance had ever finished."""
+    from sqlalchemy import event
+
+    job_id = _upload(client, test_project, NMAP_XML, "seen.xml", stage=True).json()["job_id"]
+    _finish(db_session, job_id, "completed", datetime.now(timezone.utc) - timedelta(days=9))
+    assert expire_retained_files(db_session) == 1
+
+    locked = []
+
+    def count_row_locks(conn, cursor, statement, parameters, context, executemany):
+        if "FOR UPDATE" in statement.upper():
+            locked.append(statement)
+
+    engine = db_session.get_bind().engine
+    event.listen(engine, "before_cursor_execute", count_row_locks)
+    try:
+        assert expire_retained_files(db_session) == 0
+    finally:
+        event.remove(engine, "before_cursor_execute", count_row_locks)
+    assert locked == []
+
+
+def test_a_file_the_sweep_cannot_remove_is_said_and_tried_again(client, db_session, test_project, monkeypatch):
+    import logging
+
+    from app.services import staged_import_service
+
+    job_id = _upload(client, test_project, NMAP_XML, "stuck.xml", stage=True).json()["job_id"]
+    job = _finish(db_session, job_id, "completed", datetime.now(timezone.utc) - timedelta(days=9))
+    warnings = []
+
+    class _Capture(logging.Handler):  # ``app`` loggers do not reach caplog's root handler
+        def emit(self, record):
+            warnings.append(record.getMessage())
+
+    handler = _Capture(level=logging.WARNING)
+    staged_import_service.logger.addHandler(handler)
+    real_rmtree = staged_import_service.shutil.rmtree
+    monkeypatch.setattr(staged_import_service.shutil, "rmtree", lambda *a, **k: None)
+    try:
+        assert expire_retained_files(db_session) == 0
+    finally:
+        staged_import_service.logger.removeHandler(handler)
+    assert any("Could not remove the retained file" in w for w in warnings)
+    monkeypatch.setattr(staged_import_service.shutil, "rmtree", real_rmtree)
+    assert expire_retained_files(db_session) == 1
+    assert not Path(job.storage_path).exists()
+
+
 def test_a_retry_accepted_after_the_sweep_read_keeps_its_file(client, db_session, test_project):
     """2.374.4 review H5: the sweep deleted from a snapshot read, so a retry
     accepted between its read and its delete was queued with no input file.

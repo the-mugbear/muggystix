@@ -319,6 +319,9 @@ async def upload_scanner_output(
     # a new batch before returning (v2.368.0): this handler awaits file I/O
     # next, and an uncommitted unique-index entry held across that await is
     # what froze a worker when a sweep's chunks arrived in parallel.
+    from app.services.queue_metrics_service import ensure_room_for_upload
+    ensure_room_for_upload(file.size)
+
     scan_batch = None
     if batch and batch.strip():
         from sqlalchemy.exc import OperationalError

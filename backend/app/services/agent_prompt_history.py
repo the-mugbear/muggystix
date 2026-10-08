@@ -21,6 +21,84 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.14.0",
+        "app_version": "2.463.0",
+        "summary": (
+            "One contact's remediation list as a document: POST "
+            "/agent/remediation/contact-report {contact_email, format: contact-docx | "
+            "contact-html} queues it (operator is a project admin; it records an entry "
+            "on each of the contact's hosts' timelines), GET "
+            "/agent/remediation/contact-report/{job_id} says when it is `ready`, and "
+            "…/download returns the file — curl, no MCP tool. The host export's HTML "
+            "report, agent package and Markdown bundle are retired: the inventory is "
+            "downloaded as CSV or JSON."
+        ),
+    },
+    {
+        "version": "4.13.0",
+        "app_version": "2.462.0",
+        "summary": (
+            "Remediation: remediation_list now answers what a manager asks — "
+            "`severity_counts` (overdue and due soon per severity), `overdue_ages` "
+            "(overdue rows by days past the deadline; filter with `overdue_band`) and "
+            "`not_followed_up` (at-risk rows nobody followed up recently; list them "
+            "with `no_follow_up_days`). Each row has a `team`, the group that owns the "
+            "fix: set it with remediation_apply, filter with `team`, read the rollup "
+            "with remediation_teams. remediation_trend returns the daily counts "
+            "recorded since tracking began (a day nobody recorded is absent, not "
+            "zero — say when the history starts) and closed on time / late per month."
+        ),
+    },
+    {
+        "version": "4.12.0",
+        "app_version": "2.461.0",
+        "summary": (
+            "Remediation tracking is now the INSTALLATION's choice: where it is off "
+            "every remediation tool answers 404 \"not enabled on this installation\" "
+            "— say so, do not retry. Where it is on, each finding on a host has a "
+            "deadline: the assigned date (`notified_on`) plus the installation's "
+            "days for the finding's severity, derived by the server. remediation_list "
+            "rows carry `state` (overdue, due_soon, on_track, not_assigned, "
+            "no_deadline, deferred, closed), `due_on`, `days_left`, "
+            "`closed_days_late`, `last_follow_up_on`; filter with `state` and "
+            "`severity`, order with `group=due`. remediation_contacts ranks contacts "
+            "by overdue. New: remediation_follow_up (one contact's overdue and "
+            "due-soon rows and a plain-text message for the operator to send — the "
+            "server sends nothing) and remediation_record_follow_up (record it AFTER "
+            "the operator says it was sent). Never compute or set a deadline "
+            "yourself."
+        ),
+    },
+    {
+        "version": "4.11.1",
+        "app_version": "2.458.0",
+        "summary": (
+            "remediation_apply plans the whole call before writing and its dry run "
+            "refuses what the real call would: `closed_on` goes only with status "
+            "closed (or a row already closed) — a date without it is a 422, where it "
+            "used to be stored beside an open or deferred status; one `request_key` "
+            "is one note about one finding on a host, so two different texts under "
+            "one key refuse the call and a key is never reused for another finding."
+        ),
+    },
+    {
+        "version": "4.11.0",
+        "app_version": "2.457.0",
+        "summary": (
+            "Remediation tracking: who was told about a finding on a host and where "
+            "the fix stands (contact, date notified, open / closed / deferred, "
+            "closed date), per finding ON A HOST and separate from the assessor's "
+            "statuses. New reads (remediation_list, remediation_contacts, "
+            "remediation_timeline; operator is a project auditor) and writes "
+            "(remediation_apply, remediation_add_note; operator is a project "
+            "admin). The guide carries the recipe for filling it in from a file "
+            "the operator holds: nothing is uploaded, a row that cannot be matched "
+            "to exactly one finding is reported and not written, a dry run comes "
+            "first, and a value someone set is replaced only when the operator "
+            "says so."
+        ),
+    },
+    {
         "version": "4.10.0",
         "app_version": "2.456.0",
         "summary": (

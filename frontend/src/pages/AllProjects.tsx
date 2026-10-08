@@ -26,7 +26,9 @@ import {
 import { CharacterCount } from '../components/ui/character-count';
 import { PROJECT_NAME_MAX, PROJECT_STATUSES } from './ProjectSettings';
 
-const day = (s?: string | null) => (s ? formatDate(s) : null);
+// The engagement window is a calendar day stored at UTC midnight: read the day,
+// not the instant (west of Greenwich the instant is the evening before).
+const day = (s?: string | null) => (s ? formatDate(s.slice(0, 10)) : null);
 const statusLabel = (s: string) => PROJECT_STATUSES.find((x) => x.value === s)?.label ?? s;
 
 const AllProjects: React.FC = () => {

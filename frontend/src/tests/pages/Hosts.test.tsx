@@ -3,15 +3,35 @@ import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import Hosts from '../../pages/Hosts';
 import { projectScopedKey } from '../../utils/scopedStorage';
+import { readHostsPageSize, writeHostsPageSize } from '../../utils/hostsPaging';
 
 // setupTests.ts globally mocks useLocation to a fixed empty search. Override it
 // here with a controllable value so we can exercise the URL-restore path.
 const routerState = vi.hoisted(() => ({ search: '' }));
+// One navigate for the whole file, as the router's is: the page writes its
+// filters and page into the URL through it.
+const navigateSpy = vi.hoisted(() => vi.fn());
+// What the page hands the column definitions on each render.
+const columnArgs = vi.hoisted(() => ({
+  calls: [] as Array<{ onOpen?: (id: number) => void; onFollowChange: unknown }>,
+}));
+vi.mock('../../components/hosts/useHostColumns', async () => {
+  const actual = await vi.importActual<typeof import('../../components/hosts/useHostColumns')>(
+    '../../components/hosts/useHostColumns',
+  );
+  return {
+    ...actual,
+    useHostColumns: (args: Parameters<typeof actual.useHostColumns>[0]) => {
+      columnArgs.calls.push(args);
+      return actual.useHostColumns(args);
+    },
+  };
+});
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<any>('react-router-dom');
   return {
     ...actual,
-    useNavigate: () => vi.fn(),
+    useNavigate: () => navigateSpy,
     useParams: () => ({ id: '1' }),
     useLocation: () => ({ pathname: '/hosts', search: routerState.search, hash: '', state: null }),
   };
@@ -100,9 +120,9 @@ vi.mock('../../components/HostInspector', () => ({
   default: ({ hostId }: { hostId: number }) => <div data-testid="host-inspector">host {hostId}</div>,
 }));
 
-vi.mock('../../components/ReportsDialog', () => ({
+vi.mock('../../components/InventoryDownloadDialog', () => ({
   __esModule: true,
-  default: ({ open }: { open: boolean }) => <div data-testid="reports-dialog" data-open={String(open)} />,
+  default: ({ open }: { open: boolean }) => <div data-testid="inventory-dialog" data-open={String(open)} />,
 }));
 
 vi.mock('../../components/ToolReadyOutput', () => ({
@@ -229,7 +249,90 @@ describe('Hosts', () => {
     mockedApi.deleteHostQuery.mockResolvedValue(undefined);
     mockedApi.clearHostQueryHistory.mockResolvedValue(undefined);
     sessionStorage.clear();
+    localStorage.clear();
+    columnArgs.calls.length = 0;
     routerState.search = '';
+  });
+
+  // The handlers the column definitions hold were plain closures, new on every
+  // render, so every render rebuilt every column.  They are stable now — and
+  // must still act on the list as it IS: a stale copy once opened the
+  // inspector with the previous filter context (useHostColumns' v4.7.5 note).
+  it('hands the columns stable handlers that still read the filters of now', async () => {
+    const user = userEvent.setup({ skipHover: true });
+    renderHosts();
+    await screen.findByRole('table');
+    const first = columnArgs.calls[0];
+
+    await user.click(screen.getByRole('button', { name: /Add filter/i }));
+    await user.click(await screen.findByRole('button', { name: /Scanner severity/ }));
+    await user.click(screen.getByRole('checkbox', { name: 'Critical' }));
+    await user.click(screen.getByRole('button', { name: 'Apply condition' }));
+    await waitFor(() => expect(mockedApi.getHosts).toHaveBeenLastCalledWith(
+      expect.objectContaining({ has_critical_vulns: true }), expect.anything(),
+    ));
+
+    expect(columnArgs.calls.length).toBeGreaterThan(2);
+    expect(new Set(columnArgs.calls.map((c) => c.onOpen)).size).toBe(1);
+    expect(new Set(columnArgs.calls.map((c) => c.onFollowChange)).size).toBe(1);
+
+    // The copy from the FIRST render, called after the filter changed.
+    sessionStorage.removeItem(projectScopedKey('hostFiltersState'));
+    act(() => { first.onOpen?.(2); });
+    expect(screen.getByTestId('host-inspector')).toHaveTextContent('host 2');
+    expect(JSON.parse(sessionStorage.getItem(projectScopedKey('hostFiltersState')) as string))
+      .toMatchObject({ filters: { hasCriticalVulns: true } });
+  });
+
+  // A reload, or coming back from a host's own page, dropped the reader to
+  // page 1 at 25 rows: the page was not in the URL and the size not remembered.
+  it('opens on the page the URL names and is not thrown back to the first while it loads', async () => {
+    routerState.search = '?sort_by=critical_vulns&sort_order=desc&page=2';
+    renderHosts();
+    await screen.findByRole('table');
+    await waitFor(() => expect(mockedApi.getHosts).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 25, limit: 25 }), expect.anything(),
+    ));
+    expect(mockedApi.getHosts.mock.calls.every(([p]) => (p as { skip: number }).skip === 25)).toBe(true);
+  });
+
+  it('writes the page into the URL, leaves it out for the first page, and a filter change goes back to it', async () => {
+    const user = userEvent.setup({ skipHover: true });
+    renderHosts();
+    await screen.findByRole('table');
+    const lastSearch = () => String((navigateSpy.mock.calls[navigateSpy.mock.calls.length - 1]?.[0] as { search?: string })?.search);
+    await waitFor(() => expect(lastSearch()).toContain('sort_by=critical_vulns'));
+    expect(lastSearch()).not.toContain('page=');
+
+    await user.click(screen.getByLabelText('Next page'));
+    await waitFor(() => expect(lastSearch()).toContain('page=2'));
+
+    await user.click(screen.getByRole('button', { name: /Add filter/i }));
+    await user.click(await screen.findByRole('button', { name: /Scanner severity/ }));
+    await user.click(screen.getByRole('checkbox', { name: 'Critical' }));
+    await user.click(screen.getByRole('button', { name: 'Apply condition' }));
+    await waitFor(() => expect(lastSearch()).toContain('has_critical_vulns=true'));
+    expect(lastSearch()).not.toContain('page=');
+    expect(mockedApi.getHosts).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 0 }), expect.anything());
+  });
+
+  it('remembers rows per page for the viewer, and works when nothing is stored', async () => {
+    writeHostsPageSize(50);
+    const { unmount } = renderHosts();
+    await screen.findByRole('table');
+    await waitFor(() => expect(mockedApi.getHosts).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 0, limit: 50 }), expect.anything(),
+    ));
+    unmount();
+
+    // A value the list does not offer is the default, not a request.
+    localStorage.setItem('hosts.rowsPerPage:uanon', '7');
+    expect(readHostsPageSize()).toBe(25);
+    localStorage.clear();
+    mockedApi.getHosts.mockClear();
+    renderHosts();
+    await screen.findByRole('table');
+    expect(mockedApi.getHosts).toHaveBeenCalledWith(expect.objectContaining({ limit: 25 }), expect.anything());
   });
 
   // A "service ftp" filter listed hosts whose rows never said FTP: the
@@ -268,26 +371,29 @@ describe('Hosts', () => {
     expect(screen.getByTestId('hosts-legend')).not.toHaveTextContent(/state unknown/);
   });
 
-  it('keeps both exports secondary and the query placeholder short', async () => {
+  it('keeps both header actions secondary and the query placeholder short', async () => {
     renderHosts();
     await screen.findAllByText('10.0.0.5');
-    for (const name of [/Export targets/, /Export hosts/]) {
+    for (const name of [/Export targets/, /Download inventory/]) {
       expect(screen.getByRole('button', { name })).toHaveClass('border');
     }
+    // "Export hosts" was retired (owner, 2026-10-07): the control is named
+    // for the two files it gives.
+    expect(screen.queryByRole('button', { name: /Export hosts/ })).toBeNull();
     const placeholder = screen.getByRole('combobox', { name: 'Host query' }).getAttribute('placeholder') ?? '';
     expect(placeholder.length).toBeLessThanOrEqual(60);
   });
 
-  it('opens the export tray when the URL carries ?reports=1 (report-finished deep link)', async () => {
+  it('opens the download dialog when the URL carries ?reports=1 (the "JSON is ready" deep link)', async () => {
     routerState.search = '?reports=1&job=7';
     renderHosts();
-    await waitFor(() => expect(screen.getByTestId('reports-dialog')).toHaveAttribute('data-open', 'true'));
+    await waitFor(() => expect(screen.getByTestId('inventory-dialog')).toHaveAttribute('data-open', 'true'));
   });
 
-  // Browser pass 2026-10-01 — both exports are AUDITOR on the server
+  // Browser pass 2026-10-01 — both are AUDITOR on the server
   // (`/hosts/tool-ready`, the `/reports` router).  A project viewer was
-  // offered them, and the report-finished link opened a tray whose first two
-  // reads (`/reports/jobs`, `/reports/limits`) were refused.
+  // offered them, and the report-finished link opened a dialog whose first
+  // read (`/reports/jobs`) was refused.
   describe('exports follow the project role', () => {
     afterEach(() => { viewer.projectRole = undefined; routerState.search = ''; });
 
@@ -297,8 +403,8 @@ describe('Hosts', () => {
       renderHosts();
       await screen.findAllByText('10.0.0.5');
       expect(screen.queryByRole('button', { name: /Export targets/ })).toBeNull();
-      expect(screen.queryByRole('button', { name: /Export hosts/ })).toBeNull();
-      expect(screen.getByTestId('reports-dialog')).toHaveAttribute('data-open', 'false');
+      expect(screen.queryByRole('button', { name: /Download inventory/ })).toBeNull();
+      expect(screen.getByTestId('inventory-dialog')).toHaveAttribute('data-open', 'false');
     });
 
     it('an auditor has both', async () => {
@@ -307,8 +413,8 @@ describe('Hosts', () => {
       renderHosts();
       await screen.findAllByText('10.0.0.5');
       expect(screen.getByRole('button', { name: /Export targets/ })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /Export hosts/ })).toBeInTheDocument();
-      await waitFor(() => expect(screen.getByTestId('reports-dialog')).toHaveAttribute('data-open', 'true'));
+      expect(screen.getByRole('button', { name: /Download inventory/ })).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByTestId('inventory-dialog')).toHaveAttribute('data-open', 'true'));
     });
   });
 

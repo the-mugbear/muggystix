@@ -237,7 +237,7 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "reports",
-        "description": "Generate filtered host reports in CSV, HTML, or JSON. Supports the same filter parameters as the hosts endpoint. Max 10,000 hosts per report.",
+        "description": "Download the filtered host inventory as CSV (streamed) or JSON (a report job), with the same filter parameters as the hosts endpoint and no host cap; the systemic executive briefing; and the report-job routes that client-report previews also use.",
     },
     {
         "name": "audit",
@@ -277,6 +277,10 @@ _OPENAPI_TAGS = [
     {
         "name": "agent-host-tests",
         "description": "The agent side of host tests — the same contract as `host-tests`, authenticated by the session key and attributed to the session: `POST /agent/host-tests`, `GET /agent/host-tests`, `GET`/`PATCH /agent/host-tests/{id}`. Nothing waits on approval; the result of a test is an evidence record (`POST /agent/evidence` with `host_test_id`).",
+    },
+    {
+        "name": "agent-remediation",
+        "description": "Remediation tracking for agents (v2.457.0) — the same contract as the Remediation page: `GET /agent/remediation` (one row per finding on a host, with its contact, dates and status), `GET /agent/remediation/contacts`, `GET /agent/remediation/hosts/{id}/events`, and `POST /agent/remediation/apply` to set fields from a source the operator holds (`dry_run` first). Reads need an operator who is a project auditor; writes one who is a project admin. Nothing is uploaded: the agent reads the operator's file locally and sends ids.",
     },
     {
         "name": "agent-proposals",
@@ -344,11 +348,10 @@ app.add_middleware(
     allow_headers=["*"],
     # Explicit allowlist instead of "*": with allow_credentials=True a
     # wildcard expose is over-broad, and only these response headers are
-    # actually read by the frontend (download filename, the
-    # partial-report flag and the tool-ready counts — see services/api.ts).
+    # actually read by the frontend (download filename and the tool-ready
+    # counts — see services/api.ts).
     expose_headers=[
         "Content-Disposition",
-        "X-Report-Truncated",
         "X-Tool-Ready-Total",
         "X-Tool-Ready-Returned",
         "X-Tool-Ready-Truncated",
@@ -362,6 +365,12 @@ app.add_middleware(
 # app/services/agent_api_log_service.py.
 from app.services.agent_api_log_service import AgentApiCallLogger
 app.add_middleware(AgentApiCallLogger)
+
+# Review 2026-10-07 — a body is read before authentication, so it is capped
+# before the route (and the agent logger's tee) sees it.  Inside the request
+# context so a refusal still gets its access-log line.
+from app.core.body_limit import RequestBodyLimitMiddleware
+app.add_middleware(RequestBodyLimitMiddleware, max_bytes=settings.MAX_REQUEST_BODY_BYTES)
 
 # v2.177.0 (audit B5) — request-correlation id + per-request latency.  Added
 # LAST so it sits OUTERMOST: the id is set before the agent logger / exception

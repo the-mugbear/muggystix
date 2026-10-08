@@ -68,6 +68,7 @@ import {
 } from '../components/SubnetLabelManager';
 import SiteManagerDialog from '../components/SiteManagerDialog';
 import ScopeDomainsCard from '../components/ScopeDomainsCard';
+import { InfoTip } from '../components/ui/info-tip';
 import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureSection from '../components/posture/PostureSection';
@@ -97,14 +98,25 @@ export function scopeLead(c: ScopeCoverageSummary): { sentence: string; tone: Le
       tone: 'neutral',
     };
   }
-  const parts = [
-    `${c.scoped_hosts.toLocaleString()} of ${plural(c.total_hosts, 'host')} ${c.scoped_hosts === 1 ? 'is' : 'are'} inside scoped subnets`,
-    c.name_reachable_hosts > 0 ? `${c.name_reachable_hosts.toLocaleString()} reached only through an in-scope name` : null,
-    c.out_of_scope_hosts > 0 ? `${c.out_of_scope_hosts.toLocaleString()} outside every scope` : null,
-  ].filter((p): p is string => !!p);
+  // The strip under the lead carries the three counts, each a link: the lead
+  // says the one thing to act on, not the strip again.
+  const out = c.out_of_scope_hosts;
+  const named = c.name_reachable_hosts;
+  if (out > 0) {
+    return {
+      sentence: `${out.toLocaleString()} of ${plural(c.total_hosts, 'host')} ${out === 1 ? 'is' : 'are'} outside every scope — confirm whether ${out === 1 ? 'it is' : 'they are'} in scope.`,
+      tone: 'warning',
+    };
+  }
+  if (named > 0) {
+    return {
+      sentence: `No host is outside the scope; ${named.toLocaleString()} ${named === 1 ? 'is' : 'are'} reached only through an in-scope name.`,
+      tone: 'clear',
+    };
+  }
   return {
-    sentence: `${parts.join('; ')}.`,
-    tone: c.out_of_scope_hosts > 0 ? 'warning' : 'clear',
+    sentence: `${c.scoped_hosts.toLocaleString()} of ${plural(c.total_hosts, 'host')} ${c.scoped_hosts === 1 ? 'is' : 'are'} inside scoped subnets.`,
+    tone: 'clear',
   };
 }
 
@@ -579,9 +591,6 @@ const Scopes: React.FC = () => {
       <div className="mb-md flex flex-wrap items-start gap-sm">
         <div className="min-w-0 flex-1">
           <h1 className="text-page-title font-semibold">Scope</h1>
-          <p className="text-metadata text-muted-foreground">
-            The subnets, addresses and domains this project is authorized to assess.
-          </p>
         </div>
         {/* v5.269.0 — no "Correlate Hosts": every import, subnet add, CIDR
             change and scope-file upload links hosts to subnets itself, and a
@@ -642,11 +651,12 @@ const Scopes: React.FC = () => {
       <div className="flex min-w-0 flex-col gap-lg">
         {coverage && coverageLead && (
           <>
-            <PostureLead
-              tone={coverageLead.tone}
-              restsOn="Coverage is by address: a host is in scope when a declared subnet contains it. An in-scope name never makes the address it resolves to in scope."
-            >
-              {coverageLead.sentence}
+            <PostureLead tone={coverageLead.tone}>
+              {coverageLead.sentence}{' '}
+              <InfoTip
+                label="How scope coverage is decided"
+                text="Coverage is by address: a host is in scope when a declared subnet contains it. An in-scope name never makes the address it resolves to in scope."
+              />
             </PostureLead>
             <div className="grid gap-y-md divide-border sm:grid-cols-3 lg:grid-cols-5 lg:divide-x">
               <PostureMeasure

@@ -22,8 +22,8 @@ import {
 const ROLES: { role: string; desc: string }[] = [
   { role: 'Admin', desc: 'Everything an analyst can do, plus: add and remove members and change their roles, issue a client report (and render its files again), delete a scan, manage the project’s outbound webhooks, end any agent session in the project.' },
   { role: 'Analyst', desc: 'Everything an auditor can do, plus the writes: upload scans, change the scope, review and assign hosts, tags, notes, tests and their results, promote or dismiss scanner observations, triage findings, accept or reject agent proposals, draft and revise client reports. Sees Ingestion Results.' },
-  { role: 'Auditor', desc: 'Everything a viewer can do, plus getting data out: the Reports page (client reports), Export targets / Export hosts on Hosts, the Scope and Names exports, Create briefing on the Posture pages. Can start an agent session, which is then read-only.' },
-  { role: 'Viewer', desc: 'Reads the project: Operations, hosts, names, scans, scope, findings, posture, proposals, agent sessions, collaboration, project settings. No write control, export or Reports page is shown.' },
+  { role: 'Auditor', desc: 'Everything a viewer can do, plus getting data out: the Reports page (client reports), reading the Remediation page where a global administrator has turned remediation tracking on in System settings (who each finding on each host was assigned to, its deadline and where the fix stands; a project admin records it and follows up with the contacts), Export targets / Download inventory on Hosts, the Scope and Names exports, Create briefing on the Posture pages. Can start an agent session, which is then read-only.' },
+  { role: 'Viewer', desc: 'Reads the project: Operations, hosts, names, scans, scope, findings, posture, proposals, agent sessions, collaboration, project settings. No write control, export, Reports or Remediation page is shown.' },
 ];
 
 const sections: GuideSection[] = [
@@ -139,16 +139,16 @@ const sections: GuideSection[] = [
           <li><strong>A large scope</strong> is not printed: the report gives totals and names a separate scope CSV with its SHA-256, which you download from the report's page and send with it.</li>
           <li><strong>Templates</strong> — three ship: Penetration test report, Executive brief, Remediation worklist. A global administrator uploads the logo, cover image and Word reference file on the Reports page.</li>
         </UnorderedList>
-        <Subhead>Host exports and tool-ready lists (Hosts page)</Subhead>
+        <Subhead>Tool-ready lists and the inventory download (Hosts page)</Subhead>
         <UnorderedList>
           <li><strong>Export targets</strong> — the filtered host/port list formatted for Nmap, Masscan, or custom scripts. Honours the full active filter + query.</li>
-          <li><strong>Export hosts</strong> — <em>Host dossiers</em> (everything per host — findings, scanner observations, services, site context; HTML or JSON) or <em>Host Inventory</em> (one row per host; HTML or CSV), plus two machine-readable bundles: a Markdown bundle and an NDJSON dataset for an agent. This is for reviewing the filtered hosts; it is not the client report.</li>
+          <li><strong>Download inventory</strong> — the filtered hosts as a file, every matching host in either: <em>CSV</em> (one row per host; downloads at once) or <em>JSON</em> (everything recorded per host — ports, scanner observations, findings, tests, notes — then the project&rsquo;s findings and roll-ups; prepared in the background, and you are notified when it is ready). It is not the client report, which is on the Reports page.</li>
           <li><strong>Scope and Names exports</strong> — the scope's entries and out-of-scope hosts from the Scope page; names from the Names page.</li>
         </UnorderedList>
         <Para>
-          Heavy formats (JSON and the .zip bundles) run as <strong>background report jobs</strong> on
-          a dedicated worker, so the UI never blocks. A reports tray shows recent jobs with live
-          status and lets you re-download a completed export or dismiss it.
+          The JSON is a <strong>background report job</strong> on a dedicated worker, so the UI never
+          blocks. The dialog lists recent JSON downloads with their status and lets you download a
+          finished one again, retry a failed one, or dismiss it; a file is kept for a day by default.
         </Para>
       </div>
     ),

@@ -21,6 +21,7 @@
 import { api, p, setCurrentProjectId, getCurrentProjectId } from './api/client';
 import { serializeHostParams } from './api/hosts';
 import { asAxiosError } from '../utils/apiErrors';
+import { filenameFromContentDisposition, saveBlob } from '../utils/download';
 import type { Paginated } from './api/shared';  // local use; also re-exported via the barrel below
 
 // --- Core: axios instance + project scoping ---
@@ -53,6 +54,7 @@ export * from './api/posture';
 export * from './api/projects';
 export * from './api/proposals';
 export * from './api/references';
+export * from './api/remediation';
 export * from './api/scans';
 export * from './api/scopes';
 export * from './api/shared';
@@ -392,56 +394,33 @@ export const getScanCommandExplanation = async (scanId: number): Promise<Command
 // Parse Error API functions — only the singular fetch is wired up to
 // the UI today; the list/stats/update/delete wrappers were removed in
 // the cleanup pass after months of zero consumers.  Re-add when a
-// CSV + HTML stream synchronously from the API and download directly. The heavy
-// formats (json/zip bundles) are async report jobs — see enqueueReportJob.
-export const generateHostsReport = async (
-  format: 'csv' | 'html',
-  // The full host-filter context (whatever buildHostQueryContext produced),
-  // including array filters like orgs/asns/countries — so an export honours the
-  // same filters the list shows.
-  filters: Record<string, string | number | boolean | string[] | undefined>,
-  // 'comprehensive' (full security report) | 'inventory' (concise host list).
-  // Ignored by csv (always the inventory table) and the structured zip exports.
-  reportType?: 'inventory' | 'comprehensive',
-) => {
-  const queryParams = new URLSearchParams(serializeHostParams(filters));
-  // CSV is always the inventory table; only HTML honours report_type.
-  if (reportType && format === 'html') {
-    queryParams.append('report_type', reportType);
-  }
+// --- The host inventory downloads (Hosts → "Download inventory") -------------
+// Two files, both of every host matching the list's filters, neither capped:
+// the CSV streams from the API and saves at once; the JSON carries each
+// host's full record, so the report worker writes it — see
+// enqueueInventoryJson.
 
-  const response = await api.get(`${p()}/reports/hosts/${format}?${queryParams}`, {
+/** The full host-filter context (whatever buildHostQueryContext produced),
+ *  including array filters like orgs/asns/countries — so a download honours
+ *  the same filters the list shows. */
+export type InventoryFilters = Record<string, string | number | boolean | string[] | undefined>;
+
+/** One row per host, as CSV: streamed, then saved. */
+export const downloadInventoryCsv = async (filters: InventoryFilters): Promise<void> => {
+  const queryParams = new URLSearchParams(serializeHostParams(filters));
+  const response = await api.get(`${p()}/reports/hosts/csv?${queryParams}`, {
     responseType: 'blob'
   });
-
-  // The backend caps a report at REPORT_MAX_HOSTS and flags a partial result
-  // with X-Report-Truncated. Surface it so a partial export isn't mistaken for
-  // a complete one (the client-side overCap estimate can disagree with the
-  // server's actual cap, or the data can change during generation).
-  const truncated = String(response.headers['x-report-truncated'] ?? '').toLowerCase() === 'true';
-
-  // Create download
-  const blob = new Blob([response.data]);
-  const url = window.URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  const contentDisposition = response.headers['content-disposition'] as string | undefined;
-  const filenameMatch = contentDisposition?.match(/filename="?([^"]+)"?/i);
-  const fallbackExtension = format;
-  a.download = filenameMatch?.[1] || `hosts_report_${new Date().toISOString().split('T')[0]}.${fallbackExtension}`;
-  document.body.appendChild(a);
-  a.click();
-  window.URL.revokeObjectURL(url);
-  document.body.removeChild(a);
-
-  return { truncated };
+  saveBlob(new Blob([response.data]), filenameFromContentDisposition(
+    response.headers['content-disposition'] as string | undefined,
+    `hosts_inventory_${new Date().toISOString().split('T')[0]}.csv`,
+  ));
 };
 
-// --- Async report jobs (pdf / json / agent-package / markdown-bundle) --------
-// These build the whole document in memory, so they run on a dedicated report
-// worker: enqueue a job, poll its status, then download the artifact.
-
-export type AsyncReportFormat = 'json' | 'agent-package' | 'markdown-bundle';
+// --- Report jobs --------------------------------------------------------------
+// Work the report worker does off the request: the inventory JSON, and a
+// client report's preview or render (queued by the Reports page's own routes).
+// Queue, poll the job's status, then download its file.
 
 export interface ReportJob {
   id: number;
@@ -454,7 +433,6 @@ export interface ReportJob {
   result_filename?: string | null;
   media_type?: string | null;
   file_size?: number | null;
-  truncated: boolean;
   retry_count?: number | null;
   last_error?: string | null;
   last_heartbeat?: string | null;
@@ -468,28 +446,12 @@ export interface ReportJob {
   requested_by_id?: number | null;
 }
 
-// Effective per-format host caps for this deployment — the dialog shows the
-// real number for the selected format instead of a hardcoded one.
-export interface ReportLimits {
-  in_memory_host_cap: number;
-  streamed_host_cap: number;
-  /** format -> cap; null means the format streams the full set uncapped. */
-  per_format: Record<string, number | null>;
-}
-
-export const getReportLimits = async (): Promise<ReportLimits> => {
-  const response = await api.get(`${p()}/reports/limits`);
-  return response.data as ReportLimits;
-};
-
-export const enqueueReportJob = async (
-  format: AsyncReportFormat,
-  filters: Record<string, string | number | boolean | string[] | undefined>,
-  reportType?: 'inventory' | 'comprehensive',
-): Promise<ReportJob> => {
+/** Queue the inventory JSON: every matching host's full record (ports,
+ *  scanner observations, findings, tests, notes), followed by the project's
+ *  findings and site / subnet / systemic roll-ups.  Returns the queued job. */
+export const enqueueInventoryJson = async (filters: InventoryFilters): Promise<ReportJob> => {
   const query = new URLSearchParams(serializeHostParams(filters));
-  query.set('format', format);
-  if (reportType) query.set('report_type', reportType);
+  query.set('format', 'json');
   const response = await api.post(`${p()}/reports/jobs?${query}`);
   return response.data as ReportJob;
 };
@@ -499,21 +461,11 @@ export const getReportJob = async (jobId: number): Promise<ReportJob> => {
   return response.data as ReportJob;
 };
 
-export const downloadReportJob = async (jobId: number): Promise<{ truncated: boolean }> => {
+export const downloadReportJob = async (jobId: number): Promise<void> => {
   const response = await api.get(`${p()}/reports/jobs/${jobId}/download`, { responseType: 'blob' });
-  const truncated = String(response.headers['x-report-truncated'] ?? '').toLowerCase() === 'true';
-  const blob = new Blob([response.data]);
-  const url = window.URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  const contentDisposition = response.headers['content-disposition'] as string | undefined;
-  const filenameMatch = contentDisposition?.match(/filename="?([^"]+)"?/i);
-  a.download = filenameMatch?.[1] || `report_${jobId}`;
-  document.body.appendChild(a);
-  a.click();
-  window.URL.revokeObjectURL(url);
-  document.body.removeChild(a);
-  return { truncated };
+  saveBlob(new Blob([response.data]), filenameFromContentDisposition(
+    response.headers['content-disposition'] as string | undefined, `report_${jobId}`,
+  ));
 };
 
 export const listReportJobs = async (limit = 20): Promise<ReportJob[]> => {
@@ -599,7 +551,7 @@ export const getToolReadyOutput = async (
   // emits) plus the two tool-ready-only keys.  Serialized generically so a
   // new filter can never be silently dropped here — that would let an
   // analyst generate scanner targets for a broader set than the visible
-  // list.  See generateHostsReport / getHosts for the same pattern.
+  // list.  See downloadInventoryCsv / getHosts for the same pattern.
   filters: {
     search?: string;
     state?: string;

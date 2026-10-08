@@ -255,10 +255,28 @@ def test_agent_finding_detail_caps_endpoints_and_scanner_rows_in_sql(client, db_
 
 @pytest.mark.parametrize("path", ["", "?status=active", "?sort=host_count&dir=desc"])
 def test_agent_findings_list_still_counts_distinct_addresses(client, db_session, test_project, test_user, path):
-    """The agents' list reads every endpoint of its rows for a distinct-address
-    count, so it names the load now that the relationship is lazy."""
+    """The agents' list says how many hosts each finding is on and names ten."""
     _findings(db_session, test_project, test_user, findings=2, endpoints=12)
     key = _agent(client, test_project)
     body = client.get(f"/api/v1/agent/assist/findings{path}", headers=key).json()
     assert [f["host_count"] for f in body["findings"]] == [12, 12]
+    assert [f["endpoint_count"] for f in body["findings"]] == [12, 12]
     assert all(len(f["hosts"]) == 10 and f["hosts_truncated"] for f in body["findings"])
+    assert all(f["hosts"] == sorted(f["hosts"]) for f in body["findings"])
+
+
+def test_agent_findings_list_counts_in_sql_and_loads_no_endpoint(client, db_session, test_project, test_user):
+    """Review 2026-10-07: it loaded every endpoint row and its Host to count
+    them — the load the page's list dropped.  Two vhosts on one address are
+    one host and two endpoints; no statement returns endpoint rows."""
+    _findings(db_session, test_project, test_user, findings=1, endpoints=12, named=True)
+    key = _agent(client, test_project)
+    db_session.expire_all()
+    with selects(db_session) as statements:
+        body = client.get("/api/v1/agent/assist/findings", headers=key).json()
+    finding = body["findings"][0]
+    endpoint_rows = db_session.query(FindingHost).count()
+    distinct_hosts = db_session.query(FindingHost.host_id).distinct().count()
+    assert finding["endpoint_count"] == endpoint_rows
+    assert finding["host_count"] == distinct_hosts
+    assert not [s for s in statements if "finding_hosts.host_status" in s], statements

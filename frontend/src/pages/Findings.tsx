@@ -19,13 +19,13 @@ import {
   FindingSource,
   FindingStatus,
   FindingStatusQuery,
-  ProjectMember,
   bulkAssignFindings,
   bulkSetFindingStatus,
   listFindings,
-  listProjectMembers,
   setFindingStatus,
 } from '../services/api';
+import { useProjectRoster } from '../hooks/useProjectMembers';
+import MembersLoadError from '../components/MembersLoadError';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useProjectRole } from '../hooks/useProjectRole';
@@ -244,11 +244,9 @@ const FindingsList: React.FC = () => {
   const [summaryPrompt, setSummaryPrompt] = useState<SummaryPrompt | null>(null);
   const [summaryText, setSummaryText] = useState('');
   // Project roster for bulk owner assignment. Failure is non-fatal — the
-  // status controls keep working, the assign menu just shows nobody.
-  const [members, setMembers] = useState<ProjectMember[]>([]);
-  useEffect(() => {
-    listProjectMembers().then(setMembers).catch(() => setMembers([]));
-  }, []);
+  // status controls keep working, and the assign menu says it could not load.
+  const roster = useProjectRoster();
+  const members = roster.members;
 
   const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all'
     || sourceFilter !== 'all' || ownerFilter !== 'any' || searchValue !== '';
@@ -608,6 +606,7 @@ const FindingsList: React.FC = () => {
               ))}
             </SelectContent>
           </Select>
+          {roster.status === 'error' && <MembersLoadError onRetry={roster.retry} />}
           <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>Clear</Button>
         </div>
       )}

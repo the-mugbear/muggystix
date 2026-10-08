@@ -120,10 +120,15 @@ _CREATES_A_ROW = {
     # v2.436.0: each call records a new evidence row / proposal.
     "record_evidence", "propose_finding_text", "propose_finding",
     "propose_observation", "propose_endpoint_status",
+    # v2.457.0: a note without a request_key is a second entry on retry; the
+    # field changes of remediation_apply converge, its notes need not.
+    "remediation_add_note", "remediation_apply",
 }
 #: Writes that converge on retry.
 _CONVERGES = {
     "session_renew", "end_session",
+    # v2.461.0: a row already followed up on that day is left alone.
+    "remediation_record_follow_up",
     "assist_set_follow", "assist_patch_host",
     # v2.442.0: guarded by ``expected_revision`` — a retry of an applied change
     # is refused (409) rather than applied twice.

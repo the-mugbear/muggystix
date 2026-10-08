@@ -1,34 +1,27 @@
-import { render as rtlRender, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
-import type { ReactElement } from 'react';
-
-// The dialog links to the Reports page, so it renders inside a router.
-const render = (ui: ReactElement) => rtlRender(ui, { wrapper: MemoryRouter });
 
 // Real polling hook here on purpose: the unit suite mocks it, so it could not
 // see that a swallowed refresh failure defeats the hook's backoff.
 vi.mock('../../services/api', () => ({
-  generateHostsReport: vi.fn(),
-  enqueueReportJob: vi.fn(),
+  downloadInventoryCsv: vi.fn(),
+  enqueueInventoryJson: vi.fn(),
   listReportJobs: vi.fn(),
-  getReportJob: vi.fn(),
   downloadReportJob: vi.fn(),
   retryReportJob: vi.fn(),
   cancelReportJob: vi.fn(),
   dismissReportJob: vi.fn(),
-  getReportLimits: vi.fn().mockResolvedValue({ in_memory_host_cap: 2000, streamed_host_cap: 50000, per_format: {} }),
 }));
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
 }));
 
 import * as api from '../../services/api';
-import ReportsDialog from '../../components/ReportsDialog';
+import InventoryDownloadDialog from '../../components/InventoryDownloadDialog';
 
-const running = { id: 1, status: 'processing', format: 'json', report_type: 'comprehensive', truncated: false, created_at: 'x' };
+const running = { id: 1, project_id: 1, status: 'processing', format: 'json', report_type: 'comprehensive', created_at: '2026-10-07T10:00:00Z' };
 
-describe('ReportsDialog tray polling (real useVisibilityPoll)', () => {
+describe('InventoryDownloadDialog job polling (real useVisibilityPoll)', () => {
   // shouldAdvanceTime keeps waitFor/findBy usable; the poll cadence (seconds)
   // is still driven explicitly below.
   beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
@@ -39,16 +32,16 @@ describe('ReportsDialog tray polling (real useVisibilityPoll)', () => {
     list.mockResolvedValueOnce([running]); // initial load on open
     list.mockRejectedValue(new Error('503'));
 
-    render(<ReportsDialog open onClose={vi.fn()} filters={{}} totalHosts={5} />);
+    render(<InventoryDownloadDialog open onClose={vi.fn()} filters={{}} totalHosts={5} />);
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getAllByText(/comprehensive/i).length).toBeGreaterThan(0));
+    await screen.findByTestId('inventory-job-1');
 
     // First poll tick at 2.5s → rejects.
     await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
     expect(list).toHaveBeenCalledTimes(2);
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/status may be stale/i));
-    // The tray still shows the job (stale beats blank).
-    expect(screen.getAllByText(/comprehensive/i).length).toBeGreaterThan(0);
+    // The list still shows the job (stale beats blank).
+    expect(screen.getByTestId('inventory-job-1')).toHaveTextContent('Preparing');
 
     // Backoff: the next tick must NOT come at +2.5s; it comes at +5s.
     await act(async () => { await vi.advanceTimersByTimeAsync(2500); });

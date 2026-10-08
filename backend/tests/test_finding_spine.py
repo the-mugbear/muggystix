@@ -177,8 +177,10 @@ def test_finding_comment_cross_finding_threading_rejected(client, test_project):
 
 
 def test_finding_comment_evidence_reaches_report(client, db_session, test_project, test_user):
-    """A finding's comment thread (repro/rationale) is carried into the report
-    — both the JSON findings list and the rendered HTML Evidence section."""
+    """A finding's comment thread (repro/rationale) is carried into the
+    inventory JSON's findings list (and so to the drafter, which reads the
+    same rows).  The HTML report's Evidence section, which this also checked,
+    was retired with "Export hosts"."""
     from unittest.mock import MagicMock
     from app.api.v1.endpoints.reports import ReportGenerator
 
@@ -195,14 +197,10 @@ def test_finding_comment_evidence_reaches_report(client, db_session, test_projec
     )
 
     gen = ReportGenerator(db=db_session, current_user=MagicMock(), project_id=test_project.id)
-    data = gen._findings_for_report([host])
+    data = gen._findings_for_report_ids([host.id])
     assert data, "finding should be in the report dataset"
     target = next(f for f in data if f["id"] == fid)
-    assert any("anonymous" in c["body"].lower() for c in target["comments"])
-
-    html_out = gen._html_findings_index(gen._findings_for_report([host]))
-    assert "Evidence" in html_out
-    assert "login anonymous" in html_out
+    assert any("login anonymous" in c["body"] for c in target["comments"])
 
 
 def test_findings_sort_by_severity_rank(client, test_project):

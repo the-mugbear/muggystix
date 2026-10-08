@@ -223,6 +223,7 @@ if $DB_UP; then
         "user|users|username" "email|users|email" "fullname|users|full_name"
         "site|sites|name" "site|subnets|site" "label|subnet_labels|name" "scope|scopes|name"
         "client|report_profiles|client_name" "report|reports|title"
+        "email|finding_host_remediation|contact_email" "fullname|finding_host_remediation|contact_name"
         "file|ingestion_jobs|original_filename" "file|ingestion_jobs|filename"
         "file|scans|filename" "file|parse_errors|filename"
         "host|hosts_v2|hostname" "host|hosts_v2|netbios_name" "fqdn|dns_names|fqdn"

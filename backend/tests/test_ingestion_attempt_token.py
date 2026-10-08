@@ -229,3 +229,65 @@ def test_a_stopping_worker_hands_the_job_back_to_the_queue(db_session, test_proj
     assert (row.status, row.started_at, row.completed_at) == ("queued", None, None)
     assert (row.retry_count or 0) == 0
     assert issubclass(ShutdownRequested, ParseFailure)
+
+
+# ---------------------------------------------------------------------------
+# Review 2026-10-07 — what a heartbeat reads, and how it measures the job.
+# ---------------------------------------------------------------------------
+def test_a_heartbeat_never_loads_the_created_port_list(db_session, test_project):
+    """The list is megabytes on a large Nessus import and the heartbeat runs
+    every batch: neither the heartbeat nor loading a job row brings it."""
+    from sqlalchemy import event
+
+    claim = _recent(30)
+    job = _job(db_session, test_project.id, started_at=claim, heartbeat=claim)
+    job.in_progress_created_port_ids = list(range(50))
+    db_session.commit()
+    db_session.expire_all()
+
+    statements = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    engine = db_session.get_bind().engine
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        IngestionService().update_heartbeat(db_session, job.id, "10%", claimed_at=claim)
+        db_session.query(models.IngestionJob).filter_by(id=job.id).one()
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+
+    assert statements
+    assert not [s for s in statements if "in_progress_created_port_ids" in s]
+    # Still there for the cleanup, which asks for it by name.
+    assert _fresh(db_session, job.id).in_progress_created_port_ids == list(range(50))
+
+
+@pytest.mark.parametrize("zone", ["Etc/GMT+12", "Pacific/Kiritimati"])
+def test_the_job_timeout_is_measured_in_real_time_whatever_the_session_zone(
+    db_session, test_project, zone,
+):
+    """``started_at`` comes back in the session's zone.  Stripping the zone
+    instead of converting made a 30-second-old job twelve hours old west of
+    UTC (timed out at once) and never old east of it."""
+    from sqlalchemy import text
+
+    if db_session.get_bind().dialect.name != "postgresql":
+        pytest.skip("time zones of timestamptz are a PostgreSQL behaviour")
+    claim = _recent(30)
+    job = _job(db_session, test_project.id, started_at=claim, heartbeat=claim)
+    db_session.execute(text(f"SET TIME ZONE '{zone}'"))
+    try:
+        IngestionService().update_heartbeat(db_session, job.id, "10%", claimed_at=claim)
+    finally:
+        db_session.execute(text("SET TIME ZONE 'UTC'"))
+
+    old = (datetime.now(timezone.utc) - timedelta(days=2)).replace(microsecond=0)
+    late = _job(db_session, test_project.id, started_at=old, heartbeat=old)
+    db_session.execute(text(f"SET TIME ZONE '{zone}'"))
+    try:
+        with pytest.raises(ParseFailure, match="timed out"):
+            IngestionService().update_heartbeat(db_session, late.id, "10%", claimed_at=old)
+    finally:
+        db_session.execute(text("SET TIME ZONE 'UTC'"))

@@ -205,7 +205,8 @@ describe('Agent Sessions', () => {
     renderPage();
 
     expect(await screen.findByText('No agent session is live')).toBeInTheDocument();
-    expect(screen.getByText('No agent session is live on this project.')).toBeInTheDocument();
+    // Said once: the empty state carries it, the lead does not repeat it.
+    expect(screen.queryByText('No agent session is live on this project.')).toBeNull();
     for (const link of screen.getAllByRole('link', { name: /Start agent session/ })) {
       expect(link).toHaveAttribute('href', '/operations?start=agent-session');
     }

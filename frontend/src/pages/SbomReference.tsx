@@ -11,6 +11,8 @@ import {
 } from 'lucide-react';
 import { getSbom, SbomResponse, SbomComponent } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
+import { downloadTextFile } from '../utils/download';
+import { formatTimestamp } from '../utils/relativeTime';
 import { CardListSkeleton } from '../components/PageSkeleton';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -174,13 +176,7 @@ const SbomReference: React.FC = () => {
 
   const handleDownload = () => {
     if (!data) return;
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `networkmapper-sbom-${data.app_version}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadTextFile(`networkmapper-sbom-${data.app_version}.json`, JSON.stringify(data, null, 2), 'application/json');
   };
 
   if (loading) {
@@ -229,7 +225,7 @@ const SbomReference: React.FC = () => {
           App version <strong className="text-foreground">{data.app_version}</strong>{' '}
           · Generated{' '}
           <strong className="text-foreground">
-            {new Date(data.generated_at).toLocaleString()}
+            {formatTimestamp(data.generated_at)}
           </strong>
         </p>
         <div className="ml-auto">

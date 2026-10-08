@@ -2,6 +2,7 @@ import React, { ReactNode } from 'react';
 import { useNavigate, useLocation, useNavigationType, NavLink, Link } from 'react-router-dom';
 import {
   FolderOpen,
+  CalendarClock,
   Gauge,
   MenuIcon,
   Sparkles,
@@ -9,6 +10,7 @@ import {
 import { useAppTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useRoleGate } from '../hooks/useProjectRole';
+import { useRemediationPolicy } from '../hooks/useRemediationPolicy';
 import { useHorizontalOverflowGuard } from '../hooks/useHorizontalOverflowGuard';
 import { useProject } from '../contexts/ProjectContext';
 import PendingProposalsButton from './proposals/PendingProposalsButton';
@@ -195,6 +197,7 @@ export default function Layout({ children }: LayoutProps) {
   // Nav entries: `analyst` / `auditor` mean the PROJECT role (R32); `admin`
   // the account role.  The same gate ProtectedRoute applies to the route.
   const allowed = useRoleGate();
+  const { enabled: remediationEnabled } = useRemediationPolicy();
   const { currentProject } = useProject();
 
   // Notifications-poll error/backoff state. On consecutive failures
@@ -402,8 +405,9 @@ export default function Layout({ children }: LayoutProps) {
   // background re-renders (notification ticks, theme changes) don't
   // re-filter on every pass.
   const visibleHubChildren = React.useMemo(
-    () => (activeHub?.children ?? []).filter((child) => allowed(child.requiredRole)),
-    [activeHub, allowed],
+    () => (activeHub?.children ?? []).filter(
+      (child) => allowed(child.requiredRole) && (!child.feature || remediationEnabled)),
+    [activeHub, allowed, remediationEnabled],
   );
 
   // The single active secondary tab is the LONGEST matching child path, not
@@ -460,6 +464,10 @@ export default function Layout({ children }: LayoutProps) {
             // Oversight — global administrators' programme dashboard
             // (5.258.0); the route and the API are admin-gated as well.
             { to: '/oversight', label: 'Oversight', Icon: Gauge, show: hasPermission('admin') },
+            // Remediation deadlines across the reader's projects (5.340.0):
+            // only where the installation tracks remediation; the page says
+            // so when the reader administers no project.
+            { to: '/remediation-deadlines', label: 'Remediation deadlines', Icon: CalendarClock, show: remediationEnabled },
           ].filter((l) => l.show).map(({ to, label, Icon }) => (
             <NavLink
               key={to}

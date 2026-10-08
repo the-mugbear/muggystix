@@ -29,6 +29,7 @@ import {
   TableRow,
 } from './ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
+import { formatTimestamp } from '../utils/relativeTime';
 
 // The feed is one agent session's, by the session id (5.328.0 — it was keyed
 // by a second id, the session's detail row). A test plan was a second source
@@ -87,13 +88,7 @@ const fmtDuration = (ms: number): string => {
   return `${(ms / 1000).toFixed(2)} s`;
 };
 
-const fmtTime = (iso: string): string => {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-};
+const fmtTime = (iso: string): string => formatTimestamp(iso, iso);
 
 const DetailLine: React.FC<{
   label: string;

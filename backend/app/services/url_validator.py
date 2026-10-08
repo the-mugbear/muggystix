@@ -149,6 +149,14 @@ def require_public_http_url(
     host = parsed.hostname
     if not host:
         raise ValueError("URL must include a hostname")
+    # A base URL: callers append the API path to it.  A query or fragment
+    # would swallow that path and let the caller choose the request
+    # (``http://10.0.0.5:8500/v1/kv/x?y=`` + ``/api/tags``); credentials
+    # belong in the key field.
+    if parsed.query or parsed.fragment or "?" in value or "#" in value:
+        raise ValueError("URL must not carry a query string or a fragment")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("URL must not carry a username or password")
 
     # Resolve the hostname.  ``getaddrinfo`` returns every A/AAAA
     # record the resolver knows about — we check all of them so a

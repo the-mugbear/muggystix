@@ -9,6 +9,7 @@
  * it once issued).
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { isClientTemplate } from '../utils/reportTemplates';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Download, Loader2, RefreshCw, Sparkles, Stamp, Trash2 } from 'lucide-react';
 
@@ -17,7 +18,6 @@ import {
   ClientReportFormat,
   ReportFileFormat,
   EngagementSettings,
-  ProjectMember,
   ReportJob,
   ReportSummary,
   ReportTemplate,
@@ -27,7 +27,6 @@ import {
   getClientReport,
   getReportJob,
   issueClientReport,
-  listProjectMembers,
   listReportTemplates,
   previewClientReport,
   rerenderClientReport,
@@ -38,6 +37,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDiscardGuard } from '../hooks/useDiscardGuard';
+import { useProjectRoster } from '../hooks/useProjectMembers';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import { formatApiError } from '../utils/apiErrors';
 import { formatTimestamp } from '../utils/relativeTime';
@@ -172,7 +172,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const [report, setReport] = useState<ClientReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [templates, setTemplates] = useState<ReportTemplate[]>([]);
-  const [members, setMembers] = useState<ProjectMember[]>([]);
+  const roster = useProjectRoster();
   const [form, setForm] = useState<Form | null>(null);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<'issue' | 'revise' | 'render' | 'delete' | null>(null);
@@ -193,7 +193,6 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     listReportTemplates().then(setTemplates).catch(() => {});
-    listProjectMembers().then(setMembers).catch(() => {});
   }, []);
 
   // An issued report renders its files on the worker: follow it until done.
@@ -616,7 +615,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                 disabled={!editable || savingTemplate}>
                 <SelectTrigger id="report-template" className="h-8 w-[18rem] max-w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {templates.map((t) => <SelectItem key={t.name} value={t.name}>{t.title}</SelectItem>)}
+                  {templates.filter(isClientTemplate).map((t) => <SelectItem key={t.name} value={t.name}>{t.title}</SelectItem>)}
                   {!templates.some((t) => t.name === report.template) && (
                     <SelectItem value={report.template}>{report.template}</SelectItem>
                   )}
@@ -745,7 +744,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               onChange={(v) => setForm((f) => (f ? { ...f, executive_summary: v } : f))} />
           </div>
 
-          <EngagementSettingsFields idPrefix="report" value={form.settings} members={members} currentUser={currentUser}
+          <EngagementSettingsFields idPrefix="report" value={form.settings} members={roster.members}
+            membersStatus={roster.status} onRetryMembers={roster.retry} currentUser={currentUser}
             readOnly={!editable} disabled={saving} onChange={(settings) => setForm({ ...form, settings })} />
 
           {editable && (

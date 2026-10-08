@@ -534,6 +534,7 @@ def _host_is_only_this_attempts(host_id, scan_id: int) -> List[Any]:
     from app.db.models_findings import FindingHost
     from app.db.models_host_tests import HostTest
     from app.db.models_proposals import AgentProposal, EvidenceRecord
+    from app.db.models_remediation import RemediationEvent
     from app.db.models_vulnerability import HostAttribute, Vulnerability
 
     other_hh = aliased(models.HostScanHistory)
@@ -558,6 +559,8 @@ def _host_is_only_this_attempts(host_id, scan_id: int) -> List[Any]:
         _no(FindingHost.host_id),
         _no(HostTest.host_id),
         _no(EvidenceRecord.host_id),
+        # A remediation note needs only a host, not a finding on it.
+        _no(RemediationEvent.host_id),
         ~exists().where(
             proposed_vuln.host_id == host_id,
             AgentProposal.vulnerability_id == proposed_vuln.id,
@@ -1272,15 +1275,26 @@ class IngestionService:
                 )
         db.commit()
 
-        # Single DB read for both cancellation (cross-process) and timeout checks
-        job = db.query(IngestionJob).filter(IngestionJob.id == job_id).first()
+        # Single DB read for both cancellation (cross-process) and timeout
+        # checks.  The two columns only: the row also carries the created-port
+        # list, megabytes on a large Nessus import, and this runs every batch.
+        from sqlalchemy import select as _select
+
+        job = db.execute(
+            _select(IngestionJob.status, IngestionJob.started_at).where(IngestionJob.id == job_id)
+        ).first()
         if job and job.status == "failed":
             raise ParseFailure(
                 "Job cancelled",
                 user_message="Cancelled by user",
             )
         if job and job.started_at:
-            elapsed = (now.replace(tzinfo=None) - job.started_at.replace(tzinfo=None)).total_seconds()
+            # Converted, never stripped: a session time zone other than UTC
+            # would otherwise shift the elapsed time by its offset.
+            started = job.started_at
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            elapsed = (now - started).total_seconds()
             if elapsed > settings.INGESTION_JOB_TIMEOUT:
                 raise ParseFailure(
                     f"Job timed out after {int(elapsed)}s (limit {settings.INGESTION_JOB_TIMEOUT}s)",
@@ -1601,12 +1615,21 @@ class IngestionService:
 
     def _discard_dead_attempt_scan(
         self, db: Session, job_id: int, *, lock_timeout_s: Optional[int] = None,
+        only_if_failed: bool = False,
     ) -> bool:
         """Delete the scan a previous attempt of ``job_id`` left unfinished
         (review 2026-10-01 R1): the worker died, or was reaped, after the scan
         was committed and before the job finished.  False when something was
-        left and could not be removed."""
+        left and could not be removed.
+
+        ``only_if_failed`` is for a caller working from a LIST it read
+        earlier (the failed-jobs sweep): the pointer is read together with
+        the status, and a job that is no longer ``failed`` — retried and
+        claimed by another worker since the list was read — is left alone.
+        Its pointer may by now name the new attempt's live scan."""
         job = db.get(IngestionJob, job_id)
+        if only_if_failed and (job is None or job.status != "failed"):
+            return True
         stale_scan_id = job.in_progress_scan_id if job is not None else None
         if not isinstance(stale_scan_id, int):
             # R2 — the attempt's scan row is already gone (someone deleted the
@@ -1687,7 +1710,7 @@ class IngestionService:
         for job_id in job_ids:
             if job_id in skip or self._leftover_retry_at.get(job_id, 0) > now:
                 continue
-            if self._discard_dead_attempt_scan(db, job_id):
+            if self._discard_dead_attempt_scan(db, job_id, only_if_failed=True):
                 self._leftover_retry_at.pop(job_id, None)
                 cleaned += 1
             else:

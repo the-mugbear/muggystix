@@ -31,6 +31,7 @@ import {
   DialogTitle,
 } from '../components/ui/dialog';
 import { cn } from '../utils/cn';
+import { formatTimestamp } from '../utils/relativeTime';
 import { DetailSkeleton } from '../components/PageSkeleton';
 import { PasswordRulesChecklist } from '../components/PasswordRulesChecklist';
 import TwoFactorCard from '../components/TwoFactorCard';
@@ -77,7 +78,7 @@ const roleVariant = (
   }
 };
 
-const formatDate = (s: string | null | undefined) => (s ? new Date(s).toLocaleString() : '—');
+const formatDate = (s: string | null | undefined) => formatTimestamp(s);
 
 const Profile: React.FC = () => {
   const { user, updateUser, logout } = useAuth();

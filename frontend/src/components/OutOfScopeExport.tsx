@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { copyToClipboard as copyText } from '../utils/clipboard';
+import { downloadTextFile } from '../utils/download';
+import { formatApiError } from '../utils/apiErrors';
 import { Copy, Download, Loader2, ShieldOff } from 'lucide-react';
 import { getOutOfScopeHostList } from '../services/api';
 import { Alert, AlertDescription } from './ui/alert';
@@ -58,7 +60,7 @@ export default function OutOfScopeExport({ open, onClose }: OutOfScopeExportProp
       setOutput(result);
     } catch (err) {
       console.error('Error fetching out-of-scope hosts:', err);
-      setError(err instanceof Error ? err.message : 'Failed to fetch out-of-scope hosts');
+      setError(formatApiError(err, 'Failed to fetch out-of-scope hosts'));
     } finally {
       setLoading(false);
     }
@@ -74,15 +76,7 @@ export default function OutOfScopeExport({ open, onClose }: OutOfScopeExportProp
   };
 
   const downloadOutput = () => {
-    const blob = new Blob([output], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `out_of_scope_hosts.${selectedFormat}`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadTextFile(`out_of_scope_hosts.${selectedFormat}`, output);
   };
 
   const entryCount = output

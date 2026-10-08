@@ -90,6 +90,22 @@ EXPECTED_ONDELETE = {
     ('finding_hosts', 'finding_id'): 'CASCADE',
     ('finding_hosts', 'host_id'): 'CASCADE',
     ('finding_hosts', 'port_id'): 'SET NULL',
+    # v2.457.0 — remediation tracking.  The tracked fields go with the finding
+    # on the host; the timeline is the HOST's and outlives the finding (its
+    # title is kept on the entry).
+    ('finding_host_remediation', 'finding_host_id'): 'CASCADE',
+    ('finding_host_remediation', 'project_id'): 'CASCADE',
+    ('finding_host_remediation', 'updated_by_id'): 'SET NULL',
+    # v2.461.0 — the installation's remediation settings outlive whoever set them.
+    ('remediation_policy', 'updated_by_id'): 'SET NULL',
+    # v2.462.0 — a project's daily deadline counts go with the project.
+    ('remediation_daily', 'project_id'): 'CASCADE',
+    ('remediation_events', 'agent_session_id'): 'SET NULL',
+    ('remediation_events', 'author_id'): 'SET NULL',
+    ('remediation_events', 'finding_host_id'): 'SET NULL',
+    ('remediation_events', 'finding_id'): 'SET NULL',
+    ('remediation_events', 'host_id'): 'CASCADE',
+    ('remediation_events', 'project_id'): 'CASCADE',
     ('finding_vulnerabilities', 'finding_id'): 'CASCADE',
     ('finding_vulnerabilities', 'vuln_id'): 'CASCADE',
     # v2.436.0 — agent evidence records and proposals.

@@ -74,7 +74,9 @@ describe('Project settings', () => {
     expect(await screen.findByText('Ana')).toBeInTheDocument();
     expect(screen.getByText(/For/)).toHaveTextContent('For Demo — Insights Eval — the project chosen at the top of the page.');
     expect(apiMock.get).toHaveBeenCalledWith('/projects/3/members');
-    expect(container.querySelector('.bg-card.shadow-raised')).toBeNull();
+    // A switch's thumb is drawn with the same two classes and is not a card
+    // (5.336.0 — the page has a switch of its own now).
+    expect(container.querySelector('.bg-card.shadow-raised:not([role="switch"] *)')).toBeNull();
     // No project list here any more; a non-global admin gets no delete area.
     expect(screen.queryByText('All projects')).not.toBeInTheDocument();
     expect(screen.queryByText('Delete this project')).not.toBeInTheDocument();
@@ -190,5 +192,14 @@ describe('Project settings', () => {
       })));
       expect(apiMock.delete).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('ProjectSettings — remediation is the choice of the installation (5.340.0)', () => {
+  it('has no remediation switch: a project no longer opts in or out', async () => {
+    renderPage();
+    await screen.findByText('Ana');
+    expect(screen.queryByRole('switch', { name: /Oversight/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/remediation/i)).not.toBeInTheDocument();
   });
 });

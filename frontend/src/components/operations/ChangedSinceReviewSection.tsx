@@ -35,7 +35,7 @@ import { cn } from '../../utils/cn';
 import { buildHostsUrl } from '../../utils/drilldownLinks';
 import { isPageShortcutEvent } from '../../utils/keyboard';
 import { CHANGED_SINCE_REVIEW_QUERY, fromOperationsQueue } from '../../utils/operationsQueue';
-import { formatRelativeTime } from '../../utils/relativeTime';
+import { formatRelativeTime, formatTimestamp } from '../../utils/relativeTime';
 import { runLimited } from '../../utils/runLimited';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
@@ -283,7 +283,7 @@ export const ChangedSinceReviewSection: React.FC<{
                       className="hidden truncate align-middle text-caption text-muted-foreground md:table-cell"
                       title={[
                         row.reviewed_at
-                          ? `You reviewed it on ${new Date(row.reviewed_at).toLocaleString()}.`
+                          ? `You reviewed it on ${formatTimestamp(row.reviewed_at)}.`
                           : 'Your review has no recorded date.',
                         row.review_summary ? `“${row.review_summary}”` : null,
                       ].filter(Boolean).join(' ')}

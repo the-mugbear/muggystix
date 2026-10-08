@@ -151,7 +151,10 @@ def _split_csv(value: Optional[str]) -> List[str]:
     return [v.strip().lower() for v in (value or "").split(",") if v.strip()]
 
 
-def weakness_predicate(db: Session, current_user: User, project_id: int, flags: List[str]):
+def weakness_predicate(
+    db: Session, current_user: User, project_id: int, flags: List[str],
+    *, only_host_ids: Optional[List[int]] = None,
+):
     """Hosts with ANY of the given weakness / access flags."""
     unknown = [f for f in flags if f not in WEAKNESS_FLAGS]
     if unknown:
@@ -160,18 +163,23 @@ def weakness_predicate(db: Session, current_user: User, project_id: int, flags: 
             detail=f"Unknown weakness filter {', '.join(unknown)} (one of: {', '.join(WEAKNESS_FLAGS)})",
         )
     from app.services.host_query_dsl import _HAS_KEYWORDS, BuildCtx
-    ctx = BuildCtx(db, current_user, project_id)
+    ctx = BuildCtx(db, current_user, project_id, only_host_ids=only_host_ids)
     return or_(*[_HAS_KEYWORDS[f][0](ctx) for f in flags])
 
 
 def host_weakness_flags(db: Session, current_user: User, project_id: int, host_ids: List[int]) -> dict:
     """{host_id: [flag, …]} — the weakness / access flags each host carries,
-    by the same predicates as the filter.  One statement for the page."""
+    by the same predicates as the filter.  One statement for the page.
+
+    The predicates are told which hosts are being labelled: four of them
+    resolve an id set in Python (latest observation wins), and for a page —
+    or the one host of a detail view — that set is taken from those hosts'
+    rows instead of every web and login row of the project."""
     if not host_ids:
         return {}
     from sqlalchemy import case
     columns = [
-        case((weakness_predicate(db, current_user, project_id, [flag]), True), else_=False)
+        case((weakness_predicate(db, current_user, project_id, [flag], only_host_ids=host_ids), True), else_=False)
         for flag in WEAKNESS_FLAGS
     ]
     rows = db.query(models.Host.id, *columns).filter(models.Host.id.in_(host_ids)).all()
@@ -504,6 +512,12 @@ def apply_host_sorting(query, sort_by: str, sort_order: str):
     primary_factory = sortable_fields.get(sort_by, _critical_vulns)
     primary_sort = primary_factory()
     primary_order = primary_sort.desc() if sort_desc else primary_sort.asc()
+
+    if sort_by == "ip_address":
+        # An address is unique in a project, so the counts below could never
+        # change this order — but Postgres would still evaluate both for
+        # every matching host before taking the page (review 2026-10-07).
+        return query.order_by(primary_order, models.Host.id.asc())
 
     tiebreakers = []
     if sort_by != "high_vulns":

@@ -198,42 +198,16 @@ def test_issuing_records_the_fingerprint_of_the_template_the_report_has_now(clie
 
 
 # --- R15: the host report says which filters narrowed it --------------------------
-
-def test_every_applied_filter_is_printed_escaped():
-    gen = ReportGenerator.__new__(ReportGenerator)
-    out = gen._format_filters_html({
-        "q": 'port:445 AND NOT tag:"<b>x</b>"', "sites": "London DC", "tags": "3,7",
-        "weaknesses": "smb_unsigned,weak_tls", "has_critical_vulns": True, "has_open_ports": False,
-        "orgs": ["Google, LLC", "<script>"], "state": None, "search": "", "brand_new_filter": "v",
-    })
-    assert "None" not in out
-    assert "Query: port:445 AND NOT tag:&quot;&lt;b&gt;x&lt;/b&gt;&quot;" in out
-    assert "Sites: London DC" in out and "Tag ids: 3,7" in out
-    assert "Weaknesses: smb_unsigned,weak_tls" in out
-    # A flag is its label alone; a flag set to false says so.
-    assert "Has critical vulnerabilities," in out or out.rstrip("</p>").endswith("Has critical vulnerabilities")
-    assert "Has critical vulnerabilities:" not in out
-    assert "Has open ports: no" in out
-    assert "Organisations: Google, LLC, &lt;script&gt;" in out
-    # A filter nobody labelled is still reported.
-    assert "Brand new filter: v" in out
-    assert "<script>" not in out and "<b>" not in out
-    assert "Host state" not in out and "Search" not in out      # empty ones are not listed
-
-
-def test_no_filter_reads_none():
-    gen = ReportGenerator.__new__(ReportGenerator)
-    assert "None" in gen._format_filters_html({})
-    assert "None" in gen._format_filters_html({"state": None, "q": ""})
-
-
-def test_every_hosts_filter_has_a_readable_label():
-    from app.api.v1.endpoints.hosts import HostFilterParams
-    import inspect
-    params = [p for p in inspect.signature(HostFilterParams.__init__).parameters if p != "self"]
-    assert len(params) >= 31
-    missing = [p for p in params if p not in ReportGenerator._FILTER_LABELS]
-    assert missing == []
+#
+# The three tests here pinned the HTML host report's "Applied Filters" line
+# (every filter printed, escaped, an unlabelled one still reported).  That
+# report was retired with "Export hosts" (owner, 2026-10-07) and the line with
+# it.  The rule itself — a narrowed download must not read as the whole
+# inventory, and a filter nobody labelled is still named — now lives where the
+# reader chooses the download: the dialog's "Active filters" list
+# (frontend ``utils/inventoryFilters.ts``, pinned by
+# ``tests/utils/inventoryFilters.test.ts``).  That every filter reaches the
+# query is test_report_filters.py.
 
 
 # --- R16: the ledger and the image lookups -----------------------------------------
@@ -309,22 +283,9 @@ def test_the_drafter_reads_its_captions_in_one_statement(db_session, test_projec
     assert "thread.png" in captions[findings[0].id]
 
 
-def test_the_host_report_reads_its_images_in_one_statement(db_session, test_project, test_user, tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path))
-    findings = _images(db_session, test_project, test_user, 6)
-    for att in db_session.query(NoteAttachment).all():
-        target = tmp_path / "note_attachments" / att.storage_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(b"png")
-    rows = [{"id": f.id, "evidence_annotation_id": f.evidence_annotation_id} for f in findings]
-    gen = ReportGenerator(db_session, test_user, project_id=test_project.id)
-    with _Statements() as seen:
-        images = gen._finding_evidence_images(rows)
-    assert len(seen.sql) == 1            # was two per finding: 12
-    # The host report keeps every attached image (its mark filter is parked).
-    assert [caption for _uri, caption in images[findings[2].id]] == ["marked-2.png", "unmarked-2.png"]
-    assert [caption for _uri, caption in images[findings[0].id]] == ["marked-0.png", "unmarked-0.png", "thread.png"]
-    assert images[findings[0].id][0][0].startswith("data:image/png;base64,")
+# (The third reader of that lookup, the HTML host report's embedded images,
+# was retired with "Export hosts"; the lookup's one-statement rule and both
+# values of ``marked_only`` stay pinned by the two tests above.)
 
 
 # --- R17: changing a report job --------------------------------------------------
@@ -414,13 +375,23 @@ def test_the_inventory_has_one_notes_column_and_rows_match_the_header(db_session
     assert row["IP Address"] == "10.62.0.1" and row["Notes"] == "2"
 
 
-def test_the_export_schema_advertises_no_note_status(db_session, test_user, test_project):
+def test_the_host_record_carries_no_note_status(db_session, test_user, test_project):
+    """Notes lost their status in v2.446.0: the record's summary counts
+    notes, never "open" ones, and a note in it has no status.  (The agent
+    package's ``schema.json``, which this also checked, was retired with
+    "Export hosts".)"""
+    host = _host(db_session, test_project, "10.62.0.2")
+    db_session.add(Annotation(host_id=host.id, user_id=test_user.id, body="one", note_type="observation"))
+    db_session.commit()
     gen = ReportGenerator(db_session, test_user, project_id=test_project.id)
-    schema = gen._build_schema_reference()
-    assert "note_status" not in schema["enums"]
-    assert "note_status" not in json.dumps(schema)
-    summary = gen._dossier_summary.__code__.co_consts
-    assert "open_notes" not in summary
+    (record,) = gen.iter_host_records(
+        db_session.query(models.Host.id).filter(models.Host.id == host.id)
+    )
+    assert record["dossier_summary"]["total_notes"] == 1
+    assert "open_notes" not in record["dossier_summary"]
+    (note,) = record["analyst_context"]["notes"]
+    assert note["body"] == "one" and "status" not in note and "assignee_id" not in note
+    assert "note_status" not in json.dumps(record, default=str)
 
 
 # --- N5: CVSS, validators, one formula rule ---------------------------------------

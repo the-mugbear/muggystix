@@ -10,6 +10,7 @@
  * Consumers import from ``../services/api`` — the barrel re-exports this.
  */
 import { api, p } from './client';
+import { saveBlob } from '../../utils/download';
 import type { Paginated } from './shared';
 
 export type NameKind = 'fqdn' | 'wildcard';
@@ -190,14 +191,7 @@ export const exportNames = async (
   if (opts.order) params.set('order', opts.order);
   const response = await api.get(`${p()}/names/export?${params.toString()}`, { responseType: 'blob' });
   const mime = format === 'csv' ? 'text/csv' : 'text/plain';
-  const url = window.URL.createObjectURL(new Blob([response.data], { type: mime }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `names.${format}`;
-  document.body.appendChild(a);
-  a.click();
-  window.URL.revokeObjectURL(url);
-  document.body.removeChild(a);
+  saveBlob(new Blob([response.data], { type: mime }), `names.${format}`);
 };
 
 export const getNamesSummary = async (): Promise<NamesSummary> => {

@@ -54,6 +54,7 @@ vi.mock('../../contexts/ProjectContext', () => ({
 
 import * as api from '../../services/api';
 import FindingDetail from '../../pages/FindingDetail';
+import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -74,6 +75,7 @@ const renderAt = (url: string) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetProjectMembersCache();
   projectRole.value = 'analyst';
   mocked.getFinding.mockResolvedValue(finding());
   mocked.getFindingHistory.mockResolvedValue([]);
@@ -103,6 +105,21 @@ describe('FindingDetail — C2: metadata edits keep the comment draft', () => {
     expect(screen.getByLabelText('New comment')).toHaveValue('repro: openssl s_client …');
     // The whole-page skeleton never replaced the content.
     expect(screen.getByText('Weak TLS on portal')).toBeInTheDocument();
+  });
+});
+
+describe('FindingDetail — the owner picker when the members could not be loaded', () => {
+  it('says so beside the picker, with a retry, instead of offering nobody', async () => {
+    mocked.listProjectMembers.mockRejectedValueOnce(new Error('503'));
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    const alert = await screen.findByText(/members could not be loaded/);
+    mocked.listProjectMembers.mockResolvedValue([
+      { id: 9, project_id: 1, user_id: 77, username: 'ben', full_name: 'Ben Okafor', role: 'analyst', created_at: '' },
+    ]);
+    fireEvent.click(within(alert.parentElement as HTMLElement).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText(/members could not be loaded/)).not.toBeInTheDocument());
+    expect(mocked.listProjectMembers).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -472,6 +489,31 @@ describe('FindingDetail — each proposal is reviewed where it applies (5.334.0)
     await waitFor(() => expect(mocked.acceptProposal).toHaveBeenCalledWith(1, {}));
     await waitFor(() => expect(mocked.getFinding.mock.calls.length).toBeGreaterThan(1));
     await waitFor(() => expect(mocked.listProposals.mock.calls.length).toBeGreaterThan(calls));
+  });
+
+  // The two refreshes share one lane: the status change's slower re-read used
+  // to land after the accept's and put the page back to the older finding.
+  it('a slow refresh never lands over a newer one', async () => {
+    const user = userEvent.setup();
+    mocked.acceptProposal.mockResolvedValue({ ...proposal({ id: 1, kind: 'finding_text', field: 'recommendation' }), status: 'accepted' });
+    renderAt('/findings/7');
+    const drafts = await screen.findByTestId('drafts-recommendation');
+
+    let landOlder!: (f: unknown) => void;
+    mocked.getFinding.mockImplementationOnce(() => new Promise((resolve) => { landOlder = resolve; }));
+    await user.click(screen.getByLabelText('Finding status'));
+    await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
+    await waitFor(() => expect(mocked.getFinding).toHaveBeenCalledTimes(2));
+
+    mocked.getFinding.mockResolvedValue(finding({ title: 'After the accept', status: 'confirmed' }));
+    fireEvent.click(within(drafts).getByRole('button', { name: /^Accept$/ }));
+    expect(await screen.findByText('After the accept')).toBeInTheDocument();
+
+    await act(async () => { landOlder(finding({ title: 'Before the accept', status: 'confirmed' })); });
+    expect(screen.getByText('After the accept')).toBeInTheDocument();
+    expect(screen.queryByText('Before the accept')).not.toBeInTheDocument();
+    // The status control is released by the read that superseded its own.
+    expect(screen.queryByLabelText('Saving status')).not.toBeInTheDocument();
   });
 });
 

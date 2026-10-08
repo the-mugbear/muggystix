@@ -60,6 +60,15 @@ OPERATOR_METADATA_WRITES = {
 #: a route could vanish from the sweep unnoticed).  Adding or removing an
 #: agent write route means editing this set, on purpose.
 GATED_PROJECT_WRITES = {
+    # v2.457.0 — remediation tracking.  Refused here for a read-only operator
+    # like every project write; an analyst's key is then refused by the
+    # route's own project-admin check (tests/test_remediation.py).
+    ("DELETE", "/api/v1/agent/remediation/events/{event_id}"),
+    ("PATCH", "/api/v1/agent/remediation/events/{event_id}"),
+    ("POST", "/api/v1/agent/remediation/apply"),
+    ("POST", "/api/v1/agent/remediation/events"),
+    ("POST", "/api/v1/agent/remediation/contact-report"),
+    ("POST", "/api/v1/agent/remediation/follow-up"),
     ("PATCH", "/api/v1/agent/host-tests/{test_id}"),
     ("PATCH", "/api/v1/agent/hosts/{host_id}"),
     ("POST", "/api/v1/agent/evidence"),

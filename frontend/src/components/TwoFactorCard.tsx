@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { copyToClipboard } from '../utils/clipboard';
+import { downloadTextFile } from '../utils/download';
 import { ShieldOff, Loader2, KeyRound, Copy, Download } from 'lucide-react';
 import apiClient from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
@@ -122,13 +123,7 @@ const TwoFactorCard: React.FC = () => {
   };
 
   const downloadCodes = () => {
-    const blob = new Blob([`BlueStick recovery codes\n\n${recoveryCodes.join('\n')}\n`], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'bluestick-recovery-codes.txt';
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadTextFile('bluestick-recovery-codes.txt', `BlueStick recovery codes\n\n${recoveryCodes.join('\n')}\n`);
   };
 
   return (

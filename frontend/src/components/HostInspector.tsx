@@ -405,22 +405,25 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
   const handleSaveNoteDetails = async () => {
     if (!detailsNote) return;
+    const submitHostId = hostId;
     setDetailsSaving(true);
     try {
       // The type goes only when it changed: a thread labelled before 5.326.0
       // may carry "finding" or "action", which can be kept but not chosen.
       const typeChanged = detailsType !== (detailsNote.note_type || 'none');
-      const updated = await updateAnnotation(hostId, detailsNote.id, {
+      const updated = await updateAnnotation(submitHostId, detailsNote.id, {
         ...(typeChanged ? { note_type: detailsType === 'none' ? null : (detailsType as NoteType) } : {}),
         pinned: detailsPinned,
       });
+      if (submitHostId !== hostIdRef.current) return;
       setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
       toast.success('Note details updated.');
       setDetailsNote(null);
     } catch (err) {
+      if (submitHostId !== hostIdRef.current) return;
       toast.error(formatApiError(err, 'Failed to update note details.'));
     } finally {
-      setDetailsSaving(false);
+      if (submitHostId === hostIdRef.current) setDetailsSaving(false);
     }
   };
 
@@ -466,6 +469,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     if (!triageVuln) return;
     const { id: vulnId, intent } = triageVuln;
     const reason = triageReason.trim();
+    const submitHostId = hostId;
     setVulnActionId(vulnId);
     try {
       const hostOnly = intent === 'false_positive' && triageScope === 'host';
@@ -495,6 +499,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             : { label: 'Open finding', onClick: () => navigate(`/findings/${finding.id}`) },
         },
       );
+      // The toast names the finding and is true wherever the reader is; the
+      // panel's own state belongs to the host it was done on.
+      if (submitHostId !== hostIdRef.current) return;
       setPromotedVulns((prev) => ({ ...prev, [vulnId]: finding.id }));
       if (hostOnly) setDismissedHereVulns((prev) => ({ ...prev, [vulnId]: true }));
       setFindingsRefresh((n) => n + 1);
@@ -506,7 +513,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update vulnerability.'));
     } finally {
-      setVulnActionId(null);
+      if (submitHostId === hostIdRef.current) setVulnActionId(null);
     }
   };
   const openTriage = (vulnId: number, title: string, intent: 'confirmed' | 'false_positive') => {
@@ -657,6 +664,15 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     setNoteError(null);
     setReplyTo(null);
     setReplyBody('');
+    // A save still in flight is the previous host's: its completion leaves
+    // this panel alone, so its busy states and dialogs end here.
+    setNoteSubmitting(false);
+    setFollowLoading(false);
+    setNoteActionId(null);
+    setDetailsSaving(false);
+    setDetailsNote(null);
+    setVulnActionId(null);
+    setTriageVuln(null);
     // The draft belongs to the previous host: pending screenshots must not
     // ride along and end up attached to this one (UX review C1).  Object
     // URLs are revoked here and nowhere else on a host change.
@@ -731,28 +747,34 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     status: FollowStatus | 'none',
     review?: { review_conclusion?: ReviewConclusion; review_summary?: string },
   ): Promise<boolean> => {
+    // The host this was done on: the list's row is told either way, the panel
+    // only while it still shows that host.
+    const submitHostId = hostId;
+    const stillHere = () => submitHostId === hostIdRef.current;
     setFollowLoading(true);
     try {
       if (status === 'none') {
-        await unfollowHost(hostId);
+        await unfollowHost(submitHostId);
+        onFollowChange?.(submitHostId, null);
+        if (!stillHere()) return false;
         setFollowStatus('');
         setHost((previous) => (previous ? { ...previous, follow: null } : previous));
-        onFollowChange?.(hostId, null);
         toast.info('Removed from your follow list', { autoHideMs: 2000 });
       } else {
-        const response = await followHost(hostId, status, review);
+        const response = await followHost(submitHostId, status, review);
+        onFollowChange?.(submitHostId, response);
+        if (!stillHere()) return false;
         setFollowStatus(response.status);
         setHost((previous) => (previous ? { ...previous, follow: response } : previous));
-        onFollowChange?.(hostId, response);
         toast.success(`Marked as ${FOLLOW_STATUS_META[status].label}`, { autoHideMs: 2000 });
       }
       return true;
     } catch (err) {
       console.error('Failed to update follow status:', err);
-      toast.error('Failed to update follow status. Please try again.');
+      if (stillHere()) toast.error('Failed to update follow status. Please try again.');
       return false;
     } finally {
-      setFollowLoading(false);
+      if (stillHere()) setFollowLoading(false);
     }
   };
 
@@ -904,9 +926,12 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       confirmLabel: 'Delete',
     });
     if (!ok) return;
+    const submitHostId = hostId;
+    if (submitHostId !== hostIdRef.current) return;
     setNoteActionId(noteId);
     try {
-      await deleteAnnotation(hostId, noteId);
+      await deleteAnnotation(submitHostId, noteId);
+      if (submitHostId !== hostIdRef.current) return;
       setNotes((previous) => previous.filter((note) => note.id !== noteId));
       setHost((previous) =>
         previous
@@ -918,29 +943,33 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       // Pre-audit (C8): console.error only — user clicked Trash and
       // the note stayed in the list with no signal whether the click
       // did anything.
+      if (submitHostId !== hostIdRef.current) return;
       toast.error(formatApiError(err, 'Failed to delete note.'));
     } finally {
-      setNoteActionId(null);
+      if (submitHostId === hostIdRef.current) setNoteActionId(null);
     }
   };
 
   const handleReply = async () => {
     if (!replyTo || !replyBody.trim()) return;
+    const submitHostId = hostId;
     setNoteSubmitting(true);
     try {
-      const newNote = await createAnnotation(hostId, {
+      const newNote = await createAnnotation(submitHostId, {
         body: replyBody.trim(),
         parent_id: replyTo.id,
       });
+      if (newNote.mention_warning) toast.warning(newNote.mention_warning);
+      else if (!announceMentionOutcome(toast, newNote)) toast.success('Reply posted.');
+      if (submitHostId !== hostIdRef.current) return;
       setNotes((prev) => [newNote, ...prev]);
       setReplyTo(null);
       setReplyBody('');
-      if (newNote.mention_warning) toast.warning(newNote.mention_warning);
-      else if (!announceMentionOutcome(toast, newNote)) toast.success('Reply posted.');
     } catch (err) {
+      if (submitHostId !== hostIdRef.current) return;
       toast.error(formatApiError(err, 'Failed to post reply.'));
     } finally {
-      setNoteSubmitting(false);
+      if (submitHostId === hostIdRef.current) setNoteSubmitting(false);
     }
   };
 

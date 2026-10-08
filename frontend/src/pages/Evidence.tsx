@@ -318,8 +318,8 @@ const CoverageMatrix: React.FC<{
             <Link to="/posture/segments" className="text-info hover:underline">all {unit}s on Segments</Link>.{' '}
           </span>
         )}
-        Cells: assessed / eligible hosts. Tinted = some eligible hosts not assessed (darker = a larger share);
-        hatched = none assessed; n/a = the domain applies to no host there. Select a tinted or hatched cell for its hosts.
+        Assessed / eligible hosts. Tinted = some not assessed (darker = more); hatched = none; n/a = does not apply.
+        Select a tinted or hatched cell for its hosts and the step that closes the gap.
         {hasOutside && ' Hosts outside every scoped subnet are left untinted: they are not a gap to close until someone confirms they are in scope.'}
         {matrix.group_by === 'subnet' && ' No sites are defined, so hosts are grouped by their most-specific subnet.'}
       </p>
@@ -351,8 +351,7 @@ const CredentialedLine: React.FC<{ data: EvidenceCoverageResponse }> = ({ data }
       {count(c.credentialed, 'credentialed', 'credentialed')} credentialed,{' '}
       {count(c.not_credentialed, 'uncredentialed', 'not credentialed')} not credentialed,{' '}
       {count(c.credentials_not_stated, 'unstated', 'not stated')} not stated.{' '}
-      A scan that did not authenticate saw the host only from the network: few or no results from it is weaker evidence
-      than a credentialed scan. All three count as assessed.
+      An unauthenticated scan is weaker evidence; all three count as assessed.
     </p>
   );
 };
@@ -369,9 +368,8 @@ const EvidenceLead: React.FC<{
       : complete.length === 0 ? 'critical' : 'warning';
   return (
     <PostureLead tone={tone} restsOn={<>
-      Covers all {data.total_hosts.toLocaleString()} host{data.total_hosts === 1 ? '' : 's'} in the project, inside a scoped
-      subnet or not — Patterns and the Posture grid count only hosts inside scoped subnets, so their totals can be smaller.
-      A gap is missing evidence, not a finding: nothing observed where nobody looked is unknown, not clean.
+      Covers all {data.total_hosts.toLocaleString()} host{data.total_hosts === 1 ? '' : 's'} in the project, scoped or not
+      (Patterns and the Posture grid count only scoped hosts). A gap is missing evidence, not a finding.
     </>}>
       {applicable.length === 0
         ? 'No assessment domain applies to the hosts found so far.'
@@ -466,7 +464,6 @@ const Evidence: React.FC = () => {
             <EvidenceLead data={data} largest={largest[0]} />
             <PostureSection
               title="Where the gaps are"
-              description="Each domain by site (or subnet): assessed ÷ eligible hosts. Select a tinted or hatched cell for its hosts and the step that closes the gap."
             >
               {data.matrix ? (
                 <CoverageMatrix data={data} matrix={data.matrix} selection={selection} onSelect={setSelection} />
@@ -478,8 +475,12 @@ const Evidence: React.FC = () => {
             </PostureSection>
 
             <PostureSection
-              title="Largest gaps"
-              description="The cells with the most eligible hosts not assessed, and the step that closes each. Ranked by hosts missing — not by age: this is one assessment window. Gaps on hosts outside the declared scope come last, and are not a collection task until someone confirms they are in scope."
+              title={(
+                <>
+                  Largest gaps
+                  <InfoTip text="The cells with the most eligible hosts not assessed, and the step that closes each. Ranked by hosts missing — not by age: this is one assessment window. Gaps on hosts outside the declared scope come last, and are not a collection task until someone confirms they are in scope." />
+                </>
+              )}
             >
               {largest.length === 0 ? (
                 <p className="text-metadata text-muted-foreground">Every eligible host carries evidence in every domain that applies to it.</p>

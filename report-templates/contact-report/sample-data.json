@@ -1,0 +1,386 @@
+{
+  "schema": 1,
+  "report": {
+    "id": 1,
+    "kind": "full",
+    "title": "Remediation list — Roger Smith",
+    "heading": "Example Corp",
+    "number": 1,
+    "draft": false,
+    "date": "2026-09-23",
+    "issued_at": "2026-09-23T10:00:00+00:00",
+    "template": "contact-report",
+    "authors": [
+      "Alex Tester",
+      "Sam Analyst"
+    ],
+    "baseline": null,
+    "revision_of": null,
+    "contact": {
+      "name": "Roger Smith",
+      "email": "roger.smith@example.com"
+    },
+    "as_of": "2026-10-08"
+  },
+  "project": {
+    "name": "Example Corp internal assessment",
+    "start_date": "2026-09-01",
+    "end_date": "2026-09-19"
+  },
+  "engagement": {
+    "client_name": "Example Corp",
+    "classification": "Confidential",
+    "engagement_type": "Internal network penetration test",
+    "testers": [
+      {
+        "user_id": 1,
+        "name": "Alex Tester",
+        "role": "Technical lead",
+        "email": "lead@example.com"
+      },
+      {
+        "user_id": 2,
+        "name": "Sam Analyst",
+        "role": "Tester",
+        "email": "tester@example.com"
+      }
+    ],
+    "distribution": [
+      {
+        "name": "Chief Information Security Officer",
+        "email": "ciso@example.com"
+      }
+    ],
+    "system_description": "The assessment covered the **corporate server network** and the public web portal.",
+    "applications": "- https://portal.example.com (customer portal)\n- https://api.example.com/v2",
+    "thick_clients": null,
+    "other_targets": null
+  },
+  "executive_summary": "The assessment found **one critical** and **one high** severity issue that give an attacker on the internal network control of the file server and read access to the directory.\n\n1. Patch the file server.\n2. Disable anonymous LDAP binds.",
+  "scope": {
+    "subnets": [
+      {
+        "cidr": "192.0.2.0/24",
+        "description": "Server VLAN",
+        "site": "HQ"
+      }
+    ],
+    "domains": [
+      {
+        "domain": "example.com",
+        "include_subdomains": true
+      }
+    ],
+    "totals": {
+      "networks": 1,
+      "ipv4_addresses": 256,
+      "ipv6_networks": 0,
+      "domains": 1,
+      "sites": 1
+    },
+    "by_site": [
+      {
+        "site": "HQ",
+        "networks": 1,
+        "addresses": 256
+      }
+    ],
+    "inline_max": 25,
+    "domains_inline_max": 25,
+    "subnets_inline": true,
+    "domains_inline": true,
+    "external": false,
+    "file": null
+  },
+  "severity_order": [
+    "critical",
+    "high",
+    "medium",
+    "low",
+    "info"
+  ],
+  "severity_labels": {
+    "critical": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+    "info": "Informational"
+  },
+  "counts": {
+    "critical": 1,
+    "high": 1,
+    "medium": 1,
+    "low": 0,
+    "info": 1,
+    "total": 4
+  },
+  "findings": [
+    {
+      "_path": "findings.0",
+      "id": 11,
+      "ref": "F-01",
+      "title": "Remote code execution in the file server's SMB service",
+      "severity": "critical",
+      "severity_label": "Critical",
+      "status": "confirmed",
+      "status_note": null,
+      "cvss_score": 9.8,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "description": "The SMB service on the file server runs a version with a known remote code execution flaw.",
+      "impact": "An attacker on the internal network can run commands as SYSTEM on the file server.",
+      "recommendation": "Apply the vendor's security update and restrict SMB to the hosts that need it.",
+      "references": "- https://www.example.com/advisory/2026-001",
+      "steps_to_reproduce": "1. Scan the server VLAN for SMB.\n2. Confirm the vulnerable version with a safe check.\n\n```bash\nnmap -p445 --script smb-vuln-check 192.0.2.10\n```\n\n![](evidence:1)",
+      "affected": [
+        {
+          "address": "192.0.2.10",
+          "hostname": "files01",
+          "name": null,
+          "port": "445/tcp",
+          "state": null,
+          "deadline_state": "overdue",
+          "deadline": "12 days overdue",
+          "due_on": "2026-09-26",
+          "assigned_on": "2026-08-27",
+          "team": "Platform"
+        }
+      ],
+      "affected_count": 1,
+      "new_affected": [],
+      "change": null,
+      "previous_severity": null,
+      "previous_severity_label": null,
+      "images": [
+        {
+          "attachment_id": 1,
+          "file": "evidence/1.png",
+          "caption": "The safe check reporting the file server as vulnerable",
+          "placed_in": [
+            "steps_to_reproduce"
+          ],
+          "printed": true,
+          "printed_in": [
+            "steps_to_reproduce"
+          ]
+        },
+        {
+          "attachment_id": 2,
+          "file": "evidence/2.png",
+          "caption": "The SMB banner of files01",
+          "placed_in": [],
+          "printed": true,
+          "printed_in": []
+        }
+      ],
+      "placed": {
+        "steps_to_reproduce": {
+          "1": {
+            "attachment_id": 1,
+            "file": "evidence/1.png",
+            "caption": "The safe check reporting the file server as vulnerable"
+          }
+        }
+      },
+      "evidence": [
+        {
+          "attachment_id": 2,
+          "file": "evidence/2.png",
+          "caption": "The SMB banner of files01",
+          "placed_in": [],
+          "printed": true,
+          "printed_in": []
+        }
+      ],
+      "confirmations": [
+        {
+          "_path": "findings.0.confirmations.0",
+          "id": 501,
+          "tool": "nmap",
+          "host": "192.0.2.10",
+          "outcome": "finding",
+          "summary": "The SMB service answers the vulnerable request without authentication.",
+          "command": "nmap -Pn -p445 --script smb-vuln-ms17-010 192.0.2.10",
+          "output": "PORT    STATE SERVICE\n445/tcp open  microsoft-ds\n\nHost script results:\n| smb-vuln-ms17-010:\n|   VULNERABLE:\n|   Remote Code Execution vulnerability in Microsoft SMBv1 servers (ms17-010)\n|     State: VULNERABLE\n|_    Risk factor: HIGH",
+          "output_truncated": true,
+          "executed_at": "2026-09-18T10:42:00+00:00",
+          "date": "2026-09-18",
+          "by": "Alex Tester",
+          "by_agent": false
+        }
+      ],
+      "confirmations_omitted": 0,
+      "corroboration": [
+        "Nessus",
+        "OpenVAS"
+      ],
+      "deadline": "12 days overdue"
+    },
+    {
+      "_path": "findings.1",
+      "id": 12,
+      "ref": "F-02",
+      "title": "Anonymous LDAP bind returns the directory",
+      "severity": "high",
+      "severity_label": "High",
+      "status": "confirmed",
+      "status_note": null,
+      "cvss_score": 7.5,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "description": "Both domain controllers accept anonymous LDAP binds and return user and group objects.",
+      "impact": "Anyone on the network can list every account, which makes password attacks targeted.",
+      "recommendation": "Disable anonymous binds on the domain controllers.",
+      "references": null,
+      "steps_to_reproduce": null,
+      "affected": [
+        {
+          "address": "192.0.2.20",
+          "hostname": "dc01",
+          "name": "dc01.example.com",
+          "port": "389/tcp",
+          "state": null,
+          "deadline_state": "due_soon",
+          "deadline": "Due in 3 days",
+          "due_on": "2026-10-11",
+          "assigned_on": "2026-09-11",
+          "team": "Platform"
+        },
+        {
+          "address": "192.0.2.21",
+          "hostname": "dc02",
+          "name": "dc02.example.com",
+          "port": "389/tcp",
+          "state": "Remediated",
+          "deadline_state": "on_track",
+          "deadline": "Due in 40 days",
+          "due_on": "2026-11-17",
+          "assigned_on": "2026-08-19",
+          "team": "Platform"
+        }
+      ],
+      "affected_count": 2,
+      "new_affected": [],
+      "change": null,
+      "previous_severity": null,
+      "previous_severity_label": null,
+      "images": [],
+      "placed": {},
+      "evidence": [],
+      "confirmations": [
+        {
+          "_path": "findings.1.confirmations.0",
+          "id": 502,
+          "tool": "ldapsearch",
+          "host": "192.0.2.20",
+          "outcome": "finding",
+          "summary": "An anonymous bind returned user and group objects.",
+          "command": "ldapsearch -x -H ldap://192.0.2.20 -b 'dc=example,dc=com' '(objectClass=user)' sAMAccountName",
+          "output": "# extended LDIF\n# base <dc=example,dc=com> with scope subtree\ndn: CN=svc-backup,OU=Service Accounts,DC=example,DC=com\nsAMAccountName: svc-backup",
+          "output_truncated": true,
+          "executed_at": "2026-09-19T14:05:00+00:00",
+          "date": "2026-09-19",
+          "by": "Sam Analyst",
+          "by_agent": true
+        }
+      ],
+      "confirmations_omitted": 0,
+      "corroboration": [],
+      "deadline": "Due in 3 days"
+    },
+    {
+      "_path": "findings.2",
+      "id": 13,
+      "ref": "F-03",
+      "title": "TLS 1.0 accepted by the web portal",
+      "severity": "medium",
+      "severity_label": "Medium",
+      "status": "accepted_risk",
+      "status_note": "Risk accepted",
+      "cvss_score": null,
+      "cvss_vector": null,
+      "description": "The portal still negotiates TLS 1.0.",
+      "impact": null,
+      "recommendation": "Disable TLS 1.0 and 1.1.",
+      "references": null,
+      "steps_to_reproduce": null,
+      "affected": [
+        {
+          "address": "198.51.100.5",
+          "hostname": null,
+          "name": "portal.example.com",
+          "port": "443/tcp",
+          "state": null,
+          "deadline_state": "no_deadline",
+          "deadline": "No deadline",
+          "due_on": null,
+          "assigned_on": "2026-09-01",
+          "team": "Platform"
+        }
+      ],
+      "affected_count": 1,
+      "new_affected": [],
+      "change": null,
+      "previous_severity": null,
+      "previous_severity_label": null,
+      "images": [],
+      "placed": {},
+      "evidence": [],
+      "confirmations": [],
+      "confirmations_omitted": 0,
+      "corroboration": [],
+      "deadline": "No deadline"
+    },
+    {
+      "_path": "findings.3",
+      "id": 14,
+      "ref": "F-04",
+      "title": "Web server version disclosed in headers",
+      "severity": "info",
+      "severity_label": "Informational",
+      "status": "confirmed",
+      "status_note": null,
+      "cvss_score": null,
+      "cvss_vector": null,
+      "description": "The portal's Server header names the software and version.",
+      "impact": null,
+      "recommendation": "Remove the version from the Server header.",
+      "references": null,
+      "steps_to_reproduce": null,
+      "affected": [
+        {
+          "address": "198.51.100.5",
+          "hostname": null,
+          "name": "portal.example.com",
+          "port": "443/tcp",
+          "state": null,
+          "deadline_state": "deferred",
+          "deadline": "Deferred",
+          "due_on": null,
+          "assigned_on": "2026-09-01",
+          "team": "Platform"
+        }
+      ],
+      "affected_count": 1,
+      "new_affected": [],
+      "change": null,
+      "previous_severity": null,
+      "previous_severity_label": null,
+      "images": [],
+      "placed": {},
+      "evidence": [],
+      "confirmations": [],
+      "confirmations_omitted": 0,
+      "corroboration": [],
+      "deadline": "Deferred"
+    }
+  ],
+  "delta": null,
+  "remediation": {
+    "overdue": 1,
+    "due_soon": 1,
+    "open": 5,
+    "closed": 2,
+    "due_soon_days": 7,
+    "not_listed": 0,
+    "timeline": "Critical and High 30 days, Medium 90 days, Low 120 days, Informational no deadline"
+  }
+}

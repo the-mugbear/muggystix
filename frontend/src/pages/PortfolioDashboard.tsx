@@ -343,9 +343,6 @@ const PortfolioDashboard: React.FC = () => {
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
           <h1 className="text-page-title font-semibold">Portfolio</h1>
-          <p className="mt-xxs text-metadata text-muted-foreground">
-            Your projects: what testing has found, how far review has got, and what is waiting on someone.
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-sm">
           <LastUpdated compact lastFetched={fetchedAt} onRefresh={reload} isLoading={loading} label="portfolio" />

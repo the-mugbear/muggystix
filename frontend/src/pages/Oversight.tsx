@@ -23,12 +23,13 @@
  * The API's field names (`targets_tested`, `hosts_tested`) are unchanged.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Copy } from 'lucide-react';
 
 import {
   getOversightDashboard,
   OversightProjectRow,
+  OversightRemediation,
   OversightQuery,
   OversightResponse,
   OversightSeverity,
@@ -50,6 +51,7 @@ import PostureLead from '../components/posture/PostureLead';
 import GrowthCharts from '../components/oversight/GrowthCharts';
 import JudgmentBySeverity from '../components/oversight/JudgmentBySeverity';
 import ShareSummaryDialog from '../components/oversight/ShareSummaryDialog';
+import { timelineSummary } from '../utils/remediation';
 import ProjectMultiSelect from '../components/oversight/ProjectMultiSelect';
 import { Input } from '../components/ui/input';
 import {
@@ -83,6 +85,11 @@ const REASON_LABEL: Record<string, string> = {
 };
 
 const n = (v: number) => v.toLocaleString();
+/** "finding on a host" / "findings on hosts", by the count beside it. */
+const onHosts = (count: number) => (count === 1 ? 'finding on a host' : 'findings on hosts');
+/** A duration in days, or a dash when there is nothing to measure — never 0. */
+const days = (v: number | null | undefined) =>
+  (v == null ? '—' : `${v.toLocaleString(undefined, { maximumFractionDigits: 1 })} day${v === 1 ? '' : 's'}`);
 const pct = (num: number, den: number) => (den > 0 ? `${Math.round((100 * num) / den)}%` : '—');
 const rate = (r: number | null) => (r == null ? '—' : `${r}%`);
 const name = (t: { full_name: string | null; username: string }) => t.full_name || t.username;
@@ -367,6 +374,14 @@ const TestersTable: React.FC<{ rows: OversightTesterRow[]; caption: string; expa
 // Page
 // ---------------------------------------------------------------------------
 
+/** "2 critical · 3 high": the overdue rows by severity, worst first. */
+const overdueBySeverity = (r: OversightRemediation): string =>
+  (['critical', 'high', 'medium', 'low', 'info'] as const)
+    .map((sev) => [sev, r[`overdue_${sev}`] ?? 0] as const)
+    .filter(([, count]) => count > 0)
+    .map(([sev, count]) => `${count.toLocaleString()} ${sev === 'info' ? 'informational' : sev}`)
+    .join(' · ');
+
 const Oversight: React.FC = () => {
   const navigate = useNavigate();
   const { projects, selectProject } = useProject();
@@ -504,10 +519,6 @@ const Oversight: React.FC = () => {
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
           <h1 className="text-page-title">Oversight</h1>
-          <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
-            Every registered project for administrators: what is in progress, how far review has got, what testing found,
-            and who did the work. Every number is explained on its (i).
-          </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-xs">
           <LastUpdated
@@ -675,6 +686,64 @@ const Oversight: React.FC = () => {
             >
               <JudgmentBySeverity severity={s.severity} />
             </PostureSection>
+
+            {/* Only on an installation that tracks remediation (System
+                settings): otherwise the block is null and nothing about
+                remediation is said.  The rows themselves — by project and by
+                contact — are the Remediation deadlines page; this is the
+                summary that leads there. */}
+            {s.remediation && (
+              <PostureSection
+                title={<>Remediation deadlines <InfoTip text={`Findings on hosts assigned to someone to fix, against this installation's timeline (${timelineSummary({ days: s.remediation.days ?? {} })}), counted from the day each was assigned. A finding nobody was assigned has no deadline and is counted as not assigned, never as overdue. It is the contact's progress, not the finding's own status.`} /></>}
+                description="Current, whatever the dates or tester."
+                actions={<Link to="/remediation-deadlines" className="text-caption text-info hover:underline">By project and by contact</Link>}
+              >
+                <div className="grid gap-y-md divide-border sm:grid-cols-4 lg:grid-cols-7 sm:divide-x">
+                  <PostureMeasure label="Overdue" value={<span className={s.remediation.overdue ? 'text-destructive' : undefined}>{n(s.remediation.overdue ?? 0)}</span>}
+                    to="/remediation-deadlines?state=overdue" toLabel="Overdue findings on hosts — view"
+                    info="Open findings on hosts past their remediation deadline.">
+                    {overdueBySeverity(s.remediation) || onHosts(s.remediation.overdue ?? 0)}
+                    {s.remediation.longest_overdue_days != null && (
+                      <span className="block">the longest by {days(s.remediation.longest_overdue_days)}</span>
+                    )}
+                  </PostureMeasure>
+                  <PostureMeasure label="Over 30 days late" value={n((s.remediation.overdue_age_31_90 ?? 0) + (s.remediation.overdue_age_90_plus ?? 0))}
+                    to="/remediation-deadlines?band=31-90" toLabel="Findings on hosts more than 30 days overdue — view"
+                    info="Overdue findings on hosts more than 30 days past their deadline: slippage that has become neglect. The link opens the 31–90 day band; the over-90 band is beside it on that page.">
+                    {(s.remediation.overdue_age_90_plus ?? 0) > 0
+                      ? `${n(s.remediation.overdue_age_90_plus ?? 0)} of them over 90 days`
+                      : 'of the overdue'}
+                  </PostureMeasure>
+                  <PostureMeasure label="Due soon" value={<span className={s.remediation.due_soon ? 'text-warning' : undefined}>{n(s.remediation.due_soon ?? 0)}</span>}
+                    to="/remediation-deadlines?state=due_soon" toLabel="Findings on hosts due soon — view"
+                    info={`Open findings on hosts whose deadline is within ${s.remediation.due_soon_days ?? 7} days.`}>
+                    within {s.remediation.due_soon_days ?? 7} days
+                  </PostureMeasure>
+                  <PostureMeasure label="On track" value={n(s.remediation.on_track ?? 0)}
+                    to="/remediation-deadlines?state=on_track" toLabel="Findings on hosts on track — view"
+                    info="Open, assigned, and the deadline is further away than the warning window.">
+                    {onHosts(s.remediation.on_track ?? 0)}
+                  </PostureMeasure>
+                  <PostureMeasure label="Not assigned" value={n(s.remediation.not_assigned ?? 0)}
+                    to="/remediation-deadlines?state=not_assigned" toLabel="Findings on hosts not assigned — view"
+                    info="Open findings on hosts with no assigned date: no deadline is running for them. A project that assigns nothing shows here, not under overdue.">
+                    no deadline running
+                  </PostureMeasure>
+                  <PostureMeasure label="Closed late" value={n(s.remediation.closed_late ?? 0)}
+                    info="Findings on hosts closed after the deadline that applied on the day they were closed, out of the closed ones that had a deadline.">
+                    {(s.remediation.closed_with_deadline ?? 0) > 0
+                      ? `of ${n(s.remediation.closed_with_deadline ?? 0)} closed with a deadline`
+                      : 'nothing closed with a deadline yet'}
+                  </PostureMeasure>
+                  <PostureMeasure label="Average time to close" value={days(s.remediation.avg_days_to_close)}
+                    info="Mean days from the assigned date to the closed date, over closed findings on hosts that carry both dates, the closed date not before the assigned one. One slow fix moves a mean a long way; the number of fixes it is taken over is beside it.">
+                    {(s.remediation.closed_measured ?? 0) > 0
+                      ? `over ${n(s.remediation.closed_measured ?? 0)} closed with both dates`
+                      : 'no closed finding has both dates'}
+                  </PostureMeasure>
+                </div>
+              </PostureSection>
+            )}
 
             <PostureSection
               title="Host growth"

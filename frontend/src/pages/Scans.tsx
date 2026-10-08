@@ -69,7 +69,7 @@ import {
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { formatDate, formatRelativeTime } from '../utils/relativeTime';
+import { formatDate, formatRelativeTime, formatTimestamp } from '../utils/relativeTime';
 import ScanContribution from '../components/scans/ScanContribution';
 import ImportResult from '../components/scans/ImportResult';
 import UploadReviewDialog from '../components/scans/UploadReviewDialog';
@@ -115,6 +115,9 @@ export default function Scans() {
   // Filter-aware totals for the headline cards — fetched server-side so they
   // reflect every matching scan, not just the loaded (paginated) page.
   const [inventorySummary, setInventorySummary] = useState<ScanInventorySummary | null>(null);
+  // The summary read failed: its counts are shown as not known, never as the
+  // previous filter's or the loaded rows'.
+  const [summaryFailed, setSummaryFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const fetchGenRef = useRef(0);
@@ -380,9 +383,11 @@ export default function Scans() {
     // failure here must not block the table from rendering — fetch separately.
     try {
       const summary = await getScansSummary(filters);
-      if (current()) setInventorySummary(summary);
+      if (current()) { setInventorySummary(summary); setSummaryFailed(false); }
     } catch (err) {
       console.error('Error fetching scan summary:', err);
+      // The counts on screen belong to another filter: not known beats wrong.
+      if (current()) { setInventorySummary(null); setSummaryFailed(true); }
     }
   }, [listFilters, sortBy, sortOrder, showBatchFiles, hydrateHistory]);
 
@@ -956,9 +961,6 @@ export default function Scans() {
       <div className="mb-md flex flex-wrap items-start justify-between gap-sm">
         <div>
           <h1 className="text-page-title font-semibold">Scans</h1>
-          <p className="text-metadata text-muted-foreground">
-            Import tool output, track ingestion, and review scan inventory from one place.
-          </p>
         </div>
         <div className="flex flex-wrap items-center gap-xs">
           <Button variant="outline" onClick={() => navigate('/scans/compare')}>
@@ -979,6 +981,7 @@ export default function Scans() {
           the loaded page). */}
       <ScansLead
         files={inventorySummary?.total_files ?? inventorySummary?.total_scans ?? scans.length}
+        filesUnknown={summaryFailed}
         filtered={hasActiveFilters}
         failed={queueCounts.failed}
         needAttention={inventorySummary?.imports_need_attention}
@@ -1133,18 +1136,8 @@ export default function Scans() {
                       queueCounts.processing > 0 ? `${queueCounts.processing} processing` : null,
                       queueCounts.staged > 0 ? `${queueCounts.staged} waiting for review` : null,
                     ].filter(Boolean).join(' · ')}
-                    {needAttention > 0 && (
-                      <>
-                        {queueCounts.processing > 0 || queueCounts.staged > 0 ? ' · ' : ''}
-                        <Link
-                          to="/parse-errors?status=needs_attention"
-                          className="text-destructive underline-offset-2 hover:underline"
-                          title="Every import of this project that failed or finished partial and nobody dismissed — the figure in the lead and on Ingestion Results"
-                        >
-                          {needAttention.toLocaleString()} need{needAttention === 1 ? 's' : ''} attention
-                        </Link>
-                      </>
-                    )}
+                    {/* How many imports need attention is the lead's, one line
+                        up, with its link — not said again here. */}
                   </span>
                   <button
                     type="button"
@@ -1447,7 +1440,7 @@ export default function Scans() {
                             )}
                           </TableCell>
                           <TableCell className="text-caption">
-                            <p>{new Date(job.created_at).toLocaleString()}</p>
+                            <p>{formatTimestamp(job.created_at)}</p>
                             {elapsed !== '-' && (
                               <p className="font-mono text-muted-foreground" title="How long the parse ran">ran {elapsed}</p>
                             )}
@@ -1670,11 +1663,11 @@ export default function Scans() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__all">
-                  All tools ({(inventorySummary?.total_files ?? scans.length).toLocaleString()})
+                  All tools ({summaryFailed ? '—' : (inventorySummary?.total_files ?? scans.length).toLocaleString()})
                 </SelectItem>
                 {toolChips.map(([group, count]) => (
                   <SelectItem key={group} value={group}>
-                    {group.toLowerCase()} ({count.toLocaleString()})
+                    {group.toLowerCase()} ({summaryFailed ? '—' : count.toLocaleString()})
                   </SelectItem>
                 ))}
                 {/* A tool picked from a row badge that the counts do not list. */}
@@ -1692,7 +1685,7 @@ export default function Scans() {
               }}
             >
               <SelectTrigger className="h-8 w-44 text-metadata" aria-label="Filter scans by upload date"
-                title={sinceIso ? `Uploaded since ${new Date(sinceIso).toLocaleString()}` : undefined}>
+                title={sinceIso ? `Uploaded since ${formatTimestamp(sinceIso)}` : undefined}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -2270,6 +2263,8 @@ const notImportedReasons = (byReason?: Record<string, number>): Array<{ key: str
 
 const ScansLead: React.FC<{
   files: number;
+  /** The summary could not be read: `files` is not the count. */
+  filesUnknown?: boolean;
   filtered: boolean;
   failed: number;
   needAttention?: number;
@@ -2278,8 +2273,8 @@ const ScansLead: React.FC<{
   superseded?: number;
   queueUnknown: boolean;
   lastImportAt: string | null;
-}> = ({ files, filtered, failed, needAttention, notImported = 0, byReason, superseded = 0, queueUnknown, lastImportAt }) => {
-  if (files === 0 && !filtered) return null;
+}> = ({ files, filesUnknown = false, filtered, failed, needAttention, notImported = 0, byReason, superseded = 0, queueUnknown, lastImportAt }) => {
+  if (files === 0 && !filtered && !filesUnknown) return null;
   const last = lastImportAt ? formatRelativeTime(lastImportAt, { style: 'long' }) : null;
   const projectWide = needAttention != null;
   const attention = projectWide ? needAttention : failed;
@@ -2288,7 +2283,9 @@ const ScansLead: React.FC<{
   return (
     <PostureLead className="mb-md" tone={attention > 0 ? 'warning' : 'neutral'}>
       <span className="tabular-nums">
-        {files.toLocaleString()} file{files === 1 ? '' : 's'} imported{filtered ? ' (matching these filters)' : ''}
+        {filesUnknown
+          ? `The imported files${filtered ? ' matching these filters' : ''} could not be counted`
+          : `${files.toLocaleString()} file${files === 1 ? '' : 's'} imported${filtered ? ' (matching these filters)' : ''}`}
       </span>
       {!projectWide && queueUnknown ? (
         <>{sep}the ingestion queue could not be checked</>
@@ -2341,7 +2338,7 @@ const ScansLead: React.FC<{
               </Link>
             </>
           )}
-          {attention === 0 && notImported === 0 && superseded === 0 && <>{sep}nothing failed</>}
+          {attention === 0 && notImported === 0 && superseded === 0 && !filesUnknown && <>{sep}nothing failed</>}
         </>
       )}
       {last && <>{sep}last import {last}</>}{' '}

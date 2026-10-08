@@ -1,8 +1,9 @@
 """Async report generation — queue service for the report worker.
 
-The heavy export formats (PDF, JSON, markdown-bundle, agent-package) build the
-whole document in memory, so they run on a dedicated background worker instead of
-the API request thread.  This service is the report-side twin of
+Two kinds of job run here, on a dedicated background worker instead of the API
+request thread: the host inventory's JSON download (every matching host's full
+record) and the client report's Quarto renders (draft previews, issued
+reports).  This service is the report-side twin of
 ``IngestionService``: it owns the ``report_jobs`` queue and reuses the exact same
 claim mechanics — ``create_job`` → ``enqueue_job`` (pg_notify) → ``poll_and_run_one``
 (``SELECT … FOR UPDATE SKIP LOCKED``) → ``_run_job`` → ``reap_orphaned_jobs`` —
@@ -35,20 +36,21 @@ from app.services.job_transitions import JobNotTransitionable, JobTransitions
 
 logger = logging.getLogger(__name__)
 
-# The formats that run async on the report worker (CSV + HTML stream synchronously
-# on the API and are NOT enqueued here).
-# PDF was removed in v2.196.1 — the host-dossier HTML is screen-oriented (gradients,
-# sticky, flex, collapsible), so WeasyPrint rendered it slowly (~160s/400 hosts) and
-# degraded; the interactive HTML report is the functional handover. Re-adding PDF
-# means restoring the "pdf" branch in _render + this tuple + the endpoint pattern.
-ASYNC_REPORT_FORMATS = ("json", "agent-package", "markdown-bundle")
+# The host download that runs on the report worker (the inventory CSV streams
+# synchronously on the API and is NOT enqueued here).  The agent package and
+# the Markdown bundle were retired with "Export hosts" (owner, 2026-10-07): a
+# job row that still names one of them fails with "no longer produced".
+INVENTORY_JSON_FORMAT = "json"
 # v2.381.0 — client reports (Quarto): draft previews and issued renders.
 # Mirrors client_report_render.CLIENT_JOB_FORMATS (kept literal so this module
 # does not import the renderer on the API side).
-CLIENT_JOB_FORMATS = ("report-html", "report-docx", "report-qmd", "report-issue")
-# Host exports that stream every matching host to the artifact file, uncapped
-# (review 2026-09-23 B-Ops-6).  The markdown bundle stays in memory and capped.
-STREAMED_REPORT_FORMATS = ("json", "agent-package")
+CLIENT_JOB_FORMATS = ("report-html", "report-docx", "report-qmd", "report-issue",
+                      # v2.463.0 — one contact's remediation list: the same
+                      # renderer, dispatched by ``run_client_job``.
+                      "contact-html", "contact-docx")
+#: Jobs whose page shows their state itself: no "report ready" notification,
+#: and not listed among the Hosts page's inventory downloads.
+PAGE_OWNED_REPORT_TYPES = ("client", "remediation")
 
 _REAP_MAX_RETRIES = 2
 
@@ -253,7 +255,6 @@ class ReportJobService:
                 logger.error("Report job %s not found", job_id)
                 return
             try:
-                truncated = False
                 if job.format in CLIENT_JOB_FORMATS:
                     # v2.381.0 — a client report (Quarto): a draft preview
                     # returns its file; an issued report's render stores its
@@ -273,46 +274,34 @@ class ReportJobService:
                     data, media_type, filename = rendered
                     job_dir, artifact = self._new_artifact(filename)
                     artifact.write_bytes(data)
-                else:
+                elif job.format == INVENTORY_JSON_FORMAT:
                     # Run as the requesting user so "assigned to me" / follow filters
                     # resolve the same way they did in the dialog (None if the user
                     # was deleted between enqueue and run — degraded, rare).
                     user = db.get(User, job.requested_by_id) if job.requested_by_id else None
                     gen = ReportGenerator(db, user, project_id=job.project_id)
-                    filters = job.filters or {}
                     report_type = job.report_type or "comprehensive"
                     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-                    if job.format in STREAMED_REPORT_FORMATS:
-                        # Every matching host, streamed in chunks straight to
-                        # the artifact (review 2026-09-23 B-Ops-6) — never
-                        # truncated, memory ~one chunk.
-                        ext = "json" if job.format == "json" else "zip"
-                        media_type = "application/json" if ext == "json" else "application/zip"
-                        filename = f"hosts_{report_type}_{ts}.{ext}"
-                        job_dir, artifact = self._new_artifact(filename)
-                        try:
-                            if job.format == "json":
-                                with open(artifact, "wb") as out:
-                                    gen.write_json_report(filters, report_type, out)
-                            else:
-                                gen.write_agent_package(filters, artifact)
-                        except BaseException:
-                            shutil.rmtree(job_dir, ignore_errors=True)
-                            raise
-                    else:
-                        # The markdown bundle still builds the whole document in
-                        # memory, so it is bounded by the in-memory cap (lower
-                        # REPORT_MAX_INMEMORY_HOSTS if this worker OOMs against
-                        # REPORT_WORKER_MEM_LIMIT).  The lease-renewal thread
-                        # keeps the reaper off this row for the duration.
-                        hosts = gen.get_hosts_for_report(
-                            filters, cap=gen.MAX_INMEMORY_REPORT_HOSTS
-                        )
-                        data, media_type, ext = self._render(gen, job.format, hosts, filters, report_type)
-                        truncated = bool(gen.report_truncated)
-                        filename = f"hosts_{report_type}_{ts}.{ext}"
-                        job_dir, artifact = self._new_artifact(filename)
-                        artifact.write_bytes(data)
+                    # Every matching host, streamed in chunks straight to the
+                    # artifact (review 2026-09-23 B-Ops-6) — nothing is capped,
+                    # memory ~one chunk.
+                    media_type = "application/json"
+                    filename = f"hosts_{report_type}_{ts}.json"
+                    job_dir, artifact = self._new_artifact(filename)
+                    try:
+                        with open(artifact, "wb") as out:
+                            gen.write_json_report(job.filters or {}, report_type, out)
+                    except BaseException:
+                        shutil.rmtree(job_dir, ignore_errors=True)
+                        raise
+                else:
+                    # e.g. a row queued before the agent package / Markdown
+                    # bundle were retired, or retried since: said plainly,
+                    # never rendered as something else.
+                    raise ValueError(
+                        f"The report worker does not produce {job.format!r}. "
+                        "The host inventory downloads are CSV and JSON (Hosts page)."
+                    )
                 file_size = artifact.stat().st_size
 
                 now = datetime.now(timezone.utc)
@@ -328,8 +317,7 @@ class ReportJobService:
                     result_filename=filename,
                     media_type=media_type,
                     file_size=file_size,
-                    truncated=truncated,
-                    message=f"Generated {filename}" + (" (truncated)" if truncated else ""),
+                    message=f"Generated {filename}",
                     expires_at=now + timedelta(hours=settings.REPORT_ARTIFACT_TTL_HOURS),
                     last_error=None,
                 )
@@ -341,10 +329,7 @@ class ReportJobService:
                     )
                     shutil.rmtree(job_dir, ignore_errors=True)
                     return
-                logger.info(
-                    "Report job %s completed: %s (%d bytes, truncated=%s)",
-                    job_id, filename, file_size, truncated,
-                )
+                logger.info("Report job %s completed: %s (%d bytes)", job_id, filename, file_size)
                 self._notify_finished(db, job_id)
             except Exception as exc:
                 logger.exception("Report job %s failed", job_id)
@@ -378,7 +363,7 @@ class ReportJobService:
             job = db.get(ReportJob, job_id)
             # Client-report renders are followed on the Reports page, which
             # shows their state; a notification per preview would be noise.
-            if job is None or job.report_type == "client":
+            if job is None or job.report_type in PAGE_OWNED_REPORT_TYPES:
                 return
             if NotificationService(db).notify_report_job_finished(job) is not None:
                 db.commit()
@@ -392,16 +377,6 @@ class ReportJobService:
         job_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(job_dir, 0o700)
         return job_dir, job_dir / filename
-
-    def _render(
-        self, gen, fmt: str, hosts, filters: Dict[str, Any], report_type: str,
-    ) -> Tuple[bytes, str, str]:
-        """Generate one in-memory format → (bytes, media_type, file extension).
-        JSON and the agent package are streamed instead (``STREAMED_REPORT_FORMATS``)."""
-        if fmt == "markdown-bundle":
-            return gen.generate_markdown_bundle(hosts, filters), "application/zip", "zip"
-
-        raise ValueError(f"Unsupported async report format: {fmt!r}")
 
     def reap_orphaned_jobs(self) -> int:
         """Re-queue (then fail) report jobs stuck in 'processing' past the

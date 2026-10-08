@@ -38,6 +38,7 @@ from app.db import (  # noqa: F401
     models_llm,
     models_project,
     models_proposals,
+    models_remediation,
     models_reports,
     models_tools,
     models_vulnerability,

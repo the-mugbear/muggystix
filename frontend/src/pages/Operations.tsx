@@ -57,6 +57,7 @@ import LastUpdated from '../components/LastUpdated';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
+import { InfoTip } from '../components/ui/info-tip';
 import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
 import { sinceChips, type SinceChip } from '../utils/sinceLastVisit';
 import { filenameSummary } from '../utils/filenameSummary';
@@ -651,6 +652,9 @@ const SetupBlock: React.FC<{ title: string; children: React.ReactNode }> = ({ ti
 /** One linked number-phrase of the lead. */
 interface LeadClause { key: string; to: string; text: string }
 
+/** What the lead's words count — on the (i), not a caption line under it. */
+const LEAD_DEFINITION = 'A decision is a finding under investigation or a proposal waiting for you; tests on hosts you review are listed with those hosts, not counted as assigned to you.';
+
 const LeadLinks: React.FC<{ clauses: LeadClause[] }> = ({ clauses }) => (
   <>
     {clauses.map((c, i) => (
@@ -756,17 +760,15 @@ const OperationsLead: React.FC<{
   const tone: LeadTone = blocked > 0 ? 'critical' : needsMe || holds || also.length ? 'neutral' : 'clear';
 
   return (
-    <PostureLead
-      tone={tone}
-      restsOn="A decision is a finding under investigation or a proposal waiting for you; tests on hosts you review are listed with those hosts, not counted as assigned to you."
-    >
+    <PostureLead tone={tone}>
       <span className="block" data-testid="lead-needs-me">
         {needsMe ? (
           <>
             <LeadLinks clauses={findingClauses} />
             {findingClauses.length > 0 && assignedClause && '; '}
             {assignedClause && <LeadLinks clauses={[assignedClause]} />}
-            .
+            .{' '}
+            <InfoTip text={LEAD_DEFINITION} label="What counts as a decision" />
           </>
         ) : 'Nothing is waiting on a decision from you.'}
       </span>

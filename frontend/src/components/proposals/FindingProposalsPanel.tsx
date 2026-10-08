@@ -60,7 +60,7 @@ const FindingProposalsPanel: React.FC<Props> = ({ proposals, endpointIds, canDec
     <div id="proposals" className="mb-md scroll-mt-24">
       <PostureSection
         title={<><span>Proposals to review</span><SectionCount>{items.length}</SectionCount></>}
-        description="Changes an agent or an AI draft proposed for this finding. Nothing has changed yet: each waits where it applies — report text beside the section's current text, endpoint changes on their row."
+        description="Nothing has changed yet: each is reviewed where it applies."
       >
         <ul className="min-w-0 divide-y divide-border">
           {fields.map((field) => {

@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 
 from app import worker_loop
 from app.services.ingestion_service import IngestionService
@@ -126,7 +127,9 @@ def main() -> None:
             if removed:
                 logger.info("Removed %d retained upload file(s) past the retention window", removed)
         except Exception:
-            logger.debug("staged-upload expiry failed", exc_info=True)
+            # WARNING, not DEBUG (the app logger is at INFO): a sweep that
+            # keeps failing is how the uploads disk fills.
+            logger.warning("Upload expiry / retention sweep failed", exc_info=True)
 
     def _check_backlog() -> None:
         # B2-3 — proactive WARNING when the queue is steadily backing up
@@ -134,10 +137,11 @@ def main() -> None:
         # worker process, so no leader election; per-callback exceptions are
         # isolated by run_listen_loop.
         from app.db.session import SessionLocal
-        from app.services.queue_metrics_service import warn_if_ingestion_backlog_high
+        from app.services.queue_metrics_service import warn_if_disk_low, warn_if_ingestion_backlog_high
 
         with SessionLocal() as db:
             warn_if_ingestion_backlog_high(db)
+        warn_if_disk_low()
 
     def _sweep_webhooks() -> None:
         # v2.233.0 — retry the durable webhook outbox. Rides this worker's tick
@@ -155,13 +159,37 @@ def main() -> None:
                 logger.info("Retried %d pending webhook deliver(ies)", attempted)
             prune_delivery_history(db)
 
+    last_alert_sweep = [0.0]
+
+    def _remediation_alerts() -> None:
+        # v2.461.0 — tell admins about findings entering the due-soon window
+        # or passing their deadline.  A deadline is a day, so every quarter
+        # of an hour is plenty; a no-op when the installation has the feature
+        # off.  Each deadline alerts once (the row remembers), so a second
+        # worker or a restart repeats nothing.
+        if time.monotonic() - last_alert_sweep[0] < 900:
+            return
+        last_alert_sweep[0] = time.monotonic()
+        from app.db.session import SessionLocal
+        from app.services import remediation_alerts
+
+        with SessionLocal() as db:
+            written = remediation_alerts.sweep(db)
+            # v2.462.0 — today's count per project, replaced on every sweep:
+            # the history a derived deadline does not have.
+            from app.services import remediation_service
+            remediation_service.snapshot(db)
+            db.commit()
+        if written:
+            logger.info("Raised %d remediation deadline notification(s)", written)
+
     worker_loop.run_listen_loop(
         channel="ingestion_jobs",
         poll_one=service.poll_and_run_one,
         heartbeat_path=HEARTBEAT_PATH,
         logger=logger,
         poll_interval=POLL_INTERVAL,
-        periodic=[_reap, _check_backlog, _sweep_webhooks],
+        periodic=[_reap, _check_backlog, _sweep_webhooks, _remediation_alerts],
     )
     logger.info("Ingestion worker stopped")
 
