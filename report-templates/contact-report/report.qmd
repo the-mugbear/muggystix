@@ -138,9 +138,12 @@ format:
 # Remediation list
 
 <% with caption = "Prepared for" %><% include "partials/_table_caption.qmd" %><% endwith %>
-<# An empty header row makes a table without one. #>
+<# An empty header row makes a table without one.  The Deadlines row is
+   longer than a line, and Pandoc then sizes the columns by the dashes below:
+   a quarter for the label, the rest for the value (two dashes for the value
+   set it one word wide, running the table over two pages). #>
 | | |
-|:---------------|:--|
+|:------------------------|:--------------------------------------------------------------------------|
 | Contact | << contact.get("name") or contact.get("email") or "" >><% if contact.get("name") and contact.get("email") %> (<< contact.email >>)<% endif %> |
 | Project | << project.name >> |
 | As of | << report.get("as_of") or report.date >> |
@@ -156,7 +159,7 @@ format:
 <% if findings %>
 <% with caption = "Findings assigned to you" %><% include "partials/_table_caption.qmd" %><% endwith %>
 | Ref | Finding | Severity | Systems | Most urgent |
-|:------|:--------------------------------------|:-----------|:---------|:--------------------|
+|:--------|:----------------------------------------|:----------------|:-----------|:--------------------|
 <% for f in findings %>
 | << f.ref >> | [<< f.title >>](#finding-<< f.id >>) | << f.severity_label >> | << f.affected|length >> | << f.get("deadline") or "" >> |
 <% endfor %>

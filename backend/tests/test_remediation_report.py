@@ -170,7 +170,10 @@ def test_the_filled_template_is_the_contacts_systems_and_nobody_elses(db_session
     assert "1 more assigned to you is still being investigated" in text
     # The report's format: every finding with its sections, and the deadline
     # on each of its systems.
-    assert text.count("Description") == 2 and text.count("Impact") == 2 and text.count("Recommendations") == 2
+    assert text.count("Recommendations") == 2 and text.count("bs-md") == 2      # each recommendation, through the filter
+    # A section with nothing written prints no heading (the report prints a
+    # TODO for its author; this reader is not the author).
+    assert "Description" not in text and "Impact" not in text and "Steps to reproduce" not in text
     assert "| 10\\.60\\.0\\.1 | files01 |  | " + day(12).replace("-", "\\-") + " | 12 days overdue |" in text
     assert "Due in 5 days" in text
     assert "10\\.60\\.0\\.2" not in text and "10\\.60\\.0\\.3" not in text and "jane" not in text
@@ -251,6 +254,25 @@ def test_the_worker_renders_the_document(db_session, test_project, world, test_u
     assert media_type == "text/html" and filename.startswith("remediation-roger-") and filename.endswith(".html")
     assert "Roger Smith" in html and "12 days overdue" in html and "Require SMB signing by group policy." in html
     assert "10.60.0.3" not in html and "TODO" not in html
+
+
+@needs_templates
+def test_a_finding_prints_only_the_sections_that_have_text(db_session, test_project, world):
+    """Seen in the first Word file: bare "Impact", "Steps to reproduce" and
+    "Recommendations" headings on every page, and a key/value table one word
+    wide."""
+    finding = db_session.query(Finding).filter_by(title="TLS 1.0 enabled").one()
+    finding.description, finding.impact, finding.recommendation = "Old protocol.", "Traffic can be read.", None
+    db_session.commit()
+    data = remediation_report.build_dataset(db_session, test_project.id, "roger@testdomain.com")
+    text = quarto_render.render_source(ROOT / "contact-report", "report.qmd", data)
+    tls = text[text.index("TLS 1\\.0 enabled (Medium)"):]
+    assert "Description" in tls and "Impact" in tls and "Steps to reproduce" not in tls
+    assert "Evidence / proof of concept" not in tls
+    assert "No recommendation has been written for this finding yet." in tls
+    # The value column of the front table is the wide one.
+    label, value = next(line for line in text.splitlines() if line.startswith("|:--") and line.count("|") == 3).strip("|").split("|")
+    assert len(value) >= 2 * len(label)
 
 
 def test_the_penetration_test_template_itself_is_untouched():

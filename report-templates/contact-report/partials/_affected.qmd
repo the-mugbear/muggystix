@@ -16,7 +16,7 @@
    it, so each keeps a row of its own however many there are (the report's
    four-across form has no room for a date). #>
 | System | Name | Port | Due | Deadline |
-|:------------------|:--------------------------|:----------|:-----------|:------------------|
+|:------------------|:------------------------------|:-----------|:-------------|:--------------------|
 <% for e in rows %>
 | << e.address >> | << e.name or e.hostname or "" >> | << e.port or "" >> | << e.get("due_on") or "" >> | << e.get("deadline") or e.state or "" >> |
 <% endfor %>

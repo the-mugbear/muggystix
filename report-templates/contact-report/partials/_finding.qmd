@@ -28,43 +28,48 @@
 Not specific to a host.
 <% endif %>
 
+<#
+  A contact's list prints a section only when there is something in it: the
+  report prints a TODO for its author under an empty heading, and here the
+  reader is not the author — a page of bare headings read as a broken
+  document.  The nesting is the report's: Impact, Steps and Evidence sit
+  under Description.
+#>
+<% set confirmations = f.get("confirmations") or [] %>
+<% set has_evidence = confirmations or f.evidence %>
+<% if f.description or f.impact or f.steps_to_reproduce or has_evidence %>
 << h3|safe >> Description
 << md(f, "description") >>
-<% if f.impact or f.severity != "info" %>
+<% if f.impact %>
 << h4|safe >> Impact
 << md(f, "impact") >>
 <% endif %>
+<% if f.steps_to_reproduce %>
 << h4|safe >> Steps to reproduce
 << md(f, "steps_to_reproduce") >>
+<% endif %>
+<% if has_evidence %>
 << h4|safe >> Evidence / proof of concept
-<# .get(): a report issued before test results were carried has no such list. #>
-<% set confirmations = f.get("confirmations") or [] %>
 <% if confirmations %>
 <% include "partials/_confirmations.qmd" %>
 <% endif %>
-<% if f.evidence %>
 <% for e in f.evidence %>
 << image(e) >>
 <% endfor %>
-<% elif confirmations or f.get("images") %>
-<# The test results above, or the screenshots placed in the text, are the
-   evidence: nothing more is owed here. #>
-<% else %>
-
-No evidence attached.
-
+<% endif %>
 <% endif %>
 
 << h3|safe >> Recommendations
+<% if f.recommendation %>
 << md(f, "recommendation") >>
+<% else %>
+
+No recommendation has been written for this finding yet. Ask the assessment team for it.
+
+<% endif %>
 <% if f.references %>
 << h3|safe >> References
 << md(f, "references") >>
-<% endif %>
-<% if f.corroboration %>
-
-*Observed by << f.corroboration|join(", ") >>.*
-
 <% endif %>
 
 {{< pagebreak >}}
