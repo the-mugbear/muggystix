@@ -1,44 +1,46 @@
-"""Declarative MCP tool registry — what the server exposes, per workflow.
+"""Declarative MCP tool registry — what the server exposes.
 
-Split out of ``mcp_assist.py`` in v2.278.0, when the surface stopped being
-assist-only and grew the three agentic workflows.  The seam is real: this module
-is *data* (which tool maps to which endpoint, with which schema), and
-``mcp_assist.py`` is *protocol* (JSON-RPC framing, auth, loopback dispatch,
-telemetry).  They change for different reasons and by different people — adding
-a tool touches only this file.
+This module is *data* (which tool maps to which endpoint, and what the tool
+says about it), and ``mcp_assist.py`` is *protocol* (JSON-RPC framing, auth,
+loopback dispatch, telemetry).  They change for different reasons — adding a
+tool touches only this file.
 
-Each entry:
+Each authored entry (``_AUTHORED``):
     description  : shown to the model in tools/list
-    workflows    : which key workflows may see it in tools/list (see below)
-    method       : HTTP verb of the underlying endpoint
-    path         : loopback path; ``{name}`` placeholders filled from path_params
-    path_params  : argument names substituted into the path (omit if none)
-    query_params : argument names sent as querystring (omit if none)
-    body_params  : argument names sent in the JSON body (omit if none)
-    input_schema : JSON Schema advertised to the client
+    method      : HTTP verb of the underlying endpoint
+    path         : loopback path, with the endpoint's ``{name}`` placeholders
+    params       : {argument: description} or {argument: {schema keys}} — what
+                   the tool says about an argument beyond what the endpoint
+                   declares: its description, and anything that NARROWS it
+    hidden       : endpoint parameters the tool does not offer
     defaults     : MCP-side argument defaults (smaller pages than the endpoints')
-    auto_params  : arguments filled from the caller's own identity when omitted
-    additive     : True iff the write only appends (drives destructive/idempotent
-                   annotations)
+    additive / idempotent / metadata_write : what a write does (drive the
+                   destructive / idempotent annotations)
+    retired_params : arguments the tool used to take; accepted and dropped
     path_alternatives : {arg: path} — other endpoints the tool may reach, chosen
-                   by which one id the caller passes (exactly one of path_params
-                   and these); v2.428.0, for assist_get_image
+                   by which one id the caller passes (exactly one of the path's
+                   own id and these); for assist_get_image, assist_get_host
     result       : "image" — the endpoint returns an image, handed back as an
-                   MCP image content block (v2.428.0)
+                   MCP image content block
 
-**``workflows`` is an entry-point affordance, not a security boundary.**  Hiding
-a tool from a key that cannot use it stops the model from trying a call whose
-403 it would read as its own bug.  It decides nothing: every dispatch still
-loops back through the real endpoint, where the router-level
+**A tool's arguments are its endpoint's.**  Which arguments exist, where each
+is sent, their types, enums, bounds and required-ness are read from the
+endpoint's OpenAPI operation the first time the registry is used
+(``derive_tool``); ``TOOLS[name]`` is the authored entry plus the derived
+``path_params`` / ``query_params`` / ``body_params`` / ``input_schema``.  A new
+endpoint parameter is offered by its tool without an edit here.
+
+**The registry is not a security boundary.**  Every session lists every tool,
+and every dispatch loops back through the real endpoint, where the router-level
 ``enforce_agent_operator_access`` and the operator's project role make the
-actual decision.  The MCP layer
-makes no security decision anywhere, and this file must not become the place it
-starts.
+actual decision.  The MCP layer makes no security decision anywhere, and this
+file must not become the place it starts.  The kind of work a tool belongs to
+(``tool_workflows``) is derived from its name and only groups the reference
+page.
 
-Writes are **not** filtered by whether the caller may perform them (v2.309.0
-removed the per-session capability grants that filter keyed off).  A write tool
-is listed for every session of its workflow, and whether it succeeds is the
-operator's project role, checked per request.  An agent that wants the answer
+Writes are **not** filtered by whether the caller may perform them: a write
+tool is listed for every session, and whether it succeeds is the operator's
+project role, checked per request.  An agent that wants the answer
 before trying reads ``can_write_project_data`` from ``agent_identity``.
 
 **One session, every tool (v2.337.0).**  The operator starts one agent
@@ -59,7 +61,9 @@ the token bill.  The server ``instructions`` point at them with curl instead.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import sys
+from collections.abc import Mapping
+from typing import Any, Dict, Iterator, List, Optional
 
 # The kinds of work, used only as catalogue tags on the tool reference page
 # (`tool_workflows`) — since v2.337.0 a key belongs to one project session and
@@ -79,38 +83,20 @@ _ASSIST = frozenset({WORKFLOW_ASSIST})
 _TESTING = frozenset({WORKFLOW_TESTING})
 _SCOPE = frozenset({WORKFLOW_SCOPE})
 
-HOST_ID_PROP = {
-    "host_id": {
-        "type": "integer",
-        "minimum": 1,
-        "description": "Numeric host id (from assist_list_hosts).",
-    }
-}
+# What an entry says about a parameter (``params``) is laid over what the
+# endpoint declares — see ``derive_tool``.  An id is never below 1, whether or
+# not its endpoint says so: the transport checks it before building the URL.
+HOST_ID = {"minimum": 1, "description": "Numeric host id (from assist_list_hosts)."}
 
 # The scope a read is about.  Every scope read takes it as a path parameter.
-SCOPE_ID_PROP = {
-    "scope_id": {
-        "type": "integer",
-        "minimum": 1,
-        "description": "Scope to read (from assist_list_scopes).",
-    }
-}
-
-# (The environment-probe fields and the ``record_environment`` tool went with
-# the probe in v2.434.0.)
+SCOPE_ID = {"minimum": 1, "description": "Scope to read (from assist_list_scopes)."}
 
 # The model the agent says it is running as (v2.434.0).  No protocol carries
 # it, so the writes where it matters ask for it: it labels the tests, the
 # proposal or the session, and lets output from different models be compared.
-AGENT_MODEL_PROP = {
-    "agent_model": {
-        "type": "string",
-        "maxLength": 100,
-        "description": "The model you are running as (e.g. claude-opus-5-5). Optional; labels this work.",
-    }
-}
+AGENT_MODEL = "The model you are running as (e.g. claude-opus-5-5). Optional; labels this work."
 
-TOOLS: Dict[str, Dict[str, Any]] = {
+_AUTHORED: Dict[str, Dict[str, Any]] = {
     # -----------------------------------------------------------------------
     # Every workflow
     # -----------------------------------------------------------------------
@@ -122,7 +108,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/identity",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "session_renew": {
         "description": (
@@ -137,7 +122,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "method": "POST",
         "metadata_write": True,
         "path": "/api/v1/agent/session/renew",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "end_session": {
         "description": (
@@ -151,18 +135,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "method": "POST",
         "metadata_write": True,
         "path": "/api/v1/agent/session/end",
-        "body_params": ["notes", "agent_model"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "notes": {
-                    "type": "string",
-                    "maxLength": 2000,
-                    "description": "What the session did, in a line or two.",
-                },
-                **AGENT_MODEL_PROP,
-            },
-            "additionalProperties": False,
+        "params": {
+            "notes": "What the session did, in a line or two.",
+            "agent_model": AGENT_MODEL,
         },
     },
     "read_agent_guide": {
@@ -175,20 +150,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agents-guide",
-        "query_params": ["workflow"],
-        # A project session's identity supplies "project", which deliberately
-        # returns the full guide. A slice remains available on direct HTTP.
-        "auto_params": {"workflow": "workflow"},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "workflow": {
-                    "type": "string",
-                    "enum": ["testing", "reconnaissance", "assist"],
-                    "description": "Usually omit — resolved from your API key.",
-                },
+        "params": {
+            "workflow": {
+                "enum": ["testing", "reconnaissance", "assist"],
+                "description": "One slice of the guide. Omit for the whole guide.",
             },
-            "additionalProperties": False,
         },
     },
     "list_tools": {
@@ -200,21 +166,15 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/references/tools",
-        "query_params": ["status", "category"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "enum": ["reference", "suggested", "rejected"],
-                    "description": (
-                        "reference = in the catalogue. suggested = proposed by an "
-                        "agent, not yet curated. rejected = a declined suggestion."
-                    ),
-                },
-                "category": {"type": "string", "description": "Filter to one category."},
+        "params": {
+            "status": {
+                "enum": ["reference", "suggested", "rejected"],
+                "description": (
+                    "reference = in the catalogue. suggested = proposed by an "
+                    "agent, not yet curated. rejected = a declined suggestion."
+                ),
             },
-            "additionalProperties": False,
+            "category": "Filter to one category.",
         },
     },
     "suggest_tool": {
@@ -225,30 +185,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "POST",
         "path": "/api/v1/agent/tool-suggestions",
-        "body_params": ["name", "rationale", "category", "description"],
         "additive": True,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "maxLength": 100,
-                    "description": "Tool name as it would be invoked (e.g. ligolo-ng).",
-                },
-                "rationale": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 2000,
-                    "description": (
-                        "What you used or needed it for — this is what a curator "
-                        "reads. Be specific."
-                    ),
-                },
-                "category": {"type": "string", "maxLength": 100},
-                "description": {"type": "string", "maxLength": 2000},
-            },
-            "required": ["name", "rationale"],
-            "additionalProperties": False,
+        "params": {
+            "name": "Tool name as it would be invoked (e.g. ligolo-ng).",
+            "rationale": (
+                "What you used or needed it for — this is what a curator "
+                "reads. Be specific."
+            ),
         },
     },
     "submit_feedback": {
@@ -274,46 +217,32 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         # Session bookkeeping, but an APPEND: a retry files a second row
         # (v2.343.2).
         "idempotent": False,
-        "body_params": [
-            "source", "prompt_version", "overall_rating",
-            "api_critiques", "tool_suggestions", "friction_notes", "agent_metrics",
-        ],
         # v2.449.0 — went with the `assist_sessions` table.  Still accepted
         # from a client holding the older tool list, and dropped
         # (`mcp_assist._validate_arguments`): the session comes from the key.
         "retired_params": ["assist_session_id"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "source": {
-                    "type": "string",
-                    "enum": ["assist", "reconnaissance", "testing"],
-                    "description": "The kind of work this feedback is about.",
-                },
-                "prompt_version": {"type": "string", "description": "The prompt_version from your instructions block."},
-                "overall_rating": {"type": "integer", "minimum": 1, "maximum": 5},
-                "api_critiques": {
-                    "type": "array",
-                    "items": {"type": "object", "properties": {
-                        "endpoint": {"type": "string"}, "issue": {"type": "string"},
-                        "suggestion": {"type": "string"},
-                    }},
-                },
-                "tool_suggestions": {
-                    "type": "array",
-                    "items": {"type": "object", "properties": {
-                        "name": {"type": "string"}, "category": {"type": "string"},
-                        "rationale": {"type": "string"},
-                    }},
-                },
-                "friction_notes": {"type": "string", "description": "What was confusing, slow, or guessed."},
-                "agent_metrics": {
-                    "type": "object",
-                    "description": "agent_name, model, tool_calls_total, notes — whatever your environment exposes.",
-                },
+        "params": {
+            "source": {
+                "enum": ["assist", "reconnaissance", "testing"],
+                "description": "The kind of work this feedback is about.",
             },
-            "required": ["source"],
-            "additionalProperties": False,
+            "prompt_version": "The prompt_version from your instructions block.",
+            # The endpoint takes free-form objects; these name the keys a
+            # reviewer reads.
+            "api_critiques": {
+                "items": {"type": "object", "properties": {
+                    "endpoint": {"type": "string"}, "issue": {"type": "string"},
+                    "suggestion": {"type": "string"},
+                }},
+            },
+            "tool_suggestions": {
+                "items": {"type": "object", "properties": {
+                    "name": {"type": "string"}, "category": {"type": "string"},
+                    "rationale": {"type": "string"},
+                }},
+            },
+            "friction_notes": "What was confusing, slow, or guessed.",
+            "agent_metrics": "agent_name, model, tool_calls_total, notes — whatever your environment exposes.",
         },
     },
     # -----------------------------------------------------------------------
@@ -333,7 +262,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/context",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "assist_list_hosts": {
         "description": (
@@ -360,38 +288,18 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts",
-        "query_params": [
-            "q", "search", "state", "ports", "services", "subnets",
-            "has_critical_vulns", "has_high_vulns", "limit", "offset",
-            "sort_by", "sort_order",
-        ],
         # The endpoint's own default is 500 — right for a file download, a lot
         # of tokens for a model that usually wants the first handful.
         "defaults": {"limit": 100},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "q": {"type": "string", "description": "Boolean query DSL (see tool description)."},
-                "search": {"type": "string", "description": "Substring of IP, hostname or OS NAME only. It is not the Hosts page's search box: for that pass the word as q (q=windows also matches the OS family)."},
-                "state": {"type": "string", "description": "Host state filter (e.g. up)."},
-                "ports": {"type": "string", "description": "Comma-separated port numbers, ANY of them open. For ALL of them open use q: q=port:80 port:443. No ranges or names (422)."},
-                "services": {"type": "string", "description": "Comma-separated service names, ANY of them, matched on the service the scanner identified on an OPEN port, on any port — the Hosts page's service:. The name is the scanner's own: SMB is usually microsoft-ds, not smb (or use ports=445). A masscan-only open port has no name and does not match."},
-                "subnets": {"type": "string", "description": "Comma-separated CIDR blocks."},
-                "has_critical_vulns": {"type": "boolean"},
-                "has_high_vulns": {"type": "boolean"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 500},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-                "sort_by": {
-                    "type": "string",
-                    "enum": [
-                        "ip_address", "critical_vulns", "high_vulns", "exploitable_vulns",
-                        "open_ports", "note_count", "discovery_count", "hostname", "last_seen",
-                    ],
-                    "default": "ip_address",
-                },
-                "sort_order": {"type": "string", "enum": ["asc", "desc"], "default": "asc"},
+        "params": {
+            "q": "Boolean query DSL (see tool description).",
+            "sort_by": {
+                "enum": [
+                    "ip_address", "critical_vulns", "high_vulns", "exploitable_vulns",
+                    "open_ports", "note_count", "discovery_count", "hostname", "last_seen",
+                ],
             },
-            "additionalProperties": False,
+            "sort_order": {"enum": ["asc", "desc"]},
         },
     },
     "assist_count_hosts": {
@@ -405,24 +313,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/count",
-        "query_params": [
-            "q", "search", "state", "ports", "services", "subnets",
-            "has_critical_vulns", "has_high_vulns",
-        ],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "q": {"type": "string", "description": "Boolean query DSL (see assist_list_hosts)."},
-                "search": {"type": "string", "description": "Substring of IP, hostname or OS NAME only. It is not the Hosts page's search box: for that pass the word as q (q=windows also matches the OS family)."},
-                "state": {"type": "string"},
-                "ports": {"type": "string", "description": "Comma-separated port numbers, ANY of them open. For ALL of them open use q: q=port:80 port:443. No ranges or names (422)."},
-                "services": {"type": "string", "description": "Comma-separated service names, ANY of them, matched on the service the scanner identified on an OPEN port, on any port — the Hosts page's service:. The name is the scanner's own: SMB is usually microsoft-ds, not smb (or use ports=445). A masscan-only open port has no name and does not match."},
-                "subnets": {"type": "string"},
-                "has_critical_vulns": {"type": "boolean"},
-                "has_high_vulns": {"type": "boolean"},
-            },
-            "additionalProperties": False,
-        },
+        "params": {"q": "Boolean query DSL (see assist_list_hosts)."},
     },
     "assist_get_host": {
         "description": (
@@ -442,16 +333,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}",
-        "path_params": ["host_id"],
         "path_alternatives": {"ip": "/api/v1/agent/assist/hosts/by-ip/{ip}"},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **HOST_ID_PROP,
-                "ip": {"type": "string", "maxLength": 64, "description": "The host's address, e.g. 10.0.0.5."},
-            },
-            "additionalProperties": False,
-        },
+        "params": {"host_id": HOST_ID, "ip": "The host's address, e.g. 10.0.0.5."},
     },
     "assist_get_host_vulnerabilities": {
         "description": (
@@ -471,25 +354,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/vulnerabilities",
-        "path_params": ["host_id"],
-        "query_params": ["severity", "cve", "plugin_id", "search", "limit", "offset"],
         "defaults": {"limit": 50},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **HOST_ID_PROP,
-                "severity": {
-                    "type": "string",
-                    "description": "Comma-separated severities to include (critical/high/medium/low/info). Default: all.",
-                },
-                "cve": {"type": "string", "maxLength": 40, "description": "Only rows for this CVE id (exact, any case)."},
-                "plugin_id": {"type": "string", "maxLength": 100, "description": "Only rows from this scanner plugin id (exact)."},
-                "search": {"type": "string", "maxLength": 200, "description": "Only rows whose title contains this text."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-            },
-            "required": ["host_id"],
-            "additionalProperties": False,
+        "params": {
+            "host_id": HOST_ID,
+            "search": "Only rows whose title contains this text.",
         },
     },
     "assist_list_findings": {
@@ -510,36 +378,23 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/findings",
-        "query_params": [
-            "status", "severity", "source", "host_id", "unowned", "owner",
-            "search", "limit", "offset",
-        ],
         "defaults": {"limit": 25},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "enum": [
-                        "open", "confirmed", "false_positive", "accepted_risk",
-                        "remediated", "retest", "active", "resolved", "all",
-                    ],
-                    "description": (
-                        "A status, or a group: active (still being worked) / resolved "
-                        "(every terminal status). 'all' or omitted for every status. "
-                        "Any other value is a 422."
-                    ),
-                },
-                "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
-                "source": {"type": "string"},
-                "host_id": {"type": "integer", "minimum": 1},
-                "unowned": {"type": "boolean", "description": "Only findings with no owner."},
-                "owner": {"type": "string", "description": "Username, or 'me' for this session's operator."},
-                "search": {"type": "string", "maxLength": 200},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 25},
-                "offset": {"type": "integer", "minimum": 0},
+        "params": {
+            "status": {
+                "enum": [
+                    "open", "confirmed", "false_positive", "accepted_risk",
+                    "remediated", "retest", "active", "resolved", "all",
+                ],
+                "description": (
+                    "A status, or a group: active (still being worked) / resolved "
+                    "(every terminal status). 'all' or omitted for every status. "
+                    "Any other value is a 422."
+                ),
             },
-            "additionalProperties": False,
+            "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
+            "host_id": {"minimum": 1},
+            "unowned": "Only findings with no owner.",
+            "owner": "Username, or 'me' for this session's operator.",
         },
     },
     "assist_list_host_web_interfaces": {
@@ -559,18 +414,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/web-interfaces",
-        "path_params": ["host_id"],
-        "query_params": ["limit", "offset"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **HOST_ID_PROP,
-                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-            },
-            "required": ["host_id"],
-            "additionalProperties": False,
-        },
+        "params": {"host_id": HOST_ID},
     },
     "assist_list_host_access": {
         "description": (
@@ -583,18 +427,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/access",
-        "path_params": ["host_id"],
-        "query_params": ["limit", "offset"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **HOST_ID_PROP,
-                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-            },
-            "required": ["host_id"],
-            "additionalProperties": False,
-        },
+        "params": {"host_id": HOST_ID},
     },
     "assist_list_uninterpreted_lines": {
         "description": (
@@ -608,16 +441,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/uninterpreted-lines",
-        "query_params": ["job_id", "limit", "offset"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "job_id": {"type": "integer", "minimum": 1},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-            },
-            "additionalProperties": False,
-        },
     },
     "assist_get_host_notes": {
         "description": (
@@ -633,18 +456,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/notes",
-        "path_params": ["host_id"],
-        "query_params": ["limit", "offset"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **HOST_ID_PROP,
-                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-            },
-            "required": ["host_id"],
-            "additionalProperties": False,
-        },
+        "params": {"host_id": HOST_ID},
     },
     "assist_get_vocabulary": {
         "description": (
@@ -657,7 +469,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/vocabulary",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "assist_get_coverage": {
         "description": (
@@ -678,7 +489,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/coverage",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "assist_list_segments": {
         "description": (
@@ -697,15 +507,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/segments",
-        "query_params": ["limit", "offset"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-            },
-            "additionalProperties": False,
-        },
     },
     "assist_get_posture": {
         "description": (
@@ -726,7 +527,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/posture",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "assist_get_patterns": {
         "description": (
@@ -745,7 +545,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/patterns",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     # v2.428.0 — Operations, Evidence gaps and scan compare, each the SAME
     # service its page uses (agent_assist_operations.py).
@@ -802,7 +601,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/workbench",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+        # The untouched-hosts queue has its own tool (assist_list_worth_a_look).
+        "hidden": ["include_investigate"],
     },
     "assist_list_worth_a_look": {
         "description": (
@@ -820,16 +620,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/workbench/investigate",
-        "query_params": ["tier", "limit", "offset"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "tier": {"type": "integer", "minimum": 1, "maximum": 5},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-            },
-            "additionalProperties": False,
-        },
     },
     "assist_get_terrain": {
         "description": (
@@ -841,15 +631,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/workbench/terrain",
-        "query_params": ["sort", "limit"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "sort": {"type": "string", "enum": ["address", "untouched", "critical_untouched"], "default": "address"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
-            },
-            "additionalProperties": False,
-        },
     },
     "assist_list_evidence_gaps": {
         "description": (
@@ -865,23 +646,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/evidence/gaps",
-        "query_params": ["domain", "segment", "limit"],
         "defaults": {"limit": 50},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "domain": {
-                    "type": "string",
-                    "enum": [
-                        "port_discovery", "service_detection", "os_detection",
-                        "vuln_assessment", "web_tls", "auth_smb_ad", "validation",
-                    ],
-                },
-                "segment": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 50},
+        "params": {
+            "domain": {
+                "enum": [
+                    "port_discovery", "service_detection", "os_detection",
+                    "vuln_assessment", "web_tls", "auth_smb_ad", "validation",
+                ],
             },
-            "required": ["domain"],
-            "additionalProperties": False,
         },
     },
     "assist_compare_scans": {
@@ -894,18 +666,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scans/compare",
-        "query_params": ["a", "b", "limit"],
         "defaults": {"limit": 100},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "a": {"type": "integer", "description": "Baseline scan id"},
-                "b": {"type": "integer", "description": "Later scan id"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
-            },
-            "required": ["a", "b"],
-            "additionalProperties": False,
-        },
+        "params": {"a": "Baseline scan id", "b": "Later scan id"},
     },
     "assist_list_scan_hosts": {
         "description": (
@@ -919,20 +681,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scans/{scan_id}/hosts",
-        "path_params": ["scan_id"],
-        "query_params": ["state", "search", "skip", "limit"],
         "defaults": {"limit": 100},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "scan_id": {"type": "integer", "description": "Scan id (assist_list_scans)"},
-                "state": {"type": "string", "maxLength": 40, "description": "Only hosts the scan observed in this state (up, down…)."},
-                "search": {"type": "string", "maxLength": 200, "description": "Address or hostname at scan."},
-                "skip": {"type": "integer", "minimum": 0, "default": 0},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
-            },
-            "required": ["scan_id"],
-            "additionalProperties": False,
+        "params": {
+            "scan_id": "Scan id (assist_list_scans)",
+            "state": "Only hosts the scan observed in this state (up, down…).",
+            "search": "Address or hostname at scan.",
         },
     },
     "assist_list_ingestion_issues": {
@@ -959,14 +712,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/ingestion-issues",
-        "query_params": ["limit"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
-            },
-            "additionalProperties": False,
-        },
     },
     # v2.428.0 — images can be read inline with assist_get_image (below); the
     # download paths assist_get_finding and assist_get_host hand out stay, for
@@ -1004,20 +749,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/findings/{finding_id}",
-        "path_params": ["finding_id"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "finding_id": {
-                    "type": "integer",
-                    "description": (
-                        "Project-Finding id, from assist_list_findings — NOT a "
-                        "per-host vulnerability id from assist_get_host_vulnerabilities."
-                    ),
-                },
-            },
-            "required": ["finding_id"],
-            "additionalProperties": False,
+        "params": {
+            "finding_id": (
+                "Project-Finding id, from assist_list_findings — NOT a "
+                "per-host vulnerability id from assist_get_host_vulnerabilities."
+            ),
         },
     },
     # v2.428.0 — the Findings hub's scanner-observations view and the Reports
@@ -1036,22 +772,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scanner-observations",
-        "query_params": ["search", "severity", "kind", "include_judged", "min_hosts", "sort", "offset", "skip", "limit"],
         "defaults": {"limit": 25},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "search": {"type": "string", "maxLength": 200},
-                "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
-                "kind": {"type": "string", "enum": ["misconfiguration", "vulnerability", "informational"]},
-                "include_judged": {"type": "boolean", "default": False},
-                "min_hosts": {"type": "integer", "minimum": 1, "default": 1},
-                "sort": {"type": "string", "enum": ["severity", "hosts"], "default": "severity"},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-                "skip": {"type": "integer", "minimum": 0, "description": "Older name for offset; still accepted."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 25},
-            },
-            "additionalProperties": False,
+        "params": {
+            "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
+            "kind": {"enum": ["misconfiguration", "vulnerability", "informational"]},
+            "skip": "Older name for offset; still accepted.",
         },
     },
     "assist_list_observation_hosts": {
@@ -1063,18 +788,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scanner-observations/hosts",
-        "query_params": ["issue_key", "limit", "offset"],
         "defaults": {"limit": 100},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "issue_key": {"type": "string", "minLength": 1, "maxLength": 600},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 100},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-            },
-            "required": ["issue_key"],
-            "additionalProperties": False,
-        },
     },
     "assist_list_client_reports": {
         "description": (
@@ -1085,7 +799,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/client-reports",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "assist_get_client_report": {
         "description": (
@@ -1111,13 +824,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/client-reports/{report_id}",
-        "path_params": ["report_id"],
-        "input_schema": {
-            "type": "object",
-            "properties": {"report_id": {"type": "integer", "minimum": 1}},
-            "required": ["report_id"],
-            "additionalProperties": False,
-        },
     },
     "assist_get_image": {
         "description": (
@@ -1129,19 +835,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/attachments/{attachment_id}",
-        "path_params": ["attachment_id"],
         "path_alternatives": {
             "interface_id": "/api/v1/agent/assist/web-interfaces/{interface_id}/screenshot",
         },
         "result": "image",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "attachment_id": {"type": "integer", "minimum": 1},
-                "interface_id": {"type": "integer", "minimum": 1},
-            },
-            "additionalProperties": False,
-        },
     },
     "assist_list_recent_notes": {
         "description": (
@@ -1156,16 +853,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/notes",
-        "query_params": ["limit", "author"],
         "defaults": {"limit": 25},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 25},
-                "author": {"type": "string", "description": "Username, or 'me'."},
-            },
-            "additionalProperties": False,
-        },
     },
     "assist_list_scopes": {
         "description": (
@@ -1178,7 +866,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scopes",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     "assist_list_names": {
         "description": (
@@ -1197,19 +884,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/names",
-        "query_params": ["q", "in_scope", "resolved", "host_id", "kind", "limit", "offset"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "q": {"type": "string", "description": "Case-insensitive substring on the FQDN."},
-                "in_scope": {"type": "boolean", "description": "Only names a declared domain covers (true) / does not (false)."},
-                "resolved": {"type": "boolean", "description": "Only names with (true) / without (false) a current A/AAAA answer."},
-                "host_id": {"type": "integer", "description": "Only names currently resolving to this host's address."},
-                "kind": {"type": "string", "enum": ["fqdn", "wildcard"]},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-            },
-            "additionalProperties": False,
+        "params": {
+            "q": "Case-insensitive substring on the FQDN.",
+            "in_scope": "Only names a declared domain covers (true) / does not (false).",
+            "resolved": "Only names with (true) / without (false) a current A/AAAA answer.",
+            "host_id": "Only names currently resolving to this host's address.",
+            "kind": {"enum": ["fqdn", "wildcard"]},
         },
     },
     "assist_list_scans": {
@@ -1224,19 +904,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scans",
-        "query_params": ["limit", "offset", "tool"],
         "defaults": {"limit": 50},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
-                "offset": {
-                    "type": "integer", "minimum": 0,
-                    "description": "Skip this many (newest first). Page while has_more is true.",
-                },
-                "tool": {"type": "string", "maxLength": 100, "description": "A tool name (nmap, nessus, netexec…) or scan type."},
-            },
-            "additionalProperties": False,
+        "params": {
+            "offset": "Skip this many (newest first). Page while has_more is true.",
+            "tool": "A tool name (nmap, nessus, netexec…) or scan type.",
         },
     },
     "assist_session_info": {
@@ -1248,7 +919,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/session",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     # --- evidence and proposals (v2.436.0) ---
     # What the agent DID is recorded directly; a change to what the team
@@ -1268,45 +938,18 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "POST",
         "path": "/api/v1/agent/evidence",
-        "body_params": [
-            "host_id", "finding_id", "finding_host_id", "host_test_id", "request_key",
-            "tool", "command", "outcome",
-            "summary", "raw_output", "observed_ip", "executed_at", "agent_model",
-        ],
         "additive": True,
         "idempotent": False,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **HOST_ID_PROP,
-                "finding_id": {"type": "integer", "minimum": 1, "description": "The finding this bears on, if any."},
-                "finding_host_id": {"type": "integer", "minimum": 1, "description": "The finding endpoint (vhost) it ran against, if any."},
-                "host_test_id": {
-                    "type": "integer", "minimum": 1,
-                    "description": "The host test this answers, if any (from host_tests_list). Needs request_key.",
-                },
-                "request_key": {
-                    "type": "string", "minLength": 1, "maxLength": 100,
-                    "description": "Your own stable key for this record; re-sending it returns the record already stored (a safe retry). Required with host_test_id.",
-                },
-                "tool": {"type": "string", "minLength": 1, "maxLength": 100, "description": "The tool or method (nmap, curl, a script…)."},
-                "command": {"type": "string", "maxLength": 10000, "description": "The command as actually run, verbatim."},
-                "outcome": {
-                    "type": "string",
-                    "enum": ["finding", "no_finding", "inconclusive", "failed", "info"],
-                    "description": (
-                        "finding: it demonstrated an issue; no_finding: it ran and the issue was "
-                        "not there; inconclusive; failed: it could not run; info: context, not a test."
-                    ),
-                },
-                "summary": {"type": "string", "minLength": 1, "maxLength": 10000, "description": "What it showed, in a sentence or two."},
-                "raw_output": {"type": "string", "maxLength": 5242880, "description": "The tool's output (up to 5 MB)."},
-                "observed_ip": {"type": "string", "maxLength": 45, "description": "The address actually reached."},
-                "executed_at": {"type": "string", "format": "date-time"},
-                **AGENT_MODEL_PROP,
-            },
-            "required": ["host_id", "tool", "outcome", "summary"],
-            "additionalProperties": False,
+        "params": {
+            "host_id": HOST_ID,
+            "finding_host_id": "The finding endpoint (vhost) it ran against, if any.",
+            "host_test_id": "The host test this answers, if any (from host_tests_list). Needs request_key.",
+            "request_key": "Your own stable key for this record; re-sending it returns the record already stored (a safe retry). Required with host_test_id.",
+            "tool": "The tool or method (nmap, curl, a script…).",
+            # The endpoint sets no schema length on purpose (a schema 422
+            # echoes the input back); its service answers 413 past 5 MB.
+            "raw_output": {"maxLength": 5242880, "description": "The tool's output (up to 5 MB)."},
+            "agent_model": AGENT_MODEL,
         },
     },
     "list_evidence": {
@@ -1316,24 +959,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/evidence",
-        "query_params": ["host_id", "finding_id", "host_test_id", "agent_session_id", "limit", "offset"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "host_id": {"type": "integer", "minimum": 1},
-                "finding_id": {"type": "integer", "minimum": 1},
-                "host_test_id": {
-                    "type": "integer", "minimum": 1,
-                    "description": "Only the evidence that answers this host test.",
-                },
-                "agent_session_id": {
-                    "type": "integer", "minimum": 1,
-                    "description": "Only what this agent session recorded (yours is on agent_identity).",
-                },
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
-                "offset": {"type": "integer", "minimum": 0},
-            },
-            "additionalProperties": False,
+        "params": {
+            "host_test_id": "Only the evidence that answers this host test.",
+            "agent_session_id": "Only what this agent session recorded (yours is on agent_identity).",
         },
     },
     "propose_finding_text": {
@@ -1360,29 +988,17 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "POST",
         "path": "/api/v1/agent/proposals/finding-text",
-        "body_params": ["finding_id", "fields", "rationale", "evidence_ids", "agent_model"],
         "additive": True,
         "idempotent": False,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "finding_id": {"type": "integer", "minimum": 1},
-                "fields": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"},
-                    "description": (
-                        "Field name → the section's complete new text, report-ready (it replaces "
-                        "the section on accept) — not comments about the current text."
-                    ),
-                },
-                "rationale": {"type": "string", "maxLength": 10000, "description": (
-                    "Why — what you changed and why, what the reviewer should check. Your critique goes here."
-                )},
-                "evidence_ids": {"type": "array", "items": {"type": "integer"}, "maxItems": 100},
-                **AGENT_MODEL_PROP,
-            },
-            "required": ["finding_id", "fields"],
-            "additionalProperties": False,
+        "params": {
+            "fields": (
+                "Field name → the section's complete new text, report-ready (it replaces "
+                "the section on accept) — not comments about the current text."
+            ),
+            "rationale": (
+                "Why — what you changed and why, what the reviewer should check. Your critique goes here."
+            ),
+            "agent_model": AGENT_MODEL,
         },
     },
     "propose_finding": {
@@ -1394,24 +1010,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "POST",
         "path": "/api/v1/agent/proposals/finding",
-        "body_params": ["title", "severity", "host_ids", "status", "report_text", "rationale", "evidence_ids", "agent_model"],
         "additive": True,
         "idempotent": False,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "minLength": 1, "maxLength": 500},
-                "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
-                "host_ids": {"type": "array", "items": {"type": "integer"}, "minItems": 1, "maxItems": 1000},
-                "status": {"type": "string", "enum": ["open", "confirmed"], "default": "open"},
-                "report_text": {"type": "object", "additionalProperties": {"type": "string"}},
-                "rationale": {"type": "string", "maxLength": 10000},
-                "evidence_ids": {"type": "array", "items": {"type": "integer"}, "maxItems": 100},
-                **AGENT_MODEL_PROP,
-            },
-            "required": ["title", "severity", "host_ids"],
-            "additionalProperties": False,
-        },
+        "params": {"agent_model": AGENT_MODEL},
     },
     "propose_observation": {
         "description": (
@@ -1422,23 +1023,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "POST",
         "path": "/api/v1/agent/proposals/observation",
-        "body_params": ["vulnerability_id", "action", "scope", "severity", "summary", "rationale", "evidence_ids", "agent_model"],
         "additive": True,
         "idempotent": False,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "vulnerability_id": {"type": "integer", "minimum": 1, "description": "The scanner observation's id."},
-                "action": {"type": "string", "enum": ["promote", "dismiss"]},
-                "scope": {"type": "string", "enum": ["host", "issue"]},
-                "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
-                "summary": {"type": "string", "maxLength": 2000},
-                "rationale": {"type": "string", "maxLength": 10000},
-                "evidence_ids": {"type": "array", "items": {"type": "integer"}, "maxItems": 100},
-                **AGENT_MODEL_PROP,
-            },
-            "required": ["vulnerability_id", "action"],
-            "additionalProperties": False,
+        "params": {
+            "vulnerability_id": "The scanner observation's id.",
+            "agent_model": AGENT_MODEL,
         },
     },
     "propose_endpoint_status": {
@@ -1448,43 +1037,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "POST",
         "path": "/api/v1/agent/proposals/endpoint-status",
-        "body_params": ["finding_id", "finding_host_id", "host_status", "rationale", "evidence_ids", "agent_model"],
         "additive": True,
         "idempotent": False,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "finding_id": {"type": "integer", "minimum": 1},
-                "finding_host_id": {"type": "integer", "minimum": 1},
-                "host_status": {"type": "string", "enum": ["open", "remediated", "retest", "false_positive"]},
-                "rationale": {"type": "string", "maxLength": 10000},
-                "evidence_ids": {"type": "array", "items": {"type": "integer"}, "maxItems": 100},
-                **AGENT_MODEL_PROP,
-            },
-            "required": ["finding_id", "finding_host_id", "host_status"],
-            "additionalProperties": False,
-        },
+        "params": {"agent_model": AGENT_MODEL},
     },
     "list_proposals": {
         "description": "Proposals in this project and what happened to them (pending / accepted / rejected / superseded).",
         "method": "GET",
         "path": "/api/v1/agent/proposals",
-        "query_params": ["status", "kind", "finding_id", "mine", "limit", "offset"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "status": {"type": "string", "enum": ["pending", "accepted", "rejected", "superseded"]},
-                "kind": {
-                    "type": "string",
-                    "enum": ["finding_text", "finding_create", "observation_promote", "observation_dismiss", "endpoint_status"],
-                },
-                "finding_id": {"type": "integer", "minimum": 1},
-                "mine": {"type": "boolean", "description": "Only this session's proposals."},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
-                "offset": {"type": "integer", "minimum": 0},
-            },
-            "additionalProperties": False,
-        },
     },
     # --- assist writes (allowed iff the operator's project role permits writes) ---
     "assist_add_note": {
@@ -1501,18 +1061,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "POST",
         "path": "/api/v1/agent/hosts/{host_id}/notes",
-        "path_params": ["host_id"],
-        "body_params": ["body"],
         "additive": True,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **HOST_ID_PROP,
-                "body": {"type": "string", "minLength": 1, "description": "Note text."},
-            },
-            "required": ["host_id", "body"],
-            "additionalProperties": False,
-        },
+        "params": {"host_id": HOST_ID, "body": "Note text."},
     },
     "assist_set_follow": {
         "description": (
@@ -1525,20 +1075,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "POST",
         "path": "/api/v1/agent/hosts/{host_id}/follow",
-        "path_params": ["host_id"],
-        "body_params": ["status"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **HOST_ID_PROP,
-                "status": {
-                    "type": "string",
-                    "enum": ["in_review", "reviewed", "none"],
-                    "description": "in_review / reviewed, or `none` to clear the follow.",
-                },
+        "params": {
+            "host_id": HOST_ID,
+            "status": {
+                "enum": ["in_review", "reviewed", "none"],
+                "description": "in_review / reviewed, or `none` to clear the follow.",
             },
-            "required": ["host_id", "status"],
-            "additionalProperties": False,
         },
     },
     "assist_patch_host": {
@@ -1551,27 +1093,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "PATCH",
         "path": "/api/v1/agent/hosts/{host_id}",
-        "path_params": ["host_id"],
-        "body_params": ["hostname", "os_name"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                **HOST_ID_PROP,
-                "hostname": {"type": "string", "maxLength": 255},
-                "os_name": {"type": "string", "maxLength": 255},
-            },
-            "required": ["host_id"],
-            # v2.313.0 — an `anyOf` used to encode "send at least one field", so
-            # a client could catch the endpoint's 400 before making the call.
-            # It cost more than it bought: a top-level `anyOf` makes some hosts
-            # (Codex among them) present the whole tool as an opaque object
-            # union instead of three typed parameters, so the model has to guess
-            # argument names to make a call that would otherwise be obvious. The
-            # constraint is stated in the description and enforced by the
-            # endpoint; typed parameters are worth more than a client-side
-            # pre-check only some clients perform.
-            "additionalProperties": False,
-        },
+        # "Send at least one field" is stated in the description and enforced
+        # by the endpoint, not encoded as a top-level `anyOf`: some hosts
+        # (Codex among them) then present the whole tool as an opaque object
+        # union instead of typed parameters.
+        "params": {"host_id": HOST_ID},
     },
     # -----------------------------------------------------------------------
     # Scope reads — the agent reads a scope, runs its own tools, and uploads
@@ -1584,19 +1110,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/scopes/{scope_id}/subnets",
-        "path_params": ["scope_id"],
-        "query_params": ["limit", "offset"],
         "defaults": {"limit": 100},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 100},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-                **SCOPE_ID_PROP,
-            },
-            "required": ["scope_id"],
-            "additionalProperties": False,
-        },
+        "params": {"scope_id": SCOPE_ID},
     },
     "scope_list_domains": {
         "description": (
@@ -1607,19 +1122,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/scopes/{scope_id}/domains",
-        "path_params": ["scope_id"],
-        "query_params": ["limit", "offset"],
         "defaults": {"limit": 100},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 100},
-                "offset": {"type": "integer", "minimum": 0, "default": 0},
-                **SCOPE_ID_PROP,
-            },
-            "required": ["scope_id"],
-            "additionalProperties": False,
-        },
+        "params": {"scope_id": SCOPE_ID},
     },
     "get_upload_job": {
         "description": (
@@ -1629,19 +1133,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/uploads/{job_id}",
-        "path_params": ["job_id"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "job_id": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "Job id returned by the upload.",
-                },
-            },
-            "required": ["job_id"],
-            "additionalProperties": False,
-        },
+        "params": {"job_id": {"minimum": 1, "description": "Job id returned by the upload."}},
     },
 }
 
@@ -1650,25 +1142,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 # Host tests (v2.442.0) — the tests proposed on each host, shown on the host's
 # page.  They replace test plans: no plan to register, no run to open, no
-# approval.  The write schemas are the endpoints' own Pydantic models, so there
-# is no second contract to drift (pydantic only — still no DB import here).
+# approval.
 # ---------------------------------------------------------------------------
-from app.schemas.host_test_schemas import HostTestBatch, HostTestUpdate  # noqa: E402
-from app.schemas.remediation_schemas import (  # noqa: E402
-    ApplyBody as RemediationApply, FollowUpBody as RemediationFollowUp, NoteCreate as RemediationNote,
-)
-
 _HOST_TEST_ID = {
-    "type": "integer", "minimum": 1,
+    "minimum": 1,
     "description": "The host test's id (from host_tests_list or host_tests_propose).",
 }
-_propose_schema = HostTestBatch.model_json_schema()
-_update_schema = HostTestUpdate.model_json_schema()
-_update_body = list(_update_schema["properties"])
-_update_schema["properties"]["test_id"] = _HOST_TEST_ID
-_update_schema.setdefault("required", []).append("test_id")
 
-TOOLS["host_tests_propose"] = {
+_AUTHORED["host_tests_propose"] = {
     "description": (
         "Propose tests on hosts — up to 200 in one call, each a single test on "
         "one host: the tool, what it establishes, the exact command ({ip} / "
@@ -1686,11 +1167,9 @@ TOOLS["host_tests_propose"] = {
     ),
     "method": "POST",
     "path": "/api/v1/agent/host-tests",
-    "body_params": list(_propose_schema["properties"]),
-    "input_schema": _propose_schema,
     "additive": True,
 }
-TOOLS["host_tests_list"] = {
+_AUTHORED["host_tests_list"] = {
     "description": (
         "The project's host tests, each with its status (proposed, in_progress, "
         "done, dismissed), revision and how many evidence records answer it. "
@@ -1701,43 +1180,18 @@ TOOLS["host_tests_list"] = {
     ),
     "method": "GET",
     "path": "/api/v1/agent/host-tests",
-    "query_params": [
-        "host_id", "status", "label", "assigned_to_id", "agent_session_id",
-        "mine", "q", "active_only", "limit", "offset",
-    ],
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "host_id": {"type": "integer", "minimum": 1},
-            "status": {"type": "string", "enum": ["proposed", "in_progress", "done", "dismissed"]},
-            "label": {"type": "string", "description": "Exact label."},
-            "assigned_to_id": {"type": "integer", "minimum": 1},
-            "agent_session_id": {"type": "integer", "minimum": 1},
-            "mine": {"type": "boolean"},
-            "q": {
-                "type": "string",
-                "description": "A Hosts query (the same language as assist_list_hosts' q, e.g. has:critical): tests on the hosts it matches.",
-            },
-            "active_only": {"type": "boolean"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
-            "offset": {"type": "integer", "minimum": 0},
-        },
-        "additionalProperties": False,
+    "params": {
+        "label": "Exact label.",
+        "q": "A Hosts query (the same language as assist_list_hosts' q, e.g. has:critical): tests on the hosts it matches.",
     },
 }
-TOOLS["host_tests_get"] = {
+_AUTHORED["host_tests_get"] = {
     "description": "One host test: its command, rationale, status, revision and evidence count.",
     "method": "GET",
     "path": "/api/v1/agent/host-tests/{test_id}",
-    "path_params": ["test_id"],
-    "input_schema": {
-        "type": "object",
-        "properties": {"test_id": _HOST_TEST_ID},
-        "required": ["test_id"],
-        "additionalProperties": False,
-    },
+    "params": {"test_id": _HOST_TEST_ID},
 }
-TOOLS["host_tests_update"] = {
+_AUTHORED["host_tests_update"] = {
     "description": (
         "Change a host test's status (in_progress when you start it, done when "
         "it is finished, dismissed with `dismissed_reason` when it should not "
@@ -1749,23 +1203,13 @@ TOOLS["host_tests_update"] = {
     ),
     "method": "PATCH",
     "path": "/api/v1/agent/host-tests/{test_id}",
-    "path_params": ["test_id"],
-    "body_params": _update_body,
-    "input_schema": _update_schema,
+    "params": {"test_id": _HOST_TEST_ID},
 }
 
 # v2.457.0 — remediation tracking: who was told about a finding on a host and
 # where the fix stands.  The page's contract (`endpoints/remediation.py`).
-_remediation_apply_schema = RemediationApply.model_json_schema()
-_remediation_note_schema = RemediationNote.model_json_schema()
-_REMEDIATION_STATES = ["overdue", "due_soon", "on_track", "not_assigned", "no_deadline", "deferred", "closed"]
-_remediation_follow_up_schema = RemediationFollowUp.model_json_schema()
-_PAGE_PROPS = {
-    "limit": {"type": "integer", "minimum": 1, "maximum": 200},
-    "offset": {"type": "integer", "minimum": 0},
-}
 
-TOOLS["remediation_list"] = {
+_AUTHORED["remediation_list"] = {
     "description": (
         "Remediation tracking, one row per finding ON A HOST: the contact who "
         "was told (`contact_email`, `contact_name`), `notified_on`, the "
@@ -1798,35 +1242,13 @@ TOOLS["remediation_list"] = {
     ),
     "method": "GET",
     "path": "/api/v1/agent/remediation",
-    "query_params": ["status", "state", "severity", "team", "overdue_band", "no_follow_up_days",
-                     "contact", "unassigned", "host_id", "finding_id", "group", "limit", "offset"],
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "status": {"type": "string", "enum": ["open", "closed", "deferred"]},
-            "state": {"type": "array", "items": {"type": "string", "enum": _REMEDIATION_STATES},
-                      "description": "Where the row stands against its deadline; several are OR-ed."},
-            "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
-            "team": {"type": "string", "minLength": 1, "maxLength": 100,
-                     "description": "Exactly this team (case does not matter)."},
-            "overdue_band": {"type": "string", "enum": ["1-7", "8-30", "31-90", "90+"],
-                             "description": "Only overdue rows this many days past their deadline."},
-            "no_follow_up_days": {"type": "integer", "minimum": 1, "maximum": 365,
-                                  "description": "Only overdue and due-soon rows nobody recorded a "
-                                                 "follow-up for in this many days (or ever)."},
-            "contact": {"type": "string", "minLength": 1, "maxLength": 254,
-                        "description": "Part of a contact's address or name."},
-            "unassigned": {"type": "boolean", "description": "Only rows with no contact."},
-            "host_id": {"type": "integer", "minimum": 1},
-            "finding_id": {"type": "integer", "minimum": 1},
-            "group": {"type": "string", "enum": ["host", "finding", "contact", "due", "team"],
-                      "description": "The order of the rows (default host; due = by deadline)."},
-            **_PAGE_PROPS,
-        },
-        "additionalProperties": False,
+    "params": {
+        "state": "Where the row stands against its deadline; several are OR-ed.",
+        "overdue_band": "Only overdue rows this many days past their deadline.",
+        "group": "The order of the rows (default host; due = by deadline).",
     },
 }
-TOOLS["remediation_contacts"] = {
+_AUTHORED["remediation_contacts"] = {
     "description": (
         "The remediation contacts in use in this project, the one with the "
         "most overdue first: each with how many findings on hosts they have "
@@ -1838,9 +1260,8 @@ TOOLS["remediation_contacts"] = {
     ),
     "method": "GET",
     "path": "/api/v1/agent/remediation/contacts",
-    "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
-TOOLS["remediation_teams"] = {
+_AUTHORED["remediation_teams"] = {
     "description": (
         "The teams that own fixes in this project, the one with the most "
         "overdue first: each with its findings on hosts (`total`, `open`, "
@@ -1850,9 +1271,8 @@ TOOLS["remediation_teams"] = {
     ),
     "method": "GET",
     "path": "/api/v1/agent/remediation/teams",
-    "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
-TOOLS["remediation_trend"] = {
+_AUTHORED["remediation_trend"] = {
     "description": (
         "Whether the remediation backlog is shrinking: `daily` — the counts "
         "by deadline state recorded each day since this installation began "
@@ -1862,32 +1282,22 @@ TOOLS["remediation_trend"] = {
     ),
     "method": "GET",
     "path": "/api/v1/agent/remediation/trend",
-    "query_params": ["days"],
-    "input_schema": {
-        "type": "object",
-        "properties": {"days": {"type": "integer", "minimum": 7, "maximum": 730}},
-        "additionalProperties": False,
-    },
 }
-TOOLS["remediation_follow_up"] = {
+_AUTHORED["remediation_follow_up"] = {
     "description": (
         "What to say to ONE remediation contact: their overdue and due-soon "
         "findings on hosts (`items`, the longest overdue first) and `text`, a "
         "plain-text message listing them, for the operator to send — the "
-        "server sends nothing. Give the contact's address exactly "
+        "server sends nothing. `total` is every overdue or due-soon row of the "
+        "contact and `not_listed` how many of them `items` leaves out (the "
+        "message says so too): quote `total`, never the length of `items`. "
+        "Give the contact's address exactly "
         "(`contact_email`, from remediation_contacts)."
     ),
     "method": "GET",
     "path": "/api/v1/agent/remediation/follow-up",
-    "query_params": ["contact_email"],
-    "input_schema": {
-        "type": "object",
-        "properties": {"contact_email": {"type": "string", "minLength": 3, "maxLength": 254}},
-        "required": ["contact_email"],
-        "additionalProperties": False,
-    },
 }
-TOOLS["remediation_record_follow_up"] = {
+_AUTHORED["remediation_record_follow_up"] = {
     "description": (
         "Record that the operator followed up with a contact about their "
         "overdue and due-soon findings on hosts: one immutable timeline entry "
@@ -1899,11 +1309,9 @@ TOOLS["remediation_record_follow_up"] = {
     ),
     "method": "POST",
     "path": "/api/v1/agent/remediation/follow-up",
-    "body_params": list(_remediation_follow_up_schema["properties"]),
-    "input_schema": _remediation_follow_up_schema,
     "idempotent": True,
 }
-TOOLS["remediation_timeline"] = {
+_AUTHORED["remediation_timeline"] = {
     "description": (
         "A host's remediation timeline, newest first: every change to a "
         "tracked field (`field`, `from`, `to`), every recorded follow-up "
@@ -1914,20 +1322,9 @@ TOOLS["remediation_timeline"] = {
     ),
     "method": "GET",
     "path": "/api/v1/agent/remediation/hosts/{host_id}/events",
-    "path_params": ["host_id"],
-    "query_params": ["finding_host_id", "limit", "offset"],
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            **HOST_ID_PROP,
-            "finding_host_id": {"type": "integer", "minimum": 1},
-            **_PAGE_PROPS,
-        },
-        "required": ["host_id"],
-        "additionalProperties": False,
-    },
+    "params": {"host_id": HOST_ID},
 }
-TOOLS["remediation_apply"] = {
+_AUTHORED["remediation_apply"] = {
     "description": (
         "Set remediation tracking fields on findings on hosts — typically "
         "from a spreadsheet or CSV the operator holds, which you read locally "
@@ -1954,13 +1351,11 @@ TOOLS["remediation_apply"] = {
     ),
     "method": "POST",
     "path": "/api/v1/agent/remediation/apply",
-    "body_params": list(_remediation_apply_schema["properties"]),
-    "input_schema": _remediation_apply_schema,
     # The field changes converge on a retry; a note sent without a
     # request_key is added again.
     "idempotent": False,
 }
-TOOLS["remediation_add_note"] = {
+_AUTHORED["remediation_add_note"] = {
     "description": (
         "Add a note to a host's remediation timeline (\"contacted the owner, "
         "will respond on Friday\"), optionally about one finding on that host "
@@ -1970,8 +1365,6 @@ TOOLS["remediation_add_note"] = {
     ),
     "method": "POST",
     "path": "/api/v1/agent/remediation/events",
-    "body_params": list(_remediation_note_schema["properties"]),
-    "input_schema": _remediation_note_schema,
     "additive": True,
 }
 
@@ -1989,6 +1382,215 @@ _KIND_BY_PREFIX = (
     ("host_tests_", _TESTING),
     ("remediation_", _ASSIST),
 )
+
+
+# ---------------------------------------------------------------------------
+# Parameters come from the routes
+#
+# An entry above names an endpoint; what that endpoint takes — which arguments,
+# where each goes (path / query / body), its type, enum and bounds, whether it
+# is required — is read from the endpoint's OpenAPI operation when the registry
+# is first used.  Nothing about a parameter is typed here twice, so a tool
+# cannot advertise an argument its endpoint does not take, or a value the
+# endpoint refuses.
+# ---------------------------------------------------------------------------
+
+#: JSON Schema keywords whose value is one schema / a list of them / a map of
+#: them.  Everything else (``enum``, ``default``, ``required``…) is a literal,
+#: and the keys of ``properties`` are argument names, not keywords.
+_SUBSCHEMA = ("items", "additionalProperties", "not")
+_SUBSCHEMA_LISTS = ("anyOf", "oneOf", "allOf", "prefixItems")
+_SUBSCHEMA_MAPS = ("properties", "$defs", "patternProperties")
+_NULL = {"type": "null"}
+
+
+def _plain(schema: Any, components: Dict[str, Any], _open: tuple = ()) -> Any:
+    """A route's JSON Schema as a tool advertises it.
+
+    References are inlined (a tool's schema stands alone), ``Optional[X]`` is
+    ``X`` (an omitted argument is how "none" is said), a ``None`` default and
+    pydantic's generated ``title`` are dropped, and an integer's exclusive
+    bound is written inclusive — the form ``mcp_assist`` checks values against.
+    """
+    if not isinstance(schema, dict):
+        return schema
+    if "$ref" in schema:
+        name = schema["$ref"].rsplit("/", 1)[-1]
+        if name in _open:
+            raise ValueError(f"schema {name!r} refers to itself; it cannot be inlined")
+        rest = {k: v for k, v in schema.items() if k != "$ref"}
+        return _plain({**components[name], **rest}, components, (*_open, name))
+    out: Dict[str, Any] = {}
+    for key, value in schema.items():
+        if key == "title":
+            continue
+        if key in _SUBSCHEMA:
+            out[key] = _plain(value, components, _open)
+        elif key in _SUBSCHEMA_LISTS:
+            out[key] = [_plain(v, components, _open) for v in value]
+        elif key in _SUBSCHEMA_MAPS:
+            out[key] = {k: _plain(v, components, _open) for k, v in value.items()}
+        else:
+            out[key] = value
+    for key in ("anyOf", "oneOf", "allOf"):
+        variants = out.get(key)
+        if variants is None:
+            continue
+        kept = [v for v in variants if v != _NULL] if key != "allOf" else variants
+        if len(kept) == 1:
+            del out[key]
+            out = {**kept[0], **out}
+        else:
+            out[key] = kept
+    if out.get("default", 0) is None:
+        del out["default"]
+    if out.get("type") == "integer":
+        if "exclusiveMinimum" in out:
+            out["minimum"] = out.pop("exclusiveMinimum") + 1
+        if "exclusiveMaximum" in out:
+            out["maximum"] = out.pop("exclusiveMaximum") - 1
+    return out
+
+
+def _operation(openapi: Dict[str, Any], name: str, method: str, path: str) -> Dict[str, Any]:
+    op = openapi.get("paths", {}).get(path, {}).get(method.lower())
+    if op is None:
+        raise ValueError(f"MCP tool {name}: {method} {path} is not a routed endpoint")
+    return op
+
+
+def derive_tool(name: str, authored: Dict[str, Any], openapi: Dict[str, Any]) -> Dict[str, Any]:
+    """One registry entry with its parameters read from its endpoint.
+
+    Adds ``path_params`` / ``query_params`` / ``body_params`` (where each
+    argument is sent) and ``input_schema`` to the authored entry.  Authored
+    per parameter, in ``params``: a description (a string), or a mapping laid
+    over the endpoint's schema to NARROW it (an enum where the endpoint takes
+    free text and validates in its handler, a bound it leaves to a service).
+    ``hidden`` names endpoint parameters the tool does not offer.  A name in
+    either that the endpoint does not take is an error, never ignored.
+    """
+    components = openapi.get("components", {}).get("schemas", {})
+    op = _operation(openapi, name, authored["method"], authored["path"])
+    hidden = set(authored.get("hidden", ()))
+    overlays = dict(authored.get("params", {}))
+    alternatives = authored.get("path_alternatives") or {}
+
+    props: Dict[str, Any] = {}
+    required: List[str] = []
+    placed: Dict[str, List[str]] = {"path": [], "query": [], "body": []}
+    seen = set()
+
+    def offer(where: str, pname: str, schema: Dict[str, Any], is_required: bool) -> None:
+        if pname in seen:
+            raise ValueError(f"MCP tool {name}: the endpoint takes {pname!r} in two places")
+        seen.add(pname)
+        if pname in hidden:
+            if is_required:
+                raise ValueError(f"MCP tool {name}: {pname!r} is required by the endpoint and cannot be hidden")
+            return
+        props[pname] = schema
+        placed[where].append(pname)
+        if is_required:
+            required.append(pname)
+
+    def parameter(p: Dict[str, Any]) -> Dict[str, Any]:
+        schema = _plain(p.get("schema", {}), components)
+        if p.get("description"):
+            schema["description"] = p["description"]
+        return schema
+
+    for p in op.get("parameters", ()):
+        if p.get("in") in ("path", "query"):
+            offer(p["in"], p["name"], parameter(p), bool(p.get("required")))
+    content = (op.get("requestBody") or {}).get("content", {}).get("application/json")
+    if content:
+        body = _plain(content.get("schema", {}), components)
+        for pname, schema in body.get("properties", {}).items():
+            offer("body", pname, schema, pname in body.get("required", ()))
+
+    # A tool that reaches one of several endpoints by which id it is given:
+    # each id is offered, and "exactly one" is the dispatcher's check.
+    for arg, alt_path in alternatives.items():
+        alt = _operation(openapi, name, authored["method"], alt_path)
+        (p,) = [p for p in alt.get("parameters", ()) if p.get("in") == "path" and p["name"] == arg]
+        seen.add(arg)
+        props[arg] = parameter(p)
+    if alternatives:
+        required = [r for r in required if r not in placed["path"]]
+
+    stale = sorted((set(overlays) | hidden) - seen)
+    if stale:
+        raise ValueError(
+            f"MCP tool {name}: {', '.join(stale)} not taken by {authored['method']} {authored['path']}"
+        )
+    for pname, overlay in overlays.items():
+        if isinstance(overlay, str):
+            overlay = {"description": overlay}
+        merged = {**props[pname], **overlay}
+        if "enum" in overlay:
+            # The endpoint's pattern says the same thing less readably.
+            merged.pop("pattern", None)
+        props[pname] = merged
+
+    schema: Dict[str, Any] = {"type": "object", "properties": props, "additionalProperties": False}
+    if required:
+        schema["required"] = required
+    spec = {k: v for k, v in authored.items() if k not in ("hidden", "params")}
+    if placed["path"]:
+        spec["path_params"] = placed["path"]
+    if placed["query"]:
+        spec["query_params"] = placed["query"]
+    if placed["body"]:
+        spec["body_params"] = placed["body"]
+    spec["input_schema"] = schema
+    return spec
+
+
+def _api_schema() -> Dict[str, Any]:
+    """The running API's OpenAPI document.
+
+    Read from the application module only if it is already loaded: importing
+    it applies database migrations, which a reader of this registry must never
+    cause.  Every user of the registry runs inside the API process."""
+    main = sys.modules.get("app.main")
+    if main is None:
+        raise RuntimeError(
+            "The MCP tool registry is derived from the API's routes and exists only "
+            "in the API process (app.main is not loaded)."
+        )
+    return main.app.openapi()
+
+
+class _Registry(Mapping):
+    """``{tool name: entry}`` with each entry's parameters derived from its
+    endpoint — built on first use (the routes do not exist while this module
+    is being imported) and kept."""
+
+    def __init__(self, authored: Dict[str, Dict[str, Any]]):
+        self._authored = authored
+        self._built: Optional[Dict[str, Dict[str, Any]]] = None
+
+    def _tools(self) -> Dict[str, Dict[str, Any]]:
+        if self._built is None:
+            openapi = _api_schema()
+            self._built = {
+                name: derive_tool(name, entry, openapi) for name, entry in self._authored.items()
+            }
+        return self._built
+
+    def __getitem__(self, name: str) -> Dict[str, Any]:
+        return self._tools()[name]
+
+    def __iter__(self) -> Iterator[str]:
+        # Names need no route: a caller that only lists them does not build.
+        return iter(self._authored)
+
+    def __len__(self) -> int:
+        return len(self._authored)
+
+
+TOOLS: Mapping = _Registry(_AUTHORED)
 
 
 def tool_workflows(name: str) -> frozenset:

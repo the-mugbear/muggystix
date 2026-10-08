@@ -7,7 +7,7 @@ was a non-atomic read-then-write. These tests pin both fixes.
 """
 from datetime import datetime, timezone
 
-from app.core.security import create_access_token, LOGIN_THROTTLE_PER_USERNAME
+from app.core.security import create_access_token, LOGIN_2FA_THROTTLE_PER_USERNAME
 from app.api.v1.endpoints.auth import _2FA_CHALLENGE_PURPOSE, _verify_second_factor
 from app.services import totp_service
 from app.db.models_auth import User, UserRole, AuditLog, UserRecoveryCode
@@ -37,11 +37,11 @@ def _challenge(user):
 
 def test_2fa_throttled_after_repeated_failures(client, db_session):
     user = _totp_user(db_session)
-    # Seed enough recent failed-login events for this username to trip the
-    # per-username throttle.
-    for _ in range(LOGIN_THROTTLE_PER_USERNAME):
+    # Seed enough recent wrong codes for this username to trip the second
+    # factor's per-username throttle.
+    for _ in range(LOGIN_2FA_THROTTLE_PER_USERNAME):
         db_session.add(AuditLog(
-            action="login_failed",
+            action="login_2fa_failed",
             details={"username": user.username},
             timestamp=datetime.now(timezone.utc),
         ))

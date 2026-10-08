@@ -196,6 +196,7 @@ EXPECTED_ONDELETE = {
     ('port_confidence', 'scan_id'): 'CASCADE',
     ('port_scan_history', 'port_id'): 'CASCADE',
     ('port_scan_history', 'scan_id'): 'CASCADE',
+    ('ports_v2', 'created_scan_id'): 'SET NULL',
     ('ports_v2', 'host_id'): 'CASCADE',
     ('ports_v2', 'last_updated_scan_id'): 'SET NULL',
     ('project_memberships', 'project_id'): 'CASCADE',

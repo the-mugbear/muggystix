@@ -45,29 +45,21 @@ interface HostFindingsCardProps {
   refreshKey?: number;
 }
 
-const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey }) => {
+/** One host's findings.  Keyed by the host, so another host starts empty and
+ *  an answer for the host that was left has no list to land in. */
+const HostFindingsCard: React.FC<HostFindingsCardProps> = (props) => (
+  <HostFindingsCardBody key={props.hostId} {...props} />
+);
+
+const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey }) => {
   const toast = useToast();
   const navigate = useNavigate();
   const { canWrite: canManage } = useProjectRole();
   const [findings, setFindings] = useState<Finding[]>([]);
   const [loaded, setLoaded] = useState(false);
 
-  // The inspector stays mounted while the reader steps from host to host, so
-  // every async completion here checks it is still for THIS host (M13 — the
-  // rule `hostTestsController` follows): reads by request generation, saves
-  // by `isCurrentHost(submittedFor)`.  A slow list for the host just left
-  // used to replace the new host's findings, and a save's answer landed in
-  // whichever host's list was on screen.
-  const hostRef = useRef(hostId);
-  hostRef.current = hostId;
-  const isCurrentHost = (submittedFor: number) => hostRef.current === submittedFor;
+  // A refresh supersedes the read before it: only the latest may write.
   const generation = useRef(0);
-
-  // Another host: the previous host's findings are not this one's.
-  useEffect(() => {
-    setFindings([]);
-    setLoaded(false);
-  }, [hostId]);
 
   const fetchFindings = useCallback(async () => {
     generation.current += 1;
@@ -111,10 +103,8 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
       navigate(`/findings/${id}`);
       return;
     }
-    const submittedFor = hostId;
     try {
       const updated = await setFindingStatus(id, status);
-      if (!isCurrentHost(submittedFor)) return;
       setFindings((prev) => prev.map((f) => (f.id === id ? updated : f)));
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update finding status.'));
@@ -129,21 +119,16 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
   const handleEndpointStatus = async (f: Finding, hostStatus: FindingHostStatus) => {
     const rows = (f.hosts ?? []).filter((h) => h.host_id === hostId && h.host_status !== hostStatus);
     if (rows.length === 0) return;
-    const submittedFor = hostId;
     try {
       let updated: Finding = f;
       for (const row of rows) {
         updated = await setFindingEndpointStatus(f.id, row.id, hostStatus);
       }
-      // The reader stepped to another host meanwhile: the change was made on
-      // the host it was submitted for, and this list is no longer that host's.
-      if (!isCurrentHost(submittedFor)) return;
       setFindings((prev) => prev.map((x) => (x.id === f.id ? updated : x)));
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update this host’s state on the finding.'));
-      // A partial multi-row update must not be left looking whole — on the
-      // host it was for; another host's list is its own.
-      if (isCurrentHost(submittedFor)) void fetchFindings();
+      // A partial multi-row update must not be left looking whole.
+      void fetchFindings();
     }
   };
 

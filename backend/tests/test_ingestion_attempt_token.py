@@ -172,34 +172,34 @@ def test_owning_failure_still_lands(db_session, test_project, monkeypatch):
     assert row.parse_error_id is None
 
 
-def test_cancel_before_start_is_fenced_on_the_token(db_session, test_project):
-    """The 'cancelled before processing started' branch goes through the same
-    fenced ``fail`` as every other lifecycle write: a stale attempt must not
-    fail a row a peer now owns; the owning attempt still lands the cancel."""
-    owner_claim = _recent(30)
-    job = _job(db_session, test_project.id, started_at=owner_claim, heartbeat=owner_claim)
+def test_a_job_cancelled_while_it_waited_is_never_claimed(db_session, test_project):
+    """A cancel is the row, written by the API process: the worker (another
+    service object, as in production) finds nothing to claim, and a cancel is
+    not counted as an attempt."""
+    job = _job(db_session, test_project.id, status="queued")
 
-    svc = IngestionService()
-    svc._cancelled.add(job.id)
-    try:
-        # Stale token → nothing written.
-        svc._run_job(job.id, owner_claim - timedelta(minutes=10))
-        row = _fresh(db_session, job.id)
-        assert row.status == "processing"
-        assert row.error_message is None
-        assert row.completed_at is None
+    assert IngestionService().cancel_job(job.id) is True
+    assert IngestionService().poll_and_run_one() is False
 
-        # Owning token → the cancel lands with the original wording.  _run_job
-        # clears the in-proc cancel flag on exit, so re-arm it as cancel_job would.
-        svc._cancelled.add(job.id)
-        svc._run_job(job.id, owner_claim)
-        row = _fresh(db_session, job.id)
-        assert row.status == "failed"
-        assert row.error_message == "Cancelled before processing started"
-        assert row.completed_at is not None
-        assert (row.retry_count or 0) == 0  # a cancel is not an attempt
-    finally:
-        svc._cancelled.discard(job.id)
+    row = _fresh(db_session, job.id)
+    assert row.status == "failed"
+    assert row.error_message == "Cancelled by user"
+    assert row.completed_at is not None
+    assert (row.retry_count or 0) == 0
+
+
+def test_a_cancel_reaches_a_running_parse_through_the_row(db_session, test_project):
+    """The worker holds no record of the cancel: its next heartbeat reads it
+    off the row and stops the parse."""
+    claim = _recent(30)
+    job = _job(db_session, test_project.id, started_at=claim, heartbeat=claim)
+    worker = IngestionService()
+
+    worker.update_heartbeat(db_session, job.id, "10 hosts", claimed_at=claim)
+    assert IngestionService().cancel_job(job.id) is True
+    with pytest.raises(ParseFailure, match="cancelled"):
+        worker.update_heartbeat(db_session, job.id, "20 hosts", claimed_at=claim)
+    assert _fresh(db_session, job.id).progress == "10 hosts"
 
 
 def test_a_stopping_worker_hands_the_job_back_to_the_queue(db_session, test_project, monkeypatch):
@@ -235,13 +235,14 @@ def test_a_stopping_worker_hands_the_job_back_to_the_queue(db_session, test_proj
 # Review 2026-10-07 — what a heartbeat reads, and how it measures the job.
 # ---------------------------------------------------------------------------
 def test_a_heartbeat_never_loads_the_created_port_list(db_session, test_project):
-    """The list is megabytes on a large Nessus import and the heartbeat runs
-    every batch: neither the heartbeat nor loading a job row brings it."""
+    """The job row carries no list of created ports any more (the record is
+    ``ports_v2.created_scan_id``), so neither the heartbeat nor loading a job
+    row can bring megabytes with it."""
     from sqlalchemy import event
 
     claim = _recent(30)
     job = _job(db_session, test_project.id, started_at=claim, heartbeat=claim)
-    job.in_progress_created_port_ids = list(range(50))
+    assert "in_progress_created_port_ids" not in models.IngestionJob.__table__.c
     db_session.commit()
     db_session.expire_all()
 
@@ -259,9 +260,7 @@ def test_a_heartbeat_never_loads_the_created_port_list(db_session, test_project)
         event.remove(engine, "before_cursor_execute", capture)
 
     assert statements
-    assert not [s for s in statements if "in_progress_created_port_ids" in s]
-    # Still there for the cleanup, which asks for it by name.
-    assert _fresh(db_session, job.id).in_progress_created_port_ids == list(range(50))
+    assert not [s for s in statements if "in_progress_created_port_ids" in s or "ports_v2" in s]
 
 
 @pytest.mark.parametrize("zone", ["Etc/GMT+12", "Pacific/Kiritimati"])

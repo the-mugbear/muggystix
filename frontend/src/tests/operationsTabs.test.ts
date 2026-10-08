@@ -12,7 +12,7 @@ import {
 import { fromOperationsQueue, operationsBackPath } from '../utils/operationsQueue';
 
 const workbench = (over: Partial<WorkbenchResponse> = {}): WorkbenchResponse => ({
-  my_queue: { items: [], in_review_count: 37, watching_count: 0 },
+  my_queue: { items: [], in_review_count: 37 },
   my_tasks: {
     items: [], total_open: 55,
     reason_counts: { assigned: 12, in_review: 30, triage: 15 },
@@ -126,6 +126,11 @@ describe('the URL', () => {
     expect(tabSearch(p('tab=tests&kind=triage'), 'tests')).toBe('?tab=tests&kind=triage');
     expect(tabSearch(p('tab=tests&kind=triage'), 'tests', null)).toBe('?tab=tests');
     expect(tabSearch('?start=x', 'findings')).toBe('?start=x&tab=findings');
+  });
+
+  it('a tab link never carries the list’s page: a tab opens on its first', () => {
+    expect(tabSearch(p('tab=tests&page=3'), 'hosts')).toBe('?tab=hosts');
+    expect(tabSearch(p('tab=tests&kind=triage&page=3'), 'tests', 'assigned')).toBe('?tab=tests&kind=assigned');
   });
 
   it('the need belongs to the Findings tab, exactly as the kind belongs to Tests', () => {

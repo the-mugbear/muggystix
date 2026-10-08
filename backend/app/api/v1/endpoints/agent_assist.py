@@ -34,13 +34,10 @@ from app.services.operations_read_service import blocked_import_condition
 from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
 from app.services.vulnerability_service import VulnerabilityService
 from app.db import models
-from app.db.models_agent import (
-    Agent,
-    AgentSession,
-)
-from app.db.models_project import Project, ProjectMembership
+from app.db.models_agent import Agent
+from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models_auth import User
-from app.api.deps import check_agent_rate_limit
+from app.api.deps import agent_read_floor, check_agent_rate_limit
 
 from app.api.v1.endpoints.agent_schemas import (
     AssistFinding,
@@ -59,10 +56,15 @@ from app.api.v1.endpoints.agent_schemas import (
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, severity_rank
 from app.api.v1.endpoints.agent_common import (
     PORTS_PARAM_HELP,
+    SEARCH_PARAM_HELP,
     SERVICES_PARAM_HELP,
-    apply_agent_host_filters,
+    SEVERITY_FLAGS_HELP,
+    STATE_PARAM_HELP,
+    SUBNETS_PARAM_HELP,
     batch_host_enrichment,
+    check_host_filters,
     load_agent_session,
+    load_operator,
     require_project_host,
     unknown_value_error,
 )
@@ -87,7 +89,7 @@ from app.services.host_serialization import (
 from app.services.scope_coverage import host_scope_membership
 from app.services.host_query_common import escape_like
 from app.services.note_attachment_service import require_readable_file
-from app.services.agent_prompt_history import PROMPT_VERSION
+from app.services.agent_prompt_service import PROMPT_VERSION
 from app.services.posture_service import compute_posture
 from app.services.scan_inventory_filters import apply_scan_inventory_filters
 from app.services.systemic_insight_service import compute_systemic_insights
@@ -97,20 +99,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-
-# ---------------------------------------------------------------------------
-# Session resolution
-# ---------------------------------------------------------------------------
-
-def _load_assist_session(db: Session, request: Request) -> AgentSession:
-    """The caller's unified agent session (v2.337.0).
-
-    The ``/agent/assist/*`` reads are project-wide and available to every
-    session — a query is a query.  This resolves the session the key belongs
-    to; handlers read ``session.project_id`` off it exactly as before.  The
-    name is kept so the many call sites need no edit.
-    """
-    return load_agent_session(db, request)
+# Read floors above the default (any member), each the level its page or
+# export requires of a person.  Evidence files (note attachments, EyeWitness
+# screenshots) declare none: the UI serves both to a viewer.
+#: The whole-project dossier and the bulk inventory are exports (AUDITOR).
+_EXPORT_READ = [Depends(agent_read_floor(ProjectRole.AUDITOR))]
+#: Ingestion Results is an analyst page (every ``/parse-errors`` route).
+_INGESTION_RESULTS_READ = [Depends(agent_read_floor(ProjectRole.ANALYST))]
 
 
 # ---------------------------------------------------------------------------
@@ -135,8 +130,8 @@ def get_assist_context(
     (counts and headlines, not raw row dumps).  When the agent
     needs detail it follows up with /assist/hosts or /assist/scopes.
     """
-    session = _load_assist_session(db, request)
-    project = db.query(Project).filter(Project.id == session.project_id).first()
+    session = load_agent_session(db, request)
+    project = db.query(Project).filter(Project.id == request.state.agent_project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -321,7 +316,7 @@ def get_assist_context(
 
 def _build_assist_host_query(
     db: Session,
-    session: AgentSession,
+    request: Request,
     *,
     state: Optional[str],
     ports: Optional[str],
@@ -333,41 +328,40 @@ def _build_assist_host_query(
     q: Optional[str],
 ) -> SAQuery:
     """Build the filtered, project-scoped host query shared by the paged list
-    and the NDJSON stream. Both surfaces MUST filter identically, so the discrete
-    params + the boolean DSL live here once. Raises HTTPException(400) on a
-    malformed DSL query.
+    and the NDJSON stream — with the Hosts page's own assembly
+    (``build_filtered_host_query``), so the discrete params and the boolean
+    DSL mean to an agent what they mean on the page. Raises
+    HTTPException(400) on a malformed DSL query and 422 on a discrete value
+    that cannot be understood.
     """
-    query = db.query(models.Host).filter(models.Host.project_id == session.project_id)
-    query = apply_agent_host_filters(
-        query,
-        db,
-        project_id=session.project_id,
-        state=state,
-        ports=ports,
-        services=services,
-        subnets=subnets,
-        has_critical_vulns=has_critical_vulns,
-        has_high_vulns=has_high_vulns,
-        search=search,
-    )
-    if q:
-        # Boolean DSL — same parser/evaluator as the human Hosts page, bound to
-        # the session operator so follow:/assigned: are answerable. Lazy import
-        # keeps the module-load graph acyclic; a malformed query is a clean 400.
-        from app.services.host_query_dsl import BuildCtx, DSLError, evaluate, parse_query
-        operator = session.started_by
-        if operator is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Assist session has no operator bound; cannot evaluate follow:/assigned: predicates.",
-            )
-        try:
-            query = query.filter(
-                evaluate(parse_query(q), BuildCtx(db, operator, session.project_id))
-            )
-        except DSLError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid query: {exc}")
-    return query
+    from app.services.host_query import build_filtered_host_query
+    from app.services.host_query_dsl import DSLError
+
+    check_host_filters(state=state, ports=ports, services=services, subnets=subnets)
+    # The DSL is bound to the session operator so follow:/assigned: are
+    # answerable; the discrete filters are judged for nobody.
+    operator = load_operator(db, request) if q else None
+    if q and operator is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Assist session has no operator bound; cannot evaluate follow:/assigned: predicates.",
+        )
+    try:
+        return build_filtered_host_query(
+            db,
+            operator,
+            project_id=request.state.agent_project_id,
+            state=state,
+            ports=ports,
+            services=services,
+            subnets=subnets,
+            has_critical_vulns=has_critical_vulns,
+            has_high_vulns=has_high_vulns,
+            search=search,
+            q=q,
+        )
+    except DSLError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid query: {exc}")
 
 
 def _operator_follow_map(db: Session, host_ids, operator_id) -> dict:
@@ -468,13 +462,13 @@ class AssistHostCount(BaseModel):
 )
 def count_assist_hosts(
     request: Request,
-    state: Optional[str] = Query(None),
+    state: Optional[str] = Query(None, description=STATE_PARAM_HELP),
     ports: Optional[str] = Query(None, description=PORTS_PARAM_HELP),
     services: Optional[str] = Query(None, description=SERVICES_PARAM_HELP),
-    subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
-    has_critical_vulns: Optional[bool] = Query(None),
-    has_high_vulns: Optional[bool] = Query(None),
-    search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
+    subnets: Optional[str] = Query(None, description=SUBNETS_PARAM_HELP),
+    has_critical_vulns: Optional[bool] = Query(None, description=SEVERITY_FLAGS_HELP),
+    has_high_vulns: Optional[bool] = Query(None, description=SEVERITY_FLAGS_HELP),
+    search: Optional[str] = Query(None, description=SEARCH_PARAM_HELP),
     q: Optional[str] = Query(None, description="Boolean query DSL — see /assist/hosts."),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
@@ -493,9 +487,8 @@ def count_assist_hosts(
     "how many hosts" — two answers to the same question disagreeing is precisely
     what a separate query here would eventually produce.
     """
-    session = _load_assist_session(db, request)
     query = _build_assist_host_query(
-        db, session,
+        db, request,
         state=state, ports=ports, services=services, subnets=subnets,
         has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
         search=search, q=q,
@@ -513,13 +506,13 @@ def count_assist_hosts(
 )
 def list_assist_hosts(
     request: Request,
-    state: Optional[str] = Query(None),
+    state: Optional[str] = Query(None, description=STATE_PARAM_HELP),
     ports: Optional[str] = Query(None, description=PORTS_PARAM_HELP),
     services: Optional[str] = Query(None, description=SERVICES_PARAM_HELP),
-    subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
-    has_critical_vulns: Optional[bool] = Query(None),
-    has_high_vulns: Optional[bool] = Query(None),
-    search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
+    subnets: Optional[str] = Query(None, description=SUBNETS_PARAM_HELP),
+    has_critical_vulns: Optional[bool] = Query(None, description=SEVERITY_FLAGS_HELP),
+    has_high_vulns: Optional[bool] = Query(None, description=SEVERITY_FLAGS_HELP),
+    search: Optional[str] = Query(None, description=SEARCH_PARAM_HELP),
     q: Optional[str] = Query(
         None,
         description=(
@@ -573,9 +566,8 @@ def list_assist_hosts(
     default page answered a question about ~900 hosts with 500.  ``total`` is
     the same COUNT as ``/assist/hosts/count``.
     """
-    session = _load_assist_session(db, request)
     query = _build_assist_host_query(
-        db, session,
+        db, request,
         state=state, ports=ports, services=services, subnets=subnets,
         has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
         search=search, q=q,
@@ -596,7 +588,7 @@ def list_assist_hosts(
         return page([])
     host_ids = [h.id for h in hosts]
     port_counts, vuln_map = batch_host_enrichment(db, host_ids)
-    follow_map = _operator_follow_map(db, host_ids, session.started_by_id)
+    follow_map = _operator_follow_map(db, host_ids, request.state.key_operator_id)
     exploits, critical_exploits = exploit_count_maps(db, host_ids)
     result = []
     for h in hosts:
@@ -630,18 +622,19 @@ def list_assist_hosts(
 
 @router.get(
     "/assist/hosts.ndjson",
+    dependencies=_EXPORT_READ,
     summary="Stream ALL matching hosts as newline-delimited JSON (download to disk)",
     response_class=StreamingResponse,
 )
 def download_assist_hosts_ndjson(
     request: Request,
-    state: Optional[str] = Query(None),
+    state: Optional[str] = Query(None, description=STATE_PARAM_HELP),
     ports: Optional[str] = Query(None, description=PORTS_PARAM_HELP),
     services: Optional[str] = Query(None, description=SERVICES_PARAM_HELP),
-    subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
-    has_critical_vulns: Optional[bool] = Query(None),
-    has_high_vulns: Optional[bool] = Query(None),
-    search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
+    subnets: Optional[str] = Query(None, description=SUBNETS_PARAM_HELP),
+    has_critical_vulns: Optional[bool] = Query(None, description=SEVERITY_FLAGS_HELP),
+    has_high_vulns: Optional[bool] = Query(None, description=SEVERITY_FLAGS_HELP),
+    search: Optional[str] = Query(None, description=SEARCH_PARAM_HELP),
     q: Optional[str] = Query(None, description="Boolean query DSL — same vocabulary as /assist/hosts."),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
@@ -664,18 +657,17 @@ def download_assist_hosts_ndjson(
     # A streamed export of the whole project: exempt from the API statement
     # timeout (review 2026-10-01 R23), which is for interactive requests.
     disable_statement_timeout(db)
-    session = _load_assist_session(db, request)
     query = _build_assist_host_query(
-        db, session,
+        db, request,
         state=state, ports=ports, services=services, subnets=subnets,
         has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
         search=search, q=q,
     )
     return StreamingResponse(
-        _iter_assist_hosts_ndjson(db, query, operator_id=session.started_by_id),
+        _iter_assist_hosts_ndjson(db, query, operator_id=request.state.key_operator_id),
         media_type="application/x-ndjson",
         headers={
-            "Content-Disposition": f"attachment; filename=assist-project-{session.project_id}-hosts.jsonl"
+            "Content-Disposition": f"attachment; filename=assist-project-{request.state.agent_project_id}-hosts.jsonl"
         },
     )
 
@@ -951,17 +943,16 @@ def list_assist_host_web_interfaces(
     by port), with ``id`` as the tiebreaker so pages are stable.  ``total`` and
     ``has_more`` say whether this page is the whole record.
     """
-    session = _load_assist_session(db, request)
     host = (
         db.query(models.Host)
-        .filter(models.Host.id == host_id, models.Host.project_id == session.project_id)
+        .filter(models.Host.id == host_id, models.Host.project_id == request.state.agent_project_id)
         .first()
     )
     if host is None:
         raise HTTPException(status_code=404, detail="Host not found in this project")
     scoped = db.query(models.WebInterface).filter(
         models.WebInterface.host_id == host.id,
-        models.WebInterface.project_id == session.project_id,
+        models.WebInterface.project_id == request.state.agent_project_id,
     )
     total = scoped.with_entities(func.count(models.WebInterface.id)).scalar() or 0
     rows = (
@@ -1032,10 +1023,9 @@ def list_assist_host_access(
     compares (v2.418.0)."""
     from app.db.models_confidence import NETEXEC_RAW_OUTPUT_LIMIT, NetexecResult
 
-    session = _load_assist_session(db, request)
     host = (
         db.query(models.Host.id)
-        .filter(models.Host.id == host_id, models.Host.project_id == session.project_id)
+        .filter(models.Host.id == host_id, models.Host.project_id == request.state.agent_project_id)
         .first()
     )
     if host is None:
@@ -1081,6 +1071,7 @@ class AssistUninterpretedPage(BaseModel):
 
 @router.get(
     "/assist/uninterpreted-lines",
+    dependencies=_INGESTION_RESULTS_READ,
     response_model=AssistUninterpretedPage,
     summary="Lines imports did not interpret, as redacted shapes",
 )
@@ -1092,9 +1083,8 @@ def list_assist_uninterpreted_lines(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    session = _load_assist_session(db, request)
     scoped = db.query(models.IngestionJob).filter(
-        models.IngestionJob.project_id == session.project_id,
+        models.IngestionJob.project_id == request.state.agent_project_id,
         models.IngestionJob.uninterpreted_lines.isnot(None),
     )
     if job_id is not None:
@@ -1102,7 +1092,7 @@ def list_assist_uninterpreted_lines(
         # project's, answered the same empty page as "every line was read".
         exists = db.query(models.IngestionJob.id).filter(
             models.IngestionJob.id == job_id,
-            models.IngestionJob.project_id == session.project_id,
+            models.IngestionJob.project_id == request.state.agent_project_id,
         ).first()
         if exists is None:
             raise HTTPException(
@@ -1143,9 +1133,8 @@ def get_assist_host_by_ip(
     """v2.429.1 (MCP acceptance run 2) — "what's on 10.0.0.5?" took a list
     call to find the id first.  One host per address per project
     (``uq_project_ip``), so the address names exactly one row."""
-    session = _load_assist_session(db, request)
     host_id = db.query(models.Host.id).filter(
-        models.Host.project_id == session.project_id,
+        models.Host.project_id == request.state.agent_project_id,
         models.Host.ip_address == ip.strip(),
     ).scalar()
     if host_id is None:
@@ -1164,7 +1153,6 @@ def get_assist_host(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    session = _load_assist_session(db, request)
     host = (
         db.query(models.Host)
         .options(
@@ -1174,7 +1162,7 @@ def get_assist_host(
         )
         .filter(
             models.Host.id == host_id,
-            models.Host.project_id == session.project_id,
+            models.Host.project_id == request.state.agent_project_id,
         )
         .first()
     )
@@ -1188,13 +1176,13 @@ def get_assist_host(
     open_count = sum(1 for p in host.ports if p.state == "open")
     _, vuln_map = batch_host_enrichment(db, [host.id])
     vc = vuln_map.get(host.id, {})
-    follow_map = _operator_follow_map(db, [host.id], session.started_by_id)
+    follow_map = _operator_follow_map(db, [host.id], request.state.key_operator_id)
 
     web_rows = (
         db.query(models.WebInterface)
         .filter(
             models.WebInterface.host_id == host.id,
-            models.WebInterface.project_id == session.project_id,
+            models.WebInterface.project_id == request.state.agent_project_id,
         )
         # Screenshotted interfaces first — those are the ones a report can
         # show — then by port for a stable order.
@@ -1209,7 +1197,7 @@ def get_assist_host(
         db.query(func.count(models.WebInterface.id))
         .filter(
             models.WebInterface.host_id == host.id,
-            models.WebInterface.project_id == session.project_id,
+            models.WebInterface.project_id == request.state.agent_project_id,
         )
         .scalar()
     ) or 0
@@ -1219,9 +1207,9 @@ def get_assist_host(
 
     # v2.428.0 — the inspector's facts, from the code GET /hosts/{id} uses.
     base = serialize_host_base(host, None, note_count=0)
-    operator = db.query(User).filter(User.id == session.started_by_id).first()
+    operator = load_operator(db, request)
     weakness_flags = (
-        host_weakness_flags(db, operator, session.project_id, [host.id]).get(host.id, [])
+        host_weakness_flags(db, operator, request.state.agent_project_id, [host.id]).get(host.id, [])
         if operator is not None else []
     )
     conflicts = host_detail_service.host_conflict_history(
@@ -1326,11 +1314,10 @@ def get_assist_host_vulnerabilities(
     evidence-rich report instead of citing bare counts and deferring to the UI.
     Read-only; ordered worst-severity first, then CVSS; paginated with
     ``total``/``has_more`` so coverage can be reported without guessing."""
-    session = _load_assist_session(db, request)
     # Project scope: the host must belong to this session's project.
     host_ok = (
         db.query(models.Host.id)
-        .filter(models.Host.id == host_id, models.Host.project_id == session.project_id)
+        .filter(models.Host.id == host_id, models.Host.project_id == request.state.agent_project_id)
         .first()
     )
     if not host_ok:
@@ -1368,7 +1355,7 @@ def get_assist_host_vulnerabilities(
     # inspector's own rule (``issue_coverage_map`` / ``_vuln_coverage``), so an
     # agent and the page cannot disagree (agent feedback #27, 2026-10-02: the
     # rows carried no finding state, so "is this judged here?" had no answer).
-    coverage = issue_coverage_map(db, session.project_id, rows, host_id=host_id)
+    coverage = issue_coverage_map(db, request.state.agent_project_id, rows, host_id=host_id)
 
     # One join-free port lookup for the rows' port_ids → number/service.
     port_ids = {v.port_id for v in rows if v.port_id is not None}
@@ -1424,18 +1411,19 @@ def get_assist_host_vulnerabilities(
 
 @router.get(
     "/assist/report-context.ndjson",
+    dependencies=_EXPORT_READ,
     summary="Stream the complete per-host report dossier (NDJSON, download to disk)",
     response_class=StreamingResponse,
 )
 def download_assist_report_context(
     request: Request,
-    state: Optional[str] = Query(None),
+    state: Optional[str] = Query(None, description=STATE_PARAM_HELP),
     ports: Optional[str] = Query(None, description=PORTS_PARAM_HELP),
     services: Optional[str] = Query(None, description=SERVICES_PARAM_HELP),
-    subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
-    has_critical_vulns: Optional[bool] = Query(None),
-    has_high_vulns: Optional[bool] = Query(None),
-    search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
+    subnets: Optional[str] = Query(None, description=SUBNETS_PARAM_HELP),
+    has_critical_vulns: Optional[bool] = Query(None, description=SEVERITY_FLAGS_HELP),
+    has_high_vulns: Optional[bool] = Query(None, description=SEVERITY_FLAGS_HELP),
+    search: Optional[str] = Query(None, description=SEARCH_PARAM_HELP),
     q: Optional[str] = Query(None, description="Boolean query DSL — same vocabulary as /assist/hosts."),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
@@ -1462,11 +1450,7 @@ def download_assist_report_context(
 
     # Streamed, uncapped: exempt from the API statement timeout (R23).
     disable_statement_timeout(db)
-    session = _load_assist_session(db, request)
-    operator = (
-        db.query(User).filter(User.id == session.started_by_id).first()
-        if session.started_by_id else None
-    )
+    operator = load_operator(db, request)
     if operator is None:
         # The dossier's review state is operator-relative; without a bound
         # operator there's nobody to resolve it against (mirrors the follow:/
@@ -1477,13 +1461,13 @@ def download_assist_report_context(
         )
 
     query = _build_assist_host_query(
-        db, session,
+        db, request,
         state=state, ports=ports, services=services, subnets=subnets,
         has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
         search=search, q=q,
     )
     host_id_query = query.with_entities(models.Host.id)
-    generator = ReportGenerator(db, current_user=operator, project_id=session.project_id)
+    generator = ReportGenerator(db, current_user=operator, project_id=request.state.agent_project_id)
 
     def _stream():
         for record in generator.iter_host_records(host_id_query):
@@ -1494,7 +1478,7 @@ def download_assist_report_context(
         media_type="application/x-ndjson",
         headers={
             "Content-Disposition": (
-                f"attachment; filename=assist-project-{session.project_id}-report-context.jsonl"
+                f"attachment; filename=assist-project-{request.state.agent_project_id}-report-context.jsonl"
             ),
         },
     )
@@ -1560,7 +1544,6 @@ def list_assist_findings(
     ``severity_counts`` respects every filter except severity, so an agent can
     report the breakdown within the scope it asked about without a second call.
     """
-    session = _load_assist_session(db, request)
     from app.services.finding_service import FindingService
 
     # v2.343.2 (review) — the parameter description advertised 'all', but the
@@ -1575,12 +1558,12 @@ def list_assist_findings(
         status = status.strip().lower()
         if status not in _FINDING_STATUSES:
             raise unknown_value_error("status", status, _FINDING_STATUSES | {"all"})
-    require_project_host(db, session.project_id, host_id)
+    require_project_host(db, request.state.agent_project_id, host_id)
 
     owner_id = None
     if owner:
         if owner.lower() == "me":
-            owner_id = session.started_by_id
+            owner_id = request.state.key_operator_id
         else:
             row = db.query(User.id).filter(func.lower(User.username) == owner.lower()).first()
             if row is None:
@@ -1589,7 +1572,7 @@ def list_assist_findings(
 
     svc = FindingService(db)
     filters = dict(
-        project_id=session.project_id, status=status, source=source,
+        project_id=request.state.agent_project_id, status=status, source=source,
         host_id=host_id, unowned=unowned, owner_id=owner_id, search=search,
     )
     rows, total = svc.list_findings(
@@ -1772,10 +1755,9 @@ def list_assist_host_notes(
     unanswerable, and let an agent add a note duplicating one written an hour
     earlier by someone else.
     """
-    session = _load_assist_session(db, request)
     host = (
         db.query(models.Host)
-        .filter(models.Host.id == host_id, models.Host.project_id == session.project_id)
+        .filter(models.Host.id == host_id, models.Host.project_id == request.state.agent_project_id)
         .first()
     )
     if host is None:
@@ -1832,8 +1814,7 @@ def assist_vocabulary(
     zero hosts, and "no hosts are tagged production" is a confidently wrong
     answer to a question that was really "what are the tags called here?".
     """
-    session = _load_assist_session(db, request)
-    pid = session.project_id
+    pid = request.state.agent_project_id
 
     def _names(model, column, **filters):
         q = db.query(column).filter_by(**filters) if filters else db.query(column)
@@ -1892,10 +1873,9 @@ def assist_coverage(
     being read as "no critical exposure". The report templates ask for it by
     name in their scope-and-confidence section.
     """
-    session = _load_assist_session(db, request)
     from app.services.evidence_service import compute_evidence_coverage
 
-    return compute_evidence_coverage(db, session.project_id)
+    return compute_evidence_coverage(db, request.state.agent_project_id)
 
 
 
@@ -1989,8 +1969,7 @@ def list_assist_segments(
     the subnet count; when it exceeds the page you are seeing the worst ones,
     not all of them.
     """
-    session = _load_assist_session(db, request)
-    pid = session.project_id
+    pid = request.state.agent_project_id
 
     insights = compute_subnet_insights(db, pid, limit=limit, offset=offset)
     if not insights.get("adopted"):
@@ -2088,8 +2067,7 @@ def list_assist_recent_notes(
     answers the question an analyst asks when they pick the engagement back up,
     which is about the work rather than about one asset.
     """
-    session = _load_assist_session(db, request)
-    pid = session.project_id
+    pid = request.state.agent_project_id
     # v2.313.0 — this filtered `Annotation.project_id == pid` and returned an
     # empty list for every project since it shipped.
     #
@@ -2135,7 +2113,7 @@ def list_assist_recent_notes(
     )
     if author:
         if author.lower() == "me":
-            q = q.filter(models.Annotation.user_id == session.started_by_id)
+            q = q.filter(models.Annotation.user_id == request.state.key_operator_id)
         else:
             row = db.query(User.id).filter(func.lower(User.username) == author.lower()).first()
             if row is None:
@@ -2191,10 +2169,9 @@ def list_assist_scopes(
     make the address it resolves to subnet-in-scope, and an in-scope
     subnet does not make names in scope.
     """
-    session = _load_assist_session(db, request)
     scopes = (
         db.query(models.Scope)
-        .filter(models.Scope.project_id == session.project_id)
+        .filter(models.Scope.project_id == request.state.agent_project_id)
         .order_by(models.Scope.name)
         .all()
     )
@@ -2231,7 +2208,7 @@ def list_assist_scopes(
         if len(bucket) < _SUBNET_CAP:
             bucket.append(ScopeDomainBrief(domain=domain, include_subdomains=bool(include_sub)))
     names_in_scope_total = (
-        dns_name_service.scope_domains_covered_names_total(db, session.project_id) if domain_rows else 0
+        dns_name_service.scope_domains_covered_names_total(db, request.state.agent_project_id) if domain_rows else 0
     )
     return [
         ScopeBrief(
@@ -2285,8 +2262,7 @@ def list_assist_names(
     must be tested BY NAME — the address alone reaches a different site.
     A name in scope does not put its address in subnet scope.
     """
-    session = _load_assist_session(db, request)
-    pid = session.project_id
+    pid = request.state.agent_project_id
     n = models.DNSName
     in_scope_col = dns_name_service.name_in_scope_condition(pid).label("in_scope")
     query = db.query(n, in_scope_col).filter(n.project_id == pid)
@@ -2379,9 +2355,8 @@ def list_assist_scans(
 ):
     # The Scans page's own filter (v2.429.1, MCP acceptance run 2: "the last
     # two nmap scans" meant reading every scan).
-    session = _load_assist_session(db, request)
     matching = apply_scan_inventory_filters(
-        db.query(models.Scan).filter(models.Scan.project_id == session.project_id),
+        db.query(models.Scan).filter(models.Scan.project_id == request.state.agent_project_id),
         search=None, tool=tool, created_after=None,
     )
     # The whole answer to "how many nmap scans?" (agent feedback #30: this was
@@ -2433,10 +2408,10 @@ def get_assist_session_self(
     which session it's bound to + the operator's stated purpose.
     Useful for the agent's opening message ("I see you're asking
     about $purpose; here's what I can see in $project_name…")."""
-    session = _load_assist_session(db, request)
+    session = load_agent_session(db, request)
     project_name = (
         db.query(Project.name)
-        .filter(Project.id == session.project_id)
+        .filter(Project.id == request.state.agent_project_id)
         .scalar()
     )
     # Agent feedback (v1.44.0): the agent could only discover its write grants
@@ -2452,7 +2427,7 @@ def get_assist_session_self(
         operator = {"id": operator_id, "username": operator_name}
     return {
         "id": session.id,
-        "project_id": session.project_id,
+        "project_id": request.state.agent_project_id,
         "project_name": project_name,
         "purpose": session.purpose,
         "status": session.status,
@@ -2514,15 +2489,14 @@ def get_assist_posture(
     to judge, which is NOT the same as the estate being clean, and an answer
     that reports it as "no issues found" is wrong.
     """
-    session = _load_assist_session(db, request)
-    p = compute_posture(db, session.project_id)
+    p = compute_posture(db, request.state.agent_project_id)
     # Posture's "Scanner observations" block: raw scanner rows by severity and
     # the hosts carrying each — the service the page reads (``GET
     # /dashboard/stats``).  An agent had the total and no breakdown (feedback
     # #31).  Null when it could not be counted, never zeros.
     scanner_observations = None
     try:
-        stats = VulnerabilityService(db).get_dashboard_statistics(project_id=session.project_id)
+        stats = VulnerabilityService(db).get_dashboard_statistics(project_id=request.state.agent_project_id)
         by_severity = stats["severity_breakdown"]
         informational = int(by_severity.get("info", 0) or 0)
         scanner_observations = {
@@ -2595,8 +2569,7 @@ def get_assist_patterns(
     cannot run at all — report that as "not assessable", never as "no patterns
     found".
     """
-    session = _load_assist_session(db, request)
-    ins = compute_systemic_insights(db, session.project_id)
+    ins = compute_systemic_insights(db, request.state.agent_project_id)
     if not ins.get("adopted"):
         return {
             "adopted": False,
@@ -2703,6 +2676,7 @@ class AssistIngestionIssues(BaseModel):
 
 @router.get(
     "/assist/ingestion-issues",
+    dependencies=_INGESTION_RESULTS_READ,
     response_model=AssistIngestionIssues,
     summary="Uploads that failed, stalled, or landed incomplete",
 )
@@ -2737,8 +2711,7 @@ def list_assist_ingestion_issues(
     can be reported as one. If it is true, say what is missing before drawing a
     conclusion from what is present.
     """
-    session = _load_assist_session(db, request)
-    pid = session.project_id
+    pid = request.state.agent_project_id
 
     status_counts = dict(
         db.query(models.IngestionJob.status, func.count(models.IngestionJob.id))
@@ -3035,11 +3008,10 @@ def get_assist_finding(
     """
     from app.db.models_findings import Finding, FindingHost, FindingVulnerability
 
-    session = _load_assist_session(db, request)
     finding = (
         db.query(Finding)
         .options(joinedload(Finding.owner), joinedload(Finding.created_by))
-        .filter(Finding.id == finding_id, Finding.project_id == session.project_id)
+        .filter(Finding.id == finding_id, Finding.project_id == request.state.agent_project_id)
         .first()
     )
     if finding is None:
@@ -3173,7 +3145,7 @@ def get_assist_finding(
     # evidence section shows (serialize_evidence: preview, never raw output).
     from app.services import agent_evidence_service
     evidence_rows, _ = agent_evidence_service.list_evidence(
-        db, session.project_id, finding_id=finding.id, limit=50,
+        db, request.state.agent_project_id, finding_id=finding.id, limit=50,
     )
     evidence_records = [agent_evidence_service.serialize_evidence(r) for r in evidence_rows]
 
@@ -3269,12 +3241,11 @@ def download_assist_attachment(
     """
     from app.services.note_attachment_service import _attachments_root
 
-    session = _load_assist_session(db, request)
     att = (
         db.query(models.NoteAttachment)
         .filter(
             models.NoteAttachment.id == attachment_id,
-            models.NoteAttachment.project_id == session.project_id,
+            models.NoteAttachment.project_id == request.state.agent_project_id,
         )
         .first()
     )
@@ -3317,12 +3288,11 @@ def download_assist_web_screenshot(
     from pathlib import Path as FsPath
     from app.core.config import settings
 
-    session = _load_assist_session(db, request)
     row = (
         db.query(models.WebInterface)
         .filter(
             models.WebInterface.id == interface_id,
-            models.WebInterface.project_id == session.project_id,
+            models.WebInterface.project_id == request.state.agent_project_id,
         )
         .first()
     )

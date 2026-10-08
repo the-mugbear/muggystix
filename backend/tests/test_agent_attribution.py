@@ -16,7 +16,7 @@ import uuid
 from app.db.models_agent import AgentSession
 from app.db.models_host_tests import HostTest
 from app.db.models_proposals import EvidenceRecord
-from app.services.agent_prompt_history import PROMPT_VERSION
+from app.services.agent_prompt_service import PROMPT_VERSION
 
 
 def _start(client, project):

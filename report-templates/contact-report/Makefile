@@ -13,9 +13,12 @@
 #     python /app/app/services/quarto_render.py /tpl/contact-report \
 #       --data /tpl/contact-report/sample-data.json --out /tpl/contact-report/_output
 #
-# The sample's evidence images come from sample-evidence/ (1.png for
-# evidence/1.png in the data); for another dataset's images add
-# `--evidence DIR` to RENDER.
+# This template EXTENDS ../pentest (template.json → "extends"): every file it
+# does not have itself — the Word styles, the post-processor, the filters, the
+# shared partials — is pentest's, so render it from inside report-templates/
+# with pentest beside it.  The sample's evidence images are pentest's
+# sample-evidence/ (1.png for evidence/1.png in the data); for another
+# dataset's images add `--evidence DIR` to RENDER.
 #
 # The renderer, its escaping rules and the helpers the template uses (md,
 # image, plain, asset) are described at the top of report.qmd and in

@@ -24,6 +24,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { copyToClipboard } from '../../utils/clipboard';
 import { saveBlob } from '../../utils/download';
 import { usePagedList } from '../../hooks/usePagedList';
+import { useUrlPage } from '../../hooks/useUrlPage';
 import { useListCursor } from '../../hooks/useListCursor';
 import { formatDate } from '../../utils/relativeTime';
 import {
@@ -166,13 +167,16 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     project_id: projectId ?? undefined,
   }), [state, contact, unassigned, hostId, findingId, severity, team, band, stale, projectId, policy]);
 
+  // The rows' page is in the address (`?page=`): a reload, or Back from a
+  // host or a finding, returns to the rows that were on screen.
+  const urlPage = useUrlPage();
   const list = usePagedList<RemediationRow, RemediationPage>(
     ({ offset, limit, signal }) => {
       const query = { ...filters, group, offset, limit };
       return across ? listRemediationOverview(query, signal) : listRemediation(query, signal);
     },
     [across, filters, group, pageSize, view === 'rows'],
-    { pageSize, errorMessage: 'The remediation list could not be loaded.' },
+    { pageSize, errorMessage: 'The remediation list could not be loaded.', page: urlPage },
   );
   const rows = list.rows ?? NO_ROWS;
   const counts = list.lastResponse?.state_counts ?? null;

@@ -102,6 +102,7 @@ import { announceMentionOutcome } from '../utils/mentions';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { DetailSkeleton } from './PageSkeleton';
 import { useConfirm } from '../hooks/useConfirm';
+import { useIsMounted } from '../hooks/useIsMounted';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent } from './ui/card';
@@ -237,7 +238,17 @@ export interface HostInspectorProps {
   onNextUnreviewed?: () => void;
 }
 
-export const HostInspector: React.FC<HostInspectorProps> = ({
+/**
+ * One host's inspector.  It is keyed by the host, so stepping to another host
+ * (the Hosts queue's Prev / Next) starts a new one: nothing loaded, typed or
+ * in flight for the host that was left exists in the one now shown, and a
+ * host that cannot be loaded shows its error, never the previous host.
+ */
+export const HostInspector: React.FC<HostInspectorProps> = (props) => (
+  <HostInspectorBody key={props.hostId} {...props} />
+);
+
+const HostInspectorBody: React.FC<HostInspectorProps> = ({
   hostId,
   density = 'page',
   onHostLoaded,
@@ -352,7 +363,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [noteError, setNoteError] = useState<string | null>(null);
   // The thread shows its newest threads until asked for the rest (v5.240.0).
   const [showAllNotes, setShowAllNotes] = useState(false);
-  useEffect(() => { setShowAllNotes(false); }, [hostId]);
   // Bumped when a finding is made from a test result, so the inline
   // HostFindingsCard refetches.
   const [findingsRefresh, setFindingsRefresh] = useState(0);
@@ -405,25 +415,22 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
   const handleSaveNoteDetails = async () => {
     if (!detailsNote) return;
-    const submitHostId = hostId;
     setDetailsSaving(true);
     try {
       // The type goes only when it changed: a thread labelled before 5.326.0
       // may carry "finding" or "action", which can be kept but not chosen.
       const typeChanged = detailsType !== (detailsNote.note_type || 'none');
-      const updated = await updateAnnotation(submitHostId, detailsNote.id, {
+      const updated = await updateAnnotation(hostId, detailsNote.id, {
         ...(typeChanged ? { note_type: detailsType === 'none' ? null : (detailsType as NoteType) } : {}),
         pinned: detailsPinned,
       });
-      if (submitHostId !== hostIdRef.current) return;
       setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
       toast.success('Note details updated.');
       setDetailsNote(null);
     } catch (err) {
-      if (submitHostId !== hostIdRef.current) return;
       toast.error(formatApiError(err, 'Failed to update note details.'));
     } finally {
-      if (submitHostId === hostIdRef.current) setDetailsSaving(false);
+      setDetailsSaving(false);
     }
   };
 
@@ -469,7 +476,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     if (!triageVuln) return;
     const { id: vulnId, intent } = triageVuln;
     const reason = triageReason.trim();
-    const submitHostId = hostId;
     setVulnActionId(vulnId);
     try {
       const hostOnly = intent === 'false_positive' && triageScope === 'host';
@@ -500,8 +506,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         },
       );
       // The toast names the finding and is true wherever the reader is; the
-      // panel's own state belongs to the host it was done on.
-      if (submitHostId !== hostIdRef.current) return;
+      // rest is this panel's, and re-reads nothing once the reader has left.
+      if (!isMounted()) return;
       setPromotedVulns((prev) => ({ ...prev, [vulnId]: finding.id }));
       if (hostOnly) setDismissedHereVulns((prev) => ({ ...prev, [vulnId]: true }));
       setFindingsRefresh((n) => n + 1);
@@ -513,7 +519,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update vulnerability.'));
     } finally {
-      if (submitHostId === hostIdRef.current) setVulnActionId(null);
+      setVulnActionId(null);
     }
   };
   const openTriage = (vulnId: number, title: string, intent: 'confirmed' | 'false_positive') => {
@@ -542,37 +548,29 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const [retryNonce, setRetryNonce] = useState(0);
   const [confirmEl, confirm] = useConfirm();
 
-  // Monotonic counter to guard against stale responses during rapid navigation.
-  const fetchIdRef = React.useRef(0);
-  // v5.215.0 — "N informational · show" refetches the host with the hidden
-  // rows included. Guarded by the same generation counter as the primary
-  // fetch: a late response for host A must not merge A's findings into the
-  // host B the operator has since navigated to.
+  // This inspector is one host's for its whole life (it is keyed by the host),
+  // so a completion that arrives after the reader stepped on updates state
+  // nobody sees.  What it must still not do is speak about "this host" over
+  // the next one: those toasts ask `isMounted()` first.
+  const isMounted = useIsMounted();
+  // "N informational · show" refetches the host with the hidden rows included.
   const loadInformational = async () => {
-    const fetchId = fetchIdRef.current;
     setLoadingInformational(true);
     try {
       const withInfo = await getHost(hostId, { includeInfo: true });
-      if (fetchId !== fetchIdRef.current) return;
       setHost((prev) => (
         prev
           ? { ...prev, vulnerabilities: withInfo.vulnerabilities, informational_included: true }
           : withInfo
       ));
     } catch (err: unknown) {
-      if (fetchId !== fetchIdRef.current) return;
       // Said, not only logged (R34): the "show" link otherwise spun and
       // stopped with nothing changed.
-      toast.error(formatApiError(err, 'Could not load the informational observations.'));
+      if (isMounted()) toast.error(formatApiError(err, 'Could not load the informational observations.'));
     } finally {
-      if (fetchId === fetchIdRef.current) setLoadingInformational(false);
+      setLoadingInformational(false);
     }
   };
-  // The host this panel currently shows.  Async note/attachment completions
-  // compare against it so a late response never writes into another host's
-  // panel after the queue moved on (UX review C1).
-  const hostIdRef = React.useRef(hostId);
-  hostIdRef.current = hostId;
   const onDirtyChangeRef = React.useRef(onDirtyChange);
   useEffect(() => {
     onDirtyChangeRef.current = onDirtyChange;
@@ -652,49 +650,33 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     };
   }, [hostId, linkedNoteId, linkedRootId]);
 
+  // The composer's screenshots are this host's draft: their previews are
+  // released when the inspector goes (a host change included).
+  const pendingImagesRef = React.useRef(pendingImages);
+  pendingImagesRef.current = pendingImages;
+  useEffect(() => () => {
+    pendingImagesRef.current.forEach((p) => URL.revokeObjectURL(p.url));
+  }, []);
+
+  // The host is read on mount and again on Retry; a retry supersedes the
+  // attempt before it.
   useEffect(() => {
-    const fetchId = ++fetchIdRef.current;
+    let cancelled = false;
     setLoading(true);
     setFetchError(null);
-    setFollowersError(false);
-    setShowAllVulnerabilities(false);
-    setLoadingInformational(false);
-    setShowConflicts(false);
-    setNoteBody('');
-    setNoteError(null);
-    setReplyTo(null);
-    setReplyBody('');
-    // A save still in flight is the previous host's: its completion leaves
-    // this panel alone, so its busy states and dialogs end here.
-    setNoteSubmitting(false);
-    setFollowLoading(false);
-    setNoteActionId(null);
-    setDetailsSaving(false);
-    setDetailsNote(null);
-    setVulnActionId(null);
-    setTriageVuln(null);
-    // The draft belongs to the previous host: pending screenshots must not
-    // ride along and end up attached to this one (UX review C1).  Object
-    // URLs are revoked here and nowhere else on a host change.
-    setPendingImages((prev) => {
-      prev.forEach((p) => URL.revokeObjectURL(p.url));
-      return [];
-    });
 
-    // Audit PRF·H8: previously a single Promise.all blocked the host
-    // panel on the slowest of three fetches.  Now the primary host
-    // fetch releases the loading skeleton; conflicts land into their
-    // subsection as they resolve.
+    // The primary host fetch releases the loading skeleton; conflicts and
+    // followers land in their own subsections as they resolve.
     const fetchHost = async () => {
       try {
         const hostData = await getHost(hostId);
-        if (fetchId !== fetchIdRef.current) return;
+        if (cancelled) return;
         setHost(hostData);
         setFollowStatus(hostData.follow?.status ?? '');
         setNotes(hostData.notes ?? []);
         onHostLoadedRef.current?.(hostData);
       } catch (err: unknown) {
-        if (fetchId !== fetchIdRef.current) return;
+        if (cancelled) return;
         console.error('Error fetching host details:', err);
         const status = asAxiosError(err).response?.status;
         if (status === 404) setFetchError('Host not found');
@@ -702,18 +684,15 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           setFetchError('You do not have permission to view this host');
         else setFetchError('Failed to load host details. The server may be unavailable.');
       } finally {
-        if (fetchId === fetchIdRef.current) setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
     fetchHost();
 
-    // Secondary panels — fire in parallel with the primary fetch.
-    // Each writes only into its own subsection, so the main host
-    // panel renders the instant getHost() resolves.
     getHostConflicts(hostId)
       .then((conflictData) => {
-        if (fetchId !== fetchIdRef.current) return;
+        if (cancelled) return;
         setConflicts(conflictData?.confidence || []);
         setConflictHistory(conflictData?.conflict_history || []);
         setConflictCount(conflictData?.conflict_count ?? 0);
@@ -723,47 +702,44 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         // getHostConflicts already swallows 404 (older deployments), so a
         // rejection here is a real failure — surface it instead of letting an
         // empty list read as "no conflicts" (a data-quality false negative).
-        if (fetchId === fetchIdRef.current) setConflictsError(true);
+        if (!cancelled) setConflictsError(true);
       });
 
     recordHostView(hostId).catch(() => {});
 
     getHostFollowers(hostId)
       .then((data) => {
-        if (fetchId === fetchIdRef.current) {
-          setOtherFollowers(data.followers ?? []);
-          setFollowersError(false);
-        }
+        if (cancelled) return;
+        setOtherFollowers(data.followers ?? []);
+        setFollowersError(false);
       })
       .catch(() => {
-        if (fetchId === fetchIdRef.current) {
-          setOtherFollowers([]);
-          setFollowersError(true);
-        }
+        if (cancelled) return;
+        setOtherFollowers([]);
+        setFollowersError(true);
       });
+    return () => { cancelled = true; };
   }, [hostId, retryNonce]);
 
   const updateFollow = async (
     status: FollowStatus | 'none',
     review?: { review_conclusion?: ReviewConclusion; review_summary?: string },
   ): Promise<boolean> => {
-    // The host this was done on: the list's row is told either way, the panel
-    // only while it still shows that host.
-    const submitHostId = hostId;
-    const stillHere = () => submitHostId === hostIdRef.current;
     setFollowLoading(true);
     try {
+      // The list's row is told either way (the callback names the host); the
+      // toasts say "this host", so only while the reader is still on it.
       if (status === 'none') {
-        await unfollowHost(submitHostId);
-        onFollowChange?.(submitHostId, null);
-        if (!stillHere()) return false;
+        await unfollowHost(hostId);
+        onFollowChange?.(hostId, null);
+        if (!isMounted()) return false;
         setFollowStatus('');
         setHost((previous) => (previous ? { ...previous, follow: null } : previous));
         toast.info('Removed from your follow list', { autoHideMs: 2000 });
       } else {
-        const response = await followHost(submitHostId, status, review);
-        onFollowChange?.(submitHostId, response);
-        if (!stillHere()) return false;
+        const response = await followHost(hostId, status, review);
+        onFollowChange?.(hostId, response);
+        if (!isMounted()) return false;
         setFollowStatus(response.status);
         setHost((previous) => (previous ? { ...previous, follow: response } : previous));
         toast.success(`Marked as ${FOLLOW_STATUS_META[status].label}`, { autoHideMs: 2000 });
@@ -771,10 +747,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       return true;
     } catch (err) {
       console.error('Failed to update follow status:', err);
-      if (stillHere()) toast.error('Failed to update follow status. Please try again.');
+      if (isMounted()) toast.error('Failed to update follow status. Please try again.');
       return false;
     } finally {
-      if (stillHere()) setFollowLoading(false);
+      setFollowLoading(false);
     }
   };
 
@@ -847,16 +823,12 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       setNoteError('Add a short note before saving.');
       return;
     }
-    // Snapshot the target: the queue may move to another host while the
-    // request is in flight, and this completion must then do nothing to the
-    // panel (the host-change effect already discarded the draft).
-    const submitHostId = hostId;
     // Files still bound to an earlier note's retry queue stay with that note;
     // only fresh files go on the new one.
     const toUpload = pendingImages.filter((p) => !p.error);
     setNoteSubmitting(true);
     try {
-      const response = await createAnnotation(submitHostId, {
+      const response = await createAnnotation(hostId, {
         body: noteBody.trim(),
       });
       if (response.mention_warning) toast.warning(response.mention_warning);
@@ -865,13 +837,12 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       const failed: PendingImage[] = [];
       for (const img of toUpload) {
         try {
-          uploaded.push(await uploadNoteAttachment(submitHostId, response.id, img.file));
+          uploaded.push(await uploadNoteAttachment(hostId, response.id, img.file));
           URL.revokeObjectURL(img.url);
         } catch (e) {
           failed.push({ ...img, error: formatApiError(e, 'Upload failed.'), noteId: response.id });
         }
       }
-      if (submitHostId !== hostIdRef.current) return;
       const noteWithImages = uploaded.length ? { ...response, attachments: uploaded } : response;
       setNotes((previous) => [noteWithImages, ...previous]);
       setHost((previous) =>
@@ -884,11 +855,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       setNoteBody('');
       setNoteError(null);
     } catch (err) {
-      if (submitHostId !== hostIdRef.current) return;
       console.error('Failed to save note:', err);
       setNoteError('Unable to save note right now. Please try again.');
     } finally {
-      if (submitHostId === hostIdRef.current) setNoteSubmitting(false);
+      setNoteSubmitting(false);
     }
   };
 
@@ -897,17 +867,14 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const retryPendingImage = async (idx: number) => {
     const target = pendingImages[idx];
     if (!target || target.noteId == null) return;
-    const submitHostId = hostId;
     const noteId = target.noteId;
     setPendingImages((prev) => prev.map((p, i) => (i === idx ? { ...p, error: 'Uploading…' } : p)));
     try {
-      const attachment = await uploadNoteAttachment(submitHostId, noteId, target.file);
-      if (submitHostId !== hostIdRef.current) return;
+      const attachment = await uploadNoteAttachment(hostId, noteId, target.file);
       URL.revokeObjectURL(target.url);
       setPendingImages((prev) => prev.filter((p) => p.url !== target.url));
       appendAttachment(noteId, attachment);
     } catch (e) {
-      if (submitHostId !== hostIdRef.current) return;
       setPendingImages((prev) =>
         prev.map((p) => (p.url === target.url ? { ...p, error: formatApiError(e, 'Upload failed.') } : p)),
       );
@@ -926,12 +893,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       confirmLabel: 'Delete',
     });
     if (!ok) return;
-    const submitHostId = hostId;
-    if (submitHostId !== hostIdRef.current) return;
     setNoteActionId(noteId);
     try {
-      await deleteAnnotation(submitHostId, noteId);
-      if (submitHostId !== hostIdRef.current) return;
+      await deleteAnnotation(hostId, noteId);
       setNotes((previous) => previous.filter((note) => note.id !== noteId));
       setHost((previous) =>
         previous
@@ -943,33 +907,29 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       // Pre-audit (C8): console.error only — user clicked Trash and
       // the note stayed in the list with no signal whether the click
       // did anything.
-      if (submitHostId !== hostIdRef.current) return;
       toast.error(formatApiError(err, 'Failed to delete note.'));
     } finally {
-      if (submitHostId === hostIdRef.current) setNoteActionId(null);
+      setNoteActionId(null);
     }
   };
 
   const handleReply = async () => {
     if (!replyTo || !replyBody.trim()) return;
-    const submitHostId = hostId;
     setNoteSubmitting(true);
     try {
-      const newNote = await createAnnotation(submitHostId, {
+      const newNote = await createAnnotation(hostId, {
         body: replyBody.trim(),
         parent_id: replyTo.id,
       });
       if (newNote.mention_warning) toast.warning(newNote.mention_warning);
       else if (!announceMentionOutcome(toast, newNote)) toast.success('Reply posted.');
-      if (submitHostId !== hostIdRef.current) return;
       setNotes((prev) => [newNote, ...prev]);
       setReplyTo(null);
       setReplyBody('');
     } catch (err) {
-      if (submitHostId !== hostIdRef.current) return;
       toast.error(formatApiError(err, 'Failed to post reply.'));
     } finally {
-      if (submitHostId === hostIdRef.current) setNoteSubmitting(false);
+      setNoteSubmitting(false);
     }
   };
 

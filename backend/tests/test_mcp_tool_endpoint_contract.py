@@ -76,50 +76,34 @@ def test_every_advertised_param_is_accepted_by_its_endpoint():
     assert not problems, "MCP tool/endpoint contract drift:\n" + "\n".join(problems)
 
 
-def test_every_declared_property_is_wired_to_the_request():
-    """Every input_schema property must be sent somewhere (path/query/body).
-    A declared-but-unrouted property passes _validate_arguments then vanishes in
-    _dispatch_tool — the agent's argument is accepted and silently ignored."""
-    problems = []
-    for name, spec in TOOLS.items():
-        props = set(spec["input_schema"].get("properties", {}))
-        # A path_alternatives arg is routed too — into its own endpoint's path
-        # (checked by test_every_path_alternative_is_a_real_endpoint).
-        unrouted = props - _advertised(spec) - set(spec.get("path_alternatives") or {})
-        if unrouted:
-            problems.append(f"{name}: properties {sorted(unrouted)} are not sent anywhere")
-    assert not problems, "Declared-but-unrouted MCP tool properties:\n" + "\n".join(problems)
+def test_an_entry_authors_nothing_the_endpoint_already_says():
+    """Placement, types and required-ness are read from the endpoint
+    (``mcp_tools.derive_tool``).  An authored entry that carried them again
+    would be a second copy free to drift — and a ``params`` / ``hidden`` name
+    the endpoint does not take fails the derivation itself (every entry is
+    derived above; ``derive_tool`` raises on a stale name)."""
+    from app.api.v1.endpoints.mcp_tools import _AUTHORED
+
+    derived_keys = {"path_params", "query_params", "body_params", "input_schema"}
+    known = derived_keys | {
+        "description", "method", "path", "params", "hidden", "defaults", "additive",
+        "idempotent", "metadata_write", "retired_params", "path_alternatives", "result",
+    }
+    for name, entry in _AUTHORED.items():
+        assert not derived_keys & set(entry), name
+        assert set(entry) <= known, (name, sorted(set(entry) - known))
+        for overlay in (entry.get("params") or {}).values():
+            assert isinstance(overlay, str) or "type" not in overlay, name
+        # A default the tool injects is for an argument it offers.
+        assert set(entry.get("defaults", ())) <= set(TOOLS[name]["input_schema"]["properties"]), name
+        # A retired argument is not also a live one.
+        assert not set(entry.get("retired_params", ())) & set(TOOLS[name]["input_schema"]["properties"]), name
 
 
-def test_path_placeholders_match_path_params():
-    """Every {placeholder} in the path is a declared path_param, and vice versa."""
-    import re
-    problems = []
-    for name, spec in TOOLS.items():
-        placeholders = set(re.findall(r"\{(\w+)\}", spec["path"]))
-        declared = set(spec.get("path_params", []))
-        if placeholders != declared:
-            problems.append(
-                f"{name}: path has {sorted(placeholders)} but path_params={sorted(declared)}"
-            )
-    assert not problems, "MCP tool path/param mismatch:\n" + "\n".join(problems)
-
-
-def test_auto_params_are_optional_and_declared():
-    """auto_params are filled from identity AFTER _validate_arguments runs, so an
-    auto param that is also `required` would be rejected before the fill ever
-    happens. And an auto param must be a declared property so a caller can still
-    pass it explicitly."""
-    problems = []
-    for name, spec in TOOLS.items():
-        auto = set(spec.get("auto_params") or {})
-        required = set(spec["input_schema"].get("required", []))
-        props = set(spec["input_schema"].get("properties", {}))
-        if auto & required:
-            problems.append(f"{name}: auto_params {sorted(auto & required)} are also required")
-        if auto - props:
-            problems.append(f"{name}: auto_params {sorted(auto - props)} are not declared properties")
-    assert not problems, "MCP auto_param invariant violations:\n" + "\n".join(problems)
+def test_no_tool_declares_an_argument_filled_from_the_key():
+    """The transport no longer fills arguments from the caller's identity, so an
+    ``auto_params`` entry would be read by nothing."""
+    assert not [name for name, spec in TOOLS.items() if "auto_params" in spec]
 
 
 def test_every_path_alternative_is_a_real_endpoint():

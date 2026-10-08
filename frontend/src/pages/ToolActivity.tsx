@@ -386,7 +386,7 @@ export const ToolActivity: React.FC = () => {
     } finally {
       setWeekLoading(false);
     }
-  }, [tool, target]);
+  }, [tool, target, noteAttribution]);
 
   // Only the snapshot loads on arrival. The focused query waits for the
   // analyst: it used to run "now ± 5 minutes" on mount, so the page always

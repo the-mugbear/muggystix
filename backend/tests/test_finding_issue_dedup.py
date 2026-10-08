@@ -78,10 +78,10 @@ def test_two_scanners_one_cve_produce_one_finding(
     )
 
     svc = FindingService(db_session)
-    first = svc.promote_vulnerability(
+    first, _ = svc.promote_vulnerability(
         vuln=nessus, project_id=test_project.id, actor_id=test_user.id,
     )
-    second = svc.promote_vulnerability(
+    second, _ = svc.promote_vulnerability(
         vuln=openvas, project_id=test_project.id, actor_id=test_user.id,
     )
     db_session.commit()
@@ -111,8 +111,8 @@ def test_distinct_cves_stay_distinct_findings(
     b = _vuln(db_session, host, scan_id, cve_id="CVE-2021-45046", title="Log4j RCE")
 
     svc = FindingService(db_session)
-    fa = svc.promote_vulnerability(vuln=a, project_id=test_project.id, actor_id=test_user.id)
-    fb = svc.promote_vulnerability(vuln=b, project_id=test_project.id, actor_id=test_user.id)
+    fa, _ = svc.promote_vulnerability(vuln=a, project_id=test_project.id, actor_id=test_user.id)
+    fb, _ = svc.promote_vulnerability(vuln=b, project_id=test_project.id, actor_id=test_user.id)
     db_session.commit()
 
     assert fa.id != fb.id
@@ -133,8 +133,8 @@ def test_cveless_findings_dedup_on_normalised_title(
     )
 
     svc = FindingService(db_session)
-    fa = svc.promote_vulnerability(vuln=a, project_id=test_project.id, actor_id=test_user.id)
-    fb = svc.promote_vulnerability(vuln=b, project_id=test_project.id, actor_id=test_user.id)
+    fa, _ = svc.promote_vulnerability(vuln=a, project_id=test_project.id, actor_id=test_user.id)
+    fb, _ = svc.promote_vulnerability(vuln=b, project_id=test_project.id, actor_id=test_user.id)
     db_session.commit()
 
     assert fa.id == fb.id
@@ -150,8 +150,8 @@ def test_similar_titles_are_not_merged(
     b = _vuln(db_session, host, scan_id, title="TLS 1.1 Protocol Detected")
 
     svc = FindingService(db_session)
-    fa = svc.promote_vulnerability(vuln=a, project_id=test_project.id, actor_id=test_user.id)
-    fb = svc.promote_vulnerability(vuln=b, project_id=test_project.id, actor_id=test_user.id)
+    fa, _ = svc.promote_vulnerability(vuln=a, project_id=test_project.id, actor_id=test_user.id)
+    fb, _ = svc.promote_vulnerability(vuln=b, project_id=test_project.id, actor_id=test_user.id)
     db_session.commit()
 
     assert fa.id != fb.id
@@ -176,7 +176,7 @@ def test_fanout_covers_hosts_only_the_other_scanner_saw(
     )
 
     svc = FindingService(db_session)
-    finding = svc.promote_vulnerability(
+    finding, _ = svc.promote_vulnerability(
         vuln=nessus, project_id=test_project.id, actor_id=test_user.id,
     )
     db_session.commit()
@@ -195,8 +195,8 @@ def test_promoting_the_same_row_twice_is_still_idempotent(
     v = _vuln(db_session, host, scan_id, cve_id="CVE-2019-1234")
 
     svc = FindingService(db_session)
-    a = svc.promote_vulnerability(vuln=v, project_id=test_project.id, actor_id=test_user.id)
-    b = svc.promote_vulnerability(vuln=v, project_id=test_project.id, actor_id=test_user.id)
+    a, _ = svc.promote_vulnerability(vuln=v, project_id=test_project.id, actor_id=test_user.id)
+    b, _ = svc.promote_vulnerability(vuln=v, project_id=test_project.id, actor_id=test_user.id)
     db_session.commit()
 
     assert a.id == b.id
@@ -235,8 +235,8 @@ def test_dedup_does_not_cross_projects(
     v2 = _vuln(db_session, h2, other_scan.id, cve_id="CVE-2022-1111")
 
     svc = FindingService(db_session)
-    f1 = svc.promote_vulnerability(vuln=v1, project_id=test_project.id, actor_id=test_user.id)
-    f2 = svc.promote_vulnerability(vuln=v2, project_id=other.id, actor_id=test_user.id)
+    f1, _ = svc.promote_vulnerability(vuln=v1, project_id=test_project.id, actor_id=test_user.id)
+    f2, _ = svc.promote_vulnerability(vuln=v2, project_id=other.id, actor_id=test_user.id)
     db_session.commit()
 
     assert f1.id != f2.id

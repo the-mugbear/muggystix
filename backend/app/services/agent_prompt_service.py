@@ -12,10 +12,9 @@ four separate start prompts.
 (``agent_policy.render_read_back``) is the only one since v2.442.0, when
 execution runs — and the read-back their start returned — were removed.
 
-The ``PROMPT_VERSION`` constant MUST be bumped whenever the instruction content
-changes in a way that affects agent behavior — prepend an entry to
-``PROMPT_VERSION_HISTORY`` in ``agent_prompt_history`` (the constant is derived
-from the newest entry, so version and changelog can't drift).
+``PROMPT_VERSION`` MUST be bumped whenever the instruction content changes in a
+way that affects agent behavior, and ``PROMPT_CHANGES`` rewritten to say what
+this version changed.  Earlier versions are in CHANGELOG.md.
 """
 
 import logging
@@ -24,7 +23,6 @@ from typing import Optional
 from fastapi import Request
 
 from app.core.config import settings
-from app.services.agent_prompt_history import PROMPT_VERSION
 from app.services.agent_policy import (
     render_read_back,
     render_key_expiry_guidance,
@@ -32,6 +30,28 @@ from app.services.agent_policy import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The version stamped on every session prompt, the served guide and each
+# session row.  Dotted numeric.
+PROMPT_VERSION = "4.15.0"
+
+# What PROMPT_VERSION changed (the current version only).
+PROMPT_CHANGES = (
+    "The host filters on /agent/hosts and /agent/assist/hosts are the Hosts "
+    "page's own: `search` is its search box (also OS family, port number, "
+    "service name or product); has_critical_vulns with has_high_vulns is "
+    "critical OR high; `ports` with `services` must be met by ONE open port. A "
+    "filter value that cannot be understood is a 422 naming it — an empty "
+    "list, an unknown `state`, a `subnets` value that is not a network, an "
+    "unparseable /agent/scans `created_after` — never an empty or unfiltered "
+    "answer. In `q`, NOT counts a host with no value recorded, and "
+    "`has:stale_review` is gone (use `has:changed_since_review`). A 401 with "
+    "`error: operator_credentials_changed` means the operator's password was "
+    "changed or reset: save your output and ask for a new session. Remediation: "
+    "the follow-up read carries `total` and `not_listed`, recording a follow-up "
+    "covers every at-risk row of the contact, and 'today' is the "
+    "installation's day (`as_of`)."
+)
 
 
 _INSTANCE_ID_CACHE: Optional[str] = None

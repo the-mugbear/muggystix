@@ -34,15 +34,25 @@ the templates root.  A template's declared IMAGES may be uploaded (v2.431.0,
 ``template_asset_store``): they are stored outside the folder and placed over
 the template's own in the render's private copy.
 
-``fingerprint`` is a SHA-256 over every file in the folder (paths and bytes,
-rendered output excluded), recorded on each issued report so its history says
-exactly which template produced it — the folder is mounted, so it can change
-between two reports without a rebuild.
+A template may EXTEND another (``"extends": "<folder name>"``): it is then its
+base — a template that itself extends nothing — with its own files laid over
+the base's, and a ``template.json`` key it leaves out is the base's (never
+``title``, ``description`` or ``kind``).  The base's installed images (its
+asset paths) are not taken: branding is per template.  The rules live in
+``quarto_render`` (``template_base`` / ``template_manifest`` /
+``template_file`` / ``materialize``); a base that cannot be used is a template
+problem.
+
+``fingerprint`` is a SHA-256 over every file of the template (paths and bytes,
+rendered output excluded; an extending template's includes the base's files it
+uses), recorded on each issued report so its history says exactly which
+template produced it — the folder is mounted, so it can change between two
+reports without a rebuild.  An issued report does not depend on it: ``freeze``
+gives it a copy of the template to render from.
 """
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -102,6 +112,10 @@ class ReportTemplate:
     # created with.  Both are listed on the Reports page, where an admin
     # manages a template's files (logo, Word styles).
     kind: str = "client"
+    # The template this one extends (template.json → "extends"), or None: its
+    # files and manifest keys are that template's wherever it has none of its
+    # own (``quarto_render.template_base``).
+    extends: Optional[str] = None
 
     @property
     def images(self) -> dict:
@@ -126,24 +140,32 @@ def templates_root() -> Path:
     return Path(settings.REPORT_TEMPLATES_DIR)
 
 
-def _load(folder: Path) -> ReportTemplate:
-    manifest = folder / "template.json"
+def _load(folder: Path, *, uploads: bool = True) -> ReportTemplate:
+    """``uploads=False`` reads the folder as it stands — an issued report's
+    own copy of its template, where every file is already in place."""
     try:
-        data = json.loads(manifest.read_text(encoding="utf-8"))
+        base = quarto_render.template_base(folder)
+        # The keys as they apply: the template's own over its base's.
+        data = quarto_render.template_manifest(folder)
+    except quarto_render.TemplateBaseError as exc:
+        raise TemplateError(f"{folder.name}: template.json: {exc}")
     except (OSError, ValueError) as exc:
         raise TemplateError(f"{folder.name}: template.json is missing or unreadable ({exc}).")
     entry = str(data.get("entry") or "report.qmd")
-    if "/" in entry or "\\" in entry or not entry.endswith(".qmd") or not (folder / entry).is_file():
+    if ("/" in entry or "\\" in entry or not entry.endswith(".qmd")
+            or quarto_render.template_file(folder, entry) is None):
         raise TemplateError(f"{folder.name}: entry '{entry}' is not a .qmd file in the template folder.")
     formats = tuple(f for f in (data.get("formats") or FORMATS) if f in FORMATS)
     if not formats:
         raise TemplateError(f"{folder.name}: no supported formats (html, docx, qmd).")
     post = {}
     for fmt, script in (data.get("postprocess") or {}).items():
-        target = (folder / str(script)).resolve()
-        if fmt in FORMATS and target.is_file() and target.is_relative_to(folder.resolve()):
-            post[fmt] = str(script)
-    uploaded = asset_store.uploads(folder.name)
+        script = str(script)
+        parts = script.split("/")
+        if (fmt in FORMATS and not script.startswith("/") and ".." not in parts and "\\" not in script
+                and quarto_render.template_file(folder, script) is not None):
+            post[fmt] = script
+    uploaded = asset_store.uploads(folder.name) if uploads else {}
     try:
         declared = quarto_render.template_assets(
             folder, data, overrides={k: m["file"] for k, m in uploaded.items()},
@@ -184,8 +206,15 @@ def _load(folder: Path) -> ReportTemplate:
         description=str(data.get("description") or ""), entry=entry, formats=formats,
         postprocess=post, assets=assets,
         evidence_records=data.get("evidence_records") is True,
-        image_fields=image_fields, image_trailing=image_trailing, kind=kind, **cutoffs,
+        image_fields=image_fields, image_trailing=image_trailing, kind=kind,
+        extends=base.name if base is not None else None, **cutoffs,
     )
+
+
+def load_folder(folder: Path) -> ReportTemplate:
+    """The template in ``folder`` exactly as the folder holds it: no upload is
+    looked up (an issued report's frozen copy has them in place already)."""
+    return _load(folder, uploads=False)
 
 
 def _image_declaration(name: str, declared) -> tuple:
@@ -361,11 +390,10 @@ def default_template_name() -> Optional[str]:
     return names[0] if names else None
 
 
-def template_files(template: ReportTemplate) -> List[Path]:
-    """Every file that belongs to the template (sorted, relative paths)."""
+def _folder_files(folder: Path) -> List[Path]:
     files = []
-    for path in sorted(template.path.rglob("*")):
-        rel = path.relative_to(template.path)
+    for path in sorted(folder.rglob("*")):
+        rel = path.relative_to(folder)
         if any(part in _SKIP_DIRS or part.endswith(_SKIP_SUFFIXES) for part in rel.parts):
             continue
         if path.is_file() and not path.is_symlink():
@@ -373,21 +401,61 @@ def template_files(template: ReportTemplate) -> List[Path]:
     return files
 
 
+def template_files(template: ReportTemplate) -> List[Path]:
+    """Every file that belongs to the template (sorted, relative paths) — for
+    a template that extends another, its base's files too, wherever it has
+    none of its own (``quarto_render.template_file`` says which folder each
+    comes from)."""
+    files = set(_folder_files(template.path))
+    base = quarto_render.template_base(template.path)
+    if base is not None:
+        files.update(
+            rel for rel in _folder_files(base)
+            if quarto_render.template_file(template.path, rel.as_posix()) is not None
+        )
+    return sorted(files)
+
+
 def asset_files(template: ReportTemplate) -> Dict[str, Path]:
     """The uploaded images the renderer uses for this template (v2.431.0)."""
     return asset_store.overrides(template.name)
 
 
+def folder_digest(folder: Path) -> str:
+    """SHA-256 over every file of ``folder`` (paths and bytes)."""
+    digest = hashlib.sha256()
+    for rel in _folder_files(folder):
+        digest.update(rel.as_posix().encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256((folder / rel).read_bytes()).digest())
+    return digest.hexdigest()
+
+
 def fingerprint(template: ReportTemplate) -> str:
-    """The template's files — and, since v2.431.0, its uploaded images, so an
-    issued report whose logo was replaced since refuses to re-render (a
-    revision), exactly as when a file in the folder changed.  With no upload
-    the value is what it always was, so earlier issued reports still match."""
+    """The template's files and its uploaded images: the label an issued
+    report carries for the template it was issued with.  For a template that
+    extends another, the base's files it uses and the base's ``template.json``
+    (whose keys it inherits) are part of it.  With no upload and no base the
+    value is what it always was, so earlier issued reports still match."""
     digest = hashlib.sha256()
     for rel in template_files(template):
         digest.update(rel.as_posix().encode("utf-8") + b"\0")
-        digest.update(hashlib.sha256((template.path / rel).read_bytes()).digest())
+        source = quarto_render.template_file(template.path, rel.as_posix())
+        digest.update(hashlib.sha256(source.read_bytes()).digest())
+    base = quarto_render.template_base(template.path)
+    if base is not None:
+        digest.update(f"extends:{base.name}".encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256((base / "template.json").read_bytes()).digest())
     for asset_id, path in sorted(asset_files(template).items()):
         digest.update(f"upload:{asset_id}".encode("utf-8") + b"\0")
         digest.update(hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()
+
+
+def freeze(template: ReportTemplate, dst: Path) -> str:
+    """Write the template into ``dst`` as the renderer would use it now — its
+    base's files, its own, every uploaded file in place — and return the
+    copy's ``folder_digest``.  An issued report renders from this copy, so a
+    later change to the template folder or to an upload cannot change, or
+    block, its files."""
+    quarto_render.materialize(template.path, dst, asset_files(template))
+    return folder_digest(dst)

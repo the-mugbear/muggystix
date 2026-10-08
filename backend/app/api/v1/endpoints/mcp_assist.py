@@ -24,10 +24,10 @@ decide.
 
 What it exposes
 ---------------
-A tool per interactive endpoint across inventory assistance, scope reads,
-plans, and execution. A unified project-session key sees the whole
-catalogue and opens runs as needed; the endpoint remains the authority for
-run state. The bulk, file-shaped endpoints (``report-context.ndjson``,
+A tool per interactive endpoint across inventory reads, scope reads, host
+tests, evidence, proposals and remediation tracking. A project-session key
+sees the whole catalogue; the endpoint remains the authority for what a call
+may do. The bulk, file-shaped endpoints (``report-context.ndjson``,
 a scope's target lists, ``uploads``) are deliberately *not* tools — they
 are meant to move between disk and the server, not through a model's context —
 so the server ``instructions`` point at them with curl instead.
@@ -78,7 +78,7 @@ from app.api.v1.endpoints.mcp_tools import (
     tool_workflows,
 )
 from app.services import mcp_telemetry_service as mcp_telemetry
-from app.services.agent_api_log_service import agent_audit_plumbing, mcp_loopback_active
+from app.services.agent_api_log_service import mcp_loopback_active
 from app.services.agent_prompt_service import resolve_base_url
 
 logger = logging.getLogger(__name__)
@@ -214,55 +214,6 @@ def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
     }
 
 
-# Identity lookups are server-initiated plumbing, not agent activity.  They
-# exist to fill a tool's auto-parameters (today only the guide's workflow)
-# from the key's session.
-#
-# v2.338.1 — never cached.  A 60 s per-key cache used to collapse them, but
-# the answer changes the moment the agent opens or closes a phase, and the
-# backend runs several uvicorn workers each with its own copy: a call landing
-# on a worker whose copy predated ``start_execution`` completed the PREVIOUS
-# run (seen live, 35 s after the new run opened).  No in-process invalidation
-# can fix a per-worker cache.  v2.338.3 — the cache (and the ``tools/list``
-# lookup that was its last reader) is gone: every lookup reads the live
-# answer as plumbing (``agent_audit_plumbing``), so it adds no audit row and
-# does not count as agent activity — which is also what keeps the operator's
-# activity view to the calls the agent actually made.
-
-
-async def _key_identity(
-    app,
-    api_key: Optional[str],
-    *,
-    caller: Optional[Tuple[str, int]] = None,
-    user_agent: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    """What this key is — its session, project and operator.  Live,
-    unaudited (see above).  None when there is no usable key or the lookup
-    fails, so a caller falls back to asking the agent for the id."""
-    if not api_key:
-        return None
-    token = agent_audit_plumbing.set(True)
-    try:
-        resp = await _loopback(
-            app,
-            method="GET",
-            path="/api/v1/agent/identity",
-            api_key=api_key,
-            caller=caller,
-            user_agent=user_agent,
-        )
-        identity = resp.json() if resp.status_code == 200 else None
-        if not isinstance(identity, dict):
-            identity = None
-    except Exception:  # pragma: no cover - defensive
-        logger.exception("MCP could not read the caller's identity")
-        return None
-    finally:
-        agent_audit_plumbing.reset(token)
-    return identity
-
-
 # ---------------------------------------------------------------------------
 # JSON-RPC helpers
 # ---------------------------------------------------------------------------
@@ -296,16 +247,22 @@ def _tool_image_result(resp: "httpx.Response", path: str) -> Dict[str, Any]:
     so the agent can still save the file with its API key.
     """
     media_type = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
-    data = resp.content
     if not media_type.startswith("image/"):
         return _tool_text_result(
             f"{path} is not an image ({media_type or 'no content type'}); download it "
             "with the session's API key instead.",
             is_error=True,
         )
-    if len(data) > _MAX_INLINE_IMAGE_BYTES:
+    # The declared size decides when there is one, so an oversized file is
+    # refused without touching its body.
+    declared = resp.headers.get("content-length") or ""
+    size = int(declared) if declared.isdigit() else None
+    data = b"" if size is not None and size > _MAX_INLINE_IMAGE_BYTES else resp.content
+    if size is None or size <= _MAX_INLINE_IMAGE_BYTES:
+        size = len(data)
+    if size > _MAX_INLINE_IMAGE_BYTES:
         return _tool_text_result(
-            f"The image is {len(data):,} bytes, over the {_MAX_INLINE_IMAGE_BYTES:,} "
+            f"The image is {size:,} bytes, over the {_MAX_INLINE_IMAGE_BYTES:,} "
             f"this tool returns inline. Download it from {path} with the session's "
             "API key.",
             is_error=True,
@@ -397,21 +354,6 @@ async def _dispatch_tool(
     for arg, default in spec.get("defaults", {}).items():
         arguments.setdefault(arg, default)
 
-    # Arguments the caller's own key already answers — its session id, the
-    # plan it is bound to.  Filling these server-side is not a
-    # convenience: a model asked to supply them guesses, and a guessed session id
-    # is a 404 (or another session's row) rather than an obvious error.  An
-    # explicitly-passed value always wins, so a legitimately unbound key can
-    # still say which one it means.
-    auto = spec.get("auto_params") or {}
-    if auto and any(arguments.get(a) is None for a in auto):
-        identity = await _key_identity(
-            app, api_key, caller=caller, user_agent=user_agent,
-        ) or {}
-        for arg, field in auto.items():
-            if arguments.get(arg) is None and identity.get(field) is not None:
-                arguments[arg] = identity[field]
-
     # Path params (e.g. host_id) -> substitute into the path template.
     path = spec["path"]
     path_params = tuple(spec.get("path_params", ()))
@@ -431,13 +373,6 @@ async def _dispatch_tool(
     for pname in path_params:
         value = arguments.get(pname)
         if value is None:
-            if pname in auto:
-                return _tool_text_result(
-                    f"Could not resolve `{pname}` from your API key — call "
-                    f"agent_identity to see what your key is bound to, and pass "
-                    f"`{pname}` explicitly.",
-                    is_error=True,
-                )
             return _tool_text_result(
                 f"Missing required argument: {pname}", is_error=True
             )
@@ -625,7 +560,7 @@ def _path_segment(spec: Dict[str, Any], pname: str, value: Any) -> str:
     percent-encoded with no safe characters, so a segment can never carry
     ``/``, ``?`` or ``#`` and re-route the call.  Validation above already
     rejects a mistyped value; this is the second lock on the same door — it
-    also covers auto-filled and defaulted values, which skip validation.
+    also covers defaulted values, which skip validation.
     """
     from urllib.parse import quote
 

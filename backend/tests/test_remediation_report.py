@@ -127,6 +127,7 @@ def test_the_contact_template_is_installed_and_is_not_a_client_report_template(c
 def test_a_template_kind_that_does_not_exist_is_a_named_problem(tmp_path, monkeypatch):
     folder = tmp_path / "odd"
     shutil.copytree(ROOT / "contact-report", folder)
+    shutil.copytree(ROOT / "pentest", tmp_path / "pentest")      # the template it extends
     manifest = json.loads((folder / "template.json").read_text())
     manifest["kind"] = "newsletter"
     (folder / "template.json").write_text(json.dumps(manifest))
@@ -194,7 +195,8 @@ def test_the_sample_fills_and_a_contact_with_nothing_open_is_told_so():
 # --- the job ------------------------------------------------------------------------------
 
 @needs_templates
-def test_preparing_it_queues_a_job_and_writes_the_timeline(client, db_session, test_project, world, test_user):
+def test_preparing_it_queues_a_job_and_the_timeline_is_written_when_it_completes(
+        client, db_session, test_project, world, test_user):
     r = client.post(f"{base(test_project)}/contact-report", json={"contact_email": "Roger@testdomain.com"})
     assert r.status_code == 202, r.text
     body = r.json()
@@ -203,8 +205,15 @@ def test_preparing_it_queues_a_job_and_writes_the_timeline(client, db_session, t
     job = db_session.get(ReportJob, body["id"])
     assert (job.report_type, job.filters, job.requested_by_id) == (
         "remediation", {"contact_email": "roger@testdomain.com"}, test_user.id)
+    # Queued is not prepared: nothing is on the timeline until there is a document.
+    assert db_session.query(RemediationEvent).filter_by(kind="report").count() == 0
+    # What the worker does on completion, in the completing transaction.
+    job.filters = {**job.filters, "listed_host_ids": [world["a"]]}
+    assert remediation_report.record_prepared(db_session, job) == 1
+    db_session.commit()
     (event,) = db_session.query(RemediationEvent).filter_by(kind="report").all()
-    assert (event.host_id, event.new_value, event.body) == (world["a"], "roger@testdomain.com", "Remediation list prepared (docx)")
+    assert (event.host_id, event.new_value, event.body, event.author_id) == (
+        world["a"], "roger@testdomain.com", "Remediation list prepared (docx)", test_user.id)
     timeline = client.get(f"{base(test_project)}/hosts/{world['a']}/events").json()["items"]
     assert timeline[0]["kind"] == "report" and timeline[0]["can_modify"] is False
 
@@ -298,7 +307,7 @@ def test_what_a_person_typed_about_the_contact_stays_text(tmp_path):
         finding["deadline"] = hostile
         for endpoint in finding["affected"]:
             endpoint["deadline"], endpoint["due_on"], endpoint["team"] = hostile, hostile, hostile
-    manifest = json.loads((ROOT / "contact-report" / "template.json").read_text())
+    manifest = quarto_render.template_manifest(ROOT / "contact-report")     # with what it takes from pentest
     files = quarto_render.render(ROOT / "contact-report", "report.qmd", data, ["html"], tmp_path,
                                  postprocess=manifest.get("postprocess"), timeout=240,
                                  resolve_evidence=lambda item: None)

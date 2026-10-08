@@ -229,7 +229,7 @@ def test_served_guide_is_stamped_with_live_prompt_version(client):
     PROMPT_VERSION, so the guide and the agent's prompt always report the same
     compatibility number (feedback #8: the guide carried the platform version
     while the prompt carried PROMPT_VERSION — two unrelated schemes)."""
-    from app.services.agent_prompt_history import PROMPT_VERSION
+    from app.services.agent_prompt_service import PROMPT_VERSION
 
     resp = client.get("/api/v1/agents-guide?workflow=reconnaissance")
     assert resp.status_code == 200, resp.text

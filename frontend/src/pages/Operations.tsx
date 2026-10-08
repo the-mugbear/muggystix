@@ -294,21 +294,17 @@ const Operations: React.FC = () => {
     // A new history entry: Back returns to the tab the reader came from.
     setPageParams(tabSearch(pageParams, tab));
   }, [pageParams, setPageParams]);
-  const setTier = useCallback((next: number | null) => {
+  // A tab's own filter narrows its list, which then starts from its first page.
+  const setTabFilter = useCallback((key: 'tier' | 'kind' | 'need', value: string | null) => {
     const params = new URLSearchParams(pageParams);
-    if (next == null) params.delete('tier'); else params.set('tier', String(next));
+    if (value == null) params.delete(key); else params.set(key, value);
+    params.delete('page');
     setPageParams(params, { replace: true });
   }, [pageParams, setPageParams]);
-  const setTestKind = useCallback((next: MyTaskReason | null) => {
-    const params = new URLSearchParams(pageParams);
-    if (next == null) params.delete('kind'); else params.set('kind', next);
-    setPageParams(params, { replace: true });
-  }, [pageParams, setPageParams]);
-  const setFindingNeed = useCallback((next: FindingNeed | null) => {
-    const params = new URLSearchParams(pageParams);
-    if (next == null) params.delete('need'); else params.set('need', next);
-    setPageParams(params, { replace: true });
-  }, [pageParams, setPageParams]);
+  const setTier = useCallback(
+    (next: number | null) => setTabFilter('tier', next == null ? null : String(next)), [setTabFilter]);
+  const setTestKind = useCallback((next: MyTaskReason | null) => setTabFilter('kind', next), [setTabFilter]);
+  const setFindingNeed = useCallback((next: FindingNeed | null) => setTabFilter('need', next), [setTabFilter]);
 
   const [sinceDismissed, setSinceDismissed] = useState(false);
   // §27: do NOT advance the "since last visit" cursor merely because the page
@@ -337,9 +333,9 @@ const Operations: React.FC = () => {
       .finally(() => setSinceSaving(false));
   }, [sinceAsOf]);
 
-  // v5.243.0 — when each independently fetched source last SUCCEEDED. Several
-  // sections keep their previous data on a failed refresh; this is how they
-  // say how old it is (components/UpdatedAt).
+  // When each independently fetched source last SUCCEEDED. Several sections
+  // keep their previous data on a failed refresh; the page's Refresh shows the
+  // oldest of them.
   const [loadedAt, setLoadedAt] = useState<Partial<Record<LoadedSource, Date>>>({});
   const markLoaded = useCallback((source: LoadedSource) => {
     setLoadedAt((prev) => ({ ...prev, [source]: new Date() }));

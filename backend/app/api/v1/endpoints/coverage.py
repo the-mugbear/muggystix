@@ -159,12 +159,12 @@ def get_project_coverage(
     )
 
     # --- Planned and tested hosts: the one definition of each ---------
-    from app.services.host_test_queries import planned_host_ids, tested_host_ids
+    from app.services import host_query_predicates as P
     hosts_with_plan_entry = db.query(Host.id).filter(
-        Host.project_id == project.id, Host.id.in_(planned_host_ids(project.id)),
+        Host.project_id == project.id, P.has_plan_entry_predicate(project.id),
     ).count()
     hosts_with_execution_result = db.query(Host.id).filter(
-        Host.project_id == project.id, Host.id.in_(tested_host_ids(project.id)),
+        Host.project_id == project.id, P.has_test_execution_predicate(project.id),
     ).count()
 
     # --- Scope-level coverage ----------------------------------------
@@ -262,7 +262,10 @@ def get_project_coverage(
             Host.project_id == project.id, scope_coverage_predicate([state], project.id),
         ).scalar() or 0
 
-    has_scope = len(scope_objs) > 0
+    # "Has scope" is a declared subnet or domain — the definition
+    # ``out_of_scope_count`` above and the Hosts rows use — not a Scope row,
+    # which may be empty.
+    has_scope = scope_coverage.project_has_any_scope(db, project.id)
     hosts_in_subnet_scope = _coverage_count("subnet") if has_scope else 0
     hosts_name_scope_only = _coverage_count("name") if has_scope else 0
 

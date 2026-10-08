@@ -5,10 +5,10 @@
 ``port_scan_history.port_created``.  Nessus writes no port history — and must
 not start to: it would change the port counts on the Scans page, the dashboard
 and the scan diff — so a cancelled, re-queued or killed Nessus import left the
-ports it had added to PRE-EXISTING hosts.  The attempt now remembers the ids of
-the ports it creates on its job row (``in_progress_created_port_ids``), in the
-transaction that commits each batch, and the cleanup deletes them under the
-same guards as history-found ports.  Cleanup only: no page or count reads it.
+ports it had added to PRE-EXISTING hosts.  Every port row names the scan whose
+import inserted it (``ports_v2.created_scan_id``), and the cleanup deletes the
+ones an attempt's scan created under the same guards as history-found ports.
+Cleanup only: no page or count reads it.
 
 Every test runs the import UNDER AN ACTIVE JOB (``ingestion_job_harness``).
 """
@@ -21,7 +21,7 @@ import pytest
 from app import worker_loop
 from app.core.config import settings
 from app.db import models
-from app.services.ingestion_service import IngestionService, delete_recorded_ports
+from app.services.ingestion_service import IngestionService, delete_partial_scan
 from tests.ingestion_job_harness import (
     all_scan_ids,
     host_ips,
@@ -107,7 +107,10 @@ def _port_id(db, host_id, number):
 
 
 def _recorded(db, job_id):
-    return db.query(models.IngestionJob.in_progress_created_port_ids).filter_by(id=job_id).scalar()
+    """The ports stamped as created by the scan the job has in progress."""
+    scan_id = db.query(models.IngestionJob.in_progress_scan_id).filter_by(id=job_id).scalar()
+    assert scan_id is not None
+    return [row[0] for row in db.query(models.Port.id).filter_by(created_scan_id=scan_id)]
 
 
 def _age_heartbeat(db, job_id):
@@ -127,7 +130,7 @@ def test_a_cancelled_nessus_import_removes_the_port_it_added_to_a_known_host(
 
     def cancel():
         # Heartbeat 2: the known host's batch is committed — the port is
-        # really there, and the job row names it.
+        # really there, stamped with the attempt's scan.
         seen.update(_during_the_run(lambda db: {
             "ports": [_port_id(db, known_host, n) is not None for n in (22, 443)],
             "added": _port_id(db, known_host, 443),
@@ -142,7 +145,7 @@ def test_a_cancelled_nessus_import_removes_the_port_it_added_to_a_known_host(
     assert seen["ports"] == [True, True]
     added =db_session.query(models.Port.id).filter_by(host_id=known_host, port_number=443).all()
     assert added == []                                   # gone
-    # The row named the port the attempt CREATED, never the one it found.
+    # The stamp named the port the attempt CREATED, never the one it found.
     assert seen["added"] in seen["recorded"] and seen["found"] not in seen["recorded"]
     job = job_row(db_session, job_id)
     assert job.status == "failed" and job.error_message == "Cancelled by user"
@@ -151,7 +154,6 @@ def test_a_cancelled_nessus_import_removes_the_port_it_added_to_a_known_host(
     # FOUND (22) was never the attempt's to delete.
     assert host_ips(db_session, pid) == [KNOWN]
     assert _ports(db_session, known_host) == [22]
-    assert job.in_progress_created_port_ids is None
 
 
 def test_a_nessus_import_handed_back_at_shutdown_removes_the_port_then_imports_once(
@@ -170,7 +172,6 @@ def test_a_nessus_import_handed_back_at_shutdown_removes_the_port_then_imports_o
     assert job.status == "queued", (job.status, job.error_message)
     assert _ports(db_session, known_host) == [22]
     assert host_ips(db_session, pid) == [KNOWN]
-    assert job.in_progress_created_port_ids is None
 
     stopping["on"] = False
     run_next(db_session, svc)
@@ -182,8 +183,8 @@ def test_a_nessus_import_handed_back_at_shutdown_removes_the_port_then_imports_o
 def test_a_killed_nessus_import_is_cleaned_up_by_the_attempt_that_re_claims_it(
     db_session, test_project, tmp_path, one_host_batches, known_host,
 ):
-    """A hard kill runs no cleanup.  The port list was committed WITH the
-    batch, so the next claim knows what the dead attempt added."""
+    """A hard kill runs no cleanup.  The stamp was committed WITH the port,
+    so the next claim knows what the dead attempt added."""
     pid = test_project.id
     svc = IngestionService()
     job_id = queue_file(db_session, pid, nessus_file(tmp_path, HOSTS))
@@ -195,8 +196,8 @@ def test_a_killed_nessus_import_is_cleaned_up_by_the_attempt_that_re_claims_it(
     assert dead.status == "processing"
     assert _ports(db_session, known_host) == [22, 443]          # committed, and…
     dead_port = db_session.query(models.Port.id).filter_by(host_id=known_host, port_number=443).scalar()
-    assert dead_port in dead.in_progress_created_port_ids       # …named on the job row
     dead_scan = dead.in_progress_scan_id
+    assert dead_port in _recorded(db_session, job_id)           # …stamped with the dead scan
 
     # The re-claim deletes the dead attempt's leftovers before parsing; stop
     # it at its first heartbeat to look at the inventory in between.
@@ -220,7 +221,6 @@ def test_a_killed_nessus_import_is_cleaned_up_by_the_attempt_that_re_claims_it(
     assert all_scan_ids(db_session) == [job.scan_id]
     assert _ports(db_session, known_host) == [22, 443]
     assert host_ips(db_session, pid) == [KNOWN, "10.41.0.2", "10.41.0.3"]
-    assert job.in_progress_created_port_ids is None
 
 
 def test_a_killed_job_reaped_to_failed_loses_the_ports_too(
@@ -242,10 +242,9 @@ def test_a_killed_job_reaped_to_failed_loses_the_ports_too(
     assert all_scan_ids(db_session) == []
     assert _ports(db_session, known_host) == [22]
     assert host_ips(db_session, pid) == [KNOWN]
-    assert job.in_progress_created_port_ids is None
 
 
-def test_a_successful_nessus_import_keeps_its_ports_and_clears_the_record(
+def test_a_successful_nessus_import_keeps_its_ports_and_names_no_scan_in_progress(
     db_session, test_project, tmp_path, one_host_batches, known_host,
 ):
     pid = test_project.id
@@ -257,86 +256,90 @@ def test_a_successful_nessus_import_keeps_its_ports_and_clears_the_record(
 
     job = job_row(db_session, job_id)
     assert job.status == "completed", job.error_message
-    # While it ran the row named what it had created (443 on each of the three
-    # hosts by the third heartbeat — never the 22 it found)…
+    # While it ran the stamp named what it had created (443 on each of the
+    # three hosts by the third heartbeat — never the 22 it found)…
     assert len(recorded[0]) == 3
-    # …and nothing once it finished.
-    assert job.in_progress_created_port_ids is None and job.in_progress_scan_id is None
+    # …and once it finished the job names no scan in progress, so nothing can
+    # take those ports for an attempt's leftovers.
+    assert job.in_progress_scan_id is None
     assert _ports(db_session, known_host) == [22, 443]
     # No visible count changed: Nessus still writes no port history.
     assert db_session.query(models.PortScanHistory).filter_by(scan_id=job.scan_id).count() == 0
 
 
-def test_the_last_partial_batch_is_recorded_with_the_commit_that_writes_it(
-    db_session, test_project, tmp_path, known_host, monkeypatch,
-):
-    """Default-sized batches: a three-host file never reaches a batch
-    heartbeat, so its ports are committed by the final commit — which must
-    carry the record too (a failure after it still has to find them)."""
-    from app.services import ingestion_service as mod
-
-    pid = test_project.id
-    stamped = []
-    real = mod.note_ports_created
-    monkeypatch.setattr(mod, "note_ports_created", lambda db, ids: (stamped.append(list(ids)), real(db, ids))[1])
-    job = run_file(db_session, pid, nessus_file(tmp_path, HOSTS))
-    assert job.status == "completed", job.error_message
-    assert len(stamped) == 1 and len(stamped[0]) == 3
-    assert job.in_progress_created_port_ids is None
-
-
-def test_a_record_whose_scan_is_already_gone_is_still_cleaned_up_at_the_next_claim(
+def test_the_last_partial_batch_is_stamped_in_the_commit_that_writes_it(
     db_session, test_project, tmp_path, known_host,
 ):
-    """Someone deleted the dead attempt's partial scan by hand: the FK nulled
-    the job's scan pointer, the port record remained.  The next claim removes
-    the recorded ports nothing refers to and drops the record."""
+    """Default-sized batches: a three-host file never reaches a batch
+    heartbeat, so its ports are committed by the final commit — and carry the
+    stamp already (a failure after it still has to find them)."""
     pid = test_project.id
-    leftover = models.Port(host_id=known_host, port_number=8443, protocol="tcp", state="open")
-    db_session.add(leftover)
+    job = run_file(db_session, pid, nessus_file(tmp_path, HOSTS))
+    assert job.status == "completed", job.error_message
+    stamped = db_session.query(models.Port.port_number).filter_by(created_scan_id=job.scan_id).all()
+    assert [row[0] for row in stamped] == [443, 443, 443]
+    # The port it found is not its creation.
+    assert db_session.query(models.Port.created_scan_id).filter_by(
+        host_id=known_host, port_number=22).scalar() is None
+
+
+def test_ports_of_a_partial_scan_someone_deleted_by_hand_are_left_alone(
+    db_session, test_project, tmp_path, known_host,
+):
+    """Someone deleted the dead attempt's partial scan by hand: the FK cleared
+    the job's scan pointer and the stamp on the ports it had created.  Nothing
+    says whose they were any more, so the next claim keeps them."""
+    pid = test_project.id
+    dead_scan = models.Scan(project_id=pid, filename="dead.nessus", tool_name="Nessus")
+    db_session.add(dead_scan)
     db_session.flush()
+    db_session.add(models.Port(
+        host_id=known_host, port_number=8443, protocol="tcp", state="open",
+        created_scan_id=dead_scan.id,
+    ))
     job_id = queue_file(db_session, pid, nessus_file(tmp_path, [("10.41.0.9", [443])]))
     db_session.query(models.IngestionJob).filter_by(id=job_id).update(
-        {"in_progress_created_port_ids": [leftover.id]}
+        {"in_progress_scan_id": dead_scan.id}
     )
+    db_session.commit()
+    db_session.query(models.Scan).filter_by(id=dead_scan.id).delete()
     db_session.commit()
 
     run_next(db_session)
 
     job = job_row(db_session, job_id)
     assert job.status == "completed", job.error_message
-    assert _ports(db_session, known_host) == [22]
-    assert job.in_progress_created_port_ids is None
+    assert _ports(db_session, known_host) == [22, 8443]
 
 
-def test_a_recorded_port_another_scan_has_since_seen_or_that_is_referred_to_stays(
+def test_a_stamped_port_another_scan_has_since_seen_stays_and_an_unstamped_one_is_never_touched(
     db_session, test_project, known_host,
 ):
-    """The guards are the history path's: a port another scan observed, or
-    that a note / an observation from another scan refers to, is not the
-    failed attempt's alone any more."""
+    """The guards are the history path's: a port another scan observed is not
+    the failed attempt's alone any more.  A port with no stamp was never its."""
     pid = test_project.id
     failed = models.Scan(project_id=pid, filename="failed.nessus", tool_name="Nessus")
     other = models.Scan(project_id=pid, filename="sweep.xml", tool_name="nmap")
     db_session.add_all([failed, other])
     db_session.flush()
 
-    def port(number):
-        p = models.Port(host_id=known_host, port_number=number, protocol="tcp", state="open")
+    def port(number, stamp=failed.id):
+        p = models.Port(
+            host_id=known_host, port_number=number, protocol="tcp", state="open",
+            created_scan_id=stamp, last_updated_scan_id=stamp,
+        )
         db_session.add(p)
         db_session.flush()
         return p.id
 
-    alone, seen_again, pre_existing = port(8001), port(8002), db_session.query(models.Port.id).filter_by(
-        host_id=known_host, port_number=22).scalar()
+    port(8001)
+    seen_again = port(8002)
+    port(8003, stamp=None)
     db_session.add(models.PortScanHistory(port_id=seen_again, scan_id=other.id, state_at_scan="open"))
     db_session.commit()
 
-    # 22 is not in the record (the attempt found it), so it cannot be touched;
-    # a stale or nonsense id matches nothing.
-    removed = delete_recorded_ports(db_session, [alone, seen_again, 987654321, "x", None], failed.id)
+    removed = delete_partial_scan(db_session, failed.id)
     db_session.commit()
 
-    assert removed == 1
-    assert _ports(db_session, known_host) == [22, 8002]
-    assert db_session.query(models.Port.id).filter_by(id=pre_existing).first() is not None
+    assert removed["ports"] == 1
+    assert _ports(db_session, known_host) == [22, 8002, 8003]

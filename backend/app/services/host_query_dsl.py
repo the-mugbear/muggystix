@@ -39,9 +39,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field as dc_field
 from typing import Callable, List, Optional, Union
 
-from sqlalchemy import and_, false, not_, or_
+from sqlalchemy import Boolean, and_, false, func, not_, or_
 from sqlalchemy.orm import Session
-from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.sql import operators
+from sqlalchemy.sql.elements import (
+    BooleanClauseList, ColumnElement, False_, Grouping, True_, UnaryExpression,
+)
+from sqlalchemy.sql.functions import FunctionElement
+from sqlalchemy.sql.selectable import Exists
 
 from app.db.models import FollowStatus
 from app.db.models_auth import User
@@ -364,47 +369,47 @@ class FieldSpec:
 _HAS_KEYWORDS = {
     "web": (lambda ctx: P.has_web_interface_predicate(ctx.db),
             "Has a web interface (httpx / eyewitness)."),
-    "notes": (lambda ctx: P.has_notes_predicate(ctx.db, ctx.project_id),
+    "notes": (lambda ctx: P.has_notes_predicate(),
               "Has an analyst note (on the host or one of its ports)."),
-    "exploit": (lambda ctx: P.has_exploit_predicate(ctx.db, ctx.project_id),
+    "exploit": (lambda ctx: P.has_exploit_predicate(),
                 "Has a finding flagged exploitable by a vulnerability scanner (currently Nessus)."),
     # v2.429.1 — severity and exploit on the SAME row ("has:critical AND
     # has:exploit" pairs them anywhere on the host).
-    "critical_exploit": (lambda ctx: P.critical_exploit_predicate(ctx.db, ctx.project_id),
+    "critical_exploit": (lambda ctx: P.critical_exploit_predicate(),
                          "Has a CRITICAL finding that is itself flagged exploitable — the "
                          "Hosts page's \"critical · exploit\". has:critical AND has:exploit is "
                          "wider: the exploit may be on a lower-severity finding."),
-    "tested": (lambda ctx: P.has_test_execution_predicate(ctx.db, ctx.project_id),
+    "tested": (lambda ctx: P.has_test_execution_predicate(ctx.project_id),
                "Tested: has an evidence record with outcome finding, no_finding or inconclusive."),
-    "planned": (lambda ctx: P.has_plan_entry_predicate(ctx.db, ctx.project_id),
+    "planned": (lambda ctx: P.has_plan_entry_predicate(ctx.project_id),
                 "Has a test that is proposed or in progress (planned, not necessarily tested yet)."),
     "untouched": (lambda ctx: P.untouched_predicate(ctx.db),
                   "Nobody has touched it yet: no review or assignment, note, "
                   "test that was not dismissed, evidence record or finding."),
     "open_ports": (lambda ctx: P.has_open_ports_predicate(ctx.db),
                    "Has at least one open port."),
-    "critical": (lambda ctx: P.severity_predicate(ctx.db, ["CRITICAL"], ctx.project_id),
+    "critical": (lambda ctx: P.severity_predicate(["CRITICAL"]),
                  "Has a critical-severity finding."),
-    "high": (lambda ctx: P.severity_predicate(ctx.db, ["HIGH"], ctx.project_id),
+    "high": (lambda ctx: P.severity_predicate(["HIGH"]),
              "Has a high-severity finding."),
-    "medium": (lambda ctx: P.severity_predicate(ctx.db, ["MEDIUM"], ctx.project_id),
+    "medium": (lambda ctx: P.severity_predicate(["MEDIUM"]),
                "Has a medium-severity finding."),
-    "low": (lambda ctx: P.severity_predicate(ctx.db, ["LOW"], ctx.project_id),
+    "low": (lambda ctx: P.severity_predicate(["LOW"]),
             "Has a low-severity finding."),
     # Systemic-weakness family — the drill-down targets for Systemic / Subnet
     # Insights (these resolve the same hosts those views count).
     "eol": (lambda ctx: P.eol_os_predicate(ctx.db, ctx.project_id, ctx.only_host_ids),
             "Runs an end-of-life operating system."),
-    "smb_unsigned": (lambda ctx: P.smb_unsigned_predicate(ctx.db, ctx.project_id),
+    "smb_unsigned": (lambda ctx: P.smb_unsigned_predicate(),
                      "SMB message signing not required — disabled, or on but not required "
                      "(NTLM-relay / lateral-movement exposure)."),
     "weak_auth": (lambda ctx: P.weak_auth_predicate(ctx.db, ctx.project_id, ctx.only_host_ids),
                   "A guest / anonymous / null-session login succeeded (NetExec, SMBMap)."),
     # v2.412.0 — the access an analyst HAS, not a weakness of the target, so
     # a filter rather than a scanner observation.
-    "local_admin": (lambda ctx: P.local_admin_predicate(ctx.db, ctx.project_id),
+    "local_admin": (lambda ctx: P.local_admin_predicate(),
                     "A credential was a local administrator (NetExec \"Pwn3d!\")."),
-    "writable_share": (lambda ctx: P.writable_share_predicate(ctx.db, ctx.project_id),
+    "writable_share": (lambda ctx: P.writable_share_predicate(),
                        "A share granted WRITE (NetExec --shares, SMBMap)."),
     "cert_issue": (lambda ctx: P.cert_issue_predicate(ctx.db, ctx.project_id, ctx.only_host_ids),
                    "Latest TLS certificate is expired or self-signed."),
@@ -412,8 +417,6 @@ _HAS_KEYWORDS = {
                  "Offers a weak TLS protocol (SSLv2 / SSLv3 / TLS 1.0 / TLS 1.1)."),
     "cleartext": (lambda ctx: P.cleartext_predicate(ctx.db),
                   "Open cleartext-credential service (Telnet / FTP / POP3 / IMAP)."),
-    "stale_review": (lambda ctx: P.stale_review_predicate(ctx.db),
-                     "Marked Reviewed, but re-scanned since the review (evidence changed)."),
     # Changed after ANYONE'S finished review — the team-wide list.  Operations'
     # "Changed since review" queue is the caller's own reviews (v2.451.0) and
     # opens `follow:revisit`, built from the same two conditions.
@@ -437,7 +440,7 @@ def _b_subnet(ctx: BuildCtx, values: List[str]) -> ColumnElement:
 def _b_scan(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     ids = []
     for v in values:
-        if not v.isdigit():
+        if not P.is_id(v):
             # The operator almost certainly typed the filename — that's what
             # they know the upload by.  Say where the id lives instead of just
             # restating the type.
@@ -447,7 +450,7 @@ def _b_scan(ctx: BuildCtx, values: List[str]) -> ColumnElement:
                 "it off the Scans page (shown as #id next to the filename)."
             )
         ids.append(int(v))
-    return P.scan_predicate(ctx.db, ids)
+    return P.scan_predicate(ids)
 
 
 def _parse_window(field: str, value: str):
@@ -480,7 +483,7 @@ def _b_firstseen(ctx: BuildCtx, values: List[str]) -> ColumnElement:
 
 def _b_changedsince(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     return or_(*[
-        P.changed_window_predicate(ctx.db, ctx.project_id, *_parse_window("changedsince", v))
+        P.changed_window_predicate(*_parse_window("changedsince", v))
         for v in values
     ])
 
@@ -500,9 +503,7 @@ def _b_vulnsince(ctx: BuildCtx, values: List[str]) -> ColumnElement:
                 f"vulnsince: unknown severity '{sev}' (one of: {', '.join(_VULNSINCE_SEVERITIES)})"
             )
         start, end = _parse_window("vulnsince", window)
-        preds.append(P.vuln_window_predicate(
-            ctx.db, ctx.project_id, start, end, [sev] if sev else None,
-        ))
+        preds.append(P.vuln_window_predicate(start, end, [sev] if sev else None))
     return or_(*preds)
 
 
@@ -514,7 +515,7 @@ def _parse_ports(field: str, values: List[str]) -> List[int]:
     ports = []
     for v in values:
         s = str(v).strip()
-        if not s.isdigit():
+        if not P.is_id(s):
             raise DSLError(f"{field}: expects a number, got '{v}' (try service: for a name)")
         n = int(s)
         if not (0 <= n <= 65535):
@@ -574,7 +575,7 @@ def _b_version(ctx: BuildCtx, values: List[str]) -> ColumnElement:
 
 def _b_exploitport(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     ports = _parse_ports("exploitport", values)
-    return P.exploit_on_port_predicate(ctx.db, ports, ctx.project_id)
+    return P.exploit_on_port_predicate(ports)
 
 
 def _b_follow(ctx: BuildCtx, values: List[str]) -> ColumnElement:
@@ -582,7 +583,7 @@ def _b_follow(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     for v in values:
         if v not in _FOLLOW_VALUES:
             raise DSLError(f"Unknown follow status '{v}'")
-        preds.append(P.follow_predicate(ctx.db, v, ctx.current_user))
+        preds.append(P.follow_predicate(v, ctx.current_user))
     return or_(*preds)
 
 
@@ -603,7 +604,7 @@ def _b_conclusion(ctx: BuildCtx, values: List[str]) -> ColumnElement:
         raise DSLError(
             f"Unknown review conclusion '{unknown[0]}' (one of: {', '.join(sorted(REVIEW_CONCLUSIONS))})"
         )
-    return P.review_conclusion_predicate(ctx.db, wanted)
+    return P.review_conclusion_predicate(wanted)
 
 
 def _b_assigned(ctx: BuildCtx, values: List[str]) -> ColumnElement:
@@ -627,7 +628,7 @@ def _b_site(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     if names:
         preds.append(P.site_predicate(ctx.db, names))
     if len(names) != len(values):
-        preds.append(P.site_none_predicate(ctx.db, ctx.project_id))
+        preds.append(P.site_none_predicate(ctx.project_id))
     return or_(*preds)
 
 
@@ -693,19 +694,19 @@ _FIELD_SPECS: List[FieldSpec] = [
               description="Detected web technology — httpx, whatweb, eyewitness."),
     # Network attribution (ingested from RDAP). Scope validation against the
     # outside world rather than against the CIDRs someone typed into the scope.
-    FieldSpec("org", lambda c, v: P.attribution_org_predicate(c.db, v),
+    FieldSpec("org", lambda c, v: P.attribution_org_predicate(v),
               aliases=["owner"], value_source="org", trgm=True,
               description="Registered owner of the host's netblock (RDAP). "
                           "`NOT org:\"Acme\"` finds hosts not registered to the client."),
-    FieldSpec("certorg", lambda c, v: P.cert_org_predicate(c.db, v),
+    FieldSpec("certorg", lambda c, v: P.cert_org_predicate(v),
               value_source="certorg", trgm=True,
               description="Organization on the host's TLS certificate — CA-validated, "
                           "so stronger evidence of control than a self-declared registry "
                           "record. Absent on DV certs."),
-    FieldSpec("asn", lambda c, v: P.attribution_asn_predicate(c.db, v),
+    FieldSpec("asn", lambda c, v: P.attribution_asn_predicate(v),
               value_source="asn",
               description="Autonomous system number the host's netblock belongs to."),
-    FieldSpec("country", lambda c, v: P.attribution_country_predicate(c.db, v),
+    FieldSpec("country", lambda c, v: P.attribution_country_predicate(v),
               value_source="country",
               description="ISO country the host's netblock is registered in (RDAP) — "
                           "e.g. `country:US`. `NOT country:US` surfaces foreign-hosted "
@@ -719,10 +720,10 @@ _FIELD_SPECS: List[FieldSpec] = [
     # worse than a missing one, especially on a surface framed as scope
     # validation. `P.attribution_cloud_predicate` is kept and correct; re-add
     # the FieldSpec in the same commit that lands the prefix-list parser.
-    FieldSpec("tag", lambda c, v: P.tag_predicate_by_name(c.db, v, c.project_id),
+    FieldSpec("tag", lambda c, v: P.tag_predicate_by_name(v, c.project_id),
               value_source="tag",
               description="Project host tag — applied by analysts (Hosts page)."),
-    FieldSpec("label", lambda c, v: P.label_predicate_by_name(c.db, v, c.project_id),
+    FieldSpec("label", lambda c, v: P.label_predicate_by_name(v, c.project_id),
               value_source="label",
               description="Project subnet label — applied by analysts (Scopes)."),
     FieldSpec("site", _b_site, value_source="site",
@@ -782,17 +783,17 @@ _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("has", _b_has, value_source="enum", enum_values=sorted(_HAS_KEYWORDS),
               description="Derived boolean flag — takes one of the values below.",
               enum_descriptions={k: _HAS_KEYWORDS[k][1] for k in _HAS_KEYWORDS}),
-    FieldSpec("cve", lambda c, v: P.cve_predicate(c.db, v, c.project_id), trgm=True, value_source="cve",
+    FieldSpec("cve", lambda c, v: P.cve_predicate(v), trgm=True, value_source="cve",
               description="A finding’s CVE id (substring) — Nessus, OpenVAS, Nikto."),
-    FieldSpec("vuln", lambda c, v: P.vuln_predicate(c.db, v, c.project_id), trgm=True, value_source="vuln",
+    FieldSpec("vuln", lambda c, v: P.vuln_predicate(v), trgm=True, value_source="vuln",
               description="A finding’s title / plugin name — Nessus, OpenVAS, Nikto."),
-    FieldSpec("issue", lambda c, v: P.issue_predicate(c.db, v, c.project_id), value_source="issue",
+    FieldSpec("issue", lambda c, v: P.issue_predicate(v), value_source="issue",
               description="Exactly one scanner-observation issue, by the key the Findings page "
                           "groups observations by (quote it: "
                           "`issue:\"check:smb_signing_not_required\"`, `issue:\"cve:CVE-2021-44228\"`). "
                           "Exact match, unlike vuln:."),
     # v2.415.0 — what kind of weakness, and which catalog check.
-    FieldSpec("kind", lambda c, v: P.kind_predicate(c.db, v, c.project_id), value_source="enum",
+    FieldSpec("kind", lambda c, v: P.kind_predicate(v), value_source="enum",
               enum_values=list(KINDS),
               enum_descriptions={
                   "misconfiguration": "A misconfiguration check, whichever tool reported it "
@@ -801,7 +802,7 @@ _FIELD_SPECS: List[FieldSpec] = [
                   "informational": "An informational scanner observation.",
               },
               description="The kind of weakness a host has: misconfiguration, vulnerability or informational."),
-    FieldSpec("check", lambda c, v: P.check_predicate(c.db, v, c.project_id), value_source="enum",
+    FieldSpec("check", lambda c, v: P.check_predicate(v), value_source="enum",
               enum_values=sorted(CHECKS),
               enum_descriptions={cid: check.title for cid, check in CHECKS.items()},
               description="One misconfiguration check, whichever tool reported it (nmap, NetExec, SMBMap, "
@@ -813,7 +814,7 @@ _FIELD_SPECS: List[FieldSpec] = [
               description="HTTP Server response header — httpx."),
     FieldSpec("webtitle", lambda c, v: P.webtitle_predicate(c.db, v), trgm=True, value_source="webtitle",
               description="Web page <title> — httpx, eyewitness."),
-    FieldSpec("note", lambda c, v: P.note_predicate(c.db, v, c.project_id), trgm=True,
+    FieldSpec("note", lambda c, v: P.note_predicate(v), trgm=True,
               description="Note / annotation body text — written by analysts."),
 ]
 
@@ -903,6 +904,40 @@ def parse_query(q: str) -> Node:
     return node
 
 
+def _never_null(expr) -> bool:
+    """``expr`` is TRUE or FALSE for every host, never NULL — decided from its
+    shape: an EXISTS, a constant, an unknown already read as false, or
+    AND / OR / NOT over those.  Anything else (a column comparison) may be
+    NULL and is treated as such."""
+    if isinstance(expr, (Exists, True_, False_)):
+        return True
+    if isinstance(expr, Grouping):
+        return _never_null(expr.element)
+    if isinstance(expr, BooleanClauseList):
+        return all(_never_null(clause) for clause in expr.clauses)
+    if isinstance(expr, FunctionElement):
+        # ``negate``'s own coalesce(…, false).
+        clauses = list(expr.clauses) if expr.name == "coalesce" else []
+        return bool(clauses) and isinstance(clauses[-1], False_)
+    if isinstance(expr, UnaryExpression) and expr.operator in (operators.inv, operators.is_false):
+        return _never_null(expr.element)
+    return False
+
+
+def negate(expr: ColumnElement) -> ColumnElement:
+    """``NOT expr`` where a host the child does not KNOW about is a host that
+    does not match it.
+
+    SQL's NOT keeps NULL as NULL: ``NOT os:windows`` over a host with no OS
+    recorded is NOT NULL, and the host silently left every negated list.  The
+    child is read as false when it is NULL, so the negation holds for it.  An
+    expression that cannot be NULL is negated as it is — ``NOT EXISTS`` stays
+    an anti-join Postgres can plan."""
+    if _never_null(expr):
+        return not_(expr)
+    return not_(func.coalesce(expr, false(), type_=Boolean))
+
+
 def evaluate(node: Node, ctx: BuildCtx) -> ColumnElement:
     """AST → SQLAlchemy boolean expression."""
     if isinstance(node, And):
@@ -910,7 +945,7 @@ def evaluate(node: Node, ctx: BuildCtx) -> ColumnElement:
     if isinstance(node, Or):
         return or_(*[evaluate(c, ctx) for c in node.children])
     if isinstance(node, Not):
-        return not_(evaluate(node.child, ctx))
+        return negate(evaluate(node.child, ctx))
     if isinstance(node, FieldNode):
         spec = FIELD_BUILDERS[node.name]  # presence guaranteed by _validate
         return spec.builder(ctx, node.values)
@@ -968,7 +1003,7 @@ EXAMPLES: List[dict] = [
     {"label": "VNC without authentication", "q": "check:vnc_no_auth"},
     {"label": "SMB null or guest sessions", "q": "check:smb_null_session"},
     {"label": "Local admin access or a writable share", "q": "has:local_admin OR has:writable_share"},
-    {"label": "Reviewed, evidence changed since", "q": "has:stale_review"},
+    {"label": "Reviewed, then changed", "q": "has:changed_since_review"},
 ]
 
 

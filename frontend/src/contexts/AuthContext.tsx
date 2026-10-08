@@ -157,6 +157,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     };
     run();
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the stored session is checked once, when the provider mounts
   }, []);
 
   // Another tab signed in as someone else, or signed out: the stored token is
@@ -318,6 +319,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       navigate('/login');
       timer();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- clearAuthData is a new function every render and reads only the user and token already listed
   }, [authLogger, navigate, token, user?.id, user?.username]);
 
   const clearAuthData = () => {
@@ -388,7 +390,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } else if (!isAuthenticated && !isLoading) {
       authLogger.info('User is not authenticated');
     }
-  }, [isAuthenticated, isLoading, user, token]);
+  }, [authLogger, isAuthenticated, isLoading, user, token]);
 
   const updateUser = useCallback((updates: Partial<User>) => {
     setUser(prev => prev ? { ...prev, ...updates } : prev);

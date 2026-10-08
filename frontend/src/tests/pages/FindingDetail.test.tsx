@@ -603,6 +603,41 @@ describe('FindingDetail — v5.256.0: the author renames or deletes', () => {
     await waitFor(() => expect(mocked.deleteFinding).toHaveBeenCalledWith(7));
     await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/findings'));
   });
+
+  // With remediation tracking on, the server refuses an analyst a removal
+  // that would take a filled-in remediation record with it.
+  const REFUSAL = 'This finding has a remediation record on this host (a contact, dates or a status), which '
+    + 'would be deleted with it. A project admin must remove it. Nothing was changed.';
+  const refused = { response: { status: 409, data: { detail: REFUSAL } } };
+
+  it('a refused delete says the server’s reason and stays on the finding', async () => {
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: true }));
+    mocked.deleteFinding.mockRejectedValue(refused);
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    confirmMock.mockResolvedValueOnce(true);
+    fireEvent.click(screen.getByRole('button', { name: /Delete/ }));
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith(REFUSAL));
+    expect(toastMock.success).not.toHaveBeenCalled();
+    expect(navigateSpy).not.toHaveBeenCalled();
+    expect(screen.getByText('Weak TLS on portal')).toBeInTheDocument();
+  });
+
+  it('a refused detach says the server’s reason and keeps the endpoint on the page', async () => {
+    mocked.getFinding.mockResolvedValue(finding({
+      status: 'confirmed', host_count: 1, endpoint_status_counts: { open: 1 },
+      hosts: [{ id: 31, host_id: 5, ip_address: '10.0.0.5', hostname: null, name_id: null, fqdn: null, host_status: 'open' }],
+    }));
+    mocked.removeFindingEndpoint.mockRejectedValue(refused);
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    confirmMock.mockResolvedValueOnce(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Detach 10.0.0.5 from finding' }));
+    await waitFor(() => expect(mocked.removeFindingEndpoint).toHaveBeenCalledWith(7, 31));
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith(REFUSAL));
+    expect(toastMock.success).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Detach 10.0.0.5 from finding' })).toBeInTheDocument();
+  });
 });
 
 describe('FindingDetail — report text (v5.260.0)', () => {

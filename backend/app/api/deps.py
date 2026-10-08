@@ -4,19 +4,21 @@ Shared FastAPI dependencies for project-scoped endpoints.
 
 import hashlib
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 from fastapi import Depends, Header, HTTPException, Path, Request, UploadFile, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy import and_, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import CompileError, OperationalError, ProgrammingError
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models_auth import User, UserRole, UserSession, APIKey
-from app.db.models_agent import Agent, AgentRateBucket, AgentSessionWorkflow
+from app.db.models_agent import Agent, AgentRateBucket, AgentSession, AgentSessionWorkflow
 from app.core.config import settings
 from app.core.security import check_permissions, verify_token
 # Re-exported: agent_browse reads it from here.  Defined in the service layer
@@ -28,7 +30,11 @@ from app.services.agent_key_ttl import session_renewal_deadline  # noqa: F401
 # a plan or scope):
 #   agent_id, agent_project_id, api_key_id, api_key_prefix, key_expires_at,
 #   agent_session_id, agent_session_workflow, key_operator_id (+ key_operator_role
-#   once ``enforce_agent_operator_access`` has resolved it).
+#   and key_operator_is_admin once ``enforce_agent_operator_access`` has run).
+# ``key_operator_id`` is THE operator (who the key acts for, who its writes are
+# attributed to) and ``agent_project_id`` THE project; a handler reads these
+# two rather than ``agent.owner_id`` / ``session.started_by_id`` or
+# ``agent.project_id`` / ``session.project_id``.
 # None of these are set for JWT-authed requests.
 
 logger = logging.getLogger(__name__)
@@ -258,15 +264,129 @@ def key_is_renewable(agent_session) -> bool:
     return datetime.now(timezone.utc) < deadline
 
 
-def _expired_key_detail(api_key_obj) -> Dict[str, object]:
-    """The body of a 401 raised for an expired key.
+def _aware(t: Optional[datetime]) -> Optional[datetime]:
+    """UTC-aware ``t``: some drivers hand back a naive value for a
+    ``DateTime(timezone=True)`` column, and comparing it to an aware one raises."""
+    if t is not None and t.tzinfo is None:
+        return t.replace(tzinfo=timezone.utc)
+    return t
+
+
+@dataclass(frozen=True)
+class _AgentKeyContext:
+    """Everything the agent auth chain decides from, read in one statement.
+
+    ``operator_*`` describe the one person the key acts for: the session's
+    starter, else the agent's owner.  ``agent`` is None when the key's agent
+    is missing or inactive.
+    """
+    api_key: APIKey
+    session: Optional[AgentSession]
+    agent: Optional[Agent]
+    project_archived: bool
+    operator_id: Optional[int]
+    operator_active: bool
+    operator_is_admin: bool
+    operator_password_changed_at: Optional[datetime]
+    membership_role: Optional[str]
+
+
+def _load_agent_key(db: Session, token: str) -> Optional[_AgentKeyContext]:
+    """The active agent key for ``token`` with its session, agent, project
+    state, operator and the operator's membership — one joined select, so an
+    agent call's authentication and authorization cost one read."""
+    key_hash = hashlib.sha256(token.encode()).hexdigest()
+    row = (
+        db.query(
+            APIKey, AgentSession, Agent, Project.is_archived,
+            User.id, User.is_active, User.role, User.password_changed_at,
+            ProjectMembership.role,
+        )
+        .select_from(APIKey)
+        .outerjoin(AgentSession, AgentSession.id == APIKey.agent_session_id)
+        .outerjoin(Agent, and_(Agent.id == APIKey.agent_id, Agent.is_active.is_(True)))
+        .outerjoin(Project, Project.id == Agent.project_id)
+        .outerjoin(User, User.id == func.coalesce(AgentSession.started_by_id, Agent.owner_id))
+        .outerjoin(
+            ProjectMembership,
+            and_(
+                ProjectMembership.project_id == Agent.project_id,
+                ProjectMembership.user_id == User.id,
+            ),
+        )
+        .filter(
+            APIKey.key_hash == key_hash,
+            APIKey.is_active.is_(True),
+            APIKey.agent_id.isnot(None),
+        )
+        .first()
+    )
+    if row is None:
+        return None
+    (api_key, session, agent, archived,
+     operator_id, operator_active, operator_role, password_changed_at, membership_role) = row
+    return _AgentKeyContext(
+        api_key=api_key,
+        session=session,
+        agent=agent,
+        project_archived=bool(archived),
+        operator_id=operator_id,
+        operator_active=bool(operator_active),
+        operator_is_admin=operator_role == UserRole.ADMIN,
+        operator_password_changed_at=password_changed_at,
+        membership_role=membership_role,
+    )
+
+
+def _issued_before_password_change(ctx: _AgentKeyContext) -> bool:
+    """True when the key was issued before its operator's password last changed.
+
+    A password change or reset is how a compromised account is taken back, so
+    nothing issued under the old password may keep working.  Decided by the
+    KEY's issue time: a resumed session carries a key minted by the operator
+    after the change, and that key is theirs.
+    """
+    issued = _aware(ctx.api_key.created_at) or _aware(
+        ctx.session.started_at if ctx.session is not None else None
+    )
+    changed = _aware(ctx.operator_password_changed_at)
+    return issued is not None and changed is not None and issued < changed
+
+
+_CREDENTIALS_CHANGED_DETAIL = {
+    "error": "operator_credentials_changed",
+    "recoverable": False,
+    "message": (
+        "This key was issued before its operator's password was changed, so it "
+        "no longer works. Ask the operator to start a new session; save any "
+        "output you are holding first."
+    ),
+}
+
+
+def _commit_keeping_loaded(db: Session) -> None:
+    """Commit without expiring what the auth chain has loaded.
+
+    The chain commits its own bookkeeping (last-used stamps, the rate bucket)
+    before the handler runs; an expiring commit would make every later read of
+    ``agent`` re-select a row that was read a moment ago in this request.
+    """
+    previous = db.expire_on_commit
+    db.expire_on_commit = False
+    try:
+        db.commit()
+    finally:
+        db.expire_on_commit = previous
+
+
+def _expired_key_detail(session) -> Dict[str, object]:
+    """The body of a 401 raised for an expired key bound to ``session``.
 
     Structured because the caller is usually mid-workflow holding output it
     cannot reproduce cheaply, and "expired" vs "revoked" are the same status
     code but opposite situations. ``recoverable`` is the field an agent
     branches on.
     """
-    session = getattr(api_key_obj, "agent_session", None)
     if key_is_renewable(session):
         return {
             "error": "key_expired",
@@ -315,31 +435,21 @@ def authenticate_for_renewal(
             status_code=401,
             detail="Missing agent API key — provide X-API-Key or Authorization: Bearer header",
         )
-    key_hash = hashlib.sha256(token.encode()).hexdigest()
-    api_key_obj = (
-        db.query(APIKey)
-        .options(joinedload(APIKey.agent_session))
-        .filter(
-            APIKey.key_hash == key_hash,
-            APIKey.is_active.is_(True),
-            APIKey.agent_id.isnot(None),
-        )
-        .first()
-    )
+    ctx = _load_agent_key(db, token)
     # A revoked key is gone for good — is_active is the operator's kill switch
     # and renewal must never route around it.
-    if not api_key_obj:
+    if ctx is None:
         raise HTTPException(status_code=401, detail="Invalid or revoked agent API key")
-
-    agent = (
-        db.query(Agent)
-        .filter(Agent.id == api_key_obj.agent_id, Agent.is_active.is_(True))
-        .first()
-    )
+    api_key_obj, agent = ctx.api_key, ctx.agent
     if not agent:
         raise HTTPException(status_code=401, detail="Agent inactive or not found")
 
-    if not key_is_renewable(api_key_obj.agent_session):
+    # Renewal extends a credential, so a key the operator's password change
+    # has cancelled must not be extended either.
+    if _issued_before_password_change(ctx):
+        raise HTTPException(status_code=401, detail=_CREDENTIALS_CHANGED_DETAIL)
+
+    if not key_is_renewable(ctx.session):
         raise HTTPException(
             status_code=401,
             detail={
@@ -366,7 +476,7 @@ def authenticate_for_renewal(
     request.state.agent_project_id = agent.project_id
     request.state.api_key_id = api_key_obj.id
     request.state.api_key_prefix = api_key_obj.key_prefix
-    session = api_key_obj.agent_session
+    session = ctx.session
     request.state.agent_session_id = session.id if session is not None else None
     # Same attribution the normal chain stamps (see get_current_agent), so a
     # renewal lands on the session's timeline rather than as an orphan row.
@@ -427,24 +537,12 @@ def get_current_agent(
             status_code=401,
             detail="Missing agent API key — provide X-API-Key or Authorization: Bearer header",
         )
-    key_hash = hashlib.sha256(token.encode()).hexdigest()
-
-    api_key_obj = (
-        db.query(APIKey)
-        # Eager-load the bound AgentSession — the workflow discriminator
-        # below reads it on every authenticated /agent/* request (the
-        # chattiest authenticated path), so a lazy load here would add a
-        # round-trip per call once keys carry an agent_session_id.
-        .options(joinedload(APIKey.agent_session))
-        .filter(
-            APIKey.key_hash == key_hash,
-            APIKey.is_active.is_(True),
-            APIKey.agent_id.isnot(None),
-        )
-        .first()
-    )
-    if not api_key_obj:
+    # One read for the whole chain: this dependency, the rate limiter and
+    # ``enforce_agent_operator_access`` all decide from it.
+    ctx = _load_agent_key(db, token)
+    if ctx is None:
         raise HTTPException(status_code=401, detail="Invalid agent API key")
+    api_key_obj = ctx.api_key
 
     if api_key_obj.expires_at is not None:
         # Some backends/drivers (and SQLite) hand back a tz-naive datetime
@@ -463,14 +561,10 @@ def get_current_agent(
             # try again.
             raise HTTPException(
                 status_code=401,
-                detail=_expired_key_detail(api_key_obj),
+                detail=_expired_key_detail(ctx.session),
             )
 
-    agent = (
-        db.query(Agent)
-        .filter(Agent.id == api_key_obj.agent_id, Agent.is_active.is_(True))
-        .first()
-    )
+    agent = ctx.agent
     if not agent:
         raise HTTPException(status_code=401, detail="Agent inactive or not found")
 
@@ -479,7 +573,7 @@ def get_current_agent(
     # agent key is an orphaned/corrupt credential.  Fail CLOSED rather than
     # treat it as unscoped, which was historically the MOST-privileged outcome
     # (unscoped global keys, abolished v2.295.0).
-    agent_session = api_key_obj.agent_session
+    agent_session = ctx.session
     if agent_session is None:
         logger.warning(
             "rejecting agent key %s (agent_id=%s) with no AgentSession binding — "
@@ -519,6 +613,21 @@ def get_current_agent(
             status_code=403,
             detail="API key is bound to an unrecognized session kind; start a new session.",
         )
+    if agent_session.project_id != agent.project_id:
+        # The session and the agent name the same project by construction.
+        # Handlers scope data by one or the other, and the operator's role is
+        # checked against one project, so a key whose two disagree is refused.
+        logger.warning(
+            "agent key %s: session %s is on project %s but its agent %s is on %s — denying",
+            api_key_obj.key_prefix, agent_session.id, agent_session.project_id,
+            agent.id, agent.project_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="API key's session and agent are on different projects; start a new session.",
+        )
+    if _issued_before_password_change(ctx):
+        raise HTTPException(status_code=401, detail=_CREDENTIALS_CHANGED_DETAIL)
 
     # v2.337.0 — a key no longer binds a workflow, a plan or a scope; what it
     # writes carries the session's id.  The label is stashed only so the audit
@@ -526,10 +635,18 @@ def get_current_agent(
     request.state.agent_session_id = agent_session.id
     request.state.agent_session_workflow = agent_session.workflow
 
-    # The human this session acts on behalf of.  ``enforce_agent_operator_access``
-    # resolves their role against this on every request, and agent-authored
-    # notes are attributed to them with actor_type='agent'.
-    request.state.key_operator_id = agent_session.started_by_id
+    # The ONE operator: the human this key acts for — the session's starter,
+    # else the agent's owner (the same person; ``Agent.owner_id`` is NOT NULL
+    # and a deleted user's agents and keys are deleted with them, so there is
+    # always one).  ``enforce_agent_operator_access`` checks their role on
+    # every request and agent-authored writes are attributed to them.
+    request.state.key_operator_id = agent_session.started_by_id or agent.owner_id
+    # What the operator gate decides from — plain values, so the request holds
+    # no database rows after it has been answered.
+    request.state._agent_operator_access = (
+        ctx.project_archived, ctx.operator_id, ctx.operator_active,
+        ctx.operator_is_admin, ctx.membership_role,
+    )
 
     # v2.24.0 — agent_api_call middleware reads these after the response
     # is returned (when request.state survives via Starlette's request
@@ -580,7 +697,7 @@ def get_current_agent(
             note_agent_harness(agent_session, ua, overwrite=False)
             need_commit = True
     if need_commit:
-        db.commit()
+        _commit_keeping_loaded(db)
 
     return agent
 
@@ -674,7 +791,7 @@ def check_agent_rate_limit(
         # and holding it for the request's duration would serialize every call
         # from the same agent.  get_current_agent already commits in this same
         # dependency chain, so there is no caller work to disturb.
-        db.commit()
+        _commit_keeping_loaded(db)
     except (ProgrammingError, OperationalError, CompileError):
         # No ON CONFLICT support (sqlite dev), or the table is missing because
         # migrations have not run yet.  Fail OPEN rather than locking every
@@ -721,97 +838,85 @@ def check_agent_rate_limit(
 # project, evaluated PER REQUEST.
 # ---------------------------------------------------------------------------
 
-# Paths here are **router-relative**, which is what ``request.scope["route"].path``
-# returns — FastAPI 0.141 keeps included routers as a single node, so the matched
-# route object is the one registered on the sub-router and carries its own path,
-# not the mounted `/api/v1/agent/...` one. v2.307.0 fixed exactly this: the
-# entries were written as full paths, matched nothing, and every one of these
-# routes was silently gated as a project write — so a read-only operator could
-# not report an environment probe or file feedback. Nothing failed loudly,
-# because the failure direction is a 403 that looks deliberate.
+# What a route needs beyond the defaults is DECLARED ON THE ROUTE (or on the
+# ``APIRouter`` that owns it), as a dependency that does nothing when called:
 #
-# ``tests/test_agent_operator_access.py`` pins each entry to exactly one mounted
-# route, so a renamed path can't quietly drop out of the allowlist again.
-AGENT_SESSION_METADATA_WRITES = frozenset({
-    # Mounted outside this gate entirely (its own router, so an expired key can
-    # reach it). Listed for completeness — if it were ever moved back under the
-    # gate, it must not become a project write.
-    ("POST", "/session/renew"),
-    # (``/session/environment``, the environment probe, was here until
-    # v2.434.0, when the probe was removed.)
-    # v2.343.2 (external review, finding 6) — ending one's own session is
-    # lifecycle bookkeeping, not a project write: an auditor could start a
-    # session (AUDITOR floor on /assist/start) and then not end it, because
-    # this route is mounted under the gate and was missing here.  Ownership
-    # (the key identifies its own session) lives in
-    # close_agent_session_from_agent and is unchanged.
-    ("POST", "/session/end"),
-    ("POST", "/feedback"),
-    ("POST", "/tool-suggestions"),
-})
+#     @router.get("/assist/hosts.ndjson",
+#                 dependencies=[Depends(agent_read_floor(ProjectRole.AUDITOR))])
+#     @router.post("/feedback", dependencies=[Depends(agent_session_metadata_write)])
+#
+# ``enforce_agent_operator_access`` reads the declaration off the matched route
+# before the handler runs.  A route that declares nothing gets the defaults: a
+# read needs membership (VIEWER), a write needs ANALYST.  The declaration must
+# be on the route or in its router's constructor — ``include_router(...,
+# dependencies=)`` is not part of the route object the gate is handed.
 
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
-# Reads that are bulk **exports** of project data, and therefore need the same
-# minimum role their JWT equivalents do (`export.py` and `reports.py` both gate
-# their whole router on AUDITOR).
-#
-# v2.308.0, flagged by external review. Without this the gate treats every GET
-# as available to any project member — which is harmless while only analysts can
-# start a session, but stops being harmless the moment the role floor drops.
-# A viewer's agent would otherwise have data egress the viewer's own JWT session
-# is refused, which is precisely the escalation shape this consolidation exists
-# to remove.
-#
-# Router-relative paths, matching AGENT_SESSION_METADATA_WRITES (see the note
-# there on why full paths do not work).
-AGENT_READ_ROLE_OVERRIDES = {
-    # The whole-project dossier: every host, its findings, notes and evidence.
-    ("GET", "/assist/report-context.ndjson"): ProjectRole.AUDITOR,
-    # Bulk inventory + target lists — the same data an export would hand over,
-    # in a shape built for piping into another tool.
-    ("GET", "/assist/hosts.ndjson"): ProjectRole.AUDITOR,
-    ("GET", "/scopes/{scope_id}/hosts.ndjson"): ProjectRole.AUDITOR,
-    ("GET", "/scopes/{scope_id}/live-hosts.txt"): ProjectRole.AUDITOR,
-    ("GET", "/scopes/{scope_id}/web-targets.txt"): ProjectRole.AUDITOR,
-    ("GET", "/scopes/{scope_id}/named-targets.ndjson"): ProjectRole.AUDITOR,
-    # v2.428.0 — evidence files (note attachments, EyeWitness screenshots) are
-    # NOT here any more: the UI serves both to a viewer
-    # (GET /hosts/notes/attachments/{id}, GET /hosts/web-interfaces/{id}/
-    # screenshot), so an AUDITOR floor left a viewer's agent holding
-    # references it could not open.  The rule is the UI's level, both ways.
-    #
-    # Ingestion Results is an analyst page (navigation + every /parse-errors
-    # route requires ANALYST); its agent reads were open to any member.
-    ("GET", "/assist/ingestion-issues"): ProjectRole.ANALYST,
-    ("GET", "/assist/uninterpreted-lines"): ProjectRole.ANALYST,
-    # v2.428.0 — the Reports page (client_reports router) is AUDITOR.
-    ("GET", "/assist/client-reports"): ProjectRole.AUDITOR,
-    ("GET", "/assist/client-reports/{report_id}"): ProjectRole.AUDITOR,
-    ("GET", "/assist/client-reports/{report_id}/files/{fmt}"): ProjectRole.AUDITOR,
-    # v2.457.0 — remediation tracking is read by auditors, as on its page
-    # (writes need a project admin: `remediation.agent_admin`).
-    ("GET", "/remediation"): ProjectRole.AUDITOR,
-    ("GET", "/remediation/contacts"): ProjectRole.AUDITOR,
-    ("GET", "/remediation/follow-up"): ProjectRole.AUDITOR,
-    ("GET", "/remediation/teams"): ProjectRole.AUDITOR,
-    ("GET", "/remediation/contact-report/{job_id}"): ProjectRole.AUDITOR,
-    ("GET", "/remediation/contact-report/{job_id}/download"): ProjectRole.AUDITOR,
-    ("GET", "/remediation/trend"): ProjectRole.AUDITOR,
-    ("GET", "/remediation/hosts/{host_id}/events"): ProjectRole.AUDITOR,
-    # v2.441.0 — the report's complete scope file: the Reports page's read floor.
-    ("GET", "/assist/client-reports/{report_id}/scope.csv"): ProjectRole.AUDITOR,
-}
-
-#: Everything else a member may read. Viewers can already see hosts, scans and
-#: findings in the UI, so their agent may too.
+#: What a member may read unless the route says otherwise. Viewers can already
+#: see hosts, scans and findings in the UI, so their agent may too.
 _DEFAULT_READ_ROLE = ProjectRole.VIEWER
+
+_ROLE_ORDER = (ProjectRole.VIEWER, ProjectRole.AUDITOR, ProjectRole.ANALYST, ProjectRole.ADMIN)
+
+
+class _AgentRouteDeclaration:
+    """A route's statement to the agent gate.  As a dependency it is a no-op;
+    the gate finds it among the matched route's dependencies."""
+
+    def __init__(self, *, read_floor: Optional[ProjectRole] = None,
+                 session_metadata_write: bool = False):
+        self.read_floor = read_floor
+        self.session_metadata_write = session_metadata_write
+
+    def __call__(self) -> None:
+        return None
+
+
+_READ_FLOORS = {role: _AgentRouteDeclaration(read_floor=role) for role in _ROLE_ORDER}
+
+
+def agent_read_floor(role: ProjectRole) -> _AgentRouteDeclaration:
+    """Declare the least project role whose agent may read this route — the
+    role the equivalent page or export requires of a person, both ways: a bulk
+    export or the Reports page is AUDITOR, Ingestion Results is ANALYST, and a
+    file the UI serves to a viewer declares nothing.  Without it a viewer's
+    agent would have data egress the viewer's own session is refused."""
+    return _READ_FLOORS[role]
+
+
+#: Declares a mutating route that records something about the SESSION (its end,
+#: its key's deadline, feedback, a tool suggestion) rather than project data,
+#: so a read-only operator's agent may call it.
+agent_session_metadata_write = _AgentRouteDeclaration(session_metadata_write=True)
+
+
+@dataclass(frozen=True)
+class AgentRouteAccess:
+    read_floor: ProjectRole
+    session_metadata_write: bool
+
+
+def agent_route_access(route) -> AgentRouteAccess:
+    """What ``route`` declares to the agent gate; the defaults when it declares
+    nothing.  Of several read floors (router and route), the strictest holds."""
+    floor = _DEFAULT_READ_ROLE
+    metadata_write = False
+    for dep in getattr(route, "dependencies", None) or ():
+        declared = getattr(dep, "dependency", None)
+        if not isinstance(declared, _AgentRouteDeclaration):
+            continue
+        metadata_write = metadata_write or declared.session_metadata_write
+        if declared.read_floor is not None and (
+            _ROLE_ORDER.index(declared.read_floor) > _ROLE_ORDER.index(floor)
+        ):
+            floor = declared.read_floor
+    return AgentRouteAccess(read_floor=floor, session_metadata_write=metadata_write)
 
 
 def enforce_agent_operator_access(
     request: Request,
     agent: Agent = Depends(check_agent_rate_limit),
-    db: Session = Depends(get_db),
 ) -> Agent:
     """An agent key may do what its operator may do — checked on every request.
 
@@ -836,51 +941,29 @@ def enforce_agent_operator_access(
     A global admin bypasses, matching ``require_project_role``.
     """
     method = request.method.upper()
-    route = request.scope.get("route")
-    path = getattr(route, "path", "") or ""
+    declared = agent_route_access(request.scope.get("route"))
     is_write = method not in _READ_METHODS
-    is_project_write = is_write and (method, path) not in AGENT_SESSION_METADATA_WRITES
+    is_project_write = is_write and not declared.session_metadata_write
 
     # An archived project is closed to its agents as it is to its people
     # (``get_current_project`` answers 410): a key minted before the archive
     # kept reading and writing it (review 2026-09-23 R12).  Session metadata
     # writes — ending the session among them — still go through, so a
     # session can be wrapped up.
-    if is_project_write or not is_write:
-        archived = db.query(Project.is_archived).filter(Project.id == agent.project_id).scalar()
-        if archived:
-            raise HTTPException(status_code=410, detail="Project is archived")
+    # Everything below was read with the key (``_load_agent_key``): the gate
+    # itself issues no statement.
+    access = getattr(request.state, "_agent_operator_access", None)
+    if access is None:
+        raise HTTPException(status_code=401, detail="Invalid agent API key")
+    project_archived, operator_id, operator_active, operator_is_admin, membership_role = access
 
-    # Prefer the session's own starter; fall back to the agent's owner.
-    #
-    # These are the same person in practice — an Agent is unique per
-    # (user, project) and a session is started by the user whose agent it is —
-    # but they fail differently. ``started_by_id`` is ON DELETE SET NULL and is
-    # absent on keys minted before the unified session binding, whereas
-    # ``Agent.owner_id`` is set at creation and always present. Reading only the
-    # session would make this gate deny keys whose operator is perfectly
-    # identifiable, which is a worse answer than the one it replaces.
-    operator_id = getattr(request.state, "key_operator_id", None) or agent.owner_id
-    if operator_id is None:
-        # Both gone: the operator's account was deleted, which is deliberately
-        # non-destructive to the audit trail. Reads continue; writes stop,
-        # because there is no longer anyone whose authority this key acts under.
-        if is_project_write:
-            logger.warning(
-                "agent key %s has no resolvable operator — refusing %s %s",
-                getattr(request.state, "api_key_prefix", "?"), method, path,
-            )
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "This key's operator no longer exists, so it cannot write. "
-                    "Ask an active project member to start a new session."
-                ),
-            )
-        return agent
+    if (is_project_write or not is_write) and project_archived:
+        raise HTTPException(status_code=410, detail="Project is archived")
 
-    operator = db.query(User).filter(User.id == operator_id).first()
-    if operator is None or not operator.is_active:
+    # ``operator_id`` is None only when the user row behind the key is gone,
+    # which the schema does not allow for a live key; it is refused like an
+    # inactive one.
+    if operator_id is None or not operator_active:
         raise HTTPException(
             status_code=403,
             detail=(
@@ -888,19 +971,11 @@ def enforce_agent_operator_access(
                 "project member to start a new session."
             ),
         )
-    request.state.key_operator_is_admin = operator.role == UserRole.ADMIN
-    if operator.role == UserRole.ADMIN:
+    request.state.key_operator_is_admin = operator_is_admin
+    if operator_is_admin:
         return agent
 
-    membership = (
-        db.query(ProjectMembership)
-        .filter(
-            ProjectMembership.project_id == agent.project_id,
-            ProjectMembership.user_id == operator.id,
-        )
-        .first()
-    )
-    if membership is None:
+    if membership_role is None:
         raise HTTPException(
             status_code=403,
             detail=(
@@ -908,14 +983,14 @@ def enforce_agent_operator_access(
                 "key cannot act on a project its operator has left."
             ),
         )
-    request.state.key_operator_role = membership.role
+    request.state.key_operator_role = membership_role
 
     if is_project_write:
-        if not check_permissions(membership.role, ProjectRole.ANALYST.value):
+        if not check_permissions(membership_role, ProjectRole.ANALYST.value):
             raise HTTPException(
                 status_code=403,
                 detail=(
-                    f"This key acts for a project {membership.role}, which is "
+                    f"This key acts for a project {membership_role}, which is "
                     "read-only. An agent can only do what the operator who "
                     "started its session can do."
                 ),
@@ -924,12 +999,12 @@ def enforce_agent_operator_access(
 
     # Reads: most need only membership, but bulk exports match their JWT
     # equivalents' floor.
-    required_read = AGENT_READ_ROLE_OVERRIDES.get((method, path), _DEFAULT_READ_ROLE)
-    if not check_permissions(membership.role, required_read.value):
+    required_read = declared.read_floor
+    if not check_permissions(membership_role, required_read.value):
         raise HTTPException(
             status_code=403,
             detail=(
-                f"This key acts for a project {membership.role}. This read "
+                f"This key acts for a project {membership_role}. This read "
                 f"requires {required_read.value}, the same role the equivalent "
                 "page or export requires of a person."
             ),

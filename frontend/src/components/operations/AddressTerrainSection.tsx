@@ -143,7 +143,7 @@ const AddressTerrainSection: React.FC<{ refreshKey?: number }> = ({ refreshKey =
   const summary = useMemo(() => (data ? summariseTerrain(data.blocks) : null), [data]);
   useEffect(() => { setSelected(null); setHovered(null); }, [layout]);
 
-  const blocks = layout?.placed.map((p) => p.block) ?? [];
+  const blocks = useMemo(() => layout?.placed.map((p) => p.block) ?? [], [layout]);
   // The map's readout follows the pointer or the keyboard; with neither it
   // says how to read a block (the hot block is always shown above it).
   const focusIndex = hovered ?? selected;

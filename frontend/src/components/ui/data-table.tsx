@@ -76,6 +76,8 @@ export interface UseDataTableProps<TData> {
   getRowCanExpand?: (row: Row<TData>) => boolean;
 }
 
+const UNSIZED_BY_DEFAULT = { size: undefined };
+
 export function useDataTable<TData>({
   data,
   columns,
@@ -97,6 +99,10 @@ export function useDataTable<TData>({
   return useReactTable<TData>({
     data,
     columns,
+    // tanstack gives every column a default `size` of 150, which cannot be
+    // told from a column that asked for 150.  With no default, a column's
+    // `columnDef.size` is what its definition says, or undefined (unsized).
+    defaultColumn: UNSIZED_BY_DEFAULT as Partial<ColumnDef<TData, unknown>>,
     getRowId,
     state: {
       sorting,
@@ -124,13 +130,16 @@ export function useDataTable<TData>({
 // Row subcomponent
 // ---------------------------------------------------------------------------
 //
-// Audit PRF·M4: previously the row render-loop defined inline arrow
-// handlers for onClick + onKeyDown.  Every render produced new function
-// identities so memo had nothing to grab onto, and React re-ran every
-// row even when only one row's data changed.  Pulling the row into a
-// memoised subcomponent with stable useCallback handlers lets React
-// skip re-render on the unchanged rows.  Keyboard semantics are
-// preserved verbatim from the prior inline implementation.
+// The row is memoised: a re-render of the page that changes nothing about a
+// row (its data, its selection, its expansion, the columns shown, its class)
+// does not run that row's cells again.  That holds only while the caller's
+// `onRowClick` / `renderSubRow` keep their identity — pass a `useCallback`,
+// not an inline arrow, on a page that re-renders often (Hosts).
+//
+// tanstack keeps the same `Row` object while the data is unchanged, so what
+// the row reads from TABLE state is passed in as props (`selected`,
+// `expanded`, `columns`); read through `row` alone, a change to it would not
+// re-render a memoised row.
 
 /** The id of the column `selectionColumn()` builds. */
 const SELECTION_COLUMN_ID = '__select';
@@ -140,6 +149,9 @@ interface DataTableRowProps<TData> {
   selected: boolean;
   /** The table has a selection column (or the caller reports selection). */
   selectable: boolean;
+  expanded: boolean;
+  /** The columns shown — only so that a change of columns re-renders the row. */
+  columns: unknown;
   onRowClick?: (row: TData, event: React.MouseEvent<HTMLTableRowElement>) => void;
   renderSubRow?: (row: Row<TData>) => React.ReactNode;
   /** Caller-supplied extra className for this row (e.g. a left-border
@@ -154,6 +166,7 @@ function DataTableRowImpl<TData>({
   row,
   selected,
   selectable,
+  expanded: isExpanded,
   onRowClick,
   renderSubRow,
   extraClassName,
@@ -168,7 +181,6 @@ function DataTableRowImpl<TData>({
   );
 
   const cells = row.getVisibleCells();
-  const isExpanded = row.getIsExpanded();
 
   return (
     <React.Fragment>
@@ -228,14 +240,17 @@ const DataTableRow = React.memo(DataTableRowImpl) as typeof DataTableRowImpl;
  *  - `meta: { width: '21%' }` — a SHARE of the table, so the column grows
  *    with the window (the Hosts table: spare width goes to the columns whose
  *    content wraps, not all to the one unsized column);
- *  - `size: N` (not 150) — a fixed pixel width;
- *  - neither (size is tanstack's default 150) — unsized: the column takes
- *    whatever the others leave.
+ *  - `size: N` — a fixed pixel width;
+ *  - neither — unsized: the column takes whatever the others leave.
+ *
+ * `size` is the column definition's own (`column.columnDef.size`, undefined
+ * when the definition names none), never `getSize()`, which answers 150 for
+ * an unsized column.
  */
-export const columnWidth = (meta: unknown, size: number): string | number | undefined => {
+export const columnWidth = (meta: unknown, size: number | undefined): string | number | undefined => {
   const share = (meta as { width?: unknown } | undefined)?.width;
   if (typeof share === 'string' && share) return share;
-  return size === 150 ? undefined : size;
+  return size;
 };
 
 export interface DataTableShellProps<TData> {
@@ -292,16 +307,19 @@ export function DataTableShell<TData>({
   // configured without sorting state (some legacy call sites do this).
   // Coalesce to an empty array — pre-fix this null deref crashed the
   // entire Hosts page with "can't access property 'length' of undefined".
-  const sorting = table.getState().sorting ?? [];
+  const sortingState = table.getState().sorting;
   const sortAnnouncement = React.useMemo(() => {
+    const sorting = sortingState ?? [];
     if (sorting.length === 0) return 'Sort cleared';
     const first = sorting[0];
     const col = table.getColumn(first.id);
     const headerDef = col?.columnDef.header;
     const label = typeof headerDef === 'string' ? headerDef : first.id;
     return `Sorted by ${label} ${first.desc ? 'descending' : 'ascending'}`;
-  }, [sorting, table]);
+  }, [sortingState, table]);
   const hasSelectionColumn = table.getAllLeafColumns().some((c) => c.id === SELECTION_COLUMN_ID);
+  // The same array while the column definitions and their visibility are.
+  const visibleColumns = table.getVisibleLeafColumns();
   return (
     <div
       className={cn(
@@ -339,7 +357,7 @@ export function DataTableShell<TData>({
                           : 'none'
                       : undefined
                   }
-                  style={{ width: columnWidth(header.column.columnDef.meta, header.getSize()) }}
+                  style={{ width: columnWidth(header.column.columnDef.meta, header.column.columnDef.size) }}
                   className={cn(
                     'h-9 px-sm text-left align-middle text-caption font-semibold uppercase tracking-wider text-muted-foreground',
                     '[&:has([role=checkbox])]:pr-0 [&:has([role=checkbox])]:w-10',
@@ -377,6 +395,8 @@ export function DataTableShell<TData>({
                   row={row}
                   selected={selected}
                   selectable={hasSelectionColumn || !!getRowSelectedState}
+                  expanded={row.getIsExpanded()}
+                  columns={visibleColumns}
                   onRowClick={onRowClick}
                   renderSubRow={renderSubRow}
                   extraClassName={getRowClassName ? getRowClassName(row) : undefined}

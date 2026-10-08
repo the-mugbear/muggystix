@@ -2,6 +2,7 @@
 import re
 from datetime import date, datetime
 from typing import Literal, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -119,6 +120,8 @@ class FollowUpBody(_Base):
     """Record that a contact was chased about their overdue and due-soon
     findings on hosts in this project."""
     contact_email: str = Field(..., min_length=3, max_length=254)
+    # Not after the installation's today — checked by the service, which knows
+    # the installation's time zone.
     followed_up_on: Optional[date] = Field(None, description="The day it happened, if not today.")
     note: Optional[str] = Field(None, max_length=NOTE_MAX_CHARS,
                                 description="What was said or agreed, kept on each host's timeline.")
@@ -137,15 +140,6 @@ class FollowUpBody(_Base):
     def blank_is_none(cls, value):
         return value or None
 
-    @field_validator("followed_up_on")
-    @classmethod
-    def not_in_the_future(cls, value):
-        # One day of slack: the server's day is UTC, the reader's may be ahead.
-        if value is not None and (value - date.today()).days > 1:
-            raise ValueError("followed_up_on cannot be in the future")
-        return value
-
-
 class ContactReportBody(_Base):
     """Prepare one contact's remediation list as a document."""
     contact_email: str = Field(..., min_length=3, max_length=254)
@@ -163,6 +157,21 @@ class PolicyUpdate(_Base):
     enabled: Optional[bool] = None
     days: Optional[dict[Severity, Optional[int]]] = None
     due_soon_days: Optional[int] = Field(None, ge=0, le=365)
+    time_zone: Optional[str] = Field(
+        None, min_length=1, max_length=64,
+        description="IANA name of the zone whose calendar day is 'today' for deadlines, e.g. Europe/Paris.",
+    )
+
+    @field_validator("time_zone")
+    @classmethod
+    def known_zone(cls, value):
+        if value is None:
+            return None
+        try:
+            return ZoneInfo(value).key
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            raise ValueError("time_zone must be an IANA time zone name, such as UTC, "
+                             "Europe/Paris or America/Los_Angeles")
 
     @field_validator("days")
     @classmethod

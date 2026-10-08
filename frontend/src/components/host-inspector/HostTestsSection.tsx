@@ -693,7 +693,8 @@ const Standalone: React.FC<HostTestsSectionProps> = ({ onDirtyChange, ...options
 export const HostTestsSection: React.FC<HostTestsSectionProps> = (props) => {
   const provided = useHostTests();
   if (provided) return <SectionBody ctl={provided} onDirtyChange={props.onDirtyChange} />;
-  return <Standalone {...props} />;
+  // The controller is one host's: another host starts another.
+  return <Standalone key={props.hostId} {...props} />;
 };
 
 export default HostTestsSection;

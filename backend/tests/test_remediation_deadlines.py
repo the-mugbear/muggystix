@@ -112,7 +112,7 @@ def as_user(user):
 def test_an_installation_that_did_not_opt_in_has_no_remediation_at_all(client, db_session, test_project):
     _rows(db_session, test_project, 2)
     assert client.get(POLICY_URL).json() == {
-        "enabled": False, "due_soon_days": 7,
+        "enabled": False, "due_soon_days": 7, "time_zone": "UTC",
         "days": {"critical": 30, "high": 30, "medium": 90, "low": 120, "info": None}}
     for method, url in (("get", base(test_project)), ("get", f"{base(test_project)}/contacts"),
                         ("get", OVERVIEW), ("get", f"{OVERVIEW}/projects"), ("get", f"{OVERVIEW}/contacts")):
@@ -128,7 +128,7 @@ def test_an_installation_that_did_not_opt_in_has_no_remediation_at_all(client, d
 def test_turning_it_on_is_the_global_admins_and_is_audited(client, db_session, test_project):
     r = client.put(POLICY_URL, json={"enabled": True, "days": {"high": 45, "low": None}, "due_soon_days": 10})
     assert r.status_code == 200, r.text
-    assert r.json() == {"enabled": True, "due_soon_days": 10,
+    assert r.json() == {"enabled": True, "due_soon_days": 10, "time_zone": "UTC",
                         "days": {"critical": 30, "high": 45, "medium": 90, "low": None, "info": None}}
     entry = db_session.query(AuditLog).filter(AuditLog.action == "remediation_policy_updated").one()
     assert "45" in str(entry.details)

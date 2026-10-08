@@ -228,6 +228,8 @@ Icon
 # checkout stays green without the fixtures present.
 artifacts/
 CLAUDE.md
+.claude/rules/
+.claude/archive/
 notes.txt
 troubleshooting_*
 temp_artifacts/

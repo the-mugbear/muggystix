@@ -63,6 +63,15 @@ from app.services.host_condition_sets import (
 )
 
 
+def is_id(text) -> bool:
+    """``text`` is a whole number written in ASCII digits — safe to ``int()``.
+
+    ``str.isdigit()`` alone is not: it accepts "²" and other Unicode digits
+    that ``int()`` refuses."""
+    s = str(text).strip()
+    return s.isascii() and s.isdigit()
+
+
 # ---------------------------------------------------------------------------
 # Simple Host-column predicates
 # ---------------------------------------------------------------------------
@@ -176,8 +185,8 @@ def vuln_scan_credentialed_predicate(values: Sequence[str]) -> ColumnElement:
 # ---------------------------------------------------------------------------
 #
 # The legacy path fuses ports + services + port_states + has_open_ports
-# into ONE subquery joined to Port, so a single port row must satisfy all
-# of them ("has a port that is 80 AND open").  ``port_match_subquery`` is
+# into ONE condition list on a Port row, so a single port must satisfy all
+# of them ("has a port that is 80 AND open").  ``port_match_conditions`` is
 # that single builder; the legacy block calls it once with every supplied
 # dimension, while each DSL leaf (``port:``, ``service:``, ``portstate:``)
 # calls it with just its own dimension and composes via the boolean
@@ -218,41 +227,16 @@ def resolve_endpoint_states(
     return ["open"] if has_endpoint else None
 
 
-def port_match_subquery(
-    db: Session,
-    *,
-    ports: Optional[Sequence[int]] = None,
-    services: Optional[Sequence[str]] = None,
-    port_states: Optional[Sequence[str]] = None,
-    require_open: bool = False,
-    project_id: Optional[int] = None,
-):
-    """Return a ``db.query(Host.id).join(Port)`` narrowed by the supplied
-    port dimensions (all applied to the *same* Port row).  A port or
-    service condition matches OPEN ports unless ``port_states`` names a
-    state (``resolve_endpoint_states``).
-
-    The host predicates below no longer use this (they are correlated
-    ``EXISTS`` — ``host_has_port``); it remains for callers that want the id
-    list itself.  ``project_id`` (review 2026-10-01 R19) confines it to one
-    project's hosts: it never changes which of a project's hosts match, only
-    what Postgres reads — without it the subquery is every project's ports.
-    Pass it wherever the project is known.
-    """
-    sub = db.query(models.Host.id).join(models.Port)
-    if project_id is not None:
-        sub = sub.filter(models.Host.project_id == project_id)
-    return sub.filter(*port_match_conditions(ports, services, port_states, require_open))
-
-
 def port_match_conditions(
     ports: Optional[Sequence[int]] = None,
     services: Optional[Sequence[str]] = None,
     port_states: Optional[Sequence[str]] = None,
     require_open: bool = False,
 ) -> List[ColumnElement]:
-    """The conditions ONE Port row must meet — shared by
-    ``port_match_subquery`` and ``host_has_port``."""
+    """The conditions ONE Port row must meet, for ``host_has_port``: every
+    supplied dimension applies to the same row.  A port or service condition
+    matches OPEN ports unless ``port_states`` names a state
+    (``resolve_endpoint_states``)."""
     conditions: List[ColumnElement] = []
     if ports:
         conditions.append(models.Port.port_number.in_(list(ports)))
@@ -305,12 +289,12 @@ def port_predicate(db: Session, values: Sequence, states: Optional[Sequence[str]
     """Host has at least one OPEN port whose number is in ``values`` — or
     one in ``states`` when given (``["any"]`` = any state).
 
-    RV-5 — an empty port list must NOT broaden to "any port" (the legacy
-    ``port_match_subquery`` skips an empty ``ports`` filter).  The DSL
+    RV-5 — an empty port list must NOT broaden to "any port"
+    (``port_match_conditions`` skips an empty ``ports`` filter).  The DSL
     builder validates and rejects non-numeric input upstream; this guard
     is defense-in-depth for any other caller.
     """
-    port_ints = [int(v) for v in values if str(v).strip().isdigit()]
+    port_ints = [int(v) for v in values if is_id(v)]
     if not port_ints:
         return false()
     return host_has_port(*port_match_conditions(ports=port_ints, port_states=states))
@@ -368,7 +352,7 @@ def webpath_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     return _host_has(models.WebPath.host_id, or_(*conds))
 
 
-def issue_predicate(db: Session, values: Sequence[str], project_id: int) -> ColumnElement:
+def issue_predicate(values: Sequence[str]) -> ColumnElement:
     """Host carries a scanner observation of exactly this issue
     (``Vulnerability.issue_key`` — the key the Findings page's scanner
     observations group by).  Exact, not a substring: it is the "all N hosts"
@@ -376,13 +360,7 @@ def issue_predicate(db: Session, values: Sequence[str], project_id: int) -> Colu
     keys = [v for v in values if v]
     if not keys:
         return false()
-    _H = aliased(models.Host)
-    sub = (
-        db.query(Vulnerability.host_id)
-        .join(_H, _H.id == Vulnerability.host_id)
-        .filter(_H.project_id == project_id, Vulnerability.issue_key.in_(keys))
-    )
-    return models.Host.id.in_(sub)
+    return _host_has(Vulnerability.host_id, Vulnerability.issue_key.in_(keys))
 
 
 def portstate_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
@@ -399,8 +377,14 @@ def _host_has(host_id_column, *conditions: ColumnElement) -> ColumnElement:
     subquery over EVERY project's rows.  At the top level Postgres turns that
     into a semi-join; under ``OR`` or ``NOT`` (``NOT path:admin``,
     ``follow:none``) it ran the subquery whole.  Correlated on the host, it is
-    reached through the outer query's hosts either way.  Same hosts as before:
-    a NULL ``host_id`` never equals a host's id."""
+    reached through the outer query's hosts either way — which also confines
+    it to the project without a join to say so.  Same hosts as before, and
+    two-valued where ``NOT IN`` was not: a NULL ``host_id`` never equals a
+    host's id, so it cannot empty the negated form.
+
+    ``conditions`` may name further tables (a join written as a condition:
+    ``Subnet.id == HostSubnetMapping.subnet_id``); they join inside the
+    subquery."""
     return exists().where(host_id_column == models.Host.id, *conditions).correlate(models.Host)
 
 
@@ -477,27 +461,23 @@ def webtitle_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
 # host_condition_sets and are pulled in as id-sets so the two surfaces agree.
 
 
-def smb_unsigned_predicate(db: Session, project_id: int) -> ColumnElement:
+def smb_unsigned_predicate() -> ColumnElement:
     """Host whose recorded SMB-signing posture does not REQUIRE signing —
     ``not_required`` or ``disabled``, i.e. open to NTLM relay (v2.387.0; it
     matched ``disabled`` only, so every host nmap reported "enabled but not
-    required" was missed).  Project-scoped.
+    required" was missed).
 
-    Expressed as an id-subquery rather than a bare ``Host.smb_signing IN …``
-    so ``NOT has:smb_unsigned`` includes hosts whose signing posture is
-    unknown (NULL) instead of silently dropping them via the NOT-IN/NULL
-    footgun."""
-    _H = aliased(models.Host)
-    sub = db.query(_H.id).filter(
-        _H.project_id == project_id, _H.smb_signing.in_(smb_signing_states.RELAYABLE)
-    )
-    return models.Host.id.in_(sub)
+    A plain column test: NULL (posture unknown) for a host nobody asked.
+    ``NOT has:smb_unsigned`` still lists those hosts, because the DSL's NOT
+    reads an unknown child as false (``host_query_dsl.negate``); a caller
+    negating this any other way must do the same."""
+    return models.Host.smb_signing.in_(smb_signing_states.RELAYABLE)
 
 
 def cleartext_predicate(db: Session) -> ColumnElement:
     """Host with at least one OPEN cleartext-credential port (Telnet/FTP/POP/IMAP).
 
-    Reuses ``port_match_subquery`` so port-in-set AND open are required on the
+    Reuses ``port_match_conditions`` so port-in-set AND open are required on the
     SAME Port row — matching the systemic ``cleartext_services`` condition."""
     return host_has_port(*port_match_conditions(ports=sorted(CLEARTEXT_PORTS), require_open=True))
 
@@ -523,26 +503,20 @@ def weak_auth_predicate(db: Session, project_id: int, only_host_ids=None) -> Col
     return models.Host.id.in_(ids) if ids else false()
 
 
-def _netexec_flag_predicate(db: Session, project_id: int, column) -> ColumnElement:
+def _netexec_flag_predicate(column) -> ColumnElement:
     """Host with a NetExec / SMBMap result where ``column`` is true.  An
-    id-subquery, so ``NOT has:…`` keeps hosts with no such result."""
-    _H = aliased(models.Host)
-    sub = (
-        db.query(NetexecResult.host_id)
-        .join(_H, NetexecResult.host_id == _H.id)
-        .filter(_H.project_id == project_id, column.is_(True))
-    )
-    return models.Host.id.in_(sub)
+    EXISTS, so ``NOT has:…`` keeps hosts with no such result."""
+    return _host_has(NetexecResult.host_id, column.is_(True))
 
 
-def local_admin_predicate(db: Session, project_id: int) -> ColumnElement:
+def local_admin_predicate() -> ColumnElement:
     """Host where a credential was a local administrator ("(Pwn3d!)") — v2.412.0."""
-    return _netexec_flag_predicate(db, project_id, NetexecResult.local_admin)
+    return _netexec_flag_predicate(NetexecResult.local_admin)
 
 
-def writable_share_predicate(db: Session, project_id: int) -> ColumnElement:
+def writable_share_predicate() -> ColumnElement:
     """Host with a share that granted WRITE (NetExec --shares, SMBMap) — v2.412.0."""
-    return _netexec_flag_predicate(db, project_id, NetexecResult.writable_share)
+    return _netexec_flag_predicate(NetexecResult.writable_share)
 
 
 def weak_tls_predicate(db: Session, project_id: int, only_host_ids=None) -> ColumnElement:
@@ -556,68 +530,43 @@ def weak_tls_predicate(db: Session, project_id: int, only_host_ids=None) -> Colu
 # Vulnerability / evidence predicates
 # ---------------------------------------------------------------------------
 
-# The vuln/notes/tested predicates below scope their child-table subquery to
-# ``project_id`` via a join to Host.  Without it the subquery materializes the
-# matching host-ids across EVERY project in the deployment before the outer
-# ``Host.project_id`` filter trims them — a real perf trap on multi-project,
-# Nessus-heavy installs (the global ``vulnerabilities``/``annotations`` tables).
-# Results are identical (the outer filter already constrained them); only the
-# query plan tightens.  An aliased Host (``aliased(models.Host)``) keeps the
-# subquery's hosts_v2 distinct from the outer query's.
+# The vuln / notes / tested predicates below are correlated EXISTS on the
+# host (``_host_has``), so each reads only the rows of the hosts the enclosing
+# query is looking at — the project's — and is two-valued under NOT.  They
+# were ``Host.id IN (SELECT host_id … JOIN hosts WHERE project_id = …)``: the
+# join kept the subquery to one project, but under OR or NOT Postgres still
+# ran it whole before looking at a host.  ``tests/test_read_path_review.py``
+# pins old == new, negated too.
 
-def cve_predicate(db: Session, values: Sequence[str], project_id: int) -> ColumnElement:
-    """Host has a vulnerability whose ``cve_id`` ILIKE-matches any value
-    (project-scoped)."""
-    _H = aliased(models.Host)
+def cve_predicate(values: Sequence[str]) -> ColumnElement:
+    """Host has a vulnerability whose ``cve_id`` ILIKE-matches any value."""
     conditions = [
         Vulnerability.cve_id.ilike(f'%{escape_like(v)}%', escape='\\')
         for v in values
     ]
-    sub = (
-        db.query(Vulnerability.host_id)
-        .join(_H, _H.id == Vulnerability.host_id)
-        .filter(_H.project_id == project_id, or_(*conditions))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_has(Vulnerability.host_id, or_(*conditions))
 
 
-def vuln_predicate(db: Session, values: Sequence[str], project_id: int) -> ColumnElement:
-    """Host has a vulnerability whose ``title`` ILIKE-matches any value
-    (project-scoped)."""
-    _H = aliased(models.Host)
+def vuln_predicate(values: Sequence[str]) -> ColumnElement:
+    """Host has a vulnerability whose ``title`` ILIKE-matches any value."""
     conditions = [
         Vulnerability.title.ilike(f'%{escape_like(v)}%', escape='\\')
         for v in values
     ]
-    sub = (
-        db.query(Vulnerability.host_id)
-        .join(_H, _H.id == Vulnerability.host_id)
-        .filter(_H.project_id == project_id, or_(*conditions))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_has(Vulnerability.host_id, or_(*conditions))
 
 
-def severity_predicate(db: Session, severities: Iterable[str], project_id: int) -> ColumnElement:
+def severity_predicate(severities: Iterable[str]) -> ColumnElement:
     """Host has a vulnerability of any of the given severities (upper-case
-    ``CRITICAL``/``HIGH``/``MEDIUM``/``LOW``), project-scoped."""
-    _H = aliased(models.Host)
+    ``CRITICAL``/``HIGH``/``MEDIUM``/``LOW``)."""
     sev_list = [s.upper() for s in severities]
-    sub = (
-        db.query(Vulnerability.host_id)
-        .join(_H, _H.id == Vulnerability.host_id)
-        .filter(_H.project_id == project_id, Vulnerability.severity.in_(sev_list))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_has(Vulnerability.host_id, Vulnerability.severity.in_(sev_list))
 
 
-def kind_predicate(db: Session, kinds: Iterable[str], project_id: int) -> ColumnElement:
+def kind_predicate(kinds: Iterable[str]) -> ColumnElement:
     """Host with a weakness of any of the given kinds (v2.415.0):
     ``misconfiguration`` (a catalog check, whichever tool reported it),
     ``vulnerability`` (anything else rated low or worse), ``informational``."""
-    _H = aliased(models.Host)
     wanted = {k.strip().lower() for k in kinds}
     conditions = []
     if "misconfiguration" in wanted:
@@ -628,45 +577,28 @@ def kind_predicate(db: Session, kinds: Iterable[str], project_id: int) -> Column
         conditions.append(and_(Vulnerability.check_id.is_(None), Vulnerability.severity == "INFO"))
     if not conditions:
         return false()
-    sub = (
-        db.query(Vulnerability.host_id)
-        .join(_H, _H.id == Vulnerability.host_id)
-        .filter(_H.project_id == project_id, or_(*conditions))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_has(Vulnerability.host_id, or_(*conditions))
 
 
-def check_predicate(db: Session, checks: Iterable[str], project_id: int) -> ColumnElement:
+def check_predicate(checks: Iterable[str]) -> ColumnElement:
     """Host with any of the given catalog checks (v2.415.0)."""
-    _H = aliased(models.Host)
-    sub = (
-        db.query(Vulnerability.host_id)
-        .join(_H, _H.id == Vulnerability.host_id)
-        .filter(_H.project_id == project_id, Vulnerability.check_id.in_([c.strip().lower() for c in checks]))
-        .distinct()
+    return _host_has(
+        Vulnerability.host_id,
+        Vulnerability.check_id.in_([c.strip().lower() for c in checks]),
     )
-    return models.Host.id.in_(sub)
 
 
-def has_exploit_predicate(db: Session, project_id: int) -> ColumnElement:
-    """Host has a vulnerability flagged exploitable (project-scoped).
+def has_exploit_predicate() -> ColumnElement:
+    """Host has a vulnerability flagged exploitable.
 
     Source-agnostic: reads ``Vulnerability.exploitable``, which only the Nessus
     path populates today — the moment another scanner sets it, its rows match
     here with no change.  See ``exploit_on_port_predicate`` for the port-scoped
     variant."""
-    _H = aliased(models.Host)
-    sub = (
-        db.query(Vulnerability.host_id)
-        .join(_H, _H.id == Vulnerability.host_id)
-        .filter(_H.project_id == project_id, Vulnerability.exploitable.is_(True))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_has(Vulnerability.host_id, Vulnerability.exploitable.is_(True))
 
 
-def critical_exploit_predicate(db: Session, project_id: int) -> ColumnElement:
+def critical_exploit_predicate() -> ColumnElement:
     """Host has a CRITICAL vulnerability that is itself flagged exploitable —
     severity and exploit on the SAME row, the Hosts page's "critical ·
     exploit" (``critical_exploitable_count``) and Worth-a-look tier 1.
@@ -674,97 +606,74 @@ def critical_exploit_predicate(db: Session, project_id: int) -> ColumnElement:
     ``has:critical AND has:exploit`` is not this: it also matches a critical
     with no exploit beside a low that has one (MCP acceptance run 2 — 31
     hosts against 7)."""
-    _H = aliased(models.Host)
-    sub = (
-        db.query(Vulnerability.host_id)
-        .join(_H, _H.id == Vulnerability.host_id)
-        .filter(
-            _H.project_id == project_id,
-            Vulnerability.exploitable.is_(True),
-            Vulnerability.severity == VulnerabilitySeverity.CRITICAL,
-        )
-        .distinct()
+    return _host_has(
+        Vulnerability.host_id,
+        Vulnerability.exploitable.is_(True),
+        Vulnerability.severity == VulnerabilitySeverity.CRITICAL,
     )
-    return models.Host.id.in_(sub)
 
 
-def exploit_on_port_predicate(
-    db: Session, ports: Sequence[int], project_id: int
-) -> ColumnElement:
+def exploit_on_port_predicate(ports: Sequence[int]) -> ColumnElement:
     """Host has an exploitable finding whose port is one of ``ports`` — same-row
     correlation (the exploit AND the port are on the SAME vulnerability), so it
     does NOT reduce to ``port:X AND has:exploit`` (which matches a host with X
     open and an exploit on any *other* port).
 
-    The inner join on ``port_id`` drops host-level (``port_id IS NULL``)
+    The join on ``port_id`` drops host-level (``port_id IS NULL``)
     exploitable findings — correct, since a host-level exploit isn't 'on a port'.
     ``ports`` are port NUMBERS (what the user types), matched via the joined Port
     row.  Source-agnostic on ``exploitable`` (see ``has_exploit_predicate``)."""
     port_ints = [int(p) for p in ports]
     if not port_ints:
         return false()
-    _H = aliased(models.Host)
-    sub = (
-        db.query(Vulnerability.host_id)
-        .join(_H, _H.id == Vulnerability.host_id)
-        .join(models.Port, models.Port.id == Vulnerability.port_id)
-        .filter(
-            _H.project_id == project_id,
-            Vulnerability.exploitable.is_(True),
-            models.Port.port_number.in_(port_ints),
-        )
-        .distinct()
+    return _host_has(
+        Vulnerability.host_id,
+        models.Port.id == Vulnerability.port_id,
+        Vulnerability.exploitable.is_(True),
+        models.Port.port_number.in_(port_ints),
     )
-    return models.Host.id.in_(sub)
 
 
 # ---------------------------------------------------------------------------
 # Notes / tested predicates
 # ---------------------------------------------------------------------------
 
-def has_notes_predicate(db: Session, project_id: int) -> ColumnElement:
-    """Host has at least one note — directly, or on one of its ports
-    (project-scoped).
+def has_notes_predicate() -> ColumnElement:
+    """Host has at least one note — directly, or on one of its ports.
 
     The annotations table pins each note to exactly one target (host, port,
     scan, …), so a note left on a host's port carries ``host_id = NULL``.
-    Counting only direct host notes would miss those, so we union in the hosts
-    reached through a port-level note."""
-    _H1 = aliased(models.Host)
-    _H2 = aliased(models.Host)
-    host_noted = (
-        db.query(AnnotationModel.host_id)
-        .join(_H1, _H1.id == AnnotationModel.host_id)
-        .filter(_H1.project_id == project_id, AnnotationModel.host_id.isnot(None))
+    Counting only direct host notes would miss those, so a host also matches
+    through a port-level note."""
+    return or_(
+        _host_has(AnnotationModel.host_id),
+        _host_has(models.Port.host_id, AnnotationModel.port_id == models.Port.id),
     )
-    port_noted = (
-        db.query(models.Port.host_id)
-        .join(AnnotationModel, AnnotationModel.port_id == models.Port.id)
-        .join(_H2, _H2.id == models.Port.host_id)
-        .filter(_H2.project_id == project_id)
-    )
-    return models.Host.id.in_(host_noted.union(port_noted))
 
 
-def note_predicate(db: Session, values: Sequence[str], project_id: int) -> ColumnElement:
-    """Host has a note whose ``body`` ILIKE-matches any value (project-scoped)."""
-    _H = aliased(models.Host)
+def note_predicate(values: Sequence[str]) -> ColumnElement:
+    """Host has a note whose ``body`` ILIKE-matches any value."""
     conditions = [
         AnnotationModel.body.ilike(f'%{escape_like(v)}%', escape='\\')
         for v in values
     ]
-    sub = (
-        db.query(AnnotationModel.host_id)
-        .join(_H, _H.id == AnnotationModel.host_id)
-        .filter(_H.project_id == project_id, or_(*conditions))
-        .distinct()
+    return _host_has(AnnotationModel.host_id, or_(*conditions))
+
+
+def _host_in(host_ids_select, host_id_column) -> ColumnElement:
+    """``_host_has`` for a set another module defines as a ``select`` of host
+    ids (``host_test_queries``): the same rows, correlated on the host, so the
+    definition stays where it is."""
+    return (
+        host_ids_select.where(host_id_column == models.Host.id)
+        .correlate(models.Host)
+        .exists()
     )
-    return models.Host.id.in_(sub)
 
 
-def has_test_execution_predicate(db: Session, project_id: int) -> ColumnElement:
+def has_test_execution_predicate(project_id: int) -> ColumnElement:
     """Executed testing is qualifying evidence, independent of task status."""
-    return models.Host.id.in_(tested_host_ids(project_id))
+    return _host_in(tested_host_ids(project_id), EvidenceRecord.host_id)
 
 
 def untouched_conditions(db: Session) -> List[ColumnElement]:
@@ -803,9 +712,9 @@ def untouched_predicate(db: Session) -> ColumnElement:
     return and_(*untouched_conditions(db))
 
 
-def has_plan_entry_predicate(db: Session, project_id: int) -> ColumnElement:
+def has_plan_entry_predicate(project_id: int) -> ColumnElement:
     """Host has an active proposed or in-progress test."""
-    return models.Host.id.in_(planned_host_ids(project_id))
+    return _host_in(planned_host_ids(project_id), HostTest.host_id)
 
 
 # ---------------------------------------------------------------------------
@@ -817,7 +726,7 @@ def tag_predicate_by_id(db: Session, tag_ids: Sequence[int]) -> ColumnElement:
     return _host_has(models.HostTagAssignment.host_id, models.HostTagAssignment.tag_id.in_(list(tag_ids)))
 
 
-def tag_predicate_by_name(db: Session, names: Sequence[str], project_id: int) -> ColumnElement:
+def tag_predicate_by_name(names: Sequence[str], project_id: int) -> ColumnElement:
     """Host carries any tag whose (case-insensitive) name matches, scoped
     to ``project_id``.
 
@@ -827,38 +736,32 @@ def tag_predicate_by_name(db: Session, names: Sequence[str], project_id: int) ->
     alongside the outer ``Host.project_id`` filter.
     """
     lowered = [n.lower() for n in names]
-    sub = (
-        db.query(models.HostTagAssignment.host_id)
-        .join(models.HostTag, models.HostTag.id == models.HostTagAssignment.tag_id)
-        .filter(
-            models.HostTag.project_id == project_id,
-            func.lower(models.HostTag.name).in_(lowered),
-        )
-        .distinct()
+    return _host_has(
+        models.HostTagAssignment.host_id,
+        models.HostTag.id == models.HostTagAssignment.tag_id,
+        models.HostTag.project_id == project_id,
+        func.lower(models.HostTag.name).in_(lowered),
     )
-    return models.Host.id.in_(sub)
 
 
-def label_predicate_by_id(db: Session, label_ids: Sequence[int], project_id: int) -> ColumnElement:
+def _host_in_labelled_subnet(project_id: int, *conditions: ColumnElement) -> ColumnElement:
+    """Host maps to a subnet carrying one of ``project_id``'s labels that
+    meets ``conditions``."""
+    return _host_has(
+        models.HostSubnetMapping.host_id,
+        models.SubnetLabelAssignment.subnet_id == models.HostSubnetMapping.subnet_id,
+        models.SubnetLabel.id == models.SubnetLabelAssignment.label_id,
+        models.SubnetLabel.project_id == project_id,
+        *conditions,
+    )
+
+
+def label_predicate_by_id(label_ids: Sequence[int], project_id: int) -> ColumnElement:
     """Host sits in a subnet carrying any of the given label IDs, scoped
     to ``project_id``."""
-    sub = (
-        db.query(models.HostSubnetMapping.host_id)
-        .join(
-            models.SubnetLabelAssignment,
-            models.SubnetLabelAssignment.subnet_id == models.HostSubnetMapping.subnet_id,
-        )
-        .join(
-            models.SubnetLabel,
-            models.SubnetLabel.id == models.SubnetLabelAssignment.label_id,
-        )
-        .filter(
-            models.SubnetLabelAssignment.label_id.in_(list(label_ids)),
-            models.SubnetLabel.project_id == project_id,
-        )
-        .distinct()
+    return _host_in_labelled_subnet(
+        project_id, models.SubnetLabelAssignment.label_id.in_(list(label_ids)),
     )
-    return models.Host.id.in_(sub)
 
 
 def site_predicate(db: Session, names: Sequence[str]) -> ColumnElement:
@@ -875,7 +778,7 @@ def site_predicate(db: Session, names: Sequence[str]) -> ColumnElement:
     )
 
 
-def site_none_predicate(db: Session, project_id: int) -> ColumnElement:
+def site_none_predicate(project_id: int) -> ColumnElement:
     """Host sits in a scoped subnet but NO subnet it maps to carries a site —
     the posture matrix's "Unassigned" column (v2.372.0).
 
@@ -884,49 +787,34 @@ def site_none_predicate(db: Session, project_id: int) -> ColumnElement:
     exactly when none of its mapped subnets has one.  A host outside every
     scoped subnet is NOT unassigned — it is unmapped, and absent from that
     matrix — so this is not simply the negation of ``site_predicate``."""
-    mapped = (
-        db.query(models.HostSubnetMapping.host_id)
-        .join(models.Subnet, models.Subnet.id == models.HostSubnetMapping.subnet_id)
-        .join(models.Scope, models.Scope.id == models.Subnet.scope_id)
-        .filter(models.Scope.project_id == project_id)
+    in_scoped_subnet = (
+        models.Subnet.id == models.HostSubnetMapping.subnet_id,
+        models.Scope.id == models.Subnet.scope_id,
+        models.Scope.project_id == project_id,
     )
     # Same test as the inheritance rule: a non-blank site NAME (name and
     # site_id are always written together, scopes.py).
-    sited = mapped.filter(func.trim(func.coalesce(models.Subnet.site, "")) != "")
+    sited = func.trim(func.coalesce(models.Subnet.site, "")) != ""
     return and_(
-        models.Host.id.in_(mapped.distinct()),
-        models.Host.id.notin_(sited.distinct()),
+        _host_has(models.HostSubnetMapping.host_id, *in_scoped_subnet),
+        ~_host_has(models.HostSubnetMapping.host_id, *in_scoped_subnet, sited),
     )
 
 
-def label_predicate_by_name(db: Session, names: Sequence[str], project_id: int) -> ColumnElement:
+def label_predicate_by_name(names: Sequence[str], project_id: int) -> ColumnElement:
     """Host sits in a subnet carrying any label whose (case-insensitive)
     name matches, scoped to ``project_id``."""
     lowered = [n.lower() for n in names]
-    sub = (
-        db.query(models.HostSubnetMapping.host_id)
-        .join(
-            models.SubnetLabelAssignment,
-            models.SubnetLabelAssignment.subnet_id == models.HostSubnetMapping.subnet_id,
-        )
-        .join(
-            models.SubnetLabel,
-            models.SubnetLabel.id == models.SubnetLabelAssignment.label_id,
-        )
-        .filter(
-            models.SubnetLabel.project_id == project_id,
-            func.lower(models.SubnetLabel.name).in_(lowered),
-        )
-        .distinct()
+    return _host_in_labelled_subnet(
+        project_id, func.lower(models.SubnetLabel.name).in_(lowered),
     )
-    return models.Host.id.in_(sub)
 
 
 # ---------------------------------------------------------------------------
 # Follow / assignment / scan predicates
 # ---------------------------------------------------------------------------
 
-def follow_predicate(db: Session, status: str, current_user: User) -> ColumnElement:
+def follow_predicate(status: str, current_user: User) -> ColumnElement:
     """Review-status predicate — review is a SHARED, host-level state.
 
     Review is a team activity: a host is "being reviewed" if ANY teammate
@@ -952,45 +840,40 @@ def follow_predicate(db: Session, status: str, current_user: User) -> ColumnElem
     if status == "none":
         return ~_host_has(HostFollow.host_id, HostFollow.status.in_(review_states))
     if status in ("in_review", "in_review_any"):
-        in_review = db.query(HostFollow.host_id).filter(
-            HostFollow.status == FollowStatus.IN_REVIEW.value
-        )
-        return models.Host.id.in_(in_review)
+        return _host_has(HostFollow.host_id, HostFollow.status == FollowStatus.IN_REVIEW.value)
     if status == "reviewed":
-        reviewed = db.query(HostFollow.host_id).filter(
-            HostFollow.status == FollowStatus.REVIEWED.value
-        )
-        return models.Host.id.in_(reviewed)
+        return _host_has(HostFollow.host_id, HostFollow.status == FollowStatus.REVIEWED.value)
     if status == "mine":
         # The CALLER has it In Review — exactly Operations' "In review" group
         # (``compute_my_attention_queue``), so its count opens its list.
-        mine = db.query(HostFollow.host_id).filter(
+        return _host_has(
+            HostFollow.host_id,
             HostFollow.user_id == current_user.id,
             HostFollow.status == FollowStatus.IN_REVIEW.value,
         )
-        return models.Host.id.in_(mine)
     if status == "revisit":
         # A finished review of the CALLER'S that is not done — exactly
         # Operations' "Changed since review" list.
         return my_review_followup_predicate(current_user)
     # Legacy per-user fallback (e.g. the retired 'watching' state).
-    follow_ids = db.query(HostFollow.host_id).filter(
-        HostFollow.user_id == current_user.id, HostFollow.status == status
+    return _host_has(
+        HostFollow.host_id,
+        HostFollow.user_id == current_user.id,
+        HostFollow.status == status,
     )
-    return models.Host.id.in_(follow_ids)
 
 
-def review_conclusion_predicate(db: Session, conclusions: Sequence[str]) -> ColumnElement:
+def review_conclusion_predicate(conclusions: Sequence[str]) -> ColumnElement:
     """Host whose review CONCLUDED one of these (v2.373.0) — team-level, like
     ``follow_predicate``: any teammate's Reviewed row counts.  A conclusion
     left on a row that has since gone back to In Review does not: the review
     is open again, so nothing is concluded.  ``needs_evidence`` is the
     Posture overview's "still needs evidence" count, and this is its list."""
-    concluded = db.query(HostFollow.host_id).filter(
+    return _host_has(
+        HostFollow.host_id,
         HostFollow.status == FollowStatus.REVIEWED.value,
         HostFollow.review_conclusion.in_(list(conclusions)),
     )
-    return models.Host.id.in_(concluded)
 
 
 # --- changed since review ---------------------------------------------------
@@ -1092,21 +975,17 @@ def assigned_predicate(db: Session, value: str, current_user: User) -> Optional[
     In Review now sets ``assigned_at`` too (see the review-status write path),
     so "review it = it's yours" holds without conflating the two here."""
     if value in ("any", "none"):
-        assigned = db.query(HostFollow.host_id).filter(HostFollow.assigned_at.isnot(None))
+        assigned = _host_has(HostFollow.host_id, HostFollow.assigned_at.isnot(None))
         # `none` is the complement, and it is the half operators actually reach
         # for: "critical findings nobody owns" is a work-allocation question,
         # where "assigned to someone" is rarely the interesting set. Its absence
         # made that question expressible only as `NOT assigned:any`, while the
         # sibling `follow:` field accepted `none` — so the obvious phrasing
         # errored on one field and worked on the other (v2.291.0).
-        return (
-            models.Host.id.in_(assigned)
-            if value == "any"
-            else ~models.Host.id.in_(assigned)
-        )
+        return assigned if value == "any" else ~assigned
     if value == "me":
         assignee_id: Optional[int] = current_user.id
-    elif value.isdigit():
+    elif is_id(value):
         assignee_id = int(value)
     else:
         # A username — the value a user actually knows and types (ids aren't
@@ -1119,42 +998,28 @@ def assigned_predicate(db: Session, value: str, current_user: User) -> Optional[
         assignee_id = row[0] if row else None
     if assignee_id is None:
         return None
-    assigned = db.query(HostFollow.host_id).filter(
-        HostFollow.user_id == assignee_id, HostFollow.assigned_at.isnot(None)
-    )
-    return models.Host.id.in_(assigned)
-
-
-def stale_review_predicate(db: Session) -> ColumnElement:
-    """Hosts marked Reviewed (by anyone) that a scan has re-observed SINCE the
-    review — ``last_seen`` is later than the reviewed follow's timestamp, so the
-    review is stale and worth re-checking (§9 'new evidence since review').
-    A fresh follow row has updated_at=NULL (onupdate-only), so fall back to
-    created_at for the review time."""
-    hf = aliased(HostFollow)
-    review_ts = func.coalesce(hf.updated_at, hf.created_at)
-    return exists().where(
-        (hf.host_id == models.Host.id)
-        & (hf.status == FollowStatus.REVIEWED.value)
-        & (models.Host.last_seen.isnot(None))
-        & (models.Host.last_seen > review_ts)
+    return _host_has(
+        HostFollow.host_id,
+        HostFollow.user_id == assignee_id,
+        HostFollow.assigned_at.isnot(None),
     )
 
 
-def scan_predicate(db: Session, scan_ids: Sequence[int], first_seen_only: bool = False) -> ColumnElement:
+def scan_predicate(scan_ids: Sequence[int], first_seen_only: bool = False) -> ColumnElement:
     """Host appears in any of the given scans; with ``first_seen_only`` the
     host must have been *first* discovered in one of them."""
-    history_query = db.query(models.HostScanHistory.host_id).filter(
-        models.HostScanHistory.scan_id.in_(list(scan_ids))
-    )
+    conditions = [models.HostScanHistory.scan_id.in_(list(scan_ids))]
     if first_seen_only:
         earlier = aliased(models.HostScanHistory)
-        earlier_exists = exists().where(
-            (earlier.host_id == models.HostScanHistory.host_id)
-            & (earlier.discovered_at < models.HostScanHistory.discovered_at)
-        )
-        history_query = history_query.filter(~earlier_exists)
-    return models.Host.id.in_(history_query)
+        conditions.append(~(
+            exists()
+            .where(
+                earlier.host_id == models.HostScanHistory.host_id,
+                earlier.discovered_at < models.HostScanHistory.discovered_at,
+            )
+            .correlate(models.HostScanHistory)
+        ))
+    return _host_has(models.HostScanHistory.host_id, *conditions)
 
 
 # ---------------------------------------------------------------------------
@@ -1194,45 +1059,43 @@ def vuln_window_condition(start, end=None, severities: Optional[Iterable[str]] =
     return cond
 
 
-def vuln_window_predicate(
-    db: Session, project_id: int, start, end=None, severities: Optional[Iterable[str]] = None,
-) -> ColumnElement:
+def vuln_window_predicate(start, end=None, severities: Optional[Iterable[str]] = None) -> ColumnElement:
     """Hosts carrying a scanner observation recorded in the window.  Severity
     and time are matched on the SAME row: `has:critical` AND "something new"
     would also match a host whose only new row is informational."""
-    _H = aliased(models.Host)
-    sub = (
-        db.query(Vulnerability.host_id)
-        .join(_H, _H.id == Vulnerability.host_id)
-        .filter(_H.project_id == project_id, vuln_window_condition(start, end, severities))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_has(Vulnerability.host_id, vuln_window_condition(start, end, severities))
 
 
-def changed_window_predicate(db: Session, project_id: int, start, end=None) -> ColumnElement:
+def changed_window_predicate(start, end=None) -> ColumnElement:
     """EXISTING hosts (first observed at or before ``start``) that gained a
     port or a scanner observation in the window — a material change to a
     target the analyst already knew, as opposed to a new record.  Disjoint
     from ``first_seen_window_predicate`` by construction.
 
     Removed ports are not detectable (the dedup keeps ports and does not track
-    per-scan presence — same limit as host_change_service)."""
-    new_port = (
-        db.query(models.Port.host_id)
-        .filter(_in_window(models.Port.first_seen, start, end))
-        .distinct()
-    )
+    per-scan presence — same limit as host_change_service).  Both halves are
+    reached through the enclosing query's hosts."""
     return (
         (models.Host.first_seen <= start)
         & (
-            models.Host.id.in_(new_port)
-            | vuln_window_predicate(db, project_id, start, end)
+            host_has_port(_in_window(models.Port.first_seen, start, end))
+            | vuln_window_predicate(start, end)
         )
     )
 
 
-def attribution_org_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
+def _host_attributed(*conditions: ColumnElement) -> ColumnElement:
+    """Host has a network attribution (RDAP) meeting ``conditions``."""
+    from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
+
+    return _host_has(
+        HostNetworkAttribution.host_id,
+        NetworkAttribution.id == HostNetworkAttribution.attribution_id,
+        *conditions,
+    )
+
+
+def attribution_org_predicate(values: Sequence[str]) -> ColumnElement:
     """Hosts whose registered netblock owner matches any value (substring).
 
     The scope question a pentest turns on: today's out-of-scope check only
@@ -1240,7 +1103,7 @@ def attribution_org_predicate(db: Session, values: Sequence[str]) -> ColumnEleme
     spreadsheet against itself. ``NOT org:"Acme"`` asks the far more useful
     question — what did we touch that isn't registered to the client?
     """
-    from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
+    from app.db.models_attribution import NetworkAttribution
 
     if not values:
         return false()
@@ -1250,49 +1113,31 @@ def attribution_org_predicate(db: Session, values: Sequence[str]) -> ColumnEleme
     ]
     if not clauses:
         return false()
-    sub = (
-        db.query(HostNetworkAttribution.host_id)
-        .join(
-            NetworkAttribution,
-            NetworkAttribution.id == HostNetworkAttribution.attribution_id,
-        )
-        .filter(or_(*clauses))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_attributed(or_(*clauses))
 
 
-def attribution_asn_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
+def attribution_asn_predicate(values: Sequence[str]) -> ColumnElement:
     """Hosts in any of the given autonomous systems. ``AS`` prefix optional."""
-    from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
+    from app.db.models_attribution import NetworkAttribution
 
     asns = []
     for v in values or []:
         text = str(v).strip().upper().lstrip("AS")
-        if text.isdigit():
+        if is_id(text):
             asns.append(int(text))
     if not asns:
         return false()
-    sub = (
-        db.query(HostNetworkAttribution.host_id)
-        .join(
-            NetworkAttribution,
-            NetworkAttribution.id == HostNetworkAttribution.attribution_id,
-        )
-        .filter(NetworkAttribution.asn.in_(asns))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_attributed(NetworkAttribution.asn.in_(asns))
 
 
-def attribution_cloud_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
+def attribution_cloud_predicate(values: Sequence[str]) -> ColumnElement:
     """Hosts hosted by a given cloud provider (``aws``/``azure``/``gcp``/…).
 
     ``cloud:none`` selects hosts with attribution but NO cloud provider — i.e.
     on-premise or a provider we don't have prefixes for — which is what an
     operator wants when asking "what isn't in the client's cloud tenancy?".
     """
-    from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
+    from app.db.models_attribution import NetworkAttribution
 
     if not values:
         return false()
@@ -1300,13 +1145,6 @@ def attribution_cloud_predicate(db: Session, values: Sequence[str]) -> ColumnEle
     named = [str(v).strip().lower() for v in values
              if str(v).strip().lower() not in ("none", "null")]
 
-    base = (
-        db.query(HostNetworkAttribution.host_id)
-        .join(
-            NetworkAttribution,
-            NetworkAttribution.id == HostNetworkAttribution.attribution_id,
-        )
-    )
     clauses = []
     if named:
         clauses.append(func.lower(NetworkAttribution.cloud_provider).in_(named))
@@ -1314,10 +1152,10 @@ def attribution_cloud_predicate(db: Session, values: Sequence[str]) -> ColumnEle
         clauses.append(NetworkAttribution.cloud_provider.is_(None))
     if not clauses:
         return false()
-    return models.Host.id.in_(base.filter(or_(*clauses)).distinct())
+    return _host_attributed(or_(*clauses))
 
 
-def attribution_country_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
+def attribution_country_predicate(values: Sequence[str]) -> ColumnElement:
     """Hosts whose registered netblock is in any of the given countries.
 
     RDAP stores an ISO-3166 alpha-2 code (``US``, ``NL``), so this is an
@@ -1325,24 +1163,15 @@ def attribution_country_predicate(db: Session, values: Sequence[str]) -> ColumnE
     ``org:``. ``NOT country:US`` is the useful scope-validation query: what did
     we touch that isn't registered where the client operates?
     """
-    from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
+    from app.db.models_attribution import NetworkAttribution
 
     codes = [str(v).strip().upper() for v in (values or []) if str(v).strip()]
     if not codes:
         return false()
-    sub = (
-        db.query(HostNetworkAttribution.host_id)
-        .join(
-            NetworkAttribution,
-            NetworkAttribution.id == HostNetworkAttribution.attribution_id,
-        )
-        .filter(func.upper(NetworkAttribution.country).in_(codes))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_attributed(func.upper(NetworkAttribution.country).in_(codes))
 
 
-def cert_org_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
+def cert_org_predicate(values: Sequence[str]) -> ColumnElement:
     """Hosts presenting a certificate whose subject Organization matches.
 
     Distinct from ``org:`` (registry attribution): a CA *validated* this claim
@@ -1362,9 +1191,4 @@ def cert_org_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     ]
     if not clauses:
         return false()
-    sub = (
-        db.query(models.WebInterface.host_id)
-        .filter(or_(*clauses))
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    return _host_has(models.WebInterface.host_id, or_(*clauses))

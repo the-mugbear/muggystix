@@ -836,8 +836,7 @@ export function useHostColumns({
       {
         id: 'attention',
         header: 'Attention',
-        // Not 150: that is tanstack's default size, which DataTableShell reads
-        // as "unsized" — the column took half the spare width.
+        // The share below is the width; the size only marks the column sized.
         size: 155,
         meta: { width: HOST_COLUMN_SHARES.attention },
         cell: ({ row }) => {

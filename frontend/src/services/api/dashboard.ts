@@ -56,7 +56,6 @@ export interface MyAttentionHost {
 export interface MyAttentionResponse {
   items: MyAttentionHost[];
   in_review_count: number;
-  watching_count: number;
 }
 /** Why a task is in your queue. Overlapping — a task can carry several. */
 export type MyTaskReason = 'assigned' | 'in_review' | 'triage';

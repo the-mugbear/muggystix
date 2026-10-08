@@ -31,10 +31,6 @@ class NmapXMLParser:
         self.db = db
         self.dedup_service = HostDeduplicationService(db)
         self.correlation_service = SubnetCorrelationService(db)
-        # Id of the Scan row this parser committed (incrementally). Lets the
-        # dispatcher delete a partial scan if a later attempt fails, instead of
-        # orphaning it and re-ingesting under a second Scan (see _execute_parser).
-        self._created_scan_id = None
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -253,7 +249,8 @@ class NmapXMLParser:
 
         self.db.add(scan)
         self.db.flush()
-        self._created_scan_id = scan.id
+        # Committed with the job's pointer to it (incrementally-committed
+        # parsers leave a partial scan the dispatcher must be able to find).
         announce_scan(self.db, scan)
         return scan
 

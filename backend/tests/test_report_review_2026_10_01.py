@@ -432,7 +432,7 @@ def test_the_render_validators_refuse_a_trailing_newline():
     with pytest.raises(quarto_render.RenderError):
         quarto_render.plain("2026-10-01\n")
     with pytest.raises(quarto_render.RenderError):
-        quarto_render.md("executive_summary\n")
+        quarto_render._md_factory({"executive_summary": "x"})("executive_summary\n")
     with pytest.raises(quarto_render.TemplateAssetError):
         quarto_render.template_assets(None, {"assets": [{"id": "logo\n", "path": "img/logo.png"}]})
     assert quarto_render.plain("2026-10-01") == "2026-10-01"

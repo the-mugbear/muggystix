@@ -129,14 +129,34 @@ def active_job(db, project_id: int, svc: Optional[IngestionService] = None):
     _mod._active_job.db = db
     _mod._active_job.job_id = job_id
     _mod._active_job.claimed_at = claim
-    _mod._active_job.scan_id = None
+    # A live worker holds its attempt's liveness lock (on its own connection).
+    liveness = _mod.hold_attempt_liveness(db, job_id, claim)
     try:
         yield job_id, svc
     finally:
+        if liveness is not None:
+            liveness.close()
         _mod._active_job.service = None
         _mod._active_job.db = None
         _mod._active_job.job_id = None
-        _mod._active_job.scan_id = None
+        _mod._active_job.claimed_at = None
+
+
+@contextmanager
+def live_attempt(db, job_id: int):
+    """Hold the liveness lock of the job's CURRENT attempt, as its worker
+    would: for a ``processing`` row a test wrote by hand, or to keep an
+    attempt "alive" after ``run_until_killed`` until the block ends."""
+    from app.services import ingestion_service as _mod
+
+    db.expire_all()
+    claim = db.query(models.IngestionJob.started_at).filter_by(id=job_id).scalar()
+    liveness = _mod.hold_attempt_liveness(db, job_id, claim)
+    assert liveness is not None, "the attempt's liveness lock is already held"
+    try:
+        yield
+    finally:
+        liveness.close()
 
 
 def kill_worker() -> None:

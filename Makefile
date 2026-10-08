@@ -56,7 +56,7 @@ status: ## Show status of all services
 alembic-roundtrip: ## Verify every Alembic downgrade() inverts cleanly (boots throwaway Postgres)
 	./scripts/test-alembic-roundtrip.sh
 
-check: ## The gate: backend suite (report-worker image, Quarto tests must run), ruff, frontend tsc + vitest, Alembic round trip
+check: ## The gate: backend suite (report-worker image, Quarto tests must run), ruff, frontend tsc + eslint + vitest, Alembic round trip
 	./scripts/check.sh
 
 check-fast: ## The gate without the Alembic round trip

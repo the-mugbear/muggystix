@@ -23,12 +23,16 @@ from app.core.security import (
     log_audit_event,
     create_session,
     revoke_session,
+    login_lockout_active,
     login_throttle_exceeded,
     verify_password,
     ACCESS_TOKEN_EXPIRE_MINUTES,
+    LOGIN_2FA_THROTTLE_PER_USERNAME,
+    LOGIN_LOCKOUT_MINUTES,
     LOGIN_THROTTLE_WINDOW_MINUTES,
 )
 from app.services import totp_service
+from app.services.agent_session_service import end_sessions_of_operator
 # The auth DEPENDENCIES are defined in ``app.api.deps`` (review 2026-10-01
 # B4: a router file is not where ~45 other routers should import from).  They
 # are re-exported here so ``from app.api.v1.endpoints.auth import
@@ -122,10 +126,31 @@ def login(
     """Authenticate user; create a session, or return a 2FA challenge."""
     client_info = get_client_info(request)
 
-    # Reject before doing any bcrypt work if this username or source IP is
-    # already over the recent-failure threshold. Defends against distributed
-    # brute force that would otherwise re-use a fresh IP after the
-    # per-account 5-strike lockout in authenticate_user() expires.
+    # Reject before doing any bcrypt work.  The lockout is this address's own
+    # failures for this username (so guessing never locks the account's owner
+    # out from elsewhere); the throttle bounds an address across usernames and
+    # a username across addresses.
+    if login_lockout_active(
+        db,
+        username=login_data.username,
+        ip_address=client_info.get("ip_address"),
+    ):
+        log_audit_event(
+            db=db,
+            user_id=None,
+            action="login_throttled",
+            details={"username": login_data.username, "reason": "lockout"},
+            success=False,
+            error_message="Locked out",
+            **client_info,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Too many failed login attempts from this address. Try again in "
+                f"{LOGIN_LOCKOUT_MINUTES} minutes."
+            ),
+        )
     if login_throttle_exceeded(
         db,
         username=login_data.username,
@@ -260,13 +285,16 @@ def login_2fa(
     if not user or not user.is_active or not user.totp_enabled:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid 2FA challenge")
 
-    # Throttle the second factor the same way as the password step. The TOTP
-    # space is only 1e6 and the challenge JWT is reusable for its whole TTL, so
-    # without this an attacker who already holds a valid challenge could spray
-    # codes.  Counts both failure kinds so password+2FA failures share a budget.
+    # Throttle the second factor too. The TOTP space is only 1e6 and the
+    # challenge JWT is reusable for its whole TTL, so without this an attacker
+    # who already holds a valid challenge could spray codes.  The address's
+    # budget is shared with the password step; the account's is its wrong
+    # codes only, so password guessing by a stranger cannot use it up.
     if login_throttle_exceeded(
         db, username=user.username, ip_address=client_info.get("ip_address"),
         actions=("login_failed", "login_2fa_failed"),
+        username_actions=("login_2fa_failed",),
+        per_username=LOGIN_2FA_THROTTLE_PER_USERNAME,
     ):
         log_audit_event(
             db=db, user_id=user.id, action="login_throttled",
@@ -494,6 +522,13 @@ def change_password(
     ).update(
         {"revoked_at": datetime.now(timezone.utc), "revoked_reason": "password_changed"},
         synchronize_session=False,
+    )
+    # Agent keys are credentials issued under the old password too: end the
+    # user's agent sessions, or a session started with a stolen token would
+    # keep answering and renewing.
+    end_sessions_of_operator(
+        db, current_user.id, ended_by=current_user,
+        reason="the operator changed their password",
     )
 
     db.commit()

@@ -183,6 +183,16 @@ def main() -> None:
         if written:
             logger.info("Raised %d remediation deadline notification(s)", written)
 
+    # Before the first claim: a job this worker (or a peer that is gone) was
+    # running when it died is known at once — nobody holds its attempt's
+    # liveness lock — and is re-queued, so its partial scan is removed by the
+    # very next claim instead of after the reaper's time window, with other
+    # imports in between.  A job a live peer is running keeps its lock.
+    try:
+        _reap()
+    except Exception:
+        logger.exception("Orphan reap at start-up failed; the periodic reaper will retry")
+
     worker_loop.run_listen_loop(
         channel="ingestion_jobs",
         poll_one=service.poll_and_run_one,

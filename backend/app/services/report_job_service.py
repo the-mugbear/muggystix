@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from sqlalchemy import text
+from sqlalchemy import case, select, text, update
 
 from app.core.config import settings
 # Imported as a module (not ``from … import SessionLocal``) so tests can rebind
@@ -48,6 +48,10 @@ CLIENT_JOB_FORMATS = ("report-html", "report-docx", "report-qmd", "report-issue"
                       # v2.463.0 — one contact's remediation list: the same
                       # renderer, dispatched by ``run_client_job``.
                       "contact-html", "contact-docx")
+# Of those: a draft's previews, and an issued report's render (the literals of
+# client_report_render.PREVIEW_FORMATS / ISSUE_FORMAT, test-pinned to them).
+PREVIEW_JOB_FORMATS = ("report-html", "report-docx", "report-qmd")
+ISSUE_RENDER_FORMAT = "report-issue"
 #: Jobs whose page shows their state itself: no "report ready" notification,
 #: and not listed among the Hosts page's inventory downloads.
 PAGE_OWNED_REPORT_TYPES = ("client", "remediation")
@@ -188,8 +192,10 @@ class ReportJobService:
             # thread and the completion/failure writes all condition on it, so a
             # worker whose lease was reaped and re-claimed by a peer can neither
             # keep the heartbeat warm nor publish a result over the new owner.
-            claimed = _transitions.claim_oldest_queued(db, message="Generating report")
+            self._supersede_repeated_previews(db)
+            claimed = self._claim_next(db, message="Generating report")
             if claimed is None:
+                db.commit()
                 return False
             job_id, claimed_at = claimed
             db.commit()
@@ -202,14 +208,65 @@ class ReportJobService:
         self._run_job(job_id, claimed_at)
         return True
 
-    def update_heartbeat(self, db, job_id: int, claimed_at: Optional[datetime] = None) -> None:
-        """Renew the lease.  Pass the claim token (``claimed_at``) wherever it
-        is known — an unfenced heartbeat cannot tell two attempts apart."""
-        try:
-            _transitions.heartbeat(db, job_id, claimed_at)
-            db.commit()
-        except Exception:
-            db.rollback()
+    @staticmethod
+    def _claim_next(db, *, message: str) -> Optional[Tuple[int, datetime]]:
+        """Claim the next queued job: an issued report's render before
+        anything else, then the oldest.  An issue is a sign-off someone is
+        waiting on and happens a few times per project; previews are asked for
+        freely, and one worker renders them one at a time — in plain arrival
+        order the issue waited behind every preview queued before it.
+
+        The claim itself is ``JobTransitions.claim_oldest_queued``'s: the row
+        locked ``FOR UPDATE SKIP LOCKED`` and flipped to ``processing`` with
+        the claim instant as its token."""
+        row = db.execute(
+            select(ReportJob.id)
+            .where(ReportJob.status == "queued")
+            .order_by(case((ReportJob.format == ISSUE_RENDER_FORMAT, 0), else_=1), ReportJob.created_at)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        ).first()
+        if row is None:
+            return None
+        job_id = int(row[0])
+        claimed_at = datetime.now(timezone.utc)
+        db.execute(
+            update(ReportJob).where(ReportJob.id == job_id)
+            .values(status="processing", started_at=claimed_at, last_heartbeat=claimed_at, message=message)
+        )
+        return job_id, claimed_at
+
+    @staticmethod
+    def _supersede_repeated_previews(db) -> int:
+        """Cancel a queued draft preview when the SAME person has queued a
+        newer one of the same report in the same format: a draft is live, so
+        the newer render shows everything the older would, and rendering both
+        only delays whatever is queued behind them.  Another person's preview
+        is never touched — their page is waiting for that job.  Returns the
+        number cancelled (the caller commits)."""
+        rows = db.execute(
+            select(ReportJob.id, ReportJob.format, ReportJob.filters, ReportJob.requested_by_id)
+            .where(ReportJob.status == "queued", ReportJob.report_type == "client",
+                   ReportJob.format.in_(PREVIEW_JOB_FORMATS))
+            .order_by(ReportJob.created_at.desc(), ReportJob.id.desc())
+        ).all()
+        newest = set()
+        cancelled = 0
+        for job_id, fmt, filters, requester in rows:
+            key = (fmt, (filters or {}).get("report_id"), requester)
+            if key not in newest:
+                newest.add(key)
+                continue
+            try:
+                # Under the row's lock, and only while it is still queued.
+                if _transitions.cancel(
+                    db, job_id, allowed_from=("queued",), to_status="cancelled",
+                    message="Superseded by a newer preview of the same report",
+                ) is not None:
+                    cancelled += 1
+            except JobNotTransitionable:
+                pass
+        return cancelled
 
     def _renew_lease_until(self, job_id: int, claimed_at: datetime, stop: threading.Event) -> None:
         """Keep ``last_heartbeat`` fresh while a render runs so the reaper does
@@ -321,14 +378,22 @@ class ReportJobService:
                     expires_at=now + timedelta(hours=settings.REPORT_ARTIFACT_TTL_HOURS),
                     last_error=None,
                 )
-                db.commit()
                 if written == 0:
+                    # Nothing of this attempt is saved — not even what the
+                    # render noted on the job row, which a peer now owns.
+                    db.rollback()
                     logger.warning(
                         "Report job %s lease lost mid-render (reaped/reclaimed) — "
                         "discarding this worker's artifact %s", job_id, job_dir,
                     )
                     shutil.rmtree(job_dir, ignore_errors=True)
                     return
+                if job.report_type == "remediation":
+                    # A contact's list: its hosts' timelines say "prepared"
+                    # in the transaction that makes the document available.
+                    from app.services import remediation_report
+                    remediation_report.record_prepared(db, job)
+                db.commit()
                 logger.info("Report job %s completed: %s (%d bytes)", job_id, filename, file_size)
                 self._notify_finished(db, job_id)
             except Exception as exc:

@@ -211,6 +211,30 @@ describe('Names page — screenshot review (v5.288.0)', () => {
     expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
     expect(screen.getByText('1–100 of 250')).toBeInTheDocument();
   });
+
+  it('opens on the page the address names, and Next asks for the one after it', async () => {
+    mocked.listNames.mockResolvedValue({ items: [resolved], total: 250, skip: 100, limit: 100 });
+    renderAt('/names?page=2');
+    await screen.findByText('portal.example-corp.com');
+    expect(mocked.listNames).toHaveBeenCalledTimes(1);
+    expect(mocked.listNames).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 100 }));
+    expect(screen.getByText('101–200 of 250')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(mocked.listNames).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 200 })));
+  });
+
+  // The filter changed first and the page was put back to the first one
+  // afterwards: the old page of the new filter was asked for in between.
+  it('a filter chosen from a later page asks once, for the first page', async () => {
+    mocked.listNames.mockResolvedValue({ items: [resolved], total: 250, skip: 100, limit: 100 });
+    renderAt('/names?page=2');
+    await screen.findByText('portal.example-corp.com');
+    mocked.listNames.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: /^Unresolved/ }));
+    await waitFor(() => expect(mocked.listNames).toHaveBeenCalled());
+    await screen.findByText('1–100 of 250');
+    expect(mocked.listNames.mock.calls.map(([q]) => [q.state, q.skip])).toEqual([['unresolved', 0]]);
+  });
 });
 
 // The import answers with two more scope facts the dialog never showed:

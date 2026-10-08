@@ -271,6 +271,14 @@ it. What comes back depends on *why* a call was refused:
   one call, which the model should read and work around; re-authenticating
   would not change it.
 
+The endpoint's own 401 reaches the client as that real HTTP 401, a JSON-RPC
+error (`-32001`) whose message is the endpoint's detail. Since v2.465.0 one
+more reason produces it: `operator_credentials_changed` — the key was issued
+before its operator's password was last changed or reset. It is not
+recoverable by renewing; the operator starts a new session.
+
+`read_agent_guide` called without `workflow` returns the whole guide.
+
 The challenge is deliberately bare. MCP's authorization spec uses 401 plus
 `resource_metadata` to bootstrap OAuth 2.1 discovery; this server is not an
 OAuth resource server, and advertising discovery it doesn't implement would send
@@ -290,9 +298,25 @@ it; it is allowed only when a client declares 2025-03-26).
 ## 5. The tool registry
 
 `app/api/v1/endpoints/mcp_tools.py` is the declarative map: tool → endpoint,
-schema, workflow, annotations. `mcp_assist.py` is the transport. They are split
+description, annotations. `mcp_assist.py` is the transport. They are split
 because they change for different reasons — adding a tool touches only the
 registry.
+
+**A tool's arguments are its endpoint's (v2.465.0).** A registry entry authors
+only what the endpoint cannot say: `description`, `method`, `path`, `params`
+(an argument's description, or something that NARROWS it), `hidden` (endpoint
+parameters the tool does not offer), `defaults` (MCP-side defaults, e.g. a
+smaller page), the write flags (`additive` / `idempotent` / `metadata_write`),
+`retired_params` (arguments a tool used to take: accepted and dropped) and
+`path_alternatives`. Which arguments exist, whether each goes in the path, the
+query or the body, and their types, enums, bounds, defaults and required-ness
+are read from the endpoint's OpenAPI operation the first time the registry is
+used (`derive_tool`). So a parameter added to an endpoint is offered by its
+tool with no registry edit (list it under `hidden` to keep it off), and the
+advertised schema cannot be wider than what the endpoint accepts —
+`tests/test_mcp_enum_contract.py` pins that an authored overlay never widens
+it. The derivation also brought 20 defaults and 8 bounds into the schemas that
+the endpoints already enforced but the hand-written entries had not stated.
 
 Entries carry MCP **annotations** (`readOnlyHint`, `destructiveHint`,
 `idempotentHint`) so a client can offer "always allow" on reads without the

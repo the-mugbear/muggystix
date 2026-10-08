@@ -108,18 +108,18 @@ def test_a_failed_issue_render_is_recorded_and_can_be_retried(client, db_session
     base = f"/api/v1/projects/{test_project.id}/client-reports"
     draft = client.post(base, json={"kind": "full"}).json()
     client.post(f"{base}/{draft['id']}/issue")
-    report = db_session.get(Report, draft["id"])
-    report.template = "no-such-template"
-    db_session.commit()
+    # The report renders from its own copy of the template: without it (lost
+    # from report storage) the render fails and says so.
+    copy = Path(settings.REPORT_FILES_DIR) / str(test_project.id) / str(draft["id"]) / "template"
+    assert (copy / "pentest" / "template.json").is_file()
+    copy.rename(copy.with_name("template.lost"))
     with pytest.raises(Exception):
         run_client_job(db_session, _job(db_session, test_project, "report-issue", draft["id"]))
     db_session.expire_all()
     failed = client.get(f"{base}/{draft['id']}").json()
-    assert failed["render_status"] == "failed" and "no-such-template" in failed["render_error"]
+    assert failed["render_status"] == "failed" and "own copy of its template" in failed["render_error"]
 
-    report = db_session.get(Report, draft["id"])
-    report.template = "pentest"
-    db_session.commit()
+    copy.with_name("template.lost").rename(copy)      # restored from the backup
     retried = client.post(f"{base}/{draft['id']}/render")
     assert retried.status_code == 200 and retried.json()["render_status"] == "pending"
     run_client_job(db_session, _job(db_session, test_project, "report-issue", draft["id"]))

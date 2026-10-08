@@ -109,7 +109,7 @@ def promote_or_dismiss_vulnerability(
     owner_id: Optional[int] = None,
     summary: Optional[str] = None,
     scope: Optional[str] = None,
-    confirm_only_on_join: bool = False,
+    on_join: str = "set",
 ) -> Finding:
     """Promote a scanner observation to a finding, or dismiss it.
 
@@ -120,11 +120,16 @@ def promote_or_dismiss_vulnerability(
     "issue".  Accepted risk is issue-wide: a decision about the issue, not a
     host.  The caller commits.
 
-    ``confirm_only_on_join`` (review 2026-10-01 R9) is for a caller that
-    reports ONE host's result rather than a judgment of the issue — a test's
+    ``on_join="confirm"`` (review 2026-10-01 R9) is for a caller that reports
+    ONE host's result rather than a judgment of the issue — a test's
     evidence.  Joining an existing finding then changes its status only from
     open / retest to confirmed (see ``FindingService.promote_vulnerability``).
-    The promote / dismiss click and an accepted proposal leave it off.
+    The promote / dismiss click and an accepted proposal leave it at ``"set"``.
+
+    A promotion scoped to the host says the issue is real THERE, so an
+    endpoint of the finding on that host that was dismissed as a false
+    positive goes back to open; an issue-wide promotion leaves every host's
+    own dismissal alone.
     """
     status = status or FindingStatus.CONFIRMED.value
     is_fp = status == FindingStatus.FALSE_POSITIVE.value
@@ -141,29 +146,17 @@ def promote_or_dismiss_vulnerability(
             vuln=vuln, project_id=project_id, actor_id=actor_id,
             severity=severity, owner_id=owner_id, summary=summary,
         )
-    if not is_fp:
-        # ONE lock order for every path that makes an issue's finding and
-        # links its test results: the evidence rows FIRST, the finding after.
-        # This path used to insert the finding (an entry in
-        # ``uq_finding_scanner_issue`` that a concurrent insert waits on) and
-        # only then lock the evidence, while promoting a test's result
-        # (``create_finding_from_evidence``) locks the evidence and then
-        # inserts — each held what the other needed, and Postgres killed one
-        # with a deadlock error.  Now the second request waits here, holding
-        # nothing, and joins the finding the first one made.
-        from app.services.agent_evidence_service import _lock_issue_evidence, link_issue_evidence
-        from app.services.vuln_identity import issue_key_for
-
-        _lock_issue_evidence(db, host_id=vuln.host_id, issue_key=issue_key_for(vuln))
-    finding = svc.promote_vulnerability(
+    on_this_host = scope == "host"
+    # The evidence lock that must precede the finding, and the linking of the
+    # test results that showed the issue, are the service's own steps.
+    finding, _created = svc.promote_vulnerability(
         vuln=vuln, project_id=project_id, actor_id=actor_id,
         severity=severity, status=status, owner_id=owner_id, summary=summary,
-        only_this_host=(scope == "host"),
-        confirm_only_on_join=confirm_only_on_join,
+        host_ids=([vuln.host_id] if vuln.host_id else []) if on_this_host else None,
+        on_join=on_join,
     )
-    if not is_fp:
-        # v2.445.0 — the results of tests that confirmed this issue on this
-        # host go with it, so the finding shows what demonstrated it.
-        db.flush()
-        link_issue_evidence(db, host_id=vuln.host_id, issue_key=issue_key_for(vuln), finding_id=finding.id)
+    if on_this_host and not is_fp and vuln.host_id:
+        svc.reopen_false_positive_endpoints(
+            finding=finding, host_id=vuln.host_id, actor_id=actor_id, note="promoted on this host",
+        )
     return finding

@@ -202,7 +202,8 @@ def test_a_global_admin_uploads_and_the_asset_becomes_present(client, db_session
     assert body["warnings"] == []
     # Stored outside the read-only template folder.
     assert not (root / "img" / "cover.jpg").exists()
-    assert (store.root() / "pentest" / "cover.jpg").read_bytes() == jpeg(1500, 1000)
+    stored = store.uploads("pentest")["cover"]["file"]
+    assert stored.parent == store.root() / "pentest" and stored.read_bytes() == jpeg(1500, 1000)
     audit = db_session.query(AuditLog).filter(AuditLog.action == "report_template_asset_uploaded").one()
     assert audit.details["asset"] == "cover" and audit.details["template"] == "pentest"
 

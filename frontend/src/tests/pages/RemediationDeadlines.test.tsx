@@ -40,7 +40,7 @@ const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 
 import RemediationDeadlines from '../../pages/RemediationDeadlines';
-import RemediationSettingsSection, { daysProblem } from '../../components/remediation/RemediationSettingsSection';
+import RemediationSettingsSection, { daysProblem, zoneProblem } from '../../components/remediation/RemediationSettingsSection';
 import { resetRemediationPolicy } from '../../hooks/useRemediationPolicy';
 import { notificationHref } from '../../utils/notificationLinks';
 import type { RemediationRow, RemediationState } from '../../services/api';
@@ -170,6 +170,33 @@ describe('System settings — remediation tracking', () => {
     await waitFor(() => expect(updateRemediationPolicy).toHaveBeenLastCalledWith({
       days: { critical: 30, high: 45, medium: 90, low: 120, info: null }, due_soon_days: 7,
     }));
+  });
+
+  it('edits the time zone deadlines are counted in, and sends it only when it changed', async () => {
+    getRemediationPolicy.mockResolvedValue({ ...POLICY, time_zone: 'UTC' });
+    updateRemediationPolicy.mockImplementation(async (body: object) => ({ ...POLICY, time_zone: 'UTC', ...body }));
+    render(<RemediationSettingsSection />);
+    const zone = await screen.findByLabelText('Time zone');
+    expect(zone).toHaveValue('UTC');
+    fireEvent.change(zone, { target: { value: 'Mars/Olympus' } });
+    expect(screen.getByRole('alert')).toHaveTextContent(/Time zone: an IANA name/);
+    expect(screen.getByRole('button', { name: 'Save timelines' })).toBeDisabled();
+    fireEvent.change(zone, { target: { value: ' America/Los_Angeles ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save timelines' }));
+    await waitFor(() => expect(updateRemediationPolicy).toHaveBeenLastCalledWith({
+      days: { critical: 30, high: 30, medium: 90, low: 120, info: null }, due_soon_days: 7,
+      time_zone: 'America/Los_Angeles',
+    }));
+    await waitFor(() => expect(screen.getByLabelText('Time zone')).toHaveValue('America/Los_Angeles'));
+  });
+
+  it('knows a time zone name from something else', () => {
+    expect(zoneProblem('UTC')).toBeNull();
+    expect(zoneProblem('Europe/Paris')).toBeNull();
+    expect(zoneProblem('')).toMatch(/^Time zone/);
+    expect(zoneProblem('Mars/Olympus')).toMatch(/^Time zone/);
+    expect(zoneProblem('../../etc/passwd')).toMatch(/^Time zone/);
+    expect(zoneProblem(undefined)).toMatch(/^Time zone/);
   });
 
   it('checks every field', () => {

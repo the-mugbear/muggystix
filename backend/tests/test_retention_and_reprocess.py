@@ -111,7 +111,7 @@ def test_a_file_the_sweep_cannot_remove_is_said_and_tried_again(client, db_sessi
         assert expire_retained_files(db_session) == 0
     finally:
         staged_import_service.logger.removeHandler(handler)
-    assert any("Could not remove the retained file" in w for w in warnings)
+    assert any("Could not remove the uploaded file" in w for w in warnings)
     monkeypatch.setattr(staged_import_service.shutil, "rmtree", real_rmtree)
     assert expire_retained_files(db_session) == 1
     assert not Path(job.storage_path).exists()

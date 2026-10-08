@@ -48,6 +48,7 @@ from tests.ingestion_job_harness import (
     host_ips,
     job_row,
     kill_worker,
+    live_attempt,
     new_host_count,
     on_heartbeat,
     queue_file,
@@ -369,7 +370,6 @@ def test_a_cancel_from_another_connection_stops_the_batch_before_it_is_committed
     worker.update_heartbeat = hooked  # type: ignore[method-assign]
     assert worker.poll_and_run_one() is True
 
-    assert job_id not in worker._cancelled  # the cancel was never in this process's memory
     # Heartbeat 1 committed the first 100 hosts.  Heartbeat 2 found the job
     # cancelled: the second hundred, pending in its transaction, must not be
     # visible to anyone.
@@ -559,23 +559,25 @@ def test_cancelling_a_job_whose_worker_is_dead_removes_its_partial_scan(
 def test_the_reaper_cleans_a_cancelled_job_whose_worker_died_after_the_cancel(
     db_session, test_project, tmp_path,
 ):
-    """Cancelled while the lease still looked alive: the cancel leaves the
-    cleanup to the attempt's next heartbeat.  It never comes; once the lease
-    is past the reaper's window the reaper removes the scan."""
+    """Cancelled while its worker was alive: the cancel leaves the cleanup to
+    the attempt's next heartbeat.  It never comes — the worker dies first —
+    and the reaper, finding nobody holding the attempt's liveness lock,
+    removes the scan at once (no wait for the lease to age)."""
     pid = test_project.id
     worker = IngestionService()
     job_id = queue_file(db_session, pid, nmap_file(tmp_path, 250))
     with on_heartbeat(worker, 2, kill_worker):
         run_until_killed(db_session, worker)
     db_session.commit()
-    assert IngestionService().cancel_job(job_id) is True
-    assert job_row(db_session, job_id).status == "failed"
-    assert len(all_scan_ids(db_session)) == 1  # a live attempt would clean this itself
+    with live_attempt(db_session, job_id):      # the worker, still alive for now
+        assert IngestionService().cancel_job(job_id) is True
+        assert job_row(db_session, job_id).status == "failed"
+        assert len(all_scan_ids(db_session)) == 1  # a live attempt cleans this itself
 
-    assert worker.reap_orphaned_jobs() == 0     # lease still inside the window: not touched
-    assert len(all_scan_ids(db_session)) == 1
+        assert worker.reap_orphaned_jobs() == 0     # its worker is alive: not touched
+        assert len(all_scan_ids(db_session)) == 1
 
-    _age_heartbeat(db_session, job_id)
+    # The worker is gone.
     assert worker.reap_orphaned_jobs() == 0     # nothing to reap: the job is already failed…
     assert all_scan_ids(db_session) == []       # …but its leftover is gone
     assert host_ips(db_session, pid) == []
@@ -598,8 +600,9 @@ def test_the_sweep_leaves_a_job_that_was_retried_and_claimed_after_it_was_listed
     with on_heartbeat(worker, 2, kill_worker):
         run_until_killed(db_session, worker)
     db_session.commit()
-    assert IngestionService().cancel_job(job_id) is True
-    _age_heartbeat(db_session, job_id)
+    with live_attempt(db_session, job_id):      # cancelled while its worker lived…
+        assert IngestionService().cancel_job(job_id) is True
+    _age_heartbeat(db_session, job_id)          # …which then died
     scans = all_scan_ids(db_session)
     assert len(scans) == 1
 

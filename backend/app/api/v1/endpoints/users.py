@@ -20,6 +20,7 @@ from app.core.security import (
     log_audit_event,
 )
 from app.api.deps import get_current_user, require_role, get_client_info
+from app.services.agent_session_service import end_sessions_of_operator
 
 
 # --- Shared error responses for role-gated endpoints ---
@@ -538,6 +539,12 @@ def admin_reset_password(
         {"revoked_at": datetime.now(timezone.utc), "revoked_reason": "admin_password_reset"},
         synchronize_session=False,
     )
+    # The same goes for agent keys: a session started with a stolen token
+    # would otherwise keep answering, and renewing, for up to a week.
+    end_sessions_of_operator(
+        db, user.id, ended_by=current_user,
+        reason="the operator's password was reset by an administrator",
+    )
 
     db.commit()
 
@@ -581,6 +588,12 @@ def admin_reset_two_factor(
     user.totp_enabled = False
     user.totp_confirmed_at = None
     db.query(UserRecoveryCode).filter(UserRecoveryCode.user_id == user.id).delete()
+    # A reset is the recovery step for an account whose second factor is lost
+    # or no longer trusted, so agent sessions opened before it end with it.
+    end_sessions_of_operator(
+        db, user.id, ended_by=current_user,
+        reason="the operator's two-factor enrollment was reset by an administrator",
+    )
     db.commit()
 
     log_audit_event(

@@ -2,8 +2,16 @@
   BlueStick — ONE CONTACT'S REMEDIATION LIST, in the penetration test
   report's format.
 
-  This folder began as a copy of ../pentest and is yours to change in the same
-  ways (Word styles, logo, title page image — Reports page → template files).
+  This template EXTENDS ../pentest (template.json → "extends": "pentest"): it
+  holds only what differs — this file, partials/_finding.qmd and
+  partials/_affected.qmd — and takes every other file (the Word styles, the
+  post-processor, filters/spacers.lua, partials/_confirmations.qmd and
+  partials/_table_caption.qmd) from pentest, with the template.json keys it
+  does not state (the post-processor).  To change one of those for this
+  document only, put your own file at the same path in this folder: it wins.
+  Branding is its own (Word styles, logo, title page image — Reports page →
+  template files, declared under "assets" here): pentest's installed or
+  uploaded images are never used here.
   template.json says "kind": "contact": it is filled when a project admin
   prepares a contact's document on the Remediation page, and is never offered
   for a client report.
@@ -21,7 +29,10 @@
     report.as_of         the day the deadlines were worked out
     remediation          overdue, due_soon, due_soon_days, open, closed,
                          not_listed, timeline (the deadlines in words)
-    each finding         deadline — its most urgent one, in words
+    each finding         deadline — its most urgent one, in words; ref is
+                         EMPTY until a client report has been issued with the
+                         finding (a number given before that could still move
+                         to another finding), and prints as a dash
     each affected system deadline, due_on, deadline_state, assigned_on, team
 
   The original template's notes follow.
@@ -161,8 +172,13 @@ format:
 | Ref | Finding | Severity | Systems | Most urgent |
 |:--------|:----------------------------------------|:----------------|:-----------|:--------------------|
 <% for f in findings %>
-| << f.ref >> | [<< f.title >>](#finding-<< f.id >>) | << f.severity_label >> | << f.affected|length >> | << f.get("deadline") or "" >> |
+| << f.ref or "—" >> | [<< f.title >>](#finding-<< f.id >>) | << f.severity_label >> | << f.affected|length >> | << f.get("deadline") or "" >> |
 <% endfor %>
+
+<% if findings|rejectattr("ref")|list %>
+A finding without a reference has not been in an issued report yet; it is given its number when the report is issued.
+
+<% endif %>
 
 <% if summary.get("not_listed") %>
 << summary.not_listed >> more assigned to you <% if summary.not_listed == 1 %>is<% else %>are<% endif %> still being investigated and <% if summary.not_listed == 1 %>is<% else %>are<% endif %> not in this document.

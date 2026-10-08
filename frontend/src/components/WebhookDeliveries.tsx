@@ -93,6 +93,7 @@ const WebhookDeliveries: React.FC = () => {
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the API client reads the current project itself; projectId is here so a project switch re-reads
   }, [status, projectId]);
 
   useEffect(() => {

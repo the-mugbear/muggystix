@@ -1082,8 +1082,9 @@ def get_import_history(
     only if it holds a matching file, and is dated by its newest MATCHING
     file; with none, every batch appears (one with only queued or failed
     files has no scan row, and is dated by its creation).  Four statements
-    whatever the page: batches, their matching-file dates, the unbatched
-    scans down to the end of the requested page, and their count.
+    whatever the page and however long the history: each kind's count, and
+    each kind's newest skip+limit entries — the only ones that can reach the
+    requested page — dated and ordered by Postgres.
     """
     filters_active = bool(search or tool or created_after or uploaded_by)
 
@@ -1092,28 +1093,33 @@ def get_import_history(
             return None
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
-    batches = (
-        db.query(models.ScanBatch.id, models.ScanBatch.created_at)
-        .filter(models.ScanBatch.project_id == project.id, _batch_holds_a_file())
-        .order_by(models.ScanBatch.created_at.desc(), models.ScanBatch.id.desc())
-        .limit(500)
-        .all()
-    )
-    newest_match: Dict[int, datetime] = {}
-    if batches:
-        matching = apply_scan_inventory_filters(
-            db.query(models.Scan.batch_id, func.max(models.Scan.created_at))
-            .filter(
-                models.Scan.project_id == project.id,
-                models.Scan.batch_id.in_([b.id for b in batches]),
-            ),
+    # Each batch's newest matching file.
+    newest_match = (
+        apply_scan_inventory_filters(
+            db.query(
+                models.Scan.batch_id.label("batch_id"),
+                func.max(models.Scan.created_at).label("newest"),
+            ).filter(models.Scan.project_id == project.id, models.Scan.batch_id.isnot(None)),
             search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by,
         )
-        newest_match = {bid: when for bid, when in matching.group_by(models.Scan.batch_id).all()}
+        .group_by(models.Scan.batch_id)
+        .subquery("newest_match")
+    )
+    batch_at = func.coalesce(newest_match.c.newest, models.ScanBatch.created_at)
+    batches = (
+        db.query(models.ScanBatch.id, batch_at)
+        # Under a filter only a batch holding a matching file is listed.
+        .join(newest_match, newest_match.c.batch_id == models.ScanBatch.id, isouter=not filters_active)
+        .filter(models.ScanBatch.project_id == project.id, _batch_holds_a_file())
+    )
+    batch_total = batches.with_entities(func.count(models.ScanBatch.id)).scalar() or 0
     batch_entries = [
-        ("batch", b.id, _aware(newest_match.get(b.id) or b.created_at))
-        for b in batches
-        if (b.id in newest_match) or not filters_active
+        ("batch", bid, _aware(when))
+        for bid, when in (
+            batches.order_by(batch_at.desc().nulls_last(), models.ScanBatch.id.desc())
+            .limit(skip + limit)
+            .all()
+        )
     ]
 
     unbatched = apply_scan_inventory_filters(
@@ -1122,28 +1128,29 @@ def get_import_history(
         search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by,
     )
     scan_total = unbatched.with_entities(func.count(models.Scan.id)).scalar() or 0
-    # Only the scans that can reach this page: the newest skip+limit of them.
     scan_entries = [
         ("scan", sid, _aware(when))
         for sid, when in (
-            unbatched.order_by(models.Scan.created_at.desc(), models.Scan.id.desc())
+            unbatched.order_by(models.Scan.created_at.desc().nulls_last(), models.Scan.id.desc())
             .limit(skip + limit)
             .all()
         )
     ]
 
+    # The page is cut from the two heads merged: nothing beyond either kind's
+    # newest skip+limit can sort into the first skip+limit of both.
     floor = datetime.min.replace(tzinfo=timezone.utc)
     merged = sorted(
         batch_entries + scan_entries,
         key=lambda e: (e[2] or floor, e[0] == "batch", e[1]),
         reverse=True,
     )
-    total = len(batch_entries) + int(scan_total)
+    total = int(batch_total) + int(scan_total)
     page = merged[skip: skip + limit]
     return ImportHistoryPage(
         items=[ImportHistoryEntry(kind=k, id=i, at=at) for k, i, at in page],
         total=total,
-        batch_total=len(batch_entries),
+        batch_total=int(batch_total),
         scan_total=int(scan_total),
         has_more=skip + len(page) < total,
     )

@@ -106,11 +106,12 @@ export const Combobox = React.forwardRef<HTMLDivElement, ComboboxProps>((props, 
   }, [options]);
 
   const isMulti = props.multiple === true;
-  const selectedValues: string[] = isMulti
-    ? (props as MultiProps).values
-    : (props as SingleProps).value
-      ? [(props as SingleProps).value as string]
-      : [];
+  const multiValues = isMulti ? (props as MultiProps).values : null;
+  const singleValue = isMulti ? null : (props as SingleProps).value;
+  const selectedValues: string[] = React.useMemo(
+    () => (isMulti ? (multiValues as string[]) : singleValue ? [singleValue] : []),
+    [isMulti, multiValues, singleValue],
+  );
   const selectedSet = React.useMemo(() => new Set(selectedValues), [selectedValues]);
 
   const toggle = (value: string) => {

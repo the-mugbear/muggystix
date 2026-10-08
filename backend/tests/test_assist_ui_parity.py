@@ -202,10 +202,17 @@ def test_assist_host_detail_statement_count_does_not_grow_with_ports(
     headers = _assist(client, test_project.id)
     # Warm the request path (the key's first-use bookkeeping is not the
     # handler's cost and settles after the first couple of calls).
+    small_id, large_id = small.id, large.id
     for _ in range(2):
-        client.get(f"/api/v1/agent/assist/hosts/{small.id}", headers=headers)
-    n_small = count_queries(lambda: client.get(f"/api/v1/agent/assist/hosts/{small.id}", headers=headers))
-    n_large = count_queries(lambda: client.get(f"/api/v1/agent/assist/hosts/{large.id}", headers=headers))
+        client.get(f"/api/v1/agent/assist/hosts/{small_id}", headers=headers)
+
+    def _measure(host_id):
+        # A real request has its own session; here every request shares one,
+        # so rows the warm-up loaded would not be read again for ``small``.
+        db_session.expire_all()
+        return count_queries(lambda: client.get(f"/api/v1/agent/assist/hosts/{host_id}", headers=headers))
+
+    n_small, n_large = _measure(small_id), _measure(large_id)
     # 37 more ports: a per-port query would add 37+.  One statement of slack
     # for the key's periodic last-used bookkeeping, which lands on whichever
     # request crosses its interval.

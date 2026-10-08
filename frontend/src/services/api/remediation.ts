@@ -9,18 +9,21 @@ export type OverdueBand = '1-7' | '8-30' | '31-90' | '90+';
 export type RemediationState =
   | 'overdue' | 'due_soon' | 'on_track' | 'not_assigned' | 'no_deadline' | 'deferred' | 'closed';
 
-/** This installation's remediation settings.  `days[severity]` null = no deadline. */
+/** This installation's remediation settings.  `days[severity]` null = no deadline.
+ *  `time_zone` (an IANA name) is the zone whose calendar day is "today" for
+ *  every deadline state; the server derives the states, the pages only show it. */
 export interface RemediationPolicy {
   enabled: boolean;
   days: Record<string, number | null>;
   due_soon_days: number;
+  time_zone: string;
 }
 
 export const getRemediationPolicy = async (signal?: AbortSignal): Promise<RemediationPolicy> =>
   (await api.get<RemediationPolicy>('/remediation-policy', { signal })).data;
 
 export const updateRemediationPolicy = async (
-  body: Partial<Pick<RemediationPolicy, 'enabled' | 'days' | 'due_soon_days'>>,
+  body: Partial<Pick<RemediationPolicy, 'enabled' | 'days' | 'due_soon_days' | 'time_zone'>>,
 ): Promise<RemediationPolicy> => (await api.put<RemediationPolicy>('/remediation-policy', body)).data;
 
 /** The cross-project mount of one project's remediation routes: it also
@@ -170,6 +173,9 @@ export interface ContactReportJob {
   filename: string | null;
   contact_email: string | null;
   created_at: string | null;
+  /** Images the finished document left out because their finding also
+   *  affects a system that is not this contact's. */
+  images_withheld: number;
   /** The file exists and can be downloaded. */
   ready: boolean;
 }

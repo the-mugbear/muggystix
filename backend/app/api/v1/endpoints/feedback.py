@@ -31,7 +31,7 @@ from app.db.models_auth import APIKey
 from app.db.models_project import Project
 from app.schemas.pagination import Paginated
 from app.db.models_auth import User, UserRole
-from app.api.deps import get_current_agent, check_agent_rate_limit
+from app.api.deps import agent_session_metadata_write, get_current_agent, check_agent_rate_limit
 from app.api.deps import get_current_user, require_role
 from app.services.agent_session_service import sessions_with_a_page
 
@@ -148,10 +148,12 @@ agent_feedback_router = APIRouter()
 
 @agent_feedback_router.post(
     "/feedback",
+    # Feedback is about the session, not project data: a read-only operator's
+    # agent files it too.
+    dependencies=[Depends(agent_session_metadata_write), Depends(check_agent_rate_limit)],
     response_model=AgentFeedbackAck,
     status_code=201,
     summary="Submit structured agent feedback (agent-facing)",
-    dependencies=[Depends(check_agent_rate_limit)],
 )
 def submit_agent_feedback(
     body: AgentFeedbackCreate,

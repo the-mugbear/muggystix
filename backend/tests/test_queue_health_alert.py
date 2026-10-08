@@ -27,12 +27,13 @@ def _admin(db, uid=200):
 def _stale_over_cap_job(db, project_id):
     cutoff_s = settings.INGESTION_JOB_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
     old = datetime.now(timezone.utc) - timedelta(seconds=cutoff_s + 600)
-    # retry_count already at the cap -> the reaper's increment pushes it over,
+    # reap_count already at the cap -> the reaper's increment pushes it over,
     # so this orphan is permanently failed (not requeued).
     job = models.IngestionJob(
         project_id=project_id, filename="scan.xml", original_filename="scan.xml",
         storage_path="/tmp/does-not-matter.xml", status="processing",
-        started_at=old, last_heartbeat=old, retry_count=settings.INGESTION_MAX_RETRIES,
+        started_at=old, last_heartbeat=old, retry_count=0,
+        reap_count=settings.INGESTION_MAX_RETRIES,
     )
     db.add(job)
     db.commit()

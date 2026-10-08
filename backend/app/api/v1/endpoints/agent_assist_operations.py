@@ -34,9 +34,8 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.api.deps import check_agent_rate_limit
-from app.api.v1.endpoints.agent_common import load_agent_session
-from app.db.models_agent import Agent, AgentSession
-from app.db.models_auth import User
+from app.api.v1.endpoints.agent_common import load_operator
+from app.db.models_agent import Agent
 from app.db.models_project import Project
 from app.db.session import get_db
 from app.schemas.pagination import Paginated
@@ -88,12 +87,11 @@ class AgentEvidenceGapsResponse(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _project_and_operator(db: Session, session: AgentSession) -> tuple:
-    project = db.get(Project, session.project_id)
+def _project(db: Session, request: Request) -> Project:
+    project = db.get(Project, request.state.agent_project_id)
     if project is None:  # the operator gate already 404s/410s; belt and braces
         raise HTTPException(status_code=404, detail="Project not found")
-    operator: Optional[User] = session.started_by
-    return project, operator
+    return project
 
 
 # ---------------------------------------------------------------------------
@@ -140,8 +138,8 @@ def get_assist_workbench(
     section reported ``*_unavailable: true`` could not be computed — say so;
     it does NOT mean there is nothing there.
     """
-    session = load_agent_session(db, request)
-    project, operator = _project_and_operator(db, session)
+    project = _project(db, request)
+    operator = load_operator(db, request)
     if operator is None:
         raise HTTPException(
             status_code=400,
@@ -176,8 +174,7 @@ def get_assist_investigation_queue(
     503 when the queue cannot be computed — never an empty queue, which would
     read as "every host has been touched".
     """
-    session = load_agent_session(db, request)
-    project, _ = _project_and_operator(db, session)
+    project = _project(db, request)
     try:
         return compute_investigation_queue(db, project, limit=limit, tier=tier, offset=offset)
     except Exception:
@@ -204,8 +201,7 @@ def get_assist_terrain(
     ``planned`` / ``worked`` / ``untouched`` (exclusive, adding up to
     ``hosts``), plus ``critical`` and ``critical_untouched``.  Answers "which
     ranges has nobody touched?".  503 on failure — never an empty map."""
-    session = load_agent_session(db, request)
-    project, _ = _project_and_operator(db, session)
+    project = _project(db, request)
     try:
         terrain = compute_address_terrain(db, project)
     except Exception:
@@ -259,8 +255,8 @@ def get_assist_evidence_gaps(
     ``total`` is exact; ``items`` is cut at ``limit``.  Read ``scope_caution``
     when present — hosts outside the declared scope must be confirmed in scope
     before anyone collects against them."""
-    session = load_agent_session(db, request)
-    result = evidence_gap_hosts(db, session.project_id, domain, limit=limit, segment=segment)
+    project_id = request.state.agent_project_id
+    result = evidence_gap_hosts(db, project_id, domain, limit=limit, segment=segment)
     if result is None:
         # Say WHICH value is wrong and what would be right (MCP acceptance
         # feedback #15: an agent passed a CIDR where a matrix key belongs).
@@ -268,7 +264,7 @@ def get_assist_evidence_gaps(
             raise HTTPException(status_code=404, detail={
                 "error": "unknown_domain", "domain": domain, "accepted": list(DOMAIN_LABELS),
             })
-        segs = evidence_segments(db, session.project_id)
+        segs = evidence_segments(db, project_id)
         raise HTTPException(status_code=404, detail={
             "error": "unknown_segment", "segment": segment,
             "message": "segment is a key from assist_get_coverage's matrix, not a CIDR.",
@@ -301,9 +297,8 @@ def get_assist_scan_compare(
     never looked — NOT evidence of remediation).  Both ids are required: pick
     them from ``assist_list_scans`` (compare scans of the same targets and
     tool, or the difference is coverage, not change)."""
-    session = load_agent_session(db, request)
     try:
-        return compute_scan_diff(db, session.project_id, a, b, row_cap=limit)
+        return compute_scan_diff(db, request.state.agent_project_id, a, b, row_cap=limit)
     except ScanNotInProject as exc:
         raise HTTPException(
             status_code=404,
@@ -339,10 +334,9 @@ def get_assist_scan_hosts(
     whether the scan authenticated to the host: true / false when the scanner
     said so (Nessus), null when it did not say — null is "not stated", never
     "no".  ``ports`` lists at most 50 per host; the two counts are exact."""
-    session = load_agent_session(db, request)
     try:
         return scan_host_snapshots(
-            db, session.project_id, scan_id, state=state, search=search, skip=skip, limit=limit,
+            db, request.state.agent_project_id, scan_id, state=state, search=search, skip=skip, limit=limit,
         )
     except ScanNotInProject:
         raise HTTPException(status_code=404, detail="Scan not found in this project")

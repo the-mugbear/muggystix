@@ -195,7 +195,7 @@ def compute_since_last_visit(
         # from new records: "12 new hosts" and "3 known hosts changed" are
         # different work.
         changed_host_count = host_base.filter(
-            P.changed_window_predicate(db, project.id, last_viewed, as_of)
+            P.changed_window_predicate(last_viewed, as_of)
         ).scalar() or 0
         sev_base = sev_base.filter(P.vuln_window_condition(last_viewed, as_of))
     else:

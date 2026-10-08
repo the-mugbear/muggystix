@@ -65,7 +65,16 @@ const Entry: React.FC<{
       )}
       {event.kind === 'change' ? (
         <ul className="min-w-0">
-          {group.events.map((change) => (
+          {group.events.map((change) => change.field === 'finding' ? (
+            // The record went with its finding: `to` says what happened to
+            // the finding, `from` what the record held.
+            <li key={change.id} className="break-words text-metadata">
+              <span className="font-medium">
+                {change.to === 'finding deleted' ? 'Finding deleted' : `Finding ${change.to ?? 'removed'}`}
+              </span>
+              {change.from ? `. Its remediation record held: ${change.from}.` : '.'}
+            </li>
+          ) : (
             <li key={change.id} className="break-words text-metadata">
               <span className="font-medium">{REMEDIATION_FIELD_LABEL[change.field ?? ''] ?? change.field}</span>
               {': '}{shown(change.field, change.from)} → {shown(change.field, change.to)}

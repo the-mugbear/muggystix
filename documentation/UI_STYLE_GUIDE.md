@@ -174,7 +174,7 @@ Charts with real axes are drawn with Observable Plot (§35, adopted 5.307.0; ref
   - min/max width via `min-w-[…]` / `max-w-[…]`
   - truncation via `<TableCell className="truncate">`
   - collapse behind a detail surface when a column is low-value
-  - in a `DataTableShell` table: a pixel `size`, a share of the table through `meta: { width: '21%' }` (`columnWidth`; the Hosts list — spare width goes to the columns that would otherwise wrap, not to one column without bound), or unsized (`size` 150)
+  - in a `DataTableShell` table: a pixel `size`, a share of the table through `meta: { width: '21%' }` (`columnWidth`; the Hosts list — spare width goes to the columns that would otherwise wrap, not to one column without bound), or unsized (no `size`: the column takes what the others leave). A `size` is exactly what it says — 150 included; there is no number that means "unsized"
 - Fixed widths must never be able to add up to the whole content width: the one unsized column would get 0 px (Agent Sessions' SESSION column did at a 1,126 px window). Give the table a minimum width inside an `overflow-x-auto` wrapper so that column keeps a floor.
 - A row's key column (a finding's title, Operations' NEEDS) wraps to two lines (`line-clamp-2 break-words`, title kept) rather than truncating; an address never wraps (`whitespace-nowrap`) — the tag beside it wraps instead.
 - A measure's caption wraps; a link inside it is `whitespace-nowrap` and is never cut off.
@@ -584,6 +584,13 @@ For requests that should be physically aborted (large downloads, expensive
 endpoints), use `AbortController` and pass `controller.signal` to the API
 client — `controller.abort()` in the cleanup.
 
+The Rules of Hooks and effect dependencies are lint rules (`npm run lint`,
+part of the gate, which allows no warning). A state update after unmount is
+already a no-op and needs no guard; `hooks/useIsMounted` is for what outlives
+the component — a toast that speaks about "this" record, a window event, a
+follow-up request — which a save that answers after the reader moved on must
+not do.
+
 ### 39. List pages fetch with `useListQuery` (2026-10-01)
 A list page — rows that refetch when a filter, sort or page changes — fetches
 through `hooks/useListQuery.ts`.  Do not hand-roll `loading` / `error` /
@@ -631,8 +638,27 @@ guard is a defect: give it `useLatestRequest` at least.
 
 Detail pages (`/findings/:id`, `/scans/:id`…) are remounted on navigation by
 the route error boundary's `key={location.pathname}` (`App.tsx`), which is
-what keeps a late response for the previous id from landing.  A component
-that stays mounted across ids (the host inspector) must carry its own guard.
+what keeps a late response for the previous id from landing.  A panel that
+shows one record inside a page that stays open across records does the same
+thing itself: it is **keyed by the record** (`<Body key={hostId} …/>` — the
+host inspector, `HostFindingsCard`, the standalone `HostTestsSection`), so a
+change of record remounts it and a completion for the previous one has no
+state to land in.  Do not write per-request "is this still the host on
+screen?" checks; key the panel.
+
+**A paged list keeps its page in the address.**  Pass `usePagedList` the
+page from `hooks/useUrlPage` (`{ pageSize, page: useUrlPage() }`): `?page=`,
+1-based and left out for the first page, replaced (not pushed) when the
+reader pages.  New deps — a filter, a tab — start from page 1, and a link to
+a tab or a filter never carries `page`.  Remediation, Remediation deadlines,
+the Operations tabs and Names do.
+
+**The Hosts page derives its state from the address.**  Filters, sort and
+page are read from the URL on every render, never copied into component
+state and synced back; `sessionStorage` only seeds a bare `/hosts` (the
+reader's last filters), and a link within the page is
+`navigate(buildHostsUrl(...))`.  Keep one copy of a filter — the address —
+so Back, a reload and a shared link all show the same list.
 
 ### 40. Controls follow the project role (2026-10-01)
 "May this person do that here" is answered by `hooks/useProjectRole.ts`:
@@ -829,22 +855,27 @@ From the codebase review of 2026-10-07 (5.339.0).
   summary request fails, its numbers are cleared and the page says they could
   not be counted (Scans); the previous filter's figures never stay on screen.
 - **A reader keeps their place.** A paged list keeps its page in the URL
-  (`?page=`, omitted for 1) and rows-per-page as a per-viewer preference
-  (`localStorage`, or `?per=`); a filter or sort change still returns to
-  page 1. A narrowing that came from the URL (`?host=`, `?finding=`) is always
+  (`?page=`, omitted for 1; `hooks/useUrlPage`, §39) and rows-per-page as a
+  per-viewer preference (`localStorage`, or `?per=`); a filter or sort change
+  still returns to page 1. A cross-project page (Portfolio, Oversight,
+  Remediation deadlines) keeps its filters when the reader switches project;
+  a project page drops them, because they name the previous project's ids. A narrowing that came from the URL (`?host=`, `?finding=`) is always
   shown as a removable chip naming what it narrows to.
 - **Unsaved writing is guarded.** An editor holding text the reader typed uses
   `hooks/useDiscardGuard`; an expired session returns to where the reader was
   (`utils/loginReturn` — only a path inside the app is honoured).
 - **A startup check that fails for a reason other than "not signed in" does
   not sign the reader out.** Only a 401 ends a session.
-- **One helper each, guard-tested:** a file save goes through `utils/download`
+- **One helper each, enforced by lint:** a file save goes through `utils/download`
   (`saveBlob`, `filenameFromContentDisposition`); an absolute moment through
-  `formatTimestamp`. An export's error is `formatApiError`, never the raw
-  "Request failed with status code 403".
-- **A surface that stays mounted across records** (the host inspector, a
-  timeline sheet) checks every async completion is still for the record on
-  screen — saves by the id they were sent for, reads by request generation.
+  `formatTimestamp` (ESLint refuses a hand-set `.download =` and a bare
+  `new Date(x).toLocaleString()`). An export's error is `formatApiError`,
+  never the raw "Request failed with status code 403".
+- **A panel that shows one record is keyed by that record** (§39), so nothing
+  from the previous record can land in it. The one surface that still stays
+  mounted across records — the remediation timeline sheet — checks every
+  async completion is still for the host on screen; a new one is keyed
+  instead.
 
 ## Final Rule
 If a UI change looks correct only with fixture data, it is not finished.

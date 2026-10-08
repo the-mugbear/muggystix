@@ -224,23 +224,47 @@ def start_staged_job(
     corrected format).  Raises ValueError for an unknown format."""
     if format_override is not None and format_override not in FORMATS:
         raise ValueError(f"Unknown format '{format_override}'")
-    # v2.368.0 — through the shared transition layer: the row is locked, and
-    # the status + file checks happen UNDER that lock. This was a plain
-    # read-then-write, so a double start (two tabs, a double click, the review
-    # dialog plus the results page) could reset a job a worker had already
-    # claimed back to ``queued`` — and the file imported twice.
-    # Raises JobNotTransitionable (status, "file_missing" or "duplicate").
+    return queue_job(
+        db, job.id, allowed_from=(STAGED_STATUS, "failed"),
+        choice={
+            "format_override": format_override,
+            "source_tool": (source_tool or "").strip()[:64] or None,
+        },
+    )
+
+
+def queue_job(
+    db: Session, job_id: int, *, allowed_from: tuple, choice: Optional[Dict[str, Any]] = None,
+) -> IngestionJob:
+    """staged | failed → queued: the ONE path, for the format review's start
+    and for a plain retry of a failed job.
+
+    Checked under the row lock (``job_transitions.retry``): the status, the
+    file on disk and the duplicate guard.  A double start (two tabs, the
+    review dialog plus the results page) therefore cannot reset a job a
+    worker already claimed, and a failed job whose file another job has since
+    imported is refused as a fresh upload of it would be.
+
+    ``choice`` is the operator's format and tool; None keeps what the job
+    already carries (a retry runs the same import again).  A job leaving
+    ``failed`` counts one more attempt.
+
+    Raises ``JobNotTransitionable`` (its ``status`` is the state found, or
+    "file_missing"), ``DuplicateUploadError``, or ``LookupError`` when the
+    row is gone.  Commits."""
     from app.services.ingestion_service import _transitions, ingestion_service
 
     duplicate: Dict[str, Any] = {}
+    found_as: Dict[str, Any] = {}
 
     def _precondition(locked: IngestionJob) -> Optional[str]:
+        found_as["status"] = locked.status
         if not locked.storage_path or not Path(locked.storage_path).exists():
             return "file_missing"
         # The upload-time guard ran when this file arrived; since then an
-        # identical file may have been imported or queued (staged copies were
-        # not counted before this release, and a failed job can sit for days).
-        # Skipped when the operator chose "import anyway" at upload.
+        # identical file may have been imported or queued (a failed job can
+        # sit for days).  Skipped when the operator chose "import anyway" at
+        # upload.
         if locked.content_sha256 and not (locked.options or {}).get("allow_duplicate"):
             found = ingestion_service._find_duplicate(
                 db, locked.project_id, locked.content_sha256, exclude_job_id=locked.id,
@@ -254,13 +278,11 @@ def start_staged_job(
 
     try:
         started = _transitions.retry(
-            db, job.id,
-            allowed_from=(STAGED_STATUS, "failed"),
+            db, job_id,
+            allowed_from=allowed_from,
             precondition=_precondition,
-            format_override=format_override,
-            source_tool=(source_tool or "").strip()[:64] or None,
             parse_error_id=None,
-            message="Queued by the operator" + (f" as {format_label(format_override)}" if format_override else ""),
+            **(choice or {}),
         )
     except Exception as exc:
         db.rollback()
@@ -269,16 +291,19 @@ def start_staged_job(
         raise
     if started is None:  # deleted between the caller's load and the lock
         db.rollback()
-        raise LookupError(f"Ingestion job {job.id} no longer exists")
+        raise LookupError(f"Ingestion job {job_id} no longer exists")
+    if found_as.get("status") == "failed":
+        started.retry_count = (started.retry_count or 0) + 1
+    # The operator queued it: the reaper's budget starts over.
+    started.reap_count = 0
+    if choice is None:
+        started.message = f"Re-queued by user (attempt {started.retry_count})."
+    else:
+        chosen = choice.get("format_override")
+        started.message = "Queued by the operator" + (f" as {format_label(chosen)}" if chosen else "")
     db.commit()
     db.refresh(started)
     return started
-
-
-# (job id, storage path) of finished jobs whose file this process has seen
-# gone — see ``expire_retained_files``.  Per process: a restarted worker
-# checks each once more.
-_files_known_gone: set = set()
 
 
 def retention_window() -> timedelta:
@@ -287,7 +312,33 @@ def retention_window() -> timedelta:
 
 
 def file_retained(job: IngestionJob) -> bool:
+    """Whether the job's file is kept, as the ROW says: nothing has recorded
+    removing it.  For pages that serialise many jobs — no disk access.  A
+    path that is about to read the file asks the disk (``file_on_disk``)."""
+    return bool(job.storage_path) and job.file_removed_at is None
+
+
+def file_on_disk(job: IngestionJob) -> bool:
     return bool(job.storage_path) and Path(job.storage_path).exists()
+
+
+def _remove_file_of_locked_job(job: IngestionJob, now: datetime) -> bool:
+    """Remove a job's upload and record it on the row.  The caller holds the
+    row's lock and has already decided (under it) that the file goes; its
+    commit makes the stamp durable.  ``/start`` and ``/retry`` check the file
+    under the same lock, so neither can pass that check on a file about to
+    disappear.  A directory that cannot be removed is logged and left
+    unstamped — the retention sweep comes back to it."""
+    if job.storage_path:
+        shutil.rmtree(Path(job.storage_path).parent, ignore_errors=True)
+        if Path(job.storage_path).exists():
+            logger.warning(
+                "Could not remove the uploaded file of ingestion job %s (%s)",
+                job.id, job.storage_path,
+            )
+            return False
+    job.file_removed_at = now
+    return True
 
 
 def retained_until(job: IngestionJob) -> Optional[datetime]:
@@ -307,32 +358,39 @@ def expire_retained_files(db: Session, *, now: Optional[datetime] = None) -> int
     The job rows stay — they are the record; only the bytes go."""
     now = now or datetime.now(timezone.utc)
     cutoff = now - retention_window()
+    # The rows stay for ever, so "finished and past the window" only grows;
+    # a row whose file is recorded as removed is never looked at again.
     expired = (
         (IngestionJob.status.in_(("completed", "failed")))
         & (
             (IngestionJob.completed_at < cutoff)
             | ((IngestionJob.completed_at.is_(None)) & (IngestionJob.created_at < cutoff))
         )
+        & IngestionJob.file_removed_at.is_(None)
     )
     removed = 0
-    # The rows stay for ever, so "finished and past the window" only grows:
-    # a job whose file this process has already seen gone is not locked and
-    # looked at again every minute.  (A retried job's file is kept by the
-    # retry, which never re-creates a removed one.)
-    candidates = [
-        (jid, path)
-        for jid, path in db.query(IngestionJob.id, IngestionJob.storage_path).filter(expired).all()
-        if (jid, path) not in _files_known_gone
-    ]
-    for job_id, known_path in candidates:
+    candidates = db.query(IngestionJob.id, IngestionJob.storage_path).filter(expired).all()
+    # Files already gone (removed before the row recorded it, or by hand):
+    # stamped in one statement.  No lock needed — nothing re-creates a job's
+    # file, so "gone" cannot become untrue.
+    already_gone = [jid for jid, path in candidates if not (path and Path(path).exists())]
+    for start in range(0, len(already_gone), 1000):
+        db.query(IngestionJob).filter(
+            IngestionJob.id.in_(already_gone[start:start + 1000]), expired,
+        ).update({IngestionJob.file_removed_at: now}, synchronize_session=False)
+        db.commit()
+    gone = set(already_gone)
+    for job_id, _path in candidates:
+        if job_id in gone:
+            continue
         # Each file goes while its row is LOCKED, with the predicate
         # re-checked under the lock.  Deleting from a snapshot read raced a
         # retry: the retry (which checks the file exists under this same row
         # lock) was accepted, the job re-queued, and then this sweep removed
-        # its input — "retry accepted, file absent" (2.374.4 review H5).  Now
-        # either the retry wins (the job is 'queued', no longer matched) or
-        # the sweep does (the retry then reports file_missing).  SKIP LOCKED:
-        # a job being retried right now is simply left for the next sweep.
+        # its input.  Now either the retry wins (the job is 'queued', no
+        # longer matched) or the sweep does (the retry then reports
+        # file_missing).  SKIP LOCKED: a job being retried right now is
+        # simply left for the next sweep.
         job = (
             db.query(IngestionJob)
             .filter(IngestionJob.id == job_id, expired)
@@ -341,20 +399,12 @@ def expire_retained_files(db: Session, *, now: Optional[datetime] = None) -> int
             .one_or_none()
         )
         if job is not None:
-            if file_retained(job):
-                shutil.rmtree(Path(job.storage_path).parent, ignore_errors=True)
-                if Path(job.storage_path).exists():
-                    # Tried again next sweep; said, because a sweep that
-                    # cannot delete is how the uploads disk fills unnoticed.
-                    logger.warning(
-                        "Could not remove the retained file of ingestion job %s (%s)",
-                        job_id, job.storage_path,
-                    )
-                else:
-                    removed += 1
-                    _files_known_gone.add((job_id, known_path))
-            else:
-                _files_known_gone.add((job_id, known_path))
+            had_file = file_on_disk(job)
+            # A file that cannot be removed is tried again next sweep, and
+            # said: a sweep that cannot delete is how the uploads disk fills
+            # unnoticed.
+            if _remove_file_of_locked_job(job, now) and had_file:
+                removed += 1
         db.commit()  # release the row lock before the next job
     return removed
 
@@ -374,7 +424,7 @@ def reprocess_job(
 
     if format_override is not None and format_override not in FORMATS:
         raise ValueError(f"Unknown format '{format_override}'")
-    if not file_retained(job):
+    if not file_on_disk(job):
         raise FileNotFoundError(job.storage_path)
     src = Path(job.storage_path)
     job_dir = ingestion_service._storage_root / uuid4().hex
@@ -419,10 +469,10 @@ def discard_staged_job(db: Session, job: IngestionJob, *, now: Optional[datetime
     from app.services.job_transitions import JobNotTransitionable
 
     now = now or datetime.now(timezone.utc)
-    # v2.368.0 — status checked under the row lock, and the file removed only
-    # AFTER the transition is committed. It was removed first, on an unlocked
-    # read: a discard racing a start deleted the file of a job that then went
-    # to the worker.
+    # The status is checked under the row lock and the file removed while it
+    # is still held.  A start racing this discard waits on the lock and then
+    # finds the job no longer staged; removed after the commit instead, the
+    # file of a job just re-started from ``failed`` could vanish under it.
     try:
         discarded = _transitions.cancel(
             db, job.id, allowed_from=(STAGED_STATUS,), to_status="failed",
@@ -437,10 +487,8 @@ def discard_staged_job(db: Session, job: IngestionJob, *, now: Optional[datetime
         db.rollback()
         raise ValueError("Only a staged job can be discarded (the job no longer exists)")
     discarded.completed_at = now
-    storage_path = discarded.storage_path
+    _remove_file_of_locked_job(discarded, now)
     db.commit()
-    if storage_path:
-        shutil.rmtree(Path(storage_path).parent, ignore_errors=True)
     db.refresh(discarded)
     return discarded
 
@@ -461,22 +509,16 @@ def expire_staged_jobs(db: Session, *, max_age: timedelta = STAGED_MAX_AGE, now:
         .with_for_update(skip_locked=True)
         .all()
     )
-    paths = []
     for job in stale:
         job.status = "failed"
         msg = f"{EXPIRED_MESSAGE_PREFIX}: not started within {int(max_age.total_seconds() // 3600)} hours."
         job.error_message = msg
         job.message = msg
         job.completed_at = now
-        paths.append((job.id, job.storage_path))
+        # Under the row lock, like every removal of a job's file: after the
+        # commit the job is ``failed`` and startable again, and a start could
+        # pass its file check just before the file went.
+        _remove_file_of_locked_job(job, now)
     if stale:
         db.commit()
-    # Files go after the commit, never before: a rolled-back expiry must not
-    # leave a staged job without its file.
-    for job_id, storage_path in paths:
-        try:
-            if storage_path:
-                shutil.rmtree(Path(storage_path).parent, ignore_errors=True)
-        except Exception:  # pragma: no cover
-            logger.debug("could not remove staged dir for job %s", job_id, exc_info=True)
     return len(stale)

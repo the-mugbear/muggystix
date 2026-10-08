@@ -308,36 +308,31 @@ def test_a_global_admin_operator_bypasses_membership(
     assert wrote.status_code in (200, 201), wrote.text
 
 
-def test_every_metadata_write_path_template_actually_matches_a_route():
-    """The allowlist is matched by exact (method, path-template) pair.
+def test_the_session_metadata_writes_are_exactly_the_declared_ones():
+    """A write a read-only operator's agent may make is declared on its route
+    (``deps.agent_session_metadata_write``).
 
-    A typo, or a route whose path later changes, would silently drop an entry
-    out of the allowlist — and the failure is invisible in the direction that
-    matters: the route simply starts requiring ANALYST, so a read-only
-    operator loses the ability to renew a key or report its environment, with
-    nothing to indicate why.
+    Pinned as a set, both ways: a route losing the declaration silently starts
+    requiring ANALYST (an auditor could no longer end a session or file
+    feedback, with nothing to say why), and a project write gaining it would
+    be open to a viewer's agent.
     """
     import app.main  # noqa: F401 - registers the routes
     from app.main import app
-    from app.api.deps import AGENT_SESSION_METADATA_WRITES
+    from tests.agent_route_declarations import agent_route_declarations
 
-    # Entries are router-relative (what request.scope["route"].path returns);
-    # the OpenAPI map is keyed by the mounted path. Each entry must resolve to
-    # exactly one mounted agent route.
-    mounted = [
-        (method.upper(), path)
-        for path, ops in app.openapi()["paths"].items()
-        for method in ops
-        if path.startswith("/api/v1/agent")
-    ]
-    for method, rel in sorted(AGENT_SESSION_METADATA_WRITES):
-        matches = [p for m, p in mounted if m == method and p.endswith(rel)]
-        assert len(matches) == 1, (
-            f"metadata-write allowlist entry {method} {rel!r} matched "
-            f"{len(matches)} mounted routes ({matches}). Zero means that route "
-            "now silently requires ANALYST; more than one means the entry is "
-            "ambiguous."
-        )
+    declared = {
+        key for key, access in agent_route_declarations(app).items()
+        if access.session_metadata_write
+    }
+    assert declared == {
+        # Mounted outside the gate (an expired key must reach it); declared so
+        # it would not become a project write if it were moved under it.
+        ("POST", "/api/v1/agent/session/renew"),
+        ("POST", "/api/v1/agent/session/end"),
+        ("POST", "/api/v1/agent/feedback"),
+        ("POST", "/api/v1/agent/tool-suggestions"),
+    }
 
 
 @pytest.mark.parametrize(

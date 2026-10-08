@@ -364,40 +364,23 @@ def get_hosts_v2(
         project_total = None
     query = _apply_host_sorting(query, sort_by, sort_order)
 
-    # Add eager loading for the listing response.  RV-8 — the list view
-    # never renders NSE script bodies, so we deliberately DON'T eager-load
-    # Port.scripts or Host.host_scripts here; the list serializer emits
-    # script-free ports (serialize_port_light) and never touches those
-    # relationships.  Review #5 — we ALSO don't eager-load notes or
-    # scan_history (a host can have thousands of rows); the list only shows
-    # the 3 newest notes + 6 newest discoveries, fetched with bounded
-    # window queries below, plus aggregate counts.  Detail loads everything.
+    # Loading for the listing response.  Host's relationships are plain lazy,
+    # so only what the row reads is named: its ports and its tags (with each
+    # tag's definition, read by serialize_host_base).  The list renders no NSE
+    # script bodies — ports go out script-free (serialize_port_light) and
+    # host_scripts is passed to the serializer as [] — and no vulnerability,
+    # attribute, note or scan-history rows: counts, the 3 newest notes and the
+    # 6 newest discoveries come from the grouped / window queries below.
+    # ``tests/test_host_list_query_budget.py`` bounds the page's statements.
     query = query.options(
         selectinload(models.Host.ports),
-        # Eager-load tag + its definition so serialize_host_base reads
-        # host.tag_assignments[].tag without an N+1 per host.
         selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
-        # Suppress the mapper-level lazy="selectin" defaults for the three
-        # relationships this endpoint computes via bulk/window queries instead
-        # (vuln_map, note_count_map/notes_by_host, attributes are unused here).
-        # Without these, loading a 100-host page silently fires a batched
-        # SELECT for every vuln/attribute/note of those hosts — work the light
-        # serializer throws away (serialize_host_base reads the precomputed
-        # maps, never host.vulnerabilities/.attributes/.notes). Detail re-loads
-        # what it needs explicitly, so this only trims the list path.
+        # Redundant with the lazy defaults (nothing below reads these); kept
+        # so a reader of one by mistake gets nothing rather than a query per
+        # host.
         noload(models.Host.vulnerabilities),
         noload(models.Host.attributes),
         noload(models.Host.notes),
-        # v2.301.0 — host_scripts belongs in that list and was missing, which
-        # cost one query PER HOST on every page.  The comment above says the
-        # list "deliberately doesn't eager-load" it, and that was true — but
-        # not eager-loading a relationship the serializer reads means loading
-        # it LAZILY, one host at a time, which is the worse of the two.
-        # ``serialize_host_base`` reads ``host.host_scripts`` (it is a
-        # HostSchema field), and this endpoint then throws the result away at
-        # ``serialized["host_scripts"] = []`` — so a 400-host page fired 400
-        # queries whose results were discarded.  Measured: 426 queries for a
-        # 500-row page before, 26 after.
         noload(models.Host.host_scripts),
     )
 
@@ -703,13 +686,13 @@ def get_hosts_v2(
             host, vuln_map.get(host.id),
             discoveries=discoveries_by_host.get(host.id, []),
             note_count=note_count_map.get(host.id, 0),
+            host_scripts=[],
         )
         follow = follow_map.get(host.id)
         serialized["follow"] = _serialize_follow(follow) if follow else None
 
         # RV-8 — list-weight payload: script-free ports, no host_scripts.
         serialized["ports"] = [_serialize_port_light(p) for p in host.ports]
-        serialized["host_scripts"] = []
 
         serialized["test_plan_entry_count"] = tp_count_map.get(host.id, 0)
         serialized["test_execution_count"] = te_count_map.get(host.id, 0)
@@ -786,7 +769,14 @@ def get_matching_host_ids(
         project_id=project.id,
     )
     total = query.with_entities(func.count(models.Host.id)).scalar() or 0
-    rows = query.with_entities(models.Host.id).limit(_BULK_SELECT_CAP).all()
+    # Ordered, so a capped answer is the same ids on every call (and the ones
+    # a retry of the bulk action gets): the first by id.
+    rows = (
+        query.with_entities(models.Host.id)
+        .order_by(models.Host.id)
+        .limit(_BULK_SELECT_CAP)
+        .all()
+    )
     ids = [r[0] for r in rows]
     return HostIdsResponse(ids=ids, total=total, capped=total > len(ids))
 
@@ -1461,13 +1451,11 @@ def get_host_v2(
         selectinload(models.Host.ports).selectinload(models.Port.scripts),
         selectinload(models.Host.host_scripts),
         selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
-        # v2.368.2 — these three are ``lazy="selectin"`` on the model, so the
-        # entity load fetched them all and nothing below read them: the
-        # vulnerability list is queried again just under here WITH its
-        # informational filter (so the eager copy defeated it — every info row
-        # and its plugin text was loaded anyway), notes come from the follow
-        # service, and the serializer never touches attributes. The list query
-        # has carried the same three ``noload``s since it was written.
+        # Nothing below reads these three from the entity: the vulnerability
+        # list is queried just under here WITH its informational filter,
+        # notes come from the follow service, and the serializer never
+        # touches attributes.  Redundant with the plain-lazy defaults; kept so
+        # a stray read gets nothing rather than every row.
         noload(models.Host.vulnerabilities),
         noload(models.Host.attributes),
         noload(models.Host.notes),

@@ -62,7 +62,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
-from jinja2 import FileSystemLoader, StrictUndefined
+from jinja2 import ChoiceLoader, FileSystemLoader, StrictUndefined
 from jinja2.sandbox import SandboxedEnvironment
 from markupsafe import Markup
 
@@ -170,6 +170,126 @@ class TemplateAssetError(ValueError):
     """template.json declares an asset it may not (the message names it)."""
 
 
+class TemplateBaseError(ValueError):
+    """template.json names a base (``extends``) that cannot be used."""
+
+
+# ---------------------------------------------------------------------------
+# A template that extends another
+# ---------------------------------------------------------------------------
+# ``"extends": "<folder name>"`` in template.json: the template is its base —
+# a template in the folder beside it — with its own files laid over the
+# base's.  One level only (a base never extends), so what a template is made
+# of is two folders at most.
+#
+# * Files: every file of the base that the template does not have itself,
+#   EXCEPT the base's installed images (the ``path`` of each asset the base
+#   declares): branding is per template, so an operator's logo for one report
+#   never appears on another by inheritance.
+# * template.json: a key the template leaves out is the base's, except the
+#   ones in ``_OWN_KEYS`` — a template always states what it is.
+
+_TEMPLATE_NAME = re.compile(r"\A[a-z0-9][a-z0-9_-]{0,63}\Z")
+_OWN_KEYS = ("title", "description", "kind", "extends")
+
+
+def _read_manifest(folder: Path) -> dict:
+    data = json.loads((folder / "template.json").read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("template.json must be an object.")
+    return data
+
+
+def template_base(template_dir: Path, manifest: Optional[dict] = None) -> Optional[Path]:
+    """The folder of the template ``template_dir`` extends, or None.  Raises
+    ``TemplateBaseError`` when the base is not a template beside it, is the
+    template itself, or itself extends another."""
+    template_dir = template_dir.resolve()
+    if manifest is None:
+        if not (template_dir / "template.json").is_file():
+            return None
+        manifest = _read_manifest(template_dir)
+    name = manifest.get("extends")
+    if name is None:
+        return None
+    if not isinstance(name, str) or not _TEMPLATE_NAME.match(name):
+        raise TemplateBaseError("`extends` must be the folder name of another template.")
+    if name == template_dir.name:
+        raise TemplateBaseError(f"`extends`: '{name}' cannot extend itself.")
+    base = template_dir.parent / name
+    if base.is_symlink() or not (base / "template.json").is_file():
+        raise TemplateBaseError(f"`extends`: there is no template called '{name}' beside this one.")
+    try:
+        base_manifest = _read_manifest(base)
+    except (OSError, ValueError) as exc:
+        raise TemplateBaseError(f"`extends`: the template.json of '{name}' is unreadable ({exc}).") from exc
+    if base_manifest.get("extends") is not None:
+        raise TemplateBaseError(
+            f"`extends`: '{name}' itself extends another template; a template extends one that stands alone."
+        )
+    return base
+
+
+def template_manifest(template_dir: Path) -> dict:
+    """``template.json`` as it applies: the template's own keys over its
+    base's (see above), without ``extends``."""
+    own = _read_manifest(template_dir)
+    base = template_base(template_dir, own)
+    merged = dict(own)
+    if base is not None:
+        merged = {**{k: v for k, v in _read_manifest(base).items() if k not in _OWN_KEYS}, **own}
+    merged.pop("extends", None)
+    return merged
+
+
+def _layers(template_dir: Path) -> List[tuple]:
+    """``[(folder, paths not taken from it)]``, the base first: the folders a
+    template is made of."""
+    base = template_base(template_dir)
+    if base is None:
+        return [(template_dir, frozenset())]
+    declared = _read_manifest(base).get("assets")
+    branding = frozenset(
+        str(entry.get("path")) for entry in (declared if isinstance(declared, list) else [])
+        if isinstance(entry, dict)
+    )
+    return [(base, branding), (template_dir, frozenset())]
+
+
+def template_file(template_dir: Path, relative: str) -> Optional[Path]:
+    """Where ``relative`` comes from — the template's own folder, else its
+    base's — or None when neither has it as a regular file (no symlink on the
+    way: ``_copy_template`` skips symlinks)."""
+    parts = relative.split("/")
+    for folder, skipped in reversed(_layers(template_dir)):
+        if relative in skipped:
+            continue
+        node = folder
+        for part in parts:
+            node = node / part
+            if node.is_symlink():
+                break
+        else:
+            if node.is_file():
+                return node
+    return None
+
+
+def materialize(template_dir: Path, dst: Path, overrides: Optional[Dict[str, Path]] = None) -> None:
+    """Write into ``dst`` the template as one self-contained folder: the
+    base's files, the template's over them, each uploaded file at its asset's
+    path, and a ``template.json`` that states everything itself (no
+    ``extends``).  What a render works in, and what an issued report keeps."""
+    dst.mkdir(parents=True, exist_ok=True)
+    for folder, skipped in _layers(template_dir):
+        _copy_template(folder, dst, skipped)
+    _place_overrides(template_dir, dst, overrides)
+    if (template_dir / "template.json").is_file():
+        (dst / "template.json").write_text(
+            json.dumps(template_manifest(template_dir), ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+
+
 def template_assets(
     template_dir: Path, manifest: Optional[dict] = None, overrides: Optional[Dict[str, Path]] = None,
 ) -> List[dict]:
@@ -193,7 +313,10 @@ def template_assets(
     another extension), a ``replaces`` of a different kind of file, or a
     duplicate id."""
     if manifest is None:
-        manifest = json.loads((template_dir / "template.json").read_text(encoding="utf-8"))
+        try:
+            manifest = template_manifest(template_dir)
+        except TemplateBaseError as exc:
+            raise TemplateAssetError(str(exc)) from exc
     raw = manifest.get("assets") or []
     if not isinstance(raw, list):
         raise TemplateAssetError("`assets` must be a list.")
@@ -230,7 +353,7 @@ def template_assets(
         rendered = [f for f, spec in FORMATS.items() if spec[0] is not None]
         formats = [f for f in (entry.get("formats") or rendered) if f in rendered]
         kind = ASSET_KINDS.get(Path(path).suffix.lower(), "")
-        installed = _asset_present(template_dir, parts)
+        installed = template_file(template_dir, "/".join(parts)) is not None
         override = (overrides or {}).get(asset_id)
         out.append({
             "id": asset_id,
@@ -344,15 +467,6 @@ def _apply_replacements(template_dir: Path, work: Path, overrides: Optional[Dict
             shutil.copyfile(work / a["path"], target)
 
 
-def _asset_present(template_dir: Path, parts: List[str]) -> bool:
-    node = template_dir
-    for part in parts:
-        node = node / part
-        if node.is_symlink():
-            return False
-    return node.is_file()
-
-
 def missing_required_assets(template_dir: Path, overrides: Optional[Dict[str, Path]] = None) -> List[dict]:
     """The declared, REQUIRED images neither in the folder nor uploaded."""
     if not (template_dir / "template.json").is_file():
@@ -395,10 +509,15 @@ def _asset_factory(template_dir: Path, overrides: Optional[Dict[str, Path]] = No
 # ---------------------------------------------------------------------------
 
 def escape_md(value: Any) -> str:
-    """Plain text → Markdown that reads as exactly that text, inline."""
+    """Plain text → Markdown that reads as exactly that text, inline.
+
+    Leading whitespace is dropped: a value printed at the start of a line
+    with four spaces before it would otherwise be an indented code block (and
+    inline Markdown never shows leading spaces anyway)."""
     text = str(value)
     text = "".join(" " if ch in "\r\n\t\v\f" else ch for ch in text)
     text = "".join(ch for ch in text if ch >= " " or ch == " ")
+    text = text.lstrip(" ")
     return "".join("\\" + ch if ch in _PUNCT else ch for ch in text)
 
 
@@ -513,21 +632,6 @@ def _code_factory(dataset: dict, record: Recorder = None):
     return code
 
 
-def md(obj: Any, field: Optional[str] = None) -> Markup:
-    """The placeholder alone, without the empty check (kept for callers that
-    have no dataset)."""
-    if isinstance(obj, dict):
-        base = obj.get("_path")
-        if not isinstance(base, str) or not field:
-            raise RenderError("md() needs a finding (or other item) and a field name.")
-        key = f"{base}.{field}"
-    else:
-        key = str(obj)
-    if not _KEY.match(key):
-        raise RenderError(f"md(): '{key}' is not a data path.")
-    return Markup(f'\n\n::: {{.bs-md key="{key}"}}\n:::\n\n')
-
-
 def image(item: Any, width: str = "6in", number: Optional[int] = None) -> Markup:
     """An evidence image the renderer placed in the work directory, as a
     placeholder the Lua filter turns into a figure: the file from here (it
@@ -572,11 +676,16 @@ def jinja_environment(
     template_dir: Path, dataset: Optional[dict] = None, overrides: Optional[Dict[str, Path]] = None,
     record: Recorder = None,
 ) -> SandboxedEnvironment:
-    """Includes resolve inside the template folder only (FileSystemLoader
+    """Includes resolve inside the template folder — and, for a template that
+    extends another, its base's folder after it — only (FileSystemLoader
     refuses ``..``).  Use includes, not macros, for reusable parts: a macro's
     result is printed through ``<< >>`` and so escaped like data."""
+    try:
+        folders = [folder for folder, _skipped in reversed(_layers(template_dir))]
+    except (TemplateBaseError, ValueError, OSError) as exc:
+        raise RenderError(f"The template '{template_dir.name}' cannot be used: {exc}") from exc
     env = SandboxedEnvironment(
-        loader=FileSystemLoader(str(template_dir)),
+        loader=ChoiceLoader([FileSystemLoader(str(folder)) for folder in folders]),
         block_start_string="<%", block_end_string="%>",
         variable_start_string="<<", variable_end_string=">>",
         comment_start_string="<#", comment_end_string="#>",
@@ -585,10 +694,10 @@ def jinja_environment(
     )
     try:
         asset = _asset_factory(template_dir, overrides)
-    except (TemplateAssetError, ValueError, OSError) as exc:
+    except (TemplateAssetError, TemplateBaseError, ValueError, OSError) as exc:
         raise RenderError(f"The template '{template_dir.name}' declares unusable assets: {exc}") from exc
     env.globals.update(
-        md=_md_factory(dataset, record) if dataset is not None else md,
+        md=_md_factory(dataset or {}, record),
         code=_code_factory(dataset or {}, record),
         image=_image_factory(record), plain=plain, todo=todo, asset=asset,
     )
@@ -705,10 +814,12 @@ def render_source(
 # The Quarto run
 # ---------------------------------------------------------------------------
 
-def _copy_template(src: Path, dst: Path) -> None:
+def _copy_template(src: Path, dst: Path, skipped: Iterable[str] = ()) -> None:
     for path in src.rglob("*"):
         rel = path.relative_to(src)
         if any(part in _SKIP or part.endswith("_files") for part in rel.parts):
+            continue
+        if rel.as_posix() in skipped:
             continue
         if path.is_symlink():
             continue
@@ -892,8 +1003,13 @@ def render(
     quarto: str = "quarto",
     strict_evidence: bool = False,
     asset_files: Optional[Dict[str, Path]] = None,
+    on_progress: Optional[Callable[[], None]] = None,
 ) -> Dict[str, Path]:
     """Render ``dataset`` with the template into ``out_dir`` → {format: file}.
+
+    ``on_progress`` is called before each format and before each
+    post-processor — the points at which a worker can say it is still alive
+    (one render is several Quarto runs, each with its own timeout).
 
     ``asset_files`` ({asset id: file}, v2.431.0): uploaded template images,
     used in place of (or instead of a missing) server-installed file.
@@ -916,8 +1032,10 @@ def render(
     with tempfile.TemporaryDirectory(prefix="bs-report-") as tmp:
         work = Path(tmp) / "work"
         work.mkdir()
-        _copy_template(template_dir, work)
-        _place_overrides(template_dir, work, asset_files)
+        try:
+            materialize(template_dir, work, asset_files)
+        except (TemplateBaseError, TemplateAssetError, ValueError) as exc:
+            raise RenderError(f"The template '{template_dir.name}' cannot be used: {exc}") from exc
         _apply_replacements(template_dir, work, asset_files)
         (work / "_bluestick").mkdir(exist_ok=True)
         shutil.copyfile(FIELDS_FILTER, work / "_bluestick" / "fields.lua")
@@ -941,6 +1059,8 @@ def render(
         results: Dict[str, Path] = {}
         env = _clean_env(work)
         for fmt in formats:
+            if on_progress is not None:
+                on_progress()
             to, suffix, _media = FORMATS[fmt]
             produced = work / f"report{suffix}"
             if produced.exists():
@@ -967,6 +1087,8 @@ def render(
                 )
             script = (postprocess or {}).get(fmt)
             if script:
+                if on_progress is not None:
+                    on_progress()
                 # The same treatment as Quarto: its own process group, killed
                 # whole on timeout, and a message without the work directory
                 # (an uncaught TimeoutExpired printed the full command line,
@@ -1003,24 +1125,23 @@ def _main(argv: Optional[List[str]] = None) -> int:
                              "Default: the template's sample-evidence/ folder, when it has one.")
     args = parser.parse_args(argv)
 
-    manifest = json.loads((args.template / "template.json").read_text(encoding="utf-8"))
     dataset = json.loads(args.data.read_text(encoding="utf-8"))
     try:
+        manifest = template_manifest(args.template)
         for a in template_assets(args.template, manifest):
             if not a["present"]:
                 kind = "required" if a["required"] else "optional"
                 print(f"note: {kind} image '{a['id']}' is not installed ({a['path']})", file=sys.stderr)
-    except TemplateAssetError as exc:
+    except (TemplateAssetError, TemplateBaseError) as exc:
         print(f"error: template.json: {exc}", file=sys.stderr)
         return 1
-    evidence_dir = args.evidence
-    if evidence_dir is None and (args.template / SAMPLE_EVIDENCE_DIR).is_dir():
-        evidence_dir = args.template / SAMPLE_EVIDENCE_DIR
 
     def resolve(item: dict) -> Optional[Path]:
-        if evidence_dir is None:
-            return None
-        return evidence_dir / Path(item["file"]).name
+        name = Path(item["file"]).name
+        if args.evidence is not None:
+            return args.evidence / name
+        # The template's own sample images, else its base's.
+        return template_file(args.template, f"{SAMPLE_EVIDENCE_DIR}/{name}")
 
     try:
         files = render(

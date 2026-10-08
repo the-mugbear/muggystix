@@ -33,6 +33,7 @@ from app.db.models_host_tests import HostTest
 from app.db.models_auth import User
 from app.db.models_findings import Finding, FindingHost
 from app.db.models_project import Project
+from app.db.session import is_statement_timeout
 from app.services.import_attention_service import (
     superseded_import_condition,
     unsuccessful_import_condition,
@@ -68,9 +69,6 @@ class MyAttentionResponse(BaseModel):
     """Personal attention queue payload for the dashboard widget."""
     items: List[MyAttentionHost] = Field(default_factory=list)
     in_review_count: int = 0
-    # Kept on the schema as 0 for client back-compat — Watching is no
-    # longer surfaced by the queue widget.
-    watching_count: int = 0
 
 
 def compute_my_attention_queue(
@@ -102,11 +100,17 @@ def compute_my_attention_queue(
         .scalar()
     ) or 0
     if not in_review_count or limit <= 0:
-        return MyAttentionResponse(items=[], in_review_count=in_review_count, watching_count=0)
+        return MyAttentionResponse(items=[], in_review_count=in_review_count)
 
-    # Columns, not the Host entity: a row shows an address and a name.
+    # Columns, not entities: a row shows an address, a name and three facts of
+    # the follow — and plain values survive the rollback below, where loaded
+    # entities would each be read again.
     follows = (
-        db.query(HostFollow, models.Host.id, models.Host.ip_address, models.Host.hostname)
+        db.query(
+            HostFollow.status, HostFollow.last_viewed_at, HostFollow.updated_at,
+            HostFollow.created_at,
+            models.Host.id, models.Host.ip_address, models.Host.hostname,
+        )
         .join(models.Host, HostFollow.host_id == models.Host.id)
         .filter(*mine)
         # Most recently touched first; NULL updated_at lands last.  The id
@@ -123,16 +127,23 @@ def compute_my_attention_queue(
     )
     if not follows:
         # A page past the end: the count still describes the list.
-        return MyAttentionResponse(items=[], in_review_count=in_review_count, watching_count=0)
+        return MyAttentionResponse(items=[], in_review_count=in_review_count)
 
-    host_ids = [row[1] for row in follows]
+    host_ids = [row[4] for row in follows]
 
-    # Batch vuln summary lookup — one query for all rows.
+    # Batch vuln summary lookup — one query for all rows.  The rows are still
+    # worth showing without it, but a statement the API timeout cancelled is
+    # the request's failure (``get_db`` answers 503), and any other database
+    # error has aborted the transaction: roll back, or the port count below
+    # fails with "current transaction is aborted".
     vuln_service = VulnerabilityService(db)
     try:
         vuln_map = vuln_service.get_bulk_host_vulnerability_summaries(host_ids)
-    except Exception:
+    except Exception as exc:
+        if is_statement_timeout(exc):
+            raise
         logger.exception("Failed to load vuln summaries for my-attention queue")
+        db.rollback()
         vuln_map = {}
 
     # Open port counts in a single GROUP BY query.
@@ -145,25 +156,21 @@ def compute_my_attention_queue(
     port_count_map = {hid: cnt for hid, cnt in port_count_rows}
 
     items: List[MyAttentionHost] = []
-    for follow, host_id, ip_address, hostname in follows:
+    for status, last_viewed_at, updated_at, created_at, host_id, ip_address, hostname in follows:
         sev = (vuln_map.get(host_id) or {}).get("by_severity", {})
         items.append(MyAttentionHost(
             host_id=host_id,
             ip_address=str(ip_address),
             hostname=hostname,
-            follow_status=follow.status.value if hasattr(follow.status, "value") else str(follow.status),
+            follow_status=status.value if hasattr(status, "value") else str(status),
             open_port_count=port_count_map.get(host_id, 0),
             critical_vulns=sev.get("critical", 0),
             high_vulns=sev.get("high", 0),
-            last_viewed_at=follow.last_viewed_at,
-            follow_updated_at=follow.updated_at or follow.created_at,
+            last_viewed_at=last_viewed_at,
+            follow_updated_at=updated_at or created_at,
         ))
 
-    return MyAttentionResponse(
-        items=items,
-        in_review_count=in_review_count,
-        watching_count=0,
-    )
+    return MyAttentionResponse(items=items, in_review_count=in_review_count)
 
 
 # (The project-wide review roster — ``compute_team_review`` and the
@@ -271,32 +278,60 @@ def compute_review_followups(
     host after it.  Measured against ``HostFollow.reviewed_at`` — never ``updated_at``, which
     every view of the host bumps.  A row reviewed before that column existed
     and never backfilled (NULL) is reported for ``needs_evidence`` only: with
-    no baseline there is nothing to call "since".  Three statements whatever
-    the number of hosts (follows, new open ports, new critical/high vulns).
+    no baseline there is nothing to call "since".
 
-    What counts as "changed" is ``host_query_predicates.port_after_review_condition``
-    / ``vuln_after_review_condition`` — the same two conditions, on the same
-    rows, as ``follow:revisit`` (``P.my_review_followup_predicate``), so
-    ``total`` is the size of the Hosts list this section opens.
+    The list IS ``follow:revisit`` (``P.my_review_followup_predicate``): the
+    count is that predicate counted, and the page is that predicate ordered
+    and cut by Postgres — oldest review first, an unknown review date last.
+    ``limit=0`` is the count alone, one statement.  A page is three whatever
+    the number of reviews: the page's rows (with the total), then the new
+    open ports and the new critical / high observations of those rows only,
+    from ``P.port_after_review_condition`` / ``vuln_after_review_condition``
+    — the conditions the predicate itself tests, which is what each row's
+    reasons are written from.
     """
     from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 
-    # Columns, not the Host entity: Host eager-loads its ports, vulnerabilities,
-    # attributes, annotations and tags — five more statements and most of the
-    # inventory's weight, for an address and a name.
-    follows = (
-        db.query(HostFollow, models.Host.id, models.Host.ip_address, models.Host.hostname)
+    listed = (
+        models.Host.project_id == project.id,
+        P.my_review_followup_predicate(current_user),
+    )
+
+    def _total() -> int:
+        return int(db.query(func.count(models.Host.id)).filter(*listed).scalar() or 0)
+
+    if limit <= 0:
+        return ReviewFollowupsResponse(total=_total())
+
+    # The caller's own review of each listed host — one row per host
+    # (``uq_host_follow_user``), the row the predicate tested.  Columns, not
+    # entities: a row shows an address, a name and what the review said.
+    page = (
+        db.query(
+            HostFollow.id, HostFollow.reviewed_at, HostFollow.review_conclusion,
+            HostFollow.review_summary,
+            models.Host.id, models.Host.ip_address, models.Host.hostname,
+            func.count().over().label("total"),
+        )
         .join(models.Host, models.Host.id == HostFollow.host_id)
         .filter(
-            models.Host.project_id == project.id,
+            *listed,
             HostFollow.user_id == current_user.id,
             HostFollow.status == FollowStatus.REVIEWED,
         )
+        # The oldest conclusion first (it has been unresolved longest).  The
+        # host id makes the order total, so two pages never share or skip a row.
+        .order_by(HostFollow.reviewed_at.asc().nulls_last(), models.Host.id)
+        .offset(max(0, offset))
+        .limit(limit)
         .all()
     )
-    if not follows:
-        return ReviewFollowupsResponse()
-    follow_ids = [row[0].id for row in follows]
+    if not page:
+        # No rows at all, or a page past the end: the count still describes
+        # the list.
+        return ReviewFollowupsResponse(total=_total() if offset > 0 else 0)
+    total = int(page[0].total)
+    follow_ids = [row[0] for row in page]
 
     new_ports: Dict[int, List[int]] = {}
     for fid, port_number in (
@@ -323,14 +358,14 @@ def compute_review_followups(
         return f"{n} {one if n == 1 else (many or one + 's')}"
 
     rows: List[ReviewFollowupRow] = []
-    for follow, host_id, ip_address, hostname in follows:
+    for follow_id, reviewed_at, conclusion, summary, host_id, ip_address, hostname, _total_ in page:
         reasons: List[InvestigateReason] = []
-        if follow.review_conclusion == "needs_evidence":
+        if conclusion == "needs_evidence":
             reasons.append(InvestigateReason(
                 kind="needs_evidence",
                 text="Concluded “needs more evidence” — the question is still open",
             ))
-        ports = new_ports.get(follow.id)
+        ports = new_ports.get(follow_id)
         if ports:
             shown = ", ".join(str(p) for p in ports[:_FOLLOWUP_PORT_SAMPLE])
             more = f", +{len(ports) - _FOLLOWUP_PORT_SAMPLE} more" if len(ports) > _FOLLOWUP_PORT_SAMPLE else ""
@@ -338,38 +373,24 @@ def compute_review_followups(
                 kind="new_ports",
                 text=f"{_plural(len(ports), 'open port')} first seen after the review ({shown}{more})",
             ))
-        vulns = new_vulns.get(follow.id)
+        vulns = new_vulns.get(follow_id)
         if vulns:
             parts = [f"{vulns[k]} {k}" for k in ("critical", "high") if vulns.get(k)]
             reasons.append(InvestigateReason(
                 kind="new_vulns",
                 text=f"{' and '.join(parts)} scanner observation{'s' if sum(vulns.values()) != 1 else ''} recorded after the review",
             ))
-        if not reasons:
-            continue
         rows.append(ReviewFollowupRow(
             host_id=host_id,
             ip_address=str(ip_address),
             hostname=hostname,
-            reviewed_at=follow.reviewed_at,
-            review_conclusion=follow.review_conclusion,
-            review_summary=follow.review_summary,
+            reviewed_at=reviewed_at,
+            review_conclusion=conclusion,
+            review_summary=summary,
             reasons=reasons,
         ))
 
-    # The oldest conclusion first (it has been unresolved longest); an unknown
-    # review date sorts last.
-    far_future = datetime.max.replace(tzinfo=timezone.utc)
-
-    def _when(row: ReviewFollowupRow) -> datetime:
-        dt = row.reviewed_at
-        if dt is None:
-            return far_future
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-    rows.sort(key=lambda r: (_when(r), r.host_id))
-    start = max(0, offset)
-    return ReviewFollowupsResponse(items=rows[start:start + max(0, limit)], total=len(rows))
+    return ReviewFollowupsResponse(items=rows, total=total)
 
 
 # The ordering is a stated tier, not a weighted score (the risk-scoring
@@ -473,7 +494,7 @@ def compute_investigation_queue(
     high_value_open = and_(
         models.Port.state == "open", models.Port.port_number.in_(list(poi.keys())),
     )
-    has_high_value_port = models.Host.id.in_(db.query(models.Port.host_id).filter(high_value_open))
+    has_high_value_port = P.host_has_port(high_value_open)
 
     # Tier 4 — "changed at its latest scan" is asked only of hosts that could
     # land in tier 4 BECAUSE of it: a high-value port open, no vulnerability

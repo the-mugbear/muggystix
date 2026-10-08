@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import ipaddress
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select
@@ -257,13 +257,17 @@ def read_raw_output(record: EvidenceRecord) -> str:
     return record.raw_output
 
 
-def link_issue_evidence(db: Session, *, host_id: int, issue_key: Optional[str], finding_id: int) -> int:
-    """Attach to a finding the results that showed its issue on this host
+def link_issue_evidence(
+    db: Session, *, host_ids: Sequence[int], issue_key: Optional[str], finding_id: int,
+) -> int:
+    """Attach to a finding the results that showed its issue on these hosts
     (v2.445.0): evidence with outcome ``finding``, not yet on a finding,
-    recorded for a test linked to that issue.  Called when the observation is
-    promoted, so promoting from the weakness row and promoting from the test's
-    result end in the same place.  Returns how many were linked."""
-    ids = _lock_issue_evidence(db, host_id=host_id, issue_key=issue_key)
+    recorded for a test linked to that issue.  Called by
+    ``FindingService.promote_vulnerability`` for the hosts it attaches, so
+    every way of promoting an observation — the weakness row, the test's
+    result, the scanner-observations list — ends in the same place.  Returns
+    how many were linked."""
+    ids = lock_issue_evidence(db, host_ids=host_ids, issue_key=issue_key)
     if not ids:
         return 0
     return (
@@ -273,25 +277,27 @@ def link_issue_evidence(db: Session, *, host_id: int, issue_key: Optional[str], 
     )
 
 
-def _lock_issue_evidence(
-    db: Session, *, host_id: int, issue_key: Optional[str], also: Optional[int] = None,
+def lock_issue_evidence(
+    db: Session, *, host_ids: Sequence[int], issue_key: Optional[str], also: Optional[int] = None,
 ) -> List[int]:
     """Lock, IN ID ORDER, the unlinked finding-outcome evidence of the tests
-    that confirm this issue on this host (plus record ``also``); returns the
-    ids.
+    that confirm this issue on these hosts (plus record ``also``); returns
+    the ids.
 
     Review 2026-10-01 N8: promoting one result locked ITS record and then
     updated its siblings, so two people promoting two results of one issue
     each held the row the other wanted — a deadlock.  Every path now takes
     the whole set in one ordered statement, so the second waits for the first
-    and then finds the records linked."""
+    and then finds the records linked.  The evidence is locked BEFORE the
+    issue's finding is looked up or inserted, on every path."""
     from app.db.models_host_tests import HostTest
 
     conditions = []
-    if issue_key:
-        test_ids = select(HostTest.id).where(HostTest.host_id == host_id, HostTest.issue_key == issue_key)
+    hosts = sorted({hid for hid in host_ids if hid is not None})
+    if issue_key and hosts:
+        test_ids = select(HostTest.id).where(HostTest.host_id.in_(hosts), HostTest.issue_key == issue_key)
         conditions.append(
-            EvidenceRecord.host_test_id.in_(test_ids) & (EvidenceRecord.host_id == host_id)
+            EvidenceRecord.host_test_id.in_(test_ids) & EvidenceRecord.host_id.in_(hosts)
             & (EvidenceRecord.outcome == "finding") & EvidenceRecord.finding_id.is_(None)
         )
     if also is not None:
@@ -342,8 +348,8 @@ def create_finding_from_evidence(
     if target is None:
         raise HTTPException(status_code=404, detail="Evidence record not found in this project")
     test = db.get(HostTest, target.host_test_id) if target.host_test_id else None
-    _lock_issue_evidence(
-        db, host_id=target.host_id, issue_key=test.issue_key if test is not None else None,
+    lock_issue_evidence(
+        db, host_ids=[target.host_id], issue_key=test.issue_key if test is not None else None,
         also=evidence_id,
     )
     record = (
@@ -371,7 +377,7 @@ def create_finding_from_evidence(
         finding = promote_or_dismiss_vulnerability(
             db, vuln=vuln, project_id=project_id, actor_id=actor_id, severity=None,
             status=status, scope="host", summary=f"Confirmed by test evidence #{record.id}",
-            confirm_only_on_join=True,
+            on_join="confirm",
         )
     else:
         if not (title or "").strip() or not severity:

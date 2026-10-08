@@ -4,7 +4,7 @@
 
 ## Current Test Stack
 
-- Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage enforcement from [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini). The suite runs **~2,500 test functions** (more after parametrisation) across ~280 modules (v2.450) — the number moves; `pytest --collect-only -q | tail -1` is the source.
+- Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage measurement configured in [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini) (a `--cov-fail-under` floor that no routine run enforces — every recipe and `check.sh` pass `--no-cov`; see "The gates"). For the size of the suite, `pytest --collect-only -q | tail -1` is the source.
 - Frontend: `vitest` + Testing Library from [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests).
 
 ## The gates (run locally — there is no hosted CI)
@@ -85,7 +85,7 @@ Coverage has a `68%` ratchet floor (`--cov-fail-under` in `backend/pytest.ini`) 
 
 Location: [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests)
 
-Frontend coverage (~180 test files) has grown well beyond the original dashboard/version smoke tests. It now spans page-level views (`Hosts`, `Operations`, `ProjectActivity`, `AgentSessionDetail`, the scan compare view), shared components (`HostFilters`, `HostCommandBar`, `HostInspector`, `ProposeTestsDialog`), and pure utilities (`dslFromFilters`, `toolReadyOutput`, `navigation`, `versionConsistency`). Tests assert visible outcomes and the host query-DSL translation rather than implementation details.
+Frontend coverage has grown well beyond the original dashboard/version smoke tests. It now spans page-level views (`Hosts`, `Operations`, `ProjectActivity`, `AgentSessionDetail`, the scan compare view), shared components (`HostFilters`, `HostCommandBar`, `HostInspector`, `ProposeTestsDialog`), and pure utilities (`dslFromFilters`, `toolReadyOutput`, `navigation`, `versionConsistency`). Tests assert visible outcomes and the host query-DSL translation rather than implementation details.
 
 Run locally:
 
@@ -103,6 +103,20 @@ npx tsc --noEmit
 ```
 
 Strict-mode TypeScript is enforced; every PR should typecheck clean before merge.
+
+Lint (ESLint, `frontend/eslint.config.mjs`):
+
+```bash
+cd frontend
+npm run lint
+```
+
+A small rule set on purpose: the Rules of Hooks (error), effect dependencies (warning), the
+`services/api` barrel import (a component or page that imports a submodule bypasses a test's
+mock of the barrel), no hand-set `.download =` (use `utils/download.saveBlob`) and no bare
+`new Date(x).toLocaleString()` (use `formatTimestamp`). The gate runs it with
+`--max-warnings 0`. The last two were tests that searched the source; they are lint rules now,
+and those tests are gone.
 
 ## Regression-pin file
 
@@ -131,9 +145,10 @@ Update these WITH the change, never around it:
 | `test_host_query_suggest.py::test_every_value_source_is_enumerable_or_deliberately_not` | every `/hosts` DSL field has a value source the autocomplete enumerates, or is `enum`/`window`/`free` on purpose |
 | `test_quarto_render.py::test_hostile_text_stays_text_in_every_format`, `test_report_templates_shipped.py`, `test_report_templates_escaping.py`, `test_report_template_assets.py` | every template in `report-templates/` keeps hostile text as text (run in the report-worker image — Quarto tests skip in the backend image); every shipped template is offered with no problems |
 | `test_service_router_boundary.py` | a module under `app/services` never imports from `app.api`; an endpoint module never imports another endpoint module's `_private` name; `app/api/deps.py` / `app/api/params.py` never import a router |
-| `test_finding_loading.py`, `test_read_path_review.py` | querying findings is one statement and loads no endpoints; rewritten Hosts predicates return the same hosts as the old ones, within a statement budget, and the revision's indexes match the models |
+| `test_finding_loading.py`, `test_read_path_review.py` | querying findings is one statement and loads no endpoints; rewritten Hosts predicates return the same hosts as the old ones, within a statement budget, the revision's indexes match the models, and no host predicate is an `IN (subquery)` (`test_no_host_predicate_is_an_in_subquery_any_more`) |
+| `test_agent_role_route_matrix.py` | every agent read's role floor, declared on its route with `agent_read_floor(...)`, equals the role its page asks of a person — a table of every such read, checked both ways |
 | `test_review_2026_10_01_integration.py` | every route that queries while streaming is exempt from the API statement timeout (add a new streamed route there) |
-| `test_mcp_enum_contract.py` | every value an endpoint restricts to an enum is advertised by its MCP tool as an enum no wider than the endpoint's |
+| `test_mcp_enum_contract.py` | an MCP tool's schema is derived from its endpoint, and what the registry authors over it never widens it: every value an endpoint restricts to an enum is advertised as an enum no wider than the endpoint's |
 | `test_ingestion_partial_scan.py`, `test_ingestion_late_cleanup.py` | a failed, cancelled or killed import leaves nothing only it created, and a late cleanup never deletes what a later import re-observed (run parser heartbeat tests under `tests/ingestion_job_harness.py` — without an active job `report_progress` is a no-op) |
 | `test_db_init_concurrent_boot.py` | five real processes booting together finish their migrations (no hang on the migration lock) |
 | `test_ops_scripts.py` | the real deploy / backup / restore / rollback scripts against a fake `docker` (`tests/ops_fake_docker.py`); a change to those scripts gets a case there |

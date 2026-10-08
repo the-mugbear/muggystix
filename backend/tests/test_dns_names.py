@@ -608,7 +608,7 @@ class TestNamedEndpoints:
         NiktoParser(db_session).parse_file(str(f), "nikto.json", project_id=test_project.id)
         vuln = db_session.query(Vulnerability).one()
         assert vuln.name.fqdn == "portal.example.com"
-        finding = FindingService(db_session).promote_vulnerability(
+        finding, _ = FindingService(db_session).promote_vulnerability(
             vuln=vuln, project_id=test_project.id, actor_id=None,
         )
         db_session.flush()
@@ -756,8 +756,8 @@ class TestNamedEndpoints:
         vulns = db_session.query(Vulnerability).order_by(Vulnerability.id).all()
         assert [v.name.fqdn for v in vulns] == ["a.example.com", "b.example.com"]
         fsvc = FindingService(db_session)
-        f1 = fsvc.promote_vulnerability(vuln=vulns[0], project_id=test_project.id, actor_id=None)
-        f2 = fsvc.promote_vulnerability(vuln=vulns[1], project_id=test_project.id, actor_id=None)
+        f1, _ = fsvc.promote_vulnerability(vuln=vulns[0], project_id=test_project.id, actor_id=None)
+        f2, _ = fsvc.promote_vulnerability(vuln=vulns[1], project_id=test_project.id, actor_id=None)
         db_session.flush()
         assert f1.id == f2.id  # same issue → one umbrella finding …
         db_session.refresh(f1)

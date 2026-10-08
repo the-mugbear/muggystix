@@ -132,14 +132,16 @@ def test_matching_token_writes_land(db_session, test_project, model, make):
 
 @pytest.mark.parametrize("model,make", QUEUES)
 def test_fenced_writes_never_touch_a_non_processing_row(db_session, test_project, model, make):
-    # Even with no token, a completion/failure must not resurrect a queued or
-    # terminal row (that is the 'status = processing' half of the fence).
+    # A completion/failure must not resurrect a queued or terminal row,
+    # whatever token it carries (that is the 'status = processing' half of
+    # the fence) — the row's own old token included.
     tx = JobTransitions(model, name="t")
     for status in ("queued", "completed", "failed"):
         job = make(db_session, test_project.id, status=status)
-        assert tx.complete(db_session, job.id, None) == 0
-        assert tx.fail(db_session, job.id, None, error_message="x") == 0
-        assert tx.heartbeat(db_session, job.id, None) == 0
+        for token in (job.started_at, datetime.now(timezone.utc)):
+            assert tx.complete(db_session, job.id, token) == 0
+            assert tx.fail(db_session, job.id, token, error_message="x") == 0
+            assert tx.heartbeat(db_session, job.id, token) == 0
     db_session.commit()
 
 

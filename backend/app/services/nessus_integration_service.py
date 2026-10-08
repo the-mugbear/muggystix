@@ -55,12 +55,6 @@ class NessusIntegrationService:
         self.dedup_service = HostDeduplicationService(db)
         self.correlation_service = SubnetCorrelationService(db)
         self._commit_batch_size = max(1, settings.NESSUS_COMMIT_BATCH_SIZE)
-        # See NmapXMLParser — id of the incrementally-committed Scan, so the
-        # dispatcher can delete a partial scan when the import does not
-        # finish (review 2026-10-01 C1: Nessus never said which one it was).
-        self._created_scan_id: Optional[int] = None
-        # How many created-port ids are already on the job row (R2).
-        self._ports_recorded = 0
 
     def process_nessus_file(self, file_path: str, scan_name: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         """
@@ -86,8 +80,9 @@ class NessusIntegrationService:
             scan = self._create_scan_record(scan_info, scan_name, project_id=project_id)
             scan_id = scan.id
             scan_label = scan.filename
-            self._created_scan_id = scan_id
-            # R1 — on the job row with the scan's first commit.
+            # On the job row with the scan's first commit: that pointer is
+            # how the dispatcher finds the partial scan of an import that
+            # does not finish.
             note_scan_created(self.db, scan_id)
 
             # Process hosts and vulnerabilities
@@ -125,8 +120,6 @@ class NessusIntegrationService:
                             severity_counts[severity_name] += count
 
                     if hosts_processed % self._commit_batch_size == 0:
-                        # R2 — in the transaction the heartbeat commits.
-                        self._record_created_ports()
                         report_progress(f"{hosts_processed} hosts, {vulnerabilities_found} vulns")
                         self.db.commit()
                         self.db.expunge_all()
@@ -161,9 +154,6 @@ class NessusIntegrationService:
             if scan:
                 clock.apply(scan)
 
-            # R2 — the last, partial batch's ports, in the commit that makes
-            # them durable.
-            self._record_created_ports()
             self.db.commit()
 
             # Correlate hosts to subnets
@@ -312,8 +302,8 @@ class NessusIntegrationService:
             # below turned them into ``success: False``, so a restart FAILED
             # the job instead of handing it back, and the batches already
             # committed stayed in a scan nothing pointed at.  They are the
-            # dispatcher's to handle: it deletes the partial scan
-            # (``_created_scan_id``) and re-queues or fails the job.
+            # dispatcher's to handle: it deletes the partial scan (the one
+            # the job row names) and re-queues or fails the job.
             self.db.rollback()
             raise
         except Exception as e:
@@ -348,25 +338,6 @@ class NessusIntegrationService:
         self.db.flush()  # Get the scan ID
 
         return scan
-
-    def _record_created_ports(self) -> None:
-        """Put the ids of the ports this import has created on its job row,
-        in the CURRENT transaction (review 2026-10-01 R2) — called just before
-        each batch commit, so a committed port is always one the job names.
-
-        Nessus writes no ``PortScanHistory`` (it would change the port counts
-        on the Scans page, the dashboard and the scan diff), so without this a
-        failed attempt's ports on hosts that already existed could not be
-        found again.  Cleanup only.  The whole list is rewritten when it grew
-        — one row write per batch (50 hosts by default); a JSON array of
-        100k ids is about 1 MB."""
-        from app.services.ingestion_service import note_ports_created
-
-        ids = self.vulnerability_service.created_port_ids
-        if len(ids) == self._ports_recorded:
-            return
-        note_ports_created(self.db, ids)
-        self._ports_recorded = len(ids)
 
     def _record_credentialed(self, host_id: int, scan_id: int, credentialed: Optional[bool]) -> None:
         """Whether this scan authenticated to the host, on the host's row in

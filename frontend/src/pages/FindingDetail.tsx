@@ -334,11 +334,11 @@ const FindingDetail: React.FC = () => {
   const proposals = useFindingProposals(finding?.id ?? null, proposalsKey);
   const reloadProposals = proposals.reload;
   const endpointIds = useMemo(() => new Set((finding?.hosts ?? []).map((h) => h.id)), [finding?.hosts]);
-  const proposalDecided = useCallback((updated: Proposal) => {
-    if (updated.status === 'accepted') { void refreshAfterProposal(); findingImages.reload(); }
-    void reloadProposals();
-  }, [refreshAfterProposal, findingImages.reload, reloadProposals]);
   const reloadImages = findingImages.reload;
+  const proposalDecided = useCallback((updated: Proposal) => {
+    if (updated.status === 'accepted') { void refreshAfterProposal(); reloadImages(); }
+    void reloadProposals();
+  }, [refreshAfterProposal, reloadImages, reloadProposals]);
   const imagesById = useMemo(
     () => new Map(findingImages.images.map((img) => [img.id, img])), [findingImages.images],
   );

@@ -116,6 +116,7 @@ export const REMEDIATION_FIELD_LABEL: Record<string, string> = {
   notified_on: 'Assigned on',
   status: 'Status',
   closed_on: 'Closed date',
+  finding: 'Finding',
 };
 
 export const isRemediationStatus = (v: string | null): v is RemediationStatus =>

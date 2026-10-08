@@ -91,7 +91,7 @@ with `report-templates/` mounted, and **fails if any test skipped for want of Qu
 templates**: in the plain `backend` image (the recipe further down) the client-report tests,
 the hostile-text contract among them, skip, and that run is green without them; (2) `ruff check`
 over `backend/` in the same image — any finding fails the gate (see "Lint" above); (3) frontend
-`tsc --noEmit` and `vitest run`; (4) `scripts/test-alembic-roundtrip.sh`, which ends with
+`tsc --noEmit`, `npm run lint -- --max-warnings 0` (ESLint, below) and `vitest run`; (4) `scripts/test-alembic-roundtrip.sh`, which ends with
 `alembic check` (`--fast` skips this step). Every step runs even when one fails, a one-screen summary ends the run, and
 the exit status is non-zero on any failure. It needs the stack up and the images built, builds
 and pulls nothing, and sets `BLUESTICK_SKIP_DB_INIT=1`. From a git worktree it tests the
@@ -103,11 +103,17 @@ and back up, so a migration needs a genuinely reversible `downgrade()`; `alembic
 model/migration drift. **Backend** — `pytest` (the recipe below; it passes `--no-cov`, as
 `check.sh` does, so the `--cov-fail-under` floor in `backend/pytest.ini` is **not** enforced by
 any routine run — drop `--no-cov` to measure coverage by hand). **Frontend** — `tsc --noEmit` →
-`vitest run` (what `check.sh` runs; `npm run build` is run by the image build, not by the gate).
-`tsc` runs with `noUnusedLocals` / `noUnusedParameters`, so an unused import fails the gate and
-the image build.
+`npm run lint` → `vitest run` (what `check.sh` runs; `npm run build` is run by the image build,
+not by the gate). `tsc` runs with `noUnusedLocals` / `noUnusedParameters`, so an unused import
+fails the gate and the image build. **ESLint** (`frontend/eslint.config.mjs`) is a small rule set
+on purpose — what nothing else enforces: the Rules of Hooks (error), effect dependencies
+(warning), components and pages importing the API from the `services/api` barrel rather than a
+submodule (a submodule import bypasses a page test's mock), `utils/download.saveBlob` as the one
+file save and `formatTimestamp` as the one absolute moment. The gate allows no warning, so a new
+`exhaustive-deps` warning fails it. A convention that can be a lint rule belongs there, not in a
+test that greps the source.
 
-- **Frontend** tests run on the host: `cd frontend && npx vitest run` / `npx tsc --noEmit`.
+- **Frontend** checks run on the host: `cd frontend && npx tsc --noEmit && npm run lint && npx vitest run`.
 - **Backend** tests do **not** run on the host — there's no host `pytest`, and `app/` is baked
   into the backend image (compose bind-mounts only `tests/`, `pytest.ini`, `scripts/`, `artifacts/`,
   `uploads/`, `documentation/AGENT_GUIDE.md`, `platform_version.json`, `report-templates/` (read-only, so template
@@ -217,14 +223,15 @@ folder (mounted read-only, outside the `backend/` build context). The authoring 
 the escaped Jinja fill, written-Markdown placeholders, template images, the hostile-text test
 every shipped template must pass — is [report-templates/README.md](report-templates/README.md).
 
-## File-size policy
+## Refactoring and file size
 
-The target is **monoliths** — unfocused files with multiple unrelated responsibilities — not
-large files per se. A big file with one cohesive, deliberate purpose is **not** tech debt;
-carving it to shrink a number makes it worse. When a feature next lands in a file at/above
-**~1,500 LOC**, evaluate a split, and carve only if **all** hold: (1) there's a genuine seam
-(2+ distinct responsibilities not sharing much state), (2) the feature is actually landing in
-that file now, and (3) the split reduces real conflict or cognitive load. Otherwise leave it.
+A standalone refactor is welcome when a test proves old == new behaviour (the pattern
+`backend/tests/test_read_path_review.py` uses). Consolidation that reduces net debt — two paths
+made into one, dead code removed with the change that orphans it — is a bonus, not scope creep;
+do the foundational refactor before stacking a feature on it. Size alone is never the reason:
+a big file with one cohesive, deliberate purpose is **not** tech debt, and splitting it to
+shrink a number makes it worse. Split where there is a genuine seam (two or more
+responsibilities that share little state).
 
 ## Agent workflows & the agent contract
 
@@ -245,9 +252,16 @@ is written directly and attributed to the session.
 
 - **`documentation/AGENT_GUIDE.md`** is the contract every agent reads at startup, served sliced by
   workflow at `GET /api/v1/agents-guide?workflow=…` via the `<!-- agents:section -->` markers.
-- **Bump `PROMPT_VERSION`** whenever the agent's instructions change materially: PREPEND an entry
-  to `PROMPT_VERSION_HISTORY` in `app/services/agent_prompt_history.py`. The version is computed
-  from element 0, so appending does nothing.
+- **Bump `PROMPT_VERSION`** whenever the agent's instructions change materially, and rewrite
+  `PROMPT_CHANGES` beside it to say what this version changed — both in
+  `app/services/agent_prompt_service.py`. There is no history list; earlier versions are in the
+  changelog.
+- **A new agent read declares its role floor on the route** — `dependencies=[Depends(agent_read_floor(ProjectRole.AUDITOR))]`
+  on the route or in its `APIRouter(...)` constructor (never on `include_router`, which the gate
+  cannot see) — equal to the role its page asks of a person; `tests/test_agent_role_route_matrix.py`
+  lists every one. A new MCP tool (`mcp_tools.py`) authors its description and, where needed, a
+  per-argument description or a hidden parameter; its arguments, types, enums and bounds are
+  derived from the route's OpenAPI operation.
 - **`tests/test_docs_contract.py`** guards both surfaces: the guide's section markers stay balanced
   and every workflow slice keeps its body; every described OpenAPI tag is used by a route; and
   every agent endpoint documented in the guide's API-reference tables exists. If you rename or

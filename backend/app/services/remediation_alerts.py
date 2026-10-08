@@ -15,7 +15,7 @@ One notification per recipient, project and kind per sweep, carrying the
 count — never one per row.
 """
 import logging
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Optional
 
 from sqlalchemy import or_
@@ -60,22 +60,27 @@ def sweep(db: Session, today: Optional[date] = None) -> int:
     policy = deadlines.load(db)
     if not policy.enabled:
         return 0
-    today = today or datetime.now(timezone.utc).date()
+    today = today or policy.today()
     state_of, due = deadlines.state_expr(db, policy, today), deadlines.due_expr(db, policy)
     written = 0
     for kind in ("overdue", "due_soon"):
         alerted = _ALERTED[kind]
+        # SKIP LOCKED: the sweep never waits for a row a writer holds (it is
+        # alerted on the next sweep), so it cannot be part of a lock cycle
+        # with the writers, which lock in ``remediation_service._lock_for_write``'s order.
         rows = (db.query(Remediation.id, Remediation.project_id, due)
                 .join(FindingHost, FindingHost.id == Remediation.finding_host_id)
                 .join(Finding, Finding.id == FindingHost.finding_id)
                 .filter(state_of == kind, or_(alerted.is_(None), alerted != due))
                 .order_by(Remediation.id).with_for_update(of=Remediation, skip_locked=True).all())
-        by_project: dict[int, list[tuple[int, date]]] = {}
+        per_project: dict[int, int] = {}
+        by_deadline: dict[date, list[int]] = {}
         for row_id, project_id, due_on in rows:
-            by_project.setdefault(project_id, []).append((row_id, deadlines.as_date(due_on)))
-        names = dict(db.query(Project.id, Project.name).filter(Project.id.in_(by_project))) if by_project else {}
-        for project_id, found in by_project.items():
-            title = _title(kind, len(found), names.get(project_id) or f"Project {project_id}", policy)
+            per_project[project_id] = per_project.get(project_id, 0) + 1
+            by_deadline.setdefault(deadlines.as_date(due_on), []).append(row_id)
+        names = dict(db.query(Project.id, Project.name).filter(Project.id.in_(per_project))) if per_project else {}
+        for project_id, found in per_project.items():
+            title = _title(kind, found, names.get(project_id) or f"Project {project_id}", policy)
             for user_id in sorted(_recipients(db, project_id)):
                 db.add(Notification(
                     user_id=user_id, project_id=project_id, type="remediation", title=title,
@@ -83,8 +88,10 @@ def sweep(db: Session, today: Optional[date] = None) -> int:
                     source_type=SOURCE_TYPES[kind], source_id=project_id, actor_id=None,
                 ))
                 written += 1
-            for row_id, due_on in found:
-                db.query(Remediation).filter(Remediation.id == row_id).update(
-                    {alerted: due_on}, synchronize_session=False)
+        # One statement per deadline, not per row: the rows that share a
+        # deadline remember it together.
+        for due_on, row_ids in by_deadline.items():
+            db.query(Remediation).filter(Remediation.id.in_(row_ids)).update(
+                {alerted: due_on}, synchronize_session=False)
     db.flush()
     return written

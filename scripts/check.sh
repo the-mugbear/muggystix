@@ -19,7 +19,8 @@
 #      skipped for want of Quarto or the templates: here they must run.
 #   2. Backend lint: `ruff check` in the same image — pyflakes (F) rules only
 #      (backend/ruff.toml), --no-cache.  Any finding fails the gate.
-#   3. Frontend: `tsc --noEmit`, then `vitest run` (on the host; needs node).
+#   3. Frontend: `tsc --noEmit`, `eslint` (no warnings allowed), then
+#      `vitest run` (on the host; needs node).
 #   4. scripts/test-alembic-roundtrip.sh — every migration down and back up
 #      against a throwaway Postgres, then `alembic check` (models vs
 #      migrations).  Skipped by --fast.
@@ -283,7 +284,7 @@ backend_lint() {
 # --- 3. Frontend ------------------------------------------------------------
 frontend_checks() {
     local started=$SECONDS log="$LOG_DIR/frontend.log"
-    banner "3/4 Frontend (tsc --noEmit, vitest run)"
+    banner "3/4 Frontend (tsc --noEmit, eslint, vitest run)"
     if ! command -v npx >/dev/null 2>&1; then
         record "frontend tsc" FAIL "npx is not on PATH (install Node; see frontend/Dockerfile for the version)"
         record "frontend vitest" FAIL "not run"
@@ -298,6 +299,13 @@ frontend_checks() {
         record "frontend tsc" PASS "no type errors ($(elapsed "$started"))"
     else
         record "frontend tsc" FAIL "type errors — $log"
+    fi
+    started=$SECONDS
+    log="$LOG_DIR/eslint.log"
+    if ( cd "$SRC/frontend" && npm run --silent lint -- --max-warnings 0 ) 2>&1 | tee "$log"; then
+        record "frontend lint" PASS "no errors, no warnings ($(elapsed "$started"))"
+    else
+        record "frontend lint" FAIL "lint errors or warnings — $log"
     fi
     started=$SECONDS
     log="$LOG_DIR/vitest.log"

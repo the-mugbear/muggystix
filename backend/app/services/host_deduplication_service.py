@@ -799,6 +799,9 @@ class HostDeduplicationService:
             service_conf=port_data.get('service_conf'),
             service_tunnel=port_data.get('service_tunnel'),
             last_updated_scan_id=scan_id,
+            # Which import inserted the row: how a failed import's cleanup
+            # finds the ports it created.
+            created_scan_id=scan_id,
             # H8 — the update path's rule: a new closed port was active
             # until its first repeat observation turned it inactive.
             is_active=port_state_is_active(port_data.get('state')),

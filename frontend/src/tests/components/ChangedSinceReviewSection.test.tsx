@@ -272,7 +272,6 @@ describe('Changed since review — selection and bulk', () => {
 
   it('bulk re-open confirms first (it clears conclusions), and reports a partial failure honestly', async () => {
     api.followHost.mockImplementation(async (id: number) => {
-      // eslint-disable-next-line @typescript-eslint/no-throw-literal
       if (id === 32) throw { response: { status: 409, data: { detail: 'host is locked' } } };
       return { status: 'in_review' };
     });

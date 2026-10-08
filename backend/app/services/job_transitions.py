@@ -77,7 +77,7 @@ class ReapResult:
         return len(self.requeued) + len(self.failed)
 
 
-# A reap decision: given the locked, retry_count-incremented row, return
+# A reap decision: given the locked row, its reap counter incremented, return
 # ("requeue", extra_values) or ("fail", extra_values).  The module sets the
 # status / token / completed_at columns itself; the callback supplies the
 # queue-specific message text and side conditions (e.g. "is the upload still
@@ -93,9 +93,13 @@ class JobTransitions:
     ``last_heartbeat``, ``completed_at``, ``retry_count``, ``created_at``.
     """
 
-    def __init__(self, model: Type[Any], *, name: str):
+    def __init__(self, model: Type[Any], *, name: str, reap_counter: str = "retry_count"):
         self.model = model
         self.name = name
+        # The column the reaper counts its own re-queues in.  The report
+        # queue's ``retry_count`` counts nothing else; ingestion's also
+        # counts failures and operator retries, so it has a separate one.
+        self.reap_counter = reap_counter
 
     # ------------------------------------------------------------------
     # claim
@@ -135,22 +139,18 @@ class JobTransitions:
     # ------------------------------------------------------------------
     # fenced writes — rowcount 0 == "this attempt no longer owns the row"
     # ------------------------------------------------------------------
-    def _fenced(self, job_id: int, claimed_at: Optional[datetime]):
+    def _fenced(self, job_id: int, claimed_at: datetime):
+        """This attempt's row: ``processing`` under the token its claim
+        wrote.  There is no unfenced form — a claim always returns a token,
+        and a missing one (None) matches no processing row."""
         m = self.model
-        conds = [m.id == job_id, m.status == "processing"]
-        if claimed_at is not None:
-            conds.append(m.started_at == claimed_at)
-        return conds
+        return [m.id == job_id, m.status == "processing", m.started_at == claimed_at]
 
     def heartbeat(
-        self, db: Session, job_id: int, claimed_at: Optional[datetime], **cols: Any,
+        self, db: Session, job_id: int, claimed_at: datetime, **cols: Any,
     ) -> int:
-        """Renew ``last_heartbeat`` (and any extra columns, e.g. ``progress``).
-
-        Fenced on the token when one is given.  ``claimed_at=None`` is the
-        legacy unfenced form — it still requires ``status = 'processing'``
-        so a heartbeat can never resurrect a terminal row, but it cannot
-        tell two attempts apart; new call sites must pass the token."""
+        """Renew ``last_heartbeat`` (and any extra columns, e.g. ``progress``)
+        for THIS attempt only."""
         m = self.model
         now = datetime.now(timezone.utc)
         res = db.execute(
@@ -161,7 +161,7 @@ class JobTransitions:
         return res.rowcount
 
     def stamp(
-        self, db: Session, job_id: int, claimed_at: Optional[datetime], **cols: Any,
+        self, db: Session, job_id: int, claimed_at: datetime, **cols: Any,
     ) -> int:
         """Write ``cols`` on the row for THIS attempt only, changing neither
         the status nor the heartbeat (review 2026-10-01 R1: the scan an
@@ -172,7 +172,7 @@ class JobTransitions:
         return res.rowcount
 
     def complete(
-        self, db: Session, job_id: int, claimed_at: Optional[datetime], **cols: Any,
+        self, db: Session, job_id: int, claimed_at: datetime, **cols: Any,
     ) -> int:
         """processing → completed for THIS attempt only.  ``completed_at`` is
         stamped unless the caller supplies it."""
@@ -186,7 +186,7 @@ class JobTransitions:
         self,
         db: Session,
         job_id: int,
-        claimed_at: Optional[datetime],
+        claimed_at: datetime,
         *,
         increment_retry: bool = False,
         **cols: Any,
@@ -203,7 +203,7 @@ class JobTransitions:
         return res.rowcount
 
     def release(
-        self, db: Session, job_id: int, claimed_at: Optional[datetime], **cols: Any,
+        self, db: Session, job_id: int, claimed_at: datetime, **cols: Any,
     ) -> int:
         """processing → queued for THIS attempt only: the worker is stopping
         and hands the job back (the reaper's requeue, without waiting out its
@@ -355,6 +355,7 @@ class JobTransitions:
         cutoff: datetime,
         max_retries: int,
         decide: Optional[ReapDecision] = None,
+        attempt_is_over: Optional[Callable[[int, datetime], bool]] = None,
     ) -> ReapResult:
         """Reap stale ``processing`` rows.
 
@@ -366,25 +367,46 @@ class JobTransitions:
         window the old select-then-mutate reapers left open.  A row another
         reaper holds is skipped too.
 
-        For each locked row ``retry_count`` is incremented, then ``decide``
-        (default: requeue while ``retry_count <= max_retries``) chooses
+        For each locked row the queue's reap counter (``reap_counter``) is
+        incremented, then ``decide`` (default: requeue while it is
+        ``<= max_retries``) chooses
         ``("requeue", cols)`` — status back to ``queued``, token and
         heartbeat cleared — or ``("fail", cols)`` — status ``failed``,
         ``completed_at`` stamped.  ``cols`` are applied on top so each
-        queue words its own ``message`` / ``error_message``."""
+        queue words its own ``message`` / ``error_message``.
+
+        ``attempt_is_over(job_id, started_at)`` is a queue's exact answer to
+        "is the worker of this attempt gone?" (ingestion: nobody holds the
+        attempt's liveness lock).  With it, a ``processing`` row whose lease
+        is still inside the window is reaped as well when it answers True —
+        re-selected under the row lock as the SAME attempt (``started_at``
+        unchanged), so a row finished or re-claimed in between is skipped.
+        The lease's age remains the rule for an attempt it cannot vouch for."""
         m = self.model
-        ids = [
-            int(r[0])
+        # (job id, the predicate it must still satisfy under the row lock)
+        candidates: List[Tuple[int, Tuple[Any, ...]]] = [
+            (int(r[0]), self.stale_condition(cutoff))
             for r in db.execute(select(m.id).where(*self.stale_condition(cutoff)).order_by(m.id)).all()
         ]
+        if attempt_is_over is not None:
+            stale_ids = {job_id for job_id, _ in candidates}
+            for job_id, started_at in db.execute(
+                select(m.id, m.started_at).where(m.status == "processing").order_by(m.id)
+            ).all():
+                if job_id in stale_ids or started_at is None:
+                    continue
+                if attempt_is_over(int(job_id), started_at):
+                    candidates.append(
+                        (int(job_id), (m.status == "processing", m.started_at == started_at))
+                    )
         result = ReapResult()
-        if not ids:
+        if not candidates:
             return result
         now = datetime.now(timezone.utc)
-        for job_id in ids:
+        for job_id, still in candidates:
             stmt = (
                 select(m)
-                .where(m.id == job_id, *self.stale_condition(cutoff))
+                .where(m.id == job_id, *still)
                 .with_for_update(skip_locked=True)
             )
             job = db.execute(stmt).scalar_one_or_none()
@@ -394,11 +416,12 @@ class JobTransitions:
                     "held by a peer) — skipped", self.name, job_id,
                 )
                 continue
-            job.retry_count = (job.retry_count or 0) + 1
+            reaps = (getattr(job, self.reap_counter) or 0) + 1
+            setattr(job, self.reap_counter, reaps)
             if decide is not None:
                 action, cols = decide(job)
             else:
-                action, cols = ("requeue" if job.retry_count <= max_retries else "fail"), {}
+                action, cols = ("requeue" if reaps <= max_retries else "fail"), {}
             if action == "requeue":
                 job.status = "queued"
                 job.started_at = None

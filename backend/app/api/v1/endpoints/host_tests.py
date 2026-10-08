@@ -35,7 +35,10 @@ def human_writer(project: Project = Depends(get_current_project),
 
 def agent_actor(request: Request, agent: Agent = Depends(check_agent_rate_limit), db: Session = Depends(get_db)):
     session = load_agent_session(db, request)
-    return Actor(agent.project_id, Attribution(user_id=session.started_by_id, session=session))
+    return Actor(
+        request.state.agent_project_id,
+        Attribution(user_id=request.state.key_operator_id, session=session),
+    )
 
 
 def make_router(reader, writer):

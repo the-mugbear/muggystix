@@ -485,8 +485,8 @@ class MyToolParser:
   that needs committed rows, as rdap's `correlate_hosts`); `grep db.commit
   app/parsers` for the current set. A committing parser writes part of a scan
   before it can fail — the dispatcher deletes a failed import's scan, so never
-  let a re-observed row's cascading `scan_id` move (see CLAUDE.md, record
-  isolation).
+  let a re-observed row's cascading `scan_id` move (see "What a failed import
+  leaves" below).
 - **Record isolation:** a parser that catches a record's exception and carries
   on MUST wrap the record in `record_savepoint(db, observed, on_rollback)`;
   without it the failed flush poisons the session and the whole import fails
@@ -496,7 +496,9 @@ class MyToolParser:
   once, OUTSIDE any record savepoint. Under a job this stamps
   `ingestion_jobs.in_progress_scan_id` and commits it with the scan row, which
   is how a failed, cancelled or killed import's partial scan is found and
-  deleted (review 2026-10-01).
+  deleted (review 2026-10-01). That column is the only record of an attempt's
+  scan — nothing reads an attribute of the parser for it (the Nessus service,
+  which creates its scan itself, calls `ingestion_service.note_scan_created`).
 - **Heartbeat:** a record loop calls `ProgressBeat(...).tick()` once per
   record, OUTSIDE the record's savepoint (nmap / gnmap / masscan / NetExec /
   Nessus call `report_progress` themselves). The heartbeat keeps the job's
@@ -510,7 +512,9 @@ class MyToolParser:
   hostname) — so calling it before every heartbeat costs what changed, not
   the whole file. A heartbeat that finds the job is no longer this attempt's
   (cancelled from the API, or re-claimed) rolls the pending batch back and
-  raises; it never commits it.
+  raises; it never commits it. The lease write is one UPDATE conditioned on
+  the attempt's claim, with no read of the job row, and a cancel is decided
+  from the job row alone.
   A parser that COLLECTS the file before it writes wraps the read loop in
   `beat_while_reading(items)` (every 20,000 by default): the read phase holds
   nothing half-built in the session, so its commit is safe and a cancel there
@@ -562,17 +566,28 @@ class MyToolParser:
   named on the job row: the job is not parsed again until it is gone (a claim
   that cannot remove it fails the job; a parser failure whose scan cannot be
   removed ends the fallback chain), and the reaper retries the cleanup of
-  failed jobs once their lease is past the stale window — which is also how a
-  job cancelled while its worker was dead is cleaned.
-  An import path that writes no
+  failed jobs once their attempt is over — its worker no longer holds the
+  attempt's liveness lock, or its lease is past the stale window — which is
+  also how a job cancelled while its worker was dead is cleaned.
+  **Ports carry the scan that created them.** Every code path that INSERTS a
+  port stamps `ports_v2.created_scan_id` (`HostDeduplicationService._create_new_port`,
+  masscan's batch INSERT — its `DO UPDATE` never touches the stamp —, and
+  `VulnerabilityService._get_or_create_port` for Nessus); **a new insert site
+  must do the same**, or a failed import leaves its ports behind. The cleanup
+  deletes the ports stamped with the attempt's scan — and, beside them, those
+  `port_scan_history` says it created — under the same guards (no other scan
+  saw it, nothing refers to it). For an import path that writes no
   `PortScanHistory` (Nessus — and it must not start to: that would change the
-  port counts on the Scans page, the dashboard and the scan diff) reports the
-  ports it creates instead: `VulnerabilityService.created_port_ids` →
-  `ingestion_service.note_ports_created`, which puts the ids on the job row
-  (`ingestion_jobs.in_progress_created_port_ids`) in the transaction that
-  commits each batch. The cleanup deletes those ports under the same guards
-  (no other scan saw it, nothing refers to it) and the column is cleared when
-  the job completes. It is read by the cleanup and nothing else.
+  port counts on the Scans page, the dashboard and the scan diff) the stamp is
+  the only record. It is read by the cleanup and nothing else, and a NULL
+  stamp (every port from before v2.465.0) is never an attempt's own. A partial
+  scan deleted by hand from the Scans page clears the stamp (`ON DELETE SET
+  NULL`), so its ports are kept.
+- **A re-observed vulnerability is refreshed in one place:**
+  `parser_utils.refresh_reobserved_vulnerability`, called by
+  `upsert_vulnerability` and by the Nessus path. Severity is always taken from
+  the newer observation; title, description, solution and references when the
+  newer value is not empty. `scan_id` ("first recorded by") never moves.
 - **Fail closed:** raise `ValueError` when the file yields **zero** records, so
   a misrouted or malformed file surfaces a parse error instead of a silent
   empty scan. (Most parsers do this; it's the expected convention.)

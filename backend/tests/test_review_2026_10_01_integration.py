@@ -179,22 +179,25 @@ def test_a_streamed_route_lifts_the_statement_timeout_for_its_session(client, db
 
 @pytest.mark.parametrize("params", [{"ports": "80"}, {"services": "http"}])
 def test_agent_host_filters_confine_the_port_subquery_to_the_project(client, db_session, test_project, monkeypatch, params):
+    """The agents' port filters are the page's: a correlated EXISTS reached
+    through the project's hosts (``P.host_has_port``), not an id list of every
+    project's ports."""
     host = _host(db_session, test_project, "10.83.0.1")
     db_session.add(models.Port(host_id=host.id, port_number=80, protocol="tcp", state="open", service_name="http"))
     db_session.commit()
     headers, _ = _agent(client, test_project)
     seen = []
-    real = P.port_match_subquery
+    real = P.host_has_port
 
-    def spy(db, **kwargs):
-        seen.append(kwargs.get("project_id"))
-        return real(db, **kwargs)
+    def spy(*conditions):
+        seen.append(conditions)
+        return real(*conditions)
 
-    monkeypatch.setattr(P, "port_match_subquery", spy)
+    monkeypatch.setattr(P, "host_has_port", spy)
     r = client.get("/api/v1/agent/assist/hosts", headers=headers, params=params)
     assert r.status_code == 200, r.text
     assert r.json()["total"] == 1
-    assert seen and all(pid == test_project.id for pid in seen), seen
+    assert seen, "the port filter did not go through the page's predicate"
 
 
 def test_an_issues_hosts_are_found_by_cve_without_wrapping_the_column(db_session, test_project, test_user):
@@ -222,7 +225,7 @@ def test_an_issues_hosts_are_found_by_cve_without_wrapping_the_column(db_session
     bind = db_session.get_bind()
     event.listen(bind, "before_cursor_execute", record)
     try:
-        finding = FindingService(db_session).promote_vulnerability(
+        finding, _ = FindingService(db_session).promote_vulnerability(
             vuln=db_session.get(Vulnerability, ids[0][1]), project_id=test_project.id, actor_id=test_user.id,
         )
     finally:
@@ -321,8 +324,9 @@ def _row_keyed(db, project_id):
 def _promote(project_id, user_id, vuln_id):
     def run(db):
         return FindingService(db).promote_vulnerability(
-            vuln=db.get(Vulnerability, vuln_id), project_id=project_id, actor_id=user_id, only_this_host=True,
-        ).id
+            vuln=db.get(Vulnerability, vuln_id), project_id=project_id, actor_id=user_id,
+            host_ids=[db.get(Vulnerability, vuln_id).host_id],
+        )[0].id
     return run
 
 

@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 from app.services import quarto_render
-from app.services.quarto_render import RenderError, escape_md, image, md, plain
+from app.services.quarto_render import RenderError, escape_md, image, plain
 
 HERE = Path(__file__).resolve()
 TEMPLATE_CANDIDATES = [
@@ -49,7 +49,21 @@ def test_escape_md_escapes_every_ascii_punctuation_and_folds_lines():
     assert escape_md("$a$ $$b$$ \\(c\\) \\[d\\]") == r"\$a\$ \$\$b\$\$ \\\(c\\\) \\\[d\\\]"
 
 
+def test_escape_md_drops_leading_whitespace_so_a_value_is_never_an_indented_code_block():
+    assert escape_md("    four spaces") == "four spaces"
+    assert escape_md("\t\ttabbed *x*") == r"tabbed \*x\*"
+    assert escape_md("\n    after a newline") == "after a newline"
+    assert escape_md("inner    spaces stay ") == "inner    spaces stay "
+    assert escape_md("   ") == ""
+
+
 def test_md_placeholders_only_take_data_paths():
+    # The one md(): the dataset's (there is no other — a template is never
+    # filled without its data).
+    md = quarto_render._md_factory({
+        "executive_summary": "Summary.",
+        "findings": [{}, {}, {}, {"description": "Text."}],
+    })
     assert 'key="findings.3.description"' in md({"_path": "findings.3"}, "description")
     assert 'key="executive_summary"' in md("executive_summary")
     for bad in ('findings.3" onclick="x', "../etc", "a b"):
@@ -244,6 +258,136 @@ PNG_1X1 = bytes.fromhex(
 )
 
 
+#: Hosts that Quarto's own embedded scripts NAME without fetching: licence and
+#: documentation addresses in the comments of Bootstrap, Popper, clipboard.js
+#: and anchor.js, and the SVG / XHTML namespace names.  A host that is not
+#: here fails the test — a new one is looked at before it is added.
+_SCRIPT_TEXT_HOSTS = frozenset({
+    "www.w3.org", "getbootstrap.com", "github.com", "popper.js.org", "clipboardjs.com", "www.bryanbraun.com",
+})
+_WEB_ADDRESS = re.compile(r"(?:https?:)?//([A-Za-z0-9.-]+\.[A-Za-z]{2,})", re.I)
+_CSS_FETCH = re.compile(r"@import|url\(\s*['\"]?\s*(?:https?:)?//", re.I)
+
+
+def _outbound_references(html: str) -> list:
+    """Everything in a rendered HTML report that would make — or could make —
+    the reader's browser ask another machine for something: ``[(where,
+    what)]``, empty for a report that makes no request.
+
+    Allowed: an ``<a href>`` (the reader clicks it), namespace names
+    (``xmlns``), embedded ``data:`` resources — which are decoded and held to
+    the same rules — and, inside a script, the addresses in
+    ``_SCRIPT_TEXT_HOSTS``.  Everything else that names a web address in an
+    attribute, a stylesheet or a script is listed."""
+    import base64
+    from html.parser import HTMLParser
+    from urllib.parse import unquote_to_bytes
+
+    found = []
+
+    def css(where: str, text: str) -> None:
+        for m in _CSS_FETCH.finditer(text):
+            found.append((where, text[m.start():m.start() + 80]))
+
+    def script(where: str, text: str) -> None:
+        for host in sorted({m.group(1).lower() for m in re.finditer(r"https?://([A-Za-z0-9.-]+)", text)}):
+            if host not in _SCRIPT_TEXT_HOSTS:
+                found.append((where, host))
+
+    def embedded(where: str, value: str) -> None:
+        head, _, body = value.partition(",")
+        mime = head[5:].split(";")[0].lower()
+        if mime.startswith("image/") and mime != "image/svg+xml" or mime.startswith(("font/", "application/font")):
+            return
+        try:
+            raw = base64.b64decode(body) if ";base64" in head else unquote_to_bytes(body)
+        except ValueError:
+            found.append((where, "undecodable data: resource"))
+            return
+        text = raw.decode("utf-8", errors="replace")
+        if mime == "text/css":
+            css(f"{where} (css)", text)
+        elif "javascript" in mime:
+            script(f"{where} (script)", text)
+        else:
+            # An SVG image, a font served as octet-stream, anything else:
+            # nothing in it may name a web address at all, bar a namespace.
+            for host in sorted({m.group(1).lower() for m in re.finditer(r"https?://([A-Za-z0-9.-]+)", text)}):
+                if host != "www.w3.org":
+                    found.append((f"{where} ({mime})", host))
+
+    class _Page(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.inside = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ("script", "style"):
+                self.inside = tag
+            for name, value in attrs:
+                value = (value or "").strip()
+                where = f"<{tag} {name}>"
+                if name == "xmlns" or name.startswith("xmlns:") or (tag == "a" and name == "href"):
+                    continue
+                if value.lower().startswith("data:"):
+                    embedded(where, value)
+                elif name == "style":
+                    css(where, value)
+                elif name in ("content", "alt", "title", "aria-label", "id", "class", "name", "value") \
+                        or name.startswith("data-"):
+                    continue          # text, never fetched
+                elif _WEB_ADDRESS.match(value) or re.search(r"https?://", value, re.I):
+                    found.append((where, value[:120]))
+
+        def handle_endtag(self, tag):
+            if tag == self.inside:
+                self.inside = None
+
+        def handle_data(self, data):
+            if self.inside == "style":
+                css("<style>", data)
+            elif self.inside == "script":
+                script("<script>", data)
+
+    _Page().feed(html)
+    return found
+
+
+def test_the_outbound_check_sees_what_it_must():
+    """The checker itself: each way a page reaches out is listed, and what a
+    report legitimately holds is not."""
+    import base64
+
+    def b64(text: str) -> str:
+        return base64.b64encode(text.encode()).decode()
+
+    clean = (
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head>'
+        f'<link rel="stylesheet" href="data:text/css;base64,{b64("p { color: red }")}">'
+        '<script>/* https://getbootstrap.com/docs licence */</script></head>'
+        '<body><a href="https://example.com/ok">https://example.com/ok</a>'
+        '<p>Browse to https://intranet.example.com/login</p>'
+        '<img src="data:image/png;base64,AAAA" alt="see https://example.com"></body></html>'
+    )
+    assert _outbound_references(clean) == []
+    remote_module = 'import("https://cdn.example.net/m.js")'
+    for bad in (
+        '<script src="https://cdn.example.net/mathjax.js"></script>',
+        '<img src="https://tracker.example.net/p.png">',
+        '<img src="//tracker.example.net/p.png">',
+        '<link rel="stylesheet" href="https://fonts.example.net/css">',
+        '<style>@import url("x.css");</style>',
+        '<style>body { background: url(https://example.net/bg.png) }</style>',
+        '<p style="background:url(//example.net/bg.png)">x</p>',
+        f'<link rel="stylesheet" href="data:text/css;base64,{b64("@font-face{src:url(https://example.net/f.woff)}")}">',
+        '<script>fetch("https://collector.example.net/x")</script>',
+        f'<script src="data:application/javascript;base64,{b64(remote_module)}"></script>',
+        '<iframe src="https://example.net/"></iframe>',
+        '<form action="https://example.net/post"></form>',
+    ):
+        assert _outbound_references(bad), bad
+
+
 def _img_elements(html: str) -> list:
     """The attributes of every <img> element of an HTML document."""
     from html.parser import HTMLParser
@@ -412,15 +556,19 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
     block = {"subnets": subnets, "domains": []}
     block.update(report_scope.summarise(subnets, []))
     data["scope"] = report_scope.attach_file(block, project_slug="hostile", number=1, report_id=1)
-    manifest = json.loads((template / "template.json").read_text())
+    # As it applies: a template that extends another takes its post-processor
+    # (and whatever else it does not state) from its base.
+    manifest = quarto_render.template_manifest(template)
     # Review 2026-10-01 B8 — how the finding was confirmed: a command line and
     # a tool's output are the most hostile text a report carries.  Every field
     # of the entry is hostile here, whether or not this template prints it.
+    # The summary is printed on a line of its own and starts with four
+    # spaces: Markdown's indented code block, if the spaces were kept.
     data["findings"][0]["confirmations"] = [{
         "_path": "findings.0.confirmations.0", "id": 1, "outcome": "finding",
         "tool": HOSTILE, "host": HOSTILE, "by": HOSTILE, "date": "2026-10-01",
         "executed_at": "2026-10-01T00:00:00+00:00", "by_agent": False,
-        "summary": HOSTILE_MD, "command": "CONFIRM-COMMAND " + HOSTILE_CODE,
+        "summary": "    INDENTED-SUMMARY *starred* " + HOSTILE_MD, "command": "CONFIRM-COMMAND " + HOSTILE_CODE,
         "output": "CONFIRM-OUTPUT\n" + HOSTILE_CODE, "output_truncated": True,
     }]
     data["findings"][0]["confirmations_omitted"] = 2
@@ -476,6 +624,11 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
     lowered = html.lower()
     for needle in ('class="math', "mathjax", "katex", "cdn.jsdelivr", "<math"):
         assert needle not in lowered, needle
+    # --- no outbound request --------------------------------------------------
+    # Not a list of known offenders but what is allowed: outside a link the
+    # reader clicks, nothing in the page names a web address a browser would
+    # fetch, and no stylesheet imports one.
+    assert _outbound_references(html) == []
     assert "m:oMath" not in docx_parts and "<m:r>" not in docx_parts
     # The formulas are the characters that were typed — every form of them.
     for marker in ("MATHLINK", "DISPLAYLINK", "PARENLINK", "BRACKETLINK", "FENCELINK", "TICKLINK", "VALUELINK"):
@@ -560,6 +713,11 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
         for text in (html, docx):
             assert "CONFIRM-COMMAND" in text and "CONFIRM-OUTPUT" in text
             assert "after the fence" in text and "END-OF-HOSTILE-CODE" in text
+        # The summary that began with four spaces is text, its asterisks
+        # characters — not a code block showing the escapes.
+        assert "INDENTED-SUMMARY *starred* " in html
+        assert not re.search(r"<code[^>]*>[^<]*INDENTED-SUMMARY", html)
+        assert "INDENTED-SUMMARY \\*" not in html and "INDENTED-SUMMARY \\*" not in docx
         block = html[html.index("CONFIRM-OUTPUT"):]
         block = block[:block.index("</pre>")]
         assert "END-OF-HOSTILE-CODE" in block                      # one block, not split by its own fences
@@ -592,6 +750,24 @@ def test_no_template_can_make_the_html_report_load_a_math_library(tmp_path):
         assert needle not in lowered, needle
     assert "set $home/bin:$path first." in lowered and "mathlink" in lowered
     assert 'href="javascript' not in lowered
+
+
+@needs_quarto
+def test_a_value_that_starts_with_four_spaces_is_a_paragraph_not_a_code_block(tmp_path):
+    """A printed value on a line of its own, starting with four spaces, was
+    Markdown's indented code block: the text in a ``<pre>``, its escapes shown
+    as backslashes."""
+    folder = tmp_path / "tpl"
+    folder.mkdir()
+    (folder / "report.qmd").write_text(
+        "---\ntitle: x\nengine: markdown\nformat:\n  html:\n    embed-resources: true\n---\n\n"
+        "Before.\n\n<< note >>\n\nAfter.\n"
+    )
+    data = {"note": "    INDENTED-VALUE *starred* <b>bold</b>"}
+    html = quarto_render.render(folder, "report.qmd", data, ["html"], tmp_path / "out", timeout=240)["html"]
+    page = html.read_text(encoding="utf-8")
+    assert "<p>INDENTED-VALUE *starred* &lt;b&gt;bold&lt;/b&gt;</p>" in page
+    assert not re.search(r"<code[^>]*>[^<]*INDENTED-VALUE", page) and "INDENTED-VALUE \\*" not in page
 
 
 def test_the_reader_and_the_filter_both_refuse_math():

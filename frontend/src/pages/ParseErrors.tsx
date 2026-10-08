@@ -331,7 +331,7 @@ const ParseErrors: React.FC = () => {
         ?.scrollIntoView({ block: 'center' });
     });
     clearFocus();
-  }, [focusErrorId, focusJobId, loading, list.rows, setSearchParams]);
+  }, [focusErrorId, focusJobId, loading, list.rows, setSearchParams, toast]);
 
   // v2.86.2 — items come pre-filtered + pre-sorted from the server; no
   // more client-side filtering of the partial slice.  The old

@@ -43,7 +43,7 @@ from app.db.models_agent import (
 )
 from app.db.models_auth import APIKey, User, UserRole
 from app.db.models_project import ProjectMembership, ProjectRole
-from app.services.agent_prompt_history import PROMPT_VERSION
+from app.services.agent_prompt_service import PROMPT_VERSION
 from app.services.agent_key_ttl import resolve_expires_at, session_renewal_deadline
 
 logger = logging.getLogger(__name__)
@@ -167,6 +167,10 @@ def mint_session_key(
             key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
             key_prefix=raw_key[:14],
             expires_at=resolve_expires_at(ttl_hours),
+            # The application's clock, not the database's: the auth chain
+            # compares this with ``User.password_changed_at``, which the
+            # password routes also stamp from the application.
+            created_at=datetime.now(timezone.utc),
         )
     )
     try:
@@ -301,6 +305,38 @@ def end_agent_session(
         END_REASON_OPERATOR if ended_by is not None else END_REASON_LAPSED
     )
     session.notes = (f"{session.notes}\n{line}" if session.notes else line)[-8192:]
+
+
+def end_sessions_of_operator(
+    db: Session, user_id: int, *, ended_by: Optional[User], reason: str,
+) -> int:
+    """End every active session ``user_id`` started, in every project.
+
+    For when the account's credentials are replaced (password change or reset,
+    two-factor reset): a session opened under the old credentials may have been
+    opened by whoever had them.  Each session is ended like an operator's End,
+    so the Agent Sessions page shows it ended with ``reason``.  Any other live
+    key of the user's agents is revoked too.  Returns the number of sessions
+    ended; the caller commits.
+    """
+    sessions = (
+        db.query(AgentSession)
+        .filter(
+            AgentSession.started_by_id == user_id,
+            AgentSession.status == SESSION_ACTIVE,
+        )
+        .all()
+    )
+    for session in sessions:
+        end_agent_session(
+            db, session, ended_by=ended_by, reason=reason, end_reason=END_REASON_OPERATOR,
+        )
+    owned_agents = db.query(Agent.id).filter(Agent.owner_id == user_id)
+    db.query(APIKey).filter(
+        APIKey.is_active.is_(True),
+        APIKey.agent_id.in_(owned_agents),
+    ).update({"is_active": False}, synchronize_session=False)
+    return len(sessions)
 
 
 def feedback_counts_for_agent_sessions(db: Session, session_ids: List[int]) -> dict:

@@ -426,6 +426,7 @@ export default function Scans() {
     }
   }, [
     toast,
+    hydrateHistory,
     scans.length,
     listFilters,
     sortBy,

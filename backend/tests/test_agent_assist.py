@@ -326,7 +326,7 @@ def test_assist_context_carries_live_prompt_version(client, test_project):
     """The /context response carries the live PROMPT_VERSION so the agent can
     verify mid-session that the deployment still matches its prompt (feedback
     #8). Mirrors the recon/execution/plan context responses."""
-    from app.services.agent_prompt_history import PROMPT_VERSION
+    from app.services.agent_prompt_service import PROMPT_VERSION
 
     body = _start_session(client, test_project.id)
     headers = _auth_headers(body["api_key"])

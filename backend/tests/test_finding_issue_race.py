@@ -85,9 +85,9 @@ def test_an_insert_the_index_refuses_joins_the_finding_that_won(db_session, test
     joins the winner instead of failing or forking."""
     first, second = _estate(db_session, test_project.id)
     svc = FindingService(db_session)
-    winner = svc.promote_vulnerability(
+    winner, _ = svc.promote_vulnerability(
         vuln=db_session.get(Vulnerability, first), project_id=test_project.id, actor_id=test_user.id,
-        only_this_host=True,
+        host_ids=[db_session.get(Vulnerability, first).host_id],
     )
     db_session.commit()
 
@@ -101,8 +101,8 @@ def test_an_insert_the_index_refuses_joins_the_finding_that_won(db_session, test
     monkeypatch.setattr(FindingService, "_scanner_finding_for", blind_once)
     vuln = db_session.get(Vulnerability, second)
     if path == "promote":
-        joined = svc.promote_vulnerability(
-            vuln=vuln, project_id=test_project.id, actor_id=test_user.id, only_this_host=True,
+        joined, _ = svc.promote_vulnerability(
+            vuln=vuln, project_id=test_project.id, actor_id=test_user.id, host_ids=[vuln.host_id],
         )
     else:
         joined = svc.dismiss_vulnerability_on_host(
@@ -142,8 +142,8 @@ def _promote(project_id, user_id, vuln_id):
     def run(db):
         vuln = db.get(Vulnerability, vuln_id)
         return FindingService(db).promote_vulnerability(
-            vuln=vuln, project_id=project_id, actor_id=user_id, only_this_host=True,
-        ).id
+            vuln=vuln, project_id=project_id, actor_id=user_id, host_ids=[vuln.host_id],
+        )[0].id
     return run
 
 

@@ -908,24 +908,15 @@ def test_granted_writes_land_through_mcp(client, test_project, test_user, db_ses
     ).count() == 0
 
 
-def test_auto_params_read_the_identity_without_an_audit_row(client, test_project, db_session):
-    """v2.338.1 — found live: a tool's auto-filled plan_id / session_id came
-    from a 60 s identity cache that predated the phase the agent had just
-    opened, so execution_complete_session completed the PREVIOUS run.  The fix
-    read the live identity on every auto-fill and, being plumbing, added no
-    audit row.
-
-    v2.442.0 — plans and runs are gone, so no tool has an id to fill from the
-    key any more (the stale-cache half of this test went with them).  The one
-    auto-filled argument left is the guide's ``workflow``; what still holds,
-    and is pinned here, is that the lookup behind it is not audited — and that
-    no tool quietly grew a key-derived id again."""
+def test_the_guide_tool_returns_the_whole_guide_with_no_identity_lookup(client, test_project, db_session):
+    """No tool fills an argument from the caller's key: the last one was the
+    guide's ``workflow``, whose filled value ("project") meant "the whole
+    guide", the same as leaving it out.  A live session still gets the whole
+    guide, and the transport makes no identity call of its own to serve it."""
     from app.api.v1.endpoints.mcp_tools import TOOLS
     from app.db.models_agent import AgentApiCall
 
-    assert {name: spec["auto_params"] for name, spec in TOOLS.items() if spec.get("auto_params")} == {
-        "read_agent_guide": {"workflow": "workflow"},
-    }
+    assert not [name for name, spec in TOOLS.items() if "auto_params" in spec]
 
     body = _start_session(client, test_project.id)
     headers = {"X-API-Key": body["api_key"]}
@@ -945,11 +936,12 @@ def test_auto_params_read_the_identity_without_an_audit_row(client, test_project
         "params": {"name": "read_agent_guide", "arguments": {}},
     }, headers=headers).json()["result"]
     assert not got.get("isError"), got
-    # ``project`` was filled in: the whole guide, not a refusal for a missing slice.
-    assert "/agent/uploads" in got["content"][0]["text"]
+    # The whole guide, as the direct route serves it with no ``workflow``.
+    whole = client.get("/api/v1/agents-guide").text
+    assert "/agent/uploads" in whole
+    assert got["content"][0]["text"] == whole
 
-    # The lookup was plumbing: no identity row joined the activity log.
-    assert identity_rows() == warmed, "auto-fill identity lookups must not be audited"
+    assert identity_rows() == warmed, "the guide tool must not call /agent/identity"
 
 
 def test_submit_feedback_over_mcp_lands_on_the_session(client, test_project, db_session):

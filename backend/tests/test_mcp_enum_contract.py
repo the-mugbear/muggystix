@@ -6,13 +6,13 @@ failed, skipped" — the endpoint's enum has no ``completed`` and answered 422.
 ``test_phase`` was a free string in MCP and an enum at the endpoint.  A
 schema-following agent had to guess and retry.
 
-The registry (``mcp_tools.py``) is plain data by design (no DB imports), so it
-cannot share the endpoint's enums; this test is the referee instead.  Every
-field an endpoint constrains to an enum — in the body, nested in arrays and
-objects, or in the query — must be advertised with an enum by the tool, and
-that enum must be a subset of the endpoint's (a tool may narrow, never widen).
+Since the review of 2026-10-08 a tool's arguments are read from its endpoint
+(``mcp_tools.derive_tool``), so an endpoint's enum is the tool's by
+construction.  What these tests still referee is the part that is authored:
+what a tool lays over an argument may narrow it, never widen it — and that the
+derivation carries an enum through at every depth.
 """
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def _components():
@@ -60,31 +60,71 @@ def _mismatches(path: str, tool: Dict[str, Any], api: Dict[str, Any], spec) -> L
     return out
 
 
-def _request_body_schema(op: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    content = (op.get("requestBody") or {}).get("content") or {}
-    for media in ("application/json", "multipart/form-data"):
-        if media in content:
-            return content[media]["schema"]
-    return None
+def _widenings(path: str, said: Dict[str, Any], route: Dict[str, Any]) -> List[str]:
+    """Where what a tool SAYS about an argument is wider than its endpoint."""
+    import re
+
+    out: List[str] = []
+    if "type" in said and said["type"] != route.get("type"):
+        out.append(f"{path}: the tool says type {said['type']!r}; the endpoint's is {route.get('type')!r}")
+    if "enum" in said:
+        if "enum" in route:
+            extra = set(said["enum"]) - set(route["enum"])
+        elif "pattern" in route:
+            extra = {v for v in said["enum"] if not re.fullmatch(route["pattern"], str(v))}
+        else:
+            extra = set()  # free text at the endpoint, validated in its handler
+        if extra:
+            out.append(f"{path}: tool advertises {sorted(extra)}, endpoint rejects them")
+    for key, tighter in (("minimum", max), ("minLength", max), ("minItems", max),
+                         ("maximum", min), ("maxLength", min), ("maxItems", min)):
+        if key in said and key in route and tighter(said[key], route[key]) != said[key]:
+            out.append(f"{path}: {key} {said[key]} is looser than the endpoint's {route[key]}")
+    if "items" in said and isinstance(route.get("items"), dict):
+        out += _widenings(f"{path}[]", said["items"], route["items"])
+    route_props = route.get("properties") or {}
+    for name, sub in (said.get("properties") or {}).items():
+        if name in route_props:
+            out += _widenings(f"{path}.{name}", sub, route_props[name])
+    return out
 
 
-def test_every_advertised_enum_matches_the_endpoint():
+def test_what_a_tool_says_about_an_argument_never_widens_its_endpoint():
+    """A tool's arguments are read from its endpoint, so an enum the endpoint
+    declares is the tool's by construction.  What is still authored is the
+    ``params`` laid over them (an enum where the endpoint takes free text, a
+    bound it leaves to a service): each may narrow, never widen, and never
+    restate a type."""
+    from app.api.v1.endpoints.mcp_tools import _AUTHORED, derive_tool
+
+    openapi = _components()
+    problems: List[str] = []
+    for name, entry in _AUTHORED.items():
+        bare = {k: v for k, v in entry.items() if k != "params"}
+        route_props = derive_tool(name, bare, openapi)["input_schema"]["properties"]
+        for param, said in (entry.get("params") or {}).items():
+            if isinstance(said, dict):
+                problems += _widenings(f"{name}.{param}", said, route_props[param])
+    assert not problems, "MCP tools widen their endpoints:\n" + "\n".join(problems)
+
+
+def test_an_endpoints_enum_reaches_the_tool_at_every_depth():
+    """Body, nested in arrays and objects, and query: the acceptance run of
+    2026-09-30 sent a value the endpoint's enum did not have."""
     from app.api.v1.endpoints.mcp_tools import TOOLS
 
     spec = _components()
     problems: List[str] = []
     for name, tool in TOOLS.items():
         op = spec["paths"][tool["path"]][tool["method"].lower()]
-        props = tool["input_schema"].get("properties", {})
-        body = _request_body_schema(op)
-        if body is not None:
-            api_props = _resolve(body, spec).get("properties") or {}
-            for param in tool.get("body_params", []):
-                if param in props and param in api_props:
-                    problems += _mismatches(f"{name}.{param}", props[param], api_props[param], spec)
-        for p in op.get("parameters", []):
-            if p.get("in") == "query" and p["name"] in props:
-                problems += _mismatches(f"{name}?{p['name']}", props[p["name"]], p["schema"], spec)
+        props = tool["input_schema"]["properties"]
+        sources = {p["name"]: p["schema"] for p in op.get("parameters", []) if p.get("in") == "query"}
+        body = ((op.get("requestBody") or {}).get("content") or {}).get("application/json")
+        if body:
+            sources.update(_resolve(body["schema"], spec).get("properties") or {})
+        for arg, schema in sources.items():
+            if arg in props:
+                problems += _mismatches(f"{name}.{arg}", props[arg], schema, spec)
     assert not problems, "MCP schemas disagree with their endpoints:\n" + "\n".join(problems)
 
 

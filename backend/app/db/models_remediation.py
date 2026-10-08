@@ -25,6 +25,7 @@ TRACKED_FIELDS = ("contact_email", "contact_name", "team", "notified_on", "statu
 TIMELINE_SEVERITIES = ("critical", "high", "medium", "low", "info")
 DEFAULT_TIMELINE_DAYS = {"critical": 30, "high": 30, "medium": 90, "low": 120, "info": None}
 DEFAULT_DUE_SOON_DAYS = 7
+DEFAULT_TIME_ZONE = "UTC"
 EVENT_KINDS = ("note", "change", "follow_up", "report")
 
 
@@ -45,6 +46,10 @@ class RemediationPolicy(Base):
     days_info = Column(Integer)
     due_soon_days = Column(Integer, nullable=False, default=DEFAULT_DUE_SOON_DAYS,
                            server_default=str(DEFAULT_DUE_SOON_DAYS))
+    # IANA name of the zone whose calendar day is "today" for every deadline
+    # state: assigned and closed dates are entered by hand, in local days.
+    time_zone = Column(String(64), nullable=False, default=DEFAULT_TIME_ZONE,
+                       server_default=DEFAULT_TIME_ZONE)
     updated_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 

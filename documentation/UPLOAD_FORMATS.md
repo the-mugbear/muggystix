@@ -34,7 +34,7 @@ Upload is **staged**: choose files → review formats → import. BlueStick dete
 
 - Single uploads are capped by `MAX_FILE_SIZE` (default 1 GB) and streamed to disk, so browser timeouts are avoided.
 - Upload requests return quickly with an ingestion job ID; once started, parsing continues in a background worker and the UI follows the job.
-- **An identical file is refused.** Every upload is hashed (SHA-256); a file already in the project — as a scan, still parsing, or staged awaiting its format review — answers `409 duplicate_scan` naming what it already is. Re-importing on purpose is an explicit choice ("Import again" in the review; *Re-process* on Ingestion Results).
+- **An identical file is refused.** Every upload is hashed (SHA-256); a file already in the project — as a scan, still parsing, or staged awaiting its format review — answers `409 duplicate_scan` naming what it already is. The same check runs when a staged or failed file is started or retried: retrying a failed import whose identical file has been imported since is refused the same way. Re-importing on purpose is an explicit choice ("Import again" in the review; *Re-process* on Ingestion Results).
 - **Files are retained for `INGESTION_RETAIN_FILES_DAYS` (default 7) after a job finishes**, then only the bytes are removed — the job row stays. Retry-with-a-different-format and Re-process work only inside that window. A staged file nobody starts expires after 24 hours.
 - The review stages 4 files at a time and starts 6 at a time, however many you select.
 - Nessus files commit in batches (`NESSUS_COMMIT_BATCH_SIZE`, default 50 hosts) to keep database pressure manageable.

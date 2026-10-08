@@ -6,24 +6,61 @@ import { projectScopedKey } from '../../utils/scopedStorage';
 import { readHostsPageSize, writeHostsPageSize } from '../../utils/hostsPaging';
 
 // setupTests.ts globally mocks useLocation to a fixed empty search. Override it
-// here with a controllable value so we can exercise the URL-restore path.
-const routerState = vi.hoisted(() => ({ search: '' }));
-// One navigate for the whole file, as the router's is: the page writes its
-// filters and page into the URL through it.
-const navigateSpy = vi.hoisted(() => vi.fn());
+// here with an address that behaves like one: the page reads its filters,
+// sort and page from it, and a navigate to a /hosts address changes it.
+const { routerState, navigateSpy } = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  let search = '';
+  const state = {
+    get search() { return search; },
+    set search(next: string) {
+      if (next === search) return;
+      search = next;
+      listeners.forEach((listener) => listener());
+    },
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+  };
+  // One navigate for the whole file, as the router's is.
+  const navigate = vi.fn((to: unknown) => {
+    if (to && typeof to === 'object' && typeof (to as { search?: unknown }).search === 'string') {
+      state.search = (to as { search: string }).search;
+    } else if (typeof to === 'string' && (to === '/hosts' || to.startsWith('/hosts?'))) {
+      state.search = to.slice('/hosts'.length);
+    }
+  });
+  return { routerState: state, navigateSpy: navigate };
+});
 // What the page hands the column definitions on each render.
 const columnArgs = vi.hoisted(() => ({
   calls: [] as Array<{ onOpen?: (id: number) => void; onFollowChange: unknown }>,
 }));
+const cellRenders = vi.hoisted(() => ({ count: 0 }));
 vi.mock('../../components/hosts/useHostColumns', async () => {
   const actual = await vi.importActual<typeof import('../../components/hosts/useHostColumns')>(
     '../../components/hosts/useHostColumns',
   );
+  type Columns = ReturnType<typeof actual.useHostColumns>;
+  // The first column's cell counts its renders. Wrapped once per column set,
+  // so the wrapper adds no change of identity of its own.
+  const counted = new WeakMap<Columns, Columns>();
+  const withCounter = (columns: Columns): Columns => {
+    let wrapped = counted.get(columns);
+    if (!wrapped) {
+      const [first, ...rest] = columns;
+      const cell = first.cell as (ctx: unknown) => unknown;
+      wrapped = [{ ...first, cell: (ctx: unknown) => { cellRenders.count += 1; return cell(ctx); } } as Columns[number], ...rest];
+      counted.set(columns, wrapped);
+    }
+    return wrapped;
+  };
   return {
     ...actual,
     useHostColumns: (args: Parameters<typeof actual.useHostColumns>[0]) => {
       columnArgs.calls.push(args);
-      return actual.useHostColumns(args);
+      return withCounter(actual.useHostColumns(args));
     },
   };
 });
@@ -33,7 +70,11 @@ vi.mock('react-router-dom', async () => {
     ...actual,
     useNavigate: () => navigateSpy,
     useParams: () => ({ id: '1' }),
-    useLocation: () => ({ pathname: '/hosts', search: routerState.search, hash: '', state: null }),
+    useLocation: () => {
+      const React = require('react') as typeof import('react');
+      const search = React.useSyncExternalStore(routerState.subscribe, () => routerState.search);
+      return React.useMemo(() => ({ pathname: '/hosts', search, hash: '', state: null }), [search]);
+    },
   };
 });
 
@@ -117,7 +158,12 @@ vi.mock('../../contexts/ToastContext', async () => ({
 // WHICH host is open.
 vi.mock('../../components/HostInspector', () => ({
   __esModule: true,
-  default: ({ hostId }: { hostId: number }) => <div data-testid="host-inspector">host {hostId}</div>,
+  default: ({ hostId, onQueryHosts }: { hostId: number; onQueryHosts?: (q: string) => void }) => (
+    <div data-testid="host-inspector">
+      host {hostId}
+      <button type="button" onClick={() => onQueryHosts?.('cve:CVE-2024-0001')}>hosts with this weakness</button>
+    </div>
+  ),
 }));
 
 vi.mock('../../components/InventoryDownloadDialog', () => ({
@@ -284,6 +330,25 @@ describe('Hosts', () => {
       .toMatchObject({ filters: { hasCriticalVulns: true } });
   });
 
+  // The rows are memoised, and an inline `onRowClick` was a new prop for each
+  // of them on every render: any state change on the page ran every cell.
+  it('a change on the page that touches no row does not render the rows again', async () => {
+    renderHosts();
+    await screen.findByRole('table');
+    await screen.findAllByText('10.0.0.20');
+    await waitFor(() => expect(mockedApi.getHostFilterData).toHaveBeenCalled());
+    await act(async () => { await Promise.resolve(); });
+    const rows = screen.getAllByRole('row').length - 1;
+    expect(rows).toBeGreaterThan(10);
+    const before = cellRenders.count;
+
+    // Opening a host changes page state (the inspector) and no row's data.
+    act(() => { columnArgs.calls[0].onOpen?.(2); });
+    expect(screen.getByTestId('host-inspector')).toHaveTextContent('host 2');
+    // At most the row the keyboard cursor moves to, never the page of rows.
+    expect(cellRenders.count - before).toBeLessThanOrEqual(2);
+  });
+
   // A reload, or coming back from a host's own page, dropped the reader to
   // page 1 at 25 rows: the page was not in the URL and the size not remembered.
   it('opens on the page the URL names and is not thrown back to the first while it loads', async () => {
@@ -301,11 +366,16 @@ describe('Hosts', () => {
     renderHosts();
     await screen.findByRole('table');
     const lastSearch = () => String((navigateSpy.mock.calls[navigateSpy.mock.calls.length - 1]?.[0] as { search?: string })?.search);
-    await waitFor(() => expect(lastSearch()).toContain('sort_by=critical_vulns'));
-    expect(lastSearch()).not.toContain('page=');
+    // Nothing was chosen yet: the address is left as it was opened.
+    await waitFor(() => expect(mockedApi.getHosts).toHaveBeenCalled());
+    expect(navigateSpy).not.toHaveBeenCalled();
 
     await user.click(screen.getByLabelText('Next page'));
     await waitFor(() => expect(lastSearch()).toContain('page=2'));
+    expect(lastSearch()).toContain('sort_by=critical_vulns');
+    // A replacement, never a history entry per page.
+    expect(navigateSpy).toHaveBeenLastCalledWith(expect.anything(), { replace: true });
+    expect(mockedApi.getHosts).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 25 }), expect.anything());
 
     await user.click(screen.getByRole('button', { name: /Add filter/i }));
     await user.click(await screen.findByRole('button', { name: /Scanner severity/ }));
@@ -557,11 +627,7 @@ describe('Hosts', () => {
     );
     sessionStorage.setItem(projectScopedKey('projectDefaultName'), 'Web tier');
     routerState.search = '?q=has%3Acritical';
-    try {
-      renderHosts();
-    } finally {
-      routerState.search = '';
-    }
+    renderHosts();
 
     await screen.findByRole('table');
     await waitFor(() => {
@@ -587,6 +653,109 @@ describe('Hosts', () => {
       },
       { timeout: 2000 },
     );
+  });
+
+  // The filters ARE the address.  They used to be read from it once, on
+  // mount, and then written back from component state: a navigate to another
+  // /hosts address while the page was open changed nothing, and the write put
+  // the old filters back over it.
+  describe('the list follows the address', () => {
+    const lastParams = () => {
+      const calls = mockedApi.getHosts.mock.calls;
+      return calls[calls.length - 1]?.[0] as Record<string, unknown>;
+    };
+
+    it('a new /hosts address while the page is open is a new list, and stays the address', async () => {
+      routerState.search = '?has_critical_vulns=true&page=2';
+      renderHosts();
+      await waitFor(() => expect(lastParams()).toMatchObject({ has_critical_vulns: true, skip: 25 }));
+
+      // Another part of the app sends the reader to a filtered list.
+      act(() => { navigateSpy('/hosts?q=port%3A22&sort_by=ip_address'); });
+      await waitFor(() => expect(lastParams()).toMatchObject({ q: 'port:22', sort_by: 'ip_address', skip: 0 }));
+      expect(lastParams().has_critical_vulns).toBeUndefined();
+      expect(await screen.findByText('Query: port:22')).toBeInTheDocument();
+      // Nothing writes the previous filters back.
+      await new Promise((resolve) => setTimeout(resolve, 450));
+      expect(routerState.search).toBe('?q=port%3A22&sort_by=ip_address');
+      expect(lastParams()).toMatchObject({ q: 'port:22' });
+    });
+
+    it('a page named by a new address is not cut to the previous list’s last page', async () => {
+      // 30 hosts under the first filter (2 pages), 200 under the second.
+      mockedApi.getHosts.mockImplementation(async (params?: Record<string, any>) => (
+        params?.q
+          ? { ...buildHostResponse({ ...params, skip: 0 }), total: 200, skip: params.skip }
+          : buildHostResponse(params)
+      ));
+      renderHosts();
+      await waitFor(() => expect(lastParams()).toMatchObject({ skip: 0 }));
+      await screen.findByRole('table');
+
+      act(() => { navigateSpy('/hosts?q=port%3A22&page=4'); });
+      await waitFor(() => expect(lastParams()).toMatchObject({ q: 'port:22', skip: 75 }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(routerState.search).toBe('?q=port%3A22&page=4');
+      expect(mockedApi.getHosts.mock.calls.filter(([p]) => p.q).every(([p]) => p.skip === 75)).toBe(true);
+    });
+
+    it('"hosts with this weakness" in the inspector goes to that address and closes the inspector', async () => {
+      routerState.search = '?has_critical_vulns=true';
+      renderHosts();
+      await screen.findByRole('table');
+      act(() => { columnArgs.calls[0].onOpen?.(2); });
+      fireEvent.click(within(screen.getByTestId('host-inspector')).getByRole('button', { name: 'hosts with this weakness' }));
+      await waitFor(() => expect(lastParams()).toMatchObject({ q: 'cve:CVE-2024-0001' }));
+      expect(lastParams().has_critical_vulns).toBeUndefined();
+      expect(navigateSpy).toHaveBeenLastCalledWith('/hosts?q=cve%3ACVE-2024-0001');
+      expect(screen.queryByTestId('host-inspector')).not.toBeInTheDocument();
+    });
+
+    it('the page’s own change is in the address at once, as a replacement', async () => {
+      const user = userEvent.setup({ skipHover: true });
+      renderHosts();
+      await screen.findByRole('table');
+      await user.click(screen.getByRole('button', { name: /Add filter/i }));
+      await user.click(await screen.findByRole('button', { name: /Scanner severity/ }));
+      await user.click(screen.getByRole('checkbox', { name: 'Critical' }));
+      await user.click(screen.getByRole('button', { name: 'Apply condition' }));
+      // No debounce to lag a copied link or the way back from a host.
+      expect(routerState.search).toContain('has_critical_vulns=true');
+      expect(navigateSpy).toHaveBeenLastCalledWith(
+        { search: expect.stringContaining('has_critical_vulns=true') }, { replace: true },
+      );
+      await waitFor(() => expect(lastParams()).toMatchObject({ has_critical_vulns: true }));
+    });
+
+    it('an address from outside is no longer the view that was applied', async () => {
+      const user = userEvent.setup({ skipHover: true });
+      renderHosts();
+      await screen.findByRole('heading', { level: 1, name: 'Hosts' });
+      await user.click(await screen.findByRole('button', { name: /^View:/ }));
+      await user.click(await screen.findByRole('menuitem', { name: /Critical observations/ }));
+      expect(await screen.findByRole('button', { name: 'View: Critical observations' })).toBeInTheDocument();
+
+      act(() => { navigateSpy('/hosts?ports=8080'); });
+      await waitFor(() => expect(lastParams()).toMatchObject({ ports: '8080' }));
+      expect(lastParams().has_critical_vulns).toBeUndefined();
+      expect(screen.queryByRole('button', { name: /Critical observations/ })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^View: Custom filters/ })).toBeInTheDocument();
+    });
+
+    it('a restored session is put into the address, and only the restored list is asked for', async () => {
+      sessionStorage.setItem(
+        projectScopedKey('hostFiltersState'),
+        JSON.stringify({ filters: { hasCriticalVulns: true }, followFilter: 'in_review', onlyWithNotes: false }),
+      );
+      renderHosts();
+      await screen.findByTestId('hosts-restored-notice');
+      expect(routerState.search).toContain('has_critical_vulns=true');
+      expect(routerState.search).toContain('follow_status=in_review');
+      expect(mockedApi.getHosts.mock.calls.length).toBeGreaterThan(0);
+      for (const [params] of mockedApi.getHosts.mock.calls) {
+        expect(params).toMatchObject({ has_critical_vulns: true, follow_status: 'in_review' });
+      }
+    });
   });
 
   it('treats URL params as authoritative over conflicting session filters', async () => {

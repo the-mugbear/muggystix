@@ -17,7 +17,7 @@ page cannot disagree on a number (ASSIST_TOOLS.md, review rule 3).
 
 Mounted under ``/agent`` with the same ``enforce_agent_operator_access`` gate
 as every agent router; the client-report routes also take the Reports page's
-floor, AUDITOR (``deps.AGENT_READ_ROLE_OVERRIDES``).
+floor, AUDITOR (declared on each route with ``deps.agent_read_floor``).
 """
 from __future__ import annotations
 
@@ -28,8 +28,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, defer, selectinload
 
-from app.api.deps import check_agent_rate_limit
-from app.api.v1.endpoints.agent_common import load_agent_session
+from app.api.deps import agent_read_floor, check_agent_rate_limit
 from app.api.v1.endpoints.client_reports import report_file_response, report_scope_response
 from app.api.v1.endpoints.scanner_observations import IssueHostOut, IssuePageOut, IssueRowOut
 from app.db.models_agent import Agent
@@ -44,6 +43,9 @@ from app.services.client_report_service import ClientReportService
 from app.services.client_report_views import load_report, serialize_report
 
 router = APIRouter()
+
+# The Reports page (the ``client_reports`` router) is AUDITOR.
+_REPORTS_READ = [Depends(agent_read_floor(ProjectRole.AUDITOR))]
 
 
 def _operator_role(request: Request) -> Optional[str]:
@@ -90,11 +92,10 @@ def list_assist_scanner_observations(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    session = load_agent_session(db, request)
     start = skip if offset is None else offset
     try:
         page = observations.list_issues(
-            db, session.project_id, search=search, severity=severity, include_judged=include_judged,
+            db, request.state.agent_project_id, search=search, severity=severity, include_judged=include_judged,
             min_hosts=min_hosts, skip=start, limit=limit, kind=kind, sort=sort,
         )
     except observations.ObservationError as exc:
@@ -129,12 +130,11 @@ def list_assist_scanner_observation_hosts(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    session = load_agent_session(db, request)
     items = [
         IssueHostOut(**vars(h))
-        for h in observations.issue_hosts(db, session.project_id, issue_key, limit=limit, offset=offset)
+        for h in observations.issue_hosts(db, request.state.agent_project_id, issue_key, limit=limit, offset=offset)
     ]
-    total = observations.issue_host_total(db, session.project_id, issue_key)
+    total = observations.issue_host_total(db, request.state.agent_project_id, issue_key)
     return AssistIssueHostPage(
         items=items, total=total, has_more=offset + len(items) < total, limit=limit, offset=offset,
     )
@@ -216,6 +216,7 @@ def _files_path(report_id: int, fmt: str) -> str:
 
 @router.get(
     "/assist/client-reports",
+    dependencies=_REPORTS_READ,
     response_model=AssistClientReportList,
     summary="The project's client reports — drafts first, then issued ones by number",
 )
@@ -224,17 +225,16 @@ def list_assist_client_reports(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    session = load_agent_session(db, request)
     role = _operator_role(request) or ""
     rows = (
         db.query(Report)
         .options(defer(Report.snapshot), selectinload(Report.files))
-        .filter(Report.project_id == session.project_id)
+        .filter(Report.project_id == request.state.agent_project_id)
         .all()
     )
     # The Reports page's order.
     rows.sort(key=lambda r: (r.status != ReportStatus.DRAFT, -(r.number or 0), -(r.id)))
-    latest = ClientReportService(db).latest_issued(session.project_id)
+    latest = ClientReportService(db).latest_issued(request.state.agent_project_id)
     return AssistClientReportList(
         items=[serialize_report(db, r, role, with_summary=False) for r in rows],
         latest_issued_id=latest.id if latest else None,
@@ -243,6 +243,7 @@ def list_assist_client_reports(
 
 @router.get(
     "/assist/client-reports/{report_id}",
+    dependencies=_REPORTS_READ,
     response_model=AssistClientReport,
     summary="One client report: its details, and every finding as the report states it",
 )
@@ -252,8 +253,7 @@ def get_assist_client_report(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    session = load_agent_session(db, request)
-    report = load_report(db, session.project_id, report_id)
+    report = load_report(db, request.state.agent_project_id, report_id)
     dataset, summary = ClientReportService(db).content(report)
     base = serialize_report(db, report, _operator_role(request) or "", with_summary=False)
     dataset = dataset or {}
@@ -300,6 +300,7 @@ def get_assist_client_report(
 
 @router.get(
     "/assist/client-reports/{report_id}/scope.csv",
+    dependencies=_REPORTS_READ,
     summary="The report's complete scope as CSV — the file a report over its template's scope cutoff names",
 )
 def download_assist_client_report_scope(
@@ -310,13 +311,13 @@ def download_assist_client_report_scope(
 ):
     """v2.441.0 — the page's scope-file download, for agents (same builder,
     same bytes, same SHA-256 as the report prints)."""
-    session = load_agent_session(db, request)
-    report = load_report(db, session.project_id, report_id)
+    report = load_report(db, request.state.agent_project_id, report_id)
     return report_scope_response(ClientReportService(db), report)
 
 
 @router.get(
     "/assist/client-reports/{report_id}/files/{fmt}",
+    dependencies=_REPORTS_READ,
     summary="Download one rendered file of a client report (html, docx, qmd)",
 )
 def download_assist_client_report_file(
@@ -326,8 +327,7 @@ def download_assist_client_report_file(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ) -> FileResponse:
-    session = load_agent_session(db, request)
-    report = load_report(db, session.project_id, report_id)
+    report = load_report(db, request.state.agent_project_id, report_id)
     record = next((f for f in report.files if f.format == fmt), None)
     if record is None:
         raise HTTPException(status_code=404, detail=f"This report has no {fmt} file.")

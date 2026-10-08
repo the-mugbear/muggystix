@@ -9,15 +9,21 @@ from __future__ import annotations
 
 import importlib.util
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from sqlalchemy import String, cast, event, func, literal, or_
+from sqlalchemy.orm import aliased
+from sqlalchemy.sql import exists
 
 from app.api.v1.endpoints import hosts as hosts_endpoint
 from app.api.v1.endpoints import scopes as scopes_endpoint
 from app.db import models
 from app.db.models import Annotation, HostFollow, HostSubnetMapping, Scope, Site, Subnet
+from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
+from app.db.models_auth import User, UserRole
+from app.db.models_confidence import NetexecResult
 from app.db.models_findings import Finding, FindingHost
 from app.db.models_host_tests import HostTest
 from app.db.models_project import Project
@@ -27,6 +33,8 @@ from app.services import host_query_predicates as P
 from app.services import scanner_observation_service as observations
 from app.services.host_query import build_filtered_host_query, build_search_predicate
 from app.services.host_query_common import escape_like
+from app.services.host_query_dsl import negate
+from app.services.host_test_queries import planned_host_ids, tested_host_ids
 from app.services.subnet_correlation import SubnetCorrelationService
 from app.services.systemic_insight_service import compute_systemic_insights
 
@@ -172,23 +180,10 @@ def test_product_version_text_is_what_the_index_is_built_on(db_session):
     assert migration._PRODUCT_VERSION_EXPR == rendered.replace("ports_v2.", "").join("()")
 
 
-@pytest.mark.parametrize("kwargs", [
-    dict(require_open=True),
-    dict(ports=[22]), dict(ports=[22, 80], port_states=["any"]),
-    dict(services=["ssh"]), dict(services=["htt"], port_states=["closed"]),
-    dict(port_states=["filtered"]), dict(ports=[80], require_open=True, port_states=["closed"]),
-])
-def test_project_scoped_port_subquery_selects_the_same_hosts(db_session, port_estate, kwargs):
-    pid, other_id, _hosts, foreign = port_estate
-    unscoped = P.port_match_subquery(db_session, **kwargs)
-    scoped = P.port_match_subquery(db_session, project_id=pid, **kwargs)
-    assert _ids(db_session, pid, models.Host.id.in_(scoped)) == _ids(db_session, pid, models.Host.id.in_(unscoped))
-    assert _ids(db_session, pid, ~models.Host.id.in_(scoped)) == _ids(db_session, pid, ~models.Host.id.in_(unscoped))
-    # What the scoping is for: the subquery itself no longer returns another
-    # project's hosts for Postgres to hash and discard.
-    assert foreign.id not in {row[0] for row in scoped.all()}
-    assert "hosts_v2.project_id" in str(scoped.statement.compile(dialect=db_session.get_bind().dialect))
-
+# (``P.port_match_subquery`` — the id list those predicates were built on, and
+# its project-scoped form — was removed in the 2026-10-08 review with its last
+# caller, the agents' host filter, which now runs the page's own assembly.  Its
+# old == new cases remain below against a copy of the old form.)
 
 @pytest.mark.parametrize("term", ["ssh", "OpenSSH", "22", "nginx", "10.9.0", "http", "zzz"])
 def test_scoped_search_matches_the_unscoped_search(db_session, port_estate, term):
@@ -202,7 +197,9 @@ def test_scoped_search_matches_the_unscoped_search(db_session, port_estate, term
 def _old_port_predicate(db, **kwargs):
     """The port predicates as they stood before R19: ``Host.id IN`` an
     uncorrelated join of every project's hosts and ports."""
-    return models.Host.id.in_(P.port_match_subquery(db, **kwargs))
+    return models.Host.id.in_(
+        db.query(models.Host.id).join(models.Port).filter(*P.port_match_conditions(**kwargs))
+    )
 
 
 @pytest.mark.parametrize("name,new,old_kwargs", [
@@ -321,7 +318,7 @@ def test_child_table_predicates_as_exists_select_what_in_selected(db_session, te
                      _old_in(db_session, HostSubnetMapping.host_id, Subnet.site.in_(["HQ"]),
                              joins=[(Subnet, Subnet.id == HostSubnetMapping.subnet_id)])),
             "follow_none": (
-                P.follow_predicate(db_session, "none", test_user),
+                P.follow_predicate("none", test_user),
                 ~_old_in(db_session, HostFollow.host_id, HostFollow.status.in_(("in_review", "reviewed")))),
         }[name]
         selected = _ids(db_session, project_id, new)
@@ -869,6 +866,371 @@ def test_the_filter_is_evaluated_once_per_filtered_facet_request(
     # the single statement the request gained.
     assert evaluations(old) >= 10
     assert len(new) <= len(old) + 1
+
+
+# ---------------------------------------------------------------------------
+# Review 2026-10-08 — the remaining ``Host.id IN (subquery)`` predicates as
+# correlated EXISTS
+# ---------------------------------------------------------------------------
+
+_T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+_WIDE_HOSTS = 9
+
+
+@pytest.fixture
+def wide_estate(db_session, test_project, test_user):
+    """Nine hosts per project, each carrying one kind of row a converted
+    predicate reads; host 9 carries nothing and has no OS, name or SMB posture
+    (NULLs).  The same rows exist in a second project, and a second person
+    holds one review."""
+    other_user = User(
+        id=test_user.id + 100,   # the fixture's user took id 1 without the sequence
+        username="wide-other", email="wide-other@example.com", full_name="Other",
+        hashed_password="x", role=UserRole.MEMBER, is_active=True, is_verified=True,
+    )
+    db_session.add(other_user)
+    db_session.flush()
+    other_project = _project(db_session, "wide-other")
+    facts = {}
+    for index, pid in enumerate((test_project.id, other_project.id)):
+        old_scan = _scan(db_session, pid)
+        new_scan = _scan(db_session, pid, tool="nessus")
+        h = [None] + [
+            _host(db_session, pid, f"10.8.{index}.{n}", first_seen=_T0 - timedelta(days=30))
+            for n in range(1, _WIDE_HOSTS + 1)
+        ]
+        h[9].first_seen = _T0 + timedelta(days=5)
+        h[1].smb_signing, h[2].smb_signing = "disabled", "required"
+
+        smb = _port(db_session, h[1], 445, first_seen=_T0 + timedelta(days=10))
+        web = _port(db_session, h[4], 80, first_seen=_T0 - timedelta(days=30))
+
+        def vuln(host, severity, title, **extra):
+            db_session.add(Vulnerability(
+                host_id=host.id, scan_id=new_scan.id, plugin_id=f"w-{host.id}-{title}", title=title,
+                severity=severity, source=VulnerabilitySource.NESSUS, **extra,
+            ))
+
+        vuln(h[1], VulnerabilitySeverity.CRITICAL, "Log4Shell RCE", cve_id="CVE-2021-44228",
+             issue_key="cve:CVE-2021-44228", check_id="smb_signing_not_required", exploitable=True,
+             port_id=smb.id, created_at=_T0 + timedelta(days=10))
+        vuln(h[2], VulnerabilitySeverity.HIGH, "Weak cipher", created_at=_T0 - timedelta(days=10))
+        vuln(h[2], VulnerabilitySeverity.INFO, "Service detection", created_at=_T0 - timedelta(days=10))
+
+        db_session.add(Annotation(host_id=h[3].id, user_id=test_user.id, body="rotate creds"))
+        db_session.add(Annotation(host_id=None, port_id=web.id, user_id=test_user.id, body="odd banner"))
+
+        db_session.add(NetexecResult(scan_id=new_scan.id, host_id=h[5].id, protocol="smb", local_admin=True))
+        db_session.add(NetexecResult(scan_id=new_scan.id, host_id=h[6].id, protocol="smb",
+                                     local_admin=False, writable_share=True))
+
+        db_session.add(HostFollow(host_id=h[6].id, user_id=test_user.id, status=models.FollowStatus.IN_REVIEW,
+                                  assigned_at=_T0))
+        db_session.add(HostFollow(host_id=h[7].id, user_id=test_user.id, status=models.FollowStatus.REVIEWED,
+                                  review_conclusion="needs_evidence", reviewed_at=_T0))
+        db_session.add(HostFollow(host_id=h[8].id, user_id=other_user.id, status=models.FollowStatus.IN_REVIEW,
+                                  assigned_at=_T0))
+        db_session.add(HostFollow(host_id=h[2].id, user_id=test_user.id, status=models.FollowStatus.WATCHING))
+
+        for host, scan, when in ((h[1], old_scan, -30), (h[2], old_scan, -30), (h[2], new_scan, 1), (h[3], new_scan, 1)):
+            db_session.add(models.HostScanHistory(
+                host_id=host.id, scan_id=scan.id, discovered_at=_T0 + timedelta(days=when)))
+
+        acme = NetworkAttribution(project_id=pid, cidr="10.8.0.0/25", asn=64500, org_name="Acme Corp",
+                                  country="US", source="rdap")
+        cloud = NetworkAttribution(project_id=pid, cidr="10.8.0.128/25", asn=64501, org_name="Hoster BV",
+                                   country="NL", cloud_provider="aws", source="rdap")
+        db_session.add_all([acme, cloud])
+        db_session.flush()
+        db_session.add(HostNetworkAttribution(host_id=h[1].id, attribution_id=acme.id))
+        db_session.add(HostNetworkAttribution(host_id=h[2].id, attribution_id=cloud.id))
+
+        scope = Scope(project_id=pid, name="wide")
+        tag = models.HostTag(project_id=pid, name="Crown")
+        label = models.SubnetLabel(project_id=pid, name="DMZ")
+        db_session.add_all([scope, tag, label])
+        db_session.flush()
+        sited = Subnet(scope_id=scope.id, cidr="10.8.4.0/24", site="HQ")
+        bare = Subnet(scope_id=scope.id, cidr="10.8.5.0/24")
+        db_session.add_all([sited, bare])
+        db_session.flush()
+        db_session.add(models.HostTagAssignment(host_id=h[3].id, tag_id=tag.id))
+        db_session.add(models.SubnetLabelAssignment(subnet_id=sited.id, label_id=label.id))
+        db_session.add(HostSubnetMapping(host_id=h[4].id, subnet_id=sited.id))
+        db_session.add(HostSubnetMapping(host_id=h[5].id, subnet_id=bare.id))
+
+        db_session.add(models.WebInterface(
+            scan_id=new_scan.id, project_id=pid, host_id=h[6].id, source="httpx",
+            url=f"https://10.8.{index}.6/", cert_subject_org="Acme Corp"))
+
+        db_session.add(HostTest(
+            project_id=pid, host_id=h[7].id, tool="nmap", description="d", rationale="r",
+            priority="high", status="proposed", source="person",
+            request_key=f"wide-{pid}", request_hash="0" * 64))
+        db_session.add(EvidenceRecord(project_id=pid, host_id=h[8].id, tool="nmap", outcome="finding", summary="s"))
+        db_session.flush()
+        # The key the row was stored under (the model derives it on flush).
+        issue = db_session.query(Vulnerability.issue_key).filter(
+            Vulnerability.host_id == h[1].id).scalar()
+        facts[pid] = dict(new_scan=new_scan.id, label=label.id, issue=issue)
+    db_session.flush()
+    return test_project.id, other_project.id, other_user, facts
+
+
+def _old_vuln_in(db, pid, *conditions, joins=()):
+    """The scanner-row predicates as they stood: ``Host.id IN`` a subquery
+    joined to an aliased Host to keep it inside the project."""
+    H = aliased(models.Host)
+    sub = db.query(Vulnerability.host_id).join(H, H.id == Vulnerability.host_id)
+    for target, on in joins:
+        sub = sub.join(target, on)
+    return models.Host.id.in_(sub.filter(H.project_id == pid, *conditions).distinct())
+
+
+def _old_follow_in(db, *conditions):
+    return models.Host.id.in_(db.query(HostFollow.host_id).filter(*conditions))
+
+
+def _old_attributed_in(db, *conditions):
+    sub = (
+        db.query(HostNetworkAttribution.host_id)
+        .join(NetworkAttribution, NetworkAttribution.id == HostNetworkAttribution.attribution_id)
+        .filter(*conditions).distinct()
+    )
+    return models.Host.id.in_(sub)
+
+
+def _old_labelled_in(db, pid, *conditions):
+    sub = (
+        db.query(HostSubnetMapping.host_id)
+        .join(models.SubnetLabelAssignment, models.SubnetLabelAssignment.subnet_id == HostSubnetMapping.subnet_id)
+        .join(models.SubnetLabel, models.SubnetLabel.id == models.SubnetLabelAssignment.label_id)
+        .filter(models.SubnetLabel.project_id == pid, *conditions).distinct()
+    )
+    return models.Host.id.in_(sub)
+
+
+def _wide_pairs(db, pid, user, facts):
+    """name → (the predicate now, the predicate as it stood)."""
+    V = Vulnerability
+    H1, H2, H3, H4 = (aliased(models.Host) for _ in range(4))
+    earlier = aliased(models.HostScanHistory)
+    in_scan = db.query(models.HostScanHistory.host_id).filter(
+        models.HostScanHistory.scan_id.in_([facts["new_scan"]]))
+    mapped = (
+        db.query(HostSubnetMapping.host_id)
+        .join(Subnet, Subnet.id == HostSubnetMapping.subnet_id)
+        .join(Scope, Scope.id == Subnet.scope_id)
+        .filter(Scope.project_id == pid)
+    )
+    assigned = db.query(HostFollow.host_id).filter(HostFollow.assigned_at.isnot(None))
+    critical_window = (
+        (V.created_at > _T0) & func.lower(cast(V.severity, String)).in_(["critical"])
+    )
+    return {
+        "issue": (P.issue_predicate([facts["issue"]]),
+                  _old_vuln_in(db, pid, V.issue_key.in_([facts["issue"]]))),
+        "cve": (P.cve_predicate(["cve-2021"]), _old_vuln_in(db, pid, V.cve_id.ilike("%cve-2021%"))),
+        "vuln": (P.vuln_predicate(["log4"]), _old_vuln_in(db, pid, V.title.ilike("%log4%"))),
+        "severity": (P.severity_predicate(["critical", "high"]),
+                     _old_vuln_in(db, pid, V.severity.in_(["CRITICAL", "HIGH"]))),
+        "kind misconfiguration": (P.kind_predicate(["misconfiguration"]),
+                                  _old_vuln_in(db, pid, V.check_id.isnot(None))),
+        "kind informational": (P.kind_predicate(["informational"]),
+                               _old_vuln_in(db, pid, V.check_id.is_(None), V.severity == "INFO")),
+        "check": (P.check_predicate(["smb_signing_not_required"]),
+                  _old_vuln_in(db, pid, V.check_id.in_(["smb_signing_not_required"]))),
+        "exploit": (P.has_exploit_predicate(), _old_vuln_in(db, pid, V.exploitable.is_(True))),
+        "critical exploit": (
+            P.critical_exploit_predicate(),
+            _old_vuln_in(db, pid, V.exploitable.is_(True), V.severity == VulnerabilitySeverity.CRITICAL)),
+        "exploitport": (
+            P.exploit_on_port_predicate([445]),
+            _old_vuln_in(db, pid, V.exploitable.is_(True), models.Port.port_number.in_([445]),
+                         joins=[(models.Port, models.Port.id == V.port_id)])),
+        "vuln window": (P.vuln_window_predicate(_T0, None, ["critical"]),
+                        _old_vuln_in(db, pid, critical_window)),
+        "changed window": (
+            P.changed_window_predicate(_T0),
+            (models.Host.first_seen <= _T0) & (
+                models.Host.id.in_(db.query(models.Port.host_id).filter(models.Port.first_seen > _T0).distinct())
+                | _old_vuln_in(db, pid, V.created_at > _T0))),
+        "has notes": (
+            P.has_notes_predicate(),
+            models.Host.id.in_(
+                db.query(Annotation.host_id).join(H1, H1.id == Annotation.host_id)
+                .filter(H1.project_id == pid, Annotation.host_id.isnot(None))
+                .union(
+                    db.query(models.Port.host_id)
+                    .join(Annotation, Annotation.port_id == models.Port.id)
+                    .join(H2, H2.id == models.Port.host_id).filter(H2.project_id == pid)))),
+        "note": (
+            P.note_predicate(["rotate"]),
+            models.Host.id.in_(
+                db.query(Annotation.host_id).join(H3, H3.id == Annotation.host_id)
+                .filter(H3.project_id == pid, Annotation.body.ilike("%rotate%")).distinct())),
+        "tested": (P.has_test_execution_predicate(pid), models.Host.id.in_(tested_host_ids(pid))),
+        "planned": (P.has_plan_entry_predicate(pid), models.Host.id.in_(planned_host_ids(pid))),
+        "local admin": (
+            P.local_admin_predicate(),
+            models.Host.id.in_(
+                db.query(NetexecResult.host_id).join(H4, NetexecResult.host_id == H4.id)
+                .filter(H4.project_id == pid, NetexecResult.local_admin.is_(True)))),
+        "writable share": (
+            P.writable_share_predicate(),
+            models.Host.id.in_(
+                db.query(NetexecResult.host_id).filter(NetexecResult.writable_share.is_(True)))),
+        "smb unsigned": (
+            P.smb_unsigned_predicate(),
+            models.Host.id.in_(
+                db.query(H1.id).filter(H1.project_id == pid, H1.smb_signing.in_(("disabled", "not_required"))))),
+        "tag name": (
+            P.tag_predicate_by_name(["CROWN"], pid),
+            models.Host.id.in_(
+                db.query(models.HostTagAssignment.host_id)
+                .join(models.HostTag, models.HostTag.id == models.HostTagAssignment.tag_id)
+                .filter(models.HostTag.project_id == pid, func.lower(models.HostTag.name).in_(["crown"]))
+                .distinct())),
+        "label id": (P.label_predicate_by_id([facts["label"]], pid),
+                     _old_labelled_in(db, pid, models.SubnetLabelAssignment.label_id.in_([facts["label"]]))),
+        "label name": (P.label_predicate_by_name(["dmz"], pid),
+                       _old_labelled_in(db, pid, func.lower(models.SubnetLabel.name).in_(["dmz"]))),
+        "site none": (
+            P.site_none_predicate(pid),
+            models.Host.id.in_(mapped.distinct()) & models.Host.id.notin_(
+                mapped.filter(func.trim(func.coalesce(Subnet.site, "")) != "").distinct())),
+        "follow in_review": (P.follow_predicate("in_review", user),
+                             _old_follow_in(db, HostFollow.status == "in_review")),
+        "follow reviewed": (P.follow_predicate("reviewed", user),
+                            _old_follow_in(db, HostFollow.status == "reviewed")),
+        "follow mine": (P.follow_predicate("mine", user),
+                        _old_follow_in(db, HostFollow.user_id == user.id, HostFollow.status == "in_review")),
+        "follow watching": (P.follow_predicate("watching", user),
+                            _old_follow_in(db, HostFollow.user_id == user.id, HostFollow.status == "watching")),
+        "conclusion": (
+            P.review_conclusion_predicate(["needs_evidence"]),
+            _old_follow_in(db, HostFollow.status == "reviewed",
+                           HostFollow.review_conclusion.in_(["needs_evidence"]))),
+        "assigned any": (P.assigned_predicate(db, "any", user), models.Host.id.in_(assigned)),
+        "assigned none": (P.assigned_predicate(db, "none", user), ~models.Host.id.in_(assigned)),
+        "assigned me": (
+            P.assigned_predicate(db, "me", user),
+            _old_follow_in(db, HostFollow.user_id == user.id, HostFollow.assigned_at.isnot(None))),
+        "assigned by name": (
+            P.assigned_predicate(db, "WIDE-OTHER", user),
+            _old_follow_in(db, HostFollow.user_id != user.id, HostFollow.assigned_at.isnot(None))),
+        "scan": (P.scan_predicate([facts["new_scan"]]), models.Host.id.in_(in_scan)),
+        "scan first seen": (
+            P.scan_predicate([facts["new_scan"]], first_seen_only=True),
+            models.Host.id.in_(in_scan.filter(~exists().where(
+                (earlier.host_id == models.HostScanHistory.host_id)
+                & (earlier.discovered_at < models.HostScanHistory.discovered_at))))),
+        "org": (P.attribution_org_predicate(["acme"]),
+                _old_attributed_in(db, NetworkAttribution.org_name.ilike("%acme%"))),
+        "asn": (P.attribution_asn_predicate(["AS64500"]),
+                _old_attributed_in(db, NetworkAttribution.asn.in_([64500]))),
+        "country": (P.attribution_country_predicate(["us"]),
+                    _old_attributed_in(db, func.upper(NetworkAttribution.country).in_(["US"]))),
+        "cloud": (P.attribution_cloud_predicate(["aws"]),
+                  _old_attributed_in(db, func.lower(NetworkAttribution.cloud_provider).in_(["aws"]))),
+        "cloud none": (P.attribution_cloud_predicate(["none"]),
+                       _old_attributed_in(db, NetworkAttribution.cloud_provider.is_(None))),
+        "certorg": (
+            P.cert_org_predicate(["acme"]),
+            models.Host.id.in_(
+                db.query(models.WebInterface.host_id)
+                .filter(models.WebInterface.cert_subject_org.ilike("%acme%")).distinct())),
+    }
+
+
+_WIDE_NAMES = [
+    "issue", "cve", "vuln", "severity", "kind misconfiguration", "kind informational", "check",
+    "exploit", "critical exploit", "exploitport", "vuln window", "changed window", "has notes",
+    "note", "tested", "planned", "local admin", "writable share", "smb unsigned", "tag name",
+    "label id", "label name", "site none", "follow in_review", "follow reviewed", "follow mine",
+    "follow watching", "conclusion", "assigned any", "assigned none", "assigned me",
+    "assigned by name", "scan", "scan first seen", "org", "asn", "country", "cloud", "cloud none",
+    "certorg",
+]
+
+
+@pytest.mark.parametrize("name", _WIDE_NAMES)
+def test_converted_predicates_select_what_the_in_form_selected(db_session, test_user, wide_estate, name):
+    pid, other_id, _other_user, facts = wide_estate
+    for project_id in (pid, other_id):
+        pairs = _wide_pairs(db_session, project_id, test_user, facts[project_id])
+        assert set(pairs) == set(_WIDE_NAMES)
+        new, old = pairs[name]
+        selected = _ids(db_session, project_id, new)
+        assert selected == _ids(db_session, project_id, old), name
+        assert 0 < len(selected) < _WIDE_HOSTS, name     # the fixture really tells hosts apart
+        # … and negated the way the DSL negates (an unknown child reads as
+        # false), where NOT IN and NOT EXISTS would part ways.
+        negated = _ids(db_session, project_id, negate(new))
+        assert negated == _ids(db_session, project_id, ~old), name
+        assert len(negated) == _WIDE_HOSTS - len(selected), name
+
+
+@pytest.mark.parametrize("q", [
+    "NOT has:critical", "NOT cve:CVE-2021", "has:notes OR has:exploit", "NOT has:tested",
+    "NOT has:planned", "NOT has:local_admin", "follow:in_review OR follow:reviewed", "NOT follow:mine",
+    "assigned:none", "NOT assigned:any", "NOT conclusion:needs_evidence", "NOT org:acme",
+    "NOT country:US", "NOT asn:64500", "NOT certorg:acme", "NOT tag:crown", "NOT label:dmz",
+    "site:none", 'NOT issue:"cve:CVE-2021-44228"', "NOT kind:misconfiguration",
+    "NOT check:smb_signing_not_required", "NOT exploitport:445", "NOT note:rotate",
+    'changedsince:"2026-01-01T00:00:00Z"', 'NOT vulnsince:"critical@2026-01-01T00:00:00Z"',
+])
+def test_converted_filters_never_reach_postgres_as_in_or_not_in(db_session, test_user, wide_estate, q):
+    pid, _other_id, _other_user, facts = wide_estate
+    query = build_filtered_host_query(db_session, test_user, project_id=pid, q=q).with_entities(models.Host.id)
+    sql = str(query.statement.compile(dialect=db_session.get_bind().dialect))
+    assert "EXISTS (SELECT" in sql, sql
+    assert " IN (SELECT" not in sql, sql
+    # Reached through the outer query's hosts: no subquery re-joins hosts.
+    assert sql.count("FROM hosts_v2") == 1 and "JOIN hosts_v2" not in sql, sql
+    query.all()
+
+
+def test_discrete_filters_reach_postgres_as_exists_too(db_session, test_user, wide_estate):
+    pid, _other_id, _other_user, facts = wide_estate
+    query = build_filtered_host_query(
+        db_session, test_user, project_id=pid,
+        has_critical_vulns=True, has_exploit_available=True, has_test_execution=True,
+        with_notes_only=True, follow_status="in_review", assigned_to="any",
+        scan_ids=str(facts[pid]["new_scan"]), first_seen_in_scan=True,
+        subnet_labels=str(facts[pid]["label"]), orgs=["acme"], asns=["64500"], countries=["US"],
+        checks="smb_signing_not_required", out_of_scope_only=True,
+    ).with_entities(models.Host.id)
+    sql = str(query.statement.compile(dialect=db_session.get_bind().dialect))
+    assert " IN (SELECT" not in sql, sql
+    assert "JOIN hosts_v2" not in sql and "LEFT OUTER JOIN" not in sql, sql
+    query.all()
+
+
+#: The four flags that resolve an id set in Python (latest observation wins)
+#: and pass it as a literal list — not a subquery.
+_ID_SET_PREDICATES = {"eol_os_predicate", "cert_issue_predicate", "weak_auth_predicate", "weak_tls_predicate"}
+
+
+def test_no_host_predicate_is_an_in_subquery_any_more():
+    """A host predicate over a child table is a correlated EXISTS.  A new
+    ``Host.id.in_(…)`` in the predicate module is a predicate that runs its
+    subquery over every project's rows under OR or NOT — write it with
+    ``_host_has`` / ``host_has_port``."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(P))
+    offenders = []
+    for function in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        source = ast.unparse(function)
+        if function.name in _ID_SET_PREDICATES:
+            continue
+        if "Host.id.in_(" in source or "Host.id.notin_(" in source or "Host.id.not_in(" in source:
+            offenders.append(function.name)
+    assert offenders == []
+    for name in _ID_SET_PREDICATES:
+        assert "Host.id.in_(ids)" in inspect.getsource(getattr(P, name)), name
 
 
 # ---------------------------------------------------------------------------

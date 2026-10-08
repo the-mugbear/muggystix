@@ -18,7 +18,7 @@
 
 | Reference | CVSS score | Vector | Status |
 |:------------|:------------|:----------------------------------------|:----------------|
-| << f.ref >> | << "%.1f"|format(f.cvss_score) if f.cvss_score is not none else "Not scored" >> | << f.cvss_vector or "—" >> | << f.status_note or "Confirmed" >> |
+| << f.ref or "—" >> | << "%.1f"|format(f.cvss_score) if f.cvss_score is not none else "Not scored" >> | << f.cvss_vector or "—" >> | << f.status_note or "Confirmed" >> |
 
 << h3|safe >> Affected system(s)
 

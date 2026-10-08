@@ -30,6 +30,7 @@ from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.api.deps import (
     AGENT_SESSION_RENEW_PATH,
+    agent_session_metadata_write,
     authenticate_for_renewal,
     check_agent_rate_limit,
     session_renewal_deadline,
@@ -53,9 +54,11 @@ from app.api.v1.endpoints.agent_schemas import (
     AgentToolSuggestionRequest, AgentToolSuggestionResponse,
 )
 from app.api.v1.endpoints.agent_common import (
-    PORTS_PARAM_HELP, SERVICES_PARAM_HELP,
-    apply_agent_host_filters, batch_host_enrichment, load_agent_session,
+    PORTS_PARAM_HELP, SEARCH_PARAM_HELP, SERVICES_PARAM_HELP, SEVERITY_FLAGS_HELP,
+    STATE_PARAM_HELP, SUBNETS_PARAM_HELP,
+    batch_host_enrichment, check_host_filters, load_agent_session,
 )
+from app.services.host_query import build_filtered_host_query
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -153,6 +156,10 @@ class SessionEndResponse(BaseModel):
 
 @router.post(
     "/session/end",
+    # Ending one's own session is lifecycle bookkeeping: an auditor can start
+    # a session and must be able to end it.  Ownership (the key identifies its
+    # own session) is in close_agent_session_from_agent.
+    dependencies=[Depends(agent_session_metadata_write)],
     response_model=SessionEndResponse,
     summary="End this session — the LAST call you make (revokes your key)",
 )
@@ -191,6 +198,9 @@ def end_own_session(
 
 @renewal_router.post(
     "/session/renew",
+    # This router is mounted outside the operator gate; declared so that it
+    # would not become a project write if it were ever moved under it.
+    dependencies=[Depends(agent_session_metadata_write)],
     response_model=SessionRenewResponse,
     summary="Extend this key's deadline (accepts an already-expired key)",
 )
@@ -271,10 +281,8 @@ def get_agent_identity(
         else None
     )
 
-    # Same resolution the access gate uses, including the ``Agent.owner_id``
-    # fallback — reporting no operator for a key the gate is happily checking
-    # against one would make this endpoint disagree with the thing it describes.
-    operator_id = getattr(request.state, "key_operator_id", None) or agent.owner_id
+    # The operator the access gate checked — this endpoint describes that gate.
+    operator_id = request.state.key_operator_id
     is_global_admin = bool(getattr(request.state, "key_operator_is_admin", False))
     project_role = getattr(request.state, "key_operator_role", None)
     operator = None
@@ -315,6 +323,7 @@ def get_agent_identity(
 
 @router.post(
     "/tool-suggestions",
+    dependencies=[Depends(agent_session_metadata_write)],
     response_model=AgentToolSuggestionResponse,
     status_code=201,
     summary="Suggest a tool for BlueStick's catalogue",
@@ -413,12 +422,12 @@ def get_dashboard(
 @router.get("/hosts", response_model=List[HostBrief], summary="List hosts")
 def list_hosts(
     request: Request,
-    state: Optional[str] = Query(None),
+    state: Optional[str] = Query(None, description=STATE_PARAM_HELP),
     ports: Optional[str] = Query(None, description=PORTS_PARAM_HELP),
     services: Optional[str] = Query(None, description=SERVICES_PARAM_HELP),
-    subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
-    has_critical_vulns: Optional[bool] = Query(None),
-    has_high_vulns: Optional[bool] = Query(None),
+    subnets: Optional[str] = Query(None, description=SUBNETS_PARAM_HELP),
+    has_critical_vulns: Optional[bool] = Query(None, description=SEVERITY_FLAGS_HELP),
+    has_high_vulns: Optional[bool] = Query(None, description=SEVERITY_FLAGS_HELP),
     has_exploit_available: Optional[bool] = Query(
         None,
         description=(
@@ -430,15 +439,16 @@ def list_hosts(
             "persisted so this filter would have matched nothing."
         ),
     ),
-    search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
+    search: Optional[str] = Query(None, description=SEARCH_PARAM_HELP),
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    q = db.query(models.Host).filter(models.Host.project_id == agent.project_id)
-    q = apply_agent_host_filters(
-        q, db, project_id=agent.project_id,
+    check_host_filters(state=state, ports=ports, services=services, subnets=subnets)
+    # The Hosts page's own assembly; nothing here is judged for a person.
+    q = build_filtered_host_query(
+        db, None, project_id=request.state.agent_project_id,
         state=state, ports=ports, services=services, subnets=subnets,
         has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
         has_exploit_available=has_exploit_available,
@@ -530,23 +540,24 @@ def list_scans(
     q = db.query(models.Scan).filter(models.Scan.project_id == agent.project_id)
     # v2.85.0 — same filter surface as the user-side /scans endpoint, so
     # an agent that already understands the page can replicate its
-    # narrowing without an extra query/round-trip.  ``created_after``
-    # accepts any ISO-8601 string SQLAlchemy can compare to a TZ-aware
-    # column; malformed input returns no rows rather than 400 so the
-    # agent can ratchet the filter without first probing format.
+    # narrowing without an extra query/round-trip.
     if tool:
         from app.services.host_query_common import escape_like
         q = q.filter(models.Scan.tool_name.ilike(f"%{escape_like(tool)}%", escape='\\'))
     if created_after:
-        from datetime import datetime
+        # A value that is not a timestamp is refused by name: an empty list
+        # would read as "no scans since then".
         try:
-            cutoff = datetime.fromisoformat(created_after.replace("Z", "+00:00"))
-            q = q.filter(models.Scan.created_at >= cutoff)
-        except (ValueError, TypeError):
-            # Pin to no-results rather than 400 — keep the contract
-            # symmetric with the rest of the agent surface (which favors
-            # quiet empty responses over surfacing validation errors).
-            return []
+            cutoff = datetime.fromisoformat(created_after.strip().replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"created_after must be an ISO-8601 timestamp "
+                    f"(2026-10-08 or 2026-10-08T14:30:00Z); not understood: {created_after!r}."
+                ),
+            )
+        q = q.filter(models.Scan.created_at >= cutoff)
     _SORT_COLUMNS = {
         "created_at": models.Scan.created_at,
         "filename": models.Scan.filename,
@@ -642,7 +653,7 @@ def create_agent_note(
     svc = HostFollowService(db)
     note = svc.create_note(
         host_id,
-        agent.owner_id,
+        request.state.key_operator_id,
         body.body,
         actor_type=ActorType.AGENT.value,
         agent_session_id=getattr(request.state, "agent_session_id", None),
@@ -725,7 +736,7 @@ def set_agent_follow(
     # enum otherwise lacks, so an agent that set a status can undo it rather
     # than being stuck at watching/in_review/reviewed forever (v2.315.0).
     if body.status in ("none", "clear"):
-        svc.unfollow(host_id, agent.owner_id)
+        svc.unfollow(host_id, request.state.key_operator_id)
         return
 
     try:
@@ -733,7 +744,7 @@ def set_agent_follow(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid follow status: {body.status}")
 
-    svc.set_follow_status(host_id, agent.owner_id, follow_status)
+    svc.set_follow_status(host_id, request.state.key_operator_id, follow_status)
 
 
 @router.patch(

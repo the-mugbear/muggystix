@@ -5,11 +5,13 @@ installed by copying them into ``report-templates/<name>/`` on the server —
 a folder mounted READ-ONLY into the backend and report worker.  Uploading from
 the Reports page writes them here instead:
 
-    <UPLOAD_DIR>/template_assets/<template>/<asset id><ext>   the file
-    <UPLOAD_DIR>/template_assets/<template>/<asset id>.json   who, when, size
+    <UPLOAD_DIR>/template_assets/<template>/<asset id>.<hash><ext>   the file
+    <UPLOAD_DIR>/template_assets/<template>/<asset id>.json          who, when, size, which file
 
 The metadata file is written last and removed first, so a file without one is
-never used.  Each upload writes its own temporary files (``.<asset id>.<random>
+never used; it NAMES its file, whose name carries the start of the content's
+SHA-256, so a reader never pairs one upload's metadata with another's bytes
+(an upload stored before that is ``<asset id><ext>`` and still read).  Each upload writes its own temporary files (``.<asset id>.<random>
 .tmp``) and publishes file and metadata under a per-asset ``flock``
 (``.<asset id>.lock``, shared by every API worker; ``remove`` takes it too) —
 neither is ever listed as an upload.  ``uploads/`` is already backed up (``backup-db.sh``) and carried
@@ -103,17 +105,37 @@ def uploads(template_name: str) -> Dict[str, dict]:
         asset_id = meta_path.stem
         if not _ASSET_ID.match(asset_id):
             continue
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        kind = meta.get("kind")
-        if kind not in _EXT:
-            continue
-        stored = folder / f"{asset_id}{_EXT[kind]}"
-        if stored.is_file() and not stored.is_symlink():
-            out[asset_id] = {**meta, "file": stored}
+        # Twice at most: a replacement swaps the metadata and then removes the
+        # file the old metadata named, so a file that is gone means "read the
+        # metadata again", not "nothing is uploaded".
+        for _attempt in range(2):
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                break
+            kind = meta.get("kind") if isinstance(meta, dict) else None
+            if kind not in _EXT:
+                break
+            stored = folder / _stored_name(asset_id, kind, meta)
+            if stored.is_file() and not stored.is_symlink():
+                out[asset_id] = {**meta, "file": stored}
+                break
     return out
+
+
+def _stored_name(asset_id: str, kind: str, meta: dict) -> str:
+    """The file an upload's metadata names.  The name carries the start of
+    the content's SHA-256 (``logo.3f9a….png``), so metadata and bytes are a
+    pair by construction: replacing an upload writes a NEW file and then
+    swaps the metadata, and a reader can never see one upload's metadata with
+    another's bytes.  An upload stored before the name carried the hash is
+    ``<asset id><ext>``."""
+    named = meta.get("stored")
+    if isinstance(named, str) and re.fullmatch(
+        re.escape(asset_id) + r"\.[0-9a-f]{16}" + re.escape(_EXT[kind]), named,
+    ):
+        return named
+    return f"{asset_id}{_EXT[kind]}"
 
 
 def overrides(template_name: str) -> Dict[str, Path]:
@@ -277,12 +299,18 @@ def _clean_filename(name: Optional[str]) -> str:
 def save(template_name: str, asset: dict, data: bytes, *, uploaded_by: str,
          original_filename: Optional[str] = None) -> Tuple[dict, List[str]]:
     """Validate and store an upload (replacing a previous one), atomically:
-    the file first, the metadata that makes it count last."""
+    the file first — under a name of its own, taken from its content — then
+    the metadata that names it, which is what makes it count; the file a
+    previous upload left is removed last.  A reader (no lock) therefore sees
+    the old pair or the new pair, never one's metadata with the other's
+    bytes."""
     facts, warnings = validate(asset, data)
-    stored, meta_path = _paths(template_name, asset["id"], facts["kind"])
-    stored.parent.mkdir(parents=True, exist_ok=True)
+    legacy, meta_path = _paths(template_name, asset["id"], facts["kind"])
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    stored = legacy.with_name(f"{asset['id']}.{facts['sha256'][:16]}{_EXT[facts['kind']]}")
     meta = {
         **facts,
+        "stored": stored.name,
         "original_filename": _clean_filename(original_filename),
         "uploaded_by": uploaded_by,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
@@ -298,6 +326,11 @@ def save(template_name: str, asset: dict, data: bytes, *, uploaded_by: str,
         with _publication_lock(template_name, asset["id"]):
             os.replace(tmp_file, stored)
             os.replace(tmp_meta, meta_path)
+            # What earlier uploads of this asset left (any kind, either
+            # naming): nothing names them any more.
+            for old in stored.parent.glob(f"{asset['id']}.*"):
+                if old not in (stored, meta_path) and old.suffix in _EXT.values():
+                    old.unlink(missing_ok=True)
     finally:
         tmp_file.unlink(missing_ok=True)  # only still there when it failed
         if tmp_meta is not None:

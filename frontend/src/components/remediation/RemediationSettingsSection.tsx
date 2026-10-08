@@ -7,8 +7,10 @@
  * must fix them, each with a deadline that follows from its severity, and
  * admins are told when one is close to or past it.
  *
- * The switch applies at once (like a preference); the days are a form with
- * its own Save, because changing them moves every open deadline.
+ * The switch applies at once (like a preference); the days and the time zone
+ * are a form with its own Save, because changing them moves every open
+ * deadline.  The zone decides which calendar day is "today" on the server —
+ * this page never works a state out itself.
  */
 import React, { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
@@ -29,10 +31,27 @@ const MAX_DAYS = 3650;
 
 type Draft = Record<string, string>;
 
+const zoneOf = (policy: RemediationPolicy): string => policy.time_zone || 'UTC';
+
 const draftOf = (policy: RemediationPolicy): Draft => ({
   ...Object.fromEntries(SEVERITIES.map((s) => [s, policy.days[s] == null ? '' : String(policy.days[s])])),
   due_soon: String(policy.due_soon_days),
+  time_zone: zoneOf(policy),
 });
+
+/** Why a time zone cannot be saved, or null.  A first check only: the server
+ *  decides which names it knows. */
+export const zoneProblem = (raw: string | undefined): string | null => {
+  const name = (raw ?? '').trim();
+  const problem = 'Time zone: an IANA name such as UTC, Europe/Paris or America/Los_Angeles.';
+  if (name === '' || name.length > 64 || !/^[A-Za-z0-9_+\-/]+$/.test(name)) return problem;
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: name });
+    return null;
+  } catch {
+    return problem;
+  }
+};
 
 /** Why a field cannot be saved, or null.  Empty days = no deadline. */
 export const daysProblem = (draft: Draft): string | null => {
@@ -86,16 +105,20 @@ export const RemediationSettingsSection: React.FC = () => {
     }
   };
 
-  const problem = draft ? daysProblem(draft) : null;
+  const problem = draft ? (daysProblem(draft) ?? zoneProblem(draft.time_zone)) : null;
   const dirty = !!policy && !!draft && JSON.stringify(draft) !== JSON.stringify(draftOf(policy));
 
   const saveDays = async () => {
-    if (!draft || problem) return;
+    if (!draft || !policy || problem) return;
     setBusy('days');
     try {
+      const zone = draft.time_zone.trim();
       saved(await updateRemediationPolicy({
         days: Object.fromEntries(SEVERITIES.map((s) => [s, draft[s].trim() === '' ? null : Number(draft[s])])),
         due_soon_days: Number(draft.due_soon),
+        // Sent only when it changed: the days are one form, the zone moves
+        // every state at once and should not ride along unnoticed.
+        ...(zone !== zoneOf(policy) ? { time_zone: zone } : {}),
       }));
       toast.success('Timelines saved. Open deadlines now follow them.');
     } catch (err) {
@@ -153,6 +176,16 @@ export const RemediationSettingsSection: React.FC = () => {
             <p className="mt-xs text-caption text-muted-foreground">
               All in days. Empty means no deadline for that severity; “Warn before” is how close to its deadline a finding counts as due soon. A change applies to every finding still open; one already closed keeps the deadline it was closed against.
             </p>
+            <div className="mt-sm max-w-xs min-w-0">
+              <Label htmlFor="ss-remediation-zone"
+                title="The time zone whose calendar day is today for every deadline">Time zone</Label>
+              <Input id="ss-remediation-zone" value={draft.time_zone} maxLength={64} spellCheck={false}
+                autoComplete="off" placeholder="UTC" aria-describedby="ss-remediation-zone-hint"
+                onChange={(e) => setDraft({ ...draft, time_zone: e.target.value })} />
+              <p id="ss-remediation-zone-hint" className="mt-xs text-caption text-muted-foreground">
+                An IANA name, such as Europe/Paris. A deadline passes when the day ends there.
+              </p>
+            </div>
             {problem && dirty && <p role="alert" className="mt-xs text-caption text-destructive">{problem}</p>}
             {dirty && (
               <div className="mt-sm flex items-center gap-xs">

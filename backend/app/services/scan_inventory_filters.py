@@ -11,6 +11,7 @@ from __future__ import annotations
 from sqlalchemy import func
 
 from app.db import models
+from app.services.host_query_common import escape_like
 
 
 def apply_scan_inventory_filters(query, *, search, tool, created_after, uploaded_by=None):
@@ -21,11 +22,13 @@ def apply_scan_inventory_filters(query, *, search, tool, created_after, uploaded
     ``models.Scan`` is part of the query's FROM clause.
     """
     if search and search.strip():
-        needle = f"%{search.strip()}%"
+        # ``%`` and ``_`` in the term are text, not wildcards: file names are
+        # full of underscores.
+        needle = f"%{escape_like(search.strip())}%"
         query = query.filter(
-            (models.Scan.filename.ilike(needle))
-            | (models.Scan.tool_name.ilike(needle))
-            | (models.Scan.scan_type.ilike(needle))
+            (models.Scan.filename.ilike(needle, escape="\\"))
+            | (models.Scan.tool_name.ilike(needle, escape="\\"))
+            | (models.Scan.scan_type.ilike(needle, escape="\\"))
         )
     if tool and tool.strip():
         tool_lower = tool.strip().lower()

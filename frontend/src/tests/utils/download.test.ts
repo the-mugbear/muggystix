@@ -2,8 +2,6 @@
  * One copy of "save this as a file" (the object-URL sequence was written out a
  * dozen times), and the file names each export gives must not change.
  */
-import fs from 'node:fs';
-import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { downloadTextFile as fromClipboard } from '../../utils/clipboard';
@@ -65,20 +63,5 @@ describe('filenameFromContentDisposition', () => {
   });
 });
 
-// The sequence lives in utils/download only.  (`createObjectURL` for showing
-// an image in the page is a different job and stays where it is.)
-describe('no export writes the download sequence by hand', () => {
-  const SRC = path.resolve(__dirname, '../..');
-  const files = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) return entry.name === 'tests' ? [] : files(full);
-    return /\.tsx?$/.test(entry.name) ? [full] : [];
-  });
-
-  it('only utils/download sets a link’s download name', () => {
-    const offenders = files(SRC)
-      .filter((file) => /\.download\s*=/.test(fs.readFileSync(file, 'utf8')))
-      .map((file) => path.relative(SRC, file));
-    expect(offenders).toEqual(['utils/download.ts']);
-  });
-});
+// That the sequence lives in utils/download only — nothing else sets a link's
+// download name — is a lint rule (`npm run lint`, eslint.config.mjs).

@@ -6,7 +6,7 @@ a durable, roll-up-able record.  The annotation thread stays as the
 finding's evidence/discussion; the Finding carries severity + disposition +
 owner + the cross-host M2M.
 """
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import func, case, select, asc, desc
@@ -42,6 +42,10 @@ _TERMINAL_STATUSES = {
 # exactly. Kept here so posture's active counts and the Findings list it links
 # to share one definition.
 _ACTIVE_STATUSES = set(ACTIVE_FINDING_STATUSES)
+
+#: What a promotion does to the status of a finding the issue already has
+#: (``FindingService.promote_vulnerability``).
+_ON_JOIN = ("set", "confirm", "keep")
 
 #: Endpoints a findings LIST row carries (review 2026-10-01 C2).  The row's
 #: ``host_count`` is the true total; the finding's own page has them all.
@@ -213,11 +217,9 @@ class FindingService:
         status: str = FindingStatus.CONFIRMED.value,
         owner_id: Optional[int] = None,
         summary: Optional[str] = None,
-        only_this_host: bool = False,
         host_ids: Optional[Sequence[int]] = None,
-        confirm_only_on_join: bool = False,
-        keep_status_on_join: bool = False,
-    ) -> Finding:
+        on_join: str = "set",
+    ) -> Tuple[Finding, bool]:
         """Promote a scanner vulnerability into a Finding (references, never
         copies — Finding.vuln_id).  Severity defaults to the vuln's own
         severity (``unknown`` → ``info``, since findings have no unknown).
@@ -225,89 +227,117 @@ class FindingService:
         promote-then-dismiss can't fork two findings for one vuln — pass a
         terminal ``status`` (false_positive / accepted_risk) to dismiss.
 
-        ``only_this_host`` (v2.366.0): attach the row's OWN host instead of
-        every host carrying the issue.  The finding is still the ISSUE's — one
-        per ``dedup_key`` — so promoting the same issue later from another host
+        Returns ``(finding, created)``: ``created`` is False when the call
+        joined the issue's existing finding — found by the lookup, or the
+        winner of a concurrent insert.
+
+        ``host_ids``: attach exactly these hosts instead of every host
+        carrying the issue.  A host-scoped promotion passes the row's own
+        host (v2.366.0), the bulk promotion from the Scanner observations
+        list the hosts the operator ticked (v2.386.0; the caller checks they
+        carry the issue).  The finding is still the ISSUE's — one per
+        ``dedup_key`` — so promoting the same issue later from another host
         joins this finding rather than forking one.  What it changes is the
-        claim: "confirmed" is recorded for the host that was looked at, not for
-        hosts nobody has verified.  The others stay untriaged scanner
+        claim: "confirmed" is recorded for the hosts that were looked at, not
+        for hosts nobody has verified.  The others stay untriaged scanner
         observations that say "Finding #N covers other hosts only".
 
-        ``host_ids`` (v2.386.0): exactly these hosts — the bulk promotion from
-        the Scanner observations list, where the operator ticked the hosts
-        they verified.  The caller checks they carry the issue.
+        ``on_join`` — what happens to the status of a finding the issue
+        already has:
 
-        ``confirm_only_on_join`` (review 2026-10-01 R9): when the issue already
-        has a finding, the only status change made is open / retest →
-        confirmed.  A concluded finding (accepted risk, remediated, false
-        positive) is joined as it stands and a confirmed one is never taken
-        back to open.  For callers that record a result on ONE host — a test's
-        evidence — and are not re-judging the issue.  The explicit promote /
-        dismiss click leaves it off: there the person chose the status.
+        * ``"set"`` — it takes ``status``.  The promote / dismiss click and an
+          accepted proposal: there the person chose the status.
+        * ``"confirm"`` (review 2026-10-01 R9) — the only change made is open
+          / retest → confirmed.  A concluded finding (accepted risk,
+          remediated, false positive) is joined as it stands and a confirmed
+          one is never taken back to open.  For callers that record a result
+          on ONE host — a test's evidence — and are not re-judging the issue.
+        * ``"keep"`` — joined exactly as it stands.  The bulk promotion,
+          which says an issue's finding is never re-statused by it; the
+          caller cannot make that true by passing the status it read earlier,
+          because the finding may have been created since.
 
-        ``keep_status_on_join``: an existing finding is joined exactly as it
-        stands — no status change at all.  The bulk promotion, which says an
-        issue's finding is never re-statused by it; the caller cannot make
-        that true by passing the status it read earlier, because the finding
-        may have been created since.
-
-        ``self.last_promotion_created`` says, after the call, whether THIS
-        call made the finding (False: it joined one — found by the lookup, or
-        the winner of a concurrent insert).
+        Unless the call is a false-positive dismissal, the results of tests
+        that confirmed this issue on the attached hosts are linked to the
+        finding (``link_issue_evidence``), so it shows what demonstrated it
+        whichever way it was promoted.  Those evidence rows are locked BEFORE
+        the finding is looked up or inserted — the one lock order of every
+        path that makes an issue's finding (``create_finding_from_evidence``
+        locks the evidence first too); the opposite order deadlocked.
         """
-        self.last_promotion_created = False
-        def _hosts_for(v, k):
-            if host_ids is not None:
-                return list(host_ids)
-            if only_this_host:
-                return [v.host_id] if v.host_id else []
-            return self._issue_host_ids(v, project_id, k)
-
-        raw = severity or getattr(vuln.severity, "value", vuln.severity) or "medium"
-        sev = "info" if str(raw).lower() == "unknown" else str(raw).lower()
-        validate_severity(sev)
+        if on_join not in _ON_JOIN:
+            raise ValueError(f"on_join must be one of {_ON_JOIN}")
+        sev = self._scanner_severity(vuln, severity)
         _validate_status(status)
 
         # Identity of the ISSUE, not of the scanner row — see vuln_identity.
         # This is what makes the Nessus row and the GreenBone row for one
         # problem converge on a single finding.
         key = issue_key_for(vuln)
+        hosts = list(host_ids) if host_ids is not None else self._issue_host_ids(vuln, project_id, key)
 
-        def _join(existing: Finding) -> Finding:
-            # Record this scanner's row as evidence even when the finding
-            # already existed; corroboration is the thing worth keeping.
-            self.attach_vulnerability(finding=existing, vuln=vuln)
-            # A second scanner may see the issue on hosts the first one missed.
-            self._attach_hosts(
-                existing, _hosts_for(vuln, key),
-                names_by_host=self._vuln_names_by_host(vuln),
-            )
-            # Already promoted — if the caller is dismissing/redispositioning,
-            # honour the new status rather than silently returning stale.
-            # R9: a one-host result may only confirm a finding still under
-            # investigation; it never reopens, un-concludes or downgrades.
-            may_move = not keep_status_on_join and (not confirm_only_on_join or (
-                status == FindingStatus.CONFIRMED.value
-                and existing.status in (FindingStatus.OPEN.value, FindingStatus.RETEST.value)
-            ))
-            if status != existing.status and may_move:
-                self.set_status(finding=existing, status=status, actor_id=actor_id,
-                                summary=summary or "Re-dispositioned scanner finding")
-            self.db.flush()
-            return existing
+        links_evidence = status != FindingStatus.FALSE_POSITIVE.value
+        if links_evidence:
+            from app.services.agent_evidence_service import link_issue_evidence, lock_issue_evidence
+
+            lock_issue_evidence(self.db, host_ids=hosts, issue_key=key)
 
         # A different scanner may already have promoted this same issue.
-        # Attach to that finding as corroborating evidence instead of forking
-        # a second record — which is what produced two entries in the client
-        # report for one problem.
+        # Joining that finding as corroborating evidence instead of forking a
+        # second record is what keeps one entry in the client report for one
+        # problem.
+        finding, created = self._get_or_create_scanner_finding(
+            vuln, project_id, key, severity=sev, status=status,
+            owner_id=owner_id, actor_id=actor_id,
+        )
+        # Record this scanner's row as evidence even when the finding already
+        # existed (corroboration is the thing worth keeping); a second
+        # scanner may also see the issue on hosts the first one missed.
+        self.attach_vulnerability(finding=finding, vuln=vuln)
+        self._attach_hosts(finding, hosts, names_by_host=self._vuln_names_by_host(vuln))
+        if created:
+            record_status_transition(
+                self.db, history_model=FindingStatusHistory, fk_field="finding_id",
+                entity_id=finding.id, from_status=None, to_status=status,
+                changed_by_id=actor_id,
+                summary=summary or "Promoted from scanner vulnerability",
+            )
+        else:
+            may_move = on_join == "set" or (
+                on_join == "confirm"
+                and status == FindingStatus.CONFIRMED.value
+                and finding.status in (FindingStatus.OPEN.value, FindingStatus.RETEST.value)
+            )
+            if status != finding.status and may_move:
+                self.set_status(finding=finding, status=status, actor_id=actor_id,
+                                summary=summary or "Re-dispositioned scanner finding")
+        self.db.flush()
+        if links_evidence:
+            link_issue_evidence(self.db, host_ids=hosts, issue_key=key, finding_id=finding.id)
+        return finding, created
+
+    @staticmethod
+    def _scanner_severity(vuln, severity: Optional[str]) -> str:
+        """The severity a scanner finding is made with: the caller's, else
+        the row's own (``unknown`` → ``info``: findings have no unknown)."""
+        raw = severity or getattr(vuln.severity, "value", vuln.severity) or "medium"
+        sev = "info" if str(raw).lower() == "unknown" else str(raw).lower()
+        return validate_severity(sev)
+
+    def _get_or_create_scanner_finding(
+        self, vuln, project_id: int, key: Optional[str], *, severity: str, status: str,
+        owner_id: Optional[int], actor_id: Optional[int],
+    ) -> Tuple[Finding, bool]:
+        """The issue's scanner finding and whether THIS call made it.  A new
+        one is created with ``status``; an existing one — or the winner of a
+        concurrent insert — is returned as it stands."""
         existing = self._scanner_finding_for(vuln, project_id, key)
         if existing is not None:
-            return _join(existing)
-
+            return existing, False
         finding = Finding(
             project_id=project_id,
             title=(vuln.title or "Vulnerability")[:500],
-            severity=sev,
+            severity=severity,
             status=status,
             source=FindingSource.SCANNER.value,
             owner_id=owner_id or actor_id,
@@ -318,21 +348,34 @@ class FindingService:
         seed_report_text_from_vuln(finding, vuln)
         winner = self._insert_scanner_finding(finding, vuln, project_id, key)
         if winner is not None:
-            return _join(winner)
-        self.attach_vulnerability(finding=finding, vuln=vuln)
-        self._attach_hosts(
-            finding, _hosts_for(vuln, key),
-            names_by_host=self._vuln_names_by_host(vuln),
+            return winner, False
+        return finding, True
+
+    def reopen_false_positive_endpoints(
+        self, *, finding: Finding, host_id: int, actor_id: Optional[int], note: Optional[str] = None,
+    ) -> int:
+        """A promotion made ON this host says the issue is real here: endpoint
+        rows of the finding on this host that were dismissed as a false
+        positive go back to ``open``, each through the endpoint-status step
+        (its history line).  Other hosts' rows are never touched.  Returns how
+        many moved."""
+        rows = (
+            self.db.query(FindingHost)
+            .options(selectinload(FindingHost.host), selectinload(FindingHost.name))
+            .filter(
+                FindingHost.finding_id == finding.id, FindingHost.host_id == host_id,
+                FindingHost.host_status == FindingHostStatus.FALSE_POSITIVE.value,
+            )
+            .order_by(FindingHost.id)
+            .all()
         )
-        record_status_transition(
-            self.db, history_model=FindingStatusHistory, fk_field="finding_id",
-            entity_id=finding.id, from_status=None, to_status=status,
-            changed_by_id=actor_id,
-            summary=summary or "Promoted from scanner vulnerability",
+        moved = sum(
+            1 for row in rows
+            if self._move_endpoint(finding, row, FindingHostStatus.OPEN.value, actor_id, note)
         )
-        self.db.flush()
-        self.last_promotion_created = True
-        return finding
+        if moved:
+            self.db.flush()
+        return moved
 
     def dismiss_vulnerability_on_host(
         self,
@@ -361,31 +404,16 @@ class FindingService:
           rows become ``false_positive``, and the FINDING'S status is left
           alone: it is the issue's, and the issue was not re-judged.
         """
-        raw = severity or getattr(vuln.severity, "value", vuln.severity) or "medium"
-        sev = "info" if str(raw).lower() == "unknown" else str(raw).lower()
-        validate_severity(sev)
+        sev = self._scanner_severity(vuln, severity)
         key = issue_key_for(vuln)
 
-        finding = self._scanner_finding_for(vuln, project_id, key)
-        created = finding is None
-        if created:
-            finding = Finding(
-                project_id=project_id,
-                title=(vuln.title or "Vulnerability")[:500],
-                severity=sev,
-                status=FindingStatus.FALSE_POSITIVE.value,
-                source=FindingSource.SCANNER.value,
-                owner_id=owner_id or actor_id,
-                vuln_id=vuln.id,
-                dedup_key=key,
-                created_by_id=actor_id,
-            )
-            seed_report_text_from_vuln(finding, vuln)
-            winner = self._insert_scanner_finding(finding, vuln, project_id, key)
-            if winner is not None:
-                # Someone promoted or dismissed the issue while this ran (R8):
-                # theirs is the issue's finding and its status stays theirs.
-                finding, created = winner, False
+        # A finding someone promoted or dismissed first — the lookup's, or the
+        # winner of a concurrent insert (R8) — is the issue's, and its status
+        # stays theirs.
+        finding, created = self._get_or_create_scanner_finding(
+            vuln, project_id, key, severity=sev, status=FindingStatus.FALSE_POSITIVE.value,
+            owner_id=owner_id, actor_id=actor_id,
+        )
         self.attach_vulnerability(finding=finding, vuln=vuln)
         self._attach_hosts(finding, [vuln.host_id], names_by_host=self._vuln_names_by_host(vuln))
         self.db.flush()
@@ -828,15 +856,39 @@ class FindingService:
         self.db.flush()
         return wanted
 
-    def remove_host(self, *, finding: Finding, host_id: int) -> Finding:
+    def _before_endpoints_removed(
+        self, finding: Finding, *, actor_id: Optional[int], is_project_admin: bool, **which,
+    ) -> None:
+        """Deleting an endpoint row deletes what hangs on it, and restoring
+        the endpoint makes a NEW row.  On an installation that tracks
+        remediation, a filled-in remediation record is therefore the project
+        admins' to give up (``remediation_service.before_endpoints_removed``:
+        409 for anyone else, a timeline entry for an admin).  With tracking
+        off this does and says nothing."""
+        from app.services import remediation_service
+
+        remediation_service.before_endpoints_removed(
+            self.db, finding, user_id=actor_id, is_project_admin=is_project_admin, **which,
+        )
+
+    def remove_host(
+        self, *, finding: Finding, host_id: int,
+        actor_id: Optional[int] = None, is_project_admin: bool = False,
+    ) -> Finding:
         """Detach EVERY endpoint row on ``host_id`` (named and unnamed).
         Callers that mean one named endpoint use ``remove_endpoint``."""
+        self._before_endpoints_removed(
+            finding, actor_id=actor_id, is_project_admin=is_project_admin, host_id=host_id,
+        )
         self.db.query(FindingHost).filter(
             FindingHost.finding_id == finding.id, FindingHost.host_id == host_id,
         ).delete(synchronize_session=False)
         return finding
 
-    def remove_endpoint(self, *, finding: Finding, finding_host_id: int) -> Optional[dict]:
+    def remove_endpoint(
+        self, *, finding: Finding, finding_host_id: int,
+        actor_id: Optional[int] = None, is_project_admin: bool = False,
+    ) -> Optional[dict]:
         """v2.325.0 — detach exactly one affected-endpoint row.  Returns
         ``{host_id, name_id, host_status}`` (what an Undo must restore) or
         None when the row isn't on this finding."""
@@ -847,6 +899,9 @@ class FindingService:
         )
         if row is None:
             return None
+        self._before_endpoints_removed(
+            finding, actor_id=actor_id, is_project_admin=is_project_admin, finding_host_id=finding_host_id,
+        )
         snapshot = {"host_id": row.host_id, "name_id": row.name_id, "host_status": row.host_status}
         self.db.delete(row)
         self.db.flush()
@@ -887,7 +942,9 @@ class FindingService:
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------
-    def delete_finding(self, *, finding: Finding) -> List[int]:
+    def delete_finding(
+        self, *, finding: Finding, actor_id: Optional[int] = None, is_project_admin: bool = False,
+    ) -> List[int]:
         """Delete a finding and everything that is only ITS (v2.375.0): the
         endpoint rows, scanner-evidence links, status history (ORM cascades)
         and its own comment thread (``annotations.finding_id`` cascades in the
@@ -895,6 +952,9 @@ class FindingService:
         promotable again and the scanner rows go back to being untriaged
         observations.  Does not commit.  Returns the comment ids so the caller
         can purge their attachment files once the delete has committed."""
+        self._before_endpoints_removed(
+            finding, actor_id=actor_id, is_project_admin=is_project_admin, deleting_finding=True,
+        )
         note_ids = [
             nid for (nid,) in self.db.query(Annotation.id).filter(Annotation.finding_id == finding.id)
         ]

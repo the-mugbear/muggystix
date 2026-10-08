@@ -104,8 +104,8 @@ const sections: GuideSection[] = [
         </Para>
         <UnorderedList>
           <li><strong>JWT authentication</strong> — 8-hour token expiry; sessions are tracked server-side and can be revoked individually.</li>
-          <li><strong>Account lockout</strong> — 5 failed login attempts triggers a 30-minute lockout.</li>
-          <li><strong>Session management</strong> — view and revoke your active sessions from your <strong>Profile</strong>. Changing your password signs out every session.</li>
+          <li><strong>Sign-in lockout</strong> — counted per account and client address: 5 failed sign-ins from one address within 30 minutes lock that address out of that account (the sign-in page says so; the API answers 429). The account's owner signing in from another address is not affected. Across all addresses, an account accepts at most 100 failed sign-ins per 15 minutes.</li>
+          <li><strong>Session management</strong> — view and revoke your active sessions from your <strong>Profile</strong>. Changing your password signs out every session and ends your agent sessions. An administrator resetting a user's password does the same for that user; resetting their two-factor enrolment ends their agent sessions.</li>
           <li><strong>One account per browser</strong> — every tab shares the sign-in. When another tab signs in as a different account, or signs out, this tab reloads rather than keep showing the first account's project.</li>
           <li><strong>Audit trail</strong> — actions are logged with timestamps, IP addresses, and user agents; global administrators review them under Administration → System. (The project role "auditor" does not open the audit log.)</li>
           <li><strong>HTTPS</strong> — the app is served over HTTPS only. The certificate is self-signed by default, or issued from your organisation's local root CA (<Mono>ca/local-ca.sh</Mono>), which analysts install once so browsers and agents trust the server.</li>

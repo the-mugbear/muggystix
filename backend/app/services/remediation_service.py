@@ -5,11 +5,14 @@ One row of the list is one finding on one host.  Every read takes a SET of
 projects, so the project page and a cross-project lookup ("everything open
 for this contact") are the same statement.
 """
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterable, Optional, Sequence
 
 from fastapi import HTTPException
-from sqlalchemy import Integer, and_, case, cast, func, or_, tuple_
+from sqlalchemy import Integer, and_, case, cast, func, or_, tuple_, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
@@ -67,10 +70,6 @@ def _rows(db, project_ids: Sequence[int]):
     )
 
 
-def _today() -> date:
-    return datetime.now(timezone.utc).date()
-
-
 def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
               state: Optional[Sequence[str]] = None,
               contact: Optional[str] = None, contact_email: Optional[str] = None,
@@ -81,7 +80,7 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
               group: str = "host", limit: int = 50, offset: int = 0,
               policy: Optional[deadlines.Policy] = None, today: Optional[date] = None) -> dict:
     policy = policy or deadlines.load(db)
-    today = today or _today()
+    today = today or policy.today()
     state_of, due = deadlines.state_expr(db, policy, today), deadlines.due_expr(db, policy)
     band_of = deadlines.overdue_band_expr(db, policy, today)
     query = _rows(db, project_ids)
@@ -153,12 +152,18 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
 
     rows = (
         query.join(Project, Project.id == Finding.project_id).with_entities(
-            FindingHost.id, FindingHost.host_status, Finding.id, Finding.project_id, Finding.title,
-            Finding.severity, Finding.status, models.Host.id, models.Host.ip_address,
-            models.Host.hostname, Remediation.contact_email, Remediation.contact_name,
-            Remediation.notified_on, _STATUS, Remediation.closed_on, Remediation.updated_at,
-            state_of, due, Remediation.closed_due_on, Remediation.last_follow_up_on, Project.name,
-            Remediation.team,
+            FindingHost.id.label("finding_host_id"), FindingHost.host_status.label("endpoint_status"),
+            Finding.id.label("finding_id"), Finding.project_id.label("project_id"),
+            Project.name.label("project_name"), Finding.title.label("finding_title"),
+            Finding.severity.label("severity"), Finding.status.label("finding_status"),
+            models.Host.id.label("host_id"), models.Host.ip_address.label("ip_address"),
+            models.Host.hostname.label("hostname"), Remediation.contact_email.label("contact_email"),
+            Remediation.contact_name.label("contact_name"), Remediation.team.label("team"),
+            Remediation.notified_on.label("notified_on"), _STATUS.label("status"),
+            Remediation.closed_on.label("closed_on"), Remediation.updated_at.label("updated_at"),
+            state_of.label("state"), due.label("open_due_on"),
+            Remediation.closed_due_on.label("closed_due_on"),
+            Remediation.last_follow_up_on.label("last_follow_up_on"),
         )
         .order_by(*_order(db, group, state_of, due)).offset(offset).limit(limit).all()
     )
@@ -187,18 +192,20 @@ def _status_counts(state_counts: dict) -> dict:
 
 
 def _item(r, today: date) -> dict:
-    state = r[16]
-    closed_on, closed_due = deadlines.as_date(r[14]), deadlines.as_date(r[18])
+    """One list row from the labelled columns ``list_rows`` selects."""
+    state = r.state
+    closed_on, closed_due = deadlines.as_date(r.closed_on), deadlines.as_date(r.closed_due_on)
     # A closed row shows the deadline it was closed against; a deferred row
     # has no clock, so it shows none.
-    due = closed_due if state == "closed" else None if state == "deferred" else deadlines.as_date(r[17])
+    due = closed_due if state == "closed" else None if state == "deferred" else deadlines.as_date(r.open_due_on)
     return {
-        "finding_host_id": r[0], "endpoint_status": r[1], "finding_id": r[2], "project_id": r[3],
-        "project_name": r[20],
-        "finding_title": r[4], "severity": r[5], "finding_status": r[6], "host_id": r[7],
-        "ip_address": r[8], "hostname": r[9], "contact_email": r[10], "contact_name": r[11],
-        "notified_on": _iso(r[12]), "status": r[13], "closed_on": _iso(r[14]),
-        "updated_at": _iso(r[15]),
+        "finding_host_id": r.finding_host_id, "endpoint_status": r.endpoint_status,
+        "finding_id": r.finding_id, "project_id": r.project_id, "project_name": r.project_name,
+        "finding_title": r.finding_title, "severity": r.severity, "finding_status": r.finding_status,
+        "host_id": r.host_id, "ip_address": r.ip_address, "hostname": r.hostname,
+        "contact_email": r.contact_email, "contact_name": r.contact_name,
+        "notified_on": _iso(r.notified_on), "status": r.status, "closed_on": _iso(r.closed_on),
+        "updated_at": _iso(r.updated_at),
         "state": state, "due_on": _iso(due),
         # Days to the deadline of an open row: negative once it is overdue.
         "days_left": (due - today).days if due is not None and state != "closed" else None,
@@ -206,7 +213,7 @@ def _item(r, today: date) -> dict:
         # None when it had no deadline.
         "closed_days_late": (max(0, (closed_on - closed_due).days)
                              if state == "closed" and closed_on and closed_due else None),
-        "last_follow_up_on": _iso(r[19]), "team": r[21],
+        "last_follow_up_on": _iso(r.last_follow_up_on), "team": r.team,
     }
 
 
@@ -228,7 +235,8 @@ def state_counts_by_project(db, project_ids: Sequence[int], policy: deadlines.Po
 def status_counts_by_project(db, project_ids: Sequence[int], policy: Optional[deadlines.Policy] = None,
                              today: Optional[date] = None) -> dict[int, dict[str, int]]:
     """Each project's open / closed / deferred, from the same states."""
-    by_state = state_counts_by_project(db, project_ids, policy or deadlines.load(db), today or _today())
+    policy = policy or deadlines.load(db)
+    by_state = state_counts_by_project(db, project_ids, policy, today or policy.today())
     return {pid: _status_counts(counts) for pid, counts in by_state.items()}
 
 
@@ -341,8 +349,14 @@ def _resolve_targets(db, project_id: int, rows) -> list[list[FindingHost]]:
              .filter(Finding.project_id == project_id, or_(*named))
              .order_by(FindingHost.id).limit(APPLY_MAX_TARGETS + 1).all())
     if len(light) > APPLY_MAX_TARGETS:
-        raise HTTPException(422, {"message": "Nothing was changed.", "problems": [
-            f"the call names more than {APPLY_MAX_TARGETS} findings on hosts; send them in several calls"]})
+        problem = f"the call names more than {APPLY_MAX_TARGETS} findings on hosts; send them in several calls"
+        if whole:
+            # ``finding_id`` alone means every host of the finding, which can
+            # be more than one call may change.
+            problem += (f" (a row with finding_id and no host_id covers every host of that finding: "
+                        f"for a finding on more than {APPLY_MAX_TARGETS} hosts, name the hosts — "
+                        f"finding_id with host_id, or finding_host_id — at most {APPLY_MAX_TARGETS} a call)")
+        raise HTTPException(422, {"message": "Nothing was changed.", "problems": [problem]})
     known = {fh_id for fh_id, _, _ in light}
     of_finding: dict[int, list[tuple[int, int]]] = {}
     for fh_id, finding_id, host_id in light:
@@ -442,13 +456,11 @@ def apply(db, project_id: int, body, who) -> dict:
     """
     resolved = _resolve_targets(db, project_id, body.rows)
     ids = [fh.id for targets in resolved for fh in targets]
-    if not body.dry_run:
-        # Serialises two callers creating the same finding's first record.
-        # In id order, so two overlapping calls cannot lock each other out.
-        db.query(FindingHost.id).filter(FindingHost.id.in_(ids)).order_by(FindingHost.id) \
-            .with_for_update().all()
-    records = {r.finding_host_id: r for r in db.query(Remediation)
-               .filter(Remediation.finding_host_id.in_(ids)).populate_existing()}
+    if body.dry_run:
+        records = {r.finding_host_id: r for r in db.query(Remediation)
+                   .filter(Remediation.finding_host_id.in_(ids)).populate_existing()}
+    else:
+        records = {r.finding_host_id: r for r in _lock_for_write(db, ids)}
     keys = [_note_key(note, fh) for row, targets in zip(body.rows, resolved)
             for note in row.notes for fh in targets if note.request_key]
     # A key's note, stored or accepted earlier in THIS call: the same note
@@ -502,7 +514,7 @@ def apply(db, project_id: int, body, who) -> dict:
         raise HTTPException(422, {"message": "Nothing was changed.", "problems": problems[:50]})
 
     if not body.dry_run:
-        policy = deadlines.load(db)
+        refreeze = []
         for fh, changes, notes in plan:
             record = records.get(fh.id)
             restarts_clock = any(field in ("status", "notified_on") for field, _, _ in changes)
@@ -519,17 +531,59 @@ def apply(db, project_id: int, body, who) -> dict:
                 db.add(_event(project_id, fh, who, kind="change", field=field,
                               old_value=_text(old), new_value=_text(new), occurred_at=now, created_at=now))
             if record is not None and restarts_clock:
-                # The deadline is frozen on the day a row is closed (against
-                # the timeline and severity of that day) and is derived again
-                # the moment it is not; either way a new deadline alerts anew.
-                record.closed_due_on = (policy.due_on(fh.finding.severity, record.notified_on)
-                                        if record.status == "closed" else None)
+                # A new status or assigned date is a new deadline: it alerts
+                # anew, and an open row's deadline is derived, never stored.
                 record.due_soon_alerted_for = record.overdue_alerted_for = None
+                if record.status == "closed":
+                    refreeze.append(record)
+                else:
+                    record.closed_due_on = None
             for note, key in notes:
                 db.add(_event(project_id, fh, who, kind="note", body=note.body,
                               occurred_at=note.occurred_at or now, created_at=now, request_key=key))
         db.flush()
+        _freeze_closed_deadlines(db, refreeze)
     return {"dry_run": body.dry_run, "overwrite": body.overwrite, "summary": summary, "rows": report}
+
+
+def _lock_for_write(db, finding_host_ids: Sequence[int]) -> list[Remediation]:
+    """Lock what a write to these findings on hosts touches and return their
+    records.  ONE order for every writer (``apply``, a recorded follow-up, an
+    endpoint's removal): the ``finding_hosts`` rows in id order — which also
+    serialises two callers creating the same row's first record — then the
+    records in the same order.  Writers that locked different things, or the
+    same things in request order, could each hold what the other wanted."""
+    ids = sorted(set(finding_host_ids))
+    if not ids:
+        return []
+    db.query(FindingHost.id).filter(FindingHost.id.in_(ids)).order_by(FindingHost.id) \
+        .with_for_update().all()
+    return (db.query(Remediation).filter(Remediation.finding_host_id.in_(ids))
+            .order_by(Remediation.finding_host_id).with_for_update().populate_existing().all())
+
+
+def _freeze_closed_deadlines(db, records: Sequence[Remediation]) -> None:
+    """Store, on rows that are closed, the deadline in force NOW — the
+    assigned date plus today's timeline for the finding's current severity,
+    read with ``due_expr`` (the one definition) in one statement for them all.
+
+    It runs whenever a closed row's status or assigned date was written.  So
+    correcting the assigned date of a row that is ALREADY closed re-freezes
+    its deadline against the severity and timeline of the day of the
+    correction, not those of the day it was closed: the earlier ones are not
+    kept anywhere to freeze against."""
+    if not records:
+        return
+    db.execute(
+        update(Remediation)
+        .values(closed_due_on=deadlines.due_expr(db, deadlines.load(db)))
+        .where(Remediation.id.in_([record.id for record in records]),
+               FindingHost.id == Remediation.finding_host_id,
+               Finding.id == FindingHost.finding_id)
+        .execution_options(synchronize_session=False)
+    )
+    for record in records:
+        db.expire(record, ["closed_due_on"])
 
 
 def _note_key(note, fh: FindingHost) -> Optional[str]:
@@ -547,6 +601,82 @@ def _event(project_id: int, fh: Optional[FindingHost], who, *, host_id: Optional
         author_id=who.user_id, agent_session_id=session.id if session is not None else None,
         **columns,
     )
+
+
+# --- a finding leaves a host ---------------------------------------------
+
+@dataclass(frozen=True)
+class _Person:
+    user_id: Optional[int]
+    session: None = None
+
+
+def _held(record: Remediation) -> str:
+    """What a record that is about to go said, for the timeline."""
+    parts = []
+    if record.contact_email or record.contact_name:
+        parts.append("contact " + " ".join(filter(None, [record.contact_name, record.contact_email])))
+    if record.team:
+        parts.append(f"team {record.team}")
+    if record.notified_on:
+        parts.append(f"assigned {record.notified_on.isoformat()}")
+    parts.append(f"status {record.status}" + (f" on {record.closed_on.isoformat()}" if record.closed_on else ""))
+    if record.last_follow_up_on:
+        parts.append(f"last follow-up {record.last_follow_up_on.isoformat()}")
+    return ", ".join(parts)
+
+
+def before_endpoints_removed(db, finding: Finding, *, user_id: Optional[int], is_project_admin: bool,
+                             host_id: Optional[int] = None, finding_host_id: Optional[int] = None,
+                             deleting_finding: bool = False) -> int:
+    """Called before finding-on-host rows are deleted — one endpoint
+    (``finding_host_id``), every endpoint on a host (``host_id``), or all of
+    the finding's.  Their remediation records are deleted with them (the
+    foreign key cascades) and a restored endpoint is a new row, so a record
+    somebody filled in is the project admins' to give up: anyone else is
+    refused (409) and nothing is removed; for an admin each such record is
+    written to its host's timeline, which outlives it.
+
+    Does nothing — and says nothing — on an installation that has remediation
+    tracking off.  Returns how many filled-in records go.  The caller deletes
+    the rows in the same transaction."""
+    if not deadlines.load(db).enabled:
+        return 0
+    scope = [FindingHost.finding_id == finding.id]
+    if host_id is not None:
+        scope.append(FindingHost.host_id == host_id)
+    if finding_host_id is not None:
+        scope.append(FindingHost.id == finding_host_id)
+    leaving = [fh_id for (fh_id,) in db.query(FindingHost.id).filter(*scope)]
+    # Locked like every other write, and only then read: an ``apply`` that
+    # was filling one of them in has finished by the time this decides.
+    records = [record for record in _lock_for_write(db, leaving) if _is_filled(record)]
+    if not records:
+        return 0
+    if not is_project_admin:
+        n = len(records)
+        on = "this host" if n == 1 else f"{n} hosts"
+        raise HTTPException(409, (
+            f"This finding has a remediation record on {on} (a contact, dates or a status), which "
+            f"would be deleted with it. A project admin must remove it. Nothing was changed."))
+    targets = {fh.id: fh for fh in db.query(FindingHost).options(joinedload(FindingHost.finding))
+               .filter(FindingHost.id.in_([record.finding_host_id for record in records]))}
+    now = datetime.now(timezone.utc)
+    who = _Person(user_id)
+    for record in records:
+        db.add(_event(finding.project_id, targets[record.finding_host_id], who, kind="change",
+                      field="finding", old_value=_held(record),
+                      new_value="finding deleted" if deleting_finding else "removed from this host",
+                      occurred_at=now, created_at=now))
+    db.flush()
+    return len(records)
+
+
+def _is_filled(record: Remediation) -> bool:
+    """Somebody recorded something: a contact, a team, a date, a status that
+    is not where every row starts, or a follow-up."""
+    return bool(record.contact_email or record.contact_name or record.team or record.notified_on
+                or record.status != "open" or record.last_follow_up_on)
 
 
 # --- timeline -------------------------------------------------------------
@@ -684,7 +814,8 @@ def contacts(db, project_ids: Iterable[int], *, limit: int = 200,
     with the most overdue comes first; ``last_follow_up_on`` is the most
     recent day anyone recorded chasing them about a row that is still at
     risk (None: nobody has)."""
-    policy, today = policy or deadlines.load(db), today or _today()
+    policy = policy or deadlines.load(db)
+    today = today or policy.today()
     state_of = deadlines.state_expr(db, policy, today)
     n = lambda *names: func.sum(case((state_of.in_(names), 1), else_=0))  # noqa: E731
     at_risk = state_of.in_(deadlines.AT_RISK_STATES)
@@ -712,7 +843,8 @@ def teams(db, project_ids: Iterable[int], *, limit: int = 200,
     the most overdue first.  A team is free text compared without case; the
     spelling shown is one that was entered.  Rows with a contact and no team
     are one last entry, ``team: null``, so nothing assigned is left out."""
-    policy, today = policy or deadlines.load(db), today or _today()
+    policy = policy or deadlines.load(db)
+    today = today or policy.today()
     state_of = deadlines.state_expr(db, policy, today)
     n = lambda *names: func.sum(case((state_of.in_(names), 1), else_=0))  # noqa: E731
     key = func.lower(Remediation.team)
@@ -742,17 +874,28 @@ def snapshot(db, today: Optional[date] = None) -> int:
     policy = deadlines.load(db)
     if not policy.enabled:
         return 0
-    today = today or _today()
-    ids = [pid for (pid,) in db.query(Project.id)]
+    today = today or policy.today()
+    ids = [pid for (pid,) in db.query(Project.id).order_by(Project.id)]
     counts = state_counts_by_project(db, ids, policy, today)
-    db.query(RemediationDaily).filter(RemediationDaily.day == today).delete(synchronize_session=False)
-    written = 0
-    for pid, states in counts.items():
-        if any(states.values()):
-            db.add(RemediationDaily(project_id=pid, day=today, **states))
-            written += 1
+    rows = [{"project_id": pid, "day": today, **states} for pid, states in counts.items()
+            if any(states.values())]
+    # A project that has nothing left today loses today's earlier row.
+    stale = db.query(RemediationDaily).filter(RemediationDaily.day == today)
+    if rows:
+        stale = stale.filter(RemediationDaily.project_id.notin_([row["project_id"] for row in rows]))
+    stale.delete(synchronize_session=False)
+    if rows:
+        # One upsert, the projects in id order: two workers sweeping at the
+        # same moment both succeed (a delete followed by plain inserts made
+        # the second one fail on the unique index, and its sweep with it).
+        insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
+        statement = insert(RemediationDaily).values(rows)
+        db.execute(statement.on_conflict_do_update(
+            index_elements=[RemediationDaily.project_id, RemediationDaily.day],
+            set_={name: statement.excluded[name] for name in deadlines.STATES},
+        ))
     db.flush()
-    return written
+    return len(rows)
 
 
 def trend(db, project_ids: Sequence[int], *, days: int = 90, today: Optional[date] = None) -> dict:
@@ -760,7 +903,7 @@ def trend(db, project_ids: Sequence[int], *, days: int = 90, today: Optional[dat
     installation began tracking (summed over the projects), and how the
     closed rows ended per month — on time, late, or with no deadline to
     judge them by.  A day nobody recorded is absent, never a zero."""
-    today = today or _today()
+    today = today or deadlines.load(db).today()
     ids = tuple(project_ids)
     since = today - timedelta(days=days)
     names = ("overdue", "due_soon", "on_track", "not_assigned", "deferred", "closed")
@@ -775,17 +918,28 @@ def trend(db, project_ids: Sequence[int], *, days: int = 90, today: Optional[dat
 
     months: dict[str, dict] = {}
     if ids:
-        first = (today.replace(day=1) - timedelta(days=335)).replace(day=1)      # twelve months, this one included
-        for closed_on, due_on in (db.query(Remediation.closed_on, Remediation.closed_due_on)
-                                  .filter(Remediation.project_id.in_(ids), Remediation.status == "closed",
-                                          Remediation.closed_on.isnot(None), Remediation.closed_on >= first,
-                                          Remediation.closed_on <= today)):
-            closed_on, due_on = deadlines.as_date(closed_on), deadlines.as_date(due_on)
-            month = months.setdefault(closed_on.strftime("%Y-%m"),
-                                      {"on_time": 0, "late": 0, "no_deadline": 0})
-            month["no_deadline" if due_on is None else "late" if closed_on > due_on else "on_time"] += 1
+        first = first_of_twelve_months(today)
+        if db.get_bind().dialect.name == "postgresql":
+            month_of = func.to_char(Remediation.closed_on, "YYYY-MM")
+        else:
+            month_of = func.strftime("%Y-%m", Remediation.closed_on)
+        ended = case((Remediation.closed_due_on.is_(None), "no_deadline"),
+                     (Remediation.closed_on > Remediation.closed_due_on, "late"), else_="on_time")
+        for month, how, n in (db.query(month_of, ended, func.count())
+                              .filter(Remediation.project_id.in_(ids), Remediation.status == "closed",
+                                      Remediation.closed_on.isnot(None), Remediation.closed_on >= first,
+                                      Remediation.closed_on <= today)
+                              .group_by(month_of, ended)):
+            months.setdefault(month, {"on_time": 0, "late": 0, "no_deadline": 0})[how] = n
     return {"as_of": today.isoformat(), "days": days, "daily": daily,
             "closed_by_month": [{"month": key, **months[key]} for key in sorted(months)]}
+
+
+def first_of_twelve_months(today: date) -> date:
+    """The first day of the month eleven months before this one: with the
+    current month that is exactly twelve, whatever their lengths."""
+    months = today.year * 12 + (today.month - 1) - 11
+    return date(months // 12, months % 12 + 1, 1)
 
 
 # --- following up with a contact ---------------------------------------------
@@ -797,18 +951,27 @@ def follow_up(db, project_ids: Sequence[int], contact_email: str, *,
               policy: Optional[deadlines.Policy] = None, today: Optional[date] = None) -> dict:
     """What to say to one contact: their overdue and due-soon findings on
     hosts, and the message as plain text to paste into mail or chat.  Nothing
-    is sent by the server."""
-    policy, today = policy or deadlines.load(db), today or _today()
+    is sent by the server.
+
+    ``items`` (and the message) list at most ``FOLLOW_UP_MAX_ROWS``, the most
+    overdue first; ``total`` is every at-risk row of the contact and
+    ``not_listed`` how many of them the list leaves out, which the message
+    says.  Recording the follow-up covers all of them, listed or not."""
+    policy = policy or deadlines.load(db)
+    today = today or policy.today()
     email = contact_email.strip().lower()
     listing = list_rows(db, project_ids, contact_email=email, state=deadlines.AT_RISK_STATES,
                         group="due", limit=FOLLOW_UP_MAX_ROWS, policy=policy, today=today)
     items = listing["items"]
+    not_listed = listing["total"] - len(items)
     name = next((row["contact_name"] for row in items if row["contact_name"]), None)
     return {"contact_email": email, "contact_name": name, "as_of": today.isoformat(),
             "overdue": listing["state_counts"]["overdue"], "due_soon": listing["state_counts"]["due_soon"],
             "items": items, "has_more": listing["has_more"],
+            "total": listing["total"], "not_listed": not_listed,
             "project_ids": sorted({row["project_id"] for row in items}),
-            "text": follow_up_text(name, items, today, several_projects=len(set(project_ids)) > 1)}
+            "text": follow_up_text(name, items, today, several_projects=len(set(project_ids)) > 1,
+                                   not_listed=not_listed)}
 
 
 def _plural(n: int, one: str, many: str) -> str:
@@ -816,8 +979,9 @@ def _plural(n: int, one: str, many: str) -> str:
 
 
 def follow_up_text(name: Optional[str], items: Sequence[dict], today: date, *,
-                   several_projects: bool = False) -> str:
-    """Plain text: tool-neutral, no markup, one line per finding on a host."""
+                   several_projects: bool = False, not_listed: int = 0) -> str:
+    """Plain text: tool-neutral, no markup, one line per finding on a host.
+    ``not_listed``: at-risk rows of the contact that ``items`` leaves out."""
     def line(row: dict) -> str:
         where = row["ip_address"] + (f" ({row['hostname']})" if row["hostname"] else "")
         left = row["days_left"]
@@ -835,6 +999,10 @@ def follow_up_text(name: Optional[str], items: Sequence[dict], today: date, *,
         parts += ["", f"Past the remediation deadline ({len(overdue)}):", *map(line, overdue)]
     if soon:
         parts += ["", f"Approaching the deadline ({len(soon)}):", *map(line, soon)]
+    if not_listed > 0:
+        parts += ["", f"{_plural(not_listed, 'more finding on a host is', 'more findings on hosts are')} "
+                      f"overdue or approaching the deadline and not listed here; the list above is the "
+                      f"{len(items)} that need attention first."]
     if not items:
         parts += ["", "Nothing assigned to you is overdue or approaching its deadline."]
     parts += ["", "Please reply with the status of each, or the date you expect it to be fixed."]
@@ -846,22 +1014,30 @@ def record_follow_up(db, project_id: int, body, who) -> dict:
     project: one immutable timeline entry per finding on a host, and the day
     on each row (``last_follow_up_on``), so two people do not chase the same
     contact and an overdue row nobody chased can be seen."""
-    policy, today = deadlines.load(db), _today()
+    policy = deadlines.load(db)
+    today = policy.today()
     on = body.followed_up_on or today
-    listing = list_rows(db, [project_id], contact_email=body.contact_email, state=deadlines.AT_RISK_STATES,
-                        limit=FOLLOW_UP_MAX_ROWS, policy=policy, today=today)
-    ids = [row["finding_host_id"] for row in listing["items"]]
+    if on > today:
+        raise HTTPException(422, {"message": "Nothing was recorded.", "problems": [
+            f"followed_up_on cannot be in the future (today is {today.isoformat()})"]})
+    # Every at-risk row of the contact, resolved in SQL with no page cut: the
+    # preview lists the first ``FOLLOW_UP_MAX_ROWS`` by deadline, and a
+    # follow-up recorded from another page of rows must not be refused.
+    at_risk = (_rows(db, [project_id])
+               .filter(Remediation.contact_email == body.contact_email,
+                       deadlines.state_expr(db, policy, today).in_(deadlines.AT_RISK_STATES)))
     if body.finding_host_ids is not None:
         named = set(body.finding_host_ids)
+        ids = [fh_id for (fh_id,) in at_risk.filter(FindingHost.id.in_(named))]
         unknown = sorted(named - set(ids))
         if unknown:
             raise HTTPException(422, {"message": "Nothing was recorded.", "problems": [
                 f"finding_host_id {i} is not an overdue or due-soon row of this contact" for i in unknown[:50]]})
-        ids = [i for i in ids if i in named]
+    else:
+        ids = [fh_id for (fh_id,) in at_risk]
     if not ids:
         return {"recorded": 0, "already_recorded": 0, "followed_up_on": on.isoformat(), "finding_host_ids": []}
-    records = (db.query(Remediation).filter(Remediation.finding_host_id.in_(ids))
-               .order_by(Remediation.finding_host_id).with_for_update().populate_existing().all())
+    records = _lock_for_write(db, ids)
     targets = {fh.id: fh for fh in db.query(FindingHost).options(joinedload(FindingHost.finding))
                .filter(FindingHost.id.in_(ids))}
     now = datetime.now(timezone.utc)

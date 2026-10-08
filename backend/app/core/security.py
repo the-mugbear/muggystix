@@ -9,7 +9,7 @@ from jwt.exceptions import InvalidTokenError, ExpiredSignatureError
 import bcrypt
 import secrets
 from fastapi import HTTPException, status
-from sqlalchemy import func
+from sqlalchemy import func, literal, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -181,58 +181,101 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
         verify_password(password, _DUMMY_PASSWORD_HASH)
         return None
 
-    # Check if account is locked
-    if user.locked_until and user.locked_until > datetime.now(timezone.utc):
-        verify_password(password, _DUMMY_PASSWORD_HASH)
-        return None
-
+    # Failed attempts are not counted on the user row: a counter and lock
+    # there let anyone who knows a username keep its owner out.  The lockout
+    # is per (username, client address) — ``login_lockout_active`` — and is
+    # counted from the ``login_failed`` audit rows the login route writes.
     if not verify_password(password, user.hashed_password):
-        # v2.91.3 (code review #4) — atomic increment via a single
-        # UPDATE ... RETURNING.  Pre-fix this was a read-modify-write
-        # on user.failed_login_attempts, so two concurrent failed
-        # attempts could both read counter=N, both write counter=N+1,
-        # and the lockout-at-5 evaluation could be skipped.  The
-        # SQL-level increment + RETURNING gives back the row's new
-        # value so the lockout decision uses the authoritative count.
-        from sqlalchemy import update
-        new_count = db.execute(
-            update(User)
-            .where(User.id == user.id)
-            .values(failed_login_attempts=User.failed_login_attempts + 1)
-            .returning(User.failed_login_attempts)
-        ).scalar_one()
-
-        # Lock account after 5 failed attempts.  The lock window is
-        # also written atomically (single UPDATE) so a second
-        # concurrent failure that crosses the threshold can't race
-        # the lock write either.
-        if new_count >= 5:
-            db.execute(
-                update(User)
-                .where(User.id == user.id)
-                .values(locked_until=datetime.now(timezone.utc) + timedelta(minutes=30))
-            )
-
-        db.commit()
         return None
 
-    # Reset failed login attempts on successful login
-    user.failed_login_attempts = 0
     user.last_login = datetime.now(timezone.utc)
-    user.locked_until = None
     db.commit()
 
     return user
 
 
-# Login-throttling thresholds — counts apply over the trailing window.
-# The existing per-account lockout in authenticate_user() still applies on
-# top of this (5 failures from a single attacker lock the account for 30 min);
-# these limits exist so a botnet split across many IPs can't simply re-use a
-# fresh IP for every guess after the per-account lockout expires.
+# Failed sign-ins are limited three ways, all counted from ``audit_logs``:
+#
+#   * (username, client address): LOGIN_LOCKOUT_FAILURES in
+#     LOGIN_LOCKOUT_MINUTES locks that address out of that account.  This is
+#     the tight limit, and it only ever locks out the address that guessed —
+#     the account's owner signs in from anywhere else.  The client address is
+#     the peer nginx saw (it overwrites X-Forwarded-For), so a caller cannot
+#     choose it.
+#   * client address, any username: LOGIN_THROTTLE_PER_IP per window.
+#   * username, any address: LOGIN_THROTTLE_PER_USERNAME per window.  A ceiling
+#     for guessing spread over many addresses; it is deliberately far above
+#     the per-address limit, because anyone can reach it for any username and
+#     while it holds the owner is kept out too.
+#
+# The second factor has its own per-username limit (LOGIN_2FA_THROTTLE_PER_USERNAME)
+# counted over ``login_2fa_failed`` only: reaching that step takes the
+# password, so the limit can stay low without letting a stranger lock the
+# account, and password failures do not use it up.
+LOGIN_LOCKOUT_FAILURES = 5
+LOGIN_LOCKOUT_MINUTES = 30
 LOGIN_THROTTLE_WINDOW_MINUTES = 15
-LOGIN_THROTTLE_PER_USERNAME = 10   # failures across all IPs in window → reject
-LOGIN_THROTTLE_PER_IP = 20         # failures across all usernames in window → reject
+LOGIN_THROTTLE_PER_USERNAME = 100
+LOGIN_THROTTLE_PER_IP = 20
+LOGIN_2FA_THROTTLE_PER_USERNAME = 10
+
+
+def _audit_username():
+    # AuditLog.details is sqlalchemy.JSON, which maps to Postgres `json`
+    # (NOT `jsonb`): `.contains()` and `.astext` do not compile against it.
+    # `json_extract_path_text` does, and matches the text written by
+    # `log_audit_event(details={"username": ...})`.
+    return func.json_extract_path_text(AuditLog.details, "username")
+
+
+def login_lockout_active(
+    db: Session, username: Optional[str], ip_address: Optional[str],
+) -> bool:
+    """True when this client address has failed ``LOGIN_LOCKOUT_FAILURES``
+    sign-ins for ``username`` in the last ``LOGIN_LOCKOUT_MINUTES`` — counted
+    since that address last got the account's password right.
+
+    Decided by the username as typed, whether or not the account exists, so
+    the answer says nothing about which usernames are real.
+
+    Takes a transaction-scoped advisory lock on the pair, held until the
+    caller's audit row for this attempt commits: parallel guesses from one
+    address are counted one at a time, never all against the same total.
+    """
+    if not username:
+        return False
+    db.execute(
+        select(func.pg_advisory_xact_lock(func.hashtextextended(
+            literal(f"login:{username}|{ip_address or ''}"), 0,
+        )))
+    )
+    same_address = (
+        AuditLog.ip_address == ip_address if ip_address else AuditLog.ip_address.is_(None)
+    )
+    # Ordered by id, not timestamp: the reset must be exact for two rows
+    # written in the same instant.
+    last_success = (
+        select(func.coalesce(func.max(AuditLog.id), 0))
+        .where(
+            AuditLog.action.in_(("login_success", "login_2fa_challenge")),
+            AuditLog.user_id == select(User.id).where(User.username == username).scalar_subquery(),
+            same_address,
+        )
+        .scalar_subquery()
+    )
+    since = datetime.now(timezone.utc) - timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
+    failures = (
+        db.query(func.count(AuditLog.id))
+        .filter(
+            AuditLog.action == "login_failed",
+            AuditLog.timestamp >= since,
+            _audit_username() == username,
+            same_address,
+            AuditLog.id > last_success,
+        )
+        .scalar()
+    )
+    return failures >= LOGIN_LOCKOUT_FAILURES
 
 
 def login_throttle_exceeded(
@@ -240,16 +283,20 @@ def login_throttle_exceeded(
     username: Optional[str],
     ip_address: Optional[str],
     actions: Sequence[str] = ("login_failed",),
+    username_actions: Optional[Sequence[str]] = None,
+    per_username: int = LOGIN_THROTTLE_PER_USERNAME,
 ) -> bool:
     """Return True if recent failed-auth activity for this username OR this
     source IP exceeds the throttle. Reads ``audit_logs`` rows produced by
     ``log_audit_event(action=...)`` — no extra table needed.
 
-    ``actions`` selects which failure events count. The password step passes
-    the default (``login_failed``); the 2FA step passes both ``login_failed``
-    and ``login_2fa_failed`` so a 2FA-code brute force is bounded by the same
-    window/thresholds (the TOTP space is only 1e6, and the challenge JWT is
-    reusable for its full TTL, so an uncounted 2FA path would be sprayable).
+    ``actions`` selects which failure events count against the address. The
+    password step passes the default (``login_failed``); the 2FA step passes
+    both ``login_failed`` and ``login_2fa_failed`` (the TOTP space is only
+    1e6, and the challenge JWT is reusable for its full TTL, so an uncounted
+    2FA path would be sprayable).  ``username_actions`` / ``per_username``
+    are the events and the limit counted against the username across all
+    addresses; they default to ``actions`` and the password step's ceiling.
     """
     window_start = datetime.now(timezone.utc) - timedelta(minutes=LOGIN_THROTTLE_WINDOW_MINUTES)
     base = db.query(AuditLog).filter(
@@ -258,19 +305,12 @@ def login_throttle_exceeded(
     )
 
     if username:
-        # AuditLog.details is sqlalchemy.JSON, which maps to Postgres `json`
-        # (NOT `jsonb`).  Two operator gotchas hit us during deploy:
-        #   * `.contains({"username": ...})` emits `json @> json` — no such
-        #     Postgres operator (only `jsonb @> jsonb` exists).
-        #   * `details["username"].astext` requires a JSONB-typed column;
-        #     the generic JSON type's comparator has no `astext` attr.
-        # `func.json_extract_path_text` is the one form that compiles
-        # cleanly against both `json` and `jsonb` columns and matches the
-        # text written by `log_audit_event(details={"username": ...})`.
-        per_user = base.filter(
-            func.json_extract_path_text(AuditLog.details, "username") == username
+        per_user = db.query(AuditLog).filter(
+            AuditLog.action.in_(list(username_actions or actions)),
+            AuditLog.timestamp >= window_start,
+            _audit_username() == username,
         ).count()
-        if per_user >= LOGIN_THROTTLE_PER_USERNAME:
+        if per_user >= per_username:
             return True
 
     if ip_address:

@@ -40,6 +40,11 @@ describe('locationAfterProjectSwitch', () => {
     // /tool-activity is cross-project by design (App.tsx): the analyst
     // arrives with a timestamp, not knowing which project owns the activity.
     expect(locationAfterProjectSwitch('/tool-activity', '?start=2026-09-01')).toBeNull();
+    // Opening a row's host on the cross-project remediation page selects the
+    // row's project first: the filtered list must still be what Back returns to.
+    expect(locationAfterProjectSwitch('/remediation-deadlines', '?state=overdue')).toBeNull();
+    // The project's own page is not that page.
+    expect(locationAfterProjectSwitch('/remediation', '?state=overdue')).toBe('/remediation');
   });
 });
 

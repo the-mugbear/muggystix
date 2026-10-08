@@ -16,6 +16,7 @@ import re
 import shutil
 import threading
 import time
+import zlib
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -97,7 +98,7 @@ def carry_upload_identity(db: Session, job: IngestionJob) -> None:
 # v2.328.0 — every lifecycle write (claim / heartbeat / complete / fail /
 # cancel / retry / reap) goes through the shared transition layer so the
 # ingestion and report queues cannot drift on fencing or locking again.
-_transitions = JobTransitions(IngestionJob, name="ingestion")
+_transitions = JobTransitions(IngestionJob, name="ingestion", reap_counter="reap_count")
 
 # Canonical upload allowlist — the single source of truth for which file
 # extensions ingestion accepts.  Enforced inside ``create_job`` so EVERY
@@ -152,7 +153,6 @@ def note_scan_created(db: Session, scan_id: Optional[int]) -> None:
     job_id = getattr(_active_job, "job_id", None)
     if scan_id is None or job_id is None or getattr(_active_job, "db", None) is not db:
         return
-    _active_job.scan_id = scan_id
     written = _transitions.stamp(
         db, job_id, getattr(_active_job, "claimed_at", None), in_progress_scan_id=scan_id,
     )
@@ -165,34 +165,6 @@ def note_scan_created(db: Session, scan_id: Optional[int]) -> None:
             user_message="Cancelled or superseded before the import started",
         )
     db.commit()
-
-
-def note_ports_created(db: Session, port_ids: Sequence[int]) -> None:
-    """Called by an import path that writes NO ``PortScanHistory`` (Nessus)
-    just before each batch commit, with every port id the attempt has created
-    so far (review 2026-10-01 R2).
-
-    Under an active job this stamps ``ingestion_jobs.in_progress_created_port_ids``
-    in the CALLER'S transaction and does not commit: the list and the ports it
-    names become durable together, in the commit the next heartbeat performs,
-    so a hard kill between commits cannot leave a committed port the job does
-    not name.  ``delete_partial_scan`` reads it; nothing else does.
-
-    No active job (a service driven directly): does nothing.
-    """
-    job_id = getattr(_active_job, "job_id", None)
-    if job_id is None or getattr(_active_job, "db", None) is not db:
-        return
-    ids = [int(i) for i in port_ids]
-    written = _transitions.stamp(
-        db, job_id, getattr(_active_job, "claimed_at", None),
-        in_progress_created_port_ids=ids or None,
-    )
-    if written == 0:
-        raise ParseFailure(
-            "Job no longer owned by this attempt",
-            user_message="Cancelled or superseded before the import finished",
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +253,75 @@ def lock_project_for_cleanup(
         db.execute(text("SET LOCAL lock_timeout TO DEFAULT"))
 
 
+# ---------------------------------------------------------------------------
+# Is the worker that claimed a job still there?
+#
+# The heartbeat answers only after the reaper's window (1.5 × the job
+# timeout): a hard-killed worker's job sat ``processing`` that long, other
+# imports of the same hosts ran meanwhile, and the cleanup of its partial
+# scan then had to work out what was still only its own.
+#
+# So the worker also holds a SESSION-level advisory lock for the attempt, on
+# a connection opened for that job alone.  A worker that dies — however it
+# dies — drops the connection and with it the lock.  "``processing`` and the
+# attempt's lock is free" therefore means the attempt is over, at once; the
+# time-based rule stays as the fallback for a worker that is alive but
+# wedged.  The fencing token still decides what a stale attempt may write.
+#
+# The key is per ATTEMPT (job id + claim token), not per job: an attempt the
+# time-based rule reaped may still be alive and holding its lock, and the
+# next claim of the same job must not wait on it or be mistaken for it.
+# Two-integer key space with its own class — the project import lock uses
+# another class, the upload guard and the migration lock the bigint form.
+_JOB_LIVENESS_LOCK_CLASS = 0x42534A4C  # "BSJL"
+
+
+def _liveness_key(job_id: int, claimed_at: datetime) -> Dict[str, int]:
+    token = claimed_at if claimed_at.tzinfo else claimed_at.replace(tzinfo=timezone.utc)
+    micros = (token - datetime(1970, 1, 1, tzinfo=timezone.utc)) // timedelta(microseconds=1)
+    crc = zlib.crc32(f"{int(job_id)}:{micros}".encode())
+    return {"cls": _JOB_LIVENESS_LOCK_CLASS, "attempt": crc - (1 << 32) if crc >= (1 << 31) else crc}
+
+
+def hold_attempt_liveness(db: Session, job_id: int, claimed_at: datetime):
+    """Take the attempt's liveness lock on a connection of its own and return
+    that connection; closing it (or the process dying) releases the lock.
+    None off PostgreSQL, and None when the lock could not be taken — the
+    caller then does not claim."""
+    if not _on_postgres(db):
+        return None
+    bind = db.get_bind()
+    conn = getattr(bind, "engine", bind).connect().execution_options(isolation_level="AUTOCOMMIT")
+    # Out of the pool: a session-level lock survives the pool's reset, so a
+    # connection handed back would keep it.  Detached, close() ends the
+    # database session — exactly what a dying worker does.
+    conn.detach()
+    try:
+        held = conn.execute(
+            text("SELECT pg_try_advisory_lock(:cls, :attempt)"), _liveness_key(job_id, claimed_at),
+        ).scalar()
+    except Exception:
+        conn.close()
+        raise
+    if not held:
+        conn.close()
+        return None
+    return conn
+
+
+def attempt_is_over(db: Session, job_id: int, claimed_at: Optional[datetime]) -> bool:
+    """True when nobody holds the liveness lock of this attempt: its worker
+    is gone (or finished).  Asked with a transaction-level try-lock, which
+    ``db``'s commit or rollback releases.  False when it cannot be known —
+    no claim token, not PostgreSQL — so the caller falls back to the
+    heartbeat's age."""
+    if not isinstance(claimed_at, datetime) or not _on_postgres(db):
+        return False
+    return bool(db.execute(
+        text("SELECT pg_try_advisory_xact_lock(:cls, :attempt)"), _liveness_key(job_id, claimed_at),
+    ).scalar())
+
+
 def _project_of_scan(db: Session, scan_id: int) -> Optional[int]:
     """The project a partial scan belongs to.  NetExec and gnmap create their
     scan with no project until the import succeeds, so the job that names the
@@ -301,36 +342,30 @@ def _project_of_scan(db: Session, scan_id: int) -> Optional[int]:
     return None
 
 
-def _seen_by_another_scan(vuln, scan_id: Optional[int]):
+def _seen_by_another_scan(vuln, scan_id: int):
     """A scanner observation that is not the attempt's alone: another scan (or
     no scan — a backfill, a deleted first recorder) first recorded it, or a
     later scan has re-observed it (``last_seen_scan_id``; ``scan_id`` never
-    moves).  With no scan id (the attempt's scan row is already gone) every
-    observation counts."""
-    from sqlalchemy import and_, or_, true
+    moves)."""
+    from sqlalchemy import and_, or_
 
-    if scan_id is None:
-        return true()
     return or_(
         vuln.scan_id.is_distinct_from(scan_id),
         and_(vuln.last_seen_scan_id.isnot(None), vuln.last_seen_scan_id != scan_id),
     )
 
 
-def _port_is_only_this_attempts(port_id, scan_id: Optional[int]) -> List[Any]:
+def _port_is_only_this_attempts(port_id, scan_id: int) -> List[Any]:
     """The guards under which a port an attempt created may be deleted: no
     OTHER scan saw it and nothing else refers to it.  One list for the ports
-    found through port history and for the ones a job row remembers.
+    found through the row's own stamp (``ports_v2.created_scan_id``) and for
+    the ones found through port history.
 
     "Saw it" is more than port history (S1): Nessus writes none, so a later
     scan's re-observation shows only as ``ports_v2.last_updated_scan_id`` and
     as ``vulnerabilities.last_seen_scan_id`` on a row the attempt first
-    recorded.  Both protect the port.
-
-    ``scan_id`` None (the attempt's scan row is already gone): any history,
-    observation, script or web row at all protects the port, and so does a
-    scan named as its last updater."""
-    from sqlalchemy import exists, true
+    recorded.  Both protect the port."""
+    from sqlalchemy import exists
     from sqlalchemy.orm import aliased
 
     from app.db import models
@@ -341,18 +376,14 @@ def _port_is_only_this_attempts(port_id, scan_id: Optional[int]) -> List[Any]:
     this_port = aliased(models.Port)
 
     def another_scan(column):
-        return column.is_distinct_from(scan_id) if scan_id is not None else true()
-
-    # A scan NAMED as the last updater that is not this one.  NULL does not
-    # protect: it means the scan that last updated the port was deleted.
-    updated_by_another = (
-        this_port.last_updated_scan_id != scan_id if scan_id is not None
-        else this_port.last_updated_scan_id.isnot(None)
-    )
+        return column.is_distinct_from(scan_id)
 
     return [
         ~exists().where(other_ph.port_id == port_id, another_scan(other_ph.scan_id)),
-        ~exists().where(this_port.id == port_id, updated_by_another),
+        # A scan NAMED as the last updater that is not this one.  NULL does
+        # not protect: it means the scan that last updated the port was
+        # deleted.
+        ~exists().where(this_port.id == port_id, this_port.last_updated_scan_id != scan_id),
         ~exists().where(models.Annotation.port_id == port_id),
         ~exists().where(FindingHost.port_id == port_id),
         ~exists().where(Vulnerability.port_id == port_id, _seen_by_another_scan(Vulnerability, scan_id)),
@@ -362,58 +393,11 @@ def _port_is_only_this_attempts(port_id, scan_id: Optional[int]) -> List[Any]:
     ]
 
 
-_PORT_ID_CHUNK = 5000
-
 # How long a cleanup started from an API request (a cancel) waits for the
 # project's import lock before giving up; the reaper's sweep finishes it.
 _API_CLEANUP_LOCK_TIMEOUT_S = 15
 # How long the reaper's sweep leaves a failed job whose cleanup failed.
 _LEFTOVER_RETRY_SECONDS = 600
-
-
-def delete_recorded_ports(db: Session, port_ids: Sequence[Any], scan_id: Optional[int]) -> int:
-    """Delete the ports in ``port_ids`` (a job row's record of what its
-    attempt created) that are still only that attempt's.  A port another scan
-    has since observed, or that anything refers to, stays.  Ids that no longer
-    exist (their host was deleted, a rolled-back record) match nothing."""
-    from sqlalchemy import delete
-
-    from app.db import models
-
-    ids = sorted({i for i in port_ids if isinstance(i, int) and not isinstance(i, bool)})
-    removed = 0
-    for start in range(0, len(ids), _PORT_ID_CHUNK):
-        removed += db.execute(
-            delete(models.Port)
-            .where(models.Port.id.in_(ids[start:start + _PORT_ID_CHUNK]))
-            .where(*_port_is_only_this_attempts(models.Port.id, scan_id))
-            .execution_options(synchronize_session=False)
-        ).rowcount
-    return removed
-
-
-def _delete_job_recorded_ports(db: Session, scan_id: int) -> int:
-    """Delete the ports recorded on the job(s) whose in-progress scan is
-    ``scan_id`` and clear the record.  Keyed on the SCAN, not on a job id: a
-    stale attempt cleaning up after itself must never read the list a newer
-    attempt of the same job is writing (that one names a different scan)."""
-    from sqlalchemy import select, update
-
-    rows = db.execute(
-        select(IngestionJob.id, IngestionJob.in_progress_created_port_ids)
-        .where(IngestionJob.in_progress_scan_id == scan_id)
-    ).all()
-    removed = 0
-    for job_id, port_ids in rows:
-        if not isinstance(port_ids, list):
-            continue
-        removed += delete_recorded_ports(db, port_ids, scan_id)
-        db.execute(
-            update(IngestionJob).where(IngestionJob.id == job_id)
-            .values(in_progress_created_port_ids=None)
-            .execution_options(synchronize_session=False)
-        )
-    return removed
 
 
 def _rehome_rows_a_later_scan_saw(db: Session, scan_id: int) -> int:
@@ -652,9 +636,10 @@ def delete_partial_scan(
       to it (``_host_is_only_this_attempts``): work is never deleted to tidy
       an import, and when in doubt the host stays;
     * on the hosts that stay, ports this scan created that no other scan saw
-      and nothing else refers to — found through ``port_scan_history``, and,
-      for an import that writes none (Nessus), through the ids its job row
-      remembers (``in_progress_created_port_ids``); the same guards for both;
+      and nothing else refers to — found through the stamp every insert puts
+      on the row (``ports_v2.created_scan_id``; Nessus writes no port
+      history, so for it the stamp is the only record) and through
+      ``port_scan_history``; the same guards for both;
     * scanner observations this scan first recorded and no later scan saw,
       unless a finding or a proposal refers to them, and the name
       observations it made;
@@ -687,18 +672,28 @@ def delete_partial_scan(
     ).rowcount
 
     # Ports of the deleted hosts went with them; these are on hosts that stay.
+    # The row's own stamp names the import that inserted it — the only record
+    # for an import that writes no port history (Nessus).  A NULL stamp (a row
+    # older than the column, or one whose creating scan is gone) matches no
+    # scan, so such a port is never deleted here.
+    ports = db.execute(
+        delete(models.Port)
+        .where(models.Port.created_scan_id == scan_id)
+        .where(*_port_is_only_this_attempts(models.Port.id, scan_id))
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    # ...and the ports whose introduction passed to this scan when the scan
+    # that inserted them was cleaned up (``_rehome_rows_a_later_scan_saw``
+    # moves ``port_created``; the stamp went with the deleted scan).
     created_ports = (
         select(PH.port_id)
         .where(PH.scan_id == scan_id, PH.port_created.is_(True))
         .where(*_port_is_only_this_attempts(PH.port_id, scan_id))
     )
-    ports = db.execute(
+    ports += db.execute(
         delete(models.Port).where(models.Port.id.in_(created_ports))
         .execution_options(synchronize_session=False)
     ).rowcount
-    # ...and the ports an attempt that writes no port history (Nessus) said it
-    # created, remembered on the job row that names this scan as in progress.
-    ports += _delete_job_recorded_ports(db, scan_id)
 
     # Only what no other scan has seen.  The re-observed ones were moved to
     # the scan that saw them above; the second condition is the same rule
@@ -879,9 +874,6 @@ class IngestionService:
             )
             logger.critical(msg)
             raise RuntimeError(msg) from exc
-        # Job IDs that have been requested to cancel.  Checked by
-        # update_heartbeat so long-running parsers can bail out early.
-        self._cancelled: set[int] = set()
         # Failed jobs whose leftover cleanup failed: job id -> monotonic time
         # before which the reaper's sweep does not try again.
         self._leftover_retry_at: Dict[int, float] = {}
@@ -1076,7 +1068,6 @@ class IngestionService:
         notify is swallowed below.  On the caller's session the notify rides
         the connection the request already has; NOTIFY is delivered at commit.
         """
-        self._cancelled.discard(job_id)
         try:
             if db is not None:
                 db.execute(text("SELECT pg_notify('ingestion_jobs', :jid)"), {"jid": str(job_id)})
@@ -1101,11 +1092,12 @@ class IngestionService:
                     logger.debug("rollback after failed pg_notify also failed", exc_info=True)
 
     def cancel_job(self, job_id: int) -> bool:
-        """Request cancellation of a running job.
+        """Request cancellation of a queued or running job.
 
+        The cancel IS the row: this runs in the API process, the parse in the
+        worker's, and the worker sees ``failed`` on its next heartbeat.
         Returns True if the job was in a cancellable state.
         """
-        self._cancelled.add(job_id)
         with _session_module.SessionLocal() as db:
             # Locked read-check-write (job_transitions.cancel): a worker's
             # SKIP LOCKED claim cannot land between the status check and
@@ -1127,15 +1119,17 @@ class IngestionService:
             # be claimed again; if an earlier, dead attempt left a scan on it,
             # nothing else would remove it.  A running parse (token set)
             # deletes its own scan when its next heartbeat sees the cancel —
-            # unless its worker is dead (M5): a lease already past the
-            # reaper's window has nobody left to see the cancel, so the scan
-            # is removed here.  (A worker that dies later, between the cancel
-            # and its next heartbeat, is caught by the reaper's sweep of
-            # failed jobs — ``_discard_failed_jobs_leftovers``.)
-            has_leftover = isinstance(job.in_progress_scan_id, int) or isinstance(
-                job.in_progress_created_port_ids, list
+            # unless its worker is dead (M5): an attempt whose liveness lock
+            # nobody holds, or whose lease is past the reaper's window, has
+            # nobody left to see the cancel, so the scan is removed here.  (A
+            # worker that dies later, between the cancel and its next
+            # heartbeat, is caught by the reaper's sweep of failed jobs —
+            # ``_discard_failed_jobs_leftovers``.)
+            has_leftover = isinstance(job.in_progress_scan_id, int)
+            nobody_will_clean = (
+                job.started_at is None or self._lease_is_dead(job)
+                or (has_leftover and attempt_is_over(db, job_id, job.started_at))
             )
-            nobody_will_clean = job.started_at is None or self._lease_is_dead(job)
             db.commit()
             if has_leftover and nobody_will_clean:
                 # Bounded wait: this runs in an API request.
@@ -1162,38 +1156,31 @@ class IngestionService:
     def requeue_job(self, job_id: int) -> str:
         """Re-queue a FAILED job whose uploaded file is still on disk.
 
-        Mirrors the orphan reaper's requeue (``reap_orphaned_jobs``): a parse
-        that failed for a transient reason (a DB blip, a since-fixed parser
-        bug) can be retried without forcing the operator to locate and
-        re-upload the original — often multi-GB — scan file, which is still
-        on disk because only *successful* parses unlink it.
+        A parse that failed for a transient reason (a DB blip, a since-fixed
+        parser bug) can be retried without forcing the operator to locate and
+        re-upload the original — often multi-GB — scan file, which is
+        retained after a failure.  The same failed → queued path as the
+        format review's start (``staged_import_service.queue_job``), keeping
+        the job's format and tool: the file check and the duplicate guard run
+        under the row lock.
 
         Returns ``"requeued"`` on success, or a reason code (``"not_failed"``
         / ``"file_missing"`` / ``"not_found"``) so the endpoint can surface a
-        precise error.
+        precise error.  Raises :class:`DuplicateUploadError` when another job
+        has imported (or is importing) this exact file since.
         """
-        self._cancelled.discard(job_id)
-        with _session_module.SessionLocal() as db:
-            def _file_present(job) -> Optional[str]:
-                return None if (job.storage_path and Path(job.storage_path).exists()) else "file_missing"
+        from app.services.staged_import_service import queue_job
 
+        with _session_module.SessionLocal() as db:
             try:
-                job = _transitions.retry(
-                    db, job_id,
-                    allowed_from=("failed",),
-                    precondition=_file_present,
-                    increment_retry=True,
-                )
+                job = queue_job(db, job_id, allowed_from=("failed",))
             except JobNotTransitionable as exc:
                 # ``status`` is either the actual state or the precondition's
                 # reason code.
                 return "file_missing" if exc.status == "file_missing" else "not_failed"
-            if job is None:
+            except LookupError:
                 return "not_found"
-            job.message = f"Re-queued by user (attempt {job.retry_count})."
-            retry_count = job.retry_count
-            db.commit()
-            logger.info("Re-queued failed ingestion job %s (attempt %d)", job_id, retry_count)
+            logger.info("Re-queued failed ingestion job %s (attempt %d)", job_id, job.retry_count)
             # Wake the worker immediately (same pg_notify hint as the upload
             # path) — on THIS session, not a third connection.
             self.enqueue_job(job_id, db=db)
@@ -1205,12 +1192,12 @@ class IngestionService:
         job_id: int,
         progress: Optional[str] = None,
         *,
-        claimed_at: Optional[datetime] = None,
+        claimed_at: datetime,
     ) -> None:
         """Update heartbeat timestamp and optional progress text.
 
         ``claimed_at`` is the attempt's fencing token (the ``started_at`` the
-        claim wrote — see ``poll_and_run_one``).  When given, the write is
+        claim wrote — see ``poll_and_run_one``).  The write is
         conditioned on ``status = 'processing' AND started_at = :claimed`` so
         a stale attempt — one the orphan reaper re-queued and a peer
         re-claimed — can neither keep the new owner's lease warm nor
@@ -1220,13 +1207,6 @@ class IngestionService:
         Raises ``ParseFailure`` if the job has been cancelled or has exceeded
         the configured timeout, giving the active parser a chance to bail out.
         """
-        # In-memory check (same process only — e.g. tests or single-process mode)
-        if job_id in self._cancelled:
-            raise ParseFailure(
-                "Job cancelled",
-                user_message="Cancelled by user",
-            )
-
         # A long parse keeps the container's liveness file fresh, and a worker
         # asked to stop hands the job back NOW instead of being SIGKILLed
         # mid-parse (review 2026-09-23 R3: the job then sat 'processing' until
@@ -1252,54 +1232,37 @@ class IngestionService:
             # parser's pending batch durable, and a batch committed by an
             # attempt that no longer owns the job lands after the cleanup that
             # removed its scan — hosts with no scan behind them.  The status
-            # is read in this same transaction: a cancel from the API process
-            # is a row another connection changed, never the in-memory set.
+            # is read in this same transaction: a cancel is the row the API
+            # process changed.
             from sqlalchemy import select as _select
 
             status = db.execute(
                 _select(IngestionJob.status).where(IngestionJob.id == job_id)
             ).scalar()
+            db.rollback()
             if status == "failed":
-                db.rollback()
                 raise ParseFailure("Job cancelled", user_message="Cancelled by user")
-            if claimed_at is not None:
-                db.rollback()
-                logger.warning(
-                    "Ingestion job %s: stale attempt (claimed %s) — heartbeat skipped, "
-                    "pending batch rolled back; another attempt owns the job",
-                    job_id, claimed_at,
-                )
-                raise ParseFailure(
-                    "Job re-claimed by another worker",
-                    user_message="Superseded by a newer attempt",
-                )
+            logger.warning(
+                "Ingestion job %s: stale attempt (claimed %s) — heartbeat skipped, "
+                "pending batch rolled back; another attempt owns the job",
+                job_id, claimed_at,
+            )
+            raise ParseFailure(
+                "Job re-claimed by another worker",
+                user_message="Superseded by a newer attempt",
+            )
         db.commit()
 
-        # Single DB read for both cancellation (cross-process) and timeout
-        # checks.  The two columns only: the row also carries the created-port
-        # list, megabytes on a large Nessus import, and this runs every batch.
-        from sqlalchemy import select as _select
-
-        job = db.execute(
-            _select(IngestionJob.status, IngestionJob.started_at).where(IngestionJob.id == job_id)
-        ).first()
-        if job and job.status == "failed":
+        # The fenced UPDATE wrote the row, so it was 'processing' and its
+        # ``started_at`` is the token this attempt holds: the timeout needs no
+        # second read.  (A cancel landing after the commit is seen by the
+        # next heartbeat, or by the fenced completion.)
+        elapsed = (now - claimed_at).total_seconds()
+        if elapsed > settings.INGESTION_JOB_TIMEOUT:
             raise ParseFailure(
-                "Job cancelled",
-                user_message="Cancelled by user",
+                f"Job timed out after {int(elapsed)}s (limit {settings.INGESTION_JOB_TIMEOUT}s)",
+                user_message=f"Parse timed out after {int(elapsed // 60)} minutes",
             )
-        if job and job.started_at:
-            # Converted, never stripped: a session time zone other than UTC
-            # would otherwise shift the elapsed time by its offset.
-            started = job.started_at
-            if started.tzinfo is None:
-                started = started.replace(tzinfo=timezone.utc)
-            elapsed = (now - started).total_seconds()
-            if elapsed > settings.INGESTION_JOB_TIMEOUT:
-                raise ParseFailure(
-                    f"Job timed out after {int(elapsed)}s (limit {settings.INGESTION_JOB_TIMEOUT}s)",
-                    user_message=f"Parse timed out after {int(elapsed // 60)} minutes",
-                )
 
     def _validate_content_matches_extension(self, destination: Path, raw_name: str) -> None:
         """Peek at the first 1 KB of the uploaded file and verify it
@@ -1442,10 +1405,10 @@ class IngestionService:
 
         A job is 'orphaned' if its status is 'processing' but the
         worker that owned it has died without writing a final status.
-        We detect this via ``last_heartbeat``: ``update_heartbeat`` is
-        called every few seconds by the active parser, so any job
-        whose heartbeat is older than 3× the configured timeout is
-        almost certainly a dead worker's leftover row.
+        Two ways to know: nobody holds the attempt's liveness lock
+        (``attempt_is_over`` — exact, and immediate), or its heartbeat is
+        older than ``INGESTION_JOB_TIMEOUT × INGESTION_ORPHAN_CUTOFF_MULTIPLIER``
+        (a worker that is alive but wedged).
 
         Returns the number of jobs reaped — the worker logs this so
         operators can see orphan detection happening.  Called once per
@@ -1462,32 +1425,36 @@ class IngestionService:
                 # doesn't dead-end the upload — but only while we're under the
                 # retry cap AND the stored upload is still on disk (re-running
                 # without it just fails again at the FileNotFoundError guard).
-                # ``job`` is locked and its retry_count already incremented.
+                # ``job`` is locked and its reap_count already incremented:
+                # the cap is on the reaper's own re-queues, not on failures
+                # or the operator's retries (retry_count counts those too).
                 file_present = bool(job.storage_path) and Path(job.storage_path).exists()
-                if job.retry_count <= max_retries and file_present:
+                how = (
+                    f"no heartbeat >{int(cutoff_seconds)}s" if self._lease_is_dead(job)
+                    else "its worker is gone"
+                )
+                if job.reap_count <= max_retries and file_present:
                     logger.warning(
-                        "Re-queued orphaned ingestion job %s (attempt %d/%d, started_at=%s, last_heartbeat=%s)",
-                        job.id, job.retry_count, max_retries, job.started_at, job.last_heartbeat,
+                        "Re-queued orphaned ingestion job %s (%s; auto-retry %d/%d, started_at=%s, "
+                        "last_heartbeat=%s)",
+                        job.id, how, job.reap_count, max_retries, job.started_at, job.last_heartbeat,
                     )
                     return "requeue", {
-                        "last_error": (
-                            f"Orphaned (no heartbeat >{int(cutoff_seconds)}s) — worker likely "
-                            "crashed; automatically re-queued."
-                        ),
-                        "message": f"Re-queued after orphan detection (attempt {job.retry_count}/{max_retries}).",
+                        "last_error": f"Orphaned ({how}) — worker likely crashed; automatically re-queued.",
+                        "message": f"Re-queued after orphan detection (attempt {job.reap_count}/{max_retries}).",
                     }
                 reason = (
                     f"exceeded {max_retries} auto-retries"
-                    if job.retry_count > max_retries
+                    if job.reap_count > max_retries
                     else "uploaded file no longer present"
                 )
                 err = (
-                    f"Orphaned — no heartbeat for >{int(cutoff_seconds)}s and {reason}; "
+                    f"Orphaned — {how} and {reason}; "
                     "worker likely crashed. Re-upload to retry."
                 )
                 logger.warning(
-                    "Failed orphaned ingestion job %s (%s, retry_count=%d)",
-                    job.id, reason, job.retry_count,
+                    "Failed orphaned ingestion job %s (%s, reap_count=%d)",
+                    job.id, reason, job.reap_count,
                 )
                 return "fail", {"error_message": err, "message": err, "last_error": err}
 
@@ -1496,6 +1463,7 @@ class IngestionService:
             # meantime keeps its job — see job_transitions.requeue_or_fail_stale.
             reaped = _transitions.requeue_or_fail_stale(
                 db, cutoff=cutoff, max_retries=max_retries, decide=_decide,
+                attempt_is_over=lambda job_id, started_at: attempt_is_over(db, job_id, started_at),
             )
             if not reaped.total:
                 db.rollback()
@@ -1552,15 +1520,39 @@ class IngestionService:
             if claimed is None:
                 return False
             job_id, claimed_at = claimed
-            db.commit()
+            # The attempt's liveness lock, taken BEFORE the claim is visible:
+            # no reaper can see the row ``processing`` with its lock free
+            # while this worker lives.
+            liveness = hold_attempt_liveness(db, job_id, claimed_at)
+            if liveness is None and _on_postgres(db):
+                db.rollback()
+                logger.warning(
+                    "Ingestion job %s: could not take the attempt's liveness lock — left queued",
+                    job_id,
+                )
+                return False
+            try:
+                db.commit()
+            except Exception:
+                if liveness is not None:
+                    liveness.close()
+                raise
         except Exception:
             db.rollback()
             raise
         finally:
             db.close()
 
-        # Now process outside the row-lock transaction.
-        self._run_job(job_id, claimed_at=claimed_at)
+        # Now process outside the row-lock transaction.  The lock goes when
+        # the attempt is over, whatever ended it.
+        try:
+            self._run_job(job_id, claimed_at=claimed_at)
+        finally:
+            if liveness is not None:
+                try:
+                    liveness.close()
+                except Exception:  # noqa: BLE001 — a dead connection has released it already
+                    logger.debug("closing the liveness connection of job %s failed", job_id, exc_info=True)
         return True
 
     def _discard_partial_scan(
@@ -1599,18 +1591,32 @@ class IngestionService:
         )
         return True
 
-    def _discard_attempt_scan(self, db: Session, parser: object) -> Optional[bool]:
-        """Delete the scan THIS attempt's parser committed, if it got that
-        far.  The id comes from the parser (``_created_scan_id``) or from what
-        it announced through ``note_scan_created``.  True when one was
-        deleted, False when one exists and could NOT be deleted, None when
-        the attempt had not committed a scan."""
-        scan_id = getattr(parser, "_created_scan_id", None)
-        if not isinstance(scan_id, int):
-            scan_id = getattr(_active_job, "scan_id", None)
-        _active_job.scan_id = None
+    def _discard_attempt_scan(self, db: Session, job_id: int) -> Optional[bool]:
+        """Delete the scan THIS attempt committed, if it got that far.  True
+        when one was deleted, False when one exists and could NOT be deleted,
+        None when the attempt has no scan to delete.
+
+        The scan is the one the job row names (``in_progress_scan_id``, which
+        every parser stamps through ``note_scan_created`` in the transaction
+        that commits its scan) — the same pointer the cleanup of a dead
+        attempt reads, so there is one record of "this attempt's scan".  It
+        is read only while the row still carries this attempt's claim token:
+        once the job has been re-queued or re-claimed the pointer is the next
+        owner's to act on (its claim deletes this attempt's scan, or the
+        pointer already names its own)."""
+        from sqlalchemy import select
+
+        claimed_at = getattr(_active_job, "claimed_at", None)
+        if claimed_at is None or getattr(_active_job, "job_id", None) != job_id:
+            return None
+        db.rollback()
+        scan_id = db.execute(
+            select(IngestionJob.in_progress_scan_id)
+            .where(IngestionJob.id == job_id, IngestionJob.started_at == claimed_at)
+        ).scalar()
         if isinstance(scan_id, int):
             return self._discard_partial_scan(db, scan_id, why="import did not finish")
+        db.rollback()
         return None
 
     def _discard_dead_attempt_scan(
@@ -1632,39 +1638,14 @@ class IngestionService:
             return True
         stale_scan_id = job.in_progress_scan_id if job is not None else None
         if not isinstance(stale_scan_id, int):
-            # R2 — the attempt's scan row is already gone (someone deleted the
-            # partial scan; the FK nulled the pointer) but the job still
-            # remembers ports it created.  Remove the ones nothing at all
-            # refers to and drop the record.
-            recorded = job.in_progress_created_port_ids if job is not None else None
-            if isinstance(recorded, list):
-                was_paused = getattr(_import_lock, "paused", False)
-                _import_lock.paused = True
-                try:
-                    project_id = job.project_id
-                    db.rollback()
-                    lock_project_for_cleanup(db, project_id, lock_timeout_s=lock_timeout_s)
-                    removed = delete_recorded_ports(db, recorded, None)
-                    db.execute(
-                        text("UPDATE ingestion_jobs SET in_progress_created_port_ids = NULL WHERE id = :id"),
-                        {"id": job_id},
-                    )
-                    db.commit()
-                    logger.info(
-                        "Job %s: removed %d port(s) a dead attempt created (its scan was already gone)",
-                        job_id, removed,
-                    )
-                except Exception:  # noqa: BLE001 — best-effort, like _discard_partial_scan
-                    db.rollback()
-                    logger.warning("Could not remove a dead attempt's ports for job %s", job_id, exc_info=True)
-                    return False
-                finally:
-                    _import_lock.paused = was_paused
+            # Nothing named: the attempt committed no scan, or its scan row is
+            # already gone (deleted from the Scans page — the FK cleared the
+            # pointer and, with it, the stamp on the ports it had created,
+            # which now follow that delete's rule and stay).
             return True
         if stale_scan_id == job.scan_id:
             # The scan the job FINISHED with — never an attempt's leftover.
             job.in_progress_scan_id = None
-            job.in_progress_created_port_ids = None
             db.commit()
             return True
         return self._discard_partial_scan(
@@ -1681,25 +1662,27 @@ class IngestionService:
         an operator retries it.  Two ways to get there: a ``processing`` job
         cancelled while its worker was dead (the cancel leaves the cleanup to
         the attempt's next heartbeat, which never comes), and a cleanup that
-        itself failed.  Only leases past the reaper's window (``cutoff``) are
-        touched — a live attempt that has not yet seen its cancel cleans up
-        after itself.  A job whose cleanup fails is tried again in ten
+        itself failed.  Only an attempt that is over is touched — nobody holds
+        its liveness lock, or its lease is past the reaper's window
+        (``cutoff``): a live attempt that has not yet seen its cancel cleans
+        up after itself.  A job whose cleanup fails is tried again in ten
         minutes, not on every poll.  Returns how many were cleaned."""
-        from sqlalchemy import or_, select
+        from sqlalchemy import select
 
         try:
-            job_ids = db.execute(
-                select(IngestionJob.id)
+            rows = db.execute(
+                select(IngestionJob.id, IngestionJob.started_at, IngestionJob.last_heartbeat)
                 .where(
                     IngestionJob.status == "failed",
-                    or_(
-                        IngestionJob.in_progress_scan_id.isnot(None),
-                        IngestionJob.in_progress_created_port_ids.isnot(None),
-                    ),
-                    or_(IngestionJob.last_heartbeat.is_(None), IngestionJob.last_heartbeat < cutoff),
+                    IngestionJob.in_progress_scan_id.isnot(None),
                 )
                 .order_by(IngestionJob.id)
-            ).scalars().all()
+            ).all()
+            job_ids = [
+                job_id for job_id, started_at, last_heartbeat in rows
+                if last_heartbeat is None or last_heartbeat < cutoff
+                or attempt_is_over(db, job_id, started_at)
+            ]
             db.rollback()
         except Exception:  # noqa: BLE001 — a sweep, never the reaper's result
             db.rollback()
@@ -1721,7 +1704,7 @@ class IngestionService:
         self,
         db: Session,
         job_id: int,
-        claimed_at: Optional[datetime],
+        claimed_at: datetime,
         *,
         error_message: str,
         message: Optional[str],
@@ -1730,8 +1713,7 @@ class IngestionService:
     ) -> bool:
         """Transition processing→failed for THIS attempt only.
 
-        Conditioned on the fencing token (when the caller has one) so a
-        stale attempt's late failure can't clobber a row the reaper already
+        Conditioned on the fencing token so a stale attempt's late failure can't clobber a row the reaper already
         re-queued or a peer re-claimed.  Returns True if the row was written.
         """
         cols = {
@@ -1757,7 +1739,7 @@ class IngestionService:
         self._discard_dead_attempt_scan(db, job_id)
         return True
 
-    def _run_job(self, job_id: int, claimed_at: Optional[datetime] = None) -> None:
+    def _run_job(self, job_id: int, claimed_at: datetime) -> None:
         db = _session_module.SessionLocal()
         import_lock = ExitStack()
         try:
@@ -1766,43 +1748,19 @@ class IngestionService:
                 logger.error("Ingestion job %s not found", job_id)
                 return
 
-            if job_id in self._cancelled:
-                # Fenced like every other lifecycle write: only THIS attempt's
-                # processing row is failed.  A row the reaper re-queued or a
-                # peer re-claimed in the meantime is not ours to touch.
-                written = _transitions.fail(
-                    db, job_id, claimed_at,
-                    error_message="Cancelled before processing started",
-                )
-                db.commit()
-                if written == 0:
-                    logger.warning(
-                        "Ingestion job %s: stale attempt (claimed %s) — "
-                        "cancel-before-start write skipped; the row is no longer "
-                        "this attempt's", job_id, claimed_at,
-                    )
-                else:
-                    # R1 — nothing will parse this job again; drop what an
-                    # earlier dead attempt left.
-                    self._discard_dead_attempt_scan(db, job_id)
-                return
-
             # Status already set to "processing" by poll_and_run_one;
             # set thread-local context so parsers can call report_progress()
             _active_job.service = self
             _active_job.db = db
             _active_job.job_id = job_id
             _active_job.claimed_at = claimed_at
-            _active_job.scan_id = None
 
             # R1 — a scan still named on the row belongs to an attempt that
             # died (hard kill, reaped lease) after committing it.  Delete it
             # before parsing, or this attempt imports into a second scan and
             # the first is orphaned.
             # (A real id only: test doubles answer every attribute truthily.)
-            if isinstance(job.in_progress_scan_id, int) or isinstance(
-                job.in_progress_created_port_ids, list
-            ):
+            if isinstance(job.in_progress_scan_id, int):
                 if not self._discard_dead_attempt_scan(db, job_id):
                     # M1 — the dead attempt's scan is still there.  Parsing
                     # now would stamp a NEW scan over the row's pointer and
@@ -1837,9 +1795,8 @@ class IngestionService:
             result = self._process_job(db, job)
             job = db.get(IngestionJob, job_id)  # Refresh job state
             if result:
-                # Cancellation wins (code-review Critical 2): cancel_job runs in
-                # the API process, so the in-proc _cancelled set isn't visible
-                # here — it flips the row to 'failed' in the DB.  Transition
+                # Cancellation wins: cancel_job runs in the API process and
+                # flips the row to 'failed' in the DB.  Transition
                 # processing→completed ATOMICALLY; a zero-row update means the job
                 # was cancelled (or reaped) and must NOT be resurrected as
                 # completed, even though the parser's data committed.
@@ -1847,10 +1804,8 @@ class IngestionService:
                 # attempt; this one's result must not be published over it.
                 # R1 — the scan is finished: it stops being "in progress" in
                 # the same statement that completes the job.
-                # R2 — and its record of created ports (cleanup only) goes too.
                 _claimed = _transitions.complete(
-                    db, job_id, claimed_at,
-                    in_progress_scan_id=None, in_progress_created_port_ids=None,
+                    db, job_id, claimed_at, in_progress_scan_id=None,
                 )
                 if not _claimed:
                     logger.info(
@@ -1870,7 +1825,6 @@ class IngestionService:
                         # Kept and linked, so no longer a leftover to delete
                         # if the operator re-queues the job (R1).
                         job.in_progress_scan_id = None
-                        job.in_progress_created_port_ids = None
                         job.message = (
                             f"Cancelled after the import had written scan #{_scan_id}: "
                             "its data is in the inventory. Delete that scan to undo it."
@@ -2019,8 +1973,7 @@ class IngestionService:
             _active_job.service = None
             _active_job.db = None
             _active_job.job_id = None
-            _active_job.scan_id = None
-            self._cancelled.discard(job_id)
+            _active_job.claimed_at = None
             import_lock.close()
             db.close()
 
@@ -2091,12 +2044,22 @@ class IngestionService:
                 # Cancellation / timeout is terminal for the whole job — it is
                 # NOT a "this parser didn't match, try the next one" failure.
                 # Falling through to the next attempt would re-run a cancelled
-                # or timed-out job under a second parser. Clean the session and
-                # let _run_job's ParseFailure handler mark the job.
+                # or timed-out job under a second parser. Remove what the
+                # attempt committed and let _run_job's handler mark the job.
                 db.rollback()
+                self._discard_attempt_scan(db, job_id)
                 raise
             except Exception as exc:
                 db.rollback()
+                # Every parser commits its scan as soon as it exists (and a
+                # heartbeat commits hosts), so a failure anywhere after that —
+                # in the parser, or between its return and the dispatcher's
+                # own commit — leaves a committed partial scan.  It is deleted
+                # HERE, once, before the next parser is tried: that parser's
+                # scan replaces the job's pointer, and nothing would name
+                # this one again.  If it cannot be deleted, no other parser
+                # is tried.
+                self._stop_if_not_discarded(self._discard_attempt_scan(db, job_id), exc)
                 elapsed = time.time() - start
                 logger.warning(
                     "Job %s: parser %s failed after %.2fs: %s",
@@ -2173,6 +2136,7 @@ class IngestionService:
         options = job.options or {}
         storage_path = job.storage_path
         filename = job.original_filename
+        job_id = job.id
 
         project_id = options.get("project_id")
         # v2.28.1 — initialise so every branch (Nessus, generic parser
@@ -2193,34 +2157,23 @@ class IngestionService:
         # both code paths.
         warnings_parts: List[str] = []
 
-        # The scan this attempt creates is announced by the parser
-        # (note_scan_created); a fallback attempt must not inherit the
-        # previous parser's.
-        _active_job.scan_id = None
-
+        # Whatever this raises, ``_process_job`` removes the scan the attempt
+        # committed (the job row names it) before anything else is tried.
         if parser_class is NessusIntegrationService:
             parser_instance = NessusIntegrationService(db)
-            try:
-                result = parser_instance.process_nessus_file(
-                    storage_path, filename, project_id=project_id,
-                    # v2.341.0 — resolved at upload time (form field, else the
-                    # project's setting); the worker only carries it through.
-                    skip_informational=bool(options.get("skip_informational", False)),
-                )
-            except Exception as exc:
-                # Review 2026-10-01 C1 — cancel, timeout and shutdown now
-                # propagate out of the Nessus import (they used to come back
-                # as ``success: False``); its committed batches are removed
-                # exactly as for every other streaming parser.
-                self._stop_if_not_discarded(self._discard_attempt_scan(db, parser_instance), exc)
-                raise
+            result = parser_instance.process_nessus_file(
+                storage_path, filename, project_id=project_id,
+                # v2.341.0 — resolved at upload time (form field, else the
+                # project's setting); the worker only carries it through.
+                skip_informational=bool(options.get("skip_informational", False)),
+            )
             if not result.get("success"):
                 # C1 — a failed Nessus import (an error, a truncated export,
                 # no host processed) used to leave the hosts and observations
                 # of its committed batches in a scan no job pointed at, and
                 # the re-upload the message asks for then made a second scan.
                 # A failed import leaves nothing behind, like the others.
-                removed = self._discard_attempt_scan(db, parser_instance)
+                removed = self._discard_attempt_scan(db, job_id)
                 nessus_error_msg = result.get("error") or result.get("message") or "Nessus processing failed"
                 user_msg = result.get("message") or result.get("error")
                 if removed and user_msg:
@@ -2279,18 +2232,8 @@ class IngestionService:
                     source_tool=_source_tool if isinstance(_source_tool, str) else None,
                 )
                 rejected_json_lines = end_rejection_tally(_tally)
-            except Exception as exc:
+            except Exception:
                 end_rejection_tally(_tally)
-                # Streaming parsers (nmap/gnmap/masscan) commit the Scan row and
-                # some hosts incrementally, so a mid-parse failure leaves a
-                # committed partial Scan. Without this, the dispatcher's rollback
-                # can't reach it and the fallback parser re-ingests the same file
-                # under a SECOND Scan, orphaning the first. Delete exactly the id
-                # this parser created (race-free — not a project-wide id sweep).
-                # Review 2026-10-01 R1/R2/R6: every parser now names its scan
-                # (a heartbeat commits, so each of them can leave one), and
-                # the hosts and ports only this attempt created go with it.
-                self._stop_if_not_discarded(self._discard_attempt_scan(db, parser), exc)
                 raise
             # Ensure scan and all hosts are tagged with the project
             if project_id and scan:

@@ -26,6 +26,7 @@ import {
   type PromotedEvidence,
 } from '../../services/api';
 import { useAgentTask } from '../../hooks/useAgentTask';
+import { useIsMounted } from '../../hooks/useIsMounted';
 import { formatApiError } from '../../utils/apiErrors';
 import { copyToClipboard } from '../../utils/clipboard';
 import { resolveCommand } from '../../utils/hostTests';
@@ -90,13 +91,13 @@ interface ResultPanelProps {
   onSaved: (updated: HostTest) => void;
   /** The test changed underneath: re-read and hand back the fresh copy. */
   onStale: (id: number) => Promise<HostTest | null>;
-  /** Is the page still on this host? A save that outlives the host it was
-   *  made on must change nothing on the host the analyst stepped to. */
-  isCurrentHost: (hostId: number) => boolean;
   onDraft: (dirty: boolean) => void;
 }
 
-const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onStale, onDraft, isCurrentHost }) => {
+const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onStale, onDraft }) => {
+  // The panel goes with its host's inspector. A save that answers after that
+  // has nothing to update, and must not set off the host's re-reads.
+  const isMounted = useIsMounted();
   const [current, setCurrent] = useState<HostTest | null>(test);
   const [outcome, setOutcome] = useState<HostTestOutcome | ''>('');
   const [summary, setSummary] = useState('');
@@ -125,7 +126,6 @@ const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onSta
 
   const save = async () => {
     if (!current || !outcome) return;
-    const submittedFor = current.host_id;
     setSaving(true);
     setError(null);
     try {
@@ -136,16 +136,15 @@ const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onSta
         summary: summary.trim(),
         ...(output ? { raw_output: output } : {}),
       });
-      if (!isCurrentHost(submittedFor)) return;
+      if (!isMounted()) return;
       onDraft(false);
       onSaved(res.test);
     } catch (err) {
-      if (!isCurrentHost(submittedFor)) return;
+      if (!isMounted()) return;
       const status = (err as { response?: { status?: number } })?.response?.status;
       if (status === 409) {
         // Keep what was typed; take the fresh revision so Save works again.
         const fresh = await onStale(current.id);
-        if (!isCurrentHost(submittedFor)) return;
         if (fresh) setCurrent(fresh);
         // A new key with the fresh copy: if the first attempt did land (a lost
         // response), what is saved next is a further result, never a silent
@@ -156,7 +155,7 @@ const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onSta
         setError(formatApiError(err, 'Could not save the result.'));
       }
     } finally {
-      if (isCurrentHost(submittedFor)) setSaving(false);
+      setSaving(false);
     }
   };
 
@@ -262,12 +261,12 @@ interface AddPanelProps {
   onClose: () => void;
   onSaved: (created: HostTest) => void;
   onDraft: (dirty: boolean) => void;
-  isCurrentHost: (hostId: number) => boolean;
 }
 
 /** A person writes a test for this host — the same row an agent proposes. */
-const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose, onSaved, onDraft, isCurrentHost }) => {
+const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose, onSaved, onDraft }) => {
   const confirms = target?.confirms;
+  const isMounted = useIsMounted();
   const [description, setDescription] = useState('');
   const [tool, setTool] = useState('');
   const [command, setCommand] = useState('');
@@ -307,15 +306,12 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
 
   const save = async () => {
     if (!ready) return;
-    // The host this test is FOR. If the analyst steps to another host while
-    // the save is in flight, its answer belongs to no list on screen.
-    const submittedFor = hostId;
     setSaving(true);
     setError(null);
     try {
       const res = await createHostTests([{
         request_key: requestKey,
-        host_id: submittedFor,
+        host_id: hostId,
         tool: tool.trim(),
         description: description.trim(),
         rationale: why,
@@ -325,13 +321,15 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
         ...(mine && userId != null ? { assigned_to_id: userId } : {}),
         ...(confirms ? { vulnerability_id: confirms.vulnerabilityId } : {}),
       }]);
-      if (!isCurrentHost(submittedFor)) return;
+      // If the analyst stepped to another host meanwhile, the answer belongs
+      // to no list on screen, and must not ask the next host's list to open it.
+      if (!isMounted()) return;
       onDraft(false);
       onSaved(res.items[0]);
     } catch (err) {
-      if (isCurrentHost(submittedFor)) setError(formatApiError(err, 'Could not add the test.'));
+      setError(formatApiError(err, 'Could not add the test.'));
     } finally {
-      if (isCurrentHost(submittedFor)) setSaving(false);
+      setSaving(false);
     }
   };
 
@@ -432,7 +430,10 @@ export interface HostTestsControllerOptions {
 }
 
 /** Load the host's tests and own the result panel. Returns the controller to
- *  provide and the element to render once (the panel and the agent dialog). */
+ *  provide and the element to render once (the panel and the agent dialog).
+ *
+ *  One host for the life of the hook: its owner is keyed by the host (the
+ *  inspector, or the standalone section), so `hostId` never changes here. */
 export const useHostTestsController = ({
   hostId, canEdit, userId, onResultRecorded, onFindingCreated,
 }: HostTestsControllerOptions): { controller: HostTestsController; element: React.ReactNode } => {
@@ -448,16 +449,10 @@ export const useHostTestsController = ({
   const [proposalByEvidence, setProposalByEvidence] = useState<Record<number, number>>({});
   const { give: giveAgent, allowed: canAskAgent, dialog: agentDialog } = useAgentTask();
 
-  // The inspector stays mounted while the analyst steps from host to host, so
-  // an answer for the host they left can arrive after this host's. Only the
-  // latest request may write (the same guard as the inspector's own fetch).
+  // The list is re-read after every change, and a slower earlier answer can
+  // arrive after a later one: only the latest request may write.
   const requestRef = useRef(0);
   const proposalRequestRef = useRef(0);
-  // Writes too: a save started on the host that was left must not touch
-  // this host's list, count or panels when it lands.
-  const hostIdRef = useRef(hostId);
-  hostIdRef.current = hostId;
-  const isCurrentHost = useCallback((id: number) => hostIdRef.current === id, []);
 
   const reload = useCallback(async (): Promise<HostTest[]> => {
     const request = ++requestRef.current;
@@ -492,13 +487,6 @@ export const useHostTestsController = ({
   }, [hostId]);
 
   useEffect(() => {
-    setTests(null);
-    setProposalByEvidence({});
-    setStaleNotice(false);
-    setResultFor(null);
-    setResultDraft(false);
-    setAddFor(null);
-    setAddDraft(false);
     void reload();
     loadProposals();
   }, [reload, loadProposals]);
@@ -537,7 +525,6 @@ export const useHostTestsController = ({
           onResultRecorded?.();
         }}
         onStale={async (id) => (await reload()).find((t) => t.id === id) ?? null}
-        isCurrentHost={isCurrentHost}
       />
       <AddTestPanel
         target={addFor}
@@ -545,7 +532,6 @@ export const useHostTestsController = ({
         userId={userId}
         onClose={() => { setAddFor(null); setAddDraft(false); }}
         onDraft={setAddDraft}
-        isCurrentHost={isCurrentHost}
         onSaved={(created) => {
           setStaleNotice(false);
           setTests((prev) => (prev ? [created, ...prev.filter((t) => t.id !== created.id)] : [created]));

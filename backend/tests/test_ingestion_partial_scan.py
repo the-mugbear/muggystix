@@ -540,7 +540,7 @@ def test_a_cancel_reaches_every_parser(db_session, test_project, tmp_path, monke
     path = _write(tmp_path, filename, content)
 
     with active_job(db_session, pid) as (job_id, svc):
-        with on_heartbeat(svc, 1, lambda: svc._cancelled.add(job_id)) as beats:
+        with on_heartbeat(svc, 1, lambda: svc.cancel_job(job_id)) as beats:
             with pytest.raises(ParseFailure, match="cancelled"):
                 getattr(mod, cls)(db_session).parse_file(str(path), filename, project_id=pid)
     assert beats, "the parser never heartbeated"

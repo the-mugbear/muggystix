@@ -453,7 +453,7 @@ def remediation_counts(db: Session, project_ids: Iterable[int]) -> Dict[int, Dic
     policy = remediation_policy.load(db)
     if not ids or not policy.enabled:
         return {}
-    today = datetime.now(timezone.utc).date()
+    today = policy.today()
     states = remediation_service.state_counts_by_project(db, ids, policy, today)
     durations = remediation_service.durations_by_project(db, ids, today)
     # The overdue rows by severity and by how late they are (v2.462.0).

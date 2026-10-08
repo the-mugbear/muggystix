@@ -54,8 +54,8 @@ class User(Base):
     # Security settings
     password_changed_at = Column(DateTime(timezone=True), server_default=func.now())
     must_change_password = Column(Boolean, default=False, nullable=False, server_default="false")
-    failed_login_attempts = Column(Integer, default=0)
-    locked_until = Column(DateTime(timezone=True))
+    # The sign-in lockout is per (username, client address), counted from the
+    # audit log (``core.security.login_lockout_active``); nothing is stored here.
 
     # Two-factor authentication (TOTP, RFC 6238).  The base32 secret is stored
     # as Fernet ciphertext under a TOTP-dedicated key (app.services.totp_service)

@@ -96,7 +96,7 @@ def test_a_cancel_during_the_read_phase_stops_the_parse_and_leaves_nothing(
     path = _write(tmp_path, filename, content)
 
     with active_job(db_session, pid) as (job_id, svc):
-        with on_heartbeat(svc, 1, lambda: svc._cancelled.add(job_id)) as beats:
+        with on_heartbeat(svc, 1, lambda: svc.cancel_job(job_id)) as beats:
             with pytest.raises(ParseFailure, match="cancelled"):
                 getattr(mod, cls)(db_session).parse_file(str(path), filename, project_id=pid)
     assert beats and "read" in beats[0], f"the first heartbeat was not in the read phase: {beats}"
@@ -171,7 +171,7 @@ def test_rdap_checks_its_job_once_before_it_writes(db_session, test_project, tmp
     from app.parsers.rdap_parser import RdapParser
 
     with active_job(db_session, pid) as (job_id, svc):
-        with on_heartbeat(svc, 1, lambda: svc._cancelled.add(job_id)) as beats:
+        with on_heartbeat(svc, 1, lambda: svc.cancel_job(job_id)) as beats:
             with pytest.raises(ParseFailure, match="cancelled"):
                 RdapParser(db_session).parse_file(str(path), "rdap.json", project_id=pid)
     assert beats == ["1 records read"]

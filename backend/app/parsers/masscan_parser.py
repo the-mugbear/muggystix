@@ -56,9 +56,6 @@ class MasscanParser:
 
     def __init__(self, db: Session):
         self.db = db
-        # See NmapXMLParser — id of the incrementally-committed Scan so the
-        # dispatcher can delete a partial scan if the attempt fails.
-        self._created_scan_id = None
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         """Dispatch to format-specific parsers based on file extension."""
@@ -631,7 +628,7 @@ class MasscanParser:
             params[f"rsn_{idx}"] = port_data.get("reason") or None
             values_clauses.append(
                 f"(:hid_{idx}, :pn_{idx}, :proto_{idx}, :st_{idx}, "
-                f":rsn_{idx}, :svc_{idx}, :scan_id, TRUE)"
+                f":rsn_{idx}, :svc_{idx}, :scan_id, :scan_id, TRUE)"
             )
 
         # service_name merge MIRRORS the canonical rule in
@@ -644,8 +641,11 @@ class MasscanParser:
         # longer/better nmap service name. Keep in lockstep.
         sql = (
             "INSERT INTO ports_v2 "
+            # created_scan_id is written by the INSERT only (the DO UPDATE
+            # leaves it): which import created the row, for the cleanup of a
+            # failed one.
             "(host_id, port_number, protocol, state, reason, service_name, "
-            "last_updated_scan_id, is_active) "
+            "last_updated_scan_id, created_scan_id, is_active) "
             "VALUES " + ", ".join(values_clauses) + " "
             "ON CONFLICT (host_id, port_number, protocol) DO UPDATE SET "
             "state = EXCLUDED.state, last_seen = NOW(), "
@@ -761,7 +761,6 @@ class MasscanParser:
         )
         self.db.add(scan)
         self.db.flush()
-        self._created_scan_id = scan.id
         announce_scan(self.db, scan)
         return scan
 

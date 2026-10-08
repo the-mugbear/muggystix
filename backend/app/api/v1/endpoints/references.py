@@ -35,7 +35,7 @@ from app.core.config import settings
 from app.db.models_auth import User, UserRole
 from app.db.session import get_db
 from app.services.agents_guide_service import read_agent_guide, slice_agents_md
-from app.services.agent_prompt_history import PROMPT_VERSION
+from app.services.agent_prompt_service import PROMPT_VERSION
 
 logger = logging.getLogger(__name__)
 

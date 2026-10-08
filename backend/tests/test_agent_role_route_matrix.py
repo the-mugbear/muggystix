@@ -133,49 +133,106 @@ def test_role_route_matrix(
         )
 
 
-def test_every_read_override_names_a_real_route():
-    """A stale override silently reverts that route to the member-only default,
-    which is the direction that matters: a bulk export quietly losing its
-    AUDITOR floor."""
+#: Every agent read whose page or export requires more than membership of a
+#: person, with that role — the route declares it (``deps.agent_read_floor``)
+#: and this is the list a reviewer reads.  Anything not here is a viewer's.
+_A = "/api/v1/agent"
+READ_FLOORS = {
+    # Bulk exports (``export.py`` / ``reports.py`` gate their routers on AUDITOR).
+    f"{_A}/assist/report-context.ndjson": "auditor",
+    f"{_A}/assist/hosts.ndjson": "auditor",
+    f"{_A}/scopes/{{scope_id}}/hosts.ndjson": "auditor",
+    f"{_A}/scopes/{{scope_id}}/live-hosts.txt": "auditor",
+    f"{_A}/scopes/{{scope_id}}/web-targets.txt": "auditor",
+    f"{_A}/scopes/{{scope_id}}/named-targets.ndjson": "auditor",
+    # Ingestion Results is an analyst page (every /parse-errors route).
+    f"{_A}/assist/ingestion-issues": "analyst",
+    f"{_A}/assist/uninterpreted-lines": "analyst",
+    # The Reports page (client_reports router).
+    f"{_A}/assist/client-reports": "auditor",
+    f"{_A}/assist/client-reports/{{report_id}}": "auditor",
+    f"{_A}/assist/client-reports/{{report_id}}/files/{{fmt}}": "auditor",
+    f"{_A}/assist/client-reports/{{report_id}}/scope.csv": "auditor",
+    # Remediation tracking (its page's floor; the same router factory).
+    f"{_A}/remediation": "auditor",
+    f"{_A}/remediation/contacts": "auditor",
+    f"{_A}/remediation/follow-up": "auditor",
+    f"{_A}/remediation/teams": "auditor",
+    f"{_A}/remediation/trend": "auditor",
+    f"{_A}/remediation/contact-report/{{job_id}}": "auditor",
+    f"{_A}/remediation/contact-report/{{job_id}}/download": "auditor",
+    f"{_A}/remediation/hosts/{{host_id}}/events": "auditor",
+}
+
+
+def _declared_read_floors():
     import app.main  # noqa: F401
     from app.main import app
-    from app.api.deps import AGENT_READ_ROLE_OVERRIDES
+    from tests.agent_route_declarations import agent_route_declarations
 
-    mounted = [
-        (m.upper(), p)
-        for p, ops in app.openapi()["paths"].items()
-        for m in ops
-        if p.startswith("/api/v1/agent")
-    ]
-    for (method, rel) in sorted(AGENT_READ_ROLE_OVERRIDES):
-        matches = [p for m, p in mounted if m == method and p.endswith(rel)]
-        assert len(matches) == 1, (
-            f"read-role override {method} {rel!r} matched {len(matches)} routes "
-            f"({matches}). Zero means it silently reverted to the default."
-        )
+    return {
+        path: access.read_floor.value
+        for (method, path), access in agent_route_declarations(app).items()
+        if method == "GET"
+    }
+
+
+def test_every_agent_read_declares_its_pages_floor_and_no_other():
+    """Both directions: a read losing its floor (a viewer's agent gets what
+    the viewer's own session is refused) and a read gaining one its page does
+    not have (an agent holding references it cannot open) both fail here."""
+    declared = _declared_read_floors()
+    above_default = {path: role for path, role in declared.items() if role != "viewer"}
+    assert above_default == READ_FLOORS
 
 
 def test_bulk_export_routes_are_not_left_on_the_default():
     """A guard against the gap the review found: adding a new export-shaped
     agent route and forgetting it needs the same floor its JWT twin has."""
-    import app.main  # noqa: F401
-    from app.main import app
-    from app.api.deps import AGENT_READ_ROLE_OVERRIDES
-
-    covered = {rel for _m, rel in AGENT_READ_ROLE_OVERRIDES}
-    suspicious = []
-    for path, ops in app.openapi()["paths"].items():
-        if not path.startswith("/api/v1/agent"):
-            continue
-        if "GET" not in {m.upper() for m in ops}:
-            continue
+    suspicious = [
+        path for path, role in _declared_read_floors().items()
         # Export-shaped: a file extension, or the word "export".
-        if not (path.endswith((".ndjson", ".txt", ".csv", ".json")) or "export" in path):
-            continue
-        if not any(path.endswith(rel) for rel in covered):
-            suspicious.append(path)
+        if (path.endswith((".ndjson", ".txt", ".csv", ".json")) or "export" in path)
+        and role == "viewer"
+    ]
     assert not suspicious, (
-        f"export-shaped agent read routes with no minimum-role override: "
-        f"{suspicious}. Give each one the floor its JWT equivalent requires, or "
-        "add it here with a reason."
+        f"export-shaped agent read routes with no declared read floor: "
+        f"{suspicious}. Give each one the floor its JWT equivalent requires "
+        "(dependencies=[Depends(agent_read_floor(...))])."
     )
+
+
+def test_the_remediation_reads_take_their_pages_floor_from_one_constant():
+    """The page's routes and the agents' are one router factory; the floor is
+    ``remediation.READ_ROLE`` on both sides, for every read it has."""
+    from app.api.v1.endpoints import remediation
+    from fastapi.routing import APIRoute
+
+    declared = _declared_read_floors()
+    reads = [
+        r.path for r in remediation.router.routes
+        if isinstance(r, APIRoute) and "GET" in r.methods
+    ]
+    assert len(reads) >= 8
+    for rel in reads:
+        assert declared[_A + rel] == remediation.READ_ROLE.value, rel
+
+
+@pytest.mark.parametrize("role", ["analyst", "auditor", "viewer"])
+def test_the_gate_enforces_every_declared_floor(client, db_session, test_project, role):
+    """The declaration is what the gate reads: each floored route refuses a
+    role below it and lets the others through (to the route's own answer)."""
+    from app.core.security import check_permissions
+
+    user = _member(db_session, test_project, role)
+    headers = {"X-API-Key": _key_for(db_session, test_project, user)}
+    for template, floor in READ_FLOORS.items():
+        path = (
+            template.replace("{scope_id}", "999999").replace("{report_id}", "999999")
+            .replace("{fmt}", "html").replace("{job_id}", "999999").replace("{host_id}", "999999")
+        )
+        resp = client.get(path, headers=headers, params={"contact_email": "a@example.com"})
+        refused_by_gate = resp.status_code == 403 and "requires" in resp.text
+        assert refused_by_gate == (not check_permissions(role, floor)), (
+            f"{role} on {path} (floor {floor}): {resp.status_code} {resp.text[:160]}"
+        )

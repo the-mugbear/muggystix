@@ -211,20 +211,13 @@ function App() {
             element={
               <ProtectedRoute>
                 <ProjectProvider>
-                {/* width: '100%' is load-bearing.  This Box is a flex
-                    container that wraps Layout + VersionFooter as
-                    siblings, but a flex container with no explicit
-                    width shrink-wraps to its content.  Combined with
-                    Layout's own internal flex container and `<main>`'s
-                    `flexGrow: 1`, that produces a shrink-to-fit
-                    cascade where the visible page width is determined
-                    by the natural content width of the rendered page.
-                    Pages with wide tables (Hosts, TestPlanDetail) end
-                    up at viewport width incidentally; pages with
-                    naturally narrow content (Activity, Scopes) render
-                    at e.g. 837px on a 1080px viewport.  Setting
-                    width: 100% pins the outer wrapper to the body's
-                    full width and the cascade resolves correctly. */}
+                {/* `w-full` is load-bearing.  A flex container with no
+                    explicit width shrink-wraps to its content; with
+                    Layout's own flex container and `<main>`'s grow, the
+                    page would then be as wide as its content happens to
+                    be (a wide table fills the window, a narrow page
+                    stops short of it).  Full width pins the wrapper to
+                    the body and the cascade resolves. */}
                 <div className="flex w-full">
                   <Layout>
                     <Suspense fallback={<RouteSkeleton />}>
@@ -739,9 +732,6 @@ function App() {
                     </RoutedErrorBoundary>
                     </Suspense>
                   </Layout>
-                  {/* VersionFooter removed per UX audit #12 —
-                      build info now lives in the UserMenu "About" entry
-                      so it doesn't occlude table pagination or snackbars. */}
                 </div>
                 </ProjectProvider>
               </ProtectedRoute>

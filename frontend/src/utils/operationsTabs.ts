@@ -147,7 +147,8 @@ export type TabFilter = MyTaskReason | FindingNeed;
 /** The search string that opens a tab of this page, keeping its other
  *  parameters.  `filter` is the tab's own — `kind` on Tests, `need` on
  *  Findings: a value sets it, `null` clears it, none asked keeps what the
- *  address has.  Each is dropped on every other tab. */
+ *  address has.  Each is dropped on every other tab.  The list's page
+ *  (`?page=`) is never carried: a tab opens on its first page. */
 export function tabSearch(
   current: URLSearchParams | string,
   tab: OperationsTab,
@@ -155,6 +156,7 @@ export function tabSearch(
 ): string {
   const next = new URLSearchParams(current);
   next.set('tab', tab);
+  next.delete('page');
   const own = (param: 'kind' | 'need', owner: OperationsTab, values: string[]) => {
     if (tab !== owner || filter === null) next.delete(param);
     else if (filter !== undefined && values.includes(filter)) next.set(param, filter);

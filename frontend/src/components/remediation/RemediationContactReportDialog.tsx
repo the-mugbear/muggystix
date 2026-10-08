@@ -122,6 +122,13 @@ export const RemediationContactReportDialog: React.FC<{
               </p>
             )}
             {job?.ready && <p className="break-words">Ready: <span className="font-medium">{job.filename}</span></p>}
+            {job?.ready && job.images_withheld > 0 && (
+              <p className="text-muted-foreground">
+                {job.images_withheld === 1
+                  ? '1 image was left out because its finding also affects other contacts’ systems.'
+                  : `${job.images_withheld.toLocaleString()} images were left out because their findings also affect other contacts’ systems.`}
+              </p>
+            )}
             {failed && (
               <p role="alert" className="break-words text-destructive">
                 The document could not be prepared{job?.error ? `: ${job.error}` : '.'}

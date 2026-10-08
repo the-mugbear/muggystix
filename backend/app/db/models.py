@@ -11,7 +11,7 @@ Key changes:
 
 import enum
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, Index, func, JSON, BigInteger, Enum as SQLEnum, text
-from sqlalchemy.orm import relationship, backref, deferred
+from sqlalchemy.orm import relationship, backref
 from app.db.session import Base
 
 
@@ -138,8 +138,18 @@ class Port(Base):
     # fresh observation timestamp.
     last_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_updated_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"))
+    # The scan whose import INSERTED this row, set at every insert site and
+    # never moved afterwards.  Cleanup only: a failed import removes the ports
+    # it created (``ingestion_service.delete_partial_scan``), and an import
+    # that writes no port history (Nessus) has no other record of which ones
+    # those are.  NULL — a row older than the column, or one whose creating
+    # scan was deleted — is never "this attempt's".  Not read by a page or a
+    # count.
+    created_scan_id = Column(
+        Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
     is_active = Column(Boolean, default=True)  # Track if port is currently active
-    
+
     # Relationships
     host = relationship("Host", back_populates="ports")
     scripts = relationship("Script", back_populates="port", cascade="all, delete-orphan")
@@ -169,8 +179,10 @@ class Script(Base):
     # Audit fields
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
-    
+    # Indexed: deleting a scan cascades here, and the partial-scan cleanup
+    # re-homes rows by it.
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+
     # Relationships
     port = relationship("Port", back_populates="scripts")
     scan = relationship("Scan")
@@ -191,9 +203,9 @@ class HostScript(Base):
     
     # Audit fields
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
-    last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now()) 
-    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
-    
+    last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+
     # Relationships
     host = relationship("Host", back_populates="host_scripts")
     scan = relationship("Scan")
@@ -877,9 +889,15 @@ class IngestionJob(Base):
     # existing rows behave as before until the worker touches them.
     retry_count = Column(Integer, nullable=False, default=0, server_default="0")
     last_error = Column(Text, nullable=True)
+    # How many times the orphan reaper has re-queued this job since an
+    # operator last queued it.  The reaper's budget (INGESTION_MAX_RETRIES)
+    # is measured against this alone: ``retry_count`` above also counts
+    # ordinary failures and the operator's own retries, which are not the
+    # reaper's to ration.
+    reap_count = Column(Integer, nullable=False, default=0, server_default="0")
 
     submitted_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True, index=True)
     parse_error_id = Column(Integer, ForeignKey("parse_errors.id", ondelete="SET NULL"), nullable=True)
     # Review 2026-10-01 R1 — the scan the CURRENT attempt is writing, stamped
     # in the transaction that first commits the scan row
@@ -889,21 +907,9 @@ class IngestionJob(Base):
     # the re-queued attempt imported into a second one.  A value still here
     # when a job is claimed (or reaped to failed) is a dead attempt's scan and
     # is deleted before anything else is parsed.
-    in_progress_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True)
-    # Review 2026-10-01 R2 — the ids of the ports the CURRENT attempt created,
-    # for an import path that writes no PortScanHistory (Nessus).  Cleanup
-    # only: ``delete_partial_scan`` finds an attempt's ports through
-    # ``port_scan_history.port_created``, which Nessus does not write (and
-    # must not start to — it would change the port counts on the Scans page,
-    # the dashboard and the scan diff), so the ports a failed Nessus attempt
-    # added to hosts that already existed stayed.  Written in the transaction
-    # that commits each batch (``ingestion_service.note_ports_created``), so a
-    # committed port is always named here; cleared when the job completes and
-    # when the attempt's leftovers are deleted.  Never read by a page or a
-    # count.  A plain JSON array of ints — ~1 MB for the ~100k ports a 1 GB
-    # file can create.  Deferred: loading a job (the heartbeat, the Scans
-    # page's poll) must not bring the list with it.
-    in_progress_created_port_ids = deferred(Column(JSON(none_as_null=True), nullable=True))
+    in_progress_scan_id = Column(
+        Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
     # An agent's upload (POST /agent/uploads) carries the agent session that
     # sent it (v2.433.0).  Null for an operator's upload.
     agent_session_id = Column(
@@ -964,6 +970,11 @@ class IngestionJob(Base):
     # never need this — they already vanish from the queue via the
     # status='completed' filter on the frontend.
     dismissed_at = Column(DateTime(timezone=True), nullable=True)
+    # When the uploaded file was removed from disk (retention sweep, a
+    # discarded or expired staged job).  NULL = not known to be gone: rows
+    # from before this column are stamped by the sweep as it finds their
+    # file missing.  The pages read this instead of asking the disk per row.
+    file_removed_at = Column(DateTime(timezone=True), nullable=True)
 
     # Two FKs reach scans (scan_id, in_progress_scan_id): this is the finished one.
     scan = relationship("Scan", foreign_keys=[scan_id])

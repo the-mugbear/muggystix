@@ -32,6 +32,7 @@ import type {
   ReviewFollowupRow, ReviewFollowupsResponse,
 } from '../../services/api';
 import { usePagedList, type PagedList } from '../../hooks/usePagedList';
+import { useUrlPage } from '../../hooks/useUrlPage';
 import type { ListPage } from '../../hooks/useListQuery';
 import {
   OPERATIONS_PAGE_SIZE, OPERATIONS_TABS, OPERATIONS_TAB_LABEL,
@@ -45,7 +46,9 @@ import ReviewHostsTable from './ReviewHostsTable';
 import UntouchedQueueSection from './UntouchedQueueSection';
 import type { ListState, Pager } from './QueueParts';
 
-const PAGE = { pageSize: OPERATIONS_PAGE_SIZE };
+/** Every tab pages the same way, and keeps its page in the address (only the
+ *  open tab's panel is mounted, so `?page=` is that tab's). */
+const usePage = () => ({ pageSize: OPERATIONS_PAGE_SIZE, page: useUrlPage() });
 
 /** What a table needs of a paged list. */
 function listProps<T, P extends ListPage<T>>(
@@ -87,7 +90,7 @@ const FindingsPanel: React.FC<PanelProps & {
       return { ...r, total: need ? (r.need_counts?.[need] ?? r.items.length) : r.total_open };
     },
     [need, refreshKey],
-    PAGE,
+    usePage(),
   );
   // The chips' counts are this list's own (the same statement as the rows'
   // total); until it has answered, the page's.
@@ -102,7 +105,7 @@ const HostsPanel: React.FC<PanelProps> = ({ refreshKey, canWrite }) => {
       return { ...r, total: r.in_review_count };
     },
     [refreshKey],
-    PAGE,
+    usePage(),
   );
   return <ReviewHostsTable {...listProps(list)} canWrite={canWrite} />;
 };
@@ -121,7 +124,7 @@ const TestsPanel: React.FC<PanelProps & {
       return { ...r, total: kind ? (groups?.[kind] ?? r.items.length) : r.total_open };
     },
     [kind, refreshKey],
-    PAGE,
+    usePage(),
   );
   // The chips' counts are this list's own (the same statement as the rows'
   // total); until it has answered, the page's.
@@ -146,7 +149,7 @@ const ChangedPanel: React.FC<PanelProps> = ({ refreshKey, canWrite, onCountsChan
   const list = usePagedList<ReviewFollowupRow, ReviewFollowupsResponse>(
     (req) => getReviewFollowupsPage(req),
     [refreshKey],
-    PAGE,
+    usePage(),
   );
   const onChanged = useChanged(list.reload, onCountsChanged);
   return <ChangedSinceReviewSection {...listProps(list)} canWrite={canWrite} onChanged={onChanged} />;
@@ -163,7 +166,7 @@ const PickUpPanel: React.FC<PanelProps & {
       return { ...r, total: tier != null ? (r.tier_counts?.[tier - 1] ?? r.items.length) : r.queue_total };
     },
     [tier, refreshKey],
-    PAGE,
+    usePage(),
   );
   const onChanged = useChanged(list.reload, onCountsChanged);
   return (

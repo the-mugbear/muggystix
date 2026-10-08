@@ -231,6 +231,7 @@ const Scopes: React.FC = () => {
   useEffect(() => {
     loadData(true);
     fetchLabelCatalogue();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the first load, once per mount (the page remounts per project)
   }, []);
 
   const SUBNET_PAGE_SIZE = 200;

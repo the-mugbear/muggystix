@@ -16,6 +16,10 @@ the deadline then in force (``closed_due_on``).
 
 States, exclusive, decided in this order:
 
+"Today" is the day in the installation's time zone (``Policy.today``): the
+dates are entered by hand from a local calendar, and against the server's UTC
+day a row became overdue in the middle of the afternoon.
+
 * ``closed`` / ``deferred`` — the recorded status; a deferred row has no clock.
 * ``no_deadline`` — open, and the severity has no timeline (informational).
 * ``not_assigned`` — open, a timeline applies, no assigned date: the clock has
@@ -25,8 +29,9 @@ States, exclusive, decided in this order:
 * ``on_track`` — the rest.
 """
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException
 from sqlalchemy import Date, Integer, case, cast, func, literal, null
@@ -34,7 +39,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models_findings import Finding
 from app.db.models_remediation import (
-    DEFAULT_DUE_SOON_DAYS, DEFAULT_TIMELINE_DAYS, TIMELINE_SEVERITIES,
+    DEFAULT_DUE_SOON_DAYS, DEFAULT_TIME_ZONE, DEFAULT_TIMELINE_DAYS, TIMELINE_SEVERITIES,
     FindingHostRemediation as Remediation, RemediationPolicy,
 )
 
@@ -48,24 +53,37 @@ AT_RISK_STATES = ("overdue", "due_soon")
 NOT_ENABLED = "Remediation tracking is not enabled on this installation."
 
 
+def zone(name: Optional[str]) -> Optional[ZoneInfo]:
+    """The IANA time zone called ``name``, or None when there is none."""
+    try:
+        return ZoneInfo(name) if name else None
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return None
+
+
 @dataclass(frozen=True)
 class Policy:
     enabled: bool
     days: dict            # severity -> days, or None for "no deadline"
     due_soon_days: int
+    # Where the installation's day begins and ends.  Assigned and closed dates
+    # are entered by hand from a local calendar, so "today" — and with it
+    # every state — is that calendar's day, not the server clock's.
+    time_zone: str = DEFAULT_TIME_ZONE
 
     def days_for(self, severity: Optional[str]) -> Optional[int]:
         return self.days.get((severity or "").lower())
 
-    def due_on(self, severity: Optional[str], assigned_on: Optional[date]) -> Optional[date]:
-        """The deadline of an open row — the Python twin of ``due_expr``."""
-        days = self.days_for(severity)
-        if days is None or assigned_on is None:
-            return None
-        return assigned_on + timedelta(days=days)
+    def today(self, now: Optional[datetime] = None) -> date:
+        """The installation's current day: what every state is derived
+        against and what the dialogs default to.  A stored zone this host no
+        longer knows reads as UTC."""
+        now = now or datetime.now(timezone.utc)
+        return now.astimezone(zone(self.time_zone) or timezone.utc).date()
 
     def as_dict(self) -> dict:
-        return {"enabled": self.enabled, "days": dict(self.days), "due_soon_days": self.due_soon_days}
+        return {"enabled": self.enabled, "days": dict(self.days), "due_soon_days": self.due_soon_days,
+                "time_zone": self.time_zone}
 
 
 DEFAULT = Policy(False, dict(DEFAULT_TIMELINE_DAYS), DEFAULT_DUE_SOON_DAYS)
@@ -77,7 +95,7 @@ def load(db: Session) -> Policy:
         return DEFAULT
     return Policy(bool(row.enabled),
                   {severity: getattr(row, f"days_{severity}") for severity in TIMELINE_SEVERITIES},
-                  row.due_soon_days)
+                  row.due_soon_days, row.time_zone or DEFAULT_TIME_ZONE)
 
 
 def save(db: Session, body, user_id: Optional[int]) -> tuple[Policy, Policy]:
@@ -87,6 +105,7 @@ def save(db: Session, body, user_id: Optional[int]) -> tuple[Policy, Policy]:
     before = load(db)
     if row is None:
         row = RemediationPolicy(id=1, enabled=False, due_soon_days=DEFAULT_DUE_SOON_DAYS,
+                                time_zone=DEFAULT_TIME_ZONE,
                                 **{f"days_{s}": d for s, d in DEFAULT_TIMELINE_DAYS.items()})
         db.add(row)
     sent = body.model_fields_set
@@ -97,6 +116,8 @@ def save(db: Session, body, user_id: Optional[int]) -> tuple[Policy, Policy]:
     if "days" in sent and body.days is not None:
         for severity, days in body.days.items():
             setattr(row, f"days_{severity}", days)
+    if "time_zone" in sent and body.time_zone is not None:
+        row.time_zone = body.time_zone
     row.updated_by_id = user_id
     db.flush()
     return before, load(db)

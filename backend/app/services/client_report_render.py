@@ -16,11 +16,21 @@ issued report reads ITS OWN copies, made when it was issued
 (``client_report_service.freeze_report_images`` → ``report_images``), so an
 attachment deleted afterwards cannot fail its render.  The copies are of the
 images the report PRINTS: one the dataset marks ``"printed": false`` (its
-template shows it nowhere) has no copy and the renderer never asks for it.  An issued render
-refuses what would make its files differ from what was signed off (review
-2026-09-23 C4): a template whose fingerprint changed since the issue, or an
-image copy that is gone or no longer matches its recorded hash.  Either is a
-revision, not a re-render.
+template shows it nowhere) has no copy and the renderer never asks for it.
+
+The template: an issued report renders from ITS OWN copy of it, made when it
+was issued (``client_report_service.freeze_report_template`` — the template's
+files, its base's, and every uploaded file in place), so a logo uploaded or a
+template folder changed between the issue and its render can neither change
+the files nor block them; ``template_fingerprint`` is then only the label of
+what was issued.  A report issued before the copy existed renders from the
+live template, and only while its fingerprint is still the recorded one.
+
+An issued render refuses what would make its files differ from what was
+signed off (review 2026-09-23 C4): a template copy or an image copy that is
+gone or no longer matches its recorded hash (for a report without a template
+copy: a template whose fingerprint changed since the issue).  That is a
+restore from backup or a revision, not a re-render.
 """
 from __future__ import annotations
 
@@ -34,12 +44,13 @@ from typing import Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from app import worker_loop
 from app.core.config import settings
 from app.db.models import NoteAttachment, ReportJob
 from app.db.models_reports import RenderStatus, Report, ReportFile, ReportImage, ReportStatus
 from app.services import quarto_render
 from app.services import report_template_service as templates
-from app.services.client_report_service import ClientReportService
+from app.services.client_report_service import ClientReportService, frozen_template_dir
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +64,16 @@ CONTACT_JOB_FORMATS = ("contact-html", "contact-docx")
 CLIENT_JOB_FORMATS = tuple(PREVIEW_FORMATS) + (ISSUE_FORMAT,) + CONTACT_JOB_FORMATS
 
 
-def _slug(text: Optional[str]) -> str:
+def file_slug(text: Optional[str], fallback: str = "report") -> str:
+    """``text`` as part of an output file name: ASCII letters and digits,
+    everything else a dash (the renderer accepts no other file name)."""
     slug = re.sub(r"[^A-Za-z0-9]+", "-", text or "").strip("-").lower()
-    return (slug or "report")[:60]
+    return (slug or fallback)[:60]
 
 
-def _evidence_resolver(db: Session, project_id: int):
-    """A DRAFT's images: the live attachments."""
+def live_evidence_resolver(db: Session, project_id: int):
+    """The live attachments: a DRAFT's images, and those of a document that
+    is never frozen (a contact's remediation list)."""
     base = (Path(settings.UPLOAD_DIR) / "note_attachments").resolve()
 
     def resolve(item: dict) -> Optional[Path]:
@@ -87,7 +101,7 @@ def _issued_evidence_resolver(db: Session, report: Report):
         for row in db.query(ReportImage).filter(ReportImage.report_id == report.id)
     }
     if not copies:
-        return _evidence_resolver(db, report.project_id)
+        return live_evidence_resolver(db, report.project_id)
     root = Path(settings.REPORT_FILES_DIR).resolve()
 
     def resolve(item: dict) -> Optional[Path]:
@@ -124,24 +138,36 @@ def _lock_report(db: Session, report_id: int) -> Optional[Report]:
 
 def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, basename: str,
             *, issued: bool = False):
-    template = templates.get_template(report.template)
-    if issued and report.template_fingerprint and templates.fingerprint(template) != report.template_fingerprint:
-        raise ValueError(
-            f"The '{report.template}' template has changed since this report was issued, so its "
-            "files would no longer be the document that was signed off. Revise the report to "
-            "issue it with the current template."
-        )
+    # An issued report renders from ITS OWN copy of the template, made when
+    # it was issued: whatever happened to the template folder or its uploaded
+    # files since can neither change the files nor block them.
+    frozen = frozen_template_dir(report) if issued else None
+    if frozen is not None:
+        template = templates.load_folder(frozen)
+        asset_files = None      # already in place in the copy
+    else:
+        template = templates.get_template(report.template)
+        # A report issued before it kept a copy: the live template, and only
+        # while it is still the one that was signed off.
+        if issued and report.template_fingerprint and templates.fingerprint(template) != report.template_fingerprint:
+            raise ValueError(
+                f"The '{report.template}' template has changed since this report was issued, so its "
+                "files would no longer be the document that was signed off. Revise the report to "
+                "issue it with the current template."
+            )
+        asset_files = templates.asset_files(template)
     wanted = [f for f in formats if f in template.formats]
     return quarto_render.render(
         template.path, template.entry, dataset, wanted, out_dir,
         basename=basename,
         resolve_evidence=(
-            _issued_evidence_resolver(db, report) if issued else _evidence_resolver(db, report.project_id)
+            _issued_evidence_resolver(db, report) if issued else live_evidence_resolver(db, report.project_id)
         ),
         postprocess=template.postprocess,
         timeout=settings.REPORT_RENDER_TIMEOUT_SECONDS,
         strict_evidence=issued,
-        asset_files=templates.asset_files(template),
+        asset_files=asset_files,
+        on_progress=worker_loop.touch_heartbeat,
     )
 
 
@@ -164,7 +190,7 @@ def run_client_job(db: Session, job: ReportJob) -> Optional[Tuple[bytes, str, st
             raise ValueError("This report has been issued; download its files instead of a preview.")
         fmt = PREVIEW_FORMATS[job.format]
         dataset, _, _ = ClientReportService(db).build(report)
-        basename = f"{_slug(dataset['project']['name'])}-draft-{report.id}"
+        basename = f"{file_slug(dataset['project']['name'])}-draft-{report.id}"
         with tempfile.TemporaryDirectory(prefix="bs-preview-") as tmp:
             files = _render(db, report, dataset, [fmt], Path(tmp), basename)
             if fmt not in files:
@@ -198,7 +224,7 @@ def _render_issued(db: Session, report: Report) -> None:
         raise ValueError("Only an issued report has files to render.")
     dataset = report.snapshot["dataset"]
     number = report.number or 0
-    basename = f"{_slug(dataset['project']['name'])}-report-{number:02d}"
+    basename = f"{file_slug(dataset['project']['name'])}-report-{number:02d}"
     root = Path(settings.REPORT_FILES_DIR)
     final_dir = root / str(report.project_id) / str(report.id)
     with tempfile.TemporaryDirectory(prefix="bs-issue-") as tmp:

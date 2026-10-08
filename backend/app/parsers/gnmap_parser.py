@@ -16,9 +16,6 @@ class GnmapParser:
         self.db = db
         self.dedup_service = HostDeduplicationService(db)
         self.correlation_service = SubnetCorrelationService(db)
-        # See NmapXMLParser — id of the incrementally-committed Scan so the
-        # dispatcher can delete a partial scan if the attempt fails.
-        self._created_scan_id = None
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -50,7 +47,8 @@ class GnmapParser:
         self.db.add(scan)
         self.db.flush()
         scan_id = scan.id
-        self._created_scan_id = scan_id
+        # Committed with the job's pointer to it: what the dispatcher deletes
+        # if the import does not finish.
         announce_scan(self.db, scan)
 
         hosts_processed = 0
@@ -87,19 +85,8 @@ class GnmapParser:
                     self._process_host_with_deduplication(host_data, scan_id)
                     host_sp.commit()
                     hosts_processed += 1
-
-                    if hosts_processed % 100 == 0:
-                        logger.info(f"Processed {hosts_processed} host observations")
-                        from app.services.ingestion_service import report_progress
-                        report_progress(f"{hosts_processed} hosts")
-                        # R7 — committed (under a job): stop pinning every
-                        # history row for the rest of the file.
-                        self.dedup_service.release_committed_history()
-
                 except Exception as e:
-                    # ParseFailure (cancel/timeout, raised by report_progress after
-                    # host_sp already committed) subclasses RuntimeError — re-raise
-                    # so it isn't swallowed as a per-host error and the worker stops.
+                    # A cancel / timeout / shutdown is never a bad host.
                     from app.services.ingestion_service import ParseFailure
                     if isinstance(e, ParseFailure):
                         raise
@@ -112,6 +99,18 @@ class GnmapParser:
                         # frame — fine, parent transaction is clean.
                         pass
                     continue
+
+                # The heartbeat lives OUTSIDE the host's savepoint and its
+                # try: it commits, and a commit that fails must fail the
+                # import — caught above it read as one bad host, while the
+                # whole uncommitted batch of counted hosts was gone.
+                if hosts_processed % 100 == 0:
+                    logger.info(f"Processed {hosts_processed} host observations")
+                    from app.services.ingestion_service import report_progress
+                    report_progress(f"{hosts_processed} hosts")
+                    # Committed (under a job): stop pinning every history
+                    # row for the rest of the file.
+                    self.dedup_service.release_committed_history()
 
         # Commit parsed host data before correlation so it survives
         # even if correlation fails.

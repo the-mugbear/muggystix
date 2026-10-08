@@ -46,6 +46,67 @@ from app.services.host_query_common import (  # noqa: F401  (re-exported on purp
 
 
 # ---------------------------------------------------------------------------
+# Discrete-parameter values — shared by the page's and the agents' host routes
+# ---------------------------------------------------------------------------
+#
+# A value that cannot be understood is refused, naming it.  Skipping it left
+# the filter with nothing to match on, and a filter that is not applied
+# answers with the whole project — to a count, and to "select all matching".
+
+MAX_PORT = 65535
+_MAX_ROW_ID = 2**31 - 1
+
+
+def parse_port_list(ports: str) -> List[int]:
+    """``"22,80,443"`` → ``[22, 80, 443]``.  A value that is not a port
+    number (a range, ``445/tcp``, a name), or no value at all, is a 422."""
+    out: List[int] = []
+    bad: List[str] = []
+    for raw in ports.split(","):
+        value = raw.strip()
+        if not value:
+            continue
+        if P.is_id(value) and int(value) <= MAX_PORT:  # the DSL's port: range, 0-65535
+            out.append(int(value))
+        else:
+            bad.append(value)
+    if bad or not out:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"ports must be comma-separated port numbers (0-{MAX_PORT}); not understood: "
+                f"{bad or [ports]}. "
+                "There are no ranges: list each port (ports=5900,5901,5902). For a port in "
+                "another state use q= (q=port:445@any); for a service by name use services= "
+                "(matched on the service the scanner identified, on any port)."
+            ),
+        )
+    return out
+
+
+def parse_id_list(name: str, value: str) -> List[int]:
+    """``"3,7"`` → ``[3, 7]`` for a filter that takes row ids (``tags``,
+    ``subnet_labels``).  Anything else — a name where an id belongs — is a
+    422 naming the parameter and the value."""
+    out: List[int] = []
+    bad: List[str] = []
+    for raw in value.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        if P.is_id(item) and int(item) <= _MAX_ROW_ID:
+            out.append(int(item))
+        else:
+            bad.append(item)
+    if bad or not out:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{name} must be comma-separated numeric ids; not understood: {bad or [value]}.",
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Sort-key helper
 # ---------------------------------------------------------------------------
 
@@ -93,14 +154,16 @@ def build_search_predicate(db: Session, search: str, project_id: Optional[int] =
     search_lower = search.lower().strip()
     port_search_conditions = []
 
-    if search.isdigit():
+    # ASCII digits only: ``"²".isdigit()`` is true and ``int("²")`` raises.
+    is_number = P.is_id(search)
+    if is_number and int(search) <= MAX_PORT:
         port_search_conditions.append(models.Port.port_number == int(search))
 
     service_ports = SERVICE_PORT_MAPPINGS.get(search_lower)
     if service_ports:
         port_search_conditions.append(models.Port.port_number.in_(service_ports))
 
-    if not search.isdigit():
+    if not is_number:
         port_search_conditions.extend([
             models.Port.service_name.ilike(f'%{escaped_search}%', escape='\\'),
             models.Port.service_product.ilike(f'%{escaped_search}%', escape='\\'),
@@ -195,7 +258,7 @@ def checks_predicate(db: Session, project_id: int, checks: List[str]):
     unknown = [c for c in checks if c not in CHECKS]
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown check {', '.join(unknown)}")
-    return P.check_predicate(db, checks, project_id)
+    return P.check_predicate(checks)
 
 
 # ---------------------------------------------------------------------------
@@ -240,11 +303,15 @@ def build_filtered_host_query(
 ):
     """Build a filtered ``Host`` query (no eager loading).
 
-    Reused by both the listing endpoint and the filter-metadata
-    endpoint so they apply the same predicates and stay in sync.  Every
-    block delegates to ``host_query_predicates`` (the single source of
-    truth shared with the DSL); ``q`` appends the boolean DSL filter,
-    ANDed with the discrete params.
+    Reused by the listing endpoint, the filter-metadata endpoint and the
+    agents' host routes, so a filter word means one thing wherever it is
+    asked.  Every block delegates to ``host_query_predicates`` (the single
+    source of truth shared with the DSL); ``q`` appends the boolean DSL
+    filter, ANDed with the discrete params.
+
+    ``current_user`` is whose reviews and assignments ``follow_status``,
+    ``assigned_to``, ``weaknesses`` and ``q`` are judged for; a caller that
+    passes none of those may pass ``None``.
     """
     query = db.query(models.Host)
 
@@ -264,7 +331,7 @@ def build_filtered_host_query(
 
     # Port dimensions are fused into one Port subquery (a single port row
     # must satisfy all of ports/services/port_states/require_open) — see
-    # ``port_match_subquery``, where a port/service condition means an OPEN
+    # ``port_match_conditions``, where a port/service condition means an OPEN
     # port unless ``port_states`` names one (``any`` = every state; v2.403.0).
     # ``has_open_ports=False`` is a standalone
     # exclusion of open-port hosts and intentionally ignores the other
@@ -273,7 +340,7 @@ def build_filtered_host_query(
     # right.  The old `or has_open_ports` skipped this whole block when False
     # was the ONLY port filter, so "no open ports" returned every host.
     if ports or services or port_states or has_open_ports is not None:
-        port_ints = [int(p.strip()) for p in ports.split(',') if p.strip().isdigit()] if ports else None
+        port_ints = parse_port_list(ports) if ports else None
         service_list = [s.strip() for s in services.split(',') if s.strip()] if services else None
         state_list = [s.strip().lower() for s in port_states.split(',') if s.strip()] if port_states else None
         if has_open_ports is False:
@@ -293,25 +360,17 @@ def build_filtered_host_query(
         query = query.filter(build_search_predicate(db, search, project_id))
 
     if with_notes_only:
-        query = query.filter(P.has_notes_predicate(db, project_id))
+        query = query.filter(P.has_notes_predicate())
 
     if follow_status:
         if follow_status not in ("none", "in_review_any") and follow_status not in {s.value for s in FollowStatus}:
             raise HTTPException(status_code=400, detail="Invalid follow status filter")
-        query = query.filter(P.follow_predicate(db, follow_status, current_user))
+        query = query.filter(P.follow_predicate(follow_status, current_user))
 
     if out_of_scope_only:
-        # Same derivation as scope_coverage._base_query: no subnet mapping
-        # AND not reachable via an in-scope name (v2.322.0 third state).
-        from app.services.dns_name_service import host_reachable_via_in_scope_name_condition
-
-        query = query.outerjoin(
-            models.HostSubnetMapping,
-            models.HostSubnetMapping.host_id == models.Host.id,
-        ).filter(
-            models.HostSubnetMapping.host_id.is_(None),
-            ~host_reachable_via_in_scope_name_condition(project_id),
-        )
+        # The DSL's ``scope:none`` — in no scope subnet and not reached through
+        # an in-scope name.  One definition of the third coverage state.
+        query = query.filter(P.scope_coverage_predicate(["none"], project_id))
 
     severities = []
     if has_critical_vulns:
@@ -323,13 +382,13 @@ def build_filtered_host_query(
     if has_low_vulns:
         severities.append('LOW')
     if severities:
-        query = query.filter(P.severity_predicate(db, severities, project_id))
+        query = query.filter(P.severity_predicate(severities))
 
     if has_exploit_available:
-        query = query.filter(P.has_exploit_predicate(db, project_id))
+        query = query.filter(P.has_exploit_predicate())
 
     if has_test_execution:
-        query = query.filter(P.has_test_execution_predicate(db, project_id))
+        query = query.filter(P.has_test_execution_predicate(project_id))
 
     if scan_ids:
         try:
@@ -337,7 +396,7 @@ def build_filtered_host_query(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid scan_ids parameter")
         if scan_id_list:
-            query = query.filter(P.scan_predicate(db, scan_id_list, first_seen_only=bool(first_seen_in_scan)))
+            query = query.filter(P.scan_predicate(scan_id_list, first_seen_only=bool(first_seen_in_scan)))
 
     # v2.12.1: web interface filters.  ``has_web_interface`` narrows to
     # hosts with at least one web_interfaces row (or, when false, those
@@ -355,16 +414,14 @@ def build_filtered_host_query(
 
     # v2.71.0 — tag filter.  Comma-separated tag IDs; OR semantics.
     if tags:
-        tag_id_list = [int(t.strip()) for t in tags.split(',') if t.strip().isdigit()]
-        if tag_id_list:
-            query = query.filter(P.tag_predicate_by_id(db, tag_id_list))
+        query = query.filter(P.tag_predicate_by_id(db, parse_id_list("tags", tags)))
 
     # v2.86.0 — subnet-label filter.  Comma-separated label IDs; OR
     # semantics within the group, project-scoped join chain.
     if subnet_labels and project_id is not None:
-        label_id_list = [int(t.strip()) for t in subnet_labels.split(',') if t.strip().isdigit()]
-        if label_id_list:
-            query = query.filter(P.label_predicate_by_id(db, label_id_list, project_id))
+        query = query.filter(
+            P.label_predicate_by_id(parse_id_list("subnet_labels", subnet_labels), project_id)
+        )
 
     # Site filter — comma-separated site names; a host matches if ANY of its
     # subnets belongs to one of the sites (OR within the group).
@@ -385,15 +442,15 @@ def build_filtered_host_query(
     if orgs:
         org_values = [s.strip() for s in orgs if s and s.strip()]
         if org_values:
-            query = query.filter(P.attribution_org_predicate(db, org_values))
+            query = query.filter(P.attribution_org_predicate(org_values))
     if asns:
         asn_values = [s.strip() for s in asns if s and s.strip()]
         if asn_values:
-            query = query.filter(P.attribution_asn_predicate(db, asn_values))
+            query = query.filter(P.attribution_asn_predicate(asn_values))
     if countries:
         country_values = [s.strip() for s in countries if s and s.strip()]
         if country_values:
-            query = query.filter(P.attribution_country_predicate(db, country_values))
+            query = query.filter(P.attribution_country_predicate(country_values))
 
     # v2.423.0 — weakness / access flags and catalog checks; OR within each.
     weakness_flags = _split_csv(weaknesses)

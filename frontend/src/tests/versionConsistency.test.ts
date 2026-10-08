@@ -4,8 +4,8 @@
  * platform_version.json is the source of truth for both versions.  This test
  * fails the build if frontend/package.json drifts from it (the exact bug this
  * was added for: package.json stuck at 5.10.0 while platform said 5.15.0, so
- * the VersionFooter — stamped by generate-build-info.js — reported a stale
- * build).  Keep the three in sync: platform_version.json, package.json, and
+ * the version shown in the user menu's About item — stamped by
+ * generate-build-info.js — reported a stale build).  Keep the three in sync: platform_version.json, package.json, and
  * the docker-compose FRONTEND_VERSION default.
  *
  * Read via fs (not import) so vite's fs-allow guard doesn't block reading

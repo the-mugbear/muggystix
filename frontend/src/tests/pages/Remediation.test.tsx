@@ -390,6 +390,31 @@ describe('Remediation', () => {
     await waitFor(() => expect(addRemediationNote).toHaveBeenCalledWith({ host_id: 101, body: 'Owner on leave until Monday' }, undefined));
   });
 
+  it('the timeline says a removed finding in words, with what its record held', async () => {
+    const gone = { host_id: 101, kind: 'change', finding_id: null, finding_host_id: null, field: 'finding',
+      body: null, edited_at: null, author: 'Ana', agent_session_id: null, can_modify: false };
+    listRemediationEvents.mockResolvedValue({
+      total: 2, has_more: false,
+      items: [
+        { ...gone, id: 5, finding_title: 'Weak TLS', from: 'contact Roger Smith roger@example.com, status deferred',
+          to: 'removed from this host', occurred_at: '2026-10-07T10:00:00Z', recorded_at: '2026-10-07T10:00:00Z' },
+        { ...gone, id: 4, finding_title: 'Old SMB', from: 'status closed on 2026-09-30',
+          to: 'finding deleted', occurred_at: '2026-10-06T10:00:00Z', recorded_at: '2026-10-06T10:00:00Z' },
+      ],
+    });
+    show();
+    const table = await screen.findByRole('table', { name: /remediation/i });
+    fireEvent.click(within(table).getByRole('button', { name: 'Timeline for 10.0.0.1' }));
+    const removed = (await screen.findByText('Finding removed from this host')).closest('li')!;
+    expect(removed).toHaveTextContent(
+      'Finding removed from this host. Its remediation record held: contact Roger Smith roger@example.com, status deferred.');
+    expect(screen.getByText('Finding deleted').closest('li')).toHaveTextContent(
+      'Finding deleted. Its remediation record held: status closed on 2026-09-30.');
+    // Not the field-change form ("Finding: … → removed from this host").
+    expect(removed).not.toHaveTextContent('→');
+    expect(removed).not.toHaveTextContent('Finding:');
+  });
+
   it('a bulk note goes once on each host’s timeline, however many of its findings are ticked', async () => {
     // Five findings on one host stored five identical notes on that host's
     // timeline while the dialog said "each of the 1 host's timelines".
@@ -518,6 +543,18 @@ describe('Remediation', () => {
     expect(screen.queryByLabelText('Contact email')).not.toBeInTheDocument();
   });
 
+  it('opens on the page the address names, and a filter starts from the first again', async () => {
+    listRemediation.mockResolvedValue(page([row(1), row(2)], 80));
+    show('/remediation?page=3');
+    await screen.findByRole('table', { name: /remediation deadlines$/i });
+    expect(listRemediation).toHaveBeenCalledTimes(1);
+    expect(listRemediation).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50, limit: 25 }), expect.anything());
+    fireEvent.click(screen.getByRole('button', { name: '1 high overdue: show them' }));
+    await waitFor(() => expect(listRemediation).toHaveBeenLastCalledWith(
+      expect.objectContaining({ severity: 'high', offset: 0 }), expect.anything()));
+    expect(listRemediation.mock.calls.filter(([q]) => q.severity === 'high').every(([q]) => q.offset === 0)).toBe(true);
+  });
+
   it('answers the manager’s questions above the list, each number opening its rows', async () => {
     show();
     await screen.findByRole('table', { name: /remediation deadlines$/i });
@@ -571,7 +608,7 @@ describe('Remediation', () => {
         on_track: 0, deferred: 0, closed: 2, last_follow_up_on: null, projects: 1 },
     ]);
     const job = { id: 7, status: 'queued', format: 'contact-docx', message: null, error: null, filename: null,
-      contact_email: 'roger@example.com', created_at: null, ready: false };
+      contact_email: 'roger@example.com', created_at: null, images_withheld: 0, ready: false };
     prepareContactReport.mockReset().mockResolvedValue(job);
     getContactReport.mockReset().mockResolvedValue({ ...job, status: 'completed', ready: true, filename: 'remediation-roger-2026-11-10.docx' });
     downloadContactReport.mockReset().mockResolvedValue(new Blob(['x']));
@@ -590,6 +627,29 @@ describe('Remediation', () => {
     expect(await within(dialog).findByText('remediation-roger-2026-11-10.docx', undefined, { timeout: 4000 })).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Download' }));
     await waitFor(() => expect(saveBlob).toHaveBeenCalledWith(expect.any(Blob), 'remediation-roger-2026-11-10.docx'));
+  });
+
+  it.each([
+    [0, null],
+    [1, '1 image was left out because its finding also affects other contacts’ systems.'],
+    [3, '3 images were left out because their findings also affect other contacts’ systems.'],
+  ])('a finished document with %i images withheld says so only when there are some', async (withheld, sentence) => {
+    listRemediationContacts.mockResolvedValue([
+      { contact_email: 'roger@example.com', contact_name: 'Roger Smith', total: 3, open: 3, overdue: 2, due_soon: 1,
+        on_track: 0, deferred: 0, closed: 0, last_follow_up_on: null, projects: 1 },
+    ]);
+    prepareContactReport.mockReset().mockResolvedValue({
+      id: 7, status: 'completed', format: 'contact-docx', message: null, error: null, filename: 'list.docx',
+      contact_email: 'roger@example.com', created_at: null, images_withheld: withheld, ready: true,
+    });
+    show('/remediation?view=contacts');
+    const table = await screen.findByRole('table', { name: /contacts/i });
+    fireEvent.click(within(table).getByRole('button', { name: 'Document' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Prepare' }));
+    expect(await within(dialog).findByText('list.docx')).toBeInTheDocument();
+    if (sentence) expect(within(dialog).getByText(sentence)).toBeInTheDocument();
+    else expect(within(dialog).queryByText(/left out/)).not.toBeInTheDocument();
   });
 
   it('offers no document to someone who cannot write', async () => {

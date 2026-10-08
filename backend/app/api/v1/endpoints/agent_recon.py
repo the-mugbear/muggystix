@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 from app.db.session import disable_statement_timeout, get_db
 from app.db import models
 from app.db.models_agent import Agent
-from app.api.deps import check_agent_rate_limit
+from app.db.models_project import ProjectRole
+from app.api.deps import agent_read_floor, check_agent_rate_limit
 from app.api.v1.endpoints.agent_schemas import (
     ReconUploadResponse, ReconJobStatus,
 )
@@ -31,6 +32,10 @@ from app.services.scope_targets_service import (
 )
 
 router = APIRouter()
+
+# A scope's target files are bulk exports of project data: the floor the JWT
+# exports have (``export.py`` and ``reports.py`` gate on AUDITOR).
+_EXPORT_READ = [Depends(agent_read_floor(ProjectRole.AUDITOR))]
 
 
 def _seconds_between(start: Optional[datetime], end: Optional[datetime]) -> Optional[float]:
@@ -157,6 +162,7 @@ def _stream(db: Session, generator, media_type: str, filename: str) -> Streaming
 
 @router.get(
     "/scopes/{scope_id}/hosts.ndjson",
+    dependencies=_EXPORT_READ,
     summary="Stream every in-scope host as newline-delimited JSON",
     response_class=StreamingResponse,
 )
@@ -177,6 +183,7 @@ def download_scope_hosts_ndjson(
 
 @router.get(
     "/scopes/{scope_id}/live-hosts.txt",
+    dependencies=_EXPORT_READ,
     summary="Stream in-scope host IPs as a target file",
     response_class=StreamingResponse,
 )
@@ -196,6 +203,7 @@ def download_scope_live_hosts(
 
 @router.get(
     "/scopes/{scope_id}/web-targets.txt",
+    dependencies=_EXPORT_READ,
     summary="Stream derived http/https URLs as a target file",
     response_class=StreamingResponse,
 )
@@ -215,6 +223,7 @@ def download_scope_web_targets(
 
 @router.get(
     "/scopes/{scope_id}/named-targets.ndjson",
+    dependencies=_EXPORT_READ,
     summary="Stream every in-scope NAME with its current addresses and web evidence",
     response_class=StreamingResponse,
 )

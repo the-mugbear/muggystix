@@ -234,23 +234,20 @@ def report_image_dir(project_id: int, report_id: int) -> Path:
     return Path(settings.REPORT_FILES_DIR) / str(int(project_id)) / str(int(report_id)) / "evidence"
 
 
-def discard_report_images(project_id: int, report_id: int) -> None:
-    """Remove the copies ``freeze_report_images`` made — when an issue fails
-    while it still holds the report's lock, at the start of the next attempt,
-    and when the DRAFT is discarded.  NEVER after the issuing transaction has
-    rolled back: the lock is gone and the folder may hold a later request's
-    committed copies (external review 2026-10-02 H1).  (Review 2026-10-01 M2: a crash between the copy and the commit left
-    the folder, and nothing ever removed it.)  Never called for a report
-    that was issued: the callers hold a draft.
+#: The folders an issue writes beside a report's rendered files: its copies
+#: of its evidence images, of its template, and of its scope file.
+_EVIDENCE_DIR, _TEMPLATE_DIR, _SCOPE_DIR = "evidence", "template", "scope"
 
-    Only ever this report's ``evidence`` folder: the path is built from the
-    two numbers, resolved, and must be exactly
-    ``<REPORT_FILES_DIR>/<project>/<report>/evidence`` — a symlink that leads
-    anywhere else is left alone.  The report's own folder goes too when that
-    leaves it empty (a draft has no rendered files)."""
+
+def _discard_report_folder(project_id: int, report_id: int, name: str) -> None:
+    """Remove ``<REPORT_FILES_DIR>/<project>/<report>/<name>`` and nothing
+    else: the path is built from the two numbers, resolved, and must be
+    exactly that — a symlink that leads anywhere else is left alone.  The
+    report's own folder goes too when that leaves it empty (a draft has no
+    rendered files)."""
     root = Path(settings.REPORT_FILES_DIR).resolve()
     try:
-        expected = (str(int(project_id)), str(int(report_id)), "evidence")
+        expected = (str(int(project_id)), str(int(report_id)), name)
         folder = root.joinpath(*expected)
         if folder.is_symlink() or folder.resolve().relative_to(root).parts != expected:
             return
@@ -261,6 +258,129 @@ def discard_report_images(project_id: int, report_id: int) -> None:
         folder.parent.rmdir()          # only when empty
     except OSError:
         pass
+
+
+def discard_report_images(project_id: int, report_id: int) -> None:
+    """Remove the copies ``freeze_report_images`` made — when an issue fails
+    while it still holds the report's lock, at the start of the next attempt,
+    and when the DRAFT is discarded.  NEVER after the issuing transaction has
+    rolled back: the lock is gone and the folder may hold a later request's
+    committed copies (external review 2026-10-02 H1).  (Review 2026-10-01 M2: a crash between the copy and the commit left
+    the folder, and nothing ever removed it.)  Never called for a report
+    that was issued: the callers hold a draft.
+
+    Only ever this report's ``evidence`` folder (``_discard_report_folder``)."""
+    _discard_report_folder(project_id, report_id, _EVIDENCE_DIR)
+
+
+def discard_report_copies(project_id: int, report_id: int) -> None:
+    """Everything an issue attempt copied for a DRAFT — its images
+    (``discard_report_images``), its template and its scope file — under the
+    same rule: while the issue still holds the report's lock, at the start of
+    the next attempt, and when the draft is discarded; never after the
+    issuing transaction rolled back, and never for an issued report."""
+    for name in (_EVIDENCE_DIR, _TEMPLATE_DIR, _SCOPE_DIR):
+        _discard_report_folder(project_id, report_id, name)
+
+
+def _report_dir(project_id: int, report_id: int, name: str) -> Path:
+    return Path(settings.REPORT_FILES_DIR) / str(int(project_id)) / str(int(report_id)) / name
+
+
+def freeze_report_template(report: Report) -> Optional[dict]:
+    """Copy the report's template, as the renderer would use it now (its
+    base's files, its own, every uploaded file in place), into the report's
+    own storage → ``{"name", "sha256"}`` for the snapshot.  Called while
+    issuing, under the report's lock: from then on the report's files are
+    rendered from this copy, so a logo uploaded — or a template folder
+    changed by an upgrade — between the issue and its render can neither
+    change them nor block them.
+
+    The folder is emptied first: this is a draft being issued, so whatever
+    is there is left over from an attempt that did not commit.  None — and no
+    copy — when the template cannot be loaded (the render then says so).
+    Raises ``ReportStateError`` when the copy cannot be written."""
+    _discard_report_folder(report.project_id, report.id, _TEMPLATE_DIR)
+    try:
+        template = report_template_service.get_template(report.template)
+    except report_template_service.TemplateError:
+        return None
+    # Under the template's name, so a render's messages name the template.
+    target = _report_dir(report.project_id, report.id, _TEMPLATE_DIR) / template.name
+    try:
+        digest = report_template_service.freeze(template, target)
+    except (OSError, ValueError) as exc:
+        _discard_report_folder(report.project_id, report.id, _TEMPLATE_DIR)
+        raise ReportStateError(
+            f"The '{template.name}' template could not be copied into report storage "
+            f"({getattr(exc, 'strerror', None) or exc})."
+        ) from exc
+    return {"name": template.name, "sha256": digest}
+
+
+def frozen_template_dir(report: Report) -> Optional[Path]:
+    """The folder of an issued report's own template copy, checked against
+    the digest recorded at issue.  None for a report issued before the copy
+    existed (its snapshot does not name one).  Raises ``ValueError`` when the
+    copy is gone or is no longer what was issued."""
+    frozen = (report.snapshot or {}).get("template")
+    if not isinstance(frozen, dict):
+        return None
+    name = str(frozen.get("name") or "")
+    root = Path(settings.REPORT_FILES_DIR).resolve()
+    folder = _report_dir(report.project_id, report.id, _TEMPLATE_DIR) / name
+    try:
+        folder.resolve().relative_to(root)
+        intact = bool(name) and folder.is_dir() and not folder.is_symlink() and (
+            report_template_service.folder_digest(folder) == frozen.get("sha256"))
+    except (ValueError, OSError):
+        intact = False
+    if not intact:
+        raise ValueError(
+            "This report's own copy of its template is missing from report storage, or is no longer "
+            "the one it was issued with. Restore it (uploads/client_reports, from a backup), or "
+            "revise the report."
+        )
+    return folder
+
+
+def freeze_report_scope(report: Report, dataset: dict) -> None:
+    """Keep the bytes of the scope file an issued report names (its name and
+    SHA-256 are printed in it), written under the report's lock like its
+    images.  Nothing is kept for a report that lists its scope itself."""
+    _discard_report_folder(report.project_id, report.id, _SCOPE_DIR)
+    scope = dataset.get("scope") or {}
+    if not scope.get("file"):
+        return
+    target = _report_dir(report.project_id, report.id, _SCOPE_DIR)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "scope.csv").write_bytes(report_scope.scope_csv(scope))
+    except OSError as exc:
+        _discard_report_folder(report.project_id, report.id, _SCOPE_DIR)
+        raise ReportStateError(
+            f"The report's scope file could not be written to report storage ({exc.strerror or 'error'})."
+        ) from exc
+
+
+def issued_scope_file(report: Report, scope: dict) -> bytes:
+    """The scope file of an ISSUED report: the bytes kept when it was issued
+    — or, for a report issued before they were kept, built again from its
+    frozen scope — and in either case only if they are the file whose SHA-256
+    the report prints.  Raises ``ValueError`` when they are not."""
+    stored = _report_dir(report.project_id, report.id, _SCOPE_DIR) / "scope.csv"
+    try:
+        data = stored.read_bytes() if stored.is_file() and not stored.is_symlink() else None
+    except OSError:
+        data = None
+    if data is None:
+        data = report_scope.scope_csv(scope)
+    printed = (scope.get("file") or {}).get("sha256")
+    if printed and hashlib.sha256(data).hexdigest() != printed:
+        raise ValueError(
+            f"report {report.id}: its scope file no longer has the SHA-256 the report prints ({printed})"
+        )
+    return data
 
 
 def discard_project_report_files(project_id: int) -> None:
@@ -658,15 +778,25 @@ class ClientReportService:
             by_finding[fid] = {"images": images, "placed": placed, "evidence": unplaced}
         return by_finding, skipped, by_agent
 
-    def _records_in_report(self, template_name: Optional[str]) -> bool:
+    @staticmethod
+    def _template(template):
+        """The report's template — by name, or one already loaded (a build
+        loads it once and hands it to everything that reads it) — or None
+        when there is no such template."""
+        if template is not None and not isinstance(template, str):
+            return template
+        try:
+            return report_template_service.get_template(template)
+        except report_template_service.TemplateError:
+            return None
+
+    def _records_in_report(self, template) -> bool:
         """Whether the report's template prints how findings were confirmed:
         ``template.json`` → ``"evidence_records": true``.  Opt-in — a template
         that does not ask gets none in its data, so none is frozen at issue
         either."""
-        try:
-            return report_template_service.get_template(template_name).evidence_records
-        except report_template_service.TemplateError:
-            return False
+        template = self._template(template)
+        return bool(template is not None and template.evidence_records)
 
     def _confirmations(self, findings: List[Finding]) -> Tuple[Dict[int, List[dict]], Dict[int, int], int]:
         """How each finding was confirmed (review 2026-10-01 B8): its linked
@@ -865,19 +995,19 @@ class ClientReportService:
             "domains": [{"domain": d, "include_subdomains": bool(sub)} for d, sub in domains],
         }
 
-    def _scope_block(self, report: Report, project: Optional[Project], number: Optional[int]) -> dict:
+    def _scope_block(self, report: Report, project: Optional[Project], number: Optional[int],
+                     template=None) -> dict:
         """The scope as the report states it (v2.441.0): the lists, their
         totals and per-site summary, whether each list is printed (the
         template's cutoff), and — when it is not — the separate file's name
         and SHA-256 (``report_scope``).  Frozen with the rest of the dataset
         at issue, so an issued report's file never changes."""
         scope = self._scope(report.project_id)
-        try:
-            template = report_template_service.get_template(report.template)
-            cutoffs = {"inline_max": template.scope_inline_max,
-                       "domains_inline_max": template.scope_domains_inline_max}
-        except report_template_service.TemplateError:
-            cutoffs = {}
+        template = self._template(template if template is not None else report.template)
+        cutoffs = {} if template is None else {
+            "inline_max": template.scope_inline_max,
+            "domains_inline_max": template.scope_domains_inline_max,
+        }
         scope.update(report_scope.summarise(scope["subnets"], scope["domains"], **cutoffs))
         return report_scope.attach_file(
             scope, project_slug=project.slug if project else None, number=number, report_id=report.id,
@@ -899,7 +1029,10 @@ class ClientReportService:
         confirmations: Dict[int, List[dict]] = {}
         confirmations_omitted: Dict[int, int] = {}
         agent_records = 0
-        if self._records_in_report(report.template):
+        # Loaded ONCE per build: the manifest, its base's and every asset's
+        # presence are read from disk each time.
+        template = self._template(report.template)
+        if self._records_in_report(template):
             confirmations, confirmations_omitted, agent_records = self._confirmations(findings)
 
         endpoints: Dict[int, Dict[str, dict]] = {
@@ -1073,7 +1206,9 @@ class ClientReportService:
             },
             "engagement": settings,
             "executive_summary": report.executive_summary,
-            "scope": self._scope_block(report, project, number if number is not None else report.number),
+            "scope": self._scope_block(
+                report, project, number if number is not None else report.number, template,
+            ),
             "severity_order": list(SEVERITY_ORDER),
             "severity_labels": SEVERITY_LABEL,
             "counts": counts,
@@ -1083,7 +1218,7 @@ class ClientReportService:
 
         # What THIS report prints of that (S2): marks each image, and takes
         # out the test results of findings the report does not show in detail.
-        printing = self._mark_printed(report.template, dataset)
+        printing = self._mark_printed(template if template is not None else report.template, dataset)
         if printing is not None:
             agent_records = sum(1 for i in items for c in i["confirmations"] if c.get("by_agent"))
 
@@ -1157,7 +1292,7 @@ class ClientReportService:
         return dataset, reported, summary
 
     @staticmethod
-    def _mark_printed(template_name: Optional[str], dataset: dict) -> Optional[dict]:
+    def _mark_printed(template, dataset: dict) -> Optional[dict]:
         """Say, in the dataset, what this report's template PRINTS of each
         finding's evidence (review 2026-10-01 S2) → the counts for the
         summary, or None when it cannot be measured (no such template, or it
@@ -1180,10 +1315,12 @@ class ClientReportService:
           for that finding: the report's data holds the test results it
           prints, not those of a finding it shows as a table row.
         """
+        template = ClientReportService._template(template)
+        if template is None:
+            return None
         try:
-            template = report_template_service.get_template(template_name)
             parts = report_template_service.printed_parts(template, dataset)
-        except (report_template_service.TemplateError, quarto_render.RenderError):
+        except quarto_render.RenderError:
             return None
         figures = set(parts["figures"])
         shown = set(parts["findings"])
@@ -1408,9 +1545,15 @@ class ClientReportService:
         # lock is gone.
         freeze_report_images(self.db, report, dataset)
         try:
+            # Its own copies of its template and of the scope file it names,
+            # under the same rule as the images.
+            frozen_template = freeze_report_template(report)
+            freeze_report_scope(report, dataset)
             report.snapshot = {
                 "schema": SCHEMA_VERSION, "dataset": dataset, "reported": reported, "summary": summary,
             }
+            if frozen_template is not None:
+                report.snapshot["template"] = frozen_template
             report.number = number
             report.status = ReportStatus.ISSUED
             report.issued_at = now
@@ -1422,6 +1565,6 @@ class ClientReportService:
                 original.status = ReportStatus.SUPERSEDED
             self.db.flush()
         except Exception:
-            discard_report_images(project_id, report_id)
+            discard_report_copies(project_id, report_id)
             raise
         return report

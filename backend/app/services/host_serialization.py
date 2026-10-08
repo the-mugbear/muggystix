@@ -169,6 +169,7 @@ def serialize_host_base(
     *,
     discoveries: Optional[List[dict]] = None,
     note_count: Optional[int] = None,
+    host_scripts: Optional[list] = None,
 ) -> dict:
     """Common host fields used by both the list and the detail endpoints.
 
@@ -176,6 +177,10 @@ def serialize_host_base(
     endpoint passes windowed top-N + aggregate counts so it never has to
     eager-load every note/scan-history row — review #5).  When omitted, they
     are derived from the loaded relationships (the detail endpoint's path).
+
+    ``host_scripts`` likewise: the list shows none and passes ``[]``, so the
+    relationship is not read (a lazy load per host otherwise); the detail
+    omits it and gets the host's own.
     """
     if note_count is None:
         note_count = len(getattr(host, "notes", []) or [])
@@ -229,7 +234,7 @@ def serialize_host_base(
         "first_seen": host.first_seen,
         "last_seen": host.last_seen,
         "ports": host.ports,
-        "host_scripts": host.host_scripts,
+        "host_scripts": host.host_scripts if host_scripts is None else host_scripts,
         "vulnerability_summary": build_vuln_summary(vuln_data),
         "vulnerabilities": [],
         "note_count": note_count,

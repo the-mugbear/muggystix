@@ -16,7 +16,7 @@
  *     `port:22@any`).  For a closed or filtered port nmap fills the service
  *     name from its port table, so "ssh 22/tcp · closed" proves nothing;
  *   - structured filter (`ports` / `services` / `portStates` / `hasOpenPorts`):
- *     ONE port row must satisfy every dimension (`port_match_subquery`);
+ *     ONE port row must satisfy every dimension (`port_match_conditions`);
  *     service = case-insensitive substring of `service_name`;
  *   - query `port:` = port number (`port_predicate`);
  *   - query `service:` / `svc:` = substring of `service_name` (`service_predicate`);

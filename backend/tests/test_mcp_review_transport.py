@@ -100,8 +100,12 @@ def test_every_path_param_in_the_registry_is_typed():
 # ---------------------------------------------------------------------------
 
 def test_session_end_is_on_the_metadata_write_allowlist():
-    from app.api.deps import AGENT_SESSION_METADATA_WRITES
-    assert ("POST", "/session/end") in AGENT_SESSION_METADATA_WRITES
+    import app.main  # noqa: F401
+    from app.main import app
+    from tests.agent_route_declarations import agent_route_declarations
+
+    declared = agent_route_declarations(app)
+    assert declared[("POST", "/api/v1/agent/session/end")].session_metadata_write
 
 
 # ---------------------------------------------------------------------------

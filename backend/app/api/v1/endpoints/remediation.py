@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
-    enforce_agent_operator_access, get_client_info, get_current_project, get_current_user,
+    agent_read_floor, enforce_agent_operator_access, get_client_info, get_current_project, get_current_user,
     require_project_role, require_role,
 )
 from app.api.v1.endpoints.agent_common import load_agent_session, require_project_host
@@ -43,8 +43,12 @@ class Actor:
     who: Attribution
 
 
+#: Who reads remediation tracking — the page's floor and the agents' alike.
+READ_ROLE = ProjectRole.AUDITOR
+
+
 def human_reader(project: Project = Depends(get_current_project),
-                 user: User = Depends(require_project_role(ProjectRole.AUDITOR))):
+                 user: User = Depends(require_project_role(READ_ROLE))):
     return Actor(project.id, Attribution(user_id=user.id))
 
 
@@ -67,8 +71,8 @@ _STALE = Query(None, ge=1, le=365, description=(
 _TREND_DAYS = Query(90, ge=7, le=730, description="How many days of daily counts to return.")
 
 
-def make_router(reader, admin):
-    router = APIRouter(dependencies=[Depends(enabled)])
+def make_router(reader, admin, *, dependencies=()):
+    router = APIRouter(dependencies=[Depends(enabled), *dependencies])
 
     @router.get("/remediation", summary="Findings on hosts with their remediation contact and status")
     def listing(status: Optional[RemediationStatus] = None,
@@ -185,9 +189,12 @@ router = make_router(human_reader, human_admin)
 
 def agent_reader(request: Request, agent: Agent = Depends(enforce_agent_operator_access),
                  db: Session = Depends(get_db)):
-    """The auditor floor for these reads is in ``AGENT_READ_ROLE_OVERRIDES``."""
+    """The reads' floor (``READ_ROLE``) is declared on ``agent_router``."""
     session = load_agent_session(db, request)
-    return Actor(agent.project_id, Attribution(user_id=session.started_by_id, session=session))
+    return Actor(
+        request.state.agent_project_id,
+        Attribution(user_id=request.state.key_operator_id, session=session),
+    )
 
 
 def agent_admin(request: Request, actor: Actor = Depends(agent_reader)):
@@ -207,7 +214,9 @@ def agent_admin(request: Request, actor: Actor = Depends(agent_reader)):
     return actor
 
 
-agent_router = make_router(agent_reader, agent_admin)
+agent_router = make_router(
+    agent_reader, agent_admin, dependencies=[Depends(agent_read_floor(READ_ROLE))],
+)
 
 
 # --- not about one project ---------------------------------------------------
@@ -222,7 +231,8 @@ def read_policy(_: User = Depends(get_current_user), db: Session = Depends(get_d
     return remediation_policy.load(db).as_dict()
 
 
-@account_router.put("/remediation-policy", summary="Turn remediation tracking on or off; set the timelines")
+@account_router.put("/remediation-policy",
+                    summary="Turn remediation tracking on or off; set the timelines and the time zone")
 def write_policy(body: PolicyUpdate, request: Request,
                  user: User = Depends(require_role(UserRole.ADMIN)), db: Session = Depends(get_db)):
     before, after = remediation_policy.save(db, body, user.id)
@@ -306,7 +316,7 @@ def overview(project_id: Optional[int] = Query(None, gt=0),
                     summary="Each project you administer, with its findings on hosts by deadline state")
 def overview_projects(projects: List[Project] = Depends(administered_projects),
                       policy: remediation_policy.Policy = Depends(enabled), db: Session = Depends(get_db)):
-    today = remediation._today()
+    today = policy.today()
     counts = remediation.state_counts_by_project(db, [p.id for p in projects], policy, today)
     items = [{"project_id": p.id, "name": p.name, "archived": p.status == "archived",
               "states": counts[p.id]} for p in projects]

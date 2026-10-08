@@ -46,7 +46,7 @@ vi.mock('react-router-dom', async () => {
 });
 
 const emptyWorkbench = {
-  my_queue: { items: [], in_review_count: 0, watching_count: 0 },
+  my_queue: { items: [], in_review_count: 0 },
   my_tasks: {
     items: [], total_open: 0,
     reason_counts: { assigned: 0, in_review: 0, triage: 0 },
@@ -186,7 +186,7 @@ const q = (el: HTMLElement) => new URL(el.getAttribute('href') ?? '', 'https://x
 // -- a project with work in every tab (the owner's: 24 · 37 · 40 · 27 · 112) --
 const busy = (over: Record<string, unknown> = {}) => ({
   ...emptyWorkbench,
-  my_queue: { items: [], in_review_count: 37, watching_count: 0 },
+  my_queue: { items: [], in_review_count: 37 },
   my_tasks: {
     items: [], total_open: 55,
     reason_counts: { assigned: 12, in_review: 30, triage: 15 },
@@ -236,7 +236,7 @@ const withWork = (over: Record<string, unknown> = {}) => {
   mockedApi.getMyFindingsPage.mockResolvedValue({
     items: [findingRow(21), findingRow(1)], total_open: 24, need_counts: NEEDS,
   });
-  mockedApi.getMyReviewHostsPage.mockResolvedValue({ items: [hostRow(1), hostRow(2)], in_review_count: 37, watching_count: 0 });
+  mockedApi.getMyReviewHostsPage.mockResolvedValue({ items: [hostRow(1), hostRow(2)], in_review_count: 37 });
   mockedApi.getMyTestsPage.mockResolvedValue({
     items: [testRow(31, 'assigned'), testRow(32)], total_open: 55,
     reason_counts: { assigned: 12, in_review: 30, triage: 15 },
@@ -267,7 +267,7 @@ beforeEach(() => {
   mockedApi.getWorkbench.mockResolvedValue(emptyWorkbench);
   mockedApi.getInvestigationQueue.mockResolvedValue(emptyQueue);
   mockedApi.getMyFindingsPage.mockResolvedValue({ items: [], total_open: 0, need_counts: { decide: 0, write: 0 } });
-  mockedApi.getMyReviewHostsPage.mockResolvedValue({ items: [], in_review_count: 0, watching_count: 0 });
+  mockedApi.getMyReviewHostsPage.mockResolvedValue({ items: [], in_review_count: 0 });
   mockedApi.getMyTestsPage.mockResolvedValue({ ...emptyWorkbench.my_tasks });
   mockedApi.getReviewFollowupsPage.mockResolvedValue({ items: [], total: 0 });
   mockedApi.markWorkbenchSeen.mockResolvedValue({ last_viewed_at: '2026-01-01T00:00:00Z' });
@@ -414,7 +414,7 @@ describe('Operations page', () => {
     it('Tests opens for claimable tests alone — the tab lists them', async () => {
       withWork({
         my_findings: { items: [], total_open: 0 },
-        my_queue: { items: [], in_review_count: 0, watching_count: 0 },
+        my_queue: { items: [], in_review_count: 0 },
         my_work: {
           total: 0, hosts_in_review: 0, tests_assigned: 0, tests_on_hosts_in_review: 0,
           ...NO_FINDINGS, to_claim: 15,

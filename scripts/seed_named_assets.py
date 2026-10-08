@@ -354,7 +354,7 @@ def _seed_body(db, project, owner, hostname_before):
     )
     finding = None
     for v in vhost_vulns:
-        finding = fsvc.promote_vulnerability(vuln=v, project_id=project.id, actor_id=owner.id)
+        finding, _ = fsvc.promote_vulnerability(vuln=v, project_id=project.id, actor_id=owner.id)
     db.flush()
     db.refresh(finding)
     print(f"  finding #{finding.id} '{finding.title[:40]}…' endpoints="

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { type ListPage, type ListPageRequest, useListQuery } from './useListQuery';
+import type { UrlPage } from './useUrlPage';
 
 /**
  * usePagedList — one page of a list at a time ("1–25 of N", previous / next),
@@ -17,6 +18,9 @@ import { type ListPage, type ListPageRequest, useListQuery } from './useListQuer
  * New `deps` (a filter, the page's Refresh) start from the first page.  A page
  * that an action emptied — the last row of the last page was dealt with —
  * steps back to the last page that exists.
+ *
+ * A page's main list keeps its page in the address: pass
+ * `{ page: useUrlPage() }` (`?page=`, left out for the first).
  */
 export interface PagedList<T, P extends ListPage<T>> {
   /** `null` until this page has loaded (loading, or failed — see `error`). */
@@ -37,26 +41,55 @@ export interface PagedList<T, P extends ListPage<T>> {
   lastResponse: P | null;
 }
 
+export interface PagedListOptions {
+  pageSize?: number;
+  errorMessage?: string;
+  /** Keep the page in the address instead of in the component
+   *  (`useUrlPage()`): it survives a reload and Back from a row's own page. */
+  page?: UrlPage;
+}
+
 export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
   fetchPage: (request: ListPageRequest) => Promise<P>,
   deps: ReadonlyArray<unknown>,
-  { pageSize = 25, errorMessage }: { pageSize?: number; errorMessage?: string } = {},
+  { pageSize = 25, errorMessage, page: url }: PagedListOptions = {},
 ): PagedList<T, P> {
   // The page belongs to the deps it was chosen under: with new deps it is the
   // first page at once, with no render in which the old page number is asked
   // of the new list.
   const depsKey = JSON.stringify(deps);
   const [chosen, setChosen] = useState({ page: 0, key: depsKey });
-  const page = chosen.key === depsKey ? chosen.page : 0;
+  // In the address, the page is the address's while the deps are the ones it
+  // was read under.  New deps start from the first page — and take the page
+  // out of the address — unless they came WITH an address the reader went
+  // back or forward to, whose page is then the one they left.
+  const [read, setRead] = useState({ key: depsKey, search: url?.search });
+  const wentBack = !!url && url.byHistory && url.search !== read.search;
+  const page = url
+    ? (read.key === depsKey || wentBack ? url.page : 0)
+    : (chosen.key === depsKey ? chosen.page : 0);
   // …and it is forgotten with them: returning to an earlier filter (All →
   // one kind → All) starts from the first page too, not the page that was
   // left.  `page` is already 0 here, so this asks for nothing.
   useEffect(() => {
-    setChosen((c) => (c.key === depsKey ? c : { page: 0, key: depsKey }));
-  }, [depsKey]);
+    if (!url) {
+      setChosen((c) => (c.key === depsKey ? c : { page: 0, key: depsKey }));
+      return;
+    }
+    if (read.key !== depsKey && !wentBack && url.page !== 0) {
+      // Runs again once the address has lost its page.
+      url.setPage(0);
+      return;
+    }
+    if (read.key !== depsKey || read.search !== url.search) setRead({ key: depsKey, search: url.search });
+  }, [depsKey, url, read, wentBack]);
+  const setUrlPage = url?.setPage;
   const setPage = useCallback(
-    (next: number) => setChosen({ page: Math.max(0, next), key: depsKey }),
-    [depsKey],
+    (next: number) => {
+      if (setUrlPage) setUrlPage(Math.max(0, next));
+      else setChosen({ page: Math.max(0, next), key: depsKey });
+    },
+    [depsKey, setUrlPage],
   );
 
   const list = useListQuery<T, P>(

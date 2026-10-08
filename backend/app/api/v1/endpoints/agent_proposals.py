@@ -38,7 +38,7 @@ _MODEL = Field(None, max_length=100, description="The model you are running as (
 def _who(db: Session, request: Request, agent_model: Optional[str]) -> proposals.Attribution:
     session = load_agent_session(db, request)
     note_agent_model(session, agent_model)
-    return proposals.Attribution(user_id=session.started_by_id, session=session)
+    return proposals.Attribution(user_id=request.state.key_operator_id, session=session)
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +262,7 @@ def list_proposals(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    session_id = load_agent_session(db, request).id if mine else None
+    session_id = request.state.agent_session_id if mine else None
     rows, total = proposals.list_proposals(
         db, agent.project_id, status=status, kind=kind, finding_id=finding_id,
         agent_session_id=session_id, limit=limit, offset=offset,

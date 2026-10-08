@@ -31,7 +31,7 @@ from app.schemas.client_reports import (
 )
 from app.schemas.schemas import ReportJobSchema
 from app.services.client_report_service import (
-    ClientReportService, ReportStateError, discard_report_images, stored_file_path,
+    ClientReportService, ReportStateError, discard_report_copies, issued_scope_file, stored_file_path,
 )
 from app.services.client_report_views import (
     load_report,
@@ -232,8 +232,8 @@ async def upload_report_template_asset(
 ):
     """Upload the file a template expects (a logo, the title page image, the
     Word styles file).  It is used in place of a server-installed one from the
-    next preview or issue on; issued reports keep theirs (the template
-    fingerprint includes it, so an issued report refuses to re-render)."""
+    next preview or issue on; issued reports keep theirs (each renders from
+    its own copy of the template, made when it was issued)."""
     _require_global_admin(current_user)
     _template, asset = _declared_asset(name, asset_id)
     limit = int(asset.get("max_bytes") or 0) or asset_store_module.MAX_DOCX_UNCOMPRESSED
@@ -289,7 +289,11 @@ def preview_report_template_asset(name: str, asset_id: str):
     if media is None:
         raise HTTPException(status_code=404, detail="This file has no image preview.")
     uploaded = asset_store_module.overrides(name).get(asset_id)
-    path = uploaded if uploaded is not None else (template.path / asset["path"] if asset.get("installed") else None)
+    # Installed in the template's folder (or, for a template that extends
+    # another, wherever the renderer takes the file from).
+    path = uploaded if uploaded is not None else (
+        templates.quarto_render.template_file(template.path, asset["path"]) if asset.get("installed") else None
+    )
     if path is None or not path.is_file() or path.is_symlink():
         raise HTTPException(status_code=404, detail="This file is not installed.")
     return FileResponse(
@@ -513,11 +517,12 @@ def delete_report(
         raise HTTPException(status_code=403, detail="Only the person who started this draft or a project admin can discard it.")
     db.delete(report)
     db.commit()
-    # An issue attempt that died between copying the images and its commit
-    # left this draft a folder of copies (review 2026-10-01 M2); with the
-    # draft gone nothing would ever remove it.  After the commit: the row is
-    # the record that the folder is nobody's.
-    discard_report_images(project.id, report_id)
+    # An issue attempt that died between copying the images (and the
+    # template, and the scope file) and its commit left this draft a folder
+    # of copies (review 2026-10-01 M2); with the draft gone nothing would
+    # ever remove it.  After the commit: the row is the record that the
+    # folder is nobody's.
+    discard_report_copies(project.id, report_id)
     return Response(status_code=204)
 
 
@@ -644,7 +649,10 @@ def rerender_report(
         )
     if report.render_status == RenderStatus.PENDING and _live_issue_job(db, report):
         raise HTTPException(status_code=409, detail="The files are being rendered.")
-    _renderable_template_or_409(report.template)
+    if not (report.snapshot or {}).get("template"):
+        # A report issued before it kept its own copy of the template renders
+        # from the live one; a report with a copy needs nothing of it.
+        _renderable_template_or_409(report.template)
     report.render_status = RenderStatus.PENDING
     report.render_error = None
     job = _enqueue(db, project=project, user=current_user, fmt="report-issue", report_id=report.id,
@@ -711,15 +719,33 @@ def download_report_scope(
 
 
 def report_scope_response(service: ClientReportService, report: Report) -> Response:
-    """The scope file download — shared with the agent's route."""
+    """The scope file download — shared with the agent's route.
+
+    An ISSUED report that names its scope file prints that file's SHA-256, so
+    the download is the bytes kept at issue (or, for a report issued before
+    they were kept, built again from the frozen scope) and is refused — 500,
+    logged — when they are not the file the report names: a silently
+    different file would fail the client's own check with no explanation."""
     dataset, summary = service.content(report)
     if dataset is None:
         raise HTTPException(status_code=409, detail=summary.get("error") or "This report cannot be built.")
     scope = dataset.get("scope") or {"subnets": [], "domains": []}
     name = ((scope.get("file") or {}).get("name")
             or report_scope.file_name(project_slug=None, number=report.number, report_id=report.id))
+    if report.status != ReportStatus.DRAFT and report.snapshot and scope.get("file"):
+        try:
+            content = issued_scope_file(report, scope)
+        except ValueError as exc:
+            logger.error("Scope file refused: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail="This report's scope file no longer matches the SHA-256 the report prints, so it "
+                       "is not served. Restore the report's storage from a backup, or revise the report.",
+            )
+    else:
+        content = report_scope.scope_csv(scope)
     return Response(
-        content=report_scope.scope_csv(scope), media_type="text/csv; charset=utf-8",
+        content=content, media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{name}"'},
     )
 

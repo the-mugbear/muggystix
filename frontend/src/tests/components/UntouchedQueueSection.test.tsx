@@ -254,7 +254,6 @@ describe('Untouched, with a reason — actions', () => {
 
   it('bulk Review takes every selected host, and reports a partial failure honestly', async () => {
     api.followHost.mockImplementation(async (id: number) => {
-      // eslint-disable-next-line @typescript-eslint/no-throw-literal
       if (id === 8) throw { response: { status: 403, data: { detail: 'not a member' } } };
       return { status: 'in_review' };
     });

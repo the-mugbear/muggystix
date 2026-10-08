@@ -1,0 +1,3055 @@
+{
+ "agent_identity": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/identity",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "assist_add_note": {
+  "body_params": [
+   "body"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "body": {
+     "description": "Note text.",
+     "minLength": 1,
+     "type": "string"
+    },
+    "host_id": {
+     "description": "Numeric host id (from assist_list_hosts).",
+     "minimum": 1,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "host_id",
+    "body"
+   ],
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/hosts/{host_id}/notes",
+  "path_alternatives": {},
+  "path_params": [
+   "host_id"
+  ],
+  "query_params": []
+ },
+ "assist_compare_scans": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "a": {
+     "description": "Baseline scan id",
+     "type": "integer"
+    },
+    "b": {
+     "description": "Later scan id",
+     "type": "integer"
+    },
+    "limit": {
+     "default": 100,
+     "maximum": 500,
+     "minimum": 1,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "a",
+    "b"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/scans/compare",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "a",
+   "b",
+   "limit"
+  ]
+ },
+ "assist_count_hosts": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "has_critical_vulns": {
+     "description": "has_critical_vulns / has_high_vulns together mean a critical OR a high scanner observation, as the Hosts page's severity chips do; for both on one host use q=has:critical has:high.",
+     "type": "boolean"
+    },
+    "has_high_vulns": {
+     "description": "has_critical_vulns / has_high_vulns together mean a critical OR a high scanner observation, as the Hosts page's severity chips do; for both on one host use q=has:critical has:high.",
+     "type": "boolean"
+    },
+    "ports": {
+     "description": "Comma-separated port numbers, ANY of them open. For ALL of them open use q: q=port:80 port:443. No ranges or names (422).",
+     "type": "string"
+    },
+    "q": {
+     "description": "Boolean query DSL (see assist_list_hosts).",
+     "type": "string"
+    },
+    "search": {
+     "description": "Free text, the Hosts page's search box: address, host name, OS name or family, or \u2014 on any of the host's ports \u2014 a port number, a service name or a product.",
+     "type": "string"
+    },
+    "services": {
+     "description": "Comma-separated service names, ANY of them, matched on the service the scanner identified on an OPEN port, on any port \u2014 the Hosts page's service:. The name is the scanner's own: SMB is usually microsoft-ds, not smb (or use ports=445). A masscan-only open port has no name and does not match.",
+     "type": "string"
+    },
+    "state": {
+     "description": "Host state: up, down or unknown. Any other value is a 422.",
+     "type": "string"
+    },
+    "subnets": {
+     "description": "Comma-separated CIDR blocks (or single addresses); a host matches inside ANY of them. A value that is not a network or an address is a 422.",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/hosts/count",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "q",
+   "search",
+   "state",
+   "ports",
+   "services",
+   "subnets",
+   "has_critical_vulns",
+   "has_high_vulns"
+  ]
+ },
+ "assist_get_client_report": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "report_id": {
+     "minimum": 1,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "report_id"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/client-reports/{report_id}",
+  "path_alternatives": {},
+  "path_params": [
+   "report_id"
+  ],
+  "query_params": []
+ },
+ "assist_get_context": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/context",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "assist_get_coverage": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/coverage",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "assist_get_finding": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "finding_id": {
+     "description": "Project-Finding id, from assist_list_findings \u2014 NOT a per-host vulnerability id from assist_get_host_vulnerabilities.",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "finding_id"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/findings/{finding_id}",
+  "path_alternatives": {},
+  "path_params": [
+   "finding_id"
+  ],
+  "query_params": []
+ },
+ "assist_get_host": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "host_id": {
+     "description": "Numeric host id (from assist_list_hosts).",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "ip": {
+     "description": "The host's address, e.g. 10.0.0.5.",
+     "maxLength": 64,
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/hosts/{host_id}",
+  "path_alternatives": {
+   "ip": "/api/v1/agent/assist/hosts/by-ip/{ip}"
+  },
+  "path_params": [
+   "host_id"
+  ],
+  "query_params": []
+ },
+ "assist_get_host_notes": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "host_id": {
+     "description": "Numeric host id (from assist_list_hosts).",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "limit": {
+     "default": 50,
+     "maximum": 200,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "host_id"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/hosts/{host_id}/notes",
+  "path_alternatives": {},
+  "path_params": [
+   "host_id"
+  ],
+  "query_params": [
+   "limit",
+   "offset"
+  ]
+ },
+ "assist_get_host_vulnerabilities": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "cve": {
+     "description": "Only rows for this CVE id (exact, any case).",
+     "maxLength": 40,
+     "type": "string"
+    },
+    "host_id": {
+     "description": "Numeric host id (from assist_list_hosts).",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "limit": {
+     "default": 50,
+     "maximum": 1000,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    },
+    "plugin_id": {
+     "description": "Only rows from this scanner plugin id (exact).",
+     "maxLength": 100,
+     "type": "string"
+    },
+    "search": {
+     "description": "Only rows whose title contains this text.",
+     "maxLength": 200,
+     "type": "string"
+    },
+    "severity": {
+     "description": "Comma-separated severities to include (critical/high/medium/low/info). Default: all.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "host_id"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/hosts/{host_id}/vulnerabilities",
+  "path_alternatives": {},
+  "path_params": [
+   "host_id"
+  ],
+  "query_params": [
+   "severity",
+   "cve",
+   "plugin_id",
+   "search",
+   "limit",
+   "offset"
+  ]
+ },
+ "assist_get_image": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "attachment_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "interface_id": {
+     "minimum": 1,
+     "type": "integer"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/attachments/{attachment_id}",
+  "path_alternatives": {
+   "interface_id": "/api/v1/agent/assist/web-interfaces/{interface_id}/screenshot"
+  },
+  "path_params": [
+   "attachment_id"
+  ],
+  "query_params": []
+ },
+ "assist_get_patterns": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/patterns",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "assist_get_posture": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/posture",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "assist_get_terrain": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "limit": {
+     "default": 100,
+     "maximum": 1000,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "sort": {
+     "default": "address",
+     "enum": [
+      "address",
+      "untouched",
+      "critical_untouched"
+     ],
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/workbench/terrain",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "sort",
+   "limit"
+  ]
+ },
+ "assist_get_vocabulary": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/vocabulary",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "assist_get_workbench": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/workbench",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "assist_list_client_reports": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/client-reports",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "assist_list_evidence_gaps": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "domain": {
+     "enum": [
+      "port_discovery",
+      "service_detection",
+      "os_detection",
+      "vuln_assessment",
+      "web_tls",
+      "auth_smb_ad",
+      "validation"
+     ],
+     "type": "string"
+    },
+    "limit": {
+     "default": 50,
+     "maximum": 1000,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "segment": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "domain"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/evidence/gaps",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "domain",
+   "segment",
+   "limit"
+  ]
+ },
+ "assist_list_findings": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "host_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "limit": {
+     "default": 25,
+     "maximum": 500,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "owner": {
+     "description": "Username, or 'me' for this session's operator.",
+     "type": "string"
+    },
+    "search": {
+     "maxLength": 200,
+     "type": "string"
+    },
+    "severity": {
+     "enum": [
+      "critical",
+      "high",
+      "medium",
+      "low",
+      "info"
+     ],
+     "type": "string"
+    },
+    "source": {
+     "type": "string"
+    },
+    "status": {
+     "description": "A status, or a group: active (still being worked) / resolved (every terminal status). 'all' or omitted for every status. Any other value is a 422.",
+     "enum": [
+      "open",
+      "confirmed",
+      "false_positive",
+      "accepted_risk",
+      "remediated",
+      "retest",
+      "active",
+      "resolved",
+      "all"
+     ],
+     "type": "string"
+    },
+    "unowned": {
+     "description": "Only findings with no owner.",
+     "type": "boolean"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/findings",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "status",
+   "severity",
+   "source",
+   "host_id",
+   "unowned",
+   "owner",
+   "search",
+   "limit",
+   "offset"
+  ]
+ },
+ "assist_list_host_access": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "host_id": {
+     "description": "Numeric host id (from assist_list_hosts).",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "limit": {
+     "default": 50,
+     "maximum": 200,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "host_id"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/hosts/{host_id}/access",
+  "path_alternatives": {},
+  "path_params": [
+   "host_id"
+  ],
+  "query_params": [
+   "limit",
+   "offset"
+  ]
+ },
+ "assist_list_host_web_interfaces": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "host_id": {
+     "description": "Numeric host id (from assist_list_hosts).",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "limit": {
+     "default": 50,
+     "maximum": 200,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "host_id"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/hosts/{host_id}/web-interfaces",
+  "path_alternatives": {},
+  "path_params": [
+   "host_id"
+  ],
+  "query_params": [
+   "limit",
+   "offset"
+  ]
+ },
+ "assist_list_hosts": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "has_critical_vulns": {
+     "description": "has_critical_vulns / has_high_vulns together mean a critical OR a high scanner observation, as the Hosts page's severity chips do; for both on one host use q=has:critical has:high.",
+     "type": "boolean"
+    },
+    "has_high_vulns": {
+     "description": "has_critical_vulns / has_high_vulns together mean a critical OR a high scanner observation, as the Hosts page's severity chips do; for both on one host use q=has:critical has:high.",
+     "type": "boolean"
+    },
+    "limit": {
+     "default": 100,
+     "maximum": 5000,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    },
+    "ports": {
+     "description": "Comma-separated port numbers, ANY of them open. For ALL of them open use q: q=port:80 port:443. No ranges or names (422).",
+     "type": "string"
+    },
+    "q": {
+     "description": "Boolean query DSL (see tool description).",
+     "type": "string"
+    },
+    "search": {
+     "description": "Free text, the Hosts page's search box: address, host name, OS name or family, or \u2014 on any of the host's ports \u2014 a port number, a service name or a product.",
+     "type": "string"
+    },
+    "services": {
+     "description": "Comma-separated service names, ANY of them, matched on the service the scanner identified on an OPEN port, on any port \u2014 the Hosts page's service:. The name is the scanner's own: SMB is usually microsoft-ds, not smb (or use ports=445). A masscan-only open port has no name and does not match.",
+     "type": "string"
+    },
+    "sort_by": {
+     "default": "ip_address",
+     "enum": [
+      "ip_address",
+      "critical_vulns",
+      "high_vulns",
+      "exploitable_vulns",
+      "open_ports",
+      "note_count",
+      "discovery_count",
+      "hostname",
+      "last_seen"
+     ],
+     "type": "string"
+    },
+    "sort_order": {
+     "default": "asc",
+     "enum": [
+      "asc",
+      "desc"
+     ],
+     "type": "string"
+    },
+    "state": {
+     "description": "Host state: up, down or unknown. Any other value is a 422.",
+     "type": "string"
+    },
+    "subnets": {
+     "description": "Comma-separated CIDR blocks (or single addresses); a host matches inside ANY of them. A value that is not a network or an address is a 422.",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/hosts",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "q",
+   "search",
+   "state",
+   "ports",
+   "services",
+   "subnets",
+   "has_critical_vulns",
+   "has_high_vulns",
+   "limit",
+   "offset",
+   "sort_by",
+   "sort_order"
+  ]
+ },
+ "assist_list_ingestion_issues": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "limit": {
+     "default": 25,
+     "maximum": 100,
+     "minimum": 1,
+     "type": "integer"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/ingestion-issues",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "limit"
+  ]
+ },
+ "assist_list_names": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "host_id": {
+     "description": "Only names currently resolving to this host's address.",
+     "type": "integer"
+    },
+    "in_scope": {
+     "description": "Only names a declared domain covers (true) / does not (false).",
+     "type": "boolean"
+    },
+    "kind": {
+     "enum": [
+      "fqdn",
+      "wildcard"
+     ],
+     "type": "string"
+    },
+    "limit": {
+     "default": 100,
+     "maximum": 1000,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    },
+    "q": {
+     "description": "Case-insensitive substring on the FQDN.",
+     "type": "string"
+    },
+    "resolved": {
+     "description": "Only names with (true) / without (false) a current A/AAAA answer.",
+     "type": "boolean"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/names",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "q",
+   "in_scope",
+   "resolved",
+   "host_id",
+   "kind",
+   "limit",
+   "offset"
+  ]
+ },
+ "assist_list_observation_hosts": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "issue_key": {
+     "maxLength": 600,
+     "minLength": 1,
+     "type": "string"
+    },
+    "limit": {
+     "default": 100,
+     "maximum": 5000,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "issue_key"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/scanner-observations/hosts",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "issue_key",
+   "limit",
+   "offset"
+  ]
+ },
+ "assist_list_recent_notes": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "author": {
+     "description": "Username, or 'me'.",
+     "type": "string"
+    },
+    "limit": {
+     "default": 25,
+     "maximum": 200,
+     "minimum": 1,
+     "type": "integer"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/notes",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "limit",
+   "author"
+  ]
+ },
+ "assist_list_scan_hosts": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "limit": {
+     "default": 100,
+     "maximum": 1000,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "scan_id": {
+     "description": "Scan id (assist_list_scans)",
+     "type": "integer"
+    },
+    "search": {
+     "description": "Address or hostname at scan.",
+     "maxLength": 200,
+     "type": "string"
+    },
+    "skip": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    },
+    "state": {
+     "description": "Only hosts the scan observed in this state (up, down\u2026).",
+     "maxLength": 40,
+     "type": "string"
+    }
+   },
+   "required": [
+    "scan_id"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/scans/{scan_id}/hosts",
+  "path_alternatives": {},
+  "path_params": [
+   "scan_id"
+  ],
+  "query_params": [
+   "state",
+   "search",
+   "skip",
+   "limit"
+  ]
+ },
+ "assist_list_scanner_observations": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "include_judged": {
+     "default": false,
+     "type": "boolean"
+    },
+    "kind": {
+     "enum": [
+      "misconfiguration",
+      "vulnerability",
+      "informational"
+     ],
+     "type": "string"
+    },
+    "limit": {
+     "default": 25,
+     "maximum": 200,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "min_hosts": {
+     "default": 1,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    },
+    "search": {
+     "maxLength": 200,
+     "type": "string"
+    },
+    "severity": {
+     "enum": [
+      "critical",
+      "high",
+      "medium",
+      "low",
+      "info"
+     ],
+     "type": "string"
+    },
+    "skip": {
+     "description": "Older name for offset; still accepted.",
+     "minimum": 0,
+     "type": "integer"
+    },
+    "sort": {
+     "default": "severity",
+     "enum": [
+      "severity",
+      "hosts"
+     ],
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/scanner-observations",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "search",
+   "severity",
+   "kind",
+   "include_judged",
+   "min_hosts",
+   "sort",
+   "offset",
+   "skip",
+   "limit"
+  ]
+ },
+ "assist_list_scans": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "limit": {
+     "default": 50,
+     "maximum": 500,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "description": "Skip this many (newest first). Page while has_more is true.",
+     "minimum": 0,
+     "type": "integer"
+    },
+    "tool": {
+     "description": "A tool name (nmap, nessus, netexec\u2026) or scan type.",
+     "maxLength": 100,
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/scans",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "limit",
+   "offset",
+   "tool"
+  ]
+ },
+ "assist_list_scopes": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/scopes",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "assist_list_segments": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "limit": {
+     "default": 25,
+     "maximum": 100,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/segments",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "limit",
+   "offset"
+  ]
+ },
+ "assist_list_uninterpreted_lines": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "job_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "limit": {
+     "default": 10,
+     "maximum": 50,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/uninterpreted-lines",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "job_id",
+   "limit",
+   "offset"
+  ]
+ },
+ "assist_list_worth_a_look": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "limit": {
+     "default": 25,
+     "maximum": 100,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    },
+    "tier": {
+     "maximum": 5,
+     "minimum": 1,
+     "type": "integer"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/workbench/investigate",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "tier",
+   "limit",
+   "offset"
+  ]
+ },
+ "assist_patch_host": {
+  "body_params": [
+   "hostname",
+   "os_name"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "host_id": {
+     "description": "Numeric host id (from assist_list_hosts).",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "hostname": {
+     "maxLength": 255,
+     "type": "string"
+    },
+    "os_name": {
+     "maxLength": 255,
+     "type": "string"
+    }
+   },
+   "required": [
+    "host_id"
+   ],
+   "type": "object"
+  },
+  "method": "PATCH",
+  "path": "/api/v1/agent/hosts/{host_id}",
+  "path_alternatives": {},
+  "path_params": [
+   "host_id"
+  ],
+  "query_params": []
+ },
+ "assist_session_info": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/assist/session",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "assist_set_follow": {
+  "body_params": [
+   "status"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "host_id": {
+     "description": "Numeric host id (from assist_list_hosts).",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "status": {
+     "description": "in_review / reviewed, or `none` to clear the follow.",
+     "enum": [
+      "in_review",
+      "reviewed",
+      "none"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "host_id",
+    "status"
+   ],
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/hosts/{host_id}/follow",
+  "path_alternatives": {},
+  "path_params": [
+   "host_id"
+  ],
+  "query_params": []
+ },
+ "end_session": {
+  "body_params": [
+   "notes",
+   "agent_model"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "agent_model": {
+     "description": "The model you are running as (e.g. claude-opus-5-5). Optional; labels this work.",
+     "maxLength": 100,
+     "type": "string"
+    },
+    "notes": {
+     "description": "What the session did, in a line or two.",
+     "maxLength": 2000,
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/session/end",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "get_upload_job": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "job_id": {
+     "description": "Job id returned by the upload.",
+     "minimum": 1,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "job_id"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/uploads/{job_id}",
+  "path_alternatives": {},
+  "path_params": [
+   "job_id"
+  ],
+  "query_params": []
+ },
+ "host_tests_get": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "test_id": {
+     "description": "The host test's id (from host_tests_list or host_tests_propose).",
+     "minimum": 1,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "test_id"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/host-tests/{test_id}",
+  "path_alternatives": {},
+  "path_params": [
+   "test_id"
+  ],
+  "query_params": []
+ },
+ "host_tests_list": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "active_only": {
+     "type": "boolean"
+    },
+    "agent_session_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "assigned_to_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "host_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "label": {
+     "description": "Exact label.",
+     "type": "string"
+    },
+    "limit": {
+     "maximum": 200,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "mine": {
+     "type": "boolean"
+    },
+    "offset": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "q": {
+     "description": "A Hosts query (the same language as assist_list_hosts' q, e.g. has:critical): tests on the hosts it matches.",
+     "type": "string"
+    },
+    "status": {
+     "enum": [
+      "proposed",
+      "in_progress",
+      "done",
+      "dismissed"
+     ],
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/host-tests",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "host_id",
+   "status",
+   "label",
+   "assigned_to_id",
+   "agent_session_id",
+   "mine",
+   "q",
+   "active_only",
+   "limit",
+   "offset"
+  ]
+ },
+ "host_tests_propose": {
+  "body_params": [
+   "tests",
+   "agent_model"
+  ],
+  "inputSchema": {
+   "$defs": {
+    "HostTestCreate": {
+     "additionalProperties": false,
+     "properties": {
+      "assigned_to_id": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Assigned To Id"
+      },
+      "command": {
+       "anyOf": [
+        {
+         "maxLength": 10000,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Command"
+      },
+      "description": {
+       "maxLength": 10000,
+       "minLength": 1,
+       "title": "Description",
+       "type": "string"
+      },
+      "expected_result": {
+       "anyOf": [
+        {
+         "maxLength": 10000,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Expected Result"
+      },
+      "host_id": {
+       "exclusiveMinimum": 0,
+       "title": "Host Id",
+       "type": "integer"
+      },
+      "label": {
+       "anyOf": [
+        {
+         "maxLength": 255,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Label"
+      },
+      "priority": {
+       "default": "medium",
+       "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info"
+       ],
+       "title": "Priority",
+       "type": "string"
+      },
+      "rationale": {
+       "maxLength": 10000,
+       "minLength": 1,
+       "title": "Rationale",
+       "type": "string"
+      },
+      "references": {
+       "items": {
+        "type": "string"
+       },
+       "maxItems": 20,
+       "title": "References",
+       "type": "array"
+      },
+      "request_key": {
+       "description": "Stable unique key for this test; reuse on retries only.",
+       "maxLength": 100,
+       "minLength": 1,
+       "title": "Request Key",
+       "type": "string"
+      },
+      "target_fqdn": {
+       "anyOf": [
+        {
+         "maxLength": 253,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Target Fqdn"
+      },
+      "tool": {
+       "maxLength": 100,
+       "minLength": 1,
+       "title": "Tool",
+       "type": "string"
+      },
+      "vulnerability_id": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "The scanner observation on this host that the test is meant to confirm (a vulnerability id from the host's detail). Links the test to that weakness.",
+       "title": "Vulnerability Id"
+      }
+     },
+     "required": [
+      "tool",
+      "description",
+      "request_key",
+      "host_id",
+      "rationale"
+     ],
+     "title": "HostTestCreate",
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "agent_model": {
+     "anyOf": [
+      {
+       "maxLength": 100,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Agent Model"
+    },
+    "tests": {
+     "items": {
+      "$ref": "#/$defs/HostTestCreate"
+     },
+     "maxItems": 200,
+     "minItems": 1,
+     "title": "Tests",
+     "type": "array"
+    }
+   },
+   "required": [
+    "tests"
+   ],
+   "title": "HostTestBatch",
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/host-tests",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "host_tests_update": {
+  "body_params": [
+   "expected_revision",
+   "status",
+   "assigned_to_id",
+   "tester_summary",
+   "dismissed_reason"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "assigned_to_id": {
+     "anyOf": [
+      {
+       "exclusiveMinimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Assigned To Id"
+    },
+    "dismissed_reason": {
+     "anyOf": [
+      {
+       "maxLength": 2000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Dismissed Reason"
+    },
+    "expected_revision": {
+     "description": "Revision read by the caller; stale writes return 409.",
+     "minimum": 1,
+     "title": "Expected Revision",
+     "type": "integer"
+    },
+    "status": {
+     "anyOf": [
+      {
+       "enum": [
+        "proposed",
+        "in_progress",
+        "done",
+        "dismissed"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Status"
+    },
+    "test_id": {
+     "description": "The host test's id (from host_tests_list or host_tests_propose).",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "tester_summary": {
+     "anyOf": [
+      {
+       "maxLength": 10000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Tester Summary"
+    }
+   },
+   "required": [
+    "expected_revision",
+    "test_id"
+   ],
+   "title": "HostTestUpdate",
+   "type": "object"
+  },
+  "method": "PATCH",
+  "path": "/api/v1/agent/host-tests/{test_id}",
+  "path_alternatives": {},
+  "path_params": [
+   "test_id"
+  ],
+  "query_params": []
+ },
+ "list_evidence": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "agent_session_id": {
+     "description": "Only what this agent session recorded (yours is on agent_identity).",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "finding_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "host_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "host_test_id": {
+     "description": "Only the evidence that answers this host test.",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "limit": {
+     "default": 50,
+     "maximum": 500,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "minimum": 0,
+     "type": "integer"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/evidence",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "host_id",
+   "finding_id",
+   "host_test_id",
+   "agent_session_id",
+   "limit",
+   "offset"
+  ]
+ },
+ "list_proposals": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "finding_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "kind": {
+     "enum": [
+      "finding_text",
+      "finding_create",
+      "observation_promote",
+      "observation_dismiss",
+      "endpoint_status"
+     ],
+     "type": "string"
+    },
+    "limit": {
+     "default": 50,
+     "maximum": 500,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "mine": {
+     "description": "Only this session's proposals.",
+     "type": "boolean"
+    },
+    "offset": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "status": {
+     "enum": [
+      "pending",
+      "accepted",
+      "rejected",
+      "superseded"
+     ],
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/proposals",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "status",
+   "kind",
+   "finding_id",
+   "mine",
+   "limit",
+   "offset"
+  ]
+ },
+ "list_tools": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "category": {
+     "description": "Filter to one category.",
+     "type": "string"
+    },
+    "status": {
+     "description": "reference = in the catalogue. suggested = proposed by an agent, not yet curated. rejected = a declined suggestion.",
+     "enum": [
+      "reference",
+      "suggested",
+      "rejected"
+     ],
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/references/tools",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "status",
+   "category"
+  ]
+ },
+ "propose_endpoint_status": {
+  "body_params": [
+   "finding_id",
+   "finding_host_id",
+   "host_status",
+   "rationale",
+   "evidence_ids",
+   "agent_model"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "agent_model": {
+     "description": "The model you are running as (e.g. claude-opus-5-5). Optional; labels this work.",
+     "maxLength": 100,
+     "type": "string"
+    },
+    "evidence_ids": {
+     "items": {
+      "type": "integer"
+     },
+     "maxItems": 100,
+     "type": "array"
+    },
+    "finding_host_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "finding_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "host_status": {
+     "enum": [
+      "open",
+      "remediated",
+      "retest",
+      "false_positive"
+     ],
+     "type": "string"
+    },
+    "rationale": {
+     "maxLength": 10000,
+     "type": "string"
+    }
+   },
+   "required": [
+    "finding_id",
+    "finding_host_id",
+    "host_status"
+   ],
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/proposals/endpoint-status",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "propose_finding": {
+  "body_params": [
+   "title",
+   "severity",
+   "host_ids",
+   "status",
+   "report_text",
+   "rationale",
+   "evidence_ids",
+   "agent_model"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "agent_model": {
+     "description": "The model you are running as (e.g. claude-opus-5-5). Optional; labels this work.",
+     "maxLength": 100,
+     "type": "string"
+    },
+    "evidence_ids": {
+     "items": {
+      "type": "integer"
+     },
+     "maxItems": 100,
+     "type": "array"
+    },
+    "host_ids": {
+     "items": {
+      "type": "integer"
+     },
+     "maxItems": 1000,
+     "minItems": 1,
+     "type": "array"
+    },
+    "rationale": {
+     "maxLength": 10000,
+     "type": "string"
+    },
+    "report_text": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "type": "object"
+    },
+    "severity": {
+     "enum": [
+      "critical",
+      "high",
+      "medium",
+      "low",
+      "info"
+     ],
+     "type": "string"
+    },
+    "status": {
+     "default": "open",
+     "enum": [
+      "open",
+      "confirmed"
+     ],
+     "type": "string"
+    },
+    "title": {
+     "maxLength": 500,
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "required": [
+    "title",
+    "severity",
+    "host_ids"
+   ],
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/proposals/finding",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "propose_finding_text": {
+  "body_params": [
+   "finding_id",
+   "fields",
+   "rationale",
+   "evidence_ids",
+   "agent_model"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "agent_model": {
+     "description": "The model you are running as (e.g. claude-opus-5-5). Optional; labels this work.",
+     "maxLength": 100,
+     "type": "string"
+    },
+    "evidence_ids": {
+     "items": {
+      "type": "integer"
+     },
+     "maxItems": 100,
+     "type": "array"
+    },
+    "fields": {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "description": "Field name \u2192 the section's complete new text, report-ready (it replaces the section on accept) \u2014 not comments about the current text.",
+     "type": "object"
+    },
+    "finding_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "rationale": {
+     "description": "Why \u2014 what you changed and why, what the reviewer should check. Your critique goes here.",
+     "maxLength": 10000,
+     "type": "string"
+    }
+   },
+   "required": [
+    "finding_id",
+    "fields"
+   ],
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/proposals/finding-text",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "propose_observation": {
+  "body_params": [
+   "vulnerability_id",
+   "action",
+   "scope",
+   "severity",
+   "summary",
+   "rationale",
+   "evidence_ids",
+   "agent_model"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "action": {
+     "enum": [
+      "promote",
+      "dismiss"
+     ],
+     "type": "string"
+    },
+    "agent_model": {
+     "description": "The model you are running as (e.g. claude-opus-5-5). Optional; labels this work.",
+     "maxLength": 100,
+     "type": "string"
+    },
+    "evidence_ids": {
+     "items": {
+      "type": "integer"
+     },
+     "maxItems": 100,
+     "type": "array"
+    },
+    "rationale": {
+     "maxLength": 10000,
+     "type": "string"
+    },
+    "scope": {
+     "enum": [
+      "host",
+      "issue"
+     ],
+     "type": "string"
+    },
+    "severity": {
+     "enum": [
+      "critical",
+      "high",
+      "medium",
+      "low",
+      "info"
+     ],
+     "type": "string"
+    },
+    "summary": {
+     "maxLength": 2000,
+     "type": "string"
+    },
+    "vulnerability_id": {
+     "description": "The scanner observation's id.",
+     "minimum": 1,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "vulnerability_id",
+    "action"
+   ],
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/proposals/observation",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "read_agent_guide": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "workflow": {
+     "description": "One slice of the guide. Omit for the whole guide.",
+     "enum": [
+      "testing",
+      "reconnaissance",
+      "assist"
+     ],
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agents-guide",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "workflow"
+  ]
+ },
+ "record_evidence": {
+  "body_params": [
+   "host_id",
+   "finding_id",
+   "finding_host_id",
+   "host_test_id",
+   "request_key",
+   "tool",
+   "command",
+   "outcome",
+   "summary",
+   "raw_output",
+   "observed_ip",
+   "executed_at",
+   "agent_model"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "agent_model": {
+     "description": "The model you are running as (e.g. claude-opus-5-5). Optional; labels this work.",
+     "maxLength": 100,
+     "type": "string"
+    },
+    "command": {
+     "description": "The command as actually run, verbatim.",
+     "maxLength": 10000,
+     "type": "string"
+    },
+    "executed_at": {
+     "format": "date-time",
+     "type": "string"
+    },
+    "finding_host_id": {
+     "description": "The finding endpoint (vhost) it ran against, if any.",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "finding_id": {
+     "description": "The finding this bears on, if any.",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "host_id": {
+     "description": "Numeric host id (from assist_list_hosts).",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "host_test_id": {
+     "description": "The host test this answers, if any (from host_tests_list). Needs request_key.",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "observed_ip": {
+     "description": "The address actually reached.",
+     "maxLength": 45,
+     "type": "string"
+    },
+    "outcome": {
+     "description": "finding: it demonstrated an issue; no_finding: it ran and the issue was not there; inconclusive; failed: it could not run; info: context, not a test.",
+     "enum": [
+      "finding",
+      "no_finding",
+      "inconclusive",
+      "failed",
+      "info"
+     ],
+     "type": "string"
+    },
+    "raw_output": {
+     "description": "The tool's output (up to 5 MB).",
+     "maxLength": 5242880,
+     "type": "string"
+    },
+    "request_key": {
+     "description": "Your own stable key for this record; re-sending it returns the record already stored (a safe retry). Required with host_test_id.",
+     "maxLength": 100,
+     "minLength": 1,
+     "type": "string"
+    },
+    "summary": {
+     "description": "What it showed, in a sentence or two.",
+     "maxLength": 10000,
+     "minLength": 1,
+     "type": "string"
+    },
+    "tool": {
+     "description": "The tool or method (nmap, curl, a script\u2026).",
+     "maxLength": 100,
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "required": [
+    "host_id",
+    "tool",
+    "outcome",
+    "summary"
+   ],
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/evidence",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "remediation_add_note": {
+  "body_params": [
+   "body",
+   "occurred_at",
+   "request_key",
+   "host_id",
+   "finding_host_id"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "body": {
+     "maxLength": 10000,
+     "minLength": 1,
+     "title": "Body",
+     "type": "string"
+    },
+    "finding_host_id": {
+     "anyOf": [
+      {
+       "exclusiveMinimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Finding Host Id"
+    },
+    "host_id": {
+     "exclusiveMinimum": 0,
+     "title": "Host Id",
+     "type": "integer"
+    },
+    "occurred_at": {
+     "anyOf": [
+      {
+       "format": "date-time",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "When it happened, if not now (a call made on Tuesday, recorded on Thursday).",
+     "title": "Occurred At"
+    },
+    "request_key": {
+     "anyOf": [
+      {
+       "maxLength": 80,
+       "minLength": 1,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Stable key for this note; send the same one on a re-run so it is not added twice.",
+     "title": "Request Key"
+    }
+   },
+   "required": [
+    "body",
+    "host_id"
+   ],
+   "title": "NoteCreate",
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/remediation/events",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "remediation_apply": {
+  "body_params": [
+   "rows",
+   "dry_run",
+   "overwrite",
+   "agent_model"
+  ],
+  "inputSchema": {
+   "$defs": {
+    "ApplyRow": {
+     "additionalProperties": false,
+     "description": "One change.  Name the finding on a host by ``finding_host_id``, or by\n``finding_id`` with ``host_id``; ``finding_id`` alone means every host of\nthat finding.",
+     "properties": {
+      "closed_on": {
+       "anyOf": [
+        {
+         "format": "date",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Closed On"
+      },
+      "contact_email": {
+       "anyOf": [
+        {
+         "maxLength": 254,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Contact Email"
+      },
+      "contact_name": {
+       "anyOf": [
+        {
+         "maxLength": 200,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Contact Name"
+      },
+      "finding_host_id": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Finding Host Id"
+      },
+      "finding_id": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Finding Id"
+      },
+      "host_id": {
+       "anyOf": [
+        {
+         "exclusiveMinimum": 0,
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Host Id"
+      },
+      "notes": {
+       "items": {
+        "$ref": "#/$defs/NoteIn"
+       },
+       "maxItems": 20,
+       "title": "Notes",
+       "type": "array"
+      },
+      "notified_on": {
+       "anyOf": [
+        {
+         "format": "date",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Notified On"
+      },
+      "status": {
+       "anyOf": [
+        {
+         "enum": [
+          "open",
+          "closed",
+          "deferred"
+         ],
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "title": "Status"
+      },
+      "team": {
+       "anyOf": [
+        {
+         "maxLength": 100,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "The group that owns the fix.",
+       "title": "Team"
+      }
+     },
+     "title": "ApplyRow",
+     "type": "object"
+    },
+    "NoteIn": {
+     "additionalProperties": false,
+     "properties": {
+      "body": {
+       "maxLength": 10000,
+       "minLength": 1,
+       "title": "Body",
+       "type": "string"
+      },
+      "occurred_at": {
+       "anyOf": [
+        {
+         "format": "date-time",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "When it happened, if not now (a call made on Tuesday, recorded on Thursday).",
+       "title": "Occurred At"
+      },
+      "request_key": {
+       "anyOf": [
+        {
+         "maxLength": 80,
+         "minLength": 1,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null,
+       "description": "Stable key for this note; send the same one on a re-run so it is not added twice.",
+       "title": "Request Key"
+      }
+     },
+     "required": [
+      "body"
+     ],
+     "title": "NoteIn",
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "agent_model": {
+     "anyOf": [
+      {
+       "maxLength": 100,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Agent Model"
+    },
+    "dry_run": {
+     "default": false,
+     "description": "Report what would change and write nothing.",
+     "title": "Dry Run",
+     "type": "boolean"
+    },
+    "overwrite": {
+     "default": false,
+     "description": "Replace a value that is already set to something else. Without it such a field is reported as a conflict and left alone.",
+     "title": "Overwrite",
+     "type": "boolean"
+    },
+    "rows": {
+     "items": {
+      "$ref": "#/$defs/ApplyRow"
+     },
+     "maxItems": 500,
+     "minItems": 1,
+     "title": "Rows",
+     "type": "array"
+    }
+   },
+   "required": [
+    "rows"
+   ],
+   "title": "ApplyBody",
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/remediation/apply",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "remediation_contacts": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/remediation/contacts",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "remediation_follow_up": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "contact_email": {
+     "maxLength": 254,
+     "minLength": 3,
+     "type": "string"
+    }
+   },
+   "required": [
+    "contact_email"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/remediation/follow-up",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "contact_email"
+  ]
+ },
+ "remediation_list": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "contact": {
+     "description": "Part of a contact's address or name.",
+     "maxLength": 254,
+     "minLength": 1,
+     "type": "string"
+    },
+    "finding_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "group": {
+     "description": "The order of the rows (default host; due = by deadline).",
+     "enum": [
+      "host",
+      "finding",
+      "contact",
+      "due",
+      "team"
+     ],
+     "type": "string"
+    },
+    "host_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "limit": {
+     "maximum": 200,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "no_follow_up_days": {
+     "description": "Only overdue and due-soon rows nobody recorded a follow-up for in this many days (or ever).",
+     "maximum": 365,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "overdue_band": {
+     "description": "Only overdue rows this many days past their deadline.",
+     "enum": [
+      "1-7",
+      "8-30",
+      "31-90",
+      "90+"
+     ],
+     "type": "string"
+    },
+    "severity": {
+     "enum": [
+      "critical",
+      "high",
+      "medium",
+      "low",
+      "info"
+     ],
+     "type": "string"
+    },
+    "state": {
+     "description": "Where the row stands against its deadline; several are OR-ed.",
+     "items": {
+      "enum": [
+       "overdue",
+       "due_soon",
+       "on_track",
+       "not_assigned",
+       "no_deadline",
+       "deferred",
+       "closed"
+      ],
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "status": {
+     "enum": [
+      "open",
+      "closed",
+      "deferred"
+     ],
+     "type": "string"
+    },
+    "team": {
+     "description": "Exactly this team (case does not matter).",
+     "maxLength": 100,
+     "minLength": 1,
+     "type": "string"
+    },
+    "unassigned": {
+     "description": "Only rows with no contact.",
+     "type": "boolean"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/remediation",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "status",
+   "state",
+   "severity",
+   "team",
+   "overdue_band",
+   "no_follow_up_days",
+   "contact",
+   "unassigned",
+   "host_id",
+   "finding_id",
+   "group",
+   "limit",
+   "offset"
+  ]
+ },
+ "remediation_record_follow_up": {
+  "body_params": [
+   "contact_email",
+   "followed_up_on",
+   "note",
+   "finding_host_ids"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "description": "Record that a contact was chased about their overdue and due-soon\nfindings on hosts in this project.",
+   "properties": {
+    "contact_email": {
+     "maxLength": 254,
+     "minLength": 3,
+     "title": "Contact Email",
+     "type": "string"
+    },
+    "finding_host_ids": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "integer"
+       },
+       "maxItems": 500,
+       "minItems": 1,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Only these of the contact's at-risk rows; left out, all of them.",
+     "title": "Finding Host Ids"
+    },
+    "followed_up_on": {
+     "anyOf": [
+      {
+       "format": "date",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The day it happened, if not today.",
+     "title": "Followed Up On"
+    },
+    "note": {
+     "anyOf": [
+      {
+       "maxLength": 10000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "What was said or agreed, kept on each host's timeline.",
+     "title": "Note"
+    }
+   },
+   "required": [
+    "contact_email"
+   ],
+   "title": "FollowUpBody",
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/remediation/follow-up",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "remediation_teams": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/remediation/teams",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "remediation_timeline": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "finding_host_id": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "host_id": {
+     "description": "Numeric host id (from assist_list_hosts).",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "limit": {
+     "maximum": 200,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "minimum": 0,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "host_id"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/remediation/hosts/{host_id}/events",
+  "path_alternatives": {},
+  "path_params": [
+   "host_id"
+  ],
+  "query_params": [
+   "finding_host_id",
+   "limit",
+   "offset"
+  ]
+ },
+ "remediation_trend": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "days": {
+     "maximum": 730,
+     "minimum": 7,
+     "type": "integer"
+    }
+   },
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/remediation/trend",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": [
+   "days"
+  ]
+ },
+ "scope_list_domains": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "limit": {
+     "default": 100,
+     "maximum": 2000,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    },
+    "scope_id": {
+     "description": "Scope to read (from assist_list_scopes).",
+     "minimum": 1,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "scope_id"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/scopes/{scope_id}/domains",
+  "path_alternatives": {},
+  "path_params": [
+   "scope_id"
+  ],
+  "query_params": [
+   "limit",
+   "offset"
+  ]
+ },
+ "scope_list_subnets": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "limit": {
+     "default": 100,
+     "maximum": 2000,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    },
+    "scope_id": {
+     "description": "Scope to read (from assist_list_scopes).",
+     "minimum": 1,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "scope_id"
+   ],
+   "type": "object"
+  },
+  "method": "GET",
+  "path": "/api/v1/agent/scopes/{scope_id}/subnets",
+  "path_alternatives": {},
+  "path_params": [
+   "scope_id"
+  ],
+  "query_params": [
+   "limit",
+   "offset"
+  ]
+ },
+ "session_renew": {
+  "body_params": [],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/session/renew",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "submit_feedback": {
+  "body_params": [
+   "source",
+   "prompt_version",
+   "overall_rating",
+   "api_critiques",
+   "tool_suggestions",
+   "friction_notes",
+   "agent_metrics"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "agent_metrics": {
+     "description": "agent_name, model, tool_calls_total, notes \u2014 whatever your environment exposes.",
+     "type": "object"
+    },
+    "api_critiques": {
+     "items": {
+      "properties": {
+       "endpoint": {
+        "type": "string"
+       },
+       "issue": {
+        "type": "string"
+       },
+       "suggestion": {
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "friction_notes": {
+     "description": "What was confusing, slow, or guessed.",
+     "type": "string"
+    },
+    "overall_rating": {
+     "maximum": 5,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "prompt_version": {
+     "description": "The prompt_version from your instructions block.",
+     "type": "string"
+    },
+    "source": {
+     "description": "The kind of work this feedback is about.",
+     "enum": [
+      "assist",
+      "reconnaissance",
+      "testing"
+     ],
+     "type": "string"
+    },
+    "tool_suggestions": {
+     "items": {
+      "properties": {
+       "category": {
+        "type": "string"
+       },
+       "name": {
+        "type": "string"
+       },
+       "rationale": {
+        "type": "string"
+       }
+      },
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "source"
+   ],
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/feedback",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ },
+ "suggest_tool": {
+  "body_params": [
+   "name",
+   "rationale",
+   "category",
+   "description"
+  ],
+  "inputSchema": {
+   "additionalProperties": false,
+   "properties": {
+    "category": {
+     "maxLength": 100,
+     "type": "string"
+    },
+    "description": {
+     "maxLength": 2000,
+     "type": "string"
+    },
+    "name": {
+     "description": "Tool name as it would be invoked (e.g. ligolo-ng).",
+     "maxLength": 100,
+     "type": "string"
+    },
+    "rationale": {
+     "description": "What you used or needed it for \u2014 this is what a curator reads. Be specific.",
+     "maxLength": 2000,
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "required": [
+    "name",
+    "rationale"
+   ],
+   "type": "object"
+  },
+  "method": "POST",
+  "path": "/api/v1/agent/tool-suggestions",
+  "path_alternatives": {},
+  "path_params": [],
+  "query_params": []
+ }
+}

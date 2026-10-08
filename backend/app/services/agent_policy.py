@@ -31,8 +31,8 @@ from __future__ import annotations
 
 from typing import List
 
-# Mandatory, ordered.  Editing these is a material prompt change — prepend a
-# PROMPT_VERSION_HISTORY entry in agent_prompt_history when you do.
+# Mandatory, ordered.  Editing these is a material prompt change — bump
+# PROMPT_VERSION and rewrite PROMPT_CHANGES in agent_prompt_service when you do.
 SAFETY_RULES: List[str] = [
     "Show the operator every command before you run it.",
     "The operator drives: do what they ask within their project role, and "

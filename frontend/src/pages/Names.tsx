@@ -22,6 +22,7 @@ import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useListCursor } from '../hooks/useListCursor';
+import { pageFromParams } from '../hooks/useUrlPage';
 import { TableSkeleton } from '../components/PageSkeleton';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -655,7 +656,19 @@ const Names: React.FC = () => {
   const [state, setState] = useState<NameStateFilter>((searchParams.get('state') as NameStateFilter) || 'all');
   const [search, setSearch] = useState(searchParams.get('search') ?? '');
   const debouncedSearch = useDebouncedValue(search, 300);
-  const [page, setPage] = useState(0);
+  // The page is in the address (`?page=`, left out for the first).  It is the
+  // page of the filter it was read under: under a new filter it is the first
+  // page at once, so the old page number is never asked of the new list.
+  const filterKey = `${state}|${debouncedSearch}`;
+  const [pageFilter, setPageFilter] = useState(filterKey);
+  const page = pageFilter === filterKey ? pageFromParams(searchParams) : 0;
+  const setPage = useCallback((next: number) => {
+    setSearchParams((prev) => {
+      const out = new URLSearchParams(prev);
+      if (next > 0) out.set('page', String(next + 1)); else out.delete('page');
+      return out;
+    }, { replace: true });
+  }, [setSearchParams]);
   const [importOpen, setImportOpen] = useState(false);
   const reqIdRef = useRef(0);
 
@@ -717,19 +730,18 @@ const Names: React.FC = () => {
   }, [reloadSummary]);
 
   // Persist filter + search in the URL so a shared link reproduces the view.
+  // A changed filter takes the page out of the address in the same write;
+  // once it is out, the address's page is this filter's again.
   useEffect(() => {
     const next = new URLSearchParams(searchParams);
     if (state === 'all') next.delete('state');
     else next.set('state', state);
     if (debouncedSearch.trim()) next.set('search', debouncedSearch.trim());
     else next.delete('search');
+    if (pageFilter !== filterKey) next.delete('page');
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, debouncedSearch]);
-
-  useEffect(() => {
-    setPage(0);
-  }, [state, debouncedSearch]);
+    else if (pageFilter !== filterKey) setPageFilter(filterKey);
+  }, [state, debouncedSearch, searchParams, setSearchParams, pageFilter, filterKey]);
 
   const refreshAll = () => {
     reload();
@@ -894,10 +906,10 @@ const Names: React.FC = () => {
         actions={
           multiPage ? (
             <span className="flex gap-xs" role="group" aria-label="Pages">
-              <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
+              <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage(page - 1)}>
                 Previous
               </Button>
-              <Button size="sm" variant="outline" disabled={to >= total} onClick={() => setPage((p) => p + 1)}>
+              <Button size="sm" variant="outline" disabled={to >= total} onClick={() => setPage(page + 1)}>
                 Next
               </Button>
             </span>

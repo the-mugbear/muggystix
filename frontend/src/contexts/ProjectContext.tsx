@@ -34,8 +34,11 @@ function isProjectScopedResourceRoute(pathname: string): boolean {
 // Pages whose query string isn't tied to one project — /portfolio and
 // /tool-activity span every project (the analyst arrives at tool activity with
 // a timestamp, not knowing which project owns it), so their view state
-// survives a switch.
-const CROSS_PROJECT_ROUTES: RegExp[] = [/^\/portfolio(\/|$)/, /^\/oversight(\/|$)/, /^\/tool-activity(\/|$)/];
+// survives a switch.  /remediation-deadlines too: opening a row's host there
+// selects the row's project first, and Back must return to the filtered list.
+const CROSS_PROJECT_ROUTES: RegExp[] = [
+  /^\/portfolio(\/|$)/, /^\/oversight(\/|$)/, /^\/tool-activity(\/|$)/, /^\/remediation-deadlines(\/|$)/,
+];
 
 /** Where to send the operator after switching projects, or null to stay put.
  *  Resource pages go to /operations (their id belongs to the old project).

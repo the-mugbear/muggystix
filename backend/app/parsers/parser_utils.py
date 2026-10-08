@@ -662,6 +662,49 @@ def map_text_severity(value: Optional[str]) -> VulnerabilitySeverity:
         return VulnerabilitySeverity.UNKNOWN
 
 
+def refresh_reobserved_vulnerability(
+    existing: Vulnerability,
+    *,
+    scan_id: int,
+    severity: VulnerabilitySeverity,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    solution: Optional[str] = None,
+    references: Optional[str] = None,
+    cvss_score: Optional[float] = None,
+    cvss_vector: Optional[str] = None,
+    cve_id: Optional[str] = None,
+    plugin_output: Optional[str] = None,
+) -> None:
+    """Bring a stored scanner row up to date from a later scan's report of
+    it.  The one rule for every source (``upsert_vulnerability`` and the
+    Nessus path): the severity is always the latest scan's — the scanner
+    re-rates its checks, and the queue tiers and critical counts read this
+    column — and every other field keeps its stored value when the new
+    report carries none.  ``references`` is the stored (JSON) text.
+
+    ``scan_id`` ("first recorded by") never moves; the re-observation lands
+    on ``last_seen_scan_id``."""
+    # Aware UTC; UTCDateTime stores it naive.
+    existing.last_seen = datetime.now(timezone.utc)
+    existing.last_seen_scan_id = scan_id
+    existing.severity = severity
+    # Title can change across scans for the same plugin_id — keep latest.
+    if title:
+        existing.title = title
+    if cvss_score is not None:
+        existing.cvss_score = cvss_score
+    if cvss_vector:
+        existing.cvss_vector = cvss_vector
+    existing.description = description or existing.description
+    existing.cve_id = cve_id or existing.cve_id
+    existing.solution = solution or existing.solution
+    if references:
+        existing.references = references
+    if plugin_output:
+        existing.plugin_output = plugin_output
+
+
 def upsert_vulnerability(
     *,
     db: Session,
@@ -738,28 +781,13 @@ def upsert_vulnerability(
 
     existing = query.first()
     if existing:
-        # Aware UTC (review 2026-10-01 N1); UTCDateTime stores it naive.
-        existing.last_seen = datetime.now(timezone.utc)
-        # v2.332.0 — scan_id is "first recorded by" and never moves; the
-        # re-observation lands on last_seen_scan_id.
-        existing.last_seen_scan_id = scan_id
-        existing.severity = severity
-        # Title can change across scans for the same plugin_id — keep latest.
-        if title:
-            existing.title = title
-        # A re-observation without a score keeps the stored one, like the
-        # fields below (it used to blank it).
-        if cvss_score is not None:
-            existing.cvss_score = cvss_score
-        if cvss_vector:
-            existing.cvss_vector = cvss_vector
-        existing.description = description or existing.description
-        existing.cve_id = cve_id or existing.cve_id
-        existing.solution = solution or existing.solution
-        if references:
-            existing.references = json.dumps(references)
-        if plugin_output:
-            existing.plugin_output = plugin_output
+        refresh_reobserved_vulnerability(
+            existing, scan_id=scan_id, severity=severity, title=title,
+            description=description, solution=solution,
+            references=json.dumps(references) if references else None,
+            cvss_score=cvss_score, cvss_vector=cvss_vector, cve_id=cve_id,
+            plugin_output=plugin_output,
+        )
         if exploitable:
             existing.exploitable = True
         if check_id:

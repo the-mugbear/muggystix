@@ -247,7 +247,7 @@ def test_the_promote_click_and_a_result_promotion_take_their_locks_in_one_order(
 
     # B's first step, exactly as create_finding_from_evidence takes it.
     b = two_sessions.b
-    agent_evidence_service._lock_issue_evidence(b, host_id=host_id, issue_key=issue_key, also=evidence_id)
+    agent_evidence_service.lock_issue_evidence(b, host_ids=[host_id], issue_key=issue_key, also=evidence_id)
 
     outcome = {}
 

@@ -554,10 +554,11 @@ def retry_ingestion_job(
 ):
     """Re-queue a failed ingestion job whose uploaded file is still on disk.
 
-    The file is retained on failure (only successful parses delete it), and
-    the worker's orphan reaper already knows how to re-queue, so this just
-    exposes that path to the operator: retry a transient failure without
-    re-uploading a large scan file. Owner or admin only; analyst role.
+    The same failed → queued path as ``/start``, keeping the job's format:
+    retry a transient failure without re-uploading a large scan file.  A job
+    whose file another job has since imported is refused as a duplicate
+    (409, ``code: duplicate_scan``) unless it was uploaded with "import
+    anyway".  Owner or admin only; analyst role.
     """
     job = db.query(IngestionJob).filter(
         IngestionJob.id == job_id,
@@ -572,7 +573,12 @@ def retry_ingestion_job(
             detail=f"Only failed jobs can be retried (current status: {job.status!r})",
         )
 
-    result = ingestion_service.requeue_job(job_id)
+    from app.services.ingestion_service import DuplicateUploadError
+    try:
+        result = ingestion_service.requeue_job(job_id)
+    except DuplicateUploadError as exc:
+        # Another job imported this exact file while this one sat failed.
+        raise HTTPException(status_code=409, detail=exc.detail())
     if result == "file_missing":
         raise HTTPException(
             status_code=409,

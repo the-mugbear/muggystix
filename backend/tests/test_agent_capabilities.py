@@ -41,8 +41,8 @@ from app.db.models_project import ProjectMembership, ProjectRole
 #: These record something about the SESSION — its key deadline, its end,
 #: feedback about the prompt — rather than project data, so a
 #: read-only operator's agent needs them as much as anyone's.
-#: Mirrors ``AGENT_SESSION_METADATA_WRITES`` in deps.py, stated here as full
-#: paths because that is what a caller sees.
+#: The routes that declare ``deps.agent_session_metadata_write``, stated here
+#: as full paths because that is what a caller sees.
 OPERATOR_METADATA_WRITES = {
     ("POST", "/api/v1/agent/session/renew"),
     ("POST", "/api/v1/agent/feedback"),

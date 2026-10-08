@@ -62,6 +62,7 @@ import { projectScopedKey } from '../utils/scopedStorage';
 import { cn } from '../utils/cn';
 import { isPageShortcutEvent } from '../utils/keyboard';
 import { copyToClipboard } from '../utils/clipboard';
+import { buildHostsUrl } from '../utils/drilldownLinks';
 import { stickyBelowChrome } from '../utils/uiStyles';
 import { exposureChips } from '../utils/portsOfInterest';
 import { endpointMatchCriteria } from '../utils/endpointMatch';
@@ -172,6 +173,99 @@ const MAX_STICKY_CHIPS = 8;
 const canonicalFilters = (filters: HostFilterOptions): string =>
   JSON.stringify(Object.keys(filters).sort().map((k) => [k, (filters as Record<string, unknown>)[k]]));
 
+const DEFAULT_SORT: HostSortOption = 'critical_desc';
+
+/** What the list shows, all of it in the address: the conditions, the sort
+ *  and the page.  The page READS it from there and writes it back there —
+ *  there is no second copy in component state. */
+interface HostsListState {
+  filters: HostFilterOptions;
+  sortBy: HostSortOption;
+  /** Zero-based. */
+  page: number;
+}
+
+/** The API's parameters for a set of conditions and a sort — also the
+ *  address's own parameters, read back by `hostFiltersFromUrl`. */
+function hostQueryContext(filters: HostFilterOptions, sortBy: HostSortOption): HostQueryContext {
+  const params: HostQueryContext = {};
+  const followFilter = filters.followFilter ?? 'all';
+  if (filters.search) params.search = filters.search;
+  if (filters.state) params.state = filters.state;
+  if (filters.ports?.length) params.ports = filters.ports.join(',');
+  if (filters.services?.length) params.services = filters.services.join(',');
+  if (filters.portStates?.length) params.port_states = filters.portStates.join(',');
+  if (filters.hasOpenPorts !== undefined) params.has_open_ports = filters.hasOpenPorts;
+  if (filters.osFilter) params.os_filter = filters.osFilter;
+  if (filters.subnets?.length) params.subnets = filters.subnets.join(',');
+  if (filters.hasCriticalVulns !== undefined) params.has_critical_vulns = filters.hasCriticalVulns;
+  if (filters.hasHighVulns !== undefined) params.has_high_vulns = filters.hasHighVulns;
+  if (filters.hasMediumVulns !== undefined) params.has_medium_vulns = filters.hasMediumVulns;
+  if (filters.hasLowVulns !== undefined) params.has_low_vulns = filters.hasLowVulns;
+  if (filters.hasExploitAvailable !== undefined) params.has_exploit_available = filters.hasExploitAvailable;
+  if (filters.hasTestExecution !== undefined) params.has_test_execution = filters.hasTestExecution;
+  if (filters.outOfScopeOnly) params.out_of_scope_only = filters.outOfScopeOnly;
+  if (followFilter !== 'all') params.follow_status = followFilter;
+  if (filters.scanIds?.length) params.scan_ids = filters.scanIds.join(',');
+  if (filters.firstSeenInSelectedScans && filters.scanIds?.length)
+    params.first_seen_in_scan = filters.firstSeenInSelectedScans;
+  if (filters.onlyWithNotes === true) params.with_notes_only = true;
+  if (filters.hasWebInterface !== undefined) params.has_web_interface = filters.hasWebInterface;
+  if (filters.tech?.length) params.tech = filters.tech.join(',');
+  if (filters.tags?.length) params.tags = filters.tags.join(',');
+  if (filters.subnetLabels?.length) params.subnet_labels = filters.subnetLabels.join(',');
+  if (filters.sites?.length) params.sites = filters.sites.join(',');
+  // RDAP attribution — passed as arrays (repeated params), not comma-joined,
+  // since org names contain commas.
+  if (filters.orgs?.length) params.orgs = filters.orgs;
+  if (filters.asns?.length) params.asns = filters.asns;
+  if (filters.countries?.length) params.countries = filters.countries;
+  if (filters.assignedToMe) params.assigned_to = 'me';
+  if (filters.weaknesses?.length) params.weaknesses = filters.weaknesses.join(',');
+  if (filters.checks?.length) params.checks = filters.checks.join(',');
+  if (filters.query?.trim()) params.q = filters.query.trim();
+  params.sort_by = ({
+    critical_desc: 'critical_vulns',
+    exploitable_desc: 'exploitable_vulns',
+    open_ports_desc: 'open_ports',
+    notes_desc: 'note_count',
+    discoveries_desc: 'discovery_count',
+    ip_asc: 'ip_address',
+    hostname_asc: 'hostname',
+  } as const)[sortBy];
+  params.sort_order = sortBy.endsWith('_asc') ? 'asc' : 'desc';
+  return params;
+}
+
+/** A query context as an address query ("?a=b", or "" for none). */
+function searchOfContext(ctx: HostQueryContext, extra?: (sp: URLSearchParams) => void): string {
+  const sp = new URLSearchParams();
+  Object.entries(ctx).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    // Arrays (orgs/asns/countries) become repeated params, not a comma-joined
+    // scalar — an org name contains commas, so joining would corrupt it.
+    if (Array.isArray(value)) value.forEach((v) => sp.append(key, String(v)));
+    else sp.set(key, String(value));
+  });
+  extra?.(sp);
+  const search = sp.toString();
+  return search ? `?${search}` : '';
+}
+
+/** The address for a list state. */
+function hostsSearch({ filters, sortBy, page }: HostsListState): string {
+  return searchOfContext(hostQueryContext(filters, sortBy), (sp) => {
+    // "New in the chosen scans" ticked before a scan is chosen: not a
+    // condition the API can take yet, but still the reader's choice.
+    if (filters.firstSeenInSelectedScans && !filters.scanIds?.length) sp.set('first_seen_in_scan', 'true');
+    if (page > 0) sp.set(HOSTS_PAGE_PARAM, String(page + 1));
+  });
+}
+
+type Updater<T> = T | ((previous: T) => T);
+const resolve = <T,>(next: Updater<T> | undefined, previous: T): T =>
+  next === undefined ? previous : typeof next === 'function' ? (next as (p: T) => T)(previous) : next;
+
 export default function Hosts() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -197,7 +291,7 @@ export default function Hosts() {
   // filters were cleared (they used to be the only path, and clearing emptied it).
   const [projectDefaultView, setProjectDefaultView] = useState<HostFilterView | null>(null);
   // Set the banner AND persist it (or clear both). The init effect restores it.
-  const setProjectDefaultBanner = (name: string | null) => {
+  const setProjectDefaultBanner = useCallback((name: string | null) => {
     setAppliedProjectDefault(name);
     try {
       const key = projectScopedKey('projectDefaultName');
@@ -206,16 +300,122 @@ export default function Hosts() {
     } catch {
       /* ignore */
     }
-  };
+  }, []);
   const [hosts, setHosts] = useState<Host[]>([]);
   const [totalHosts, setTotalHosts] = useState(0);
   // Every host in the project, whatever the filters — null until known.
   const [projectTotal, setProjectTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState<HostFilterOptions>({});
+  // --- The list's state is the address -----------------------------------
+  // Conditions, sort and page are READ from `location.search` on every render
+  // and WRITTEN by replacing it (`commit`).  A link, the Back button and an
+  // in-page `navigate('/hosts?…')` are therefore all the same thing: a new
+  // address, which the list follows.
+  //
+  // What the page was opened with, decided once: the address when it carries
+  // host conditions, else the session's saved filters (a bare /hosts visit) —
+  // the rules live in utils/hostFiltersFromUrl.ts, where they are tested.
+  const [opened] = useState(() => {
+    const urlParams = new URLSearchParams(location.search);
+    let savedState: SavedHostFilterState | null = null;
+    try {
+      const raw = sessionStorage.getItem(projectScopedKey('hostFiltersState'));
+      savedState = raw ? JSON.parse(raw) : null;
+    } catch {
+      savedState = null;
+    }
+    const restored = hostFiltersFromUrl(urlParams, savedState);
+    return {
+      savedState,
+      filters: restored.filters,
+      restoredFromSession: restored.restoredFromSession,
+      // The address the session's filters are put into.
+      restoreSearch: restored.restoredFromSession
+        ? hostsSearch({ filters: restored.filters, sortBy: DEFAULT_SORT, page: hostsPageFromUrl(urlParams) })
+        : null,
+    };
+  });
+  // True until the session's filters are in the address: nothing is fetched
+  // for the bare address they are about to replace.
+  const [restoring, setRestoring] = useState(opened.restoreSearch !== null);
+  const isInitialized = !restoring;
+
+  const parsed = useMemo(() => {
+    const urlParams = new URLSearchParams(location.search);
+    const fromUrl = hostFiltersFromUrl(urlParams, null);
+    return { filters: fromUrl.filters, sortBy: fromUrl.sortBy ?? DEFAULT_SORT, page: hostsPageFromUrl(urlParams) };
+  }, [location.search]);
+  const { sortBy, page } = parsed;
+  // The same object while the conditions are the same: a new page or sort is
+  // a new address, and must not look like new filters to the effects below.
+  const filtersKey = canonicalFilters(parsed.filters);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by content
+  const filters = useMemo(() => parsed.filters, [filtersKey]);
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
+
+  // Saved Hosts page filter views (per-user, per-project): which one is what
+  // the list shows, and the last view applied (saved or built-in) with how to
+  // apply it again.  `reapply` is absent for a base restored by name after a
+  // reload.  `exactFilters` (canonical) marks a base the picker can recognise
+  // itself — a starter query — so it reads "<name>" until edited, not
+  // "· Modified".
+  const [activeViewId, setActiveViewId] = useState<number | null>(null);
+  const [baseView, setBaseView] = useState<{ name: string; reapply?: () => void; exactFilters?: string } | null>(null);
+  // A bare /hosts visit reopened the session's filters; said until they change.
+  const [showRestoredNotice, setShowRestoredNotice] = useState(false);
+
+  // What the next write starts from.  It is the address's state as of the
+  // render that first saw that address; two writes in one handler (new
+  // filters, then "back to the first page") build on each other here, before
+  // the address has changed.
+  const pendingRef = useRef<HostsListState>(parsed);
+  const renderedSearchRef = useRef<string | null>(null);
+  if (renderedSearchRef.current !== location.search) {
+    renderedSearchRef.current = location.search;
+    pendingRef.current = { filters, sortBy, page };
+  }
+  // The address this page last wrote — any other change of address came from
+  // outside (a link, another component's navigate).
+  const writtenSearchRef = useRef<string | null>(null);
+  /** Replace the address with the state after `patch`.  Returns whether the
+   *  conditions changed. */
+  const commit = useCallback((patch: {
+    filters?: Updater<HostFilterOptions>; sortBy?: HostSortOption; page?: Updater<number>;
+  }): boolean => {
+    const current = pendingRef.current;
+    const next: HostsListState = {
+      filters: resolve(patch.filters, current.filters),
+      sortBy: patch.sortBy ?? current.sortBy,
+      page: Math.max(0, resolve(patch.page, current.page)),
+    };
+    const filtersChanged = next.filters !== current.filters;
+    if (!filtersChanged && next.sortBy === current.sortBy && next.page === current.page) return false;
+    pendingRef.current = next;
+    const search = hostsSearch(next);
+    writtenSearchRef.current = search;
+    navigate({ search }, { replace: true });
+    if (filtersChanged) setShowRestoredNotice(false);
+    return filtersChanged;
+  }, [navigate]);
+  const setPage = useCallback((next: Updater<number>) => { commit({ page: next }); }, [commit]);
+  const setSortBy = useCallback((next: HostSortOption) => { commit({ sortBy: next, page: 0 }); }, [commit]);
+  /** New conditions that ARE a view (a saved one, a built-in, the project
+   *  default): the caller says which view they are. */
+  const replaceFilters = useCallback((next: HostFilterOptions) => {
+    commit({ filters: next, page: 0 });
+  }, [commit]);
+  /** An edit of the conditions.  The view that was applied is no longer what
+   *  is shown, but it is still where the reader started ("<name> ·
+   *  Modified") — until nothing of it is left — and the auto-applied project
+   *  default no longer describes the list. */
+  const setFilters = useCallback((next: Updater<HostFilterOptions>) => {
+    if (!commit({ filters: next })) return;
+    setActiveViewId(null);
+    if (Object.keys(pendingRef.current.filters).length === 0) setBaseView(null);
+    setProjectDefaultBanner(null);
+  }, [commit, setProjectDefaultBanner]);
   const [filterData, setFilterData] = useState<HostFilterData | null>(null);
   // Surfaced inline near the filter panel when the cascading filter
   // metadata call fails — previously the failure was console-only, so
@@ -236,7 +436,6 @@ export default function Hosts() {
     if (canExport && new URLSearchParams(location.search).get('reports') === '1') {
       setInventoryDialogOpen(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.search, canExport]);
   const [toolReadyDialogOpen, setToolReadyDialogOpen] = useState(false);
   const [updatingHostId, setUpdatingHostId] = useState<number | null>(null);
@@ -245,7 +444,6 @@ export default function Hosts() {
   // and `filters.onlyWithNotes === true`; the review chips write through
   // setFollowFilter below.
   const followFilter: 'all' | 'none' | FollowStatus = filters.followFilter ?? 'all';
-  const onlyWithNotes = filters.onlyWithNotes === true;
   const setFollowFilter = useCallback((next: 'all' | 'none' | FollowStatus) => {
     setFilters((previous) => {
       const updated = { ...previous };
@@ -257,15 +455,7 @@ export default function Hosts() {
       return updated;
     });
   }, [setFilters]);
-  const [isInitialized, setIsInitialized] = useState(false);
-  // v5.290.0 — the filters a bare /hosts visit restored from the session.  The
-  // notice shows only while `filters` is still that very object: any change
-  // (a chip, a view, Clear) replaces it and the notice is gone for the visit.
-  const [restoredFilters, setRestoredFilters] = useState<HostFilterOptions | null>(null);
-  const showRestoredNotice = restoredFilters !== null && filters === restoredFilters;
-  const [sortBy, setSortBy] = useState<HostSortOption>('critical_desc');
   const [vulnError, setVulnError] = useState(false);
-  const [page, setPage] = useState(0);
   // Remembered per viewer; the page itself is in the URL (utils/hostsPaging).
   const [rowsPerPage, setRowsPerPage] = useState(readHostsPageSize);
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
@@ -278,13 +468,7 @@ export default function Hosts() {
   const [saveViewDialogOpen, setSaveViewDialogOpen] = useState(false);
   const [saveViewName, setSaveViewName] = useState('');
   const [saveViewBusy, setSaveViewBusy] = useState(false);
-  const [activeViewId, setActiveViewId] = useState<number | null>(null);
   const [chipsExpanded, setChipsExpanded] = useState(false);
-  // The last view applied (saved or built-in) and how to apply it again.
-  // `reapply` is absent for a base restored by name after a reload.
-  // `exactFilters` (canonical) marks a base the picker can recognise itself —
-  // a starter query — so it reads "<name>" until edited, not "· Modified".
-  const [baseView, setBaseView] = useState<{ name: string; reapply?: () => void; exactFilters?: string } | null>(null);
   const [confirmEl, confirm] = useConfirm();
   const commandBarRef = useRef<HostCommandBarHandle>(null);
 
@@ -313,54 +497,10 @@ export default function Hosts() {
     } catch { /* ignore */ }
   }, [setFilters, setPage]);
 
-  const buildHostQueryContext = useCallback((): HostQueryContext => {
-    const params: HostQueryContext = {};
-    if (filters.search) params.search = filters.search;
-    if (filters.state) params.state = filters.state;
-    if (filters.ports?.length) params.ports = filters.ports.join(',');
-    if (filters.services?.length) params.services = filters.services.join(',');
-    if (filters.portStates?.length) params.port_states = filters.portStates.join(',');
-    if (filters.hasOpenPorts !== undefined) params.has_open_ports = filters.hasOpenPorts;
-    if (filters.osFilter) params.os_filter = filters.osFilter;
-    if (filters.subnets?.length) params.subnets = filters.subnets.join(',');
-    if (filters.hasCriticalVulns !== undefined) params.has_critical_vulns = filters.hasCriticalVulns;
-    if (filters.hasHighVulns !== undefined) params.has_high_vulns = filters.hasHighVulns;
-    if (filters.hasMediumVulns !== undefined) params.has_medium_vulns = filters.hasMediumVulns;
-    if (filters.hasLowVulns !== undefined) params.has_low_vulns = filters.hasLowVulns;
-    if (filters.hasExploitAvailable !== undefined) params.has_exploit_available = filters.hasExploitAvailable;
-    if (filters.hasTestExecution !== undefined) params.has_test_execution = filters.hasTestExecution;
-    if (filters.outOfScopeOnly) params.out_of_scope_only = filters.outOfScopeOnly;
-    if (followFilter !== 'all') params.follow_status = followFilter;
-    if (filters.scanIds?.length) params.scan_ids = filters.scanIds.join(',');
-    if (filters.firstSeenInSelectedScans && filters.scanIds?.length)
-      params.first_seen_in_scan = filters.firstSeenInSelectedScans;
-    if (onlyWithNotes) params.with_notes_only = true;
-    if (filters.hasWebInterface !== undefined) params.has_web_interface = filters.hasWebInterface;
-    if (filters.tech?.length) params.tech = filters.tech.join(',');
-    if (filters.tags?.length) params.tags = filters.tags.join(',');
-    if (filters.subnetLabels?.length) params.subnet_labels = filters.subnetLabels.join(',');
-    if (filters.sites?.length) params.sites = filters.sites.join(',');
-    // RDAP attribution — passed as arrays (repeated params), not comma-joined,
-    // since org names contain commas.
-    if (filters.orgs?.length) params.orgs = filters.orgs;
-    if (filters.asns?.length) params.asns = filters.asns;
-    if (filters.countries?.length) params.countries = filters.countries;
-    if (filters.assignedToMe) params.assigned_to = 'me';
-    if (filters.weaknesses?.length) params.weaknesses = filters.weaknesses.join(',');
-    if (filters.checks?.length) params.checks = filters.checks.join(',');
-    if (filters.query?.trim()) params.q = filters.query.trim();
-    params.sort_by = ({
-      critical_desc: 'critical_vulns',
-      exploitable_desc: 'exploitable_vulns',
-      open_ports_desc: 'open_ports',
-      notes_desc: 'note_count',
-      discoveries_desc: 'discovery_count',
-      ip_asc: 'ip_address',
-      hostname_asc: 'hostname',
-    } as const)[sortBy];
-    params.sort_order = sortBy.endsWith('_asc') ? 'asc' : 'desc';
-    return params;
-  }, [filters, sortBy]);
+  const buildHostQueryContext = useCallback(
+    (): HostQueryContext => hostQueryContext(filters, sortBy),
+    [filters, sortBy],
+  );
 
   const buildFilterParams = useCallback(
     () => ({
@@ -430,16 +570,20 @@ export default function Hosts() {
   // 0 hosts, or rapid toggling), which would otherwise replace the whole
   // page and snap the scroll to the top.
   const hasFetchedOnceRef = useRef(false);
+  // The conditions `totalHosts` was counted under (see the page clamp).
+  const [totalFor, setTotalFor] = useState<string | null>(null);
 
   const fetchHosts = async () => {
     setLoading(true);
     setError(null);
     const params = buildFilterParams();
+    const askedFor = filterSignature;
     const r = await runHostsRequest((signal) => getHosts(params, signal));
     if (r.stale) return;
     if (r.ok) {
       setHosts(r.value.items);
       setTotalHosts(r.value.total ?? 0);
+      setTotalFor(askedFor);
       setProjectTotal(r.value.project_total ?? null);
       setVulnError(r.value.vulnerability_error ?? false);
     } else {
@@ -519,29 +663,13 @@ export default function Hosts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional narrowing per audit H18
   }, [filters, filterOpen]);
 
+  // Once, on opening: name the view the opening filters belong to, and put a
+  // restored session's filters into the address.
   useEffect(() => {
-    if (isInitialized) return;
-    const urlParams = new URLSearchParams(location.search);
+    const { filters: initialFilters, restoredFromSession, savedState } = opened;
 
-    // URL first, saved session only on a bare /hosts visit — the rules live
-    // in utils/hostFiltersFromUrl.ts, where they are tested.
-    let savedState: SavedHostFilterState | null = null;
-    try {
-      const raw = sessionStorage.getItem(projectScopedKey('hostFiltersState'));
-      savedState = raw ? JSON.parse(raw) : null;
-    } catch {
-      savedState = null;
-    }
-    const {
-      filters: initialFilters,
-      sortBy: restoredSort,
-      restoredFromSession,
-    } = hostFiltersFromUrl(urlParams, savedState);
-    if (restoredSort) setSortBy(restoredSort);
-
-    // Re-show the "project default applied" banner after a refresh: the restored
-    // filters ARE the default, so set skipActiveClearRef so the filters-change
-    // effect doesn't clear it on this (non-user) restore.
+    // Re-show the "project default applied" banner after a refresh: the
+    // restored filters ARE the default.
     let restoredDefault: string | null = null;
     try {
       restoredDefault = sessionStorage.getItem(projectScopedKey('projectDefaultName'));
@@ -552,7 +680,6 @@ export default function Hosts() {
       const filtersAreTheSessions = restoredFromSession
         || canonicalFilters(initialFilters) === canonicalFilters(savedState?.filters ?? {});
       if (restoredDefault && filtersAreTheSessions && Object.keys(initialFilters).length > 0) {
-        skipActiveClearRef.current = true;
         setAppliedProjectDefault(restoredDefault);
         // The default is also where later edits start: "<name> · Modified",
         // not "Custom filters" (Chrome pass 2026-09-26).
@@ -566,7 +693,7 @@ export default function Hosts() {
 
     // v5.290.0 — a nav link to a bare /hosts reopens the session's filters;
     // say so, unless the project-default banner already explains them.
-    if (restoredFromSession && !restoredDefault) setRestoredFilters(initialFilters);
+    if (restoredFromSession && !restoredDefault) setShowRestoredNotice(true);
     // The view the restored filters started from, so the picker reads
     // "<name> · Modified" after a reload as it did before it (it read
     // "Custom filters").  Only its name survives; Reset needs the view.
@@ -581,21 +708,37 @@ export default function Hosts() {
             exactFilters: typeof stored.exactFilters === 'string' ? stored.exactFilters : undefined,
           });
           // A saved view still unmodified stays named as itself, not "· Modified".
-          if (typeof stored.viewId === 'number') {
-            skipActiveClearRef.current = true;
-            setActiveViewId(stored.viewId);
-          }
+          if (typeof stored.viewId === 'number') setActiveViewId(stored.viewId);
         }
       } catch { /* ignore */ }
     }
-    setFilters(initialFilters);
-    setPage(hostsPageFromUrl(urlParams));
-    setIsInitialized(true);
-  }, [isInitialized, location.search]);
+    if (opened.restoreSearch !== null) {
+      writtenSearchRef.current = opened.restoreSearch;
+      navigate({ search: opened.restoreSearch }, { replace: true });
+      setRestoring(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- on opening only
+  }, []);
+
+  // The address changed and this page did not write it: a link, or another
+  // part of the app sending the reader to a filtered list.  What is shown is
+  // then no view this page applied.
+  const seenAddressRef = useRef({ search: location.search, key: filtersKey });
+  useEffect(() => {
+    const previous = seenAddressRef.current;
+    seenAddressRef.current = { search: location.search, key: filtersKey };
+    if (previous.search === location.search || previous.key === filtersKey) return;
+    if (location.search === writtenSearchRef.current) return;
+    setActiveViewId(null);
+    setBaseView(null);
+    setProjectDefaultBanner(null);
+    setShowRestoredNotice(false);
+  }, [location.search, filtersKey, setProjectDefaultBanner]);
 
   useEffect(() => {
     if (!isInitialized) return;
     fetchHosts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchHosts is a new function every render; the list is re-read when the filters (buildFilterParams) change
   }, [buildFilterParams, isInitialized]);
 
   useEffect(() => {
@@ -638,13 +781,8 @@ export default function Hosts() {
     }
   };
 
-  // Set when handleApplyView fires so the next clear-on-filter-change
-  // effect knows to skip itself.
-  const skipActiveClearRef = useRef(false);
-
   const applyViewFilters = useCallback((view: HostFilterView, opts?: { quiet?: boolean }) => {
     const blob = view.filter_json || {};
-    skipActiveClearRef.current = true;
     // v4.51.0 — fold the legacy top-level keys into the combined
     // filters shape on apply.  Newer saves go through the same
     // converter so old + new blobs round-trip identically.
@@ -660,10 +798,9 @@ export default function Hosts() {
     const ff = blob.followFilter as 'all' | 'none' | FollowStatus | undefined;
     if (ff && ff !== 'all') next.followFilter = ff;
     if (blob.onlyWithNotes === true) next.onlyWithNotes = true;
-    setFilters(next);
+    replaceFilters(next);
     setActiveViewId(view.id);
     setBaseView({ name: view.name, reapply: () => applyViewFilters(view) });
-    setPage(0);
     // Explicitly applying a view supersedes any auto-applied project default,
     // so the "project default applied" chip would be stale — drop it. The
     // quiet path IS the auto-apply, which sets the chip itself afterwards.
@@ -671,30 +808,26 @@ export default function Hosts() {
       setProjectDefaultBanner(null);
       toast.info(`Applied view "${view.name}"`, { autoHideMs: 2000 });
     }
-  }, [toast]);
+  }, [toast, replaceFilters, setProjectDefaultBanner]);
 
   const handleApplyView = (view: HostFilterView) => applyViewFilters(view);
 
   // A built-in view replaces the applied filters exactly as a saved one does.
   const handleApplyBuiltIn = (view: BuiltInHostView) => {
-    skipActiveClearRef.current = true;
-    setFilters({ ...view.filters });
+    replaceFilters({ ...view.filters });
     setActiveViewId(null);
     setBaseView({ name: view.name, reapply: () => handleApplyBuiltIn(view) });
-    setPage(0);
     setProjectDefaultBanner(null);
   };
 
   // A starter query replaces the applied conditions like a built-in view
   // (5.303.0); it used to be ANDed with them, the project default included.
   const handleApplyTemplate = (q: string, label: string) => {
-    skipActiveClearRef.current = true;
-    setFilters({ query: q });
+    replaceFilters({ query: q });
     setActiveViewId(null);
     setBaseView({
       name: label, reapply: () => handleApplyTemplate(q, label), exactFilters: canonicalFilters({ query: q }),
     });
-    setPage(0);
     setProjectDefaultBanner(null);
   };
 
@@ -776,25 +909,6 @@ export default function Hosts() {
     && (appliedProjectDefault !== null || activeViewId === projectDefaultView.id);
 
   useEffect(() => {
-    // The mount run is not a filter change. Letting it through used up the skip
-    // flag the restore had just set, so the restore's own setFilters then
-    // cleared the "project default applied" banner and its stored name — a
-    // reload read "Custom filters · Back to default view" (UX review 2026-09-24).
-    if (!isInitialized) return;
-    if (skipActiveClearRef.current) {
-      skipActiveClearRef.current = false;
-      return;
-    }
-    // The view is no longer what is shown, but it is still where the operator
-    // started ("<name> · Modified") — until nothing of it is left.
-    setActiveViewId(null);
-    if (Object.keys(filters).length === 0) setBaseView(null);
-    // A manual filter edit means the auto-applied project default no longer
-    // describes what's shown — clear the chip so it can't go stale.
-    setProjectDefaultBanner(null);
-  }, [filters]);
-
-  useEffect(() => {
     if (!isInitialized) return;
     if (typeof window !== 'undefined') {
       // Persist in the legacy 3-key shape so older sessions / older
@@ -823,40 +937,13 @@ export default function Hosts() {
     } catch { /* ignore */ }
   }, [baseView, filters, activeViewId, isInitialized]);
 
-  // v5.0.0 — URL write-sync (the previously-missing write side, so links
-  // are shareable).  Serializes the active query context into the URL,
-  // debounced, replace-only.  One-directional: the restore effect is
-  // mount-only (gated on isInitialized) and the fetch effect keys on
-  // buildFilterParams (filters state), not location.search — so writing
-  // the URL never triggers a refetch or a restore loop.
-  useEffect(() => {
-    if (!isInitialized) return;
-    const ctx = buildHostQueryContext();
-    const sp = new URLSearchParams();
-    Object.entries(ctx).forEach(([key, value]) => {
-      if (value === undefined || value === null || value === '') return;
-      // Arrays (orgs/asns/countries) become repeated params, not a comma-joined
-      // scalar — an org name contains commas, so joining would corrupt it.
-      if (Array.isArray(value)) {
-        value.forEach((v) => sp.append(key, String(v)));
-      } else {
-        sp.set(key, String(value));
-      }
-    });
-    if (page > 0) sp.set(HOSTS_PAGE_PARAM, String(page + 1));
-    const search = sp.toString();
-    const timer = setTimeout(() => {
-      navigate({ search: search ? `?${search}` : '' }, { replace: true });
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [buildHostQueryContext, isInitialized, navigate, page]);
-
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (!document.hidden) fetchFilterData(buildFacetParamsRef.current());
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- registered once; fetchFilterData uses only state setters and the stable request lane, and the params come from a ref
   }, []);
 
   const handleFiltersChange = (newFilters: HostFilterOptions) => {
@@ -876,10 +963,9 @@ export default function Hosts() {
     setPage(0);
   }, [setFilters, setPage]);
 
-  // Build the shareable URL from the live query context rather than
-  // window.location.href, which lags behind by the URL write-sync debounce.
-  // The command bar passes its current draft so a just-typed query is
-  // reflected immediately (its commit to filters.query is also debounced).
+  // The shareable URL.  The command bar passes its current draft so a
+  // just-typed query is in the link before its (debounced) commit to the
+  // address.
   const handleCopyLink = useCallback((draftQuery?: string) => {
     const ctx = buildHostQueryContext();
     if (draftQuery !== undefined) {
@@ -887,17 +973,7 @@ export default function Hosts() {
       if (trimmed) ctx.q = trimmed;
       else delete ctx.q;
     }
-    const sp = new URLSearchParams();
-    Object.entries(ctx).forEach(([key, value]) => {
-      if (value === undefined || value === null || value === '') return;
-      if (Array.isArray(value)) {
-        value.forEach((v) => sp.append(key, String(v)));
-      } else {
-        sp.set(key, String(value));
-      }
-    });
-    const query = sp.toString();
-    const url = `${window.location.origin}${window.location.pathname}${query ? `?${query}` : ''}`;
+    const url = `${window.location.origin}${window.location.pathname}${searchOfContext(ctx)}`;
     void copyToClipboard(url).then((ok) =>
       ok
         ? toast.info('Link copied to clipboard', { autoHideMs: 2000 })
@@ -1009,6 +1085,9 @@ export default function Hosts() {
     }
     setInspectedHostId(hostId);
   }, []);
+  // The table's rows are memoised; an inline arrow here would be a new prop
+  // for every row on every render of the page.
+  const openHostRow = useCallback((host: Host) => openInspector(host.id), [openInspector]);
 
   // "Open standalone" inside the side-sheet — passes the same navState
   // that the old direct-navigate flow used, so the standalone page's
@@ -1308,12 +1387,13 @@ export default function Hosts() {
 
 
   useEffect(() => {
-    // Not before the first read: the total is unknown then, and the page
-    // restored from the URL would be thrown back to the first.
-    if (loading || !hasFetchedOnceRef.current) return;
+    // Only against the total of the list on screen: before its first read —
+    // or when the address has just named other conditions — the total is not
+    // this list's, and the page the address names would be cut to it.
+    if (loading || totalFor !== filterSignature) return;
     const maxPage = Math.max(Math.ceil(totalHosts / rowsPerPage) - 1, 0);
     if (page > maxPage) setPage(maxPage);
-  }, [page, rowsPerPage, totalHosts, loading]);
+  }, [page, rowsPerPage, totalHosts, loading, totalFor, filterSignature, setPage]);
 
   // -------------------------------------------------------------------------
   // DataTable columns — extracted to useHostColumns hook (v2.43.0 — MONO-1).
@@ -1857,7 +1937,7 @@ export default function Hosts() {
           >
             <DataTableShell<Host>
               table={table}
-              onRowClick={(host) => openInspector(host.id)}
+              onRowClick={openHostRow}
               // v4.46.0 — the expandable sub-row was removed.  It predated the
               // side-sheet inspector (which superseded it as the drill-down)
               // and had become a third competing interaction on every row:
@@ -2113,12 +2193,9 @@ export default function Hosts() {
           </SideSheetHeader>
           <SideSheetBody>
             {inspectedHostId !== null && (
-              // Audit H17: dropping `key={inspectedHostId}` so the
-              // SideSheet's HostInspector stays mounted across
-              // prev/next.  Inspector already guards stale fetches
-              // with fetchIdRef, so the previous host is visible
-              // while the next loads instead of a "Loading host
-              // details…" flash per click.
+              // The inspector keys itself by host: Prev / Next starts a new
+              // one (its skeleton shows while the next host loads), so
+              // nothing of the host that was left is on screen or writable.
               <HostInspector
                 hostId={inspectedHostId}
                 density="sheet"
@@ -2131,16 +2208,10 @@ export default function Hosts() {
                 onNextUnreviewed={() => void stepToNextUnreviewed()}
                 onQueryHosts={async (q) => {
                   if (!(await confirmDiscardDraft())) return;
-                  // Close the sheet, then REPLACE the filter state with just
-                  // this query. navigate() does NOT work here: the Hosts page
-                  // is already mounted, so its URL→filter restore (init-only)
-                  // won't re-parse the new ?q=, and the URL-write effect would
-                  // clobber it straight back. Setting filter state is the
-                  // in-page path — it drives the refetch, and the write effect
-                  // syncs ?q= to the URL. Replacing (not merging) matches the
-                  // standalone fresh-view behavior.
+                  // Close the sheet and go to the list of just this query —
+                  // the same address the standalone host page navigates to.
                   setInspectedHostId(null);
-                  handleFiltersChange({ query: q });
+                  navigate(buildHostsUrl({ q }));
                 }}
               />
             )}

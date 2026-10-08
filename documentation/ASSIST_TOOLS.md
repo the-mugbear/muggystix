@@ -429,6 +429,27 @@ addendum's already-reported finding) has an empty list, and
 `scanner_evidence` rows and says so with `scanner_evidence_total` /
 `scanner_evidence_truncated`.
 
+**One host filter for the page and the agents (v2.465.0, prompt 4.15.0)** — no
+new tool; rule 3 applied to the filter itself. `assist_list_hosts`,
+`assist_count_hosts` and the older `GET /agent/hosts` used a filter of their
+own for the discrete parameters, which had drifted from the Hosts page's. They
+now call the page's `host_query.build_filtered_host_query`, so four answers
+changed: `search` matches what the page's search box matches (address, host
+name, OS name or family, and on any port a port number, service name or
+product); `has_critical_vulns` with `has_high_vulns` is critical OR high (both
+on one host is `q=has:critical has:high`); `ports` with `services` must be met
+by ONE open port; and a list that names nothing is a 422 instead of the whole
+project. An unknown `state` and a `subnets` value that is not a network or an
+address are 422s too, each naming the value — a count taken with a mistyped
+filter was being reported as the answer. In `q=`, `NOT` now counts a host with
+no value recorded (`NOT os:windows` includes hosts with no OS), and
+`has:stale_review` was removed in favour of `has:changed_since_review`. The
+tools' parameter schemas are no longer written by hand: each is derived from
+its endpoint's OpenAPI operation, so a parameter added to an endpoint is on its
+tool at once and a schema cannot advertise a value the endpoint refuses. And a
+read's role floor is declared on its route (`agent_read_floor`), where the
+route's page-equivalent role is stated once.
+
 The read surface is the `assist_*` reads (plus three `assist_*` writes) inside
 the one catalogue (`GET /api/v1/references/mcp-tools` is the live list). Two of
 the three P2 items turned out not to be tools at all: one folded into an
@@ -448,3 +469,11 @@ Before adding anything to this list, check it isn't:
 3. a rollup an existing service already computes (→ wrap that service, don't
    recompute it in the endpoint — an agent and a page disagreeing on a number is
    worse than the agent not having it).
+
+And when it is added: declare the read's role floor on the route
+(`dependencies=[Depends(agent_read_floor(ProjectRole.…))]` — the role its page
+asks of a person; nothing for a read any member may make) and add it to
+`tests/test_agent_role_route_matrix.py`; in `mcp_tools.py` author the tool's
+description and, where the endpoint's own text is not enough, a per-argument
+description — the arguments themselves come from the route. A filter the
+endpoint cannot understand is a 422 naming the value, never an ignored filter.

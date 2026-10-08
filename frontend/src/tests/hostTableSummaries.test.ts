@@ -35,11 +35,12 @@ describe('Hosts table width strategy', () => {
     for (const v of Object.values(s)) expect((pct(v) / 100) * 870).toBeGreaterThanOrEqual(110);
   });
 
-  it('the shell reads a share before a pixel size, and 150 stays "unsized"', () => {
+  it('the shell reads a share before a pixel size; a size is itself, and no size is unsized', () => {
     expect(columnWidth({ width: '21%' }, 165)).toBe('21%');
     expect(columnWidth(undefined, 165)).toBe(165);
-    expect(columnWidth(undefined, 150)).toBeUndefined();
-    expect(columnWidth({}, 150)).toBeUndefined();
+    expect(columnWidth(undefined, 150)).toBe(150);
+    expect(columnWidth(undefined, undefined)).toBeUndefined();
+    expect(columnWidth({}, undefined)).toBeUndefined();
   });
 });
 

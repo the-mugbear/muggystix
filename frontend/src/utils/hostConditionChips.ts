@@ -10,7 +10,7 @@ import type { HostFilterOptions } from '../components/HostFilters';
  * condition are alternatives, so they share a chip and are joined with "or".
  *
  * Port / service / port state (and "has open ports") are ONE condition: the
- * backend matches them against the same port row (`port_match_subquery`), so
+ * backend matches them against the same port row (`port_match_conditions`), so
  * they are shown — and removed — together as an Endpoint.
  */
 

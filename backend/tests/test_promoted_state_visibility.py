@@ -81,7 +81,7 @@ def test_promoted_vuln_reports_its_finding_in_the_host_response(
     host = _host(db_session, test_project.id, "10.0.0.1")
     vuln = _vuln(db_session, host, scan.id, cve_id="CVE-2024-1111")
 
-    finding = FindingService(db_session).promote_vulnerability(
+    finding, _ = FindingService(db_session).promote_vulnerability(
         vuln=vuln, project_id=test_project.id, actor_id=test_user.id,
     )
     db_session.commit()
@@ -107,7 +107,7 @@ def test_same_issue_on_another_host_reads_as_covered_not_unpromoted(
     _vuln(db_session, host_b, scan.id, cve_id="CVE-2024-2222",
           source="openvas", title="OpenSSL is outdated (GreenBone wording)")
 
-    finding = FindingService(db_session).promote_vulnerability(
+    finding, _ = FindingService(db_session).promote_vulnerability(
         vuln=vuln_a, project_id=test_project.id, actor_id=test_user.id,
     )
     db_session.commit()
@@ -162,7 +162,7 @@ def test_preview_blast_radius_matches_what_promotion_actually_attaches(
     assert preview["new_host_count"] == 3, "nothing attached yet"
     assert preview["already_promoted"] is False
 
-    finding = svc.promote_vulnerability(
+    finding, _ = svc.promote_vulnerability(
         vuln=source_vuln, project_id=test_project.id, actor_id=test_user.id,
     )
     db_session.commit()

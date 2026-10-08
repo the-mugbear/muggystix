@@ -359,7 +359,9 @@ def delete_finding(
         "status": finding.status, "source": finding.source,
         "created_by_id": finding.created_by_id, "host_count": len(finding.hosts),
     }
-    note_ids = FindingService(db).delete_finding(finding=finding)
+    note_ids = FindingService(db).delete_finding(
+        finding=finding, actor_id=current_user.id, is_project_admin=viewer.is_project_admin,
+    )
     summary["comment_count"] = len(note_ids)
     # log_audit_event commits — the delete and its audit row land together.
     log_audit_event(
@@ -461,7 +463,10 @@ def remove_finding_host(
     unnamed).  To detach ONE named endpoint use
     ``DELETE /findings/{id}/endpoints/{finding_host_id}``."""
     finding = _load(db, project, finding_id)
-    FindingService(db).remove_host(finding=finding, host_id=host_id)
+    FindingService(db).remove_host(
+        finding=finding, host_id=host_id,
+        actor_id=viewer.user_id, is_project_admin=viewer.is_project_admin,
+    )
     db.commit()
     return _serialize(_load(db, project, finding_id), viewer)
 
@@ -545,7 +550,10 @@ def remove_finding_endpoint(
     response is the finding as it stands; the caller can restore the removed
     row (name and status) via ``POST /hosts`` with ``endpoints``."""
     finding = _load(db, project, finding_id)
-    removed = FindingService(db).remove_endpoint(finding=finding, finding_host_id=finding_host_id)
+    removed = FindingService(db).remove_endpoint(
+        finding=finding, finding_host_id=finding_host_id,
+        actor_id=viewer.user_id, is_project_admin=viewer.is_project_admin,
+    )
     if removed is None:
         raise HTTPException(status_code=404, detail="Endpoint is not attached to this finding")
     db.commit()
