@@ -46,7 +46,7 @@ from app.services.agent_session_service import (
 
 from app.api.v1.endpoints.agent_schemas import (
     PortBrief, VulnCounts, HostBrief, HostDetail,
-    ScanBrief, ScopeBrief, ProjectInfo, AgentDashboard,
+    ScanBrief, ScopeBrief, ScopeDomainBrief, ProjectInfo, AgentDashboard,
     AgentIdentity, AgentIdentityOperator,
     AgentNoteCreate, AgentNoteResponse, AgentFollowRequest,
     AgentHostUpdate, AgentHostUpdateResponse,
@@ -564,11 +564,30 @@ def list_scopes(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
+    """Every scope with ALL its subnets and domain entries (uncapped — the
+    assist read caps both at 100).  The session prompt sends an agent here for
+    the scope read-back, so the domain half must be here too: without it the
+    read-back named the subnets and silently left the in-scope names out."""
     scopes = (
         db.query(models.Scope)
         .options(joinedload(models.Scope.subnets))
         .filter(models.Scope.project_id == agent.project_id)
         .all()
+    )
+    domains_by_scope: dict[int, list[ScopeDomainBrief]] = {}
+    if scopes:
+        for scope_id, domain, include_sub in (
+            db.query(models.ScopeDomain.scope_id, models.ScopeDomain.domain, models.ScopeDomain.include_subdomains)
+            .filter(models.ScopeDomain.scope_id.in_([s.id for s in scopes]))
+            .order_by(models.ScopeDomain.scope_id, models.ScopeDomain.domain)
+            .all()
+        ):
+            domains_by_scope.setdefault(scope_id, []).append(
+                ScopeDomainBrief(domain=domain, include_subdomains=bool(include_sub))
+            )
+    names_in_scope_total = (
+        dns_name_service.scope_domains_covered_names_total(db, agent.project_id)
+        if domains_by_scope else 0
     )
     return [
         ScopeBrief(
@@ -579,6 +598,9 @@ def list_scopes(
             # This route lists every subnet, so the total is the list's own
             # length — left at the schema default it read "0 of 447".
             subnet_total=len(s.subnets),
+            domains=domains_by_scope.get(s.id, []),
+            domain_total=len(domains_by_scope.get(s.id, [])),
+            names_in_scope_total=names_in_scope_total,
         )
         for s in scopes
     ]

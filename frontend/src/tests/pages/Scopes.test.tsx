@@ -262,7 +262,7 @@ describe('Scopes page — screenshot review (v5.288.0)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Scan with your agent/ }));
     expect(await screen.findByText('Start Agent Session')).toBeInTheDocument();
     expect(
-      screen.getByText('Read scope 1 in BlueStick, run your scanners on what is in scope, and upload the output to this session.'),
+      screen.getByText(/^Read this project’s scope in BlueStick \(scope id 1 — 1 subnet, \d+ domains?\), run your scanners on what is in scope, and upload the output to this session\.$/),
     ).toBeInTheDocument();
     expect(screen.getByText(/Start a session, connect your agent, then give it this/)).toBeInTheDocument();
   });

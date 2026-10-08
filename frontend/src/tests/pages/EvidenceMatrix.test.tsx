@@ -122,6 +122,30 @@ describe('Evidence — domain × segment matrix', () => {
     expect(navigateMock).not.toHaveBeenCalled();
   });
 
+  it('a Largest-gaps count opens the same detail as its matrix cell', async () => {
+    await renderPage();
+    const list = screen.getByText('Largest gaps').closest('section')!;
+    fireEvent.click(within(list).getByRole('button', { name: /^18 of 18 hosts not assessed — Web \/ TLS · Outside scoped subnets/ }));
+    await waitFor(() => expect(gapsMock).toHaveBeenCalledWith('web_tls', expect.objectContaining({ segment: 'unmapped' })));
+  });
+
+  it('counts imports by the needs-attention rule, never parse-error rows', async () => {
+    coverageMock.mockResolvedValue({
+      ...coverage,
+      data_quality: { scans: 51, parse_errors_unresolved: 16, imports_needing_attention: 2, imports_dismissed: 14 },
+    });
+    await renderPage();
+    const link = screen.getByRole('link', { name: /2 imports need attention/ });
+    expect(link).toHaveAttribute('href', '/parse-errors?status=needs_attention');
+    expect(screen.getByText(/14 failed or partial imports dismissed/)).toBeInTheDocument();
+    expect(screen.queryByText(/16/)).toBeNull();
+  });
+
+  it('says the import count is unknown when the server did not send it', async () => {
+    await renderPage();
+    expect(screen.getByText(/imports needing attention could not be counted/)).toBeInTheDocument();
+  });
+
   it('never recommends collecting against hosts outside the declared scope, and ranks them last', async () => {
     await renderPage();
     const list = screen.getByText('Largest gaps').closest('section')!;

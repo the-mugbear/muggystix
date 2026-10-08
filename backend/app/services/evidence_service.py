@@ -536,6 +536,25 @@ def compute_evidence_coverage(db: Session, project_id: int) -> Dict[str, Any]:
         or 0
     )
 
+    # What the page SAYS about imports is the Operations / Scans / Ingestion
+    # Results rule (`blocked_import_condition`), not the parse-error rows: the
+    # page read "16 unresolved parse errors" beside two imports that needed
+    # anyone, because a dismissed failure keeps its parse-error rows.
+    from app.services.import_attention_service import unsuccessful_import_condition
+    from app.services.operations_read_service import blocked_import_condition
+    Job = models.IngestionJob
+    imports_needing_attention, imports_dismissed = (
+        db.query(
+            func.count(case((blocked_import_condition(), Job.id))),
+            func.count(case((
+                and_(Job.dismissed_at.isnot(None), unsuccessful_import_condition()),
+                Job.id,
+            ))),
+        )
+        .filter(Job.project_id == project_id)
+        .one()
+    )
+
     return {
         "total_hosts": total_hosts,
         "domains": domains,
@@ -546,6 +565,8 @@ def compute_evidence_coverage(db: Session, project_id: int) -> Dict[str, Any]:
         "data_quality": {
             "scans": scan_count,
             "parse_errors_unresolved": parse_errors_unresolved,
+            "imports_needing_attention": int(imports_needing_attention or 0),
+            "imports_dismissed": int(imports_dismissed or 0),
         },
     }
 

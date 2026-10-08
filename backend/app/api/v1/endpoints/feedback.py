@@ -126,12 +126,29 @@ class FeedbackStatsResponse(BaseModel):
 # Agent-facing (API-key auth)
 # ---------------------------------------------------------------------------
 
+
+class AgentFeedbackAck(BaseModel):
+    """What a submitting agent gets back: that it was stored, and how much.
+
+    Not the submission itself — the agent has just written it, and echoing a
+    long entry back spent its context for nothing (the same echo was removed
+    from proposal creates in v2.456.0).  Admins read the full row at
+    ``GET /feedback/{id}``."""
+    id: int
+    status: str
+    source: str
+    agent_session_id: Optional[int] = None
+    created_at: Optional[datetime] = None
+    friction_notes_chars: int = 0
+    api_critique_count: int = 0
+    tool_suggestion_count: int = 0
+
 agent_feedback_router = APIRouter()
 
 
 @agent_feedback_router.post(
     "/feedback",
-    response_model=AgentFeedbackResponse,
+    response_model=AgentFeedbackAck,
     status_code=201,
     summary="Submit structured agent feedback (agent-facing)",
     dependencies=[Depends(check_agent_rate_limit)],
@@ -185,7 +202,16 @@ def submit_agent_feedback(
     db.add(row)
     db.commit()
     db.refresh(row)
-    return row
+    return AgentFeedbackAck(
+        id=row.id,
+        status=row.status,
+        source=row.source,
+        agent_session_id=row.agent_session_id,
+        created_at=row.created_at,
+        friction_notes_chars=len(row.friction_notes or ""),
+        api_critique_count=len(row.api_critiques or []),
+        tool_suggestion_count=len(row.tool_suggestions or []),
+    )
 
 
 # ---------------------------------------------------------------------------

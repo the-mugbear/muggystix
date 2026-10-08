@@ -30,7 +30,7 @@
  */
 import React, { useCallback, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Loader2, MessageCircleQuestion } from 'lucide-react';
+import { Check, Copy, Loader2, MessageCircleQuestion } from 'lucide-react';
 import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
 import {
@@ -50,6 +50,7 @@ import AssistSessionsPanel from './AssistSessionsPanel';
 import AgentSessionCredentials, { KeyHandoffFooter } from './AgentSessionCredentials';
 import { CodeBlock } from './ui/code-block';
 import { SESSIONS_LIST_PATH, agentSessionPath, hasLiveKey } from '../utils/agentRuns';
+import { copyToClipboard } from '../utils/clipboard';
 
 export interface StartAssistDialogProps {
   open: boolean;
@@ -88,6 +89,11 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<StartAssistResponse | null>(null);
   const [keyCopied, setKeyCopied] = useState(false);
+  // With a session already live the task is the point: copying it is the
+  // primary action, and starting another session is asked for explicitly.
+  const [startAnother, setStartAnother] = useState(false);
+  const [taskCopied, setTaskCopied] = useState(false);
+  const continuing = liveSession != null && !startAnother;
 
   const reset = useCallback(() => {
     setPurpose('');
@@ -95,6 +101,8 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
     setError(null);
     setResult(null);
     setKeyCopied(false);
+    setStartAnother(false);
+    setTaskCopied(false);
   }, []);
 
   const handleStart = async () => {
@@ -187,7 +195,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                       >
                         #{liveSession.id}
                       </Link>{' '}
-                      is live — paste this to its agent; there is no need to start another.
+                      is live — paste this to its agent.
                     </>
                   ) : 'Start a session, connect your agent, then give it this:'}
                 />
@@ -212,6 +220,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                   instead of starting a new one.
                 </p>
               )}
+              {!continuing && (
               <div className="flex flex-col gap-xxs">
                 <Label htmlFor="assist-purpose">
                   What is it for? <span className="text-muted-foreground">(optional — shown in the audit log)</span>
@@ -225,6 +234,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                   disabled={loading}
                 />
               </div>
+              )}
               {error && (
                 <Alert variant="destructive">
                   <AlertDescription>{error}</AlertDescription>
@@ -259,14 +269,34 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
               >
                 Cancel
               </Button>
-              <Button onClick={handleStart} disabled={loading}>
-                {loading ? (
-                  <Loader2 className="size-4 animate-spin" aria-hidden />
-                ) : (
-                  <MessageCircleQuestion className="size-4" aria-hidden />
-                )}
-                Start session
-              </Button>
+              {continuing ? (
+                <>
+                  <Button variant="outline" onClick={() => setStartAnother(true)}>
+                    Start another session
+                  </Button>
+                  <Button
+                    onClick={async () => {
+                      if (instruction && await copyToClipboard(instruction)) setTaskCopied(true);
+                    }}
+                  >
+                    {taskCopied ? (
+                      <Check className="size-4" aria-hidden />
+                    ) : (
+                      <Copy className="size-4" aria-hidden />
+                    )}
+                    {taskCopied ? 'Copied — paste it to your agent' : 'Copy task'}
+                  </Button>
+                </>
+              ) : (
+                <Button onClick={handleStart} disabled={loading}>
+                  {loading ? (
+                    <Loader2 className="size-4 animate-spin" aria-hidden />
+                  ) : (
+                    <MessageCircleQuestion className="size-4" aria-hidden />
+                  )}
+                  Start session
+                </Button>
+              )}
             </>
           ) : (
             <KeyHandoffFooter

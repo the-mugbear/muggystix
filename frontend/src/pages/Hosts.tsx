@@ -209,6 +209,8 @@ export default function Hosts() {
   };
   const [hosts, setHosts] = useState<Host[]>([]);
   const [totalHosts, setTotalHosts] = useState(0);
+  // Every host in the project, whatever the filters — null until known.
+  const [projectTotal, setProjectTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<HostFilterOptions>({});
@@ -438,6 +440,7 @@ export default function Hosts() {
     if (r.ok) {
       setHosts(r.value.items);
       setTotalHosts(r.value.total ?? 0);
+      setProjectTotal(r.value.project_total ?? null);
       setVulnError(r.value.vulnerability_error ?? false);
     } else {
       console.error('Error fetching hosts:', r.error);
@@ -1598,7 +1601,13 @@ export default function Hosts() {
               with the table and the exports. */}
           <p className="ml-auto shrink-0 text-metadata text-muted-foreground" aria-live="polite">
             <strong className="tabular-nums text-foreground">{totalHosts.toLocaleString()}</strong>{' '}
-            {activeFilterChips.length > 0 ? 'matching ' : ''}host{totalHosts === 1 ? '' : 's'}
+            {activeFilterChips.length > 0 && projectTotal != null && projectTotal >= totalHosts ? (
+              // Matching and whole population together: a default view must
+              // not read as the project's size.
+              <>of {projectTotal.toLocaleString()} host{projectTotal === 1 ? '' : 's'}</>
+            ) : (
+              <>{activeFilterChips.length > 0 ? 'matching ' : ''}host{totalHosts === 1 ? '' : 's'}</>
+            )}
           </p>
           <div className="flex shrink-0 items-center gap-xs">
             {/* Sort is a display choice, never a filter — it has no chip. */}

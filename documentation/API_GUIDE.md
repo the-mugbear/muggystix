@@ -560,7 +560,7 @@ The contract agents follow is the [agent guide](AGENT_GUIDE.md), served at `GET 
 | GET | `/agent/hosts/{host_id}` | Host detail with ports, services, vulns. |
 | PATCH | `/agent/hosts/{host_id}` | Correct hostname / OS (analyst operator); setting `os_name` re-derives `os_family`. |
 | GET | `/agent/scans` | Scan list. |
-| GET | `/agent/scopes` | Scope list with every subnet CIDR; `subnet_total` is the list's length (it read 0 until v2.456.0). |
+| GET | `/agent/scopes` | Scope list with every subnet CIDR and every declared domain (uncapped); `subnet_total` / `domain_total` are the lists' lengths and `names_in_scope_total` is the distinct inventory names any entry covers (domains were missing here until v2.464.0 — only `/agent/assist/scopes` carried them). |
 | GET · POST | `/agent/hosts/{host_id}/notes` | Read a host's notes; create one from the agent's identity. An `@username` in an agent's note notifies nobody. |
 | POST | `/agent/hosts/{host_id}/follow` | Follow a host. |
 
@@ -611,7 +611,7 @@ There is nothing to open: an agent reads a scope by id and uploads what its tool
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/agent/feedback` | Record structured feedback, at the moment of friction. Body includes `source`, `prompt_version`, `overall_rating` (1–5), `api_critiques[]`, `tool_suggestions[]`, `friction_notes`, `agent_metrics{}`. `source` is required: `assist`, `reconnaissance` or `testing` (`plan_generation` and `in_session_execution` are still accepted from older clients; `exported_execution` is refused). The project and the session come from the key, never the body (the optional `assist_session_id` body field went in v2.449.0; a direct HTTP caller that still sends it is ignored, the MCP tool no longer lists it). |
+| POST | `/agent/feedback` | Record structured feedback, at the moment of friction. Body includes `source`, `prompt_version`, `overall_rating` (1–5), `api_critiques[]`, `tool_suggestions[]`, `friction_notes`, `agent_metrics{}`. `source` is required: `assist`, `reconnaissance` or `testing` (`plan_generation` and `in_session_execution` are still accepted from older clients; `exported_execution` is refused). The project and the session come from the key, never the body (the optional `assist_session_id` body field went in v2.449.0; a direct HTTP caller that still sends it is ignored, the MCP tool no longer lists it). **The 201 is an acknowledgement, not the row (v2.464.0):** `id`, `status`, `source`, `agent_session_id`, `created_at` and the sizes stored (`friction_notes_chars`, `api_critique_count`, `tool_suggestion_count`) — the submission is not echoed back. |
 
 ### 5.6a Evidence and proposals (v2.436.0)
 

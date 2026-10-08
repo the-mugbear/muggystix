@@ -86,6 +86,11 @@ import {
   sessionRowPath,
 } from '../utils/agentRuns';
 
+/** A live key with no call for this long is said to be quiet. */
+const QUIET_AFTER_MS = 15 * 60_000;
+const isQuiet = (lastCall: string): boolean =>
+  Date.now() - new Date(lastCall).getTime() > QUIET_AFTER_MS;
+
 const KIND_OPTIONS: Array<{ value: '' | AgentSessionKind; label: string }> = [
   { value: '', label: 'All sessions' },
   { value: 'project', label: 'Sessions' },
@@ -101,9 +106,9 @@ const KIND_OPTIONS: Array<{ value: '' | AgentSessionKind; label: string }> = [
 export const HISTORY_COLUMN_WIDTHS = {
   id: 'w-14',
   session: '',
-  status: 'w-36',
+  status: 'w-52',
   started: 'w-20',
-  operator: 'w-32',
+  operator: 'w-40',
   work: 'w-44',
   actions: 'w-20',
 } as const;
@@ -606,15 +611,21 @@ const ProjectActivity: React.FC = () => {
                       <AuthorityBadge role={row.operator_role} operator={operator} />
                     </div>
                     <p className="flex min-w-0 flex-wrap items-center gap-x-xs text-caption text-muted-foreground">
+                      {/* The last call leads: LIVE says the key works, not that
+                          an agent is running — a quiet session says so. */}
+                      {!row.last_activity_at ? (
+                        <span className="text-warning">no call yet — the agent has not connected</span>
+                      ) : isQuiet(row.last_activity_at) ? (
+                        <span className="text-foreground">
+                          last call <TimeAgo value={row.last_activity_at} /> — nothing since; the key still works
+                        </span>
+                      ) : (
+                        <span className="text-foreground">last call <TimeAgo value={row.last_activity_at} /></span>
+                      )}
+                      <span aria-hidden>·</span>
                       <span className="truncate">{safeFallback(operator, 'unknown operator')}</span>
                       <span aria-hidden>·</span>
                       <span>started <TimeAgo value={row.started_at} /></span>
-                      <span aria-hidden>·</span>
-                      {row.last_activity_at ? (
-                        <span>last call <TimeAgo value={row.last_activity_at} /></span>
-                      ) : (
-                        <span className="text-warning">no call yet — the agent has not connected</span>
-                      )}
                       <span aria-hidden>·</span>
                       <StateLineText line={keyState(row)} />
                     </p>
@@ -693,14 +704,14 @@ const ProjectActivity: React.FC = () => {
         </ListFilterBar>
 
         {/* Width strategy (UX walkthrough U1): the fixed columns are sized to
-            their content and sum to 664px; SESSION — the purpose, the one
+            their content and sum to 760px; SESSION — the purpose, the one
             column whose text has no bound — takes everything left. The table's
-            minimum (832px) keeps SESSION at 168px or more: below that the table
+            minimum (928px) keeps SESSION at 168px or more: below that the table
             scrolls inside its section instead of squeezing the column to
             nothing (the fixed widths used to add up to the whole content
             width at a 1,126px window). */}
         <div className="overflow-x-auto">
-        <Table data-testid="runs-table" className="min-w-[52rem]" style={{ tableLayout: 'fixed' }}>
+        <Table data-testid="runs-table" className="min-w-[58rem]" style={{ tableLayout: 'fixed' }}>
           <TableHeader>
             <TableRow>
               <TableHead className={HISTORY_COLUMN_WIDTHS.id}>#</TableHead>

@@ -1418,6 +1418,21 @@ def test_assist_scopes_carry_domains_and_dedup_names_total(client, test_project,
     assert scope["names_in_scope_total"] == 3
 
 
+def test_agent_scopes_carry_every_domain_too(client, test_project, db_session):
+    """The session prompt sends an agent to GET /agent/scopes for the scope
+    read-back; it listed the subnets and no in-scope name."""
+    _seed_names(db_session, test_project)
+    headers = _auth_headers(_start_session(client, test_project.id)["api_key"])
+    (scope,) = client.get("/api/v1/agent/scopes", headers=headers).json()
+    (assist,) = client.get("/api/v1/agent/assist/scopes", headers=headers).json()
+    assert scope["domains"] == assist["domains"] == [
+        {"domain": "lab.example.com", "include_subdomains": True},
+        {"domain": "portal.example.com", "include_subdomains": False},
+    ]
+    assert scope["domain_total"] == 2 and scope["domains_truncated"] is False
+    assert scope["names_in_scope_total"] == assist["names_in_scope_total"] == 3
+
+
 def test_assist_context_reports_domain_and_name_counts(client, test_project, db_session):
     _seed_names(db_session, test_project)
     headers = _auth_headers(_start_session(client, test_project.id)["api_key"])

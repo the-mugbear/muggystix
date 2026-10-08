@@ -623,6 +623,8 @@ class Host(HostBase):
 class HostListResponse(BaseModel):
     items: List[Host] = []
     total: Optional[int] = 0
+    #: Every host in the project, filters ignored (None without include_total).
+    project_total: Optional[int] = None
     skip: int = 0
     limit: int = 100
     sort_by: str = "critical_vulns"

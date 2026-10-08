@@ -425,16 +425,26 @@ const Evidence: React.FC = () => {
         || b.cell.gap - a.cell.gap || a.row.label.localeCompare(b.row.label));
   }, [data, unscoped]);
   const actions = useMemo(() => new Map((data?.domains ?? []).map((d) => [d.key, d.action?.text])), [data]);
+  // The server's "needs attention" rule (Operations, Scans, Ingestion
+  // Results); a response without it is not counted, never read as zero.
+  const attention = data?.data_quality.imports_needing_attention ?? null;
+  const dismissed = data?.data_quality.imports_dismissed ?? 0;
+  // A Largest-gaps row opens the same detail as its matrix cell, from its
+  // name or its count.
+  const openGap = (
+    row: { domain: string; label: string },
+    cell: { segment: string; gap: number; eligible: number },
+    segmentLabel: string,
+  ) => setSelection({
+    domain: row.domain, domainLabel: row.label, segment: cell.segment,
+    segmentLabel, gap: cell.gap, eligible: cell.eligible,
+  });
 
   return (
     <div className="space-y-md p-md md:p-lg">
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
           <h1 className="text-page-title">Evidence</h1>
-          <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
-            How much of the picture this assessment actually has — which hosts carry evidence in each domain that applies
-            to them, and where the gaps are.
-          </p>
         </div>
         <LastUpdated compact lastFetched={loadedAt} onRefresh={reload} isLoading={loading} label="evidence" />
       </div>
@@ -499,16 +509,18 @@ const Evidence: React.FC = () => {
                         <td className="py-xs pr-md">
                           <button type="button" className="block w-full min-w-0 truncate rounded text-left font-medium text-foreground underline decoration-dotted decoration-muted-foreground underline-offset-4 hover:decoration-solid hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             title={`${row.label} · ${segmentLabel}`}
-                            onClick={() => setSelection({
-                              domain: row.domain, domainLabel: row.label, segment: cell.segment,
-                              segmentLabel, gap: cell.gap, eligible: cell.eligible,
-                            })}>
+                            onClick={() => openGap(row, cell, segmentLabel)}>
                             {row.label}
                           </button>
                           <span className="block truncate text-caption text-muted-foreground" title={segmentLabel}>{segmentLabel}</span>
                         </td>
                         <td className="py-xs pr-md text-right tabular-nums text-foreground">
-                          {cell.gap.toLocaleString()} <span className="text-muted-foreground">of {cell.eligible.toLocaleString()}</span>
+                          <button type="button"
+                            className="rounded underline decoration-dotted decoration-muted-foreground underline-offset-4 hover:decoration-solid hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            aria-label={`${cell.gap.toLocaleString()} of ${cell.eligible.toLocaleString()} hosts not assessed — ${row.label} · ${segmentLabel}`}
+                            onClick={() => openGap(row, cell, segmentLabel)}>
+                            {cell.gap.toLocaleString()} <span className="text-muted-foreground">of {cell.eligible.toLocaleString()}</span>
+                          </button>
                         </td>
                         <td className={cn('py-xs text-caption', outside ? 'text-warning' : 'text-foreground')}>
                           {outside ? (
@@ -557,11 +569,16 @@ const Evidence: React.FC = () => {
               </div>
               <p className="mt-xs text-caption text-muted-foreground">
                 <span className="font-medium text-foreground">{data.data_quality.scans.toLocaleString()}</span> scan{data.data_quality.scans === 1 ? '' : 's'} imported ·{' '}
-                {data.data_quality.parse_errors_unresolved > 0 ? (
-                  <Link to="/parse-errors" className="text-warning hover:underline">
-                    {data.data_quality.parse_errors_unresolved} unresolved parse error{data.data_quality.parse_errors_unresolved === 1 ? '' : 's'} — their data never landed →
+                {attention == null ? 'imports needing attention could not be counted' : attention > 0 ? (
+                  <Link to="/parse-errors?status=needs_attention" className="text-warning hover:underline">
+                    {attention.toLocaleString()} import{attention === 1 ? '' : 's'} need{attention === 1 ? 's' : ''} attention — {attention === 1 ? 'its' : 'their'} data did not fully land →
                   </Link>
-                ) : 'no unresolved parse errors'}
+                ) : 'no import needs attention'}
+                {dismissed > 0 && (
+                  <>
+                    {' · '}{dismissed.toLocaleString()} failed or partial import{dismissed === 1 ? '' : 's'} dismissed
+                  </>
+                )}
               </p>
             </PostureSection>
           </div>

@@ -426,6 +426,9 @@ function App() {
                       />
                       {/* v5.312.0 — one agent session: its state, controls,
                           the work it opened, notes and calls. */}
+                      {/* The list lives at /agent-activity; /agent-sessions is
+                          the URL a reader types from a session's own address. */}
+                      <Route path="/agent-sessions" element={<Navigate to="/agent-activity" replace />} />
                       <Route
                         path="/agent-sessions/:sessionId"
                         element={

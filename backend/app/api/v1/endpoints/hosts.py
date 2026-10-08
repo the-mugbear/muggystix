@@ -351,8 +351,17 @@ def get_hosts_v2(
 
     if include_total:
         total = query.with_entities(func.count(models.Host.id)).scalar()
+        # The project's host count beside the matching one: a saved default
+        # view narrowed the list to "157 matching hosts" with nothing saying
+        # out of how many.  One index-only count on (project_id, ip_address).
+        project_total = (
+            db.query(func.count(models.Host.id))
+            .filter(models.Host.project_id == project.id)
+            .scalar()
+        )
     else:
         total = None
+        project_total = None
     query = _apply_host_sorting(query, sort_by, sort_order)
 
     # Add eager loading for the listing response.  RV-8 — the list view
@@ -731,6 +740,7 @@ def get_hosts_v2(
     return {
         "items": serialized_hosts,
         "total": total,
+        "project_total": project_total,
         "skip": skip,
         "limit": limit,
         "sort_by": sort_by,

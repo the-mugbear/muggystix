@@ -23,6 +23,9 @@ export const TooltipContent = React.forwardRef<
   React.ElementRef<typeof TooltipPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Content>
 >(({ className, sideOffset = 4, ...props }, ref) => (
+  // Portaled: a tooltip inside a dialog or a scrolling panel was cut off by
+  // that container's overflow ("Copy agent instructi…" in the start dialog).
+  <TooltipPrimitive.Portal>
   <TooltipPrimitive.Content
     ref={ref}
     sideOffset={sideOffset}
@@ -38,5 +41,6 @@ export const TooltipContent = React.forwardRef<
     )}
     {...props}
   />
+  </TooltipPrimitive.Portal>
 ));
 TooltipContent.displayName = TooltipPrimitive.Content.displayName;

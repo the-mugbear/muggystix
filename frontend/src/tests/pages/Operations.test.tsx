@@ -945,7 +945,7 @@ describe('Operations page', () => {
       expect(await screen.findByRole('dialog', { name: /Start Agent Session/ })).toBeInTheDocument();
       expect(
         screen.getByText(
-          `Read scope ${baseCoverage.scopes[0].scope_id} in BlueStick, run your scanners on what is in scope, and upload the output to this session.`,
+          `Read this project’s scope in BlueStick (scope id ${baseCoverage.scopes[0].scope_id}), run your scanners on what is in scope, and upload the output to this session.`,
         ),
       ).toBeInTheDocument();
       expect(navigateSpy).not.toHaveBeenCalled();

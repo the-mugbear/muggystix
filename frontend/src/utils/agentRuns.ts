@@ -162,10 +162,17 @@ export const myActiveSessionFilters = (userId: number) =>
  *  5.313.1 — a scan is no run: the agent reads the scope and uploads to its
  *  session. 5.320.0 — tests are proposed on hosts; there is no plan. */
 export const agentInstruction = {
-  scanScope: (scopeId?: number): string =>
-    scopeId != null
-      ? `Read scope ${scopeId} in BlueStick, run your scanners on what is in scope, and upload the output to this session.`
-      : 'Read this project’s scopes in BlueStick, run your scanners on what is in scope, and upload the output to this session.',
+  /** `covers` says what the scope holds ("8 subnets, 3 domains"): "scope 2"
+   *  alone is an id the operator never sees anywhere else. The id stays —
+   *  it is what the agent's scope reads take. */
+  scanScope: (scopeId?: number, covers?: { subnets: number; domains: number }): string => {
+    if (scopeId == null) {
+      return 'Read this project’s scopes in BlueStick, run your scanners on what is in scope, and upload the output to this session.';
+    }
+    const n = (count: number, word: string) => `${count.toLocaleString()} ${word}${count === 1 ? '' : 's'}`;
+    const what = covers ? ` — ${n(covers.subnets, 'subnet')}, ${n(covers.domains, 'domain')}` : '';
+    return `Read this project’s scope in BlueStick (scope id ${scopeId}${what}), run your scanners on what is in scope, and upload the output to this session.`;
+  },
   /** Propose tests on a fixed host list (or one host). Proposing only: the
    *  operator asks for a run separately. */
   proposeTests: (hostIds: number[], what?: string): string => {

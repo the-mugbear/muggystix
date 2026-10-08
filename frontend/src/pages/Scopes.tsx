@@ -621,7 +621,10 @@ const Scopes: React.FC = () => {
             <AgentTaskButton
               variant="default"
               label="Scan with your agent"
-              instruction={agentInstruction.scanScope(scope.id)}
+              instruction={agentInstruction.scanScope(scope.id, coverage ? {
+                subnets: scope.subnets.length,
+                domains: coverage.total_domains,
+              } : undefined)}
               disabled={scope.subnets.length === 0}
               title={scope.subnets.length === 0 ? 'Add a subnet first — the agent scans the declared subnets.' : undefined}
             />

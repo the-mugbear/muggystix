@@ -179,6 +179,10 @@ def test_testing_feedback_is_accepted_and_attributed_from_the_key(client, test_p
     assert body["source"] == "testing"
     for retired in ("test_plan_id", "execution_session_id"):
         assert retired not in body
+    # An acknowledgement, not an echo: the agent just wrote the text.
+    assert "friction_notes" not in body and "api_critiques" not in body
+    assert body["friction_notes_chars"] == len("host_tests_propose 409 did not say which request_key")
+    assert body["status"] == "new" and body["agent_session_id"] == sid
     row = db_session.get(AgentFeedback, body["id"])
     assert (row.agent_session_id, row.project_id, row.source) == (sid, test_project.id, "testing")
     assert _row(client, test_project, sid)["feedback_count"] == 1

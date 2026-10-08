@@ -198,7 +198,15 @@ export interface EvidenceCoverageResponse {
   domains: EvidenceDomain[];
   matrix?: EvidenceMatrix | null;
   contributing_tools: { tool: string; scans: number }[];
-  data_quality: { scans: number; parse_errors_unresolved: number };
+  /** `imports_needing_attention` is the Operations / Ingestion Results rule
+   *  (failed or partial, not dismissed, not superseded); `parse_errors_unresolved`
+   *  counts parse-error rows and is kept for the agents' reads. */
+  data_quality: {
+    scans: number;
+    parse_errors_unresolved: number;
+    imports_needing_attention?: number;
+    imports_dismissed?: number;
+  };
 }
 
 /** v2.348.0 — a coverage gap as a list: the eligible-but-unassessed hosts,

@@ -208,3 +208,24 @@ def test_expired_and_discarded_uploads_are_not_counted_as_failed(client, db_sess
     assert ids("failed") == {real.id, no_message.id}
     assert ids("expired") == {expired.id}
     assert ids("discarded") == {discarded.id}
+
+
+def test_evidence_counts_imports_by_the_same_rule(client, db_session, test_project):
+    """The Evidence page said "N unresolved parse errors" (parse-error rows,
+    dismissed failures included) beside pages that said two imports needed
+    anyone.  Its number is the Ingestion Results one, and a dismissed failure
+    is history, not attention."""
+    from datetime import datetime, timezone
+    j = _scenario(db_session, test_project)
+    _job(db_session, test_project, sha="1" * 64, dismissed=datetime.now(timezone.utc))
+    _job(db_session, test_project, sha="2" * 64, status="completed", partial=True,
+         dismissed=datetime.now(timezone.utc))
+    base = f"/api/v1/projects/{test_project.id}"
+
+    quality = client.get(f"{base}/posture/evidence").json()["data_quality"]
+    listed = client.get(f"{base}/parse-errors/ingestion-results?status=needs_attention&limit=100").json()
+
+    assert quality["imports_needing_attention"] == listed["summary"]["total_needs_attention"]
+    assert quality["imports_needing_attention"] == len(listed["items"]) == 5
+    assert {i["id"] for i in listed["items"]} == {j[k].id for k in ("c", "d", "d_partial", "e", "g")}
+    assert quality["imports_dismissed"] == 2

@@ -346,10 +346,12 @@ describe('Hosts', () => {
         ],
       }),
     ];
-    mockedApi.getHosts.mockImplementation(async () => ({ items: ftpHosts, total: 1, skip: 0, limit: 25 }));
+    mockedApi.getHosts.mockImplementation(async () => ({ items: ftpHosts, total: 1, project_total: 420, skip: 0, limit: 25 }));
     routerState.search = '?services=ftp';
     const { unmount } = renderHosts();
     const match = await screen.findByTestId('endpoint-match');
+    // A narrowed list says out of how many.
+    expect(screen.getByText('of 420 hosts')).toBeInTheDocument();
     expect(match).toHaveTextContent('ftp 21/tcp');
     expect(match).not.toHaveTextContent('telnet');
     unmount();

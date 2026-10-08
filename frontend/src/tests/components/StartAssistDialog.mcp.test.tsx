@@ -19,7 +19,7 @@ import { MemoryRouter } from 'react-router-dom';
 
 import { StartAssistDialog } from '../../components/StartAssistDialog';
 import { TooltipProvider } from '../../components/ui/tooltip';
-import type { StartAssistResponse } from '../../services/api';
+import type { AgentSessionRow, StartAssistResponse } from '../../services/api';
 import { copyToClipboard } from '../../utils/clipboard';
 
 const startAssistSession = vi.fn();
@@ -156,6 +156,32 @@ describe('StartAssistDialog', () => {
     });
     expect(await screen.findByText('Once it is connected, give your agent this:')).toBeInTheDocument();
     expect(screen.getByText(task)).toBeInTheDocument();
+  });
+
+  // With a session already live the task is the point; a second session is
+  // asked for explicitly.
+  it('with a live session, copying the task is the primary action', async () => {
+    const task = 'Propose tests in BlueStick for these hosts only (host ids): 12, 14.';
+    const live = {
+      id: 86, kind: 'project', status: 'active', can_end: true, can_resume: true,
+      key_expires_at: new Date(Date.now() + 3 * 3_600_000).toISOString(),
+    } as unknown as AgentSessionRow;
+    render(
+      <MemoryRouter>
+        <TooltipProvider>
+          <StartAssistDialog open onOpenChange={onOpenChange} instruction={task} mySessions={[live]} />
+        </TooltipProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.queryByRole('button', { name: /^start session$/i })).toBeNull();
+    expect(screen.queryByLabelText(/What is it for/)).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Copy task' }));
+    expect(copyToClipboard).toHaveBeenCalledWith(task);
+    expect(await screen.findByRole('button', { name: /Copied — paste it to your agent/ })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start another session' }));
+    expect(screen.getByRole('button', { name: /^start session$/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/What is it for/)).toBeInTheDocument();
   });
 
   it('starts from one sentence and one field — no promised TTL before the server says', () => {

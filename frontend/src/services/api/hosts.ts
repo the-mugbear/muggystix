@@ -291,6 +291,8 @@ export interface HostAssignee {
 export interface HostListResponse {
   items: Host[];
   total: number | null;
+  /** Every host in the project, filters ignored (null when `include_total` is off). */
+  project_total?: number | null;
   skip: number;
   limit: number;
   sort_by: string;

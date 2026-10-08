@@ -73,6 +73,11 @@ class TestHostsAPI:
         # lowercase ('up'/'down'), and the endpoint filter is an exact match.
         response = client.get(f"{base}?state=up")
         assert response.status_code == 200
+        # The project's size travels with the matching count, filters ignored.
+        everything = client.get(base).json()
+        narrowed = client.get(f"{base}?ports=1").json()
+        assert everything["project_total"] == everything["total"] > 0
+        assert narrowed["project_total"] == everything["total"]
         hosts = response.json()["items"]
         assert len(hosts) == 2
         for host in hosts:
