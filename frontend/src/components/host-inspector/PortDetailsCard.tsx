@@ -326,7 +326,12 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   const pathRows = (webPathCount > 0 && paths.data) || NO_PATHS;
   const endpoints = useMemo(() => endpointsByPort(webRows), [webRows]);
   const webError = web.isError;
-  const evidenceError = (netexecCount > 0 && netexec.isError) || (webPathCount > 0 && paths.isError);
+  const netexecFailed = netexecCount > 0 && netexec.isError;
+  const pathsFailed = webPathCount > 0 && paths.isError;
+  const evidenceError = netexecFailed || pathsFailed;
+  // Named, so the line says what is missing and Retry asks for only that.
+  const failedEvidence = [netexecFailed && 'NetExec results', pathsFailed && 'discovered paths']
+    .filter((name): name is string => !!name);
 
   const all = useMemo(
     () => ({ vulnerabilities, netexec: netexecRows, web: webRows, paths: pathRows }),
@@ -592,13 +597,31 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
 
       {/* A failed evidence load must not read as "no TLS here". */}
       {webError && (
-        <p className="pt-xs text-caption text-muted-foreground">
-          TLS evidence couldn’t be loaded for this host — reopen it to retry.
+        <p className="flex flex-wrap items-center gap-x-xs pt-xs text-caption text-muted-foreground" role="alert">
+          This host&rsquo;s web and TLS evidence couldn&rsquo;t be loaded.
+          <Button
+            variant="ghost" size="sm" className="h-6" disabled={web.isFetching}
+            aria-label="Retry loading web and TLS evidence"
+            onClick={() => void web.refetch()}
+          >
+            Retry
+          </Button>
         </p>
       )}
       {evidenceError && (
-        <p className="pt-xs text-caption text-muted-foreground">
-          Some of this host&rsquo;s evidence (NetExec results, discovered paths) couldn&rsquo;t be loaded — reopen it to retry.
+        <p className="flex flex-wrap items-center gap-x-xs pt-xs text-caption text-muted-foreground" role="alert">
+          Some of this host&rsquo;s evidence ({failedEvidence.join(', ')}) couldn&rsquo;t be loaded.
+          <Button
+            variant="ghost" size="sm" className="h-6" disabled={netexec.isFetching || paths.isFetching}
+            aria-label={`Retry loading ${failedEvidence.join(' and ')}`}
+            onClick={() => {
+              // Only what failed: a read that answered is not asked again.
+              if (netexecFailed) void netexec.refetch();
+              if (pathsFailed) void paths.refetch();
+            }}
+          >
+            Retry
+          </Button>
         </p>
       )}
 

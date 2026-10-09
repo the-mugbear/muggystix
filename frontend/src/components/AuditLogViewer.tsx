@@ -21,8 +21,10 @@ import {
   listAuditLogs,
 } from '../services/api';
 import { GLOBAL, queryErrorText } from '../lib/query';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { formatAuditDetails } from '../utils/auditDetails';
 import { personName } from '../utils/people';
+import { formatTimestamp } from '../utils/relativeTime';
 import { safeFallback } from '../utils/uiStyles';
 import PostureSection from './posture/PostureSection';
 import { Badge } from './ui/badge';
@@ -37,25 +39,24 @@ import {
 export const AUDIT_PAGE_SIZE = 20;
 const PAGE_SIZE = AUDIT_PAGE_SIZE;
 
-function when(value?: string | null): string {
-  if (!value) return '—';
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
-}
-
 const AuditLogViewer: React.FC = () => {
-  // Which page is asked for; a new filter starts from the first.
-  const [asked, setAsked] = useState(0);
-  const [actionFilter, setActionFilterValue] = useState('all');
-  const [resourceFilter, setResourceFilterValue] = useState('');
-  const setActionFilter = (value: string) => { setActionFilterValue(value); setAsked(0); };
-  const setResourceFilter = (value: string) => { setResourceFilterValue(value); setAsked(0); };
+  const [actionFilter, setActionFilter] = useState('all');
+  // The box shows what is typed; the server is asked once the typing stops
+  // (it was asked once per keystroke).
+  const [resourceFilter, setResourceFilter] = useState('');
+  const resourceType = useDebouncedValue(resourceFilter, 300).trim();
+  // Which page is asked for, and of which filters: a new filter starts from
+  // the first page in the same request, with nothing to reset.
+  const filters = `${actionFilter}\n${resourceType}`;
+  const [position, setPosition] = useState({ skip: 0, filters });
+  const asked = position.filters === filters ? position.skip : 0;
+  const setAsked = (skip: number) => setPosition({ skip, filters });
 
   const params = {
     skip: asked,
     limit: PAGE_SIZE,
     ...(actionFilter !== 'all' ? { action: actionFilter } : {}),
-    ...(resourceFilter.trim() ? { resource_type: resourceFilter.trim() } : {}),
+    ...(resourceType ? { resource_type: resourceType } : {}),
   };
   const query = useQuery({
     queryKey: [GLOBAL, 'listAuditLogs', params],
@@ -199,7 +200,7 @@ const AuditLogViewer: React.FC = () => {
                     return (
                     <tr key={r.id} className="border-b border-border/50 align-top">
                       <td className="py-xs pr-xs whitespace-nowrap text-muted-foreground">
-                        {when(r.created_at)}
+                        {formatTimestamp(r.created_at)}
                       </td>
                       <td className="py-xs pr-xs">
                         <span className="flex items-start gap-xxs">

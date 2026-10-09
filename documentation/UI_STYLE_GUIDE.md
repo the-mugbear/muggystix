@@ -135,7 +135,7 @@ Use the Tailwind classes above directly. The old `sx`-style constants (`singleLi
   - **Sections:** `PostureSection` (`components/posture/PostureSection.tsx`): a sentence-case heading (subheading size, foreground colour) after a short primary accent bar — the heading is what separates sections, v5.269.0 — with an (i) `InfoTip` passed inside `title` when needed and a quiet `SectionCount` for a count or summary, one description line, right-aligned actions or a segmented control, over a `border-b`; the content keeps the full width. Nothing collapses — these pages are read top to bottom.
   - **Explanations** go on an explicit (i) `InfoTip`, never on hover alone.
 - On a DETAIL surface (the host inspector, a finding, an agent session) use `InspectorSection` (`components/host-inspector/InspectorSection.tsx`): the same heading-over-divider shape, collapsible, its state remembered per viewer. Giving every data source its own Card meant a host with two ports and two observations needed three screens, most of it chrome. `openInspectorSection` / `jumpToInspectorSection` re-open a collapsed target, so a jump link is never dead.
-- **A `<Card>` is the exception**: a self-contained object in a grid of like objects (a project tile, a person on a roster), a form panel, or an empty/error state that must stand apart. Never a card per metric.
+- **A `<Card>` is the exception**: a self-contained object in a grid of like objects (a project tile), a form panel, or an empty/error state that must stand apart. Never a card per metric.
 - **Discussions are conversations** (v5.264.0): finding comments, host notes and a finding's source-note thread render as `MessageBubble`s (`components/MessageBubble.tsx`) — the viewer's messages on the RIGHT ("You"), everyone else's on the LEFT (the phone convention, v5.268.0), oldest first, text left-aligned inside a tinted bubble, author/time above and actions below on the same side. A reply quotes what it answers ("Replying to Ana: …") rather than indenting; never wrap a thread in a Card.
 - **A repeated evidence row is ONE line** — identity, one status, dot-separated metadata — and expands only on demand (scanner observations, port sightings, earlier observations of a web interface). A 300–400 px row per observation pushes everything else off the screen.
 - **A work row may carry a second quiet line for the one thing the reader copies** (v5.322.0) — a host test's command, mono, truncated, with a copy button. That is the limit: two lines closed, everything else on demand. A row that needs a person's decision (a test whose result showed an issue and has no finding yet) opens by itself and stays in the to-do list; a finished row otherwise stays closed.
@@ -648,7 +648,17 @@ so Back, a reload and a shared link all show the same list.
 `isProjectAdmin`, `isGlobalAdmin`.  The account role is binary (admin /
 member), so `hasPermission('analyst')` is true for every member and must not
 gate anything; keep `hasPermission('admin')` for instance-wide surfaces
-(users, system settings, audit log, Oversight).
+(users, system settings, audit log, Oversight).  A control the SERVER gives
+to a project admin follows `isProjectAdmin` — never the account role: the
+Hosts page's "set / clear the project default view" was hidden from project
+admins for that reason until 5.351.1.
+
+**One set of member rules, on every screen that manages members**
+(`utils/projectMembers.ts`): the role list, and what is confirmed or refused
+before a change is sent — the only project admin cannot be removed (the
+server refuses it); demoting the only admin, changing your own role and
+removing yourself are confirmed, in the same words on Project settings, the
+Portfolio members sheet and the administrators' memberships dialog.
 
 - **Hidden, not disabled.**  A control the caller's role cannot use is not
   rendered.  A viewer or auditor gets a read-only page — rows, counts, links,
@@ -1057,9 +1067,12 @@ const save = useMutation({
   `invalidateReads`).  No `reload()` handed down as a prop, no `refreshKey`
   bumped by a parent, no window event announcing a change: those were the old
   mechanism.  A callback that changes local UI state (closes a dialog) stays.
-- **Defaults, on purpose** (`lib/query.ts`): no automatic retry and no
-  re-ask when a second reader mounts — a failure is said, with Retry
-  (`refetch`); no refetch on focus; nothing kept once nothing shows it
+- **Defaults, on purpose** (`lib/query.ts`): no automatic retry, and a
+  FAILED read is not asked again when a second reader mounts — a failure is
+  said, with Retry (`refetch`).  (A successful read IS asked again by a
+  reader of the same key that mounts later; one that should not says the
+  answer is recent enough with `staleTime` on its own observer.)  No refetch
+  on focus; nothing kept once nothing shows it
   (`gcTime: 0`), so a page that is opened reads from the server; requests are
   never paused for a browser that believes it is offline (isolated networks).
   A read that should be remembered says so (`rememberFor(ms)`: project

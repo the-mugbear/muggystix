@@ -1,3 +1,5 @@
+import React from 'react';
+import { useQueries } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -159,6 +161,81 @@ describe('HostFindingsCard', () => {
     expect(api.setFindingEndpointStatus).not.toHaveBeenCalled();
     // The status change is on the finding's history: that trail is read again.
     await waitFor(() => expect(historyReread).toHaveBeenCalledTimes(1));
+  });
+
+  // The inspector shows, beside each scanner row, the state of the finding
+  // that covers it — from the HOST's read.  A change made in this card left
+  // those rows saying the old state until the host was reopened.
+  describe('a change here re-reads the open host', () => {
+    const hostRead = vi.fn();
+    const OpenHosts: React.FC = () => {
+      useQueries({
+        queries: [HOST, 6].map((id) => ({
+          queryKey: ['getHost', id], queryFn: () => { hostRead(id); return 1; }, initialData: 0, staleTime: Infinity,
+        })),
+      });
+      return null;
+    };
+    const renderWithHost = () => render(
+      <MemoryRouter><OpenHosts /><HostFindingsCard hostId={HOST} /></MemoryRouter>,
+    );
+    beforeEach(() => hostRead.mockClear());
+
+    it('an issue status change: this host once, no other host', async () => {
+      const user = userEvent.setup();
+      const own = finding({ status: 'open' });
+      api.listFindings.mockResolvedValue({ items: [own] });
+      api.setFindingStatus.mockResolvedValue({ ...own, status: 'confirmed' });
+      renderWithHost();
+
+      await user.click(await screen.findByLabelText('Status for Weak TLS'));
+      expect(hostRead).not.toHaveBeenCalled();
+      await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
+      await waitFor(() => expect(hostRead).toHaveBeenCalledWith(HOST));
+      expect(hostRead).toHaveBeenCalledTimes(1);
+    });
+
+    it('this host’s state on a shared finding', async () => {
+      const user = userEvent.setup();
+      const shared = finding({ host_count: 2, hosts: [row(31, HOST, 'open'), row(32, 6, 'open')] });
+      api.listFindings.mockResolvedValue({ items: [shared] });
+      api.setFindingEndpointStatus.mockResolvedValue({ ...shared, hosts: [row(31, HOST, 'false_positive'), row(32, 6, 'open')] });
+      renderWithHost();
+
+      await user.click(await screen.findByLabelText('State of Weak TLS on this host'));
+      await user.click(await screen.findByRole('option', { name: 'False positive here' }));
+      await waitFor(() => expect(hostRead).toHaveBeenCalledWith(HOST));
+      expect(hostRead).toHaveBeenCalledTimes(1);
+    });
+
+    it('a change that stopped part-way: the rows that did change are on the host', async () => {
+      const user = userEvent.setup();
+      const shared = finding({
+        host_count: 2,
+        hosts: [row(31, HOST, 'open', 'a.example.com'), row(34, HOST, 'open', 'b.example.com'), row(32, 6, 'open')],
+      });
+      api.listFindings.mockResolvedValue({ items: [shared] });
+      api.setFindingEndpointStatus.mockResolvedValueOnce(shared).mockRejectedValue(new Error('boom'));
+      renderWithHost();
+
+      await user.click(await screen.findByLabelText('State of Weak TLS on this host'));
+      await user.click(await screen.findByRole('option', { name: 'Remediated here' }));
+      await waitFor(() => expect(toast.error).toHaveBeenCalled());
+      await waitFor(() => expect(hostRead).toHaveBeenCalledWith(HOST));
+      expect(hostRead).toHaveBeenCalledTimes(1);
+    });
+
+    it('a refused status change re-reads nothing', async () => {
+      const user = userEvent.setup();
+      api.listFindings.mockResolvedValue({ items: [finding({ status: 'open' })] });
+      api.setFindingStatus.mockRejectedValue(new Error('refused'));
+      renderWithHost();
+
+      await user.click(await screen.findByLabelText('Status for Weak TLS'));
+      await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
+      await waitFor(() => expect(toast.error).toHaveBeenCalled());
+      expect(hostRead).not.toHaveBeenCalled();
+    });
   });
 
   // Branch review 2026-10-01 M13 — the inspector stays mounted across hosts.

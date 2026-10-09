@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import TagManagement from '../../components/TagManagement';
 import type { HostTagWithCount } from '../../services/api';
+import { readsOnScreen } from '../helpers/readsOnScreen';
 
 const listHostTags = vi.fn();
 const updateHostTag = vi.fn();
@@ -25,6 +26,12 @@ vi.mock('../../contexts/ToastContext', () => ({
 const project = vi.hoisted(() => ({ my_role: undefined as string | undefined }));
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({ currentProject: { id: 1, name: 'Proj', my_role: project.my_role } }),
+}));
+// A project member, not the global admin setupTests signs in: the controls
+// follow the PROJECT role (`useProjectRole`), and a global admin passes it.
+const account = vi.hoisted(() => ({ role: 'member' }));
+vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ user: { id: 1, username: 'test-user', role: account.role } }),
 }));
 
 // Auto-confirm so the destructive path is exercised; the confirm copy itself
@@ -70,6 +77,52 @@ describe('TagManagement', () => {
     } finally {
       project.my_role = undefined;
     }
+  });
+
+  it('shows a global admin the controls whatever the project says', async () => {
+    project.my_role = 'viewer';
+    account.role = 'admin';
+    try {
+      render(<TagManagement />);
+      expect(await screen.findByRole('button', { name: /rename prod/i })).toBeInTheDocument();
+    } finally {
+      project.my_role = undefined;
+      account.role = 'member';
+    }
+  });
+
+  // A host that is open (the inspector) names its tags: a rename or a delete
+  // here left the old name on it until it was reopened.
+  it.each([
+    ['renaming', async () => {
+      fireEvent.click(await screen.findByRole('button', { name: /rename prod/i }));
+      fireEvent.change(screen.getByLabelText(/rename tag prod/i), { target: { value: 'production' } });
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    }],
+    ['deleting', async () => {
+      fireEvent.click(await screen.findByRole('button', { name: /delete prod/i }));
+    }],
+  ])('%s a tag re-reads an open host, the host rows and the tag lists', async (_what, act) => {
+    const { reread, ReadsOnScreen } = readsOnScreen({
+      getHost: 'open host', getHosts: 'host rows', getHostFilterData: 'filters',
+    });
+    render(<><ReadsOnScreen /><TagManagement /></>);
+    await act();
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('open host'));
+    expect(reread).toHaveBeenCalledWith('host rows');
+    expect(reread).toHaveBeenCalledWith('filters');
+    await waitFor(() => expect(listHostTags).toHaveBeenCalledTimes(2));
+  });
+
+  it('a refused rename re-reads nothing', async () => {
+    updateHostTag.mockRejectedValue(new Error('conflict'));
+    const { reread, ReadsOnScreen } = readsOnScreen({ getHost: 'open host' });
+    render(<><ReadsOnScreen /><TagManagement /></>);
+    fireEvent.click(await screen.findByRole('button', { name: /rename prod/i }));
+    fireEvent.change(screen.getByLabelText(/rename tag prod/i), { target: { value: 'staging' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(error).toHaveBeenCalled());
+    expect(reread).not.toHaveBeenCalled();
   });
 
   it('lists tags with their host counts', async () => {

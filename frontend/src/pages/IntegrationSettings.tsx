@@ -138,7 +138,12 @@ const IntegrationSettings: React.FC = () => {
   }, [error, toast]);
 
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editing, setEditing] = useState<IntegrationEntry | null>(null);
+  // WHICH integration is being edited (null: a new one).  The integration
+  // itself is the list's row, read when it is shown — a copy taken when the
+  // dialog opened still said "a secret is stored" after it had been cleared.
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const isEdit = editingId != null;
+  const editing = isEdit ? integrations.find((r) => r.id === editingId) ?? null : null;
   const [form, setForm] = useState<IntegrationCreatePayload>(emptyForm);
   // Nessus-only: operator-supplied license cap (hosts per registered
   // Nessus scan).  Stored on save in `extra_config.max_hosts_per_scan`
@@ -182,7 +187,7 @@ const IntegrationSettings: React.FC = () => {
   };
 
   const openNew = () => {
-    setEditing(null);
+    setEditingId(null);
     setForm(emptyForm);
     setMaxHostsPerScan('');
     setGmpPort('');
@@ -190,7 +195,7 @@ const IntegrationSettings: React.FC = () => {
     setDialogOpen(true);
   };
   const openEdit = (r: IntegrationEntry) => {
-    setEditing(r);
+    setEditingId(r.id);
     setForm({
       name: r.name,
       integration_type: r.integration_type,
@@ -236,9 +241,14 @@ const IntegrationSettings: React.FC = () => {
   const integrationsChanged = () => queryClient.invalidateQueries({ queryKey: [GLOBAL, 'listIntegrations'] });
 
   const save = useMutation({
-    mutationFn: async (target: IntegrationEntry | null): Promise<'updated' | 'added'> => {
-      const extraConfig = buildExtraConfig();
-      if (target) {
+    // What is saved is what was handed over with the click, not whatever the
+    // form holds when the request is built.
+    mutationFn: async ({ id, form, extraConfig }: {
+      id: number | null;
+      form: IntegrationCreatePayload;
+      extraConfig: Record<string, unknown> | undefined;
+    }): Promise<'updated' | 'added'> => {
+      if (id != null) {
         const payload: any = {
           name: form.name,
           base_url: form.base_url || null,
@@ -247,7 +257,7 @@ const IntegrationSettings: React.FC = () => {
         if (form.secret) payload.secret = form.secret;
         if (form.secret2) payload.secret2 = form.secret2;
         if (extraConfig) payload.extra_config = extraConfig;
-        await updateIntegration(target.id, payload);
+        await updateIntegration(id, payload);
         return 'updated';
       }
       await createIntegration({
@@ -267,7 +277,7 @@ const IntegrationSettings: React.FC = () => {
     onError: (err) => toast.error(formatApiError(err, 'Failed to save integration.')),
   });
   const saving = save.isPending;
-  const handleSave = () => save.mutate(editing);
+  const handleSave = () => save.mutate({ id: editingId, form, extraConfig: buildExtraConfig() });
 
   // The edit dialog's "clear" beside a stored secret: removed at once, not on Save.
   const clearSecret = useMutation({
@@ -414,7 +424,7 @@ const IntegrationSettings: React.FC = () => {
       <Dialog open={dialogOpen} onOpenChange={(next) => !next && !saving && setDialogOpen(false)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editing ? 'Edit Integration' : 'Add Integration'}</DialogTitle>
+            <DialogTitle>{isEdit ? 'Edit Integration' : 'Add Integration'}</DialogTitle>
           </DialogHeader>
           <DialogBody className="flex flex-col gap-md">
             <div className="flex flex-col gap-xs">
@@ -435,7 +445,7 @@ const IntegrationSettings: React.FC = () => {
               <Select
                 value={form.integration_type}
                 onValueChange={(v) => setForm((f) => ({ ...f, integration_type: v }))}
-                disabled={!!editing}
+                disabled={isEdit}
               >
                 <SelectTrigger id="int-type">
                   <SelectValue />
@@ -469,7 +479,7 @@ const IntegrationSettings: React.FC = () => {
             </div>
             <div className="flex flex-col gap-xs">
               <Label htmlFor="int-secret">
-                {editing ? `${labels.one} (leave blank to keep current)` : labels.one}
+                {isEdit ? `${labels.one} (leave blank to keep current)` : labels.one}
               </Label>
               <PasswordInput
                 id="int-secret"
@@ -487,7 +497,7 @@ const IntegrationSettings: React.FC = () => {
             {labels.two && (
               <div className="flex flex-col gap-xs">
                 <Label htmlFor="int-secret2">
-                  {editing ? `${labels.two} (leave blank to keep current)` : labels.two}
+                  {isEdit ? `${labels.two} (leave blank to keep current)` : labels.two}
                 </Label>
                 <PasswordInput
                   id="int-secret2"

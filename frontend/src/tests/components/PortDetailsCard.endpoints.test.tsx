@@ -157,6 +157,44 @@ describe('PortDetailsCard — density', () => {
     expect(await screen.findByText(/TLS evidence couldn’t be loaded/)).toBeInTheDocument();
   });
 
+  // The line used to end "reopen it to retry": the reader had to close the
+  // host and find it again to ask once more.
+  it('a failed web / TLS read offers Retry, which asks again and shows the evidence', async () => {
+    api.getHostWebInterfaces.mockRejectedValueOnce(new Error('boom')).mockResolvedValue([
+      { id: 1, source: 'httpx', url: 'https://portal.example.com/', fqdn: 'portal.example.com', port_id: 22, cert_self_signed: true, last_seen: iso(-2), has_screenshot: false, scan_id: 1 },
+    ]);
+    renderWith([ssh]);
+    expect(await screen.findByText(/This host’s web and TLS evidence couldn’t be loaded\./)).toBeInTheDocument();
+    expect(screen.queryByText(/reopen it/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry loading web and TLS evidence' }));
+    expect(await screen.findByText('self-signed')).toBeInTheDocument();
+    expect(api.getHostWebInterfaces).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/couldn’t be loaded/)).toBeNull();
+  });
+
+  it('a failed paths read names what is missing, and Retry asks only for that', async () => {
+    api.getHostWebInterfaces.mockResolvedValue([]);
+    api.getHostNetexecResults.mockResolvedValue([]);
+    api.getHostWebPaths.mockRejectedValueOnce(new Error('boom')).mockResolvedValue([]);
+    render(
+      <TooltipProvider>
+        <PortDetailsCard
+          hostId={1} hostIp="10.0.0.5" openPorts={[ssh]} closedPorts={[]} filteredPorts={[]}
+          connectionHelpersByPort={new Map()} netexecCount={2} webPathCount={3}
+        />
+      </TooltipProvider>,
+    );
+    expect(await screen.findByText(/Some of this host’s evidence \(discovered paths\) couldn’t be loaded\./)).toBeInTheDocument();
+    expect(screen.queryByText(/reopen it/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry loading discovered paths' }));
+    await waitFor(() => expect(screen.queryByText(/couldn’t be loaded/)).toBeNull());
+    expect(api.getHostWebPaths).toHaveBeenCalledTimes(2);
+    expect(api.getHostNetexecResults).toHaveBeenCalledTimes(1);
+    expect(api.getHostWebInterfaces).toHaveBeenCalledTimes(1);
+  });
+
   // v5.297.0 — a service row summarises what is known about it and opens to
   // the evidence itself (it used to link to per-tool sections further down).
   it('summarises each service and opens it to its evidence', async () => {

@@ -9,7 +9,7 @@
  * each tool's agent policy rather than implying everything documented is
  * runnable, and rows with no install command or URL still render.
  */
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -67,6 +67,28 @@ describe('ToolReference', () => {
     hasRole.mockReset();
     hasRole.mockReturnValue(false);
     getToolRegistry.mockResolvedValue({ count: 1, tools: [tool()] });
+  });
+
+  // A failed read said a fixed sentence and offered nothing: the server's own
+  // reason is said, with Retry.
+  it('says why the catalogue could not be loaded, and Retry reads it again', async () => {
+    getToolRegistry.mockRejectedValueOnce(Object.assign(
+      new Error('Request failed with status code 503'),
+      { response: { status: 503, data: { detail: 'The tool registry is being rebuilt.' } } },
+    ));
+    renderPage();
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The tool registry is being rebuilt.');
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('nmap')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('keeps its own sentence when the failure carries no reason', async () => {
+    getToolRegistry.mockRejectedValueOnce({});
+    renderPage();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load the tool catalogue.');
   });
 
   it('renders the registry rather than a built-in list', async () => {

@@ -214,7 +214,9 @@ const ProjectsTable: React.FC<{
                     so a neutral count never reads as loose, indented text. */}
                 <span className="flex min-w-0 flex-wrap justify-start gap-xxs" data-testid="waiting-chips">
                   {p.active_sessions > 0 && <Badge variant="info-outline" className="max-w-full">{plural(p.active_sessions, 'open agent session')}</Badge>}
-                  {p.open_tasks > 0 && <Badge variant="outline" className="max-w-full">{plural(p.open_tasks, 'open task')}</Badge>}
+                  {/* `open_tasks` is the server's name for host tests still to do
+                      (proposed or in progress, assigned or not): there are no "tasks". */}
+                  {p.open_tasks > 0 && <Badge variant="outline" className="max-w-full">{plural(p.open_tasks, 'test')} to do</Badge>}
                 </span>
                 {/* Provenance, not a judgment: an import date is never coloured. */}
                 <p className="mt-xxs text-muted-foreground">

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { GLOBAL } from '../lib/query';
 import { copyToClipboard as copyText } from '../utils/clipboard';
+import { parseCsv } from '../utils/csv';
 import {
   Search,
   Copy,
@@ -49,12 +50,11 @@ const loadDefaultCredentials = async (signal: AbortSignal): Promise<CredentialEn
   const response = await fetch('/DefaultCreds-Cheat-Sheet.csv', { signal });
   if (!response.ok) throw new Error('Failed to load credentials data');
   const csvText = await response.text();
-  const lines = csvText.split('\n');
+  // A real CSV read: a quoted password may hold a comma or a quote.
+  const rows = parseCsv(csvText);
   const parsed: CredentialEntry[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    const values = line.split(',');
+  for (let i = 1; i < rows.length; i++) {
+    const values = rows[i];
     if (values.length >= 3) {
       parsed.push({
         vendor: values[0].trim(),

@@ -482,6 +482,11 @@ const ProjectActivity: React.FC = () => {
   });
   const rows = historyQuery.data?.sessions ?? NO_SESSIONS;
   const total = historyQuery.data?.total ?? 0;
+  // A count that is not known is not 0: "…" until the history has answered,
+  // "—" when it could not be read (and nothing of it is on screen).
+  const historyCount = historyQuery.data
+    ? `${rows.length} of ${total} shown`
+    : historyQuery.isError ? '—' : '…';
 
   const summaryQuery = useQuery({
     queryKey: ['getAgentSessionSummary'],
@@ -654,7 +659,7 @@ const ProjectActivity: React.FC = () => {
           </>
         )}
       >
-        <ListFilterBar summary={`${rows.length} of ${total} shown`} className="mb-0">
+        <ListFilterBar summary={<span data-testid="history-count">{historyCount}</span>} className="mb-0">
           <div data-testid="runs-filters" className="contents">
             <Select
               value={kindFilter || 'all'}

@@ -25,8 +25,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, Trash2 } from 'lucide-react';
 import apiClient, {
-  addProjectMember, getProjects, removeProjectMember, updateProjectMemberRole,
+  addProjectMember, getProjectMembers, getProjects, removeProjectMember, updateProjectMemberRole,
 } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { GLOBAL, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
@@ -64,6 +65,10 @@ import {
   TooltipTrigger,
 } from './ui/tooltip';
 import { useConfirm } from '../hooks/useConfirm';
+import {
+  PROJECT_ROLES, allowMemberChange, countProjectAdmins, memberName, projectRoleLabel,
+  removalDecision, roleChangeDecision, type MemberChange,
+} from '../utils/projectMembers';
 
 interface MembershipRow {
   project_id: number;
@@ -86,13 +91,6 @@ interface ProjectSummary {
 
 /** Key name of `GET /users/{id}/memberships` (no barrel function). */
 const USER_MEMBERSHIPS = '/users/{id}/memberships';
-
-const PROJECT_ROLES: Array<{ value: string; label: string; help: string }> = [
-  { value: 'admin', label: 'Admin', help: 'Manage membership; everything analyst can do.' },
-  { value: 'analyst', label: 'Analyst', help: 'Read/write security data.' },
-  { value: 'auditor', label: 'Auditor', help: 'Read-only with audit-log visibility.' },
-  { value: 'viewer', label: 'Viewer', help: 'Read-only scans + hosts.' },
-];
 
 const roleVariant = (
   role: string,
@@ -119,6 +117,7 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
   onClose,
 }) => {
   const toast = useToast();
+  const { user: me } = useAuth();
   const [confirmEl, confirm] = useConfirm();
   const queryClient = useQueryClient();
   const [addPickerProjectId, setAddPickerProjectId] = useState<string>('');
@@ -185,9 +184,54 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to update role.')),
   });
-  const handleRoleChange = (row: MembershipRow, newRole: string) => {
+  // What is asked or refused first is `utils/projectMembers` — the same rules
+  // and words as Project settings and Portfolio's members sheet.  The server
+  // gives a global administrator nothing more than a project admin on these
+  // routes: the only project admin cannot be removed, and can be demoted.
+  // This dialog lists one person's projects, not a project's roster, so
+  // whether they are a project's ONLY admin is read when it matters — before
+  // an admin row is demoted or removed.  `null`: it could not be read (said).
+  const changeOf = async (row: MembershipRow): Promise<MemberChange | null> => {
+    if (!user) return null;
+    let adminCount = 0;
+    if (row.role === 'admin') {
+      try {
+        const roster = await queryClient.fetchQuery({
+          queryKey: [GLOBAL, 'getProjectMembers', row.project_id],
+          queryFn: () => getProjectMembers(row.project_id),
+        });
+        adminCount = countProjectAdmins(roster);
+      } catch (err) {
+        toast.error(formatApiError(err, `Could not check the admins of ${row.project_name}.`));
+        return null;
+      }
+    }
+    return {
+      name: memberName(user),
+      role: row.role,
+      projectName: row.project_name,
+      isSelf: user.id === me?.id,
+      adminCount,
+    };
+  };
+  const refuse = (reason: string) => { toast.error(reason); };
+  // The row whose roster is being read, so it cannot be acted on twice.
+  const [checkingProjectId, setCheckingProjectId] = useState<number | null>(null);
+  const checked = async (row: MembershipRow): Promise<MemberChange | null> => {
+    setCheckingProjectId(row.project_id);
+    try {
+      return await changeOf(row);
+    } finally {
+      setCheckingProjectId(null);
+    }
+  };
+
+  const handleRoleChange = async (row: MembershipRow, newRole: string) => {
     if (!user) return;
     if (row.role === newRole) return;
+    const change = await checked(row);
+    if (!change) return;
+    if (!(await allowMemberChange(roleChangeDecision(change, newRole), confirm, refuse))) return;
     changingRole.mutate({ row, role: newRole });
   };
 
@@ -220,28 +264,17 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
   };
 
   // One change at a time; the row it belongs to shows the spinner.
-  const savingProjectId: number | null = changingRole.isPending
+  const savingProjectId: number | null = checkingProjectId ?? (changingRole.isPending
     ? changingRole.variables.row.project_id
     : removing.isPending
       ? removing.variables.project_id
-      : adding.isPending ? adding.variables.projectId : null;
+      : adding.isPending ? adding.variables.projectId : null);
 
   const handleRemove = async (row: MembershipRow) => {
     if (!user) return;
-    // v4.57.0 (UX·4) — membership removal cuts the user's access to
-    // every host / scan / plan in that project until a project admin
-    // re-adds them.  Confirm before performing.  Promotions /
-    // role changes within the project don't go through this handler.
-    const ok = await confirm({
-      title: 'Remove user from project',
-      body:
-        `${user.username} will lose access to ${row.project_name} immediately. ` +
-        'They can be re-added later, but any active sessions tied to this project will be revoked.',
-      resourceName: `${user.username} → ${row.project_name}`,
-      severity: 'warning',
-      confirmLabel: 'Remove',
-    });
-    if (!ok) return;
+    const change = await checked(row);
+    if (!change) return;
+    if (!(await allowMemberChange(removalDecision(change), confirm, refuse))) return;
     removing.mutate(row);
   };
 
@@ -323,7 +356,7 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
                                     variant={roleVariant(row.role)}
                                     className="whitespace-nowrap"
                                   >
-                                    {row.role}
+                                    {projectRoleLabel(row.role)}
                                   </Badge>
                                 </TooltipTrigger>
                                 <TooltipContent>
@@ -334,7 +367,7 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
                             ) : (
                               <Select
                                 value={row.role}
-                                onValueChange={(v) => handleRoleChange(row, v)}
+                                onValueChange={(v) => void handleRoleChange(row, v)}
                                 disabled={isSaving}
                               >
                                 <SelectTrigger>

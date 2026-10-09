@@ -43,9 +43,13 @@ export default function OutOfScopeExport({ open, onClose }: OutOfScopeExportProp
   // Asked for by the button, so a mutation: its answer is the list shown, and
   // asking again starts from nothing.
   const generate = useMutation({
-    mutationFn: () => getOutOfScopeHostList(selectedFormat),
+    mutationFn: (format: ExportFormat) => getOutOfScopeHostList(format),
     onError: (err) => console.error('Error fetching out-of-scope hosts:', err),
   });
+  // The format the text on screen was MADE in — the request's own argument,
+  // not the picker, which the reader may have moved since: the count and the
+  // downloaded file's extension belong to the text (as in ScopeExport).
+  const outputFormat: ExportFormat = generate.variables ?? selectedFormat;
   const output = generate.data ?? '';
   const loading = generate.isPending;
   const error = queryErrorText(generate.error, 'Failed to fetch out-of-scope hosts');
@@ -59,7 +63,7 @@ export default function OutOfScopeExport({ open, onClose }: OutOfScopeExportProp
     }
   }, [open, reset]);
 
-  const generateOutput = () => generate.mutate();
+  const generateOutput = () => generate.mutate(selectedFormat);
 
   const copyToClipboard = async () => {
     // copyText (utils/clipboard) adds an execCommand fallback for non-secure
@@ -71,11 +75,11 @@ export default function OutOfScopeExport({ open, onClose }: OutOfScopeExportProp
   };
 
   const downloadOutput = () => {
-    downloadTextFile(`out_of_scope_hosts.${selectedFormat}`, output);
+    downloadTextFile(`out_of_scope_hosts.${outputFormat}`, output);
   };
 
   const entryCount = output
-    ? selectedFormat === 'json'
+    ? outputFormat === 'json'
       ? (() => {
           try {
             return JSON.parse(output).length;
@@ -83,7 +87,7 @@ export default function OutOfScopeExport({ open, onClose }: OutOfScopeExportProp
             return 0;
           }
         })()
-      : output.split('\n').filter((line) => line.trim()).length - (selectedFormat === 'csv' ? 1 : 0)
+      : output.split('\n').filter((line) => line.trim()).length - (outputFormat === 'csv' ? 1 : 0)
     : 0;
 
   return (
@@ -141,6 +145,7 @@ export default function OutOfScopeExport({ open, onClose }: OutOfScopeExportProp
             <div className="flex items-center justify-between">
               <h3 className="text-subheading">
                 {entryCount} host{entryCount === 1 ? '' : 's'}
+                {' · '}{EXPORT_FORMATS.find((f) => f.value === outputFormat)?.label ?? outputFormat}
               </h3>
               <div className="flex items-center gap-xxs">
                 <Tooltip>

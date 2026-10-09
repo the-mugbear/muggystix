@@ -161,7 +161,11 @@ const Profile: React.FC = () => {
     onSuccess: () => {
       setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
       setPasswordDialogOpen(false);
-      toast.success('Password changed.');
+      // The server has revoked every session of this account, this browser's
+      // included: say so and sign out (as ForceChangePassword does), instead
+      // of leaving the page on a token whose next request is a 401.
+      toast.success('Password changed. Sign in again with the new password.');
+      logout();
     },
     onError: (err) => setPasswordError(formatApiError(err, 'Failed to change password.')),
   });
@@ -455,7 +459,8 @@ const Profile: React.FC = () => {
           <DialogHeader>
             <DialogTitle>Change Password</DialogTitle>
             <DialogDescription>
-              Enter your current password and a new one. You'll stay signed in.
+              Enter your current password and a new one. Changing it signs you out everywhere, this
+              browser included, and ends your agent sessions; sign in again with the new password.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handlePasswordSubmit} className="flex flex-col gap-md">

@@ -34,7 +34,7 @@ import {
   getToolRegistry,
   ToolRegistryEntry,
 } from '../services/api';
-import { GLOBAL } from '../lib/query';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { cn } from '../utils/cn';
 import { safeHttpHref } from '../utils/safeHref';
 
@@ -165,7 +165,7 @@ const ToolReference: React.FC = () => {
   });
   const tools = useMemo(() => registry.data?.tools ?? [], [registry.data]);
   const loading = registry.isPending;
-  const error = registry.error ? 'Could not load the tool catalogue.' : null;
+  const error = queryErrorText(registry.error, 'Could not load the tool catalogue.');
 
   // Vetting is admin-only and deployment-wide (the catalogue is shared by every
   // project), so the affordance only exists for admins — the read view is
@@ -279,7 +279,12 @@ const ToolReference: React.FC = () => {
         </p>
       ) : error ? (
         <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
+          <AlertDescription className="break-words">
+            {error}{' '}
+            <button type="button" className="underline hover:no-underline" onClick={() => { void registry.refetch(); }}>
+              Retry
+            </button>
+          </AlertDescription>
         </Alert>
       ) : groupedEntries.length === 0 ? (
         <p className="text-metadata text-muted-foreground">

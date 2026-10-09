@@ -240,6 +240,30 @@ describe('AgentSessionDetail', () => {
     await waitFor(() => expect(getAgentSessionApiActivity.mock.calls.some((c) => c[0] === 80)).toBe(true));
   });
 
+  // Defect 1.17 — a failed Refresh replaced the whole page with the error.
+  it('keeps the session on screen when a Refresh fails, and says so with Retry', async () => {
+    const user = userEvent.setup();
+    renderAt('72');
+    expect(await screen.findByText('map the DMZ')).toBeInTheDocument();
+
+    getAgentSession.mockRejectedValue(new Error('upstream timed out'));
+    await user.click(screen.getByRole('button', { name: /Refresh agent session/i }));
+
+    const failure = await screen.findByTestId('session-refresh-error');
+    expect(failure).toHaveTextContent('Could not load this agent session. The session below is as it was last read.');
+    // The session that was read is still there, with its controls.
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Agent session #72');
+    expect(screen.getByText('map the DMZ')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^End$/ })).toBeInTheDocument();
+    expect(screen.getByTestId('session-tests')).toBeInTheDocument();
+
+    // Retry reads it again; a success clears the message.
+    getAgentSession.mockResolvedValue(row({ purpose: 'map the DMZ, again' }));
+    await user.click(within(failure).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('map the DMZ, again')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId('session-refresh-error')).not.toBeInTheDocument());
+  });
+
   it('reports a session that is not found', async () => {
     getAgentSession.mockRejectedValue(new Error('Agent session not found in this project'));
     renderAt('9999');

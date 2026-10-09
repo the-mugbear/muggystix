@@ -172,12 +172,18 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
 
   // A status or endpoint change answers with the finding (put in the list)
   // and appended to its history: the trail behind the history button is out
-  // of date, and is read again when it is next opened.
+  // of date, and is read again when it is next opened.  So is the host: its
+  // scanner rows carry the state of the finding that covers them
+  // (`finding_status`), which the inspector shows beside each.
+  const findingChanged = () => {
+    void invalidateReads(queryClient, 'getFindingHistory');
+    void queryClient.invalidateQueries({ queryKey: ['getHost', hostId] });
+  };
   const put = (updated: Finding) => {
     queryClient.setQueryData<Finding[]>(
       hostFindingsKey(hostId), (prev) => prev?.map((f) => (f.id === updated.id ? updated : f)),
     );
-    void invalidateReads(queryClient, 'getFindingHistory');
+    findingChanged();
   };
 
   const statusChange = useMutation({
@@ -212,9 +218,9 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
     onError: (err) => {
       toast.error(formatApiError(err, 'Failed to update this host’s state on the finding.'));
       // A partial multi-row update must not be left looking whole — nor its
-      // history, which the rows that did change were written to.
+      // history and the host, which the rows that did change were written to.
       void queryClient.invalidateQueries({ queryKey: hostFindingsKey(hostId) });
-      void invalidateReads(queryClient, 'getFindingHistory');
+      findingChanged();
     },
   });
   const handleEndpointStatus = (f: Finding, hostStatus: FindingHostStatus) => {

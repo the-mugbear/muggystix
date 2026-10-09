@@ -67,15 +67,20 @@ export default function ToolReadyOutput({
   // Asked for by the button, so a mutation: its answer is the output shown,
   // and asking again starts from nothing.
   const generate = useMutation({
-    mutationFn: () => getToolReadyOutput(selectedFormat, {
+    mutationFn: (format: string) => getToolReadyOutput(format, {
       ...filters,
       includePorts,
-      ...(NAME_AWARE_FORMATS.has(selectedFormat)
+      ...(NAME_AWARE_FORMATS.has(format)
         ? { namesScope: (inScopeNamesOnly ? 'in_scope' : 'all') as 'in_scope' | 'all' }
         : {}),
     }),
     onError: (err) => console.error('Error generating tool output:', err),
   });
+  // The format the text on screen was MADE in — the request's own argument,
+  // not the picker, which the reader may have moved since: the heading and the
+  // downloaded file's name and extension belong to the text (as in ScopeExport).
+  const outputFormat = generate.variables ?? selectedFormat;
+  const outputFormatInfo = TOOL_FORMATS.find((f) => f.value === outputFormat);
   const result: ToolReadyResult | null = generate.data ?? null;
   const loading = generate.isPending;
   const error = queryErrorText(generate.error, 'Failed to generate output');
@@ -91,7 +96,7 @@ export default function ToolReadyOutput({
     }
   }, [open, reset]);
 
-  const generateOutput = () => generate.mutate();
+  const generateOutput = () => generate.mutate(selectedFormat);
 
   const copyToClipboard = async () => {
     // copyText (utils/clipboard) adds an execCommand fallback for non-secure
@@ -103,13 +108,10 @@ export default function ToolReadyOutput({
   };
 
   const downloadOutput = () => {
-    const selectedFormatInfo = TOOL_FORMATS.find((f) => f.value === selectedFormat);
-    const extension = selectedFormat === 'json' ? 'json' : 'txt';
-    const filename = `${selectedFormatInfo?.label.toLowerCase() || selectedFormat}-targets.${extension}`;
+    const extension = outputFormat === 'json' ? 'json' : 'txt';
+    const filename = `${outputFormatInfo?.label.toLowerCase() || outputFormat}-targets.${extension}`;
     downloadTextFile(filename, output);
   };
-
-  const selectedFormatInfo = TOOL_FORMATS.find((f) => f.value === selectedFormat);
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
@@ -209,7 +211,7 @@ export default function ToolReadyOutput({
           <div className="space-y-xs">
             <div className="flex items-center justify-between">
               <h3 className="text-subheading">
-                Generated Output ({selectedFormatInfo?.label})
+                Generated Output ({outputFormatInfo?.label})
               </h3>
               <div className="flex items-center gap-xxs">
                 <Tooltip>

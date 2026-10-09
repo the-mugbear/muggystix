@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import WebhookDeliveries from '../../components/WebhookDeliveries';
 import type { WebhookDeliveryRow } from '../../services/api';
+import { formatTimestamp } from '../../utils/relativeTime';
 
 const listWebhookDeliveries = vi.fn();
 const retryWebhookDelivery = vi.fn();
@@ -53,6 +54,18 @@ describe('WebhookDeliveries', () => {
     render(<WebhookDeliveries />);
     expect(await screen.findByText('host_assigned')).toBeInTheDocument();
     expect(screen.getByText('Team Slack')).toBeInTheDocument();
+  });
+
+  // 1.10 — the section had its own `when()` on a bare `toLocaleString()`
+  // ("8/10/2026, 12:00:00 PM"); an absolute moment is `formatTimestamp`.
+  it('prints the created and delivered times in the one timestamp format', async () => {
+    listWebhookDeliveries.mockResolvedValue([row()]);
+    render(<WebhookDeliveries />);
+    const cell = (await screen.findByText('host_assigned')).closest('tr')!.querySelectorAll('td')[4];
+    expect(cell.textContent).toBe(
+      `${formatTimestamp('2026-08-10T12:00:00Z')}✓ ${formatTimestamp('2026-08-10T12:00:01Z')}`,
+    );
+    expect(cell.textContent).not.toContain(new Date('2026-08-10T12:00:00Z').toLocaleString());
   });
 
   it('surfaces the failure reason rather than just a red dot', async () => {

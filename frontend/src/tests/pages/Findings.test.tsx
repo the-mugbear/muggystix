@@ -309,6 +309,137 @@ describe('Findings — superseded responses', () => {
   });
 });
 
+// A change put its answer into the rows on screen and stopped there: a row
+// that left the filter was removed, but the count line, the severity bar and
+// the pagination went on describing the list of before until a reload.
+describe('Findings — a change is followed by the list as the server has it', () => {
+  const three = () => ({
+    items: [makeFinding(1), makeFinding(2), makeFinding(3)], total: 3, severity_counts: { high: 3 },
+  });
+  const two = () => ({ items: [makeFinding(2), makeFinding(3)], total: 2, severity_counts: { high: 2 } });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocked.listFindings.mockReset();       // an answer queued by one test is not the next one's
+    mocked.listProjectMembers.mockResolvedValue([]);
+    confirmMock.mockResolvedValue(true);
+  });
+
+  const chooseStatus = async (title: string, label: string) => {
+    fireEvent.keyDown(screen.getByRole('combobox', { name: `Change status for ${title}` }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('option', { name: label }));
+  };
+
+  it('a row that leaves the filter takes the count and the severity bar with it; the table and the cursor stay', async () => {
+    let answerReread!: (r: ReturnType<typeof two>) => void;
+    mocked.listFindings
+      .mockResolvedValueOnce(three())
+      .mockImplementationOnce(() => new Promise((resolve) => { answerReread = resolve; }));
+    mocked.setFindingStatus.mockResolvedValue(makeFinding(1, { status: 'confirmed' }));
+    renderFindings('/findings?status=open');
+    await screen.findByText('Finding 1');
+    expect(screen.getByRole('status')).toHaveTextContent('3 findings');
+    expect(screen.getByTitle('High: 3')).toBeInTheDocument();
+
+    // The cursor is put on Finding 2 (j, j), then Finding 1 is confirmed.
+    fireEvent.keyDown(document.body, { key: 'j' });
+    fireEvent.keyDown(document.body, { key: 'j' });
+    const cursorRow = () => document.querySelector('[data-list-cursor="true"]');
+    expect(cursorRow()).toHaveTextContent('Finding 2');
+    await chooseStatus('Finding 1', 'Confirmed');
+    await waitFor(() => expect(mocked.setFindingStatus).toHaveBeenCalledWith(1, 'confirmed', undefined));
+
+    // The list is asked for again; while it is, the rows are on screen as they were.
+    await waitFor(() => expect(mocked.listFindings).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('Finding 1')).toBeNull();
+    expect(screen.getByText('Finding 2')).toBeInTheDocument();
+    expect(screen.getByRole('status')).not.toHaveTextContent('Loading');
+    expect(screen.getByLabelText('Select Finding 2')).toBeEnabled();
+    expect(cursorRow()).toHaveTextContent('Finding 2');
+
+    answerReread(two());
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('2 findings'));
+    expect(screen.getByTitle('High: 2')).toBeInTheDocument();
+    expect(screen.queryByTitle('High: 3')).toBeNull();
+    expect(cursorRow()).toHaveTextContent('Finding 2');
+  });
+
+  it('a refused change reads nothing again', async () => {
+    mocked.listFindings.mockResolvedValue(three());
+    mocked.setFindingStatus.mockRejectedValue(new Error('refused'));
+    renderFindings('/findings?status=open');
+    await screen.findByText('Finding 1');
+    await chooseStatus('Finding 1', 'Confirmed');
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalled());
+    expect(mocked.listFindings).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Finding 1')).toBeInTheDocument();
+  });
+});
+
+// The rows were taken off the screen for every read — the table went blank
+// between two filters — although the previous rows were being kept.
+describe('Findings — while another filter loads', () => {
+  type Resp = { items: ReturnType<typeof makeFinding>[]; total: number; severity_counts: object };
+  let answer!: { resolve: (r: Resp) => void; reject: (e: unknown) => void };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocked.listProjectMembers.mockResolvedValue([]);
+    mocked.listFindings.mockImplementation((filters: { search?: string }) => (
+      filters.search
+        ? new Promise<Resp>((resolve, reject) => { answer = { resolve, reject }; })
+        : Promise.resolve({ items: [makeFinding(1), makeFinding(2)], total: 2, severity_counts: EMPTY_SEV_COUNTS })
+    ));
+  });
+
+  const startSearch = async () => {
+    renderFindings();
+    await screen.findByText('Finding 1');
+    searchFor('nine');
+    await waitFor(
+      () => expect(mocked.listFindings.mock.calls.some(([f]) => f.search === 'nine')).toBe(true),
+      { timeout: 3000 },
+    );
+  };
+
+  it('the previous rows stay, dimmed, and cannot be ticked or changed; then the new rows replace them', async () => {
+    await startSearch();
+
+    const row = screen.getByText('Finding 1').closest('tr')!;
+    expect(row.closest('tbody')).toHaveClass('opacity-50');
+    expect(screen.getByRole('region', { name: 'Findings' })).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('status')).toHaveTextContent('Loading findings…');
+    // A bulk action acts only on rows of the current filter.
+    expect(screen.getByLabelText('Select Finding 1')).toBeDisabled();
+    expect(screen.getByLabelText('Select all findings on this page')).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Change status for Finding 1' })).toBeDisabled();
+    fireEvent.click(screen.getByLabelText('Select Finding 1'));
+    expect(screen.queryByText(/1 selected/)).toBeNull();
+    // Nor does the keyboard open one.
+    fireEvent.keyDown(document.body, { key: 'j' });
+    expect(document.querySelector('[data-list-cursor="true"]')).toBeNull();
+
+    answer.resolve({ items: [makeFinding(9)], total: 1, severity_counts: EMPTY_SEV_COUNTS });
+    expect(await screen.findByText('Finding 9')).toBeInTheDocument();
+    expect(screen.queryByText('Finding 1')).toBeNull();
+    expect(screen.getByText('Finding 9').closest('tbody')).not.toHaveClass('opacity-50');
+    expect(screen.getByRole('region', { name: 'Findings' })).not.toHaveAttribute('aria-busy');
+    expect(screen.getByLabelText('Select Finding 9')).toBeEnabled();
+    expect(screen.getByRole('status')).toHaveTextContent('1 finding');
+  });
+
+  it('a new filter that FAILS says so, without the previous filter’s rows', async () => {
+    await startSearch();
+    answer.reject(new Error('boom'));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The findings could not be loaded. This is not an empty list.');
+    expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.queryByText('Finding 1')).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent('Findings could not be loaded');
+  });
+});
+
 describe('Findings — M1: row links carry the queue', () => {
   beforeEach(() => {
     vi.clearAllMocks();

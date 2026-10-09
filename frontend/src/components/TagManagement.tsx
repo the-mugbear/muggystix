@@ -21,9 +21,9 @@ import {
 import { useProject } from '../contexts/ProjectContext';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
+import { useProjectRole } from '../hooks/useProjectRole';
 import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
-import { projectRoleAtLeast } from '../utils/projectRole';
 import { safeFallback } from '../utils/uiStyles';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -35,10 +35,10 @@ const NO_TAGS: HostTagWithCount[] = [];
 
 const TagManagement: React.FC = () => {
   const { currentProject } = useProject();
-  // Renaming and deleting a tag need the project analyst (the list is every
-  // member's).  `my_role` is 'admin' for a global admin; a role that has not
-  // loaded leaves the decision to the server (style guide §40).
-  const canEdit = currentProject?.my_role === undefined || projectRoleAtLeast(currentProject.my_role, 'analyst');
+  // Renaming and deleting a tag need the project analyst on the server
+  // (`host_tags`: PATCH and DELETE); the list is every member's.  A role that
+  // has not loaded leaves the decision to the server (style guide §40).
+  const { canWrite: canEdit } = useProjectRole();
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
   const queryClient = useQueryClient();
@@ -57,10 +57,10 @@ const TagManagement: React.FC = () => {
   const loading = tagsQuery.isFetching;
   const error = loading ? null : queryErrorText(tagsQuery.error, 'Failed to load tags.');
   const reload = () => tagsQuery.refetch();
-  // A tag is read by the tag pickers, the Hosts filters and the host rows.
-  // Returned from a write's `onSuccess`, so the row stays busy until the list
-  // on screen is the new one.
-  const tagsChanged = () => invalidateReads(queryClient, 'listHostTags', 'getHostFilterData', 'getHosts');
+  // A tag is read by the tag pickers, the Hosts filters, the host rows and an
+  // open host (the inspector names the host's tags).  Returned from a write's
+  // `onSuccess`, so the row stays busy until the list on screen is the new one.
+  const tagsChanged = () => invalidateReads(queryClient, 'listHostTags', 'getHostFilterData', 'getHosts', 'getHost');
 
   const startEdit = (tag: HostTagWithCount) => {
     setEditingId(tag.id);

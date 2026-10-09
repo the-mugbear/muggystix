@@ -85,8 +85,10 @@ describe('Portfolio', () => {
     expect(within(table).getByText('3 findings: 1 critical · 2 high')).toBeInTheDocument();
     expect(within(table).getAllByText('3 of 10 reviewed')).toHaveLength(3);
     expect(within(table).getAllByText('2 in review · 5 not started')).toHaveLength(3);
-    // Open tasks are the host tests still to do (5.320.0); no blocked runs.
-    expect(within(table).getByText('4 open tasks')).toBeInTheDocument();
+    // `open_tasks` is the host tests still to do (5.320.0) and is said so —
+    // there are no "tasks" (5.351.1); no blocked runs.
+    expect(within(table).getByText('4 tests to do')).toBeInTheDocument();
+    expect(within(table).queryByText(/open task/)).toBeNull();
     expect(within(table).queryByText(/blocked run/)).toBeNull();
     expect(screen.queryByText('Blocked runs')).toBeNull();
     // 5.313.0 — plans are not approved: nothing counts them as waiting.
@@ -169,7 +171,7 @@ describe('Portfolio', () => {
     expect(within(table).getAllByText('No hosts imported yet.')).toHaveLength(1);
   });
 
-  it('every waiting item is the same outlined chip, open tasks included', async () => {
+  it('every waiting item is the same outlined chip, tests to do included', async () => {
     dashboardMock.mockReset().mockResolvedValue({
       summary,
       projects: [card({ id: 5, name: 'Busy', active_sessions: 1, open_tasks: 1 })],
@@ -177,7 +179,7 @@ describe('Portfolio', () => {
     render(<MemoryRouter><PortfolioDashboard /></MemoryRouter>);
     await screen.findByText('Busy');
     const chips = within(screen.getByTestId('waiting-chips')).getAllByText(/./);
-    expect(chips.map((c) => c.textContent)).toEqual(['1 open agent session', '1 open task']);
+    expect(chips.map((c) => c.textContent)).toEqual(['1 open agent session', '1 test to do']);
     for (const chip of chips) {
       expect(chip.className).toMatch(/\bborder-(warning|destructive|info|border)\b/);
       expect(chip.className).not.toMatch(/\bbg-/);

@@ -402,6 +402,36 @@ describe('Agent Sessions', () => {
     await screen.findByText(/No agent has reported its model or client yet/);
     expect(screen.queryByText('Activity by agent / model')).not.toBeInTheDocument();
   });
+
+  // Defect 1.7 — the history read "0 of 0 shown" before its first answer.
+  it('does not count the history before it has answered: "…", then the count', async () => {
+    let answer: (value: unknown) => void = () => undefined;
+    mockedApi.listAgentSessions.mockImplementation((filters: Record<string, unknown> = {}) => (
+      filters.kind === 'project' && filters.status === 'active'
+        ? Promise.resolve({ project_id: 1, sessions: [], total: 0 })
+        : new Promise((resolve) => { answer = resolve; })
+    ));
+    renderPage();
+
+    await screen.findByText('No agent session is live');
+    expect(screen.getByTestId('history-count')).toHaveTextContent('…');
+    expect(screen.queryByText(/0 of 0 shown/)).not.toBeInTheDocument();
+
+    answer({ project_id: 1, sessions: [legacyRun()], total: 7 });
+    await waitFor(() => expect(screen.getByTestId('history-count')).toHaveTextContent('1 of 7 shown'));
+  });
+
+  it('says "—", not a count, for a history that could not be read', async () => {
+    mockedApi.listAgentSessions.mockImplementation(async (filters: Record<string, unknown> = {}) => {
+      if (filters.kind === 'project' && filters.status === 'active') return { project_id: 1, sessions: [], total: 0 };
+      throw new Error('boom');
+    });
+    renderPage();
+
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(screen.getByTestId('history-count')).toHaveTextContent('—');
+    expect(screen.queryByText(/0 of 0 shown/)).not.toBeInTheDocument();
+  });
 });
 
 // B15 — the history's filters are in the URL.

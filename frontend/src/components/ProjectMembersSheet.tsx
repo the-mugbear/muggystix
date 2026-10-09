@@ -33,8 +33,12 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from './ui/select';
 import { useConfirm } from '../hooks/useConfirm';
+import { useAuth } from '../contexts/AuthContext';
+import {
+  PROJECT_ROLES, allowMemberChange, countProjectAdmins, memberName, projectRoleLabel,
+  removalDecision, roleChangeDecision, type MemberChange,
+} from '../utils/projectMembers';
 
-const ROLES = ['viewer', 'auditor', 'analyst', 'admin'] as const;
 type RoleTone = 'destructive' | 'success' | 'info' | 'muted';
 const roleTone = (role: string): RoleTone =>
   role === 'admin' ? 'destructive' : role === 'analyst' ? 'success' : role === 'auditor' ? 'info' : 'muted';
@@ -51,6 +55,7 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
   projectId, projectName, canManage, open, onOpenChange,
 }) => {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const [confirmDialog, confirm] = useConfirm();
   const [addUserId, setAddUserId] = React.useState<string>('');
   const [addRole, setAddRole] = React.useState<string>('viewer');
@@ -110,8 +115,19 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to update role.')),
   });
-  const handleRole = (m: ProjectMember, role: string) => {
+  // What is asked or refused first is `utils/projectMembers` — the same rules
+  // and words as Project settings and the administrator's dialog.
+  const changeOf = (m: ProjectMember): MemberChange => ({
+    name: memberName(m),
+    role: m.role,
+    projectName,
+    isSelf: m.user_id === user?.id,
+    adminCount: countProjectAdmins(members ?? []),
+  });
+  const refuse = (reason: string) => { toast.error(reason); };
+  const handleRole = async (m: ProjectMember, role: string) => {
     if (projectId == null || role === m.role) return;
+    if (!(await allowMemberChange(roleChangeDecision(changeOf(m), role), confirm, refuse))) return;
     changingRole.mutate({ userId: m.user_id, role });
   };
 
@@ -125,15 +141,7 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
   });
   const handleRemove = async (m: ProjectMember) => {
     if (projectId == null) return;
-    const who = m.full_name || m.username || 'this member';
-    const ok = await confirm({
-      title: 'Remove member?',
-      body: `Remove ${who} from ${projectName}? They lose access to this project.`,
-      resourceName: who,
-      severity: 'danger',
-      confirmLabel: 'Remove',
-    });
-    if (!ok) return;
+    if (!(await allowMemberChange(removalDecision(changeOf(m)), confirm, refuse))) return;
     removing.mutate(m.user_id);
   };
   const busyUserId = changingRole.isPending
@@ -189,8 +197,8 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {ROLES.map((r) => (
-                            <SelectItem key={r} value={r} className="capitalize">{r}</SelectItem>
+                          {PROJECT_ROLES.map((r) => (
+                            <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -220,21 +228,21 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
                         <div className="w-[8rem]">
                           <Select
                             value={m.role}
-                            onValueChange={(v) => handleRole(m, v)}
+                            onValueChange={(v) => void handleRole(m, v)}
                             disabled={busyUserId === m.user_id}
                           >
                             <SelectTrigger aria-label={`Role for ${m.full_name || m.username}`}>
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              {ROLES.map((r) => (
-                                <SelectItem key={r} value={r} className="capitalize">{r}</SelectItem>
+                              {PROJECT_ROLES.map((r) => (
+                                <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
                         </div>
                       ) : (
-                        <Badge variant={roleTone(m.role)} className="capitalize">{m.role}</Badge>
+                        <Badge variant={roleTone(m.role)}>{projectRoleLabel(m.role)}</Badge>
                       )}
                       {canManage && (
                         <Button

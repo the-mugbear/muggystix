@@ -22,9 +22,8 @@ const selectProject = vi.fn();
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({ selectProject, projects: [{ id: 5, name: 'Acme' }], currentProject: null }),
 }));
-vi.mock('../../contexts/ToastContext', () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn() }),
-}));
+const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 // 2FA has its own flow and tests; keep it out of this page's.
 vi.mock('../../components/TwoFactorCard', () => ({ default: () => null }));
 
@@ -107,6 +106,48 @@ describe('Profile', () => {
 
     await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
     expect(apiMock.delete).not.toHaveBeenCalled();
+  });
+
+  // 1.15 — `POST /auth/change-password` revokes EVERY session of the user,
+  // this browser's included (auth.py).  The dialog said "You'll stay signed
+  // in" and left the page on a dead token: the next request was a 401.
+  describe('changing the password', () => {
+    const fillAndSubmit = async () => {
+      renderPage();
+      fireEvent.click(screen.getByRole('button', { name: /Change Password/ }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.change(screen.getByLabelText('Current Password'), { target: { value: 'old-Passw0rd!' } });
+      fireEvent.change(screen.getByLabelText('New Password'), { target: { value: 'new-Passw0rd!42' } });
+      fireEvent.change(screen.getByLabelText('Confirm New Password'), { target: { value: 'new-Passw0rd!42' } });
+      fireEvent.submit(dialog.querySelector('form')!);
+    };
+
+    it('says beforehand that it signs the reader out, and never that they stay signed in', async () => {
+      renderPage();
+      fireEvent.click(screen.getByRole('button', { name: /Change Password/ }));
+      const dialog = await screen.findByRole('dialog');
+      expect(dialog).toHaveTextContent(
+        'Changing it signs you out everywhere, this browser included, and ends your agent sessions; sign in again with the new password.',
+      );
+      expect(dialog.textContent).not.toMatch(/stay signed in/);
+    });
+
+    it('signs this browser out after the change, and says why', async () => {
+      apiMock.post.mockResolvedValue({ data: {} });
+      await fillAndSubmit();
+      await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith('/auth/change-password', {
+        current_password: 'old-Passw0rd!', new_password: 'new-Passw0rd!42',
+      }));
+      await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
+      expect(toast.success).toHaveBeenCalledWith('Password changed. Sign in again with the new password.');
+    });
+
+    it('stays signed in, with the reason shown, when the change is refused', async () => {
+      apiMock.post.mockRejectedValue({ response: { status: 400, data: { detail: 'Invalid current password' } } });
+      await fillAndSubmit();
+      expect(await screen.findByText('Invalid current password')).toBeInTheDocument();
+      expect(logout).not.toHaveBeenCalled();
+    });
   });
 
   it('switches project in place from a project association', async () => {

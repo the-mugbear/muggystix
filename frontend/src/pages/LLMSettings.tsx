@@ -111,16 +111,21 @@ const LLMSettings: React.FC = () => {
   }, [error, toast]);
 
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editing, setEditing] = useState<LLMProviderEntry | null>(null);
+  // WHICH provider is being edited (null: a new one).  The provider itself is
+  // the list's row, read when it is shown — a copy taken when the dialog
+  // opened still said "a key is stored" after the key had been cleared.
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const isEdit = editingId != null;
+  const editing = isEdit ? providers.find((p) => p.id === editingId) ?? null : null;
   const [form, setForm] = useState<LLMProviderCreatePayload>(emptyForm);
 
   const openNew = () => {
-    setEditing(null);
+    setEditingId(null);
     setForm(emptyForm);
     setDialogOpen(true);
   };
   const openEdit = (p: LLMProviderEntry) => {
-    setEditing(p);
+    setEditingId(p.id);
     setForm({
       name: p.name,
       provider_type: p.provider_type,
@@ -135,8 +140,12 @@ const LLMSettings: React.FC = () => {
   const providersChanged = () => queryClient.invalidateQueries({ queryKey: [GLOBAL, 'listLLMProviders'] });
 
   const save = useMutation({
-    mutationFn: async (target: LLMProviderEntry | null): Promise<'updated' | 'added'> => {
-      if (target) {
+    // What is saved is what was handed over with the click, not whatever the
+    // form holds when the request is built.
+    mutationFn: async (
+      { id, form }: { id: number | null; form: LLMProviderCreatePayload },
+    ): Promise<'updated' | 'added'> => {
+      if (id != null) {
         const payload: any = {
           name: form.name,
           base_url: form.base_url || null,
@@ -144,7 +153,7 @@ const LLMSettings: React.FC = () => {
           is_default: form.is_default,
         };
         if (form.api_key) payload.api_key = form.api_key;
-        await updateLLMProvider(target.id, payload);
+        await updateLLMProvider(id, payload);
         return 'updated';
       }
       await createLLMProvider({
@@ -163,7 +172,7 @@ const LLMSettings: React.FC = () => {
     onError: (err) => toast.error(formatApiError(err, 'Failed to save provider.')),
   });
   const saving = save.isPending;
-  const handleSave = () => save.mutate(editing);
+  const handleSave = () => save.mutate({ id: editingId, form });
 
   // The edit dialog's "clear" beside a stored key: removed at once, not on Save.
   const clearKey = useMutation({
@@ -337,7 +346,7 @@ const LLMSettings: React.FC = () => {
       <Dialog open={dialogOpen} onOpenChange={(next) => !next && !saving && setDialogOpen(false)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editing ? 'Edit LLM Provider' : 'Add LLM Provider'}</DialogTitle>
+            <DialogTitle>{isEdit ? 'Edit LLM Provider' : 'Add LLM Provider'}</DialogTitle>
           </DialogHeader>
           <div className="flex flex-col gap-md">
             <div className="flex flex-col gap-xs">
@@ -358,7 +367,7 @@ const LLMSettings: React.FC = () => {
               <Select
                 value={form.provider_type}
                 onValueChange={(v) => setForm((f) => ({ ...f, provider_type: v }))}
-                disabled={!!editing}
+                disabled={isEdit}
               >
                 <SelectTrigger id="llm-type">
                   <SelectValue />
@@ -405,7 +414,7 @@ const LLMSettings: React.FC = () => {
             {needsKey && (
               <div className="flex flex-col gap-xs">
                 <Label htmlFor="llm-key">
-                  {editing ? 'API Key (leave blank to keep current)' : 'API Key'}
+                  {isEdit ? 'API Key (leave blank to keep current)' : 'API Key'}
                 </Label>
                 <PasswordInput
                   id="llm-key"

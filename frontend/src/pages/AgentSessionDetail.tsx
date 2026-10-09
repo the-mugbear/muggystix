@@ -132,7 +132,9 @@ const AgentSessionDetail: React.FC = () => {
       </div>
     );
   }
-  if (error || !row) {
+  // The whole page is the error only when there is no session to show: a
+  // Refresh that failed keeps the session that was read, and says so above it.
+  if (!row) {
     return (
       <div className="p-md md:p-lg">
         {back}
@@ -166,6 +168,15 @@ const AgentSessionDetail: React.FC = () => {
           <LastUpdated compact lastFetched={lastFetched} onRefresh={refresh} isLoading={loading} label="agent session" />
         </div>
       </div>
+
+      {error && (
+        <Alert variant="destructive" data-testid="session-refresh-error">
+          <AlertDescription className="flex flex-wrap items-center gap-sm">
+            <span className="min-w-0 break-words">{error} The session below is as it was last read.</span>
+            <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>Retry</Button>
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* Sections, not cards (§7): where it stands and what can be done. */}
       <section className="flex flex-col gap-sm border-b border-border pb-md">

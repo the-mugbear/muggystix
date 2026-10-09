@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Pencil, Plus, Trash2, X as CloseIcon } from 'lucide-react';
 
@@ -13,6 +13,7 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
+import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 
 import { Badge } from './ui/badge';
@@ -138,11 +139,8 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
   });
   const labels = catalogue.data ?? [];
   const loading = catalogue.isFetching;
-  const loadError = catalogue.error;
-  // Once per failed read (a reopened dialog reads again before it says so).
-  useEffect(() => {
-    if (open && loadError && !loading) toast.error(formatApiError(loadError, 'Failed to load subnet labels.'));
-  }, [open, loadError, loading, toast]);
+  // A failed read is said in the list with Retry — never shown as "No labels yet".
+  const loadError = queryErrorText(catalogue.error, 'Failed to load subnet labels.');
 
   // A change to a label changes the catalogue and the chips on the scope's
   // subnets (a rename shows there; a delete detaches server-side).
@@ -264,10 +262,20 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
 
         {/* Existing labels list */}
         <div className="max-h-96 space-y-xs overflow-y-auto">
+          {!loading && loadError && (
+            <p role="alert" className="break-words text-caption text-destructive">
+              {loadError}{' '}
+              <button type="button" className="text-info hover:underline" onClick={() => { void catalogue.refetch(); }}>
+                Retry
+              </button>
+            </p>
+          )}
           {loading ? (
             <p className="text-center text-metadata text-muted-foreground">Loading…</p>
           ) : labels.length === 0 ? (
-            <p className="text-center text-metadata text-muted-foreground">No labels yet — create one above.</p>
+            !loadError && (
+              <p className="text-center text-metadata text-muted-foreground">No labels yet — create one above.</p>
+            )
           ) : (
             labels.map((label) => {
               const isEditing = editingId === label.id;
@@ -367,11 +375,15 @@ export const SubnetLabelEditorPopover: React.FC<SubnetLabelEditorPopoverProps> =
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>(() => currentLabels.map((l) => String(l.id)));
 
-  // Re-sync when the popover (re)opens or the upstream label set
-  // changes externally (e.g. after a bulk-apply elsewhere).
-  useEffect(() => {
-    setSelected(currentLabels.map((l) => String(l.id)));
-  }, [currentLabels, open]);
+  // The selection starts from the subnet's labels each time the popover
+  // OPENS, and is the reader's from then on.  Not an effect on
+  // `currentLabels`: the owner may pass a new array on every render (a
+  // subnet without labels, a re-read of the scope), which would take back
+  // what the reader had just chosen.
+  const changeOpen = (next: boolean) => {
+    if (next) setSelected(currentLabels.map((l) => String(l.id)));
+    setOpen(next);
+  };
 
   const options = useMemo(
     () => catalogue.map((lbl) => ({
@@ -396,7 +408,7 @@ export const SubnetLabelEditorPopover: React.FC<SubnetLabelEditorPopoverProps> =
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={changeOpen}>
       <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent className="w-80 space-y-sm" align="start">
         <div className="flex items-center justify-between">

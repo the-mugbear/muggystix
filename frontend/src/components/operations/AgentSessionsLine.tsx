@@ -23,6 +23,9 @@ import { useAuth } from '../../contexts/AuthContext';
 import { SESSIONS_LIST_PATH, liveSessionsSummary, myActiveSessionFilters } from '../../utils/agentRuns';
 import { cn } from '../../utils/cn';
 
+/** How long an answer another reader on the page just got is used as it is. */
+const FRESH_FOR_MS = 30_000;
+
 const AgentSessionsLine: React.FC = () => {
   const { user } = useAuth();
   const userId = user?.id;
@@ -32,6 +35,12 @@ const AgentSessionsLine: React.FC = () => {
     // Without the reader's id there is no "mine" to ask for — and the
     // project-wide list is not this page's to show.
     enabled: userId != null,
+    // This query's own lifecycle (lib/query): the page already holds this
+    // read — `useMyAssistSessions`, the same key, mounted with Operations —
+    // and the line appears a moment later, once the page knows it has hosts.
+    // An answer that fresh is not asked for a second time because the line
+    // mounted; Refresh, and a session started, ended or resumed, still ask.
+    staleTime: FRESH_FOR_MS,
   });
   const rows = sessions.data?.sessions;
   // The sentence is as of the read it was made from (`dataUpdatedAt`).

@@ -1,88 +1,85 @@
 /**
- * Cross-project team roster (SOC-P4) — who's on which projects and their
- * current workload (assigned open tasks + hosts In Review), busiest-first.
+ * Cross-project team roster (SOC-P4) — who is on which projects and how much
+ * each person has on their plate, busiest first.
  *
- * Visual overhaul: a team summary band + a card per member (initials avatar,
- * the two workload metrics shown as relative bars so an overloaded teammate is
- * obvious at a glance, and their project/role chips). Replaces the bare table.
+ * The Posture layout (UI_STYLE_GUIDE §7): one strip of measures, then ONE
+ * section with a table, a row per member.  It was a card per member with an
+ * avatar and two meters, under a summary card.
+ *
+ * The two workload figures, as the server counts them (`/portfolio/team`,
+ * across the projects the reader can see, archived ones left out):
+ *   - `open_tasks` — host tests ASSIGNED to the person that are still to do
+ *     (proposed or in progress).  Work is host tests; there are no "tasks",
+ *     so the page says "Tests assigned".  `open_tasks` is the server's field
+ *     name, kept until `/portfolio/team` renames it.
+ *   - `hosts_in_review` — distinct hosts the person has In Review.
+ * Neither opens a list: no page lists another person's tests or reviews
+ * across projects.
  */
 import React, { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Loader2, RefreshCw, Users } from 'lucide-react';
+import { RefreshCw, Users } from 'lucide-react';
 
 import { TeamMember, getPortfolioTeam } from '../services/api';
 import { GLOBAL, queryErrorText } from '../lib/query';
+import { projectRoleLabel } from '../utils/projectMembers';
+import PostureEmpty from './posture/PostureEmpty';
+import PostureMeasure from './posture/PostureMeasure';
+import PostureSection from './posture/PostureSection';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Card, CardContent } from './ui/card';
+import { InfoTip } from './ui/info-tip';
 
 type Tone = 'default' | 'destructive' | 'success' | 'info' | 'muted' | 'warning' | 'outline';
 const roleTone = (role: string): Tone =>
   role === 'admin' ? 'destructive' : role === 'analyst' ? 'success' : role === 'auditor' ? 'info' : 'muted';
 
-// Deterministic, non-alarming avatar tint per member (never red).
-const AVATAR_HSL = ['var(--primary)', 'var(--info)', 'var(--success)', 'var(--warning)'];
-const avatarColor = (id: number) => `hsl(${AVATAR_HSL[id % AVATAR_HSL.length]})`;
-const initials = (name: string) =>
-  name.trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase() || '?';
+/** Project chips shown in a row before "+N". */
+const PROJECTS_SHOWN = 5;
 
-// A workload metric with a bar relative to the team max — so "who's slammed"
-// reads instantly without comparing raw numbers across cards.
-const WorkloadStat: React.FC<{
-  label: string; value: number; max: number; color: string; warn?: boolean;
-}> = ({ label, value, max, color, warn }) => (
-  <div className="rounded-control border border-border p-sm">
-    <div className="flex items-baseline justify-between gap-xs">
-      <span className="text-caption text-muted-foreground">{label}</span>
-      <span className={`text-body font-bold tabular-nums ${warn ? 'text-warning' : 'text-foreground'}`}>{value}</span>
-    </div>
-    <div className="mt-xs h-1.5 w-full overflow-hidden rounded-full bg-muted" aria-hidden>
-      <div className="h-full rounded-full"
-        style={{ width: `${max > 0 ? (value / max) * 100 : 0}%`, background: color }} />
-    </div>
-  </div>
-);
+const TESTS_INFO = 'Host tests assigned to the person that are still to do — proposed or in progress — across the projects you can see. Archived projects are left out.';
+const REVIEW_INFO = 'Hosts the person has In Review, each host once, across the projects you can see. Archived projects are left out.';
 
-const MemberCard: React.FC<{ m: TeamMember; maxTasks: number; maxReview: number }> = ({ m, maxTasks, maxReview }) => {
+const count = (n: number) => n.toLocaleString();
+const plural = (n: number, word: string) => `${count(n)} ${word}${n === 1 ? '' : 's'}`;
+
+const MemberRow: React.FC<{ m: TeamMember }> = ({ m }) => {
   const name = m.full_name || m.username;
-  const color = avatarColor(m.user_id);
+  const shown = m.projects.slice(0, PROJECTS_SHOWN);
+  const rest = m.projects.slice(PROJECTS_SHOWN);
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-sm p-md">
-        <div className="flex items-center gap-sm">
-          <span className="flex size-10 shrink-0 items-center justify-center rounded-full text-metadata font-bold text-white"
-            style={{ background: color }} aria-hidden>
-            {initials(name)}
-          </span>
-          <div className="min-w-0">
-            <p className="truncate font-semibold text-foreground">{name}</p>
-            <p className="truncate text-caption text-muted-foreground">
-              {m.full_name ? `@${m.username} · ` : ''}{m.project_count} project{m.project_count === 1 ? '' : 's'}
-            </p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-sm">
-          <WorkloadStat label="Open tasks" value={m.open_tasks} max={maxTasks}
-            color="hsl(var(--info))" warn={m.open_tasks >= 10} />
-          <WorkloadStat label="Hosts in review" value={m.hosts_in_review} max={maxReview}
-            color="hsl(var(--success))" />
-        </div>
-
-        {m.projects.length > 0 && (
-          <div className="flex flex-wrap gap-xxs">
-            {m.projects.slice(0, 5).map((pr) => (
-              <Badge key={pr.project_id} variant={roleTone(pr.role)} title={`${pr.role} on ${pr.project_name}`}>
+    <tr className="border-t border-border/60 align-top">
+      <td className="py-xs pr-md">
+        <span className="block truncate font-medium text-foreground" title={name}>{name}</span>
+        <span className="block truncate text-caption text-muted-foreground">
+          {m.full_name ? `@${m.username} · ` : ''}{plural(m.project_count, 'project')}
+        </span>
+      </td>
+      <td className="py-xs pr-md">
+        {m.projects.length === 0 ? (
+          <span className="text-muted-foreground">—</span>
+        ) : (
+          <span className="flex min-w-0 flex-wrap gap-xxs">
+            {shown.map((pr) => (
+              <Badge key={pr.project_id} variant={roleTone(pr.role)} className="max-w-full"
+                title={`${projectRoleLabel(pr.role)} on ${pr.project_name}`}>
                 <span className="max-w-[10rem] truncate">{pr.project_name}</span>
-                <span className="ml-xxs opacity-80">· {pr.role}</span>
+                <span className="ml-xxs shrink-0 opacity-80">· {projectRoleLabel(pr.role)}</span>
               </Badge>
             ))}
-            {m.projects.length > 5 && <Badge variant="outline">+{m.projects.length - 5}</Badge>}
-          </div>
+            {rest.length > 0 && (
+              <Badge variant="outline"
+                title={rest.map((pr) => `${pr.project_name} · ${projectRoleLabel(pr.role)}`).join(', ')}>
+                +{rest.length}
+              </Badge>
+            )}
+          </span>
         )}
-      </CardContent>
-    </Card>
+      </td>
+      <td className="py-xs pr-md text-right tabular-nums text-foreground">{count(m.open_tasks)}</td>
+      <td className="py-xs text-right tabular-nums text-foreground">{count(m.hosts_in_review)}</td>
+    </tr>
   );
 };
 
@@ -101,27 +98,19 @@ export const PortfolioTeam: React.FC = () => {
       || a.username.localeCompare(b.username)),
     [members],
   );
-  const maxTasks = Math.max(1, ...sorted.map((m) => m.open_tasks));
-  const maxReview = Math.max(1, ...sorted.map((m) => m.hosts_in_review));
   const totals = useMemo(() => sorted.reduce(
-    (acc, m) => ({ tasks: acc.tasks + m.open_tasks, review: acc.review + m.hosts_in_review }),
-    { tasks: 0, review: 0 },
+    (acc, m) => ({ tests: acc.tests + m.open_tasks, review: acc.review + m.hosts_in_review }),
+    { tests: 0, review: 0 },
   ), [sorted]);
 
   if (loading) {
-    return (
-      <Card>
-        <CardContent className="flex items-center gap-xs p-md text-metadata text-muted-foreground" role="status" aria-live="polite">
-          <Loader2 className="size-4 animate-spin" aria-hidden /> Loading team roster…
-        </CardContent>
-      </Card>
-    );
+    return <p role="status" aria-live="polite" className="text-metadata text-muted-foreground">Loading team roster…</p>;
   }
   if (error) {
     return (
       <Alert variant="destructive">
         <AlertDescription className="flex flex-wrap items-center justify-between gap-sm">
-          <span>{error}</span>
+          <span className="min-w-0 break-words">{error}</span>
           <Button size="sm" variant="outline" onClick={() => { void query.refetch(); }}>
             <RefreshCw className="size-4" aria-hidden /> Retry
           </Button>
@@ -131,40 +120,48 @@ export const PortfolioTeam: React.FC = () => {
   }
   if (sorted.length === 0) {
     return (
-      <Card>
-        <CardContent className="p-xl text-center">
-          <Users className="mx-auto mb-xs size-12 text-muted-foreground" aria-hidden />
-          <p className="text-metadata text-muted-foreground">No team members across your projects yet.</p>
-        </CardContent>
-      </Card>
+      <PostureEmpty Icon={Users} title="No team members">
+        Nobody is a member of any of your projects yet.
+      </PostureEmpty>
     );
   }
 
   return (
     <div className="space-y-md">
-      <Card>
-        <CardContent className="flex flex-wrap items-center gap-x-lg gap-y-sm p-md">
-          {[
-            { label: 'Members', value: sorted.length },
-            { label: 'Open tasks (team)', value: totals.tasks },
-            { label: 'Hosts in review (team)', value: totals.review },
-          ].map((s) => (
-            <div key={s.label}>
-              <p className="text-subheading font-bold tabular-nums text-foreground">{s.value.toLocaleString()}</p>
-              <p className="text-caption text-muted-foreground">{s.label}</p>
-            </div>
-          ))}
-          <p className="ml-auto max-w-xs text-caption text-muted-foreground">
-            Who's across your projects and their current load — assigned open tasks and hosts in review, busiest-first.
-          </p>
-        </CardContent>
-      </Card>
-
-      <div className="grid gap-md sm:grid-cols-2 xl:grid-cols-3">
-        {sorted.map((m) => (
-          <MemberCard key={m.user_id} m={m} maxTasks={maxTasks} maxReview={maxReview} />
-        ))}
+      <div data-testid="team-measures"
+        className="grid gap-md border-b border-border pb-md sm:grid-cols-3 sm:divide-x sm:divide-border">
+        <PostureMeasure label="Members" value={count(sorted.length)}
+          info="People who are a member of at least one project you can see. Archived projects are left out." />
+        <PostureMeasure label="Tests assigned" value={count(totals.tests)} info={TESTS_INFO} />
+        <PostureMeasure label="Hosts in review" value={count(totals.review)}
+          info={`${REVIEW_INFO} A host two people have in review counts for each of them.`} />
       </div>
+
+      <PostureSection title="Workload by member"
+        description="Busiest first: tests assigned plus hosts in review.">
+        {/* Fixed widths never sum to the content width: the table has a
+            minimum, inside its own scroller, and Projects takes what is left. */}
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[44rem] border-collapse text-metadata" style={{ tableLayout: 'fixed' }}
+            aria-label="Team workload">
+            <thead>
+              <tr className="text-left text-caption text-muted-foreground">
+                <th className="w-[28%] pb-xxs pr-md font-medium">Member</th>
+                <th className="pb-xxs pr-md font-medium">Projects</th>
+                <th className="w-36 pb-xxs pr-md text-right font-medium">
+                  <span className="inline-flex items-center gap-xxs">Tests assigned<InfoTip text={TESTS_INFO} label="What Tests assigned counts" /></span>
+                </th>
+                <th className="w-36 pb-xxs text-right font-medium">
+                  <span className="inline-flex items-center gap-xxs">Hosts in review<InfoTip text={REVIEW_INFO} label="What Hosts in review counts" /></span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((m) => <MemberRow key={m.user_id} m={m} />)}
+            </tbody>
+          </table>
+        </div>
+      </PostureSection>
     </div>
   );
 };

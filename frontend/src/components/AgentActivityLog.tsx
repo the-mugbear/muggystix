@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { useMutation } from '@tanstack/react-query';
 import { ChevronDown, ChevronUp, Loader2, RefreshCw } from 'lucide-react';
 import {
   AgentApiCallRow,
@@ -8,10 +8,11 @@ import {
 } from '../services/api';
 import { queryErrorText } from '../lib/query';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useListQuery } from '../hooks/useListQuery';
+import PostureSection from './posture/PostureSection';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Card, CardContent } from './ui/card';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import {
@@ -32,7 +33,9 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { formatTimestamp } from '../utils/relativeTime';
 
-const LIMIT = 100;
+/** Calls per page, and per "Show more". */
+const PAGE_SIZE = 100;
+const FAILED = 'Failed to load activity log.';
 
 interface AgentActivityLogProps {
   /** The feed is one agent session's, by the session id (5.328.0 — it was
@@ -259,8 +262,9 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
   // responsive, the API call lags 300ms behind the last keystroke.
   const debouncedTargetIp = useDebouncedValue(targetIpFilter, 300);
 
+  // The filters without the page: with the session they are the list's key.
   const filters = useMemo<AgentActivityFilters>(() => {
-    const f: AgentActivityFilters = { limit: LIMIT };
+    const f: AgentActivityFilters = {};
     if (methodFilter) f.method = methodFilter;
     if (debouncedTargetIp.trim()) f.target_ip = debouncedTargetIp.trim();
     if (mineOnly) f.mine = true;
@@ -270,51 +274,53 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
     return f;
   }, [methodFilter, debouncedTargetIp, mineOnly, statusPreset]);
 
-  const activity = useQuery({
-    queryKey: ['getAgentSessionApiActivity', sessionId, filters],
-    queryFn: () => getAgentSessionApiActivity(sessionId, filters),
-    // The calls of the previous filter stay on screen while the next loads.
-    placeholderData: keepPreviousData,
-  });
-  const rows = activity.data?.items ?? [];
-  const total = activity.data?.total ?? 0;
-  const loading = activity.isFetching;
+  // A page at a time, newest first, with "Show more": a session that made
+  // more calls than one page holds was cut at the first page, and nothing on
+  // the page reached the rest.
+  const list = useListQuery<AgentApiCallRow>(
+    'getAgentSessionApiActivity',
+    ({ offset, limit }) => getAgentSessionApiActivity(sessionId, { ...filters, limit, offset }),
+    [sessionId, filters],
+    { pageSize: PAGE_SIZE, errorMessage: FAILED },
+  );
+  // A failed "Show more" keeps the calls that are shown and says so under them.
+  const more = useMutation({ mutationFn: () => list.loadMore() });
+  const { rows, total, loading } = list;
   // Gone while the next read is in flight; it says so again if that fails too.
-  const error = loading ? null : queryErrorText(activity.error, 'Failed to load activity log.');
-  const refresh = () => { void activity.refetch(); };
+  const error = loading ? null : list.error;
+  const moreError = queryErrorText(more.error, 'Could not load more calls.');
+  const refresh = () => {
+    more.reset();
+    void list.reload();
+  };
 
   return (
-    <Card>
-      <CardContent className="p-md">
-        <div className="mb-sm flex flex-col gap-sm sm:flex-row sm:items-end">
-          <div className="min-w-0 flex-1">
-            <h3 className="truncate text-subheading font-semibold">{title}</h3>
-            <p className="text-metadata text-muted-foreground">
-              {subtitle ?? (
-                <>
-                  Every request the agent made to BlueStick for this{' '}
-                  session. Filter by host or IP to
-                  verify the agent queried what you expected.
-                </>
-              )}
-            </p>
-          </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={refresh}
-                disabled={loading}
-                aria-label={`Refresh ${title}`}
-              >
-                <RefreshCw className="size-4" aria-hidden />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Refresh</TooltipContent>
-          </Tooltip>
-        </div>
-
+    <PostureSection
+      title={title}
+      description={subtitle ?? (
+        <>
+          Every request the agent made to BlueStick for this{' '}
+          session. Filter by host or IP to
+          verify the agent queried what you expected.
+        </>
+      )}
+      actions={(
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={refresh}
+              disabled={loading}
+              aria-label={`Refresh ${title}`}
+            >
+              <RefreshCw className="size-4" aria-hidden />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Refresh</TooltipContent>
+        </Tooltip>
+      )}
+    >
         <div className="mb-sm flex flex-col gap-sm sm:flex-row sm:items-end">
           <div className="min-w-44">
             <Label htmlFor="agent-activity-status">Status</Label>
@@ -373,18 +379,24 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
               placeholder="10.0.0.5"
             />
           </div>
-          <span className="self-end text-metadata text-muted-foreground">
+          <span className="self-end text-metadata text-muted-foreground" data-testid="agent-activity-count">
+            {/* A count that is not known is not 0: nothing loaded says "—". */}
             {loading ? (
               <Loader2 className="size-4 animate-spin" aria-hidden />
+            ) : rows ? (
+              `Showing ${rows.length.toLocaleString()} of ${total.toLocaleString()}`
             ) : (
-              `${rows.length} of ${total} shown`
+              '—'
             )}
           </span>
         </div>
 
         {error && (
           <Alert variant="destructive" className="mb-sm">
-            <AlertDescription>{error}</AlertDescription>
+            <AlertDescription className="flex flex-wrap items-center gap-sm">
+              <span className="min-w-0 break-words">{error}</span>
+              <Button variant="outline" size="sm" onClick={refresh}>Retry</Button>
+            </AlertDescription>
           </Alert>
         )}
 
@@ -403,10 +415,18 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map((row) => (
+              {(rows ?? []).map((row) => (
                 <ExpandableRow key={row.id} row={row} />
               ))}
-              {!loading && rows.length === 0 && (
+              {!rows && loading && (
+                <TableRow>
+                  <TableCell colSpan={8} className="py-md text-metadata text-muted-foreground" role="status">
+                    Loading calls…
+                  </TableCell>
+                </TableRow>
+              )}
+              {/* Only an answer says "no calls": a failed read is the alert above. */}
+              {!loading && rows && rows.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={8} className="py-md text-metadata text-muted-foreground">
                     No matching API calls. The agent may not have started this{' '}
@@ -426,19 +446,19 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
           </Table>
         </div>
 
-        {total > rows.length && (
+        {moreError && <p role="alert" className="mt-sm text-caption text-destructive">{moreError}</p>}
+        {rows && total > rows.length && (
           <div className="mt-sm flex justify-center">
             <Button
               variant="outline"
-              onClick={refresh}
-              disabled={loading}
+              onClick={() => more.mutate()}
+              disabled={loading || list.loadingMore}
             >
-              {loading ? 'Loading…' : 'Refresh'}
+              {list.loadingMore ? 'Loading…' : `Show more (${(total - rows.length).toLocaleString()} left)`}
             </Button>
           </div>
         )}
-      </CardContent>
-    </Card>
+    </PostureSection>
   );
 };
 

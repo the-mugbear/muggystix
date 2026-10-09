@@ -124,3 +124,109 @@ describe('Scans — a failed Dismiss is said (R34)', () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Only the uploader may dismiss it.'));
   });
 });
+
+// The queue's actions had no busy state: the control stayed live while its
+// request was in flight, so a double click sent it twice.
+describe('Scans — a queue action is sent once', () => {
+  const held = () => {
+    let release!: (v?: unknown) => void;
+    const promise = new Promise((resolve) => { release = resolve; });
+    return { promise, release };
+  };
+  const button = (name: RegExp) => screen.getByRole('button', { name });
+
+  beforeEach(() => {
+    role.value = 'analyst';
+    api.getRecentIngestionJobs.mockResolvedValue([
+      job(1, 'failed', 'broken.xml'), job(4, 'failed', 'other.xml'), job(2, 'queued', 'waiting.xml'),
+    ]);
+  });
+
+  it.each([
+    ['Retry', /Retry failed ingestion for broken.xml/, 'retryIngestionJob', 1],
+    ['Dismiss', /Dismiss failed ingestion for broken.xml/, 'dismissIngestionJob', 1],
+    ['Discard', /Discard staged upload staged.xml/, 'discardIngestionJob', 3],
+  ] as const)('%s: a second click while the first is being answered sends nothing', async (_what, name, fn, id) => {
+    const answer = held();
+    api[fn].mockReturnValue(answer.promise);
+    renderPage();
+    await screen.findByText('broken.xml');
+    await screen.findByText('staged.xml');
+
+    fireEvent.click(button(name));
+    await waitFor(() => expect(button(name)).toBeDisabled());
+    fireEvent.click(button(name));
+    expect(api[fn]).toHaveBeenCalledTimes(1);
+    expect(api[fn]).toHaveBeenCalledWith(id);
+    // Only this job's controls: the rest of the queue is still the reader's.
+    expect(button(/Retry failed ingestion for other.xml/)).toBeEnabled();
+    expect(button(/Cancel ingestion for waiting.xml/)).toBeEnabled();
+
+    answer.release({});
+    await waitFor(() => expect(button(name)).toBeEnabled());
+  });
+
+  it('both actions of a failed job wait for the one in flight, and two jobs can be in flight at once', async () => {
+    const first = held();
+    const second = held();
+    api.retryIngestionJob.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    renderPage();
+    await screen.findByText('broken.xml');
+
+    fireEvent.click(button(/Retry failed ingestion for broken.xml/));
+    await waitFor(() => expect(button(/Retry failed ingestion for broken.xml/)).toBeDisabled());
+    expect(button(/Dismiss failed ingestion for broken.xml/)).toBeDisabled();
+
+    // A second job is retried while the first is unanswered: the first stays busy.
+    fireEvent.click(button(/Retry failed ingestion for other.xml/));
+    await waitFor(() => expect(button(/Retry failed ingestion for other.xml/)).toBeDisabled());
+    expect(button(/Retry failed ingestion for broken.xml/)).toBeDisabled();
+    fireEvent.click(button(/Retry failed ingestion for broken.xml/));
+    expect(api.retryIngestionJob).toHaveBeenCalledTimes(2);
+
+    // The answer alone does not free the row: the queue is read again first,
+    // because until then the row still shows the job as it was.
+    const queue = held();
+    api.getRecentIngestionJobs.mockReturnValueOnce(queue.promise);
+    first.release({});
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith('Re-queued for parsing'));
+    expect(button(/Retry failed ingestion for broken.xml/)).toBeDisabled();
+    queue.release([job(4, 'failed', 'other.xml'), job(1, 'queued', 'broken.xml')]);
+    expect(await screen.findByRole('button', { name: /Cancel ingestion for broken.xml/ })).toBeEnabled();
+    expect(button(/Retry failed ingestion for other.xml/)).toBeDisabled();
+    second.release({});
+  });
+
+  it('Cancel: confirmed once, sent once', async () => {
+    const answer = held();
+    api.cancelIngestionJob.mockReturnValue(answer.promise);
+    renderPage();
+    await screen.findByText('waiting.xml');
+
+    fireEvent.click(button(/Cancel ingestion for waiting.xml/));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel job' }));
+    await waitFor(() => expect(button(/Cancel ingestion for waiting.xml/)).toBeDisabled());
+    expect(api.cancelIngestionJob).toHaveBeenCalledTimes(1);
+    expect(button(/Retry failed ingestion for broken.xml/)).toBeEnabled();
+    answer.release({});
+    await waitFor(() => expect(button(/Cancel ingestion for waiting.xml/)).toBeEnabled());
+  });
+
+  it('"Discard N staged": the control and the staged rows’ own Discard wait for it', async () => {
+    const answer = held();
+    api.discardStagedJobs.mockReturnValue(answer.promise);
+    renderPage();
+    await screen.findByText('staged.xml');
+
+    fireEvent.click(button(/^Discard 1 staged$/));
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard 1' }));
+    await waitFor(() => expect(button(/^Discard 1 staged$/)).toBeDisabled());
+    expect(api.discardStagedJobs).toHaveBeenCalledTimes(1);
+    expect(api.discardStagedJobs).toHaveBeenCalledWith([3]);
+    expect(button(/Discard staged upload staged.xml/)).toBeDisabled();
+    expect(button(/Retry failed ingestion for broken.xml/)).toBeEnabled();
+
+    answer.release({ discarded: 1 });
+    await waitFor(() => expect(button(/^Discard 1 staged$/)).toBeEnabled());
+  });
+});

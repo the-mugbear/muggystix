@@ -36,7 +36,6 @@ import type {
   HostListResponse,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
-import { useAuth } from '../contexts/AuthContext';
 import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useProjectRole } from '../hooks/useProjectRole';
@@ -278,16 +277,14 @@ export default function Hosts() {
   const navigate = useNavigate();
   const location = useLocation();
   const toast = useToast();
-  const { hasPermission } = useAuth();
-  // Gates the "set as project default" affordance. Backend allows project
-  // admins too, but the per-project role isn't surfaced here, so we gate the
-  // UI on global admin (the common case) — non-admins simply don't see it.
-  const canSetProjectDefault = hasPermission('admin');
   // Both are AUDITOR on the server (`/hosts/tool-ready`, the whole `/reports`
   // router): a project viewer is not offered "Export targets" or "Download
   // inventory", and the download dialog — which reads `/reports/jobs` as it
   // opens — is never opened for one (style guide §40).
-  const { canExport } = useProjectRole();
+  // Setting and clearing the project default view are the PROJECT admin's on
+  // the server (`host_filter_views`: promote and `DELETE /default-view`), so
+  // both controls follow `isProjectAdmin` — true for a global admin as well.
+  const { canExport, isProjectAdmin: canSetProjectDefault } = useProjectRole();
   // Name of the project-default view currently applied (drives the banner);
   // null when none.  Persisted to session storage so the banner survives a page
   // refresh (the restored filters ARE the default) — without it an analyst on a

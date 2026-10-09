@@ -4,12 +4,13 @@
  * created by naming them on subnets (CSV col 4 / inline edit); this edits
  * their metadata, not the name.
  */
-import React, { useEffect } from 'react';
+import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
 import { listSites, updateSite, type Site } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
@@ -27,6 +28,11 @@ interface SiteManagerDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
+type SitePatch = Parameters<typeof updateSite>[1];
+
+/** What an "Expected hosts" box holds, as the count it would store. */
+const expectedHostsOf = (raw: string): number | null => (raw.trim() === '' ? null : Number(raw.trim()));
+
 export const SiteManagerDialog: React.FC<SiteManagerDialogProps> = ({ open, onOpenChange }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -38,22 +44,51 @@ export const SiteManagerDialog: React.FC<SiteManagerDialogProps> = ({ open, onOp
   });
   const sites = query.data ?? [];
   const loading = query.isFetching;
-  const loadError = query.error;
-  // Once per failed read (a reopened dialog reads again before it says so).
-  useEffect(() => {
-    if (open && loadError && !loading) toast.error(formatApiError(loadError, 'Failed to load sites.'));
-  }, [open, loadError, loading, toast]);
+  // A failed read is said here with Retry — never shown as "No sites yet".
+  const loadError = queryErrorText(query.error, 'Failed to load sites.');
+
+  // "Expected hosts" as the reader typed it, per site, over what is stored:
+  // a box shows the stored count unless it holds an edit, and an edit leaves
+  // only when the server has taken it (or it was typed back).
+  const [expectedEdits, setExpectedEdits] = useState<Record<number, string>>({});
+  // The sites whose last save of that edit failed: the row says so.
+  const [expectedFailed, setExpectedFailed] = useState<Record<number, true>>({});
+  const without = <T,>(map: Record<number, T>, id: number): Record<number, T> => {
+    const { [id]: _gone, ...rest } = map;
+    return rest;
+  };
 
   const update = useMutation({
-    mutationFn: ({ id, payload }: { id: number; payload: Parameters<typeof updateSite>[1] }) =>
-      updateSite(id, payload),
-    onSuccess: (updated) => {
+    mutationFn: ({ id, payload }: { id: number; payload: SitePatch }) => updateSite(id, payload),
+    onSuccess: (updated, { id, payload }) => {
       queryClient.setQueryData<Site[]>(['listSites'], (prev) =>
         prev?.map((s) => (s.id === updated.id ? updated : s)));
+      if ('expected_host_count' in payload) {
+        setExpectedEdits((prev) => without(prev, id));
+        setExpectedFailed((prev) => without(prev, id));
+      }
     },
-    onError: (e) => toast.error(formatApiError(e, 'Failed to update site.')),
+    onError: (e, { id, payload }) => {
+      if ('expected_host_count' in payload) setExpectedFailed((prev) => ({ ...prev, [id]: true }));
+      toast.error(formatApiError(e, 'Failed to update site.'));
+    },
   });
-  const patch = (id: number, payload: Parameters<typeof updateSite>[1]) => update.mutate({ id, payload });
+  const patch = (id: number, payload: SitePatch) => update.mutate({ id, payload });
+  const savingExpected = (id: number) =>
+    update.isPending && update.variables?.id === id && 'expected_host_count' in update.variables.payload;
+
+  const saveExpected = (site: Site) => {
+    const raw = expectedEdits[site.id];
+    if (raw === undefined) return;
+    const next = expectedHostsOf(raw);
+    if (next === site.expected_host_count) {
+      // Typed back to what is stored: nothing to save, nothing unsaved.
+      setExpectedEdits((prev) => without(prev, site.id));
+      setExpectedFailed((prev) => without(prev, site.id));
+      return;
+    }
+    patch(site.id, { expected_host_count: next });
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -66,14 +101,24 @@ export const SiteManagerDialog: React.FC<SiteManagerDialogProps> = ({ open, onOp
             detection). Sites are named by tagging subnets; this edits their metadata.
           </DialogDescription>
         </DialogHeader>
+        {!loading && loadError && (
+          <p role="alert" className="break-words text-caption text-destructive">
+            {loadError}{' '}
+            <button type="button" className="text-info hover:underline" onClick={() => { void query.refetch(); }}>
+              Retry
+            </button>
+          </p>
+        )}
         {loading ? (
           <div className="flex items-center gap-xs py-lg" role="status">
             <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden /> Loading…
           </div>
         ) : sites.length === 0 ? (
-          <p className="py-lg text-center text-metadata text-muted-foreground">
-            No sites yet. Add a site to a subnet (CSV column 4 or the Site cell) to create one.
-          </p>
+          !loadError && (
+            <p className="py-lg text-center text-metadata text-muted-foreground">
+              No sites yet. Add a site to a subnet (CSV column 4 or the Site cell) to create one.
+            </p>
+          )
         ) : (
           <div className="overflow-x-auto">
             <Table className="table-fixed">
@@ -111,16 +156,20 @@ export const SiteManagerDialog: React.FC<SiteManagerDialogProps> = ({ open, onOp
                       <Input
                         type="number"
                         min={0}
-                        defaultValue={s.expected_host_count ?? ''}
+                        value={expectedEdits[s.id] ?? String(s.expected_host_count ?? '')}
                         aria-label={`Expected host count for ${s.name}`}
-                        onBlur={(e) => {
-                          const raw = e.target.value.trim();
-                          const next = raw === '' ? null : Number(raw);
-                          if (next !== s.expected_host_count) {
-                            patch(s.id, { expected_host_count: next });
-                          }
-                        }}
+                        aria-invalid={expectedFailed[s.id] ? true : undefined}
+                        onChange={(e) => setExpectedEdits((prev) => ({ ...prev, [s.id]: e.target.value }))}
+                        onBlur={() => saveExpected(s)}
                       />
+                      {expectedFailed[s.id] && !savingExpected(s.id) && (
+                        <p role="alert" className="mt-xxs text-caption text-destructive">
+                          Not saved.{' '}
+                          <button type="button" className="text-info hover:underline" onClick={() => saveExpected(s)}>
+                            Save
+                          </button>
+                        </p>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}

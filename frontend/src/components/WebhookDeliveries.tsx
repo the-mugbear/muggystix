@@ -22,6 +22,7 @@ import { useProject } from '../contexts/ProjectContext';
 import { useToast } from '../contexts/ToastContext';
 import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
+import { formatTimestamp } from '../utils/relativeTime';
 import { safeFallback } from '../utils/uiStyles';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -59,13 +60,6 @@ function statusBadge(status: string) {
       <Clock className="size-3" aria-hidden /> {s || 'unknown'}
     </Badge>
   );
-}
-
-function when(value?: string | null): string {
-  if (!value) return '—';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleString();
 }
 
 const WebhookDeliveries: React.FC = () => {
@@ -206,10 +200,10 @@ const WebhookDeliveries: React.FC = () => {
                         ) : null}
                       </td>
                       <td className="py-xs pr-xs whitespace-nowrap text-muted-foreground">
-                        {when(r.created_at)}
+                        {formatTimestamp(r.created_at)}
                         {r.delivered_at && (
                           <span className="block text-caption text-success">
-                            ✓ {when(r.delivered_at)}
+                            ✓ {formatTimestamp(r.delivered_at)}
                           </span>
                         )}
                       </td>

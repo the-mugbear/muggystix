@@ -1,5 +1,7 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+import { formatTimestamp } from '../../utils/relativeTime';
 
 vi.mock('../../services/api', () => ({
   listAuditLogs: vi.fn(),
@@ -137,5 +139,58 @@ describe('AuditLogViewer', () => {
     expect(await screen.findByText('1–20 of 101')).toBeInTheDocument();
     expect(AUDIT_PAGE_SIZE).toBe(20);
     expect(mocked.listAuditLogs).toHaveBeenCalledWith(expect.objectContaining({ skip: 0, limit: 20 }));
+  });
+
+  // 1.10 — the viewer had its own `when()` on a bare `toLocaleString()`
+  // ("9/22/2026, 8:49:37 PM"); an absolute moment is `formatTimestamp`.
+  it('prints when an event happened in the one timestamp format', async () => {
+    render(<AuditLogViewer />);
+    const table = await screen.findByRole('table');
+    const cell = within(within(table).getAllByRole('row')[1]).getAllByRole('cell')[0];
+    expect(cell.textContent).toBe(formatTimestamp('2026-09-22T20:49:37Z'));
+    expect(cell.textContent).not.toBe(new Date('2026-09-22T20:49:37Z').toLocaleString());
+  });
+
+  it('shows a dash for an event with no usable time', async () => {
+    mocked.listAuditLogs.mockResolvedValue({
+      logs: [row({ created_at: null }), row({ id: 2, created_at: 'not a date' })], total: 2, skip: 0, limit: AUDIT_PAGE_SIZE,
+    });
+    render(<AuditLogViewer />);
+    const rows = within(await screen.findByRole('table')).getAllByRole('row').slice(1);
+    expect(rows.map((r) => within(r).getAllByRole('cell')[0].textContent)).toEqual(['—', '—']);
+  });
+
+  // 1.10 — the resource-type box asked the server once per keystroke.
+  it('asks once for a typed resource type, after the typing stops', async () => {
+    render(<AuditLogViewer />);
+    await screen.findByRole('table');
+    mocked.listAuditLogs.mockClear();
+
+    const box = screen.getByLabelText('Resource type');
+    for (const typed of ['u', 'us', 'use', 'user']) fireEvent.change(box, { target: { value: typed } });
+    // The box shows what is typed at once; the request waits.
+    expect(box).toHaveValue('user');
+    expect(mocked.listAuditLogs).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(mocked.listAuditLogs).toHaveBeenCalledWith(
+      expect.objectContaining({ resource_type: 'user', skip: 0 }),
+    ));
+    expect(mocked.listAuditLogs).toHaveBeenCalledTimes(1);
+  });
+
+  it('a new resource type starts from the first page, in one request', async () => {
+    render(<AuditLogViewer />);
+    await screen.findByText('1–20 of 101');
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(mocked.listAuditLogs).toHaveBeenCalledWith(expect.objectContaining({ skip: 20 })));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+    mocked.listAuditLogs.mockClear();
+
+    fireEvent.change(screen.getByLabelText('Resource type'), { target: { value: 'user' } });
+    await waitFor(() => expect(mocked.listAuditLogs).toHaveBeenCalledWith(
+      expect.objectContaining({ resource_type: 'user', skip: 0 }),
+    ));
+    // Not also "page 1 of the old filter" on the way.
+    expect(mocked.listAuditLogs).toHaveBeenCalledTimes(1);
   });
 });

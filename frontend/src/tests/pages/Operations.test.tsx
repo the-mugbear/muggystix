@@ -1090,15 +1090,18 @@ describe('Operations page', () => {
   it('page Refresh also refetches what fetches for itself: the list on screen and the agent-sessions line', async () => {
     withWork();
     renderPage('/operations?tab=hosts');
-    // On mount: the Start-Agent-Session badge's hook and the line, one each
-    // (the same filters since 5.330.0).  Refresh re-asks for the line only.
+    // On mount: the Start-Agent-Session badge's hook and the line ask the
+    // same question (the same filters since 5.330.0), so it is asked ONCE —
+    // the line, which appears after the page's counts, uses the answer the
+    // hook just got (defect 1.20: it was asked twice).  Refresh asks once more.
     const sessionReads = () => mockedApi.listAgentSessions.mock.calls.length;
-    await waitFor(() => expect(sessionReads()).toBe(2));
     await screen.findByRole('link', { name: '10.9.0.1' });
+    await screen.findByText('Your agent sessions');
     const refresh = await screen.findByRole('button', { name: 'Refresh Operations' });
     await waitFor(() => expect(refresh).not.toBeDisabled());
+    expect(sessionReads()).toBe(1);
     fireEvent.click(refresh);
-    await waitFor(() => expect(sessionReads()).toBe(3));
+    await waitFor(() => expect(sessionReads()).toBe(2));
     await waitFor(() => expect(mockedApi.getWorkbench).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(mockedApi.getMyReviewHostsPage).toHaveBeenCalledTimes(2));
     // Still only the selected tab's rows.

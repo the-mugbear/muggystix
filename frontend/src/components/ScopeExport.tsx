@@ -50,6 +50,11 @@ export default function ScopeExport({ open, onClose, scopeId, scopeName }: Scope
     onError: (err) => console.error('Error fetching scope hosts:', err),
   });
   const output = generate.data ?? '';
+  // The format the text on screen was MADE in — the request's own argument,
+  // not the picker, which the reader may have moved since.  The count, the
+  // heading and the file's extension follow it.
+  const outputFormat: ExportFormat = generate.variables ?? selectedFormat;
+  const outputFormatLabel = EXPORT_FORMATS.find((f) => f.value === outputFormat)?.label ?? outputFormat;
   const loading = generate.isPending;
   const error = queryErrorText(generate.error, 'Failed to fetch scope hosts');
   const generateOutput = () => generate.mutate(selectedFormat);
@@ -73,11 +78,11 @@ export default function ScopeExport({ open, onClose, scopeId, scopeName }: Scope
 
   const downloadOutput = () => {
     const safeName = scopeName.replace(/\s+/g, '_').replace(/[/\\]/g, '-').slice(0, 40);
-    downloadTextFile(`${safeName}_hosts.${selectedFormat}`, output);
+    downloadTextFile(`${safeName}_hosts.${outputFormat}`, output);
   };
 
   const entryCount = output
-    ? selectedFormat === 'json'
+    ? outputFormat === 'json'
       ? (() => {
           try {
             return JSON.parse(output).length;
@@ -85,7 +90,7 @@ export default function ScopeExport({ open, onClose, scopeId, scopeName }: Scope
             return 0;
           }
         })()
-      : output.split('\n').filter((line) => line.trim()).length - (selectedFormat === 'csv' ? 1 : 0)
+      : output.split('\n').filter((line) => line.trim()).length - (outputFormat === 'csv' ? 1 : 0)
     : 0;
 
   return (
@@ -141,7 +146,7 @@ export default function ScopeExport({ open, onClose, scopeId, scopeName }: Scope
           <div className="space-y-xs">
             <div className="flex items-center justify-between">
               <h3 className="text-subheading">
-                {entryCount} host{entryCount === 1 ? '' : 's'}
+                {entryCount} host{entryCount === 1 ? '' : 's'} · {outputFormatLabel}
               </h3>
               <div className="flex items-center gap-xxs">
                 <Tooltip>

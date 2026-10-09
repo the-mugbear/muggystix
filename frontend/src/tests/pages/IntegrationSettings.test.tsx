@@ -6,7 +6,7 @@
  * project).  Adding, editing and deleting need the GLOBAL administrator; the
  * page does not render those controls for anyone else.
  */
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TooltipProvider } from '../../components/ui/tooltip';
@@ -74,5 +74,63 @@ describe('Scanner Integrations — a member reads, a global admin changes', () =
     expect(screen.getByRole('button', { name: /Add Integration/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Edit integration Client X Nessus' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete integration Client X Nessus' })).toBeInTheDocument();
+  });
+});
+
+// 1.13 — the edit dialog kept its own copy of the row from the moment it was
+// opened: after "Remove the stored primary secret" it still offered to remove
+// a secret that was gone.
+describe('Scanner Integrations — the edit dialog shows the integration as it is now', () => {
+  const CLEAR = 'Remove the stored primary secret';
+  const CLEAR2 = 'Remove the stored secondary secret';
+
+  beforeEach(() => {
+    account.role = 'admin';
+    mocked.listIntegrations.mockResolvedValue([{ ...entry, has_secret2: true }]);
+    mocked.updateIntegration.mockResolvedValue(entry);
+  });
+
+  const openEdit = async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit integration Client X Nessus' }));
+    return screen.findByRole('dialog');
+  };
+
+  it('stops offering to remove a stored secret once it has been removed', async () => {
+    await openEdit();
+    expect(screen.getByRole('button', { name: CLEAR2 })).toBeInTheDocument();
+    // The server's next answer: the primary secret is gone, the second stays.
+    mocked.listIntegrations.mockResolvedValue([{ ...entry, has_secret: false, has_secret2: true }]);
+    fireEvent.click(screen.getByRole('button', { name: CLEAR }));
+
+    await waitFor(() => expect(mocked.updateIntegration).toHaveBeenCalledWith(4, { clear_secret: true }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: CLEAR })).toBeNull());
+    expect(screen.getByRole('button', { name: CLEAR2 })).toBeInTheDocument();
+    expect(screen.getByText('Edit Integration')).toBeInTheDocument();
+    expect(screen.getByLabelText('Name')).toHaveValue('Client X Nessus');
+  });
+
+  it('saves the form as it stands, to the integration being edited', async () => {
+    await openEdit();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } });
+    fireEvent.change(screen.getByLabelText(/Max hosts per scan/), { target: { value: '512' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocked.updateIntegration).toHaveBeenCalledWith(4, {
+      name: 'Renamed', base_url: 'https://nessus.example:8834', is_active: true,
+      extra_config: { max_hosts_per_scan: 512 },
+    }));
+    expect(mocked.createIntegration).not.toHaveBeenCalled();
+  });
+
+  // The row can go while its dialog is open: Save must not become "add".
+  it('an edit never becomes an add when the integration has gone from the list', async () => {
+    await openEdit();
+    mocked.listIntegrations.mockResolvedValue([]);
+    fireEvent.click(screen.getByRole('button', { name: CLEAR }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: CLEAR })).toBeNull());
+    expect(screen.getByText('Edit Integration')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocked.updateIntegration).toHaveBeenCalledWith(4, expect.objectContaining({ name: 'Client X Nessus' })));
+    expect(mocked.createIntegration).not.toHaveBeenCalled();
   });
 });

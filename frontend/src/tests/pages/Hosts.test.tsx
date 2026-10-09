@@ -563,6 +563,55 @@ describe('Hosts', () => {
     expect(screen.getByRole('button', { name: 'View: Critical observations' })).toBeInTheDocument();
   });
 
+  // Setting and clearing the project default are the PROJECT admin's on the
+  // server (`require_project_role(ADMIN)` on both routes).  The controls were
+  // gated on the ACCOUNT admin, so a project admin was never offered them.
+  describe('the project default is the project admin’s to set and clear', () => {
+    afterEach(() => { viewer.projectRole = undefined; });
+
+    const mine = {
+      id: 4, name: 'Web tier', filter_json: { filters: { ports: ['443'] } },
+      is_project_default: false, created_at: '2026-09-01T00:00:00Z', updated_at: null,
+    };
+    const openManage = async (user: ReturnType<typeof userEvent.setup>) => {
+      await screen.findAllByText('10.0.0.5');
+      await user.click(screen.getByRole('button', { name: /^View:/ }));
+      await user.click(await screen.findByRole('menuitem', { name: /Manage saved views/ }));
+      return screen.findByRole('dialog', { name: 'Saved views' });
+    };
+
+    it('a project admin who is not a global admin sets it, then clears it', async () => {
+      const user = userEvent.setup({ skipHover: true });
+      viewer.projectRole = 'admin';
+      routerState.search = '?state=up';
+      mockedApi.listHostFilterViews.mockResolvedValue([mine]);
+      mockedApi.promoteProjectDefaultView.mockResolvedValue({ ...mine, is_project_default: true });
+      renderHosts();
+      const dialog = await openManage(user);
+
+      expect(within(dialog).getByText(/make one the project default/)).toBeInTheDocument();
+      await user.click(within(dialog).getByRole('button', { name: 'Set "Web tier" as project default' }));
+      await waitFor(() => expect(mockedApi.promoteProjectDefaultView).toHaveBeenCalledWith(4));
+
+      await user.click(await within(dialog).findByRole('button', { name: 'Clear project default' }));
+      await waitFor(() => expect(mockedApi.clearProjectDefaultView).toHaveBeenCalledTimes(1));
+    });
+
+    it('an analyst is offered neither, and is told which view is the default', async () => {
+      const user = userEvent.setup({ skipHover: true });
+      viewer.projectRole = 'analyst';
+      routerState.search = '?state=up';
+      mockedApi.listHostFilterViews.mockResolvedValue([{ ...mine, is_project_default: true }]);
+      renderHosts();
+      const dialog = await openManage(user);
+
+      expect(within(dialog).getByText('Delete a view you no longer need.')).toBeInTheDocument();
+      expect(within(dialog).getByText('project default')).toBeInTheDocument();
+      expect(within(dialog).queryByRole('button', { name: /project default/i })).toBeNull();
+      expect(within(dialog).getByRole('button', { name: 'Delete saved view Web tier' })).toBeInTheDocument();
+    });
+  });
+
   // The project default is usually a colleague's view — not in THIS user's
   // saved list — so once the filters were cleared nothing led back to it.
   it('the project default stays reachable after the filters are cleared', async () => {

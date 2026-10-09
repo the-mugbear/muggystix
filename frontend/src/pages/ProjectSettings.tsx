@@ -30,6 +30,10 @@ import { useToast } from '../contexts/ToastContext';
 import { GLOBAL, invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
+import {
+  PROJECT_ROLES, allowMemberChange, countProjectAdmins, memberName, projectRoleLabel,
+  removalDecision, roleChangeDecision, type MemberChange,
+} from '../utils/projectMembers';
 import { safeFallback } from '../utils/uiStyles';
 import PostureSection from '../components/posture/PostureSection';
 import WebhookSettings from '../components/WebhookSettings';
@@ -65,13 +69,7 @@ interface DirectoryEntry {
   full_name: string | null;
 }
 
-export const PROJECT_ROLES: Array<{ value: string; label: string; can: string }> = [
-  { value: 'admin', label: 'Admin', can: 'project settings and members, plus everything below' },
-  { value: 'analyst', label: 'Analyst', can: 'uploads, scopes, triage, host tests, report drafts' },
-  { value: 'auditor', label: 'Auditor', can: 'read everything, exports and reports' },
-  { value: 'viewer', label: 'Viewer', can: 'read the inventory' },
-];
-const roleLabel = (r: string) => PROJECT_ROLES.find((x) => x.value === r)?.label ?? r;
+const roleLabel = projectRoleLabel;
 
 /** The API's `max_length` for a project name (ProjectCreate / ProjectUpdate). */
 export const PROJECT_NAME_MAX = 100;
@@ -83,7 +81,6 @@ export const PROJECT_STATUSES = [
 ];
 
 const day = (s?: string | null) => formatDate(s);
-const memberName = (m: { full_name: string | null; username: string }) => m.full_name || m.username;
 
 interface Details { name: string; description: string; status: string; start: string; end: string }
 
@@ -252,34 +249,26 @@ const ProjectSettings: React.FC = () => {
     onError: (err) => toast.error(formatApiError(err, 'Could not delete the project.')),
   });
 
-  const admins = (members ?? []).filter((m) => m.role === 'admin');
+  // What is asked or refused first is `utils/projectMembers` — the same rules
+  // and words as Portfolio's members sheet and the administrator's dialog.
+  const changeOf = (m: Member, projectName: string): MemberChange => ({
+    name: memberName(m),
+    role: m.role,
+    projectName,
+    isSelf: m.user_id === user?.id,
+    adminCount: countProjectAdmins(members ?? []),
+  });
+  const refuse = (reason: string) => { toast.error(reason); };
   const changeRole = async (m: Member, role: string) => {
     if (!currentProject || role === m.role) return;
-    const self = m.user_id === user?.id;
-    const lastAdmin = m.role === 'admin' && admins.length === 1;
-    if (self || lastAdmin) {
-      const ok = await confirm({
-        title: self ? 'Change your own role?' : `${memberName(m)} is the only project admin`,
-        body: self
-          ? `You will be a ${roleLabel(role)} on this project. ${role === 'admin' ? '' : 'Unless you are a global administrator, you will no longer be able to change settings or members here.'}`
-          : `Making them a ${roleLabel(role)} leaves the project with no project admin; only a global administrator could then manage its members.`,
-        severity: 'danger',
-        confirmLabel: `Make ${self ? 'me' : 'them'} ${roleLabel(role)}`,
-      });
-      if (!ok) return;
-    }
-    roleChange.mutate({ projectId: currentProject.id, member: m, role, self });
+    const change = changeOf(m, currentProject.name);
+    if (!(await allowMemberChange(roleChangeDecision(change, role), confirm, refuse))) return;
+    roleChange.mutate({ projectId: currentProject.id, member: m, role, self: change.isSelf });
   };
 
   const removeMember = async (m: Member) => {
     if (!currentProject) return;
-    const ok = await confirm({
-      title: `Remove ${memberName(m)}?`,
-      body: `${memberName(m)} loses access to ${currentProject.name}. Their notes, findings and reviews stay. They can be added again later.`,
-      severity: 'danger',
-      confirmLabel: 'Remove',
-    });
-    if (!ok) return;
+    if (!(await allowMemberChange(removalDecision(changeOf(m, currentProject.name)), confirm, refuse))) return;
     removal.mutate({ projectId: currentProject.id, member: m });
   };
 

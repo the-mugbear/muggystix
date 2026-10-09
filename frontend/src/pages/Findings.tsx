@@ -33,7 +33,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
-import { queryErrorText } from '../lib/query';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import { useListCursor } from '../hooks/useListCursor';
 import { SeverityBadge } from '../components/ui/SeverityBadge';
 import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../components/ListFilterBar';
@@ -314,9 +314,11 @@ const FindingsList: React.FC = () => {
 
   // The filters are the query's key: a slow response for filter set A can
   // never land under B's active filters, nor can A's failure replace B's
-  // error state.  The previous filter's rows are kept (not shown) while the
-  // next ones load, so the selection's "not on this page" count and the
-  // pagination do not blink.
+  // error state.  The previous filter's (or page's) rows stay on screen,
+  // dimmed, while the next ones load — `previousRows` — so the table, the
+  // selection's "not on this page" count and the pagination do not blink.
+  // They are not this filter's rows: nothing on them can be ticked or
+  // changed, and the keyboard cursor does not open one.
   const listKey = useMemo(() => ['listFindings', filters], [filters]);
   const listQuery = useQuery({
     queryKey: listKey,
@@ -326,14 +328,21 @@ const FindingsList: React.FC = () => {
   const findings = useMemo<Finding[]>(() => listQuery.data?.items ?? [], [listQuery.data]);
   const total = listQuery.data?.total ?? 0;
   const sevCounts: Partial<Record<FindingSeverity, number>> = listQuery.data?.severity_counts ?? {};
-  const loading = listQuery.isFetching;
+  const previousRows = listQuery.isPlaceholderData;
+  // This filter's answer is not here yet (the first load, a new filter), or a
+  // failed load is being asked for again.  A re-read after a change is
+  // neither: the rows on screen are this filter's and stay as they are.
+  const loading = listQuery.isPending || previousRows || (listQuery.isError && listQuery.isFetching);
   const error = queryErrorText(listQuery.error, LOAD_FAILED);
   // A failed load is said in the table and as a toast.
   useEffect(() => { if (error) toast.error(error); }, [error, toast]);
 
-  // A change's answer is put into the list on screen: no second read.
+  // A change's answer is put into the list on screen at once; the list is
+  // then read again (`listChanged`), because a row that left the filter also
+  // changed the total, the severity counts and what the next page holds.
   const patchFindings = (update: (rows: Finding[]) => Finding[]) =>
     queryClient.setQueryData<FindingListResponse>(listKey, (prev) => (prev ? { ...prev, items: update(prev.items) } : prev));
+  const listChanged = () => { void invalidateReads(queryClient, 'listFindings'); };
 
   const statusChange = useMutation({
     mutationFn: (v: { findingId: number; status: FindingStatus; title: string; summary?: string }) =>
@@ -346,6 +355,7 @@ const FindingsList: React.FC = () => {
           .filter((f) => f.id !== findingId || matchesStatusFilter(updated.status, statusFilter))
           .map((f) => (f.id === findingId ? updated : f)),
       );
+      listChanged();
       // The status trail gained a line.
       void queryClient.invalidateQueries({ queryKey: ['getFindingHistory', findingId] });
       const short = title.length > 40 ? `${title.slice(0, 40)}…` : title;
@@ -379,6 +389,7 @@ const FindingsList: React.FC = () => {
           // Drop rows that no longer match the active status filter.
           .filter((f) => !changed.has(f.id) || matchesStatusFilter(status, statusFilter)),
       );
+      listChanged();
       void queryClient.invalidateQueries({ queryKey: ['getFindingHistory'] });
       setSelected(new Set());
       if (result.skipped_ids.length === 0) {
@@ -404,6 +415,8 @@ const FindingsList: React.FC = () => {
       const assigned = new Set(ids);
       patchFindings((prev) =>
         prev.map((f) => (assigned.has(f.id) ? { ...f, owner_id: assigneeId, owner_name: name } : f)));
+      // Under "Assigned to me" / "Unowned" a row may have left the filter.
+      listChanged();
       setSelected(new Set());
       toast.success(
         assigneeId === null
@@ -472,7 +485,7 @@ const FindingsList: React.FC = () => {
 
   // j/k (↓/↑) move a row cursor, Enter opens the finding — as on Hosts.
   const { cursorRowProps } = useListCursor(
-    loading || error ? 0 : findings.length,
+    loading || error ? 0 : findings.length,   // never a previous filter's row
     (i) => navigate(findingDetailHref(findings[i].id, searchParams.toString())),
     // Anchored to the finding: a status change re-reads the list, and the
     // cursor stays on its row instead of on whatever took its index.
@@ -555,7 +568,7 @@ const FindingsList: React.FC = () => {
           status/source filters, ignores severity + pagination). Informational is
           excluded from the bar, so gate on actionable severities too. */}
       {(['critical', 'high', 'medium', 'low'] as FindingSeverity[]).some((s) => sevCounts[s]) && (
-        <div className="mb-md max-w-2xl">
+        <div className={cn('mb-md max-w-2xl', previousRows && 'opacity-50')}>
           <SeverityBar counts={sevCounts} variant="inline" />
         </div>
       )}
@@ -612,7 +625,7 @@ const FindingsList: React.FC = () => {
       {/* v5.267.0 — the table sits on the page, not in a Card (UI_STYLE_GUIDE
           §7). overflow-x-auto per the Table primitive's documented usage —
           keeps the fixed-width columns from forcing page-level overflow. */}
-      <section aria-label="Findings">
+      <section aria-label="Findings" aria-busy={previousRows || undefined}>
           <div className="overflow-x-auto">
           <Table className="table-fixed">
             <TableHeader>
@@ -621,6 +634,8 @@ const FindingsList: React.FC = () => {
                   {canManage && (
                     <Checkbox
                       aria-label="Select all findings on this page"
+                      // Not while the rows shown are a previous filter's.
+                      disabled={previousRows}
                       // Some of this page's rows = the dash, not an empty box.
                       checked={selectAllState(findings.filter((f) => selected.has(f.id)).length, findings.length)}
                       // Union/subtract THIS page rather than replacing the set.
@@ -652,10 +667,12 @@ const FindingsList: React.FC = () => {
                 <SortHead field="created_at" label="Age" className="w-16" />
               </TableRow>
             </TableHeader>
-            <TableBody>
-              {/* Only blank the table on the INITIAL load; a filter refetch
-                  keeps prior rows visible (no full-table flash). */}
-              {loading && findings.length === 0 && (
+            <TableBody className={previousRows ? 'opacity-50' : undefined}>
+              {/* Only blank the table on the INITIAL load (and while a failed
+                  load is retried); a filter refetch keeps the prior rows on
+                  screen, dimmed and inert, and a re-read after a change keeps
+                  the rows as they are (no full-table flash). */}
+              {loading && (findings.length === 0 || listQuery.isError) && (
                 <TableRow>
                   <TableCell colSpan={7} className="py-xl text-center text-muted-foreground">
                     <Loader2 className="mx-auto size-5 animate-spin" aria-hidden />
@@ -698,7 +715,7 @@ const FindingsList: React.FC = () => {
                   </TableCell>
                 </TableRow>
               )}
-              {!loading && !error && findings.map((f, i) => (
+              {!error && findings.map((f, i) => (
                 <TableRow
                   key={f.id}
                   data-state={selected.has(f.id) ? 'selected' : undefined}
@@ -710,6 +727,9 @@ const FindingsList: React.FC = () => {
                       <Checkbox
                         aria-label={`Select ${f.title}`}
                         checked={selected.has(f.id)}
+                        // A bulk action acts only on rows of the CURRENT
+                        // filter: a previous filter's row cannot be ticked.
+                        disabled={previousRows}
                         onCheckedChange={() => toggleSelected(f.id)}
                       />
                     )}
@@ -769,6 +789,7 @@ const FindingsList: React.FC = () => {
                     {canManage ? (
                       <Select
                         value={f.status}
+                        disabled={previousRows}
                         onValueChange={(v) => handleStatusChange(f.id, v as FindingStatus, f.title)}
                       >
                         <SelectTrigger

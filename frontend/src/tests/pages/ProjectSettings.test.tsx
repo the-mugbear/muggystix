@@ -31,9 +31,8 @@ vi.mock('../../components/scans/ProjectIngestSettings', () => ({
 }));
 const confirmMock = vi.fn();
 vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, confirmMock] }));
-vi.mock('../../contexts/ToastContext', () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
-}));
+const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }));
+vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 let myRole = 'admin';
 // A NEW object on every call, on purpose: the page must not loop or reset its
 // form when a refresh hands back an equal project.
@@ -102,6 +101,39 @@ describe('Project settings', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Viewer' }));
     await waitFor(() => expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({ title: 'Change your own role?' })));
     expect(apiMock.put).not.toHaveBeenCalled();
+  });
+
+  // 1.4 — the member rules are `utils/projectMembers`, shared with Portfolio's
+  // sheet and the administrator's dialog.  The server refuses to remove the
+  // only project admin: the page says why and sends nothing (it asked "Remove
+  // Ana?" and then showed the server's 400).
+  it('says why the only project admin cannot be removed, and sends nothing', async () => {
+    globalRole = 'admin';          // not the reader's own row: user 9 below
+    apiMock.get.mockResolvedValue({ data: [{ ...members[0], user_id: 9 }, members[1]] });
+    confirmMock.mockResolvedValue(true);
+    renderPage();
+    await screen.findByText('Ana');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Ana from the project' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
+      'Ana is the only project admin of Demo — Insights Eval and cannot be removed. Make another member a project admin first.',
+    ));
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(apiMock.delete).not.toHaveBeenCalled();
+  });
+
+  it('asks before another member is removed, in the shared words', async () => {
+    confirmMock.mockResolvedValue(true);
+    apiMock.delete.mockResolvedValue({});
+    renderPage();
+    await screen.findByText('Ana');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove ben from the project' }));
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledWith({
+      title: 'Remove ben?',
+      body: 'ben loses access to Demo — Insights Eval. Their notes, findings and reviews stay. They can be added again later.',
+      severity: 'danger',
+      confirmLabel: 'Remove',
+    }));
+    await waitFor(() => expect(apiMock.delete).toHaveBeenCalledWith('/projects/3/members/2'));
   });
 
   it('counts the name\'s characters near the API limit (v5.290.0)', async () => {

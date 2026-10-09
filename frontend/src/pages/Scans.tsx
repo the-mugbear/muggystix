@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
-  keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData,
+  keepPreviousData, useInfiniteQuery, useMutation, useMutationState, useQuery, useQueryClient, type InfiniteData,
 } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -134,8 +134,11 @@ interface HistoryPage {
 const QUEUE_READS = ['getRecentIngestionJobs', 'getStagedIngestionJobs'] as const;
 /** What lists or counts the imported files. */
 const INVENTORY_READS = [
-  'getImportHistory', 'getScans', 'getScanBatches', 'getScansSummary', 'getBatchUnimportedJobs',
+  'getImportHistory', 'getScans', 'getScansSummary', 'getBatchUnimportedJobs',
 ] as const;
+/** The key of the four writes to ONE job of the queue (retry, cancel,
+ *  dismiss, discard): what is in flight is read back per job. */
+const QUEUE_JOB_ACTION = ['scansQueueJobAction'] as const;
 
 /** How often the queue is read again while a job is queued or processing. */
 const ACTIVE_QUEUE_POLL_MS = 5000;
@@ -157,9 +160,6 @@ export default function Scans() {
   }, [queryClient]);
   const refreshQueue = useCallback(() => invalidate(QUEUE_READS), [invalidate]);
   const refreshInventory = useCallback(() => invalidate(INVENTORY_READS), [invalidate]);
-  // What a change to one ingestion job (retry, cancel, dismiss, discard) puts
-  // out of date: the queue, and the counts and lists of imports that failed.
-  const jobsChanged = useCallback(() => invalidate(INGESTION_JOB_READS), [invalidate]);
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [scanToDelete, setScanToDelete] = useState<Scan | null>(null);
@@ -632,7 +632,12 @@ export default function Scans() {
           });
         })
         .catch(() => {
-          // Not asked for, as far as a later report of the job is concerned.
+          // The lookup failed and is NOT made again: a finished job leaves
+          // `activeJobIds` in the pass that reported it, so no later answer
+          // names it and this function is not called for it a second time.
+          // The entry keeps the job's own message ("Import complete.") in
+          // place of the counts.  The mark is cleared all the same, so it
+          // does not claim a result that was never read.
           wanted.forEach((w) => resultRequestedRef.current.delete(w.key));
         });
     }
@@ -696,10 +701,6 @@ export default function Scans() {
       if (done.some((j) => j.status === 'completed')) refreshInventory();
     }
   }, [followedJobs, activeJobIds, applyJobsToUploadEntries, refreshQueue, refreshInventory]);
-  const activeJobs = useMemo(
-    () => new Map((followedJobs ?? []).map((job) => [job.id, job])),
-    [followedJobs],
-  );
 
   // v5.207.0 — refresh when ANY scan lands. The job polling above only
   // follows uploads this tab submitted, so scans from an agent or another
@@ -873,7 +874,13 @@ export default function Scans() {
   };
 
   // What an operator does to one job of the queue.  Each says what happened
-  // and puts the queue (and the failure counts) out of date.
+  // and puts the queue, and the counts and lists of imports that failed, out
+  // of date (`INGESTION_JOB_READS`).  The re-read is
+  // RETURNED from `onSuccess`, so a write stays pending until the queue on
+  // screen is the new one: its control is disabled for that long, and a
+  // second click cannot send the request again for a row that is about to
+  // change or go.
+  const jobsReRead = () => invalidateReads(queryClient, ...INGESTION_JOB_READS);
   const discardStaged = useMutation({
     mutationFn: (ids: number[]) => discardStagedJobs(ids),
     onSuccess: (res, ids) => {
@@ -883,52 +890,62 @@ export default function Scans() {
           ? `Discarded ${res.discarded} staged upload${res.discarded === 1 ? '' : 's'}`
           : `Discarded ${res.discarded} of ${n}; the rest were no longer staged`,
       );
-      jobsChanged();
+      return jobsReRead();
     },
     onError: (err) => toast.error(formatApiError(err, 'Could not discard the staged uploads')),
   });
   const discardJob = useMutation({
+    mutationKey: QUEUE_JOB_ACTION,
     mutationFn: (job: IngestionJob) => discardIngestionJob(job.id),
     onSuccess: () => {
       toast.info('Staged upload discarded');
-      jobsChanged();
+      return jobsReRead();
     },
     onError: (err) => toast.error(formatApiError(err, 'Could not discard the staged upload')),
   });
   const cancelJob = useMutation({
+    mutationKey: QUEUE_JOB_ACTION,
     mutationFn: (job: IngestionJob) => cancelIngestionJob(job.id),
     onSuccess: () => {
       toast.info('Ingestion cancelled');
-      jobsChanged();
+      return jobsReRead();
     },
     onError: (err) => toast.error(formatApiError(err, 'Could not cancel ingestion')),
   });
   const retryJob = useMutation({
+    mutationKey: QUEUE_JOB_ACTION,
     mutationFn: (job: IngestionJob) => retryIngestionJob(job.id),
     onSuccess: () => {
       toast.info('Re-queued for parsing');
-      jobsChanged();
+      return jobsReRead();
     },
     // 409 when the upload was already cleaned up — the message tells the user
     // to re-upload.
     onError: (err) => toast.error(formatApiError(err, 'Could not retry ingestion')),
   });
   const dismissJob = useMutation({
+    mutationKey: QUEUE_JOB_ACTION,
     mutationFn: (job: IngestionJob) => dismissIngestionJob(job.id),
-    onSuccess: () => jobsChanged(),
+    onSuccess: () => jobsReRead(),
     onError: (err) => toast.error(formatApiError(err, 'Could not dismiss the failed import')),
   });
+  // The jobs with one of those four in flight — every one of them, not only
+  // the last started (a mutation's own `variables` name just that one), so a
+  // second row can be acted on while the first is still being answered.  A
+  // staged job is busy as well while "Discard N staged" is discarding it.
+  const jobsWithActionInFlight = useMutationState({
+    filters: { mutationKey: QUEUE_JOB_ACTION, status: 'pending' },
+    select: (mutation) => (mutation.state.variables as IngestionJob | undefined)?.id,
+  });
+  const jobBusy = (job: IngestionJob): boolean =>
+    jobsWithActionInFlight.includes(job.id)
+    || (discardStaged.isPending && discardStaged.variables.includes(job.id));
 
   // v2.59.0 — Scan Timeline removed from this page and replaced by the
   // cross-project /tool-activity surface, which plots SOC-correlation
   // markers using the scan's actual start_time (the SOC use case) rather
   // than upload time.  See ActivityTimeline component for the
   // generalised lane-packing + bar-vs-dot rendering.
-
-  // No-op headline slot in the Scan column. Per-scan-type "headline" badges
-  // were dropped as duplicative; kept as a no-op so the JSX call sites stay
-  // small and a future Scan-column headline has somewhere to land.
-  const statusBadge = (_scan: Scan): React.ReactNode => null;
 
   // The newest upload among what is loaded (the first page is newest first).
   const lastImportAt = [
@@ -1066,27 +1083,6 @@ export default function Scans() {
         </div>
       )}
 
-      {/* Active job progress — jobs this tab did not upload (found queued or
-          processing on load); a job with a banner entry above is shown there. */}
-      {activeJobIds.length > 0 && (
-        <div className="mb-sm flex flex-col gap-xs" aria-live="polite" aria-atomic="false">
-          {activeJobIds.map((jobId) => {
-            const job = activeJobs.get(jobId);
-            if (!job) return null;
-            if (Object.values(uploadProgress).some((e) => e.jobId === jobId)) return null;
-            return (
-              <Alert key={jobId} variant="info">
-                <AlertDescription className="break-words">
-                  <strong>{job.status === 'processing' ? 'Processing' : 'Queued'}:</strong>{' '}
-                  {job.original_filename || `Job #${jobId}`}{' '}
-                  <span className="text-muted-foreground">{job.message || 'Waiting…'}</span>
-                </AlertDescription>
-              </Alert>
-            );
-          })}
-        </div>
-      )}
-
       {/* Ingestion Queue — v4.18.0: filtered to non-completed jobs only.
           Pre-fix, every successful upload showed up here AND in "Your
           Scans" below, which read as duplicate info.  Now the queue
@@ -1163,6 +1159,7 @@ export default function Scans() {
                   <Button
                     size="sm"
                     variant="outline"
+                    disabled={discardStaged.isPending}
                     onClick={async () => {
                       // The ids are captured BEFORE the confirmation and are
                       // exactly what is sent: the endpoint used to discard
@@ -1459,6 +1456,7 @@ export default function Scans() {
                                   size="sm"
                                   variant="ghost"
                                   className="text-destructive"
+                                  disabled={jobBusy(job)}
                                   onClick={() => discardJob.mutate(job)}
                                   aria-label={`Discard staged upload ${job.original_filename}`}
                                 >
@@ -1471,6 +1469,7 @@ export default function Scans() {
                                 size="sm"
                                 variant="ghost"
                                 className="text-destructive"
+                                disabled={jobBusy(job)}
                                 onClick={async () => {
                                   const ok = await confirm({
                                     title: 'Cancel ingestion',
@@ -1493,6 +1492,7 @@ export default function Scans() {
                               <Button
                                 size="sm"
                                 variant="ghost"
+                                disabled={jobBusy(job)}
                                 onClick={() => retryJob.mutate(job)}
                                 aria-label={`Retry failed ingestion for ${job.original_filename}`}
                               >
@@ -1503,6 +1503,7 @@ export default function Scans() {
                               <Button
                                 size="sm"
                                 variant="ghost"
+                                disabled={jobBusy(job)}
                                 onClick={() => dismissJob.mutate(job)}
                                 aria-label={`Dismiss failed ingestion for ${job.original_filename}`}
                               >
@@ -1867,7 +1868,6 @@ export default function Scans() {
                             <div className="flex flex-wrap items-center gap-xxs">
                               {renderInlineToolBadge(scan)}
                               {scan.version && <Badge variant="outline">v{scan.version}</Badge>}
-                              {statusBadge(scan)}
                               {/* The host-query DSL's `scan:` predicate takes
                                   the numeric id, which was previously not
                                   shown anywhere — operators know the upload by
