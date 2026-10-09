@@ -29,6 +29,8 @@ vi.mock('../../contexts/ToastContext', () => ({
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 1, username: 'admin' }, hasPermission: () => true }),
 }));
+// The project on screen: every request names it first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1, name: 'P' } }) }));
 
 import ReportDetail, { evidenceImagesLine } from '../../pages/ReportDetail';
 
@@ -64,7 +66,7 @@ describe('ReportDetail — the scope file', () => {
     expect(screen.getByText(SHA)).toBeInTheDocument();
     expect(screen.getByText('scope-acme-report-3.csv')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Download scope file/ }));
-    await waitFor(() => expect(downloadClientReportScope).toHaveBeenCalledWith(12, 'scope-acme-report-3.csv'));
+    await waitFor(() => expect(downloadClientReportScope).toHaveBeenCalledWith(1, 12, 'scope-acme-report-3.csv'));
   });
 
   // Review 2026-10-01 S2 — the line said "N placed in text, M under Evidence"

@@ -31,7 +31,7 @@ import {
   getScansAt,
   getScansBetween,
 } from '../services/api';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -143,8 +143,8 @@ const KIND_LABEL: Record<ActivityKind, string> = {
 type QueryMode = 'at' | 'between';
 
 // v4.27.0 — routes are TOP-LEVEL (`/scans/:id`, `/agent-sessions/:id`).  There is no `/projects/:id/...` nested route
-// surface — the API client reads the active project from
-// `getCurrentProjectId()` and prefixes API calls with it.  Earlier
+// surface — the destination page asks for its data of the SELECTED project
+// (`useProjectId()`, passed to each API call; 5.353.0).  Earlier
 // versions of this helper assembled `/projects/${item.project_id}/…`
 // URLs, which fell through the catch-all `/*` route, granted access
 // in ProtectedRoute, and then rendered nothing because the inner
@@ -234,15 +234,15 @@ export const ToolActivity: React.FC = () => {
   const navigate = useNavigate();
   const { projects, currentProject, selectProject } = useProject();
 
-  // v4.27.0 — /tool-activity is cross-project by design, but the API
-  // client and the detail pages both key their data fetch on the
-  // active project (`getCurrentProjectId()` in services/api/client.ts).
+  // v4.27.0 — /tool-activity is cross-project by design, and makes no
+  // project-scoped request itself (`getScansAt` / `getScansBetween` answer
+  // for every project the reader can open).  The detail pages its rows
+  // link to ask for their data of the SELECTED project (`useProjectId()`).
   // Navigating to e.g. /scans/42 without first switching projects
   // would target the WRONG project's resource id (404 or, worse,
   // silently load a foreign id that happens to exist).  Switch first,
-  // then navigate.  `selectProject` updates both the React state and
-  // the module-level `_currentProjectId` synchronously, so the
-  // destination page's first API call uses the right project.
+  // then navigate: the selection and the navigation are one update, so
+  // the destination page renders — and asks — with the row's project.
   const navigateToItem = useCallback(
     (item: ActivityItem) => {
       if (item.project_id !== currentProject?.id) {
@@ -344,8 +344,9 @@ export const ToolActivity: React.FC = () => {
   // loads; a question that failed has no answer (never the previous one's).
   // Only the question asked last is answered: an earlier, slower response
   // has nowhere to land (review 2026-10-01 follow-up).
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps -- the key IS the question: its function, then its parameters
   const focusedQuery = useQuery({
-    queryKey: [GLOBAL, question?.fn ?? 'getScansAt', question?.params ?? null],
+    queryKey: [question?.fn ?? 'getScansAt', question?.params ?? null],
     queryFn: ({ signal }) => answerQuestion(question as FocusedQuestion, signal),
     enabled: question != null,
     placeholderData: keepPreviousData,
@@ -380,7 +381,7 @@ export const ToolActivity: React.FC = () => {
   // positions don't drift while the user navigates.
   const [weekAsked, setWeekAsked] = useState(() => pastWeek(filters));
   const weekQuery = useQuery({
-    queryKey: [GLOBAL, 'getScansBetween', weekAsked],
+    queryKey: ['getScansBetween', weekAsked],
     queryFn: ({ signal }) => getScansBetween(weekAsked, signal),
     placeholderData: keepPreviousData,
   });

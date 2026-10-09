@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Layers, Loader2 } from 'lucide-react';
 import { getBatchUnimportedJobs, getScans } from '../../services/api';
 import type { IngestionJob, Scan, ScanBatchSummary } from '../../services/api';
+import { useProjectId } from '../../hooks/useProjectId';
 import { Badge } from '../ui/badge';
 import { BreakableName } from '../ui/breakable-name';
 import { Button } from '../ui/button';
@@ -117,14 +118,15 @@ export function batchRefusedAtUpload(b: ScanBatchSummary): number {
 export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
   batch: b, filters, onViewScan, colSpan, stagedJobs = [], onReviewStaged, timeFormat,
 }) => {
+  const projectId = useProjectId();
   const [expanded, setExpanded] = useState(false);
   // A batch's files are read when it is expanded, and follow the page's
   // filters while it stays open (the rows on screen stay until the new ones
   // arrive).
   const fileOptions = { ...filters, batchId: b.id, sortBy: 'filename' as const, sortOrder: 'asc' as const };
   const files = useQuery({
-    queryKey: ['getScans', fileOptions, { limit: FILES_PER_BATCH }],
-    queryFn: ({ signal }) => getScans(0, FILES_PER_BATCH, { ...fileOptions, signal }),
+    queryKey: ['getScans', projectId, fileOptions, { limit: FILES_PER_BATCH }],
+    queryFn: ({ signal }) => getScans(projectId, 0, FILES_PER_BATCH, { ...fileOptions, signal }),
     enabled: expanded,
     placeholderData: keepPreviousData,
   });
@@ -133,8 +135,8 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
   // an expanded batch listed only its imported files.  `null` = could not be
   // read (said on its own row; the imported files still show).
   const notImported = useQuery({
-    queryKey: ['getBatchUnimportedJobs', b.id],
-    queryFn: ({ signal }) => getBatchUnimportedJobs(b.id, signal),
+    queryKey: ['getBatchUnimportedJobs', projectId, b.id],
+    queryFn: ({ signal }) => getBatchUnimportedJobs(projectId, b.id, signal),
     enabled: expanded,
   });
   const unimported: IngestionJob[] | null = notImported.isError ? null : notImported.data ?? [];

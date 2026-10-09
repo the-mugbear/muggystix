@@ -9,7 +9,7 @@
  *
  * Consumers import from ``../services/api`` — the barrel re-exports this.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 import { saveBlob } from '../../utils/download';
 import type { Paginated } from './shared';
 
@@ -155,6 +155,7 @@ export interface ScopeDomainBatchResponse {
 }
 
 export const listNames = async (
+  projectId: number,
   opts: {
     skip?: number;
     limit?: number;
@@ -173,7 +174,7 @@ export const listNames = async (
   if (opts.sort) params.set('sort', opts.sort);
   if (opts.order) params.set('order', opts.order);
   const qs = params.toString();
-  const r = await api.get<Paginated<NameRow>>(`${p()}/names/${qs ? `?${qs}` : ''}`, { signal });
+  const r = await api.get<Paginated<NameRow>>(`${projectPath(projectId)}/names/${qs ? `?${qs}` : ''}`, { signal });
   return r.data;
 };
 
@@ -181,6 +182,7 @@ export const listNames = async (
  *  so the file can never cover a different set than the page shows.  Auth
  *  header rides on the axios client; a bare <a href> would lose it. */
 export const exportNames = async (
+  projectId: number,
   format: 'txt' | 'csv',
   opts: { search?: string; state?: NameStateFilter; sort?: 'fqdn' | 'last_seen' | 'first_seen'; order?: 'asc' | 'desc' } = {},
   signal?: AbortSignal,
@@ -190,38 +192,39 @@ export const exportNames = async (
   if (opts.state) params.set('state', opts.state);
   if (opts.sort) params.set('sort', opts.sort);
   if (opts.order) params.set('order', opts.order);
-  const response = await api.get(`${p()}/names/export?${params.toString()}`, { responseType: 'blob', signal });
+  const response = await api.get(`${projectPath(projectId)}/names/export?${params.toString()}`, { responseType: 'blob', signal });
   const mime = format === 'csv' ? 'text/csv' : 'text/plain';
   saveBlob(new Blob([response.data], { type: mime }), `names.${format}`);
 };
 
-export const getNamesSummary = async (signal?: AbortSignal): Promise<NamesSummary> => {
-  const r = await api.get<NamesSummary>(`${p()}/names/summary`, { signal });
+export const getNamesSummary = async (projectId: number, signal?: AbortSignal): Promise<NamesSummary> => {
+  const r = await api.get<NamesSummary>(`${projectPath(projectId)}/names/summary`, { signal });
   return r.data;
 };
 
-export const getName = async (nameId: number, signal?: AbortSignal): Promise<NameDetail> => {
-  const r = await api.get<NameDetail>(`${p()}/names/${nameId}`, { signal });
+export const getName = async (projectId: number, nameId: number, signal?: AbortSignal): Promise<NameDetail> => {
+  const r = await api.get<NameDetail>(`${projectPath(projectId)}/names/${nameId}`, { signal });
   return r.data;
 };
 
-export const importNames = async (body: NameImportRequest): Promise<NameImportResponse> => {
-  const r = await api.post<NameImportResponse>(`${p()}/names/import`, body);
+export const importNames = async (projectId: number, body: NameImportRequest): Promise<NameImportResponse> => {
+  const r = await api.post<NameImportResponse>(`${projectPath(projectId)}/names/import`, body);
   return r.data;
 };
 
-export const deleteName = async (nameId: number): Promise<void> => {
-  await api.delete(`${p()}/names/${nameId}`);
+export const deleteName = async (projectId: number, nameId: number): Promise<void> => {
+  await api.delete(`${projectPath(projectId)}/names/${nameId}`);
 };
 
-export const getHostNames = async (hostId: number, signal?: AbortSignal): Promise<HostNamesResponse> => {
-  const r = await api.get<HostNamesResponse>(`${p()}/names/by-host/${hostId}`, { signal });
+export const getHostNames = async (projectId: number, hostId: number, signal?: AbortSignal): Promise<HostNamesResponse> => {
+  const r = await api.get<HostNamesResponse>(`${projectPath(projectId)}/names/by-host/${hostId}`, { signal });
   return r.data;
 };
 
 // --- scope domains ---------------------------------------------------------
 
 export const listScopeDomains = async (
+  projectId: number,
   scopeId: number,
   opts: { skip?: number; limit?: number } = {},
   signal?: AbortSignal,
@@ -230,18 +233,19 @@ export const listScopeDomains = async (
   if (opts.skip !== undefined) params.set('skip', String(opts.skip));
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   const qs = params.toString();
-  const r = await api.get<ScopeDomainPage>(`${p()}/scopes/${scopeId}/domains${qs ? `?${qs}` : ''}`, { signal });
+  const r = await api.get<ScopeDomainPage>(`${projectPath(projectId)}/scopes/${scopeId}/domains${qs ? `?${qs}` : ''}`, { signal });
   return r.data;
 };
 
 export const addScopeDomains = async (
+  projectId: number,
   scopeId: number,
   domains: Array<{ domain: string; include_subdomains?: boolean; description?: string }>,
 ): Promise<ScopeDomainBatchResponse> => {
-  const r = await api.post<ScopeDomainBatchResponse>(`${p()}/scopes/${scopeId}/domains`, { domains });
+  const r = await api.post<ScopeDomainBatchResponse>(`${projectPath(projectId)}/scopes/${scopeId}/domains`, { domains });
   return r.data;
 };
 
-export const deleteScopeDomain = async (scopeId: number, domainId: number): Promise<void> => {
-  await api.delete(`${p()}/scopes/${scopeId}/domains/${domainId}`);
+export const deleteScopeDomain = async (projectId: number, scopeId: number, domainId: number): Promise<void> => {
+  await api.delete(`${projectPath(projectId)}/scopes/${scopeId}/domains/${domainId}`);
 };

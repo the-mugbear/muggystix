@@ -24,7 +24,7 @@ const root = (id: number, over: Record<string, unknown> = {}) => ({
 const NOTES = [5, 4, 3, 2, 1].map((id) => root(id)).concat([root(60, { parent_id: 1, body: 'reply under the oldest' })]);
 
 vi.mock('../../services/api', () => ({
-  getHost: vi.fn().mockImplementation((id: number) => Promise.resolve({
+  getHost: vi.fn().mockImplementation((_projectId: number, id: number) => Promise.resolve({
     id, ip_address: `10.0.0.${id}`, hostname: `h${id}`, state: 'up',
     ports: [], assignees: [], tags: [], vulnerabilities: [], notes: NOTES,
     discoveries: [], follow: null,

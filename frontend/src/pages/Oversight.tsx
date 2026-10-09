@@ -63,7 +63,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { formatStatusLabel } from '../utils/statusMeta';
 import { describeProjects, parseProjectIds, serializeProjectIds } from '../utils/oversightProjects';
-import { GLOBAL, queryErrorText, useLastSettled } from '../lib/query';
+import { queryErrorText, useLastSettled } from '../lib/query';
 import { formatDate } from '../utils/relativeTime';
 import {
   DATE_PRESETS, DEFAULT_PRESET, DatePreset, customRangeError, presetRange,
@@ -421,12 +421,12 @@ const Oversight: React.FC = () => {
   // The key is the query, which is the address (`?range=`, `?projects=`,
   // `?status=`…): a link to a filtered Oversight asks for exactly that.
   const dashboard = useQuery({
-    queryKey: [GLOBAL, 'getOversightDashboard', query],
+    queryKey: ['getOversightDashboard', query],
     queryFn: ({ signal }) => getOversightDashboard(query, signal),
   });
   // The figures stay on screen while other filters load, and when that read
   // fails ("Showing the last figures that loaded").
-  const data = useLastSettled(dashboard.data, { global: true }) ?? null;
+  const data = useLastSettled(dashboard.data) ?? null;
   const loading = dashboard.isFetching;
   const error = loading ? null : queryErrorText(dashboard.error, 'Failed to load Oversight.');
   const refresh = () => { void dashboard.refetch(); };

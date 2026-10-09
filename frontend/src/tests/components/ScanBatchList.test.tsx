@@ -145,7 +145,7 @@ describe('ScanBatchRow', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /show the files of nmap-tcp-top1000/i }));
     const file = await screen.findByText('chunk-001.xml');
-    expect(getScans).toHaveBeenCalledWith(0, 500, expect.objectContaining({ batchId: 7, tool: 'NMAP' }));
+    expect(getScans).toHaveBeenCalledWith(1, 0, 500, expect.objectContaining({ batchId: 7, tool: 'NMAP' }));
 
     fireEvent.click(file);
     expect(onViewScan).toHaveBeenCalledWith(11);
@@ -226,7 +226,7 @@ describe('ScanBatchRow', () => {
       .toHaveAttribute('href', '/parse-errors?status=superseded');
     fireEvent.click(screen.getByRole('button', { name: /show the files of/i }));
     await screen.findByText('smbmap-samba.txt');
-    expect(getBatchUnimportedJobs).toHaveBeenCalledWith(7, expect.any(AbortSignal));
+    expect(getBatchUnimportedJobs).toHaveBeenCalledWith(1, 7, expect.any(AbortSignal));
 
     const rows = Array.from(container.querySelectorAll('tr[data-batch-job]'));
     expect(rows).toHaveLength(3);

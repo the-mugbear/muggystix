@@ -13,6 +13,7 @@ import {
   applyRemediation, type RemediationPolicy, type RemediationRow, type RemediationStatus,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
+import { useProjectId } from '../../hooks/useProjectId';
 import { formatApiError } from '../../utils/apiErrors';
 import {
   applyRowsFor, draftCaution, draftChanges, draftFor, draftProblem, hasChanges, invalidateRemediationReads,
@@ -56,6 +57,9 @@ export const RemediationEditDialog: React.FC<{
 }> = ({ rows, onClose, onSaved, policy = null, acrossProjects = false, today }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
+  // The project page writes to its own project (across projects each row
+  // names its own).
+  const currentProjectId = useProjectId();
   const opened = useMemo(() => draftFor(rows), [rows]);
   const [draft, setDraft] = useState<RemediationDraft>(opened);
   // One key per opening: a second click on Save is the same note, not another.
@@ -110,7 +114,8 @@ export const RemediationEditDialog: React.FC<{
   const saving = useMutation({
     mutationFn: async (): Promise<{ changed: number; notes: number }> => {
       if (!acrossProjects) {
-        const result = await applyRemediation(applyRowsFor(rows, changes, draft.note, requestKey), { overwrite: true });
+        const result = await applyRemediation(
+          currentProjectId, applyRowsFor(rows, changes, draft.note, requestKey), { overwrite: true });
         return { changed: result.summary.changed, notes: result.summary.notes_added };
       }
       // One call per project, one at a time: a refusal stops before the
@@ -123,7 +128,7 @@ export const RemediationEditDialog: React.FC<{
       for (const [projectId, group] of byProject) {
         try {
           const result = await applyRemediation(
-            applyRowsFor(group, changes, draft.note, requestKey), { overwrite: true }, projectId);
+            projectId, applyRowsFor(group, changes, draft.note, requestKey), { overwrite: true }, 'overview');
           changed += result.summary.changed;
           notes += result.summary.notes_added;
           saved.push(group[0].project_name);

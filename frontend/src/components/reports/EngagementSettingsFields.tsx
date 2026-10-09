@@ -11,6 +11,7 @@ import { Plus, Trash2, Users } from 'lucide-react';
 
 import { getProjectReportTeam, type EngagementSettings, type ProjectMember } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
+import { useProjectId } from '../../hooks/useProjectId';
 import type { ProjectMembersStatus } from '../../hooks/useProjectMembers';
 import MembersLoadError from '../MembersLoadError';
 import { formatApiError } from '../../utils/apiErrors';
@@ -74,9 +75,10 @@ const EngagementSettingsFields: React.FC<Props> = ({
   // The project's analysts and admins (name, role line, email) — added once
   // each; whoever is already listed keeps what was written for them.
   const toast = useToast();
+  const projectId = useProjectId();
   // Asked for by the button, each time: the team as the project has it now.
   const projectTeam = useMutation({
-    mutationFn: () => getProjectReportTeam(),
+    mutationFn: () => getProjectReportTeam(projectId),
     onSuccess: (team) => {
       const fresh = team.filter((t) => !value.testers.some((x) => x.user_id != null && x.user_id === t.user_id));
       if (fresh.length === 0) toast.info('Everyone on the project is already listed.');

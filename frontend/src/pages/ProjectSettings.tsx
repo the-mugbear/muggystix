@@ -27,7 +27,7 @@ import {
   removeProjectMember, updateProject, updateProjectMemberRole,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
-import { GLOBAL, invalidateReads, queryErrorText } from '../lib/query';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
 import {
@@ -97,7 +97,7 @@ const ProjectSettings: React.FC = () => {
   const canSeeWebhooks = canAdmin || currentProject?.my_role == null;
 
   const queryClient = useQueryClient();
-  // The project list is the context's (`[GLOBAL, 'getProjects']`).  After a
+  // The project list is the context's (`['getProjects']`).  After a
   // write that changed it, it is read again in place — this page stays on
   // screen — and what the write says waits for that read.
   const projectsChanged = () => invalidateReads(queryClient, 'getProjects');
@@ -130,7 +130,7 @@ const ProjectSettings: React.FC = () => {
     onSuccess: async (updated) => {
       // The form shows the project list's row: put the server's answer there
       // first, so a failed re-read cannot show the old values under "saved".
-      queryClient.setQueryData<Array<{ id: number }>>([GLOBAL, 'getProjects'], (list) => (
+      queryClient.setQueryData<Array<{ id: number }>>(['getProjects'], (list) => (
         list?.map((p) => (p.id === updated.id ? { ...p, ...updated } : p))
       ));
       await projectsChanged();
@@ -152,10 +152,10 @@ const ProjectSettings: React.FC = () => {
 
   // --- Members -----------------------------------------------------------
   // `getProjectMembers` names its project (it also serves Portfolio's sheet
-  // and the admin's memberships dialog), so the id is in the key and the key
-  // is GLOBAL — one roster per project wherever it is shown.
+  // and the admin's memberships dialog), so the id is in the key — one roster
+  // per project wherever it is shown.
   const projectId = currentProject?.id;
-  const membersKey = [GLOBAL, 'getProjectMembers', projectId];
+  const membersKey = ['getProjectMembers', projectId];
   const membersQuery = useQuery({
     queryKey: membersKey,
     queryFn: async ({ signal }) => (await getProjectMembers(projectId as number, signal)) as unknown as Member[],
@@ -176,7 +176,7 @@ const ProjectSettings: React.FC = () => {
   const [newRole, setNewRole] = useState('analyst');
   // The people who could be added: asked for each time the dialog opens.
   const directoryQuery = useQuery({
-    queryKey: [GLOBAL, 'getUserDirectory'],
+    queryKey: ['getUserDirectory'],
     queryFn: ({ signal }) => getUserDirectory(signal),
     enabled: addOpen,
   });
@@ -203,7 +203,7 @@ const ProjectSettings: React.FC = () => {
     onSuccess: async () => {
       setAddOpen(false);
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: [GLOBAL, 'getProjectMembers'] }),
+        queryClient.invalidateQueries({ queryKey: ['getProjectMembers'] }),
         pickersChanged(),
       ]);
       await projectsChanged();

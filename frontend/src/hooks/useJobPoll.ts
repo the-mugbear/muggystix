@@ -71,6 +71,7 @@ export interface UseJobPollsOptions<TJob> extends JobPollShared<TJob> {
 /** The ONE set of query options behind both hooks. */
 function follow<TJob>(queryKey: QueryKey, job: TJob | null | undefined, shared: JobPollShared<TJob>) {
   const { queryFn, interval, isDone } = shared;
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps -- the caller's key names the job (its id) and its project
   return {
     queryKey,
     queryFn: ({ signal }: { signal: AbortSignal }) => queryFn(job as TJob, signal),

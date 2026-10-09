@@ -104,9 +104,9 @@ describe('Scans — filter by uploader (v5.281.0)', () => {
     renderPage('/scans?uploaded_by=7');
     expect(await screen.findByRole('combobox', { name: /filter scans by uploader/i })).toHaveTextContent('ben (1)');
     await waitFor(() => {
-      expect(api.getImportHistory).toHaveBeenCalledWith(expect.objectContaining({ uploadedBy: 7 }));
-      expect(api.getScansSummary).toHaveBeenCalledWith(expect.objectContaining({ uploadedBy: 7 }));
-      expect(api.getScanBatches).toHaveBeenCalledWith(expect.objectContaining({ uploadedBy: 7 }));
+      expect(api.getImportHistory).toHaveBeenCalledWith(1, expect.objectContaining({ uploadedBy: 7 }));
+      expect(api.getScansSummary).toHaveBeenCalledWith(1, expect.objectContaining({ uploadedBy: 7 }));
+      expect(api.getScanBatches).toHaveBeenCalledWith(1, expect.objectContaining({ uploadedBy: 7 }));
     });
   });
 
@@ -174,8 +174,8 @@ describe('Scans — import history', () => {
     expect(screen.queryByText('Individual uploads')).not.toBeInTheDocument();
 
     // Rows are fetched by id for the page the server ordered.
-    expect(api.getScans).toHaveBeenCalledWith(0, 2, { ids: [9, 3] });
-    expect(api.getScanBatches).toHaveBeenCalledWith(expect.objectContaining({ ids: [4] }));
+    expect(api.getScans).toHaveBeenCalledWith(1, 0, 2, { ids: [9, 3] });
+    expect(api.getScanBatches).toHaveBeenCalledWith(1, expect.objectContaining({ ids: [4] }));
     // v5.270.0 — how much is loaded sits at the end of the one filter row.
     expect(screen.getByText(/^3 uploads · 1 batch, 2 single files/)).toBeInTheDocument();
   });
@@ -193,7 +193,7 @@ describe('Scans — import history', () => {
 
     expect(await screen.findByText('in-batch.xml')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText('DMZ sweep')).not.toBeInTheDocument());
-    expect(api.getScans).toHaveBeenLastCalledWith(0, 250, expect.objectContaining({ unbatched: false }));
+    expect(api.getScans).toHaveBeenLastCalledWith(1, 0, 250, expect.objectContaining({ unbatched: false }));
     expect(screen.getByRole('button', { name: /Sort by Scan/ })).toBeInTheDocument();
     // One time column that sorts by either time.
     expect(screen.getByRole('button', { name: /Sort by Ran/ })).toBeInTheDocument();
@@ -286,7 +286,7 @@ describe('Scans — layout', () => {
     });
     api.getRecentIngestionJobs.mockResolvedValue([staged(3), staged(2)]);
     api.getStagedIngestionJobs.mockResolvedValue([staged(3), staged(2), staged(1)]);
-    api.getJobDetection.mockImplementation(async (jobId: number) => ({
+    api.getJobDetection.mockImplementation(async (_projectId: number, jobId: number) => ({
       job_id: jobId, filename: `file-${jobId}.txt`,
       candidates: [{ file_type: 'naabu_output', label: 'Naabu host:port text', basis: 'structure', rank: 0 }],
       primary: 'naabu_output', needs_choice: false, reason: null,
@@ -420,7 +420,7 @@ describe('Scans — layout', () => {
     await user.click(screen.getByRole('button', { name: 'More actions for newest.xml' }));
     await user.click(await screen.findByRole('menuitem', { name: /Delete scan/ }));
     // Delete still goes through its confirmation (the impact dialog).
-    await waitFor(() => expect(api.getScanDeletionImpact).toHaveBeenCalledWith(9, expect.any(AbortSignal)));
+    await waitFor(() => expect(api.getScanDeletionImpact).toHaveBeenCalledWith(1, 9, expect.any(AbortSignal)));
     expect(api.deleteScan).not.toHaveBeenCalled();
   });
 });
@@ -452,7 +452,7 @@ describe('Scans — a failed load', () => {
     expect(leadText()).toContain('40 files imported');
 
     fireEvent.change(screen.getByLabelText('Search scan inventory'), { target: { value: 'dmz' } });
-    await waitFor(() => expect(api.getScansSummary).toHaveBeenCalledWith(expect.objectContaining({ search: 'dmz' })));
+    await waitFor(() => expect(api.getScansSummary).toHaveBeenCalledWith(1, expect.objectContaining({ search: 'dmz' })));
     await waitFor(() => expect(leadText()).toMatch(/imported files matching these filters could not be counted/));
     expect(leadText()).not.toContain('40');
     expect(leadText()).not.toMatch(/nothing failed/);

@@ -42,7 +42,7 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
-import { GLOBAL, pollEvery } from '../lib/query';
+import { pollEvery } from '../lib/query';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import logger from '../utils/logger';
 import { HUBS, documentTitleFor, isCrossProjectPath, resolveActiveHub } from '../config/navigation';
@@ -210,8 +210,9 @@ export default function Layout({ children }: LayoutProps) {
   // visually alarm operators; back to false on the next successful read.
   const [notificationsStale, setNotificationsStale] = React.useState(false);
   const notificationsOn = isAuthenticated && !!currentProject;
+  // eslint-disable-next-line @tanstack/query/exhaustive-deps -- the ref is the failure count, not an input of the read
   const unread = useQuery({
-    queryKey: [GLOBAL, 'getUnreadNotificationCount'],
+    queryKey: ['getUnreadNotificationCount'],
     queryFn: async () => {
       try {
         const count = await getUnreadNotificationCount();

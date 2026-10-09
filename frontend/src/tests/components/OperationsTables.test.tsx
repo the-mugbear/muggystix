@@ -50,6 +50,8 @@ vi.mock('react-router-dom', async () => vi.importActual<typeof import('react-rou
 const api = vi.hoisted(() => ({ updateHostTest: vi.fn() }));
 vi.mock('../../services/api', () => api);
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 1 } }) }));
+// The project the tab is shown in: every request names it first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 9 } }) }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }));
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 
@@ -406,7 +408,7 @@ describe('Tests tab', () => {
     api.updateHostTest.mockResolvedValue({ revision: 5 });
     renderIt();
     fireEvent.click(within(rowOf(32)).getByRole('button', { name: 'Claim' }));
-    await waitFor(() => expect(api.updateHostTest).toHaveBeenCalledWith(32, { assigned_to_id: 1, expected_revision: 4 }));
+    await waitFor(() => expect(api.updateHostTest).toHaveBeenCalledWith(9, 32, { assigned_to_id: 1, expected_revision: 4 }));
     await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
     await waitFor(() => expect(reread).toHaveBeenCalledWith('counts'));
     // Undoable: the toast carries the way back, with the NEW revision.
@@ -414,7 +416,7 @@ describe('Tests tab', () => {
     expect(undo.label).toBe('Undo');
     reread.mockClear();
     undo.onClick();
-    await waitFor(() => expect(api.updateHostTest).toHaveBeenLastCalledWith(32, { assigned_to_id: null, expected_revision: 5 }));
+    await waitFor(() => expect(api.updateHostTest).toHaveBeenLastCalledWith(9, 32, { assigned_to_id: null, expected_revision: 5 }));
     // …and the undo is read back too.
     await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
   });

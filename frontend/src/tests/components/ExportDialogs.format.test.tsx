@@ -54,7 +54,7 @@ describe('OutOfScopeExport — the output keeps the format that produced it', ()
     pick('csv');
     fireEvent.click(screen.getByRole('button', { name: 'Generate list' }));
     expect(await screen.findByRole('heading', { name: /^2 hosts/ })).toBeInTheDocument();
-    expect(api.getOutOfScopeHostList).toHaveBeenCalledWith('csv');
+    expect(api.getOutOfScopeHostList).toHaveBeenCalledWith(1, 'csv');
 
     pick('txt');
     // Still the CSV: not recounted as an IP list (3 lines), not saved as .txt.
@@ -76,7 +76,8 @@ describe('ToolReadyOutput — the output keeps the format that produced it', () 
     pick('json');
     fireEvent.click(screen.getByRole('button', { name: 'Generate output' }));
     expect(await screen.findByRole('heading', { name: 'Generated Output (JSON)' })).toBeInTheDocument();
-    expect(api.getToolReadyOutput.mock.calls[0][0]).toBe('json');
+    // (the project, then the format)
+    expect(api.getToolReadyOutput.mock.calls[0].slice(0, 2)).toEqual([1, 'json']);
 
     pick('nmap');
     expect(screen.getByRole('heading', { name: 'Generated Output (JSON)' })).toBeInTheDocument();

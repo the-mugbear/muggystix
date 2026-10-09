@@ -34,6 +34,8 @@ import type { ReviewFollowupRow, ReviewFollowupsResponse } from '../../services/
 vi.mock('react-router-dom', async () => vi.importActual<typeof import('react-router-dom')>('react-router-dom'));
 const api = vi.hoisted(() => ({ followHost: vi.fn(), unfollowHost: vi.fn(), markStillReviewed: vi.fn() }));
 vi.mock('../../services/api', () => api);
+// The project the tab is shown in: every request names it first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 9 } }) }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }));
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 
@@ -96,7 +98,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   lastLocation = null;
   api.followHost.mockResolvedValue({ status: 'in_review' });
-  api.markStillReviewed.mockImplementation(async (ids: number[]) => ({ host_ids: ids }));
+  api.markStillReviewed.mockImplementation(async (_projectId: number, ids: number[]) => ({ host_ids: ids }));
 });
 
 describe('Changed since review — what it shows', () => {
@@ -200,7 +202,7 @@ describe('Changed since review — answering a change', () => {
   it('"Still reviewed" re-stamps the reader’s own review and refreshes', async () => {
     renderIt(data([row(), observed]));
     fireEvent.click(within(rowOf('10.8.0.2')).getByRole('button', { name: 'Still reviewed' }));
-    await waitFor(() => expect(api.markStillReviewed).toHaveBeenCalledWith([21]));
+    await waitFor(() => expect(api.markStillReviewed).toHaveBeenCalledWith(9, [21]));
     await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
     await waitFor(() => expect(reread).toHaveBeenCalledWith('counts'));
     expect(api.followHost).not.toHaveBeenCalled();
@@ -232,7 +234,7 @@ describe('Changed since review — answering a change', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Re-open review' }));
     expect(api.followHost).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /Confirm: clears the conclusion/ }));
-    await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(21, 'in_review'));
+    await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(9, 21, 'in_review'));
     await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
     await waitFor(() => expect(reread).toHaveBeenCalledWith('counts'));
   });
@@ -272,13 +274,13 @@ describe('Changed since review — selection and bulk', () => {
     expect(still).toHaveAttribute('title', expect.stringContaining('1 of the selected reviews cannot be confirmed'));
     fireEvent.click(still);
     await waitFor(() => expect(api.markStillReviewed).toHaveBeenCalledTimes(1));
-    expect(api.markStillReviewed).toHaveBeenCalledWith([21, 31, 32, 23]);
+    expect(api.markStillReviewed).toHaveBeenCalledWith(9, [21, 31, 32, 23]);
     await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
     await waitFor(() => expect(screen.queryByRole('toolbar')).not.toBeInTheDocument());
   });
 
   it('bulk re-open confirms first (it clears conclusions), and reports a partial failure honestly', async () => {
-    api.followHost.mockImplementation(async (id: number) => {
+    api.followHost.mockImplementation(async (_projectId: number, id: number) => {
       if (id === 32) throw { response: { status: 409, data: { detail: 'host is locked' } } };
       return { status: 'in_review' };
     });

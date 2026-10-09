@@ -23,6 +23,8 @@ import { overrideFor, suggestionOf, useUploadReview } from '../../hooks/useUploa
 import type { DetectionResponse, UploadOptions } from '../../services/api/uploads';
 
 const file = (name: string) => new File(['x'], name, { type: 'text/plain' });
+/** The project the review is created for. */
+const PROJECT = 4;
 
 const detection = (over: Partial<DetectionResponse>): DetectionResponse => ({
   job_id: 1,
@@ -68,21 +70,21 @@ const makeDeps = () => {
   };
   let nextJob = 100;
   const jobsByName: Record<number, string> = {};
-  const uploadFile = vi.fn(async (f: File, onProgress?: (p: number) => void, _options?: UploadOptions) => {
+  const uploadFile = vi.fn(async (_projectId: number, f: File, onProgress?: (p: number) => void, _options?: UploadOptions) => {
     onProgress?.(100);
     const id = nextJob++;
     jobsByName[id] = f.name;
     return { job_id: id, filename: f.name, status: 'staged', message: 'staged', scan_id: null };
   });
-  const getJobDetection = vi.fn(async (jobId: number) => ({ ...detections[jobsByName[jobId]], job_id: jobId }));
-  const startIngestionJob = vi.fn(async (jobId: number) => ({ id: jobId, status: 'queued' }) as never);
-  const createScanBatch = vi.fn(async () => ({ id: 7, label: 'b' }));
-  const discardIngestionJob = vi.fn(async (jobId: number) => ({ id: jobId, status: 'failed' }) as never);
-  const getUploadFormats = vi.fn(async () => [
+  const getJobDetection = vi.fn(async (_projectId: number, jobId: number) => ({ ...detections[jobsByName[jobId]], job_id: jobId }));
+  const startIngestionJob = vi.fn(async (_projectId: number, jobId: number) => ({ id: jobId, status: 'queued' }) as never);
+  const createScanBatch = vi.fn(async (_projectId: number, _label: string) => ({ id: 7, label: 'b' }));
+  const discardIngestionJob = vi.fn(async (_projectId: number, jobId: number) => ({ id: jobId, status: 'failed' }) as never);
+  const getUploadFormats = vi.fn(async (_projectId: number) => [
     { file_type: 'nmap_xml', label: 'Nmap XML', family: 'port' },
     { file_type: 'naabu_output', label: 'Naabu host:port text', family: 'port' },
   ]);
-  const renameScanBatch = vi.fn(async (id: number, label: string) => ({ id, label }));
+  const renameScanBatch = vi.fn(async (_projectId: number, id: number, label: string) => ({ id, label }));
   return {
     uploadFile, getJobDetection, startIngestionJob, createScanBatch, discardIngestionJob, getUploadFormats,
     renameScanBatch,
@@ -93,7 +95,7 @@ describe('useUploadReview', () => {
   it('stages each file, inspects it, and sorts rows into ready and choose', async () => {
     const deps = makeDeps();
     const onStarted = vi.fn();
-    const { result } = renderHook(() => useUploadReview({ skipInformational: true, onStarted, deps }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: true, onStarted, deps }));
 
     await act(async () => {
       await result.current.addFiles([file('scan.xml'), file('naabu.txt'), file('results.txt')]);
@@ -102,7 +104,9 @@ describe('useUploadReview', () => {
     // Three files dropped together are one batch; every upload is STAGED.
     expect(deps.createScanBatch).toHaveBeenCalledTimes(1);
     expect(deps.uploadFile).toHaveBeenCalledTimes(3);
-    expect(deps.uploadFile.mock.calls[0][2]).toMatchObject({ stage: true, batchId: 7, skipInformational: true });
+    expect(deps.createScanBatch.mock.calls[0][0]).toBe(PROJECT);
+    expect(deps.uploadFile.mock.calls.map((call) => call[0])).toEqual([PROJECT, PROJECT, PROJECT]);
+    expect(deps.uploadFile.mock.calls[0][3]).toMatchObject({ stage: true, batchId: 7, skipInformational: true });
 
     await waitFor(() => expect(result.current.rows.map((r) => r.phase)).toEqual(['ready', 'choose', 'choose']));
     const [xml, naabu, unknownRow] = result.current.rows;
@@ -125,7 +129,7 @@ describe('useUploadReview', () => {
 
   it('a file nothing recognised is never ready, and its fallbacks are not suggested', async () => {
     const deps = makeDeps();
-    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: false, onStarted: vi.fn(), deps }));
     await act(async () => {
       await result.current.addFiles([file('inventory.xml')]);
     });
@@ -142,7 +146,7 @@ describe('useUploadReview', () => {
   it('a failed inspection can be retried, and a format chosen by hand meanwhile', async () => {
     const deps = makeDeps();
     deps.getJobDetection.mockRejectedValueOnce(new Error('inspect failed'));
-    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: false, onStarted: vi.fn(), deps }));
     await act(async () => {
       await result.current.addFiles([file('scan.xml')]);
     });
@@ -151,6 +155,7 @@ describe('useUploadReview', () => {
     // The chooser's list arrives without a detection.
     await waitFor(() => expect(result.current.formats.map((f) => f.file_type)).toContain('nmap_xml'));
     expect(deps.getUploadFormats).toHaveBeenCalledTimes(1);
+    expect(deps.getUploadFormats).toHaveBeenCalledWith(PROJECT);
 
     // By hand: importable, and the choice is sent as the override.
     act(() => result.current.setChoice(result.current.rows[0].key, 'nmap_xml'));
@@ -168,7 +173,7 @@ describe('useUploadReview', () => {
 
   it('removing a staged row discards the staged file, and keeps the row if that fails', async () => {
     const deps = makeDeps();
-    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: false, onStarted: vi.fn(), deps }));
     await act(async () => {
       await result.current.addFiles([file('scan.xml'), file('results.txt')]);
     });
@@ -184,13 +189,13 @@ describe('useUploadReview', () => {
     await act(async () => {
       await result.current.remove(result.current.rows[0].key);
     });
-    expect(deps.discardIngestionJob).toHaveBeenLastCalledWith(100);
+    expect(deps.discardIngestionJob).toHaveBeenLastCalledWith(PROJECT, 100);
     expect(result.current.rows.map((r) => r.filename)).toEqual(['results.txt']);
   });
 
   it('a multi-file drop forms a batch the operator can name; a single file forms none', async () => {
     const deps = makeDeps();
-    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: false, onStarted: vi.fn(), deps }));
     await act(async () => {
       await result.current.addFiles([file('scan.xml')]);
     });
@@ -210,7 +215,7 @@ describe('useUploadReview', () => {
     await act(async () => {
       expect(await result.current.nameBatch('  DMZ sweep, week 2 ')).toBe(true);
     });
-    expect(deps.renameScanBatch).toHaveBeenCalledWith(7, 'DMZ sweep, week 2');
+    expect(deps.renameScanBatch).toHaveBeenCalledWith(PROJECT, 7, 'DMZ sweep, week 2');
     expect(result.current.batch).toMatchObject({ label: 'DMZ sweep, week 2', named: true });
 
     deps.renameScanBatch.mockRejectedValueOnce(new Error('nope'));
@@ -223,7 +228,7 @@ describe('useUploadReview', () => {
 
   it('clearStarted drops what the banner owns and keeps unresolved rows', async () => {
     const deps = makeDeps();
-    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: false, onStarted: vi.fn(), deps }));
     await act(async () => {
       await result.current.addFiles([file('scan.xml'), file('results.txt')]);
     });
@@ -239,7 +244,7 @@ describe('useUploadReview', () => {
   it('imports the ready rows with an override only where it means something', async () => {
     const deps = makeDeps();
     const onStarted = vi.fn();
-    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted, deps }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: false, onStarted, deps }));
     await act(async () => {
       await result.current.addFiles([file('scan.xml'), file('naabu.txt'), file('results.txt')]);
     });
@@ -253,8 +258,8 @@ describe('useUploadReview', () => {
     // scan.xml: detected by structure, no override. naabu.txt: confirmed
     // filename-only choice IS the override. results.txt: untouched, stays staged.
     expect(deps.startIngestionJob).toHaveBeenCalledTimes(2);
-    expect(deps.startIngestionJob).toHaveBeenCalledWith(100, { formatOverride: null, sourceTool: null });
-    expect(deps.startIngestionJob).toHaveBeenCalledWith(101, { formatOverride: 'naabu_output', sourceTool: null });
+    expect(deps.startIngestionJob).toHaveBeenCalledWith(PROJECT, 100, { formatOverride: null, sourceTool: null });
+    expect(deps.startIngestionJob).toHaveBeenCalledWith(PROJECT, 101, { formatOverride: 'naabu_output', sourceTool: null });
     expect(onStarted).toHaveBeenCalledTimes(2);
     expect(onStarted.mock.calls[0][0]).toMatchObject({ filename: 'scan.xml', jobId: 100, batchId: 7 });
     expect(result.current.rows.map((r) => r.phase)).toEqual(['started', 'started', 'choose']);
@@ -268,7 +273,7 @@ describe('useUploadReview', () => {
     await act(async () => {
       await result.current.importOne(result.current.rows[2]);
     });
-    expect(deps.startIngestionJob).toHaveBeenLastCalledWith(102, { formatOverride: 'naabu_output', sourceTool: 'naabu 2.3' });
+    expect(deps.startIngestionJob).toHaveBeenLastCalledWith(PROJECT, 102, { formatOverride: 'naabu_output', sourceTool: 'naabu 2.3' });
     expect(result.current.allStarted).toBe(true);
   });
 
@@ -277,7 +282,7 @@ describe('useUploadReview', () => {
     deps.uploadFile.mockRejectedValueOnce({
       response: { status: 409, data: { detail: { code: 'duplicate_scan', scan_id: 5, message: 'Already imported as scan #5.' } } },
     });
-    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: false, onStarted: vi.fn(), deps }));
     await act(async () => {
       await result.current.addFiles([file('scan.xml')]);
     });
@@ -289,16 +294,17 @@ describe('useUploadReview', () => {
       result.current.importAgain(result.current.rows[0].key);
     });
     await waitFor(() => expect(result.current.rows[0].phase).toBe('ready'));
-    expect(deps.uploadFile.mock.calls[1][2]).toMatchObject({ stage: true, allowDuplicate: true });
+    expect(deps.uploadFile.mock.calls[1][0]).toBe(PROJECT);
+    expect(deps.uploadFile.mock.calls[1][3]).toMatchObject({ stage: true, allowDuplicate: true });
   });
 
   // v5.271.0 — a closed review left 26 files staged, and the page could only
   // review them one per dialog, with the 26th out of the queue's reach.
   it('resumes staged files: inspected again, imported, and never added twice', async () => {
     const deps = makeDeps();
-    deps.getJobDetection.mockImplementation(async (jobId: number) =>
+    deps.getJobDetection.mockImplementation(async (_projectId: number, jobId: number) =>
       (jobId === 41 ? { ...ready, job_id: 41 } : { ...filenameOnly, job_id: jobId }));
-    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: false, onStarted: vi.fn(), deps }));
     const jobs = [
       { id: 41, original_filename: 'nmap.xml', file_size: 76_000, batch_id: 7 },
       { id: 42, original_filename: 'naabu.txt', file_size: 300, batch_id: 7 },
@@ -320,7 +326,7 @@ describe('useUploadReview', () => {
       await result.current.importReady();
     });
     expect(deps.startIngestionJob).toHaveBeenCalledTimes(1);
-    expect(deps.startIngestionJob).toHaveBeenCalledWith(41, { formatOverride: null, sourceTool: null });
+    expect(deps.startIngestionJob).toHaveBeenCalledWith(PROJECT, 41, { formatOverride: null, sourceTool: null });
   });
 
   it('a drop the server refused entirely leaves no batch to name', async () => {
@@ -328,7 +334,7 @@ describe('useUploadReview', () => {
     deps.uploadFile.mockRejectedValue({
       response: { status: 409, data: { detail: { code: 'duplicate_scan', job_id: 3, job_status: 'staged', message: 'waiting' } } },
     });
-    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: false, onStarted: vi.fn(), deps }));
     await act(async () => {
       await result.current.addFiles([file('scan.xml'), file('results.txt')]);
     });
@@ -342,8 +348,8 @@ describe('useUploadReview', () => {
     deps.uploadFile.mockRejectedValueOnce({
       response: { status: 409, data: { detail: { code: 'duplicate_scan', job_id: 9, job_status: 'staged', message: 'waiting' } } },
     });
-    deps.getJobDetection.mockImplementation(async (jobId: number) => ({ ...ready, job_id: jobId }));
-    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    deps.getJobDetection.mockImplementation(async (_projectId: number, jobId: number) => ({ ...ready, job_id: jobId }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: false, onStarted: vi.fn(), deps }));
     await act(async () => {
       await result.current.addFiles([file('scan.xml')]);
     });
@@ -354,7 +360,7 @@ describe('useUploadReview', () => {
     });
     await waitFor(() => expect(result.current.rows[0].phase).toBe('ready'));
     expect(result.current.rows[0].jobId).toBe(9);
-    expect(deps.getJobDetection).toHaveBeenLastCalledWith(9);
+    expect(deps.getJobDetection).toHaveBeenLastCalledWith(PROJECT, 9);
     expect(deps.uploadFile).toHaveBeenCalledTimes(1); // not uploaded a second time
   });
 
@@ -364,15 +370,15 @@ describe('useUploadReview', () => {
     const deps = makeDeps();
     let uploading = 0;
     let peak = 0;
-    deps.uploadFile.mockImplementation(async (f: File) => {
+    deps.uploadFile.mockImplementation(async (_projectId: number, f: File) => {
       uploading += 1;
       peak = Math.max(peak, uploading);
       await new Promise((r) => setTimeout(r, 5));
       uploading -= 1;
       return { job_id: 500 + Number(f.name.replace(/\D/g, '')), filename: f.name, status: 'staged', message: 'staged', scan_id: null };
     });
-    deps.getJobDetection.mockImplementation(async (jobId: number) => ({ ...ready, job_id: jobId }));
-    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    deps.getJobDetection.mockImplementation(async (_projectId: number, jobId: number) => ({ ...ready, job_id: jobId }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: false, onStarted: vi.fn(), deps }));
 
     await act(async () => {
       await result.current.addFiles(Array.from({ length: 12 }, (_, i) => file(`scan-${i}.xml`)));
@@ -387,7 +393,7 @@ describe('useUploadReview', () => {
   it('cancels an upload in flight: aborts the request and drops the row', async () => {
     const deps = makeDeps();
     let seenSignal: AbortSignal | undefined;
-    deps.uploadFile.mockImplementation((_f: File, _p?: (n: number) => void, options?: UploadOptions) =>
+    deps.uploadFile.mockImplementation((_projectId: number, _f: File, _p?: (n: number) => void, options?: UploadOptions) =>
       new Promise((_resolve, reject) => {
         seenSignal = options?.signal;
         options?.signal?.addEventListener('abort', () => {
@@ -396,7 +402,7 @@ describe('useUploadReview', () => {
           reject(err);
         });
       }));
-    const { result } = renderHook(() => useUploadReview({ skipInformational: false, onStarted: vi.fn(), deps }));
+    const { result } = renderHook(() => useUploadReview({ projectId: PROJECT, skipInformational: false, onStarted: vi.fn(), deps }));
 
     let adding: Promise<void> | undefined;
     act(() => { adding = result.current.addFiles([file('big.xml')]); });
@@ -410,6 +416,35 @@ describe('useUploadReview', () => {
     expect(seenSignal?.aborted).toBe(true);
     expect(result.current.rows).toEqual([]);
     expect(deps.getJobDetection).not.toHaveBeenCalled();
+  });
+
+  // 5.353.0 — the review is given its project once.  Its rows are that
+  // project's staged jobs, so a later step is asked of it too, whatever the
+  // owner renders with afterwards.
+  it('every step of an upload is asked of the project the review was created for', async () => {
+    const deps = makeDeps();
+    const { result, rerender } = renderHook(
+      ({ projectId }) => useUploadReview({ projectId, skipInformational: false, onStarted: vi.fn(), deps }),
+      { initialProps: { projectId: PROJECT } },
+    );
+    await act(async () => {
+      await result.current.addFiles([file('scan.xml'), file('results.txt')]);
+    });
+    await waitFor(() => expect(result.current.rows.map((r) => r.phase)).toEqual(['ready', 'choose']));
+
+    rerender({ projectId: 99 });
+    await act(async () => {
+      await result.current.nameBatch('DMZ sweep');
+      await result.current.importReady();
+      await result.current.remove(result.current.rows[1].key);
+    });
+
+    expect(deps.renameScanBatch).toHaveBeenCalledWith(PROJECT, 7, 'DMZ sweep');
+    expect(deps.startIngestionJob).toHaveBeenCalledWith(PROJECT, 100, { formatOverride: null, sourceTool: null });
+    expect(deps.discardIngestionJob).toHaveBeenCalledWith(PROJECT, 101);
+    for (const dep of Object.values(deps)) {
+      expect(dep.mock.calls.map((call: unknown[]) => call[0])).not.toContain(99);
+    }
   });
 });
 

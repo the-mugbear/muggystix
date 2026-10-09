@@ -11,6 +11,7 @@ import { Loader2, RefreshCw, Search, X } from 'lucide-react';
 
 import { Finding, Host, addFindingHosts, getHosts } from '../services/api';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { Button } from './ui/button';
 import { Checkbox } from './ui/checkbox';
@@ -36,6 +37,7 @@ export interface AddFindingHostsDialogProps {
 }
 
 const AddFindingHostsDialog: React.FC<AddFindingHostsDialogProps> = ({ open, onOpenChange, finding, onAdded }) => {
+  const projectId = useProjectId();
   const [query, setQuery] = useState('');
   const debounced = useDebouncedValue(query.trim(), 250);
   const [picked, setPicked] = useState<Map<number, Picked>>(new Map());
@@ -44,8 +46,8 @@ const AddFindingHostsDialog: React.FC<AddFindingHostsDialogProps> = ({ open, onO
 
   // The rows of the previous search stay while the next one is read.
   const search = useQuery({
-    queryKey: ['getHosts', { search: debounced || undefined, limit: PAGE, include_total: false }],
-    queryFn: ({ signal }) => getHosts({ search: debounced || undefined, limit: PAGE, include_total: false }, signal),
+    queryKey: ['getHosts', projectId, { search: debounced || undefined, limit: PAGE, include_total: false }],
+    queryFn: ({ signal }) => getHosts(projectId, { search: debounced || undefined, limit: PAGE, include_total: false }, signal),
     enabled: open,
     placeholderData: keepPreviousData,
   });
@@ -53,7 +55,7 @@ const AddFindingHostsDialog: React.FC<AddFindingHostsDialogProps> = ({ open, onO
   const loading = search.isFetching;
 
   const add = useMutation({
-    mutationFn: (ids: number[]) => addFindingHosts(finding.id, ids),
+    mutationFn: (ids: number[]) => addFindingHosts(projectId, finding.id, ids),
     onSuccess: (updated, ids) => {
       onAdded(updated, ids);
       onOpenChange(false);

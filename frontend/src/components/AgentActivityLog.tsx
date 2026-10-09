@@ -9,6 +9,7 @@ import {
 import { queryErrorText } from '../lib/query';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useListQuery } from '../hooks/useListQuery';
+import { useProjectId } from '../hooks/useProjectId';
 import PostureSection from './posture/PostureSection';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -251,6 +252,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
   defaultStatusPreset = 0,
   defaultMineOnly = true,
 }) => {
+  const projectId = useProjectId();
   const [statusPreset, setStatusPreset] = useState(defaultStatusPreset);
   const [methodFilter, setMethodFilter] = useState(defaultMethodFilter);
   const [targetIpFilter, setTargetIpFilter] = useState('');
@@ -279,8 +281,8 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
   // the page reached the rest.
   const list = useListQuery<AgentApiCallRow>(
     'getAgentSessionApiActivity',
-    ({ offset, limit, signal }) => getAgentSessionApiActivity(sessionId, { ...filters, limit, offset }, signal),
-    [sessionId, filters],
+    ({ offset, limit, signal }) => getAgentSessionApiActivity(projectId, sessionId, { ...filters, limit, offset }, signal),
+    [projectId, sessionId, filters],
     { pageSize: PAGE_SIZE, errorMessage: FAILED },
   );
   // A failed "Show more" keeps the calls that are shown and says so under them.

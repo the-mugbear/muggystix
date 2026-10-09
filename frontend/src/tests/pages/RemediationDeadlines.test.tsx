@@ -31,7 +31,12 @@ vi.mock('../../services/api', () => ({
   addRemediationNote: vi.fn(),
   deleteRemediationNote: vi.fn(),
 }));
-const projectCtx = vi.hoisted(() => ({ projects: [] as Array<{ id: number; name: string }>, selectProject: vi.fn() }));
+// The project selected in the app (77) is none of the rows': this page reads
+// and writes each row through ITS project, never the selected one.
+const projectCtx = vi.hoisted(() => ({
+  currentProject: { id: 77, name: 'Selected' },
+  projects: [] as Array<{ id: number; name: string }>, selectProject: vi.fn(),
+}));
 vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => projectCtx }));
 const navigateMock = vi.hoisted(() => vi.fn());
 vi.mock('react-router-dom', async () => {
@@ -131,8 +136,9 @@ describe('Remediation deadlines (across projects)', () => {
     fireEvent.change(within(dialog).getByLabelText('Contact name'), { target: { value: 'Roger' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(applyRemediation).toHaveBeenCalledTimes(1));
-    // The third argument is the row's project: the mount that serves archived projects.
-    expect(applyRemediation.mock.calls[0]).toEqual([[{ finding_host_id: 2, contact_name: 'Roger' }], { overwrite: true }, 9]);
+    // The row's project first — not the one selected in the app — through the
+    // mount that serves archived projects.
+    expect(applyRemediation.mock.calls[0]).toEqual([9, [{ finding_host_id: 2, contact_name: 'Roger' }], { overwrite: true }, 'overview']);
   });
 
   it('says so when the reader administers no project', async () => {

@@ -25,7 +25,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useProject } from '../contexts/ProjectContext';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useListQuery } from '../hooks/useListQuery';
-import { GLOBAL, invalidateReads, queryErrorText } from '../lib/query';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import LastUpdated from '../components/LastUpdated';
 import TimeAgo from '../components/TimeAgo';
 import PostureLead from '../components/posture/PostureLead';
@@ -151,17 +151,17 @@ const Feedback: React.FC = () => {
     return q;
   }, [status, source, minRating, content, projectFilter, debouncedSearch]);
 
-  // The queue is every project's: both reads are GLOBAL.
+  // The queue is every project's: neither key names a project.
   const list = useListQuery<AgentFeedbackEntry>(
     'listAgentFeedback',
     ({ offset, limit, signal }) => listAgentFeedback({ ...query, limit, ...(offset > 0 ? { skip: offset } : {}) }, signal),
     [query],
-    { pageSize: PAGE, errorMessage: 'Could not load agent feedback.', global: true },
+    { pageSize: PAGE, errorMessage: 'Could not load agent feedback.' },
   );
   // The measures count the whole queue, whatever the filters: their own read,
   // so they keep their value while a new filter loads.
   const statsQuery = useQuery({
-    queryKey: [GLOBAL, 'getAgentFeedbackStats'],
+    queryKey: ['getAgentFeedbackStats'],
     queryFn: ({ signal }) => getAgentFeedbackStats(signal),
   });
   const stats = statsQuery.data ?? null;

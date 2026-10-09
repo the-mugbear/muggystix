@@ -401,7 +401,7 @@ describe('Scopes page — subnet search', () => {
     renderAt('/scopes?subnet_q=dmz');
     await screen.findByText('10.77.1.0/24');
     expect(screen.getByLabelText('Search subnets by CIDR or description')).toHaveValue('dmz');
-    expect(mocked.getDefaultScope).toHaveBeenCalledWith(expect.objectContaining({ subnetsSearch: 'dmz' }), expect.any(AbortSignal));
+    expect(mocked.getDefaultScope).toHaveBeenCalledWith(1, expect.objectContaining({ subnetsSearch: 'dmz' }), expect.any(AbortSignal));
   });
 
   it('typing writes the search to the URL once it settles', async () => {
@@ -417,7 +417,7 @@ describe('Scopes page — subnet search', () => {
     let releaseFirst!: (v: unknown) => void;
     const slowFirst = new Promise((resolve) => { releaseFirst = resolve; });
     const found = { ...scope, subnets_total: 1, subnets: [{ ...scope.subnets[0], id: 99, cidr: '172.16.9.0/24', description: 'found by search' }] };
-    mocked.getDefaultScope.mockImplementation(({ subnetsSearch }: { subnetsSearch: string }) =>
+    mocked.getDefaultScope.mockImplementation((_projectId: number, { subnetsSearch }: { subnetsSearch: string }) =>
       (subnetsSearch ? Promise.resolve(found) : slowFirst));
     // The page shows its body only once the first load settles; a reload
     // after a change is the request a search can overtake.
@@ -427,7 +427,7 @@ describe('Scopes page — subnet search', () => {
 
     let releaseReload!: (v: unknown) => void;
     const slowReload = new Promise((resolve) => { releaseReload = resolve; });
-    mocked.getDefaultScope.mockImplementation(({ subnetsSearch }: { subnetsSearch: string }) =>
+    mocked.getDefaultScope.mockImplementation((_projectId: number, { subnetsSearch }: { subnetsSearch: string }) =>
       (subnetsSearch ? Promise.resolve(found) : slowReload));
     mocked.listScopeDomains.mockResolvedValue({ items: [], total: 0, skip: 0, limit: 100, names_in_scope_total: 0 });
     mocked.addScopeSubnets.mockResolvedValue({});
@@ -455,7 +455,7 @@ describe('Scopes page — subnet search', () => {
     let releaseReload!: (v: unknown) => void;
     const slowReload = new Promise((resolve) => { releaseReload = resolve; });
     let releaseCoverage!: (v: unknown) => void;
-    mocked.getDefaultScope.mockImplementation(({ subnetsSearch }: { subnetsSearch: string }) =>
+    mocked.getDefaultScope.mockImplementation((_projectId: number, { subnetsSearch }: { subnetsSearch: string }) =>
       (subnetsSearch ? Promise.resolve(found) : slowReload));
     mocked.getScopeCoverage.mockReturnValue(new Promise((resolve) => { releaseCoverage = resolve; }));
     mocked.addScopeSubnets.mockResolvedValue({});

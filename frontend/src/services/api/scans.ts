@@ -6,7 +6,7 @@
  * hosts/scans/scopes/dashboard behind).  Consumers still import these
  * from ``../services/api`` — the barrel re-exports this module.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 import type { HostWithWork } from '../../utils/scanDeletion';
 
 export interface ScanVulnerabilitySummary {
@@ -135,6 +135,7 @@ export interface Scan {
 }
 
 export const getScans = async (
+  projectId: number,
   skip = 0,
   limit = 100,
   options?: {
@@ -165,7 +166,7 @@ export const getScans = async (
   if (sortOrder) params.sort_order = sortOrder;
   if (batchId != null) params.batch_id = batchId;
   else if (unbatched) params.unbatched = true;
-  const response = await api.get(`${p()}/scans/`, { params, signal });
+  const response = await api.get(`${projectPath(projectId)}/scans/`, { params, signal });
   return response.data;
 };
 
@@ -233,6 +234,7 @@ export interface ImportHistoryPage {
 }
 
 export const getImportHistory = async (
+  projectId: number,
   options?: {
     search?: string; tool?: string; createdAfter?: string; uploadedBy?: number;
     skip?: number; limit?: number; signal?: AbortSignal;
@@ -246,11 +248,12 @@ export const getImportHistory = async (
   if (uploadedBy != null) params.uploaded_by = uploadedBy;
   if (skip) params.skip = skip;
   if (limit) params.limit = limit;
-  const response = await api.get(`${p()}/scans/history`, { params, signal });
+  const response = await api.get(`${projectPath(projectId)}/scans/history`, { params, signal });
   return response.data;
 };
 
 export const getScanBatches = async (
+  projectId: number,
   options?: {
     search?: string; tool?: string; createdAfter?: string; uploadedBy?: number; skip?: number; limit?: number;
     /** Only these batches (a history page's). */
@@ -267,15 +270,16 @@ export const getScanBatches = async (
   if (uploadedBy != null) params.uploaded_by = uploadedBy;
   if (skip) params.skip = skip;
   if (limit) params.limit = limit;
-  const response = await api.get(`${p()}/scans/batches`, { params, signal });
+  const response = await api.get(`${projectPath(projectId)}/scans/batches`, { params, signal });
   return response.data;
 };
 
 /** Start an upload batch for a multi-file upload; send its id with each file. */
 export const createScanBatch = async (
+  projectId: number,
   label: string,
 ): Promise<{ id: number; label: string; created_at?: string | null }> => {
-  const response = await api.post(`${p()}/scans/batches`, { label });
+  const response = await api.post(`${projectPath(projectId)}/scans/batches`, { label });
   return response.data;
 };
 
@@ -283,10 +287,11 @@ export const createScanBatch = async (
  *  moment files are dropped). An agent's batch is refused with 409: it is
  *  keyed by its label within the agent session. */
 export const renameScanBatch = async (
+  projectId: number,
   batchId: number,
   label: string,
 ): Promise<{ id: number; label: string; created_at?: string | null }> => {
-  const response = await api.patch(`${p()}/scans/batches/${batchId}`, { label });
+  const response = await api.patch(`${projectPath(projectId)}/scans/batches/${batchId}`, { label });
   return response.data;
 };
 
@@ -296,8 +301,8 @@ export interface ScanInventoryMarker {
   latest_id: number | null;
 }
 
-export const getScanInventoryMarker = async (signal?: AbortSignal): Promise<ScanInventoryMarker> => {
-  const response = await api.get(`${p()}/scans/inventory-marker`, { signal });
+export const getScanInventoryMarker = async (projectId: number, signal?: AbortSignal): Promise<ScanInventoryMarker> => {
+  const response = await api.get(`${projectPath(projectId)}/scans/inventory-marker`, { signal });
   return response.data;
 };
 
@@ -341,6 +346,7 @@ export interface ScanUploader {
 }
 
 export const getScansSummary = async (
+  projectId: number,
   options?: {
     search?: string;
     tool?: string;
@@ -355,12 +361,12 @@ export const getScansSummary = async (
   if (tool) params.tool = tool;
   if (createdAfter) params.created_after = createdAfter;
   if (uploadedBy != null) params.uploaded_by = uploadedBy;
-  const response = await api.get(`${p()}/scans/summary`, { params, signal });
+  const response = await api.get(`${projectPath(projectId)}/scans/summary`, { params, signal });
   return response.data;
 };
 
-export const getScan = async (scanId: number, signal?: AbortSignal) => {
-  const response = await api.get(`${p()}/scans/${scanId}`, { signal });
+export const getScan = async (projectId: number, scanId: number, signal?: AbortSignal) => {
+  const response = await api.get(`${projectPath(projectId)}/scans/${scanId}`, { signal });
   return response.data;
 };
 
@@ -370,11 +376,12 @@ export const getScan = async (scanId: number, signal?: AbortSignal) => {
  * them; the parameter is sent only then.
  */
 export const deleteScan = async (
+  projectId: number,
   scanId: number,
   options?: { confirmHostsWithWork?: boolean },
 ) => {
   const response = await api.delete(
-    `${p()}/scans/${scanId}`,
+    `${projectPath(projectId)}/scans/${scanId}`,
     options?.confirmHostsWithWork ? { params: { confirm_hosts_with_work: true } } : undefined,
   );
   return response.data;
@@ -416,10 +423,11 @@ export interface ScanDeletionImpact {
 }
 
 export const getScanDeletionImpact = async (
+  projectId: number,
   scanId: number,
   signal?: AbortSignal,
 ): Promise<ScanDeletionImpact> => {
-  const response = await api.get(`${p()}/scans/${scanId}/deletion-impact`, { signal });
+  const response = await api.get(`${projectPath(projectId)}/scans/${scanId}/deletion-impact`, { signal });
   return response.data;
 };
 
@@ -485,7 +493,7 @@ export interface ScanDiffResponse {
   not_observed_ports: ScanDiffPortChange[];
 }
 
-export const compareScans = async (a: number, b: number, signal?: AbortSignal): Promise<ScanDiffResponse> => {
-  const response = await api.get(`${p()}/scans/compare`, { params: { a, b }, signal });
+export const compareScans = async (projectId: number, a: number, b: number, signal?: AbortSignal): Promise<ScanDiffResponse> => {
+  const response = await api.get(`${projectPath(projectId)}/scans/compare`, { params: { a, b }, signal });
   return response.data;
 };

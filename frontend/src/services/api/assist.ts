@@ -11,7 +11,7 @@
  * list that lived here were keyed by a second id (the session's
  * `assist_sessions` row), which no longer exists.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 
 export interface McpClientSetup {
   id: string;
@@ -62,10 +62,11 @@ export interface StartAssistRequest {
 }
 
 export const startAssistSession = async (
+  projectId: number,
   body: StartAssistRequest,
 ): Promise<StartAssistResponse> => {
   const res = await api.post<StartAssistResponse>(
-    `${p()}/assist/start`,
+    `${projectPath(projectId)}/assist/start`,
     body,
   );
   return res.data;

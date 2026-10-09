@@ -5,6 +5,7 @@
  */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -18,6 +19,7 @@ vi.mock('../../contexts/AuthContext', async () =>
   vi.importActual<typeof import('../../contexts/AuthContext')>('../../contexts/AuthContext'));
 
 import { AuthProvider, useAuth } from '../../contexts/AuthContext';
+import { createQueryClient } from '../../lib/query';
 
 const ADMIN = { id: 1, username: 'admin', role: 'admin' };
 
@@ -59,5 +61,33 @@ describe('AuthProvider — verifying the stored session', () => {
     expect(localStorage.getItem('auth_token')).toBeNull();
     expect(localStorage.getItem('auth_user')).toBeNull();
     expect(setCurrentProjectId).toHaveBeenCalledWith(null);
+  });
+
+  // 5.353.0 — a key names the project, not the user: what one user read
+  // (remembered answers included) is dropped when the signed-in user changes.
+  it('drops what the user read from the query cache when the session ends — and keeps it while the session is kept', async () => {
+    const remembered = { staleTime: Infinity, gcTime: Infinity };
+    const withRead = async () => {
+      const client = createQueryClient();
+      await client.fetchQuery({ queryKey: ['getRemediationPolicy'], queryFn: async () => 'read by admin', ...remembered });
+      return client;
+    };
+    const mountWith = (client: ReturnType<typeof createQueryClient>) => render(
+      <MemoryRouter><AuthProvider><Who /></AuthProvider></MemoryRouter>,
+      { wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> },
+    );
+
+    apiGet.mockRejectedValue({ response: { status: 503 } });
+    const kept = await withRead();
+    const first = mountWith(kept);
+    expect(await screen.findByText('signed in as admin')).toBeInTheDocument();
+    expect(kept.getQueryData(['getRemediationPolicy'])).toBe('read by admin');
+    first.unmount();
+
+    apiGet.mockRejectedValue({ response: { status: 401 } });
+    const ended = await withRead();
+    mountWith(ended);
+    expect(await screen.findByText('signed out')).toBeInTheDocument();
+    expect(ended.getQueryData(['getRemediationPolicy'])).toBeUndefined();
   });
 });

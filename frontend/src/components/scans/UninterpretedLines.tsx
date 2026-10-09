@@ -10,6 +10,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
 import { getUninterpretedLines } from '../../services/api';
+import { useProjectId } from '../../hooks/useProjectId';
 import { queryErrorText } from '../../lib/query';
 import { copyToClipboard } from '../../utils/clipboard';
 import { Badge } from '../ui/badge';
@@ -36,9 +37,10 @@ const UninterpretedLines: React.FC<Props> = ({ jobId, total, distinct, formatKey
   const [copied, setCopied] = useState(false);
   // Read when first opened and once: a finished job's shapes do not change.
   // Opening again after a failure asks again.
+  const projectId = useProjectId();
   const lines = useQuery({
-    queryKey: ['getUninterpretedLines', jobId],
-    queryFn: ({ signal }) => getUninterpretedLines(jobId, signal),
+    queryKey: ['getUninterpretedLines', projectId, jobId],
+    queryFn: ({ signal }) => getUninterpretedLines(projectId, jobId, signal),
     enabled: open,
     staleTime: Infinity,
   });

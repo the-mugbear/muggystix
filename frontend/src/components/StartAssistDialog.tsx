@@ -46,6 +46,7 @@ import {
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { startAssistSession, type AgentSessionRow } from '../services/api';
+import { useProjectId } from '../hooks/useProjectId';
 import { SECRET_MUTATION, invalidateReads, queryErrorText } from '../lib/query';
 import AssistSessionsPanel from './AssistSessionsPanel';
 import AgentSessionCredentials, { KeyHandoffFooter } from './AgentSessionCredentials';
@@ -89,10 +90,11 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   const liveSession = instruction ? mySessions.find((s) => hasLiveKey(s, Date.now())) : undefined;
   const [purpose, setPurpose] = useState('');
   const queryClient = useQueryClient();
+  const projectId = useProjectId();
   // The key is shown once: it is this dialog's mutation result and nothing
   // else's — never a query, and dropped with the dialog (`reset`, `gcTime: 0`).
   const start = useMutation({
-    mutationFn: (stated: string | undefined) => startAssistSession({ purpose: stated }),
+    mutationFn: (stated: string | undefined) => startAssistSession(projectId, { purpose: stated }),
     ...SECRET_MUTATION,
     onSuccess: () => {
       // The new key is live the moment this returns — reflect it wherever the

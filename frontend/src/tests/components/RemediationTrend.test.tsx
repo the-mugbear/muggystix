@@ -9,6 +9,7 @@ const getRemediationTrend = vi.fn();
 vi.mock('../../services/api', () => ({
   getRemediationTrend: (...a: unknown[]) => getRemediationTrend(...a),
 }));
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1, name: 'P' } }) }));
 
 import RemediationTrend from '../../components/remediation/RemediationTrend';
 
@@ -21,6 +22,8 @@ describe('RemediationTrend', () => {
     getRemediationTrend.mockResolvedValue({ as_of: '2026-11-10', days: 90, daily: [], closed_by_month: [] });
     render(<RemediationTrend scope="project" />);
     expect(await screen.findByText(/No day has been recorded yet/)).toBeInTheDocument();
+    // The project page asks the project on screen, through its own route.
+    expect(getRemediationTrend).toHaveBeenCalledWith(1, undefined, expect.anything());
     expect(screen.getByText('Nothing was reported fixed in the last twelve months.')).toBeInTheDocument();
     expect(screen.queryByRole('img')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Show as table' })).not.toBeInTheDocument();
@@ -46,7 +49,7 @@ describe('RemediationTrend', () => {
     expect(screen.getByRole('img', { name: /reported fixed late per month: 4 in all/ })).toBeInTheDocument();
     expect(screen.getByText(/6 reported fixed on time, 4 late, 1 with no deadline to judge by/)).toBeInTheDocument();
     expect(screen.queryByText(/closed/i)).not.toBeInTheDocument();
-    expect(getRemediationTrend).toHaveBeenCalledWith('all', 9, expect.anything());
+    expect(getRemediationTrend).toHaveBeenCalledWith(9, 'all', expect.anything());
     fireEvent.click(screen.getByRole('button', { name: 'Show as table' }));
     const [days, months] = screen.getAllByRole('table');
     expect(within(days).getAllByRole('row')).toHaveLength(4);

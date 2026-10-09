@@ -1,8 +1,8 @@
 /**
  * Outbound webhook management (v2.73.0) — admin config for the current
  * project.  Lists webhooks, supports add / delete / enable-toggle / send-
- * test.  Scoped to the active project (the API client targets it via the
- * `p()` prefix), independent of the member-management project picker.
+ * test.  Scoped to the active project (`useProjectId()`), independent of the
+ * member-management project picker.
  */
 import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -20,6 +20,7 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from './ui/badge';
@@ -32,6 +33,7 @@ import { Label } from './ui/label';
 import { Switch } from './ui/switch';
 
 const WebhookSettings: React.FC = () => {
+  const projectId = useProjectId();
   const toast = useToast();
   const queryClient = useQueryClient();
   const [confirmEl, confirm] = useConfirm();
@@ -43,15 +45,21 @@ const WebhookSettings: React.FC = () => {
   const [secret, setSecret] = useState('');
   const [selectedEvents, setSelectedEvents] = useState<Set<string>>(new Set());
 
-  const hooksQuery = useQuery({ queryKey: ['listWebhooks'], queryFn: ({ signal }) => listWebhooks(signal) });
-  const typesQuery = useQuery({ queryKey: ['listWebhookEventTypes'], queryFn: ({ signal }) => listWebhookEventTypes(signal) });
+  const hooksQuery = useQuery({
+    queryKey: ['listWebhooks', projectId],
+    queryFn: ({ signal }) => listWebhooks(projectId, signal),
+  });
+  const typesQuery = useQuery({
+    queryKey: ['listWebhookEventTypes', projectId],
+    queryFn: ({ signal }) => listWebhookEventTypes(projectId, signal),
+  });
   const webhooks: WebhookConfig[] = hooksQuery.data ?? [];
   const eventTypes: WebhookEventType[] = typesQuery.data ?? [];
   const loading = hooksQuery.isFetching || typesQuery.isFetching;
   const error = loading ? null : queryErrorText(hooksQuery.error ?? typesQuery.error, 'Failed to load webhooks.');
   /** Patch the list in place with what a write is known to have done. */
   const setWebhooks = (update: (prev: WebhookConfig[]) => WebhookConfig[]) => {
-    queryClient.setQueryData<WebhookConfig[]>(['listWebhooks'], (prev) => (prev ? update(prev) : prev));
+    queryClient.setQueryData<WebhookConfig[]>(['listWebhooks', projectId], (prev) => (prev ? update(prev) : prev));
   };
 
   const resetForm = () => {
@@ -63,11 +71,11 @@ const WebhookSettings: React.FC = () => {
   };
 
   const create = useMutation({
-    mutationFn: (payload: WebhookCreatePayload) => createWebhook(payload),
+    mutationFn: (payload: WebhookCreatePayload) => createWebhook(projectId, payload),
     onSuccess: () => {
       toast.success('Webhook created');
       resetForm();
-      void queryClient.invalidateQueries({ queryKey: ['listWebhooks'] });
+      void queryClient.invalidateQueries({ queryKey: ['listWebhooks', projectId] });
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to create webhook.')),
   });
@@ -81,7 +89,7 @@ const WebhookSettings: React.FC = () => {
   });
 
   const toggle = useMutation({
-    mutationFn: (hook: WebhookConfig) => updateWebhook(hook.id, { is_active: !hook.is_active }),
+    mutationFn: (hook: WebhookConfig) => updateWebhook(projectId, hook.id,{ is_active: !hook.is_active }),
     onSuccess: (_updated, hook) => {
       setWebhooks((prev) => prev.map((h) => (h.id === hook.id ? { ...h, is_active: !h.is_active } : h)));
     },
@@ -91,7 +99,7 @@ const WebhookSettings: React.FC = () => {
 
   // Not a write: one test delivery, whose outcome is a toast.
   const test = useMutation({
-    mutationFn: (hook: WebhookConfig) => testWebhook(hook.id),
+    mutationFn: (hook: WebhookConfig) => testWebhook(projectId, hook.id),
     onSuccess: (result) => {
       if (result.ok) {
         toast.success(`Test delivered (HTTP ${result.status_code})`);
@@ -104,7 +112,7 @@ const WebhookSettings: React.FC = () => {
   const handleTest = (hook: WebhookConfig) => test.mutate(hook);
 
   const remove = useMutation({
-    mutationFn: (hook: WebhookConfig) => deleteWebhook(hook.id),
+    mutationFn: (hook: WebhookConfig) => deleteWebhook(projectId, hook.id),
     onSuccess: (_void, hook) => {
       setWebhooks((prev) => prev.filter((h) => h.id !== hook.id));
       toast.info('Webhook deleted', { autoHideMs: 2000 });

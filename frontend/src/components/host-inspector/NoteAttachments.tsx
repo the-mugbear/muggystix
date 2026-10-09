@@ -17,6 +17,7 @@ import { Checkbox } from '../ui/checkbox';
 import { Textarea } from '../ui/textarea';
 import ScreenshotLightbox from '../ScreenshotLightbox';
 import { useToast } from '../../contexts/ToastContext';
+import { useProjectId } from '../../hooks/useProjectId';
 import { invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 
@@ -107,6 +108,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   useImperativeHandle(ref, () => ({
     openPicker: () => { if (!busyRef.current) fileRef.current?.click(); },
   }), []);
+  const projectId = useProjectId();
   const queryClient = useQueryClient();
   const [lightbox, setLightbox] = useState<{ src: string; caption: string } | null>(null);
 
@@ -144,10 +146,11 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   // which would be left showing it after this one revoked it.)
   const instance = useId();
   const own = useQueries({
+    // eslint-disable-next-line @tanstack/query/exhaustive-deps -- `gone` is "this card has unmounted", not an input of the read
     queries: attachments.map((att) => ({
-      queryKey: ['getNoteAttachmentObjectUrl', att.id, instance],
+      queryKey: ['getNoteAttachmentObjectUrl', projectId, att.id, instance],
       queryFn: async ({ signal }) => {
-        const url = await getNoteAttachmentObjectUrl(att.id, signal);
+        const url = await getNoteAttachmentObjectUrl(projectId, att.id, signal);
         if (gone.current) URL.revokeObjectURL(url);
         else createdUrls.current.push(url);
         return url;
@@ -182,7 +185,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   // On a finding (`reportMarking`) a caption, a mark or an image is also one
   // of the finding's images: the editor's picker and the placed images follow.
   const changed = () => {
-    if (hostId != null) void queryClient.invalidateQueries({ queryKey: ['getHost', hostId] });
+    if (hostId != null) void queryClient.invalidateQueries({ queryKey: ['getHost', projectId, hostId] });
     onChanged?.();
     if (reportMarking) void invalidateReads(queryClient, 'getFindingImages');
   };
@@ -190,7 +193,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   const upload = useMutation({
     mutationFn: (file: File): Promise<unknown> => {
       if (uploadFn) return uploadFn(file);
-      if (hostId != null) return uploadNoteAttachment(hostId, noteId, file);
+      if (hostId != null) return uploadNoteAttachment(projectId, hostId, noteId, file);
       return Promise.reject(new Error('No upload target configured for this attachment.'));
     },
     onSuccess: changed,
@@ -217,7 +220,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   // Optimistic: the mark flips at once and the thread reloads behind it.
   const [reportOverride, setReportOverride] = useState<Record<number, boolean>>({});
   const mark = useMutation({
-    mutationFn: ({ id, include }: { id: number; include: boolean }) => setNoteAttachmentInReport(id, include),
+    mutationFn: ({ id, include }: { id: number; include: boolean }) => setNoteAttachmentInReport(projectId, id, include),
     onMutate: ({ id, include }) => setReportOverride((m) => ({ ...m, [id]: include })),
     onSuccess: (_stored, { id }) => {
       refuse(id, null);
@@ -237,7 +240,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   const onMark = (att: NoteAttachment, include: boolean) => mark.mutate({ id: att.id, include });
 
   const remove = useMutation({
-    mutationFn: (id: number) => deleteNoteAttachment(id),
+    mutationFn: (id: number) => deleteNoteAttachment(projectId, id),
     onSuccess: (_none, id) => {
       refuse(id, null);
       changed();
@@ -289,7 +292,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   // Several images' captions can be on their way at once, so which are is
   // kept per image here; the mutation itself only knows its latest call.
   const captionSave = useMutation({
-    mutationFn: ({ id, text }: { id: number; text: string }) => setNoteAttachmentCaption(id, text.trim()),
+    mutationFn: ({ id, text }: { id: number; text: string }) => setNoteAttachmentCaption(projectId, id, text.trim()),
     onMutate: ({ id }) => setCaptionSaving((prev) => new Set(prev).add(id)),
     onSuccess: (_stored, { id }) => {
       refuse(id, null);

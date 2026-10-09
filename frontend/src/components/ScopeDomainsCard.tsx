@@ -13,6 +13,7 @@ import { formatApiError } from '../utils/apiErrors';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useListQuery } from '../hooks/useListQuery';
+import { useProjectId } from '../hooks/useProjectId';
 import { invalidateReads } from '../lib/query';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -85,6 +86,7 @@ const TIPS = {
 const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = true }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const projectId = useProjectId();
   const [confirmDialog, confirm] = useConfirm();
   const [domainInput, setDomainInput] = useState('');
   const [includeSub, setIncludeSub] = useState(false);
@@ -94,8 +96,8 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = 
   // entries, so the list loads a page at a time with a load-more affordance.
   const list = useListQuery<ScopeDomainRow, ScopeDomainPage>(
     'listScopeDomains',
-    ({ offset, limit, signal }) => listScopeDomains(scopeId, { skip: offset, limit }, signal),
-    [scopeId],
+    ({ offset, limit, signal }) => listScopeDomains(projectId, scopeId, { skip: offset, limit }, signal),
+    [projectId, scopeId],
     { pageSize: PAGE, errorMessage: 'Failed to load scope domains.' },
   );
   const { rows, total, error, loadingMore } = list;
@@ -112,6 +114,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = 
 
   const add = useMutation({
     mutationFn: (entries: string[]) => addScopeDomains(
+      projectId,
       scopeId,
       entries.map((domain) => ({ domain, include_subdomains: includeSub })),
     ),
@@ -150,7 +153,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = 
   };
 
   const remove = useMutation({
-    mutationFn: (row: ScopeDomainRow) => deleteScopeDomain(scopeId, row.id),
+    mutationFn: (row: ScopeDomainRow) => deleteScopeDomain(projectId, scopeId, row.id),
     onSuccess: (_void, row) => {
       toast.success(`Removed ${row.domain} from scope`);
       return scopeChanged();

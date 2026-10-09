@@ -47,6 +47,7 @@ import {
 import type { FindingNeed, MyTaskReason } from '../services/api';
 import { useProject } from '../contexts/ProjectContext';
 import { projectRoleAtLeast } from '../utils/projectRole';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useCanStartAgentSession } from '../hooks/useCanStartAgentSession';
 import { invalidateReads, queryErrorText } from '../lib/query';
@@ -239,6 +240,7 @@ const BlockersStrip: React.FC<{
 const Operations: React.FC = () => {
   const navigate = useNavigate();
   const { currentProject } = useProject();
+  const projectId = useProjectId();
   // Write controls — Review, Still reviewed, Re-open, Claim, the selection
   // columns — follow the project role (UI_STYLE_GUIDE §40): hidden for a
   // reader, shown while the role is not known yet (the server decides).
@@ -261,8 +263,8 @@ const Operations: React.FC = () => {
   // failure raises the page-level error.  (Its scope states and the
   // scanner-observation counts are shown on Posture since 5.330.0.)
   const coverageQuery = useQuery({
-    queryKey: ['getProjectCoverage'],
-    queryFn: ({ signal }) => getProjectCoverage(signal),
+    queryKey: ['getProjectCoverage', projectId],
+    queryFn: ({ signal }) => getProjectCoverage(projectId, signal),
   });
   const coverage = coverageQuery.data ?? null;
   const error = queryErrorText(coverageQuery.error, 'Failed to load Operations data.');
@@ -270,8 +272,8 @@ const Operations: React.FC = () => {
   // blockers and the since-last-visit diff — no rows (5.331.0).  A tab's rows
   // are its panel's own request, made when the tab is opened.
   const workbenchQuery = useQuery({
-    queryKey: ['getWorkbench', LIGHT_WORKBENCH],
-    queryFn: ({ signal }) => getWorkbench(LIGHT_WORKBENCH, signal),
+    queryKey: ['getWorkbench', projectId, LIGHT_WORKBENCH],
+    queryFn: ({ signal }) => getWorkbench(projectId, LIGHT_WORKBENCH, signal),
   });
   // Counts that could not be read again are not known: never the previous
   // ones under a failure.
@@ -283,8 +285,8 @@ const Operations: React.FC = () => {
   // project the queue was most of the workbench's time).  null = not known —
   // loading, or it could not be computed (a 503) — and never shown as 0.
   const pickupQuery = useQuery({
-    queryKey: ['getInvestigationQueue', null, QUEUE_TOTAL_ONLY],
-    queryFn: ({ signal }) => getInvestigationQueue(null, { ...QUEUE_TOTAL_ONLY, signal }),
+    queryKey: ['getInvestigationQueue', projectId, null, QUEUE_TOTAL_ONLY],
+    queryFn: ({ signal }) => getInvestigationQueue(projectId, null, { ...QUEUE_TOTAL_ONLY, signal }),
   });
   const pickupTotal: number | null = pickupQuery.isError ? null : pickupQuery.data?.queue_total ?? null;
   const pickupLoading = pickupQuery.isFetching;
@@ -319,7 +321,7 @@ const Operations: React.FC = () => {
   // It is bootstrapped once, on the genuine first visit (no prior baseline,
   // so nothing to lose); thereafter it advances only when the user
   // acknowledges the banner, so a glance doesn't discard unreviewed changes.
-  const { mutate: bootstrapSeen } = useMutation({ mutationFn: () => markWorkbenchSeen() });
+  const { mutate: bootstrapSeen } = useMutation({ mutationFn: () => markWorkbenchSeen(projectId) });
   const seenBootstrappedRef = useRef(false);
   const isFirstVisit = workbench?.since_last_visit.is_first_visit === true;
   useEffect(() => {
@@ -340,7 +342,7 @@ const Operations: React.FC = () => {
   const [acknowledgedSnapshot, setAcknowledgedSnapshot] = useState<number | null>(null);
   const sinceDismissed = acknowledgedSnapshot != null && acknowledgedSnapshot === snapshotAt;
   const acknowledge = useMutation({
-    mutationFn: (seen: { asOf: string | null; snapshot: number }) => markWorkbenchSeen(seen.asOf),
+    mutationFn: (seen: { asOf: string | null; snapshot: number }) => markWorkbenchSeen(projectId, seen.asOf),
     onSuccess: (_saved, seen) => setAcknowledgedSnapshot(seen.snapshot),
   });
   const sinceAsOf = workbench?.since_last_visit.as_of ?? null;

@@ -15,7 +15,8 @@ import {
   getRemediationFollowUp, recordRemediationFollowUp, recordRemediationFollowUpOverview, type RemediationFollowUp,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
-import { GLOBAL, queryErrorText, useLastSettled } from '../../lib/query';
+import { useProjectId } from '../../hooks/useProjectId';
+import { queryErrorText, useLastSettled } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { copyToClipboard } from '../../utils/clipboard';
 import { invalidateRemediationReads, localToday } from '../../utils/remediation';
@@ -58,6 +59,11 @@ export const RemediationFollowUpDialog: React.FC<{
   const toast = useToast();
   const queryClient = useQueryClient();
   const across = scope === 'all';
+  // The project page asks, and records in, its own project; across projects
+  // it is the chosen one, or none (`null`) for every project.
+  const currentProjectId = useProjectId();
+  const asked = across ? projectId ?? null : currentProjectId;
+  const every = across ? 'all' : undefined;
   const [copied, setCopied] = useState(false);
   const [note, setNote] = useState('');
   // How far ahead the reminder looks: 0 = overdue and due soon only.
@@ -66,14 +72,13 @@ export const RemediationFollowUpDialog: React.FC<{
   // Keyed by the horizon: an answer for another one (the choice changed
   // meanwhile) is never the one on screen.
   const query = useQuery({
-    queryKey: across
-      ? [GLOBAL, 'getRemediationFollowUp', contactEmail, 'all', projectId, ahead]
-      : ['getRemediationFollowUp', contactEmail, undefined, projectId, ahead],
-    queryFn: ({ signal }) => getRemediationFollowUp(contactEmail, across ? 'all' : undefined, projectId, signal, ahead),
+    queryKey: ['getRemediationFollowUp', asked, contactEmail, every, ahead],
+    queryFn: ({ signal }) => getRemediationFollowUp(asked, contactEmail, every, signal, ahead),
   });
   // The last message prepared stays on screen while another horizon is asked
-  // for — and when that fails, so the choice can be changed back.
-  const data = useLastSettled(query.data, { global: across }) ?? null;
+  // for — and when that fails, so the choice can be changed back.  It is the
+  // message of the project(s) asked: another one forgets it.
+  const data = useLastSettled(query.data, { resetKey: asked }) ?? null;
   const loading = query.isFetching;
   const error = loading ? null : queryErrorText(query.error, 'The follow-up could not be prepared.');
 
@@ -111,13 +116,13 @@ export const RemediationFollowUpDialog: React.FC<{
           } catch (err) {
             const status = (err as { response?: { status?: number } })?.response?.status;
             if (status !== 404 && status !== 405) throw err;
-            for (const id of prepared.project_ids) recorded += (await recordRemediationFollowUp(body, id)).recorded;
+            for (const id of prepared.project_ids) recorded += (await recordRemediationFollowUp(id, body, 'overview')).recorded;
           }
         } else if (across) {
           // One chosen project, through the mount that serves archived ones.
-          for (const id of prepared.project_ids) recorded += (await recordRemediationFollowUp(body, id)).recorded;
+          for (const id of prepared.project_ids) recorded += (await recordRemediationFollowUp(id, body, 'overview')).recorded;
         } else {
-          recorded = (await recordRemediationFollowUp(body)).recorded;
+          recorded = (await recordRemediationFollowUp(currentProjectId, body)).recorded;
         }
       } catch (err) {
         throw new NotRecorded(err, recorded);

@@ -1,5 +1,5 @@
 /**
- * ProjectProvider (5.351.0 — on the `[GLOBAL, 'getProjects']` query): the
+ * ProjectProvider (5.351.0 — on the `['getProjects']` query): the
  * project list, which project is the current one, and the three screens it
  * shows instead of the app (loading, could not load, no projects).  The
  * current project is derived from the list and the reader's choice; the API
@@ -26,7 +26,6 @@ vi.mock('../../contexts/ProjectContext', async () =>
   vi.importActual<typeof import('../../contexts/ProjectContext')>('../../contexts/ProjectContext'));
 
 import { pickProject, ProjectProvider, useProject } from '../../contexts/ProjectContext';
-import { GLOBAL } from '../../lib/query';
 import type { Project } from '../../services/api';
 
 const project = (id: number, name: string): Project => ({ id, name, slug: name.toLowerCase() } as Project);
@@ -51,7 +50,7 @@ const Page: React.FC = () => {
     <div>
       <p data-testid="current">{ctx.currentProject?.name ?? 'none'}</p>
       <p data-testid="list">{ctx.projects.map((p) => p.name).join(',')}</p>
-      <button type="button" onClick={() => void client.invalidateQueries({ queryKey: [GLOBAL, 'getProjects'] })}>
+      <button type="button" onClick={() => void client.invalidateQueries({ queryKey: ['getProjects'] })}>
         another reader re-reads
       </button>
     </div>

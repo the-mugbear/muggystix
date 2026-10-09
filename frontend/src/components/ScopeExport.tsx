@@ -5,6 +5,7 @@ import { downloadTextFile } from '../utils/download';
 import { queryErrorText } from '../lib/query';
 import { Copy, Download, FolderTree, Loader2 } from 'lucide-react';
 import { getScopeHostList } from '../services/api';
+import { useProjectId } from '../hooks/useProjectId';
 import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
 import {
@@ -45,8 +46,9 @@ export default function ScopeExport({ open, onClose, scopeId, scopeName }: Scope
 
   // Asked for by the button, not by opening the dialog: an action, so its
   // answer, busy state and failure are the mutation's.
+  const projectId = useProjectId();
   const generate = useMutation({
-    mutationFn: (format: ExportFormat) => getScopeHostList(scopeId, format),
+    mutationFn: (format: ExportFormat) => getScopeHostList(projectId, scopeId, format),
     onError: (err) => console.error('Error fetching scope hosts:', err),
   });
   const output = generate.data ?? '';

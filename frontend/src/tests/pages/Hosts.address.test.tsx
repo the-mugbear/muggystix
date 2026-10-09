@@ -72,7 +72,11 @@ const findHostsTable = () => waitFor(() => {
   expect(screen.queryByText('Loading table…')).toBeNull();
   return screen.getByRole('table');
 });
-const asked =() => mocked.getHosts.mock.calls.map(([params]) => params as Record<string, unknown>);
+/** The conditions of each list read — every one asked of the project on screen. */
+const asked = () => mocked.getHosts.mock.calls.map(([projectId, params]) => {
+  expect(projectId).toBe(1);
+  return params as Record<string, unknown>;
+});
 const last = () => asked()[asked().length - 1];
 
 describe('Hosts — the list is its address (real router)', () => {
@@ -80,7 +84,7 @@ describe('Hosts — the list is its address (real router)', () => {
     vi.clearAllMocks();
     sessionStorage.clear();
     localStorage.clear();
-    mocked.getHosts.mockImplementation(async (params: { skip?: number }) => ({
+    mocked.getHosts.mockImplementation(async (_projectId: number, params: { skip?: number }) => ({
       items: Array.from({ length: 25 }, (_, i) => host((params.skip ?? 0) + i + 1)), total: 120,
       skip: params.skip ?? 0, limit: 25,
     }));

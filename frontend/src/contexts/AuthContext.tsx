@@ -1,12 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { flushSync } from 'react-dom';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { createAuthLogger } from '../utils/logger';
 import { accountChangedElsewhere, reloadForAccountChange } from '../utils/authSession';
 import { returnPathAfterLogin } from '../utils/loginReturn';
 import api, { setCurrentProjectId } from '../services/api';
-import { SECRET_MUTATION, getQueryScope, setQueryScope } from '../lib/query';
+import { SECRET_MUTATION } from '../lib/query';
 
 interface User {
   id: number;
@@ -80,9 +80,18 @@ const ROLE_HIERARCHY = {
 
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  // The query cache is partitioned by who is signed in (lib/query): set while
-  // rendering, so every query under this provider is keyed for this user.
-  setQueryScope({ ...getQueryScope(), userId: user?.id ?? null });
+  // Another user's data is never in the query cache: what the previous user
+  // read (remembered answers included) is dropped when the signed-in user
+  // changes — on sign-out, and when someone else signs in.  Done while
+  // rendering, so nothing below this provider can read it first.  (Keys name
+  // the project, not the user: this is the user's half of the isolation.)
+  const queryClient = useQueryClient();
+  const cacheOwner = useRef<number | null>(null);
+  const userId = user?.id ?? null;
+  if (cacheOwner.current !== userId) {
+    if (cacheOwner.current !== null) queryClient.getQueryCache().clear();
+    cacheOwner.current = userId;
+  }
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const navigate = useNavigate();

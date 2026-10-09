@@ -56,7 +56,7 @@ describe('ScopeExport — the output keeps the format that produced it', () => {
     pick('csv');
     fireEvent.click(screen.getByRole('button', { name: 'Generate list' }));
     expect(await screen.findByRole('heading', { name: /^2 hosts/ })).toBeInTheDocument();
-    expect(api.getScopeHostList).toHaveBeenCalledWith(3, 'csv');
+    expect(api.getScopeHostList).toHaveBeenCalledWith(1, 3, 'csv');
 
     pick('txt');
     // Still the CSV: not recounted as an IP list (3), not saved as .txt.

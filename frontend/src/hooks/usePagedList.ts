@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { GLOBAL, queryErrorText, useLastSettled } from '../lib/query';
+import { queryErrorText, useLastSettled } from '../lib/query';
 import type { ListPage, ListPageRequest } from './useListQuery';
 import type { UrlPage } from './useUrlPage';
 
@@ -57,15 +57,16 @@ export interface PagedListOptions {
   /** Keep the page in the address instead of in the component
    *  (`useUrlPage()`): it survives a reload and Back from a row's own page. */
   page?: UrlPage;
-  /** The list is not one project's (lib/query `GLOBAL`). */
-  global?: boolean;
+  /** What `lastResponse` belongs to — the project, for one project's list
+   *  (`within: projectId`): it is forgotten when this changes. */
+  within?: unknown;
 }
 
 export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
   name: string,
   fetchPage: (request: ListPageRequest) => Promise<P>,
   deps: ReadonlyArray<unknown>,
-  { pageSize = 25, errorMessage, page: url, global: isGlobal = false }: PagedListOptions = {},
+  { pageSize = 25, errorMessage, page: url, within }: PagedListOptions = {},
 ): PagedList<T, P> {
   // The page belongs to the deps it was chosen under: with new deps it is the
   // first page at once, with no render in which the old page number is asked
@@ -107,7 +108,7 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
 
   const query = useQuery<P>({
     // `depsKey` is the deps, already as one plain value.
-    queryKey: [...(isGlobal ? [GLOBAL] : []), name, depsKey, { page, pageSize }],
+    queryKey: [name, depsKey, { page, pageSize }],
     queryFn: ({ signal }) => fetchPage({ offset: page * pageSize, limit: pageSize, signal }),
   });
   const response = query.data ?? null;
@@ -123,7 +124,7 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
     }
   }, [rows, total, page, pageSize, setPage]);
 
-  const lastResponse = useLastSettled(response, { global: isGlobal }) ?? null;
+  const lastResponse = useLastSettled(response, { resetKey: within }) ?? null;
 
   return {
     rows, total,

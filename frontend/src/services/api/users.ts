@@ -4,8 +4,8 @@
  * `auth.py` for creating one (`POST /auth/register`; there is no
  * `POST /users/`).
  *
- * Not one project's data: a query on these starts its key with `GLOBAL`
- * (`[GLOBAL, 'listUsers']`).  The member-picker directory (`getUserDirectory`)
+ * Not one project's data: these take no `projectId`, and a query on them has
+ * none in its key (`['listUsers']`).  The member-picker directory (`getUserDirectory`)
  * and a project's roster live in the barrel.
  */
 import { api } from './client';

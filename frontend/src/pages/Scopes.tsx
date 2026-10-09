@@ -39,6 +39,7 @@ import { agentInstruction } from '../utils/agentRuns';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useListQuery, type ListPage } from '../hooks/useListQuery';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
@@ -161,6 +162,7 @@ const Scopes: React.FC = () => {
   const [confirmEl, confirm] = useConfirm();
 
   const queryClient = useQueryClient();
+  const projectId = useProjectId();
 
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -209,8 +211,8 @@ const Scopes: React.FC = () => {
   const [selectedSubnetIds, setSelectedSubnetIds] = useState<Set<number>>(new Set());
 
   const labelsQuery = useQuery({
-    queryKey: ['listSubnetLabels'],
-    queryFn: ({ signal }) => listSubnetLabels(signal),
+    queryKey: ['listSubnetLabels', projectId],
+    queryFn: ({ signal }) => listSubnetLabels(projectId, signal),
   });
   const labelCatalogue = labelsQuery.data ?? NO_LABELS;
   // A failed catalogue is said (R34): it used to look like "this project has
@@ -229,7 +231,7 @@ const Scopes: React.FC = () => {
   const subnetList = useListQuery<ScopeSubnet, ScopePage>(
     'getDefaultScope',
     async ({ offset, limit, signal }) => {
-      const page = await getDefaultScope({
+      const page = await getDefaultScope(projectId, {
         subnetsSkip: offset,
         subnetsLimit: limit,
         subnetsSearch: debouncedSubnetSearch,
@@ -237,8 +239,8 @@ const Scopes: React.FC = () => {
       // A server that does not count has sent everything it has.
       return { ...page, items: page.subnets, total: page.subnets_total ?? offset + page.subnets.length };
     },
-    [{ subnetsSearch: debouncedSubnetSearch.trim() }],
-    { pageSize: SUBNET_PAGE_SIZE, keepPrevious: true },
+    [projectId, { subnetsSearch: debouncedSubnetSearch.trim() }],
+    { pageSize: SUBNET_PAGE_SIZE, keepPrevious: true, within: projectId },
   );
   const { response: scopePage, rows: subnetRows, total: subnetsTotal } = subnetList;
   const scope = useMemo<Scope | null>(
@@ -251,8 +253,8 @@ const Scopes: React.FC = () => {
   // The coverage is a read of its own: it does not depend on the subnet
   // search, so a search never takes the lead and the measures with it.
   const coverageQuery = useQuery({
-    queryKey: ['getScopeCoverage'],
-    queryFn: ({ signal }) => getScopeCoverage(undefined, signal),
+    queryKey: ['getScopeCoverage', projectId],
+    queryFn: ({ signal }) => getScopeCoverage(projectId, undefined, signal),
   });
   const coverage = coverageQuery.data ?? null;
 
@@ -277,8 +279,8 @@ const Scopes: React.FC = () => {
 
   /** After a change to the scope: its subnets and where the hosts stand. */
   const scopeChanged = () => Promise.all([
-    queryClient.invalidateQueries({ queryKey: ['getDefaultScope'] }),
-    queryClient.invalidateQueries({ queryKey: ['getScopeCoverage'] }),
+    queryClient.invalidateQueries({ queryKey: ['getDefaultScope', projectId] }),
+    queryClient.invalidateQueries({ queryKey: ['getScopeCoverage', projectId] }),
   ]);
 
   const loadingMore = subnetList.loadingMore;
@@ -293,7 +295,7 @@ const Scopes: React.FC = () => {
 
   const addSubnet = useMutation({
     mutationFn: ({ scopeId, cidr, description }: { scopeId: number; cidr: string; description?: string }) =>
-      addScopeSubnets(scopeId, [{ cidr, description }]),
+      addScopeSubnets(projectId, scopeId, [{ cidr, description }]),
     onSuccess: (_added, { cidr }) => {
       toast.success(`Added ${cidr}.`);
       setNewCidr('');
@@ -338,7 +340,7 @@ const Scopes: React.FC = () => {
   const saveSubnet = useMutation({
     mutationFn: ({ scopeId, subnetId, ...changes }: {
       scopeId: number; subnetId: number; cidr: string; description: string; site: string;
-    }) => updateSubnet(scopeId, subnetId, changes),
+    }) => updateSubnet(projectId, scopeId, subnetId, changes),
     onSuccess: () => {
       toast.success('Entry updated.');
       cancelEditSubnet();
@@ -370,11 +372,11 @@ const Scopes: React.FC = () => {
   // so the chips + per-label counts stay accurate.
   const bulkApply = useMutation({
     mutationFn: ({ labelId, ids }: { labelId: number; labelName: string; ids: number[] }) =>
-      bulkApplySubnetLabel(labelId, ids),
+      bulkApplySubnetLabel(projectId, labelId, ids),
     onSuccess: (_label, { labelName, ids }) => {
       toast.success(`Applied "${labelName}" to ${ids.length} subnet${ids.length === 1 ? '' : 's'}.`);
       setSelectedSubnetIds(new Set());
-      return Promise.all([scopeChanged(), queryClient.invalidateQueries({ queryKey: ['listSubnetLabels'] })]);
+      return Promise.all([scopeChanged(), queryClient.invalidateQueries({ queryKey: ['listSubnetLabels', projectId] })]);
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to apply label.')),
   });
@@ -450,7 +452,7 @@ const Scopes: React.FC = () => {
 
   const removeSubnet = useMutation({
     mutationFn: ({ scopeId, subnetId }: { scopeId: number; subnetId: number; cidr: string }) =>
-      deleteSubnet(scopeId, subnetId),
+      deleteSubnet(projectId, scopeId, subnetId),
     onSuccess: (_void, { cidr }) => {
       toast.success(`Deleted ${cidr}.`);
       return scopeChanged();
@@ -472,7 +474,7 @@ const Scopes: React.FC = () => {
   };
 
   const upload = useMutation({
-    mutationFn: (file: File) => uploadSubnetFile(file),
+    mutationFn: (file: File) => uploadSubnetFile(projectId, file),
     onMutate: () => {
       setUploadError(null);
       setStatusMessage(null);
@@ -481,8 +483,8 @@ const Scopes: React.FC = () => {
       setStatusMessage(response.message || `Scope file "${file.name}" uploaded successfully!`);
       // A file's label column adds to the catalogue; its domain rows are the
       // domains section's list.
-      void queryClient.invalidateQueries({ queryKey: ['listSubnetLabels'] });
-      if (response.domains_added) void queryClient.invalidateQueries({ queryKey: ['listScopeDomains'] });
+      void queryClient.invalidateQueries({ queryKey: ['listSubnetLabels', projectId] });
+      if (response.domains_added) void queryClient.invalidateQueries({ queryKey: ['listScopeDomains', projectId] });
       await scopeChanged();
       setUploadOpen(false);
       setTimeout(() => setStatusMessage(null), 3000);

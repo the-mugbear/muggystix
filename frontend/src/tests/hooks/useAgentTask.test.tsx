@@ -18,6 +18,8 @@ vi.mock('../../utils/clipboard', () => ({ copyToClipboard: copy }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 7 } }) }));
+// The project the control is shown in: the look-up names it first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1 } }) }));
 const can = vi.hoisted(() => ({ value: true }));
 vi.mock('../../hooks/useCanStartAgentSession', () => ({ useCanStartAgentSession: () => can.value }));
 vi.mock('../../components/StartAssistDialog', () => ({
@@ -53,7 +55,7 @@ describe('useAgentTask', () => {
     render(<Harness onReady={(g) => { give = g; }} />);
     await act(() => give('Propose tests for host 5'));
     // Asked of the server: this operator's active project sessions.
-    expect(api.listAgentSessions).toHaveBeenCalledWith({ kind: 'project', status: 'active', user_id: 7 });
+    expect(api.listAgentSessions).toHaveBeenCalledWith(1, { kind: 'project', status: 'active', user_id: 7 });
     expect(copy).toHaveBeenCalledWith('Propose tests for host 5');
     expect(toast.success.mock.calls[0][0]).toContain('session #79');
     expect(screen.queryByTestId('start-dialog')).not.toBeInTheDocument();

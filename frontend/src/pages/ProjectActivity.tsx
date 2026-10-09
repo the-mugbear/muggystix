@@ -30,6 +30,7 @@ import {
 } from '../services/api';
 import { useAgentSessionControls } from '../hooks/useAgentSessionControls';
 import { useCanStartAgentSession } from '../hooks/useCanStartAgentSession';
+import { useProjectId } from '../hooks/useProjectId';
 import { invalidateReads, pollEvery, queryErrorText } from '../lib/query';
 import { safeFallback } from '../utils/uiStyles';
 import { InfoTip } from '../components/ui/info-tip';
@@ -416,6 +417,7 @@ const StartSessionButton: React.FC = () => (
 
 const ProjectActivity: React.FC = () => {
   const queryClient = useQueryClient();
+  const projectId = useProjectId();
   // Grows on "Load older sessions" so the history isn't silently capped.
   const [limit, setLimit] = useState(200);
   // Refresh and the analytics' Retry: every read on the page, by its API
@@ -459,8 +461,8 @@ const ProjectActivity: React.FC = () => {
   // state and last calls move while the page is open, so it is re-read each
   // minute (not in a hidden tab).
   const liveQuery = useQuery({
-    queryKey: ['listAgentSessions', LIVE_SESSION_FILTERS],
-    queryFn: ({ signal }) => listAgentSessions(LIVE_SESSION_FILTERS, { signal }),
+    queryKey: ['listAgentSessions', projectId, LIVE_SESSION_FILTERS],
+    queryFn: ({ signal }) => listAgentSessions(projectId, LIVE_SESSION_FILTERS, { signal }),
     ...pollEvery(60_000),
   });
   const live: AgentSessionRow[] | null = liveQuery.data?.sessions ?? null;
@@ -476,8 +478,8 @@ const ProjectActivity: React.FC = () => {
     return filters;
   }, [kindFilter, modelFilter, toolFilter, limit]);
   const historyQuery = useQuery({
-    queryKey: ['listAgentSessions', historyFilters],
-    queryFn: ({ signal }) => listAgentSessions(historyFilters, { signal }),
+    queryKey: ['listAgentSessions', projectId, historyFilters],
+    queryFn: ({ signal }) => listAgentSessions(projectId, historyFilters, { signal }),
     placeholderData: keepPreviousData,
   });
   const rows = historyQuery.data?.sessions ?? NO_SESSIONS;
@@ -489,8 +491,8 @@ const ProjectActivity: React.FC = () => {
     : historyQuery.isError ? '—' : '…';
 
   const summaryQuery = useQuery({
-    queryKey: ['getAgentSessionSummary'],
-    queryFn: ({ signal }) => getAgentSessionSummary(signal),
+    queryKey: ['getAgentSessionSummary', projectId],
+    queryFn: ({ signal }) => getAgentSessionSummary(projectId, signal),
   });
   const summary: ModelToolSummaryRow[] | null = summaryQuery.data?.summary ?? null;
 
@@ -498,8 +500,8 @@ const ProjectActivity: React.FC = () => {
   // history; the section shows "unavailable + Retry" instead (and never the
   // figures of an earlier read under it).
   const apiSummaryQuery = useQuery({
-    queryKey: ['getAgentActivitySummary'],
-    queryFn: ({ signal }) => getAgentActivitySummary(undefined, signal),
+    queryKey: ['getAgentActivitySummary', projectId],
+    queryFn: ({ signal }) => getAgentActivitySummary(projectId, undefined, signal),
   });
   const apiSummaryError = apiSummaryQuery.isError;
   const apiSummary: AgentActivitySummary | null = apiSummaryError ? null : apiSummaryQuery.data ?? null;

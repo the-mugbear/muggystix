@@ -95,7 +95,7 @@ describe('WebhookDeliveries', () => {
     listWebhookDeliveries.mockResolvedValue([row({ id: 9, status: 'failed' })]);
     render(<WebhookDeliveries />);
     fireEvent.click(await screen.findByRole('button', { name: /retry/i }));
-    await waitFor(() => expect(retryWebhookDelivery).toHaveBeenCalledWith(9));
+    await waitFor(() => expect(retryWebhookDelivery).toHaveBeenCalledWith(1, 9));
     // Reloaded so the row's new state is visible without a manual refresh.
     await waitFor(() => expect(listWebhookDeliveries).toHaveBeenCalledTimes(2));
   });

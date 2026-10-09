@@ -39,6 +39,7 @@ import { copyToClipboard, downloadTextFile } from '../utils/clipboard';
 import { useToast } from '../contexts/ToastContext';
 import { safeFallback } from '../utils/uiStyles';
 import { useProject } from '../contexts/ProjectContext';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
@@ -124,6 +125,7 @@ function hygieneWords(h: SubnetInsight['hygiene']): string | null {
 
 const Segments: React.FC = () => {
   const { currentProject } = useProject();
+  const projectId = useProjectId();
   const toast = useToast();
   const [lens, setLens] = useState<Lens | null>(null);
   const [offset, setOffset] = useState(0);
@@ -135,11 +137,14 @@ const Segments: React.FC = () => {
   // page on screen stays while the next one loads), and the posture, for its
   // sites.
   const subnetsQuery = useQuery({
-    queryKey: ['getSubnetInsights', PAGE_SIZE, offset],
-    queryFn: ({ signal }) => getSubnetInsights(PAGE_SIZE, offset, signal),
+    queryKey: ['getSubnetInsights', projectId, PAGE_SIZE, offset],
+    queryFn: ({ signal }) => getSubnetInsights(projectId, PAGE_SIZE, offset, signal),
     placeholderData: keepPreviousData,
   });
-  const postureQuery = useQuery({ queryKey: ['getPosture'], queryFn: ({ signal }) => getPosture({ signal }) });
+  const postureQuery = useQuery({
+    queryKey: ['getPosture', projectId],
+    queryFn: ({ signal }) => getPosture(projectId, { signal }),
+  });
   const subnetData = subnetsQuery.data ?? null;
   const subnetError = queryErrorText(subnetsQuery.error, 'Could not load the subnets.');
   const posture = postureQuery.data;
@@ -314,8 +319,9 @@ const SiteTable: React.FC<{ sites: PostureSite[] | null; error: string | null; o
   const { canExport } = useProjectRole();
   // Per-site briefing: the executive systemic report scoped to one site — what
   // a site owner takes to their meeting.
+  const projectId = useProjectId();
   const briefing = useMutation({
-    mutationFn: (site: string) => downloadSystemicReport(site),
+    mutationFn: (site: string) => downloadSystemicReport(projectId, site),
     onError: (e, site) => toast.error(formatApiError(e, `Could not create the briefing for ${site}.`)),
   });
   const createSiteBriefing = (site: string) => briefing.mutate(site);

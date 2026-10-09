@@ -10,6 +10,7 @@ import {
   type FormatOption,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
+import { useProjectId } from '../../hooks/useProjectId';
 import { BASIS_LABEL, otherFormats, suggestionOf } from '../../hooks/useUploadReview';
 import { invalidateReads, queryErrorText } from '../../lib/query';
 import { asAxiosError } from '../../utils/apiErrors';
@@ -53,13 +54,14 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
 }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const projectId = useProjectId();
   const [chosen, setChosen] = useState<string>('');
   const [sourceTool, setSourceTool] = useState('');
 
   // The retained file's detection, read each time the dialog opens.
   const inspection = useQuery({
-    queryKey: ['getJobDetection', jobId],
-    queryFn: ({ signal }) => getJobDetection(jobId, signal),
+    queryKey: ['getJobDetection', projectId, jobId],
+    queryFn: ({ signal }) => getJobDetection(projectId, jobId, signal),
     enabled: open,
   });
   const loading = open && inspection.isFetching;
@@ -72,8 +74,8 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
   // Otherwise manual selection must survive a failed inspection: the format
   // list a detection would have carried.
   const fallback = useQuery({
-    queryKey: ['getUploadFormats'],
-    queryFn: ({ signal }) => getUploadFormats(signal),
+    queryKey: ['getUploadFormats', projectId],
+    queryFn: ({ signal }) => getUploadFormats(projectId, signal),
     enabled: open && !!inspectError && !fileGone,
   });
   const fallbackFormats: FormatOption[] = inspectError && !fileGone ? fallback.data ?? [] : [];
@@ -82,10 +84,10 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
     mutationFn: async (options: { formatOverride: string | null; sourceTool: string | null; label: string | null }) => {
       const { label, ...sent } = options;
       if (mode === 'retry' || mode === 'start') {
-        await startIngestionJob(jobId, sent);
+        await startIngestionJob(projectId, jobId, sent);
         return { label, newJobId: null as number | null };
       }
-      const job = await reprocessIngestionJob(jobId, sent);
+      const job = await reprocessIngestionJob(projectId, jobId, sent);
       return { label, newJobId: job.id as number | null };
     },
     onSuccess: ({ label, newJobId }) => {

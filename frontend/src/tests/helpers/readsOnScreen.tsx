@@ -18,15 +18,13 @@
  * asks for nothing when it mounts: every call of `reread` is a re-read.
  * `reread` is a `vi.fn()` — `vi.clearAllMocks()` in a `beforeEach` clears it.
  *
- * A read that is not one project's (lib/query `GLOBAL` — the bell's count,
- * the project list) is named in `global`, so the test also proves the
- * invalidation reaches a `[GLOBAL, name, …]` key.
+ * A read's key starts with its API function's name whether or not it is one
+ * project's (5.353.0), so the bell's count or the project list is named like
+ * any other.
  */
 import React from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { vi, type Mock } from 'vitest';
-
-import { GLOBAL } from '../../lib/query';
 
 export interface ReadsOnScreenProbe {
   /** Called with a read's label each time that read is asked for again. */
@@ -38,11 +36,10 @@ export interface ReadsOnScreenProbe {
 export function readsOnScreen(
   /** API function name → the label `reread` is called with. */
   reads: Record<string, string>,
-  { global = [] }: { global?: string[] } = {},
 ): ReadsOnScreenProbe {
   const reread = vi.fn<(what: string) => void>();
   const queries = Object.entries(reads).map(([name, what]) => ({
-    queryKey: [...(global.includes(name) ? [GLOBAL] : []), name, 'on screen'],
+    queryKey: [name, 'on screen'],
     queryFn: () => { reread(what); return 1; },
     initialData: 0,
     staleTime: Infinity,

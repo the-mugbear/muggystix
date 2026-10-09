@@ -10,14 +10,16 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { listEvidenceRecords } from '../services/api';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import PostureSection, { SectionCount } from './posture/PostureSection';
 import { EvidenceItem } from './host-inspector/HostEvidenceSection';
 
 const FindingEvidence: React.FC<{ findingId: number }> = ({ findingId }) => {
+  const projectId = useProjectId();
   const query = useQuery({
-    queryKey: ['listEvidenceRecords', { finding_id: findingId, limit: 50 }],
-    queryFn: ({ signal }) => listEvidenceRecords({ finding_id: findingId, limit: 50 }, signal),
+    queryKey: ['listEvidenceRecords', projectId, { finding_id: findingId, limit: 50 }],
+    queryFn: ({ signal }) => listEvidenceRecords(projectId, { finding_id: findingId, limit: 50 }, signal),
   });
   const items = query.data?.items ?? null;
   const total = query.data?.total ?? 0;

@@ -9,6 +9,7 @@ import {
   getWebInterfaceRecord,
   fetchWebInterfaceScreenshot,
 } from '../services/api';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { asAxiosError } from '../utils/apiErrors';
 import { latestObservations } from '../utils/latestObservations';
@@ -48,10 +49,11 @@ interface WebInterfacesCardProps {
 const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count, rows: given, embedded = false }) => {
   // The same key as the Services section's read (PortDetailsCard): one
   // request for the host's web interfaces, whoever shows them.
+  const projectId = useProjectId();
   const fetchOwn = count > 0 && !given;
   const query = useQuery({
-    queryKey: ['getHostWebInterfaces', hostId],
-    queryFn: ({ signal }) => getHostWebInterfaces(hostId, signal),
+    queryKey: ['getHostWebInterfaces', projectId, hostId],
+    queryFn: ({ signal }) => getHostWebInterfaces(projectId, hostId, signal),
     enabled: fetchOwn,
   });
   const loading = fetchOwn && query.isPending;
@@ -75,7 +77,7 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count, ro
     mutationFn: async (row: WebInterface) => {
       asked.current += 1;
       const mine = asked.current;
-      const url = await fetchWebInterfaceScreenshot(row.id);
+      const url = await fetchWebInterfaceScreenshot(projectId, row.id);
       if (url && (!onScreen.current || mine !== asked.current)) {
         URL.revokeObjectURL(url);
         return null;
@@ -309,9 +311,10 @@ const fmtBytes = (n: number): string => {
  * were kept and unreachable.  Fetched when opened, one record at a time.
  */
 const SourceRecord: React.FC<{ interfaceId: number }> = ({ interfaceId }) => {
+  const projectId = useProjectId();
   const query = useQuery({
-    queryKey: ['getWebInterfaceRecord', interfaceId],
-    queryFn: ({ signal }) => getWebInterfaceRecord(interfaceId, signal),
+    queryKey: ['getWebInterfaceRecord', projectId, interfaceId],
+    queryFn: ({ signal }) => getWebInterfaceRecord(projectId, interfaceId, signal),
   });
   const record = query.data ?? null;
   const error = queryErrorText(query.error, 'The source record could not be loaded');

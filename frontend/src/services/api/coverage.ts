@@ -8,7 +8,7 @@
  *
  * See ``backend/app/api/v1/endpoints/coverage.py`` for the contract.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 
 
 export interface ScopeCoverageRow {
@@ -50,9 +50,9 @@ export interface ProjectCoverageResponse {
 }
 
 
-export const getProjectCoverage = async (signal?: AbortSignal): Promise<ProjectCoverageResponse> => {
+export const getProjectCoverage = async (projectId: number, signal?: AbortSignal): Promise<ProjectCoverageResponse> => {
   const response = await api.get<ProjectCoverageResponse>(
-    `${p()}/coverage/`,
+    `${projectPath(projectId)}/coverage/`,
     { signal },
   );
   return response.data;

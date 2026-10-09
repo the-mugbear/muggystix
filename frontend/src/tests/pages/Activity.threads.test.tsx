@@ -21,6 +21,8 @@ vi.mock('../../services/api', () => ({
   markNotificationsRead: vi.fn().mockResolvedValue(1),
   markAllNotificationsRead: vi.fn().mockResolvedValue(0),
 }));
+// The project the page is shown in: both feeds are asked of it, by name first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 91 } }) }));
 
 import Activity from '../../pages/Activity';
 
@@ -67,7 +69,7 @@ describe('Activity — finding comments and row times', () => {
     await screen.findByText('a note');
     fireEvent.change(screen.getByLabelText('Search discussions'), { target: { value: 'creds' } });
     await waitFor(() => expect(getFindingDiscussions).toHaveBeenLastCalledWith(
-      expect.objectContaining({ search: 'creds' }), expect.anything(),
+      91, expect.objectContaining({ search: 'creds' }), expect.anything(),
     ));
   });
 
@@ -131,6 +133,6 @@ describe('Activity — threads as rows', () => {
     render(<MemoryRouter><Activity /></MemoryRouter>);
     const more = await screen.findByRole('button', { name: 'Load more (149 more)' });
     fireEvent.click(more);
-    await waitFor(() => expect(getNoteActivity).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 1 }), expect.any(AbortSignal)));
+    await waitFor(() => expect(getNoteActivity).toHaveBeenLastCalledWith(91, expect.objectContaining({ skip: 1 }), expect.any(AbortSignal)));
   });
 });

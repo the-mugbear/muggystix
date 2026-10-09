@@ -6,6 +6,7 @@ import { queryErrorText } from '../../lib/query';
 import { agentInstruction } from '../../utils/agentRuns';
 import AgentTaskButton from '../agent-sessions/AgentTaskButton';
 import { useCanStartAgentSession } from '../../hooks/useCanStartAgentSession';
+import { useProjectId } from '../../hooks/useProjectId';
 import { Button } from '../ui/button';
 import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
@@ -59,8 +60,11 @@ const ProposeTestsDialog: React.FC<ProposeTestsDialogProps> = ({
   // Resolve the fixed list once per opening: the read runs while the dialog
   // is open, and each opening asks again — the list of the opening before is
   // never shown as this one's.
+  // (`resolveIds` is the caller's, bound to the project it rendered in; the key
+  // names that project so one project's list never answers another's.)
+  const projectId = useProjectId();
   const resolved = useQuery({
-    queryKey: ['getMatchingHostIds', 'proposeTests', selectionSummary],
+    queryKey: ['getMatchingHostIds', projectId, 'proposeTests', selectionSummary],
     queryFn: () => resolveIds(),
     enabled: open,
   });

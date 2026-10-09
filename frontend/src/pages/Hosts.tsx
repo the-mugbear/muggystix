@@ -37,6 +37,7 @@ import type {
 import { useToast } from '../contexts/ToastContext';
 import { queryErrorText, useLastSettled } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { LIST_CURSOR_CLASS } from '../hooks/useListCursor';
 import {
@@ -276,6 +277,7 @@ export default function Hosts() {
   const navigate = useNavigate();
   const location = useLocation();
   const toast = useToast();
+  const projectId = useProjectId();
   // Both are AUDITOR on the server (`/hosts/tool-ready`, the whole `/reports`
   // router): a project viewer is not offered "Export targets" or "Download
   // inventory", and the download dialog — which reads `/reports/jobs` as it
@@ -424,14 +426,14 @@ export default function Hosts() {
   // asked for.  `null`: not asked yet.
   const [facetScope, setFacetScope] = useState<{ params: FacetParams | undefined } | null>(null);
   const facetsQuery = useQuery({
-    queryKey: ['getHostFilterData', facetScope?.params ?? null],
-    queryFn: ({ signal }) => getHostFilterData(facetScope?.params, signal),
+    queryKey: ['getHostFilterData', projectId, facetScope?.params ?? null],
+    queryFn: ({ signal }) => getHostFilterData(projectId, facetScope?.params, signal),
     enabled: facetScope !== null,
   });
   // We keep the last-known-good `filterData` — across a failed refresh and
   // across a change of conditions — so the dropdowns degrade gracefully
   // rather than emptying out, and a chip keeps its name.
-  const filterData = useLastSettled(facetsQuery.data) ?? null;
+  const filterData = useLastSettled(facetsQuery.data, { resetKey: projectId }) ?? null;
   // Surfaced inline near the filter panel when the cascading filter
   // metadata call fails — previously the failure was console-only, so
   // users interacted with partially-stale dropdowns with no signal.  The
@@ -453,7 +455,7 @@ export default function Hosts() {
     setFacetScope({ params: liveFacetParams });
     // Reaches the query only when these conditions are the ones on screen;
     // under new ones there is none yet, and the state above starts it.
-    void queryClient.refetchQueries({ queryKey: ['getHostFilterData', liveFacetParams ?? null], exact: true });
+    void queryClient.refetchQueries({ queryKey: ['getHostFilterData', projectId, liveFacetParams ?? null], exact: true });
   };
   // The visibilitychange listener is registered once (deps []), so it reads
   // this through a ref to avoid a stale closure scoping facets to the wrong
@@ -495,15 +497,15 @@ export default function Hosts() {
 
   // Saved Hosts page filter views (per-user, per-project).
   const savedViewsQuery = useQuery({
-    queryKey: ['listHostFilterViews'],
-    queryFn: ({ signal }) => listHostFilterViews(signal),
+    queryKey: ['listHostFilterViews', projectId],
+    queryFn: ({ signal }) => listHostFilterViews(projectId, signal),
   });
   const savedViews = savedViewsQuery.data ?? NO_VIEWS;
   const savedViewsError = savedViewsQuery.isError;
   /** A write's answer put into the list on screen (no second read). */
   const setSavedViews = useCallback((update: (views: HostFilterView[]) => HostFilterView[]) => {
-    queryClient.setQueryData<HostFilterView[]>(['listHostFilterViews'], (views) => (views ? update(views) : views));
-  }, [queryClient]);
+    queryClient.setQueryData<HostFilterView[]>(['listHostFilterViews', projectId], (views) => (views ? update(views) : views));
+  }, [queryClient, projectId]);
   const [saveViewDialogOpen, setSaveViewDialogOpen] = useState(false);
   const [saveViewName, setSaveViewName] = useState('');
   const [chipsExpanded, setChipsExpanded] = useState(false);
@@ -581,10 +583,10 @@ export default function Hosts() {
 
   // --- The rows ----------------------------------------------------------
   // One query per address (conditions, sort, page) and rows-per-page.
-  const hostsKey = useMemo(() => ['getHosts', listParams] as const, [listParams]);
+  const hostsKey = useMemo(() => ['getHosts', projectId, listParams] as const, [projectId, listParams]);
   const hostsQuery = useQuery({
     queryKey: hostsKey,
-    queryFn: ({ signal }) => getHosts(listParams, signal),
+    queryFn: ({ signal }) => getHosts(projectId, listParams, signal),
     // Nothing is read for the bare address a restored session's filters are
     // about to replace.
     enabled: isInitialized,
@@ -598,7 +600,7 @@ export default function Hosts() {
     () => hostsQuery.data && { response: hostsQuery.data, signature: filterSignature },
     [hostsQuery.data, filterSignature],
   );
-  const shown = useLastSettled(answered) ?? null;
+  const shown = useLastSettled(answered, { resetKey: projectId }) ?? null;
   const hosts = shown?.response.items ?? NO_HOSTS;
   const totalHosts = shown?.response.total ?? 0;
   const totalFor = shown?.signature ?? null;
@@ -741,7 +743,7 @@ export default function Hosts() {
       // state now folds followFilter/onlyWithNotes into `filters`; we
       // split them back out at the persistence boundary.
       const { followFilter: ff, onlyWithNotes: own, ...filtersOnly } = filters;
-      return createHostFilterView(name, {
+      return createHostFilterView(projectId, name, {
         filters: filtersOnly,
         followFilter: ff ?? 'all',
         onlyWithNotes: own === true,
@@ -828,7 +830,7 @@ export default function Hosts() {
     if (ok) deleteView.mutate(view);
   };
   const deleteView = useMutation({
-    mutationFn: (view: HostFilterView) => deleteHostFilterView(view.id),
+    mutationFn: (view: HostFilterView) => deleteHostFilterView(projectId, view.id),
     onSuccess: (_done, view) => {
       setSavedViews((prev) => prev.filter((v) => v.id !== view.id));
       setActiveViewId((active) => (active === view.id ? null : active));
@@ -846,8 +848,8 @@ export default function Hosts() {
   // after the filters were cleared (they used to be the only path, and
   // clearing emptied it).  A failed read is non-fatal: there is then none.
   const defaultViewQuery = useQuery({
-    queryKey: ['getProjectDefaultView'],
-    queryFn: ({ signal }) => getProjectDefaultView(signal),
+    queryKey: ['getProjectDefaultView', projectId],
+    queryFn: ({ signal }) => getProjectDefaultView(projectId, signal),
     enabled: isInitialized,
   });
   const projectDefaultView = defaultViewQuery.data?.filter_json ? defaultViewQuery.data : null;
@@ -856,15 +858,15 @@ export default function Hosts() {
   const toggleProjectDefault = useMutation({
     mutationFn: async (view: HostFilterView): Promise<HostFilterView | null> => {
       if (view.is_project_default) {
-        await clearProjectDefaultView();
+        await clearProjectDefaultView(projectId);
         return null;
       }
-      await promoteProjectDefaultView(view.id);
+      await promoteProjectDefaultView(projectId, view.id);
       return { ...view, is_project_default: true };
     },
     onSuccess: (nowDefault, view) => {
       setSavedViews((prev) => prev.map((v) => ({ ...v, is_project_default: v.id === nowDefault?.id })));
-      queryClient.setQueryData<HostFilterView | null>(['getProjectDefaultView'], nowDefault);
+      queryClient.setQueryData<HostFilterView | null>(['getProjectDefaultView', projectId], nowDefault);
       if (nowDefault) toast.success(`"${view.name}" is now the project default.`, { autoHideMs: 2500 });
       else toast.info('Cleared the project default view.', { autoHideMs: 2000 });
     },
@@ -1311,11 +1313,11 @@ export default function Hosts() {
 
   const follow = useMutation({
     mutationFn: ({ hostId, status }: { hostId: number; status: FollowStatus | 'none' }): Promise<HostFollowInfo | null> =>
-      (status === 'none' ? unfollowHost(hostId).then(() => null) : followHost(hostId, status)),
+      (status === 'none' ? unfollowHost(projectId, hostId).then(() => null) : followHost(projectId, hostId, status)),
     onSuccess: (followInfo, { hostId, status }) => {
       applyFollowUpdate(hostId, followInfo);
       // The same host open in the inspector shows the status too.
-      void queryClient.invalidateQueries({ queryKey: ['getHost', hostId] });
+      void queryClient.invalidateQueries({ queryKey: ['getHost', projectId, hostId] });
       if (status === 'none') toast.info('Review status cleared', { autoHideMs: 2000 });
       else toast.success(`Marked as ${status === 'in_review' ? 'In Review' : 'Reviewed'}`, { autoHideMs: 2000 });
     },

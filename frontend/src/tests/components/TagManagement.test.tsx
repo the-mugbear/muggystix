@@ -138,7 +138,7 @@ describe('TagManagement', () => {
     fireEvent.change(input, { target: { value: 'production' } });
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() =>
-      expect(updateHostTag).toHaveBeenCalledWith(1, { name: 'production' }),
+      expect(updateHostTag).toHaveBeenCalledWith(1, 1, { name: 'production' }),
     );
   });
 
@@ -168,7 +168,7 @@ describe('TagManagement', () => {
     await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
     const body = String(confirmSpy.mock.calls[0][0].body);
     expect(body).toMatch(/3 hosts/);
-    await waitFor(() => expect(deleteHostTag).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(deleteHostTag).toHaveBeenCalledWith(1, 1));
   });
 
   it('does not delete when the operator cancels', async () => {

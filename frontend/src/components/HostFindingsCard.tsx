@@ -29,8 +29,9 @@ import { ENDPOINT_STATUS_LABEL, STATUS_LABEL, TERMINAL_STATUSES } from '../utils
 import { endpointPreviewIsCut } from '../utils/findingEndpoints';
 import { runLimited } from '../utils/runLimited';
 import { useToast } from '../contexts/ToastContext';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
-import { holdProject, invalidateReads, queryErrorText } from '../lib/query';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -69,9 +70,10 @@ const AddFindingForm: React.FC<{
   const [title, setTitle] = useState('');
   const [severity, setSeverity] = useState<FindingSeverity>('medium');
   const [status, setStatus] = useState<FindingStatus>('open');
+  const projectId = useProjectId();
   const queryClient = useQueryClient();
   const adding = useMutation({
-    mutationFn: () => createFinding({ title: title.trim(), severity, status, host_ids: [hostId] }),
+    mutationFn: () => createFinding(projectId, { title: title.trim(), severity, status, host_ids: [hostId] }),
     onSuccess: (made) => {
       void queryClient.invalidateQueries({ queryKey: ['listFindings'] });
       onAdded(made);
@@ -145,20 +147,21 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = (props) => (
 
 /** The key of this card's read.  It starts with `listFindings`, so whatever
  *  makes or changes a finding and invalidates that name re-reads this too. */
-const hostFindingsKey = (hostId: number) =>
-  ['listFindings', { host_id: hostId, limit: HOST_FINDINGS_LIMIT }, 'this-host-whole'] as const;
+const hostFindingsKey = (projectId: number, hostId: number) =>
+  ['listFindings', projectId, { host_id: hostId, limit: HOST_FINDINGS_LIMIT }, 'this-host-whole'] as const;
 
 const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
   const toast = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { canWrite: canManage } = useProjectRole();
+  const projectId = useProjectId();
   const [adding, setAdding] = useState(false);
 
   const query = useQuery({
-    queryKey: hostFindingsKey(hostId),
+    queryKey: hostFindingsKey(projectId, hostId),
     queryFn: async ({ signal }): Promise<HostFindings> => {
-      const res = await listFindings({ host_id: hostId, limit: HOST_FINDINGS_LIMIT }, signal);
+      const res = await listFindings(projectId, { host_id: hostId, limit: HOST_FINDINGS_LIMIT }, signal);
       // A list row's `hosts` is a preview of at most five endpoints (C2), and
       // with `host_id` the server puts THIS host's endpoint rows first
       // (`endpoint_summaries(first_host_id=)`), so the preview is enough: no
@@ -172,7 +175,7 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
         const shown = f.hosts ?? [];
         return endpointPreviewIsCut(f) && shown.length > 0 && shown.every((h) => h.host_id === hostId);
       });
-      const whole = await runLimited<Finding, Finding>(cut, 4, (f) => getFinding(f.id, signal));
+      const whole = await runLimited<Finding, Finding>(cut, 4, (f) => getFinding(projectId, f.id, signal));
       const byId = new Map<number, Finding>();
       whole.forEach((r) => { if (r.status === 'fulfilled') byId.set(r.value.id, r.value); });
       return {
@@ -197,18 +200,18 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
   // (`finding_status`), which the inspector shows beside each.
   const findingChanged = () => {
     void invalidateReads(queryClient, 'getFindingHistory');
-    void queryClient.invalidateQueries({ queryKey: ['getHost', hostId] });
+    void queryClient.invalidateQueries({ queryKey: ['getHost', projectId, hostId] });
   };
   const put = (updated: Finding) => {
     queryClient.setQueryData<HostFindings>(
-      hostFindingsKey(hostId),
+      hostFindingsKey(projectId, hostId),
       (prev) => prev && { ...prev, findings: prev.findings.map((f) => (f.id === updated.id ? updated : f)) },
     );
     findingChanged();
   };
 
   const statusChange = useMutation({
-    mutationFn: ({ id, status }: { id: number; status: FindingStatus }) => setFindingStatus(id, status),
+    mutationFn: ({ id, status }: { id: number; status: FindingStatus }) => setFindingStatus(projectId, id, status),
     onSuccess: put,
     onError: (err) => toast.error(formatApiError(err, 'Failed to update finding status.')),
   });
@@ -229,11 +232,10 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
   // host's inspector — the same reach the false-positive dismissal had.
   const endpointChange = useMutation({
     mutationFn: async ({ f, rowIds, hostStatus }: { f: Finding; rowIds: number[]; hostStatus: FindingHostStatus }) => {
+      // Every row's request carries the project this card was rendered in.
       let updated: Finding = f;
-      const stillHere = holdProject();
       for (const rowId of rowIds) {
-        stillHere();
-        updated = await setFindingEndpointStatus(f.id, rowId, hostStatus);
+        updated = await setFindingEndpointStatus(projectId, f.id, rowId, hostStatus);
       }
       return updated;
     },
@@ -242,7 +244,7 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
       toast.error(formatApiError(err, 'Failed to update this host’s state on the finding.'));
       // A partial multi-row update must not be left looking whole — nor its
       // history and the host, which the rows that did change were written to.
-      void queryClient.invalidateQueries({ queryKey: hostFindingsKey(hostId) });
+      void queryClient.invalidateQueries({ queryKey: hostFindingsKey(projectId, hostId) });
       findingChanged();
     },
   });

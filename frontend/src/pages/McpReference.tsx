@@ -15,7 +15,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Lock, Radio, ShieldCheck } from 'lucide-react';
 import { getMcpTools, type McpToolDoc } from '../services/api';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { CardListSkeleton } from '../components/PageSkeleton';
 import McpConnectPanel from '../components/McpConnectPanel';
 import SectionJumpBar, { JumpEntry, jumpTargetStyle } from '../components/SectionJumpBar';
@@ -80,7 +80,7 @@ const paramSummary = (tool: McpToolDoc): Array<{ name: string; required: boolean
 
 const McpReference: React.FC = () => {
   const catalogQuery = useQuery({
-    queryKey: [GLOBAL, 'getMcpTools'],
+    queryKey: ['getMcpTools'],
     queryFn: ({ signal }) => getMcpTools(signal),
   });
   const catalog = catalogQuery.data ?? null;

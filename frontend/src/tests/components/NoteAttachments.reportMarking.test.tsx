@@ -48,7 +48,7 @@ describe('NoteAttachments — report marking (v5.260.0)', () => {
     expect(screen.getAllByText('In report')).toHaveLength(2);
 
     fireEvent.click(box);
-    await waitFor(() => expect(mocked.setNoteAttachmentInReport).toHaveBeenCalledWith(1, true));
+    await waitFor(() => expect(mocked.setNoteAttachmentInReport).toHaveBeenCalledWith(1, 1, true));
     expect(onChanged).toHaveBeenCalled();
     expect(box).toHaveAttribute('data-state', 'checked');
   });
@@ -115,7 +115,7 @@ describe('NoteAttachments — captions and placement on a finding', () => {
     expect(box).toHaveAttribute('maxlength', '2000');
     fireEvent.change(box, { target: { value: '  New words  ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save caption' }));
-    await waitFor(() => expect(mocked.setNoteAttachmentCaption).toHaveBeenCalledWith(1, 'New words'));
+    await waitFor(() => expect(mocked.setNoteAttachmentCaption).toHaveBeenCalledWith(1, 1, 'New words'));
     await waitFor(() => expect(reread).toHaveBeenCalledWith('the finding’s images'));
     expect(reread).toHaveBeenCalledTimes(1);
     expect(onChanged).toHaveBeenCalled();
@@ -158,7 +158,7 @@ describe('NoteAttachments — captions and placement on a finding', () => {
       fireEvent.keyDown(box, { key: 'Enter', keyCode: 229 });
       expect(mocked.setNoteAttachmentCaption).not.toHaveBeenCalled();
       fireEvent.keyDown(box, { key: 'Enter' });
-      await waitFor(() => expect(mocked.setNoteAttachmentCaption).toHaveBeenCalledWith(1, 'The relayed session'));
+      await waitFor(() => expect(mocked.setNoteAttachmentCaption).toHaveBeenCalledWith(1, 1, 'The relayed session'));
     });
 
     it('Escape cancels, saves nothing, and hands the keyboard back to the button', async () => {
@@ -275,7 +275,8 @@ describe('NoteAttachments — captions and placement on a finding', () => {
       expect(screen.getByRole('button', { name: 'View shot-1.png' }).querySelector('img')).toHaveAttribute('src', 'blob:shared');
       expect(thumbnails.ensure).toHaveBeenCalledWith(1);
       await waitFor(() => expect(screen.getByRole('button', { name: 'View shot-2.png' }).querySelector('img')).toHaveAttribute('src', 'blob:x'));
-      expect(mocked.getNoteAttachmentObjectUrl.mock.calls.map((c) => c[0])).toEqual([2]);
+      // (the project, then the attachment)
+      expect(mocked.getNoteAttachmentObjectUrl.mock.calls.map((c) => [c[0], c[1]])).toEqual([[1, 2]]);
     });
 
     it('fetches nothing of its own while the finding’s list is still being read', async () => {

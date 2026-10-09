@@ -30,6 +30,7 @@ import { useProjectRoster } from '../hooks/useProjectMembers';
 import MembersLoadError from '../components/MembersLoadError';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
@@ -161,6 +162,7 @@ const Findings: React.FC = () => {
 
 const FindingsList: React.FC = () => {
   const toast = useToast();
+  const projectId = useProjectId();
   const navigate = useNavigate();
   const { user } = useAuth();
   // Viewers may read findings but not dispose/select; analyst+ may triage.
@@ -319,10 +321,10 @@ const FindingsList: React.FC = () => {
   // selection's "not on this page" count and the pagination do not blink.
   // They are not this filter's rows: nothing on them can be ticked or
   // changed, and the keyboard cursor does not open one.
-  const listKey = useMemo(() => ['listFindings', filters], [filters]);
+  const listKey = useMemo(() => ['listFindings', projectId, filters], [projectId, filters]);
   const listQuery = useQuery({
     queryKey: listKey,
-    queryFn: ({ signal }) => listFindings(filters, signal),
+    queryFn: ({ signal }) => listFindings(projectId, filters, signal),
     placeholderData: keepPreviousData,
   });
   const findings = useMemo<Finding[]>(() => listQuery.data?.items ?? [], [listQuery.data]);
@@ -346,7 +348,7 @@ const FindingsList: React.FC = () => {
 
   const statusChange = useMutation({
     mutationFn: (v: { findingId: number; status: FindingStatus; title: string; summary?: string }) =>
-      setFindingStatus(v.findingId, v.status, v.summary),
+      setFindingStatus(projectId, v.findingId, v.status, v.summary),
     onSuccess: (updated, { findingId, status, title }) => {
       patchFindings((prev) =>
         prev
@@ -357,7 +359,7 @@ const FindingsList: React.FC = () => {
       );
       listChanged();
       // The status trail gained a line.
-      void queryClient.invalidateQueries({ queryKey: ['getFindingHistory', findingId] });
+      void queryClient.invalidateQueries({ queryKey: ['getFindingHistory', projectId, findingId] });
       const short = title.length > 40 ? `${title.slice(0, 40)}…` : title;
       toast.success(`${short} → ${STATUS_LABEL[status]}`, { autoHideMs: 2500 });
     },
@@ -380,7 +382,7 @@ const FindingsList: React.FC = () => {
   // terminal-justification rule enforced per call rather than per batch.
   const bulkStatus = useMutation({
     mutationFn: (v: { ids: number[]; status: FindingStatus; summary?: string }) =>
-      bulkSetFindingStatus(v.ids, v.status, v.summary),
+      bulkSetFindingStatus(projectId, v.ids, v.status, v.summary),
     onSuccess: (result, { ids, status }) => {
       const changed = new Set(ids.filter((id) => !result.skipped_ids.includes(id)));
       patchFindings((prev) =>
@@ -407,7 +409,7 @@ const FindingsList: React.FC = () => {
     bulkStatus.mutate({ ids, status, summary });
 
   const bulkAssign = useMutation({
-    mutationFn: (v: { ids: number[]; assigneeId: number | null }) => bulkAssignFindings(v.ids, v.assigneeId),
+    mutationFn: (v: { ids: number[]; assigneeId: number | null }) => bulkAssignFindings(projectId, v.ids, v.assigneeId),
     onSuccess: (result, { ids, assigneeId }) => {
       const name = assigneeId === null
         ? null

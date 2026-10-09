@@ -581,9 +581,9 @@ on `useInfiniteQuery`.  Do not hand-roll `loading` / `error` / `rows` state.
 ```tsx
 const list = useListQuery(
   'listThings',                   // the API function the fetcher calls: the key's name
-  ({ offset, limit, signal }) => listThings({ status, offset, limit }, signal),
-  [status],                       // plain values: with the name, the query key
-  { pageSize: 50, poll: 60_000 }, // poll is optional; `global: true` for a list that is not one project's
+  ({ offset, limit, signal }) => listThings(projectId, { status, offset, limit }, signal),
+  [projectId, status],            // plain values: with the name, the query key — the project first
+  { pageSize: 50, poll: 60_000 }, // poll is optional
 );
 // list.rows (null until loaded) · list.total · list.loading · list.error
 // list.reload() after a change · list.loadMore() for "Show more"
@@ -641,7 +641,7 @@ observations use it.  There is no other guard to choose from: a hand-made
 generation counter, a `cancelled` flag or an `AbortController` around a fetch
 is the old mechanism and is not written again (§48).
 
-A record's data is keyed by the record (`['getHost', hostId]`), so a late
+A record's data is keyed by the record (`['getHost', projectId, hostId]`), so a late
 answer for the previous record has no query to land in — on a detail page and
 in a panel that stays open across records alike.  A panel that shows one
 record is still **keyed by the record** (`<Body key={hostId} …/>` — the host
@@ -1052,15 +1052,16 @@ lint rule `bluestick/api-in-query-only` enforces it.  `src/lib/query.ts` holds
 what the whole app shares.
 
 ```tsx
+const projectId = useProjectId();                       // read while rendering (hooks/useProjectId)
 const thing = useQuery({
-  queryKey: ['getThing', thingId],                      // the API function's name, then its arguments
-  queryFn: ({ signal }) => getThing(thingId, signal),
+  queryKey: ['getThing', projectId, thingId],           // the API function's name, then its arguments
+  queryFn: ({ signal }) => getThing(projectId, thingId, signal),
   enabled: thingId != null,
 });
 const save = useMutation({
-  mutationFn: (body: Body) => updateThing(thingId, body),
+  mutationFn: (body: Body) => updateThing(projectId, thingId, body),
   onSuccess: (updated) => {
-    queryClient.setQueryData(['getThing', thingId], updated);   // the server's answer, or…
+    queryClient.setQueryData(['getThing', projectId, thingId], updated);   // the server's answer, or…
     void invalidateReads(queryClient, 'listThings');            // …say which reads are out of date
   },
   onError: (err) => toast.error(formatApiError(err, 'Could not save.')),
@@ -1070,26 +1071,28 @@ const save = useMutation({
 - **Key = the API function's name, then its arguments.**  There is no registry
   of keys; the name is the identity, so a write reaches every read of that
   function with `invalidateReads(queryClient, 'listThings')`.
-- **A key never names the project.**  The cache is partitioned by signed-in
-  user and project inside the key's hash (`setQueryScope`, set by the two
-  contexts): one project's rows cannot answer another's question.  Data that
-  is not one project's — the project list, users, installation settings,
-  Oversight, Portfolio — starts its key with `GLOBAL`.
-- **An async completion keeps the identity it started with.**  The scope is
-  read when a key is hashed, which protects a read but not a write that lands
-  late (a save started in project A answering after a switch to B).  So a
-  component takes the client from `useQueryClient()` — under the project
-  provider that is `scopedClient`, which drops a `setQueryData` made under
-  another scope — and never writes project data through the module's
-  `queryClient`.
-- **An operation of several requests stays in the project it started in.**
-  An API function builds its address from the project that is current when
-  it is CALLED, so a `mutationFn` that awaits one request and then makes
-  another takes `const stillHere = holdProject()` (`lib/query`) at its start
-  and calls `stillHere()` after each `await`: it throws `ProjectChanged`
-  and nothing more is sent.  `utils/runLimited` does this itself for a
-  fanned-out selection.  A `queryFn` that passes its `signal` needs nothing:
-  it is cancelled when its page goes with the project.
+- **The project is an argument (5.353.0).**  Every project-scoped API function
+  takes `projectId` first and builds its address from it.  A component reads
+  it while rendering — `useProjectId()`, or the project it was given (a row's
+  `project_id` on a cross-project page) — so the key names it like any other
+  argument, and one project's rows cannot answer another's question by the
+  key itself.  TypeScript requires the argument; the lint rule
+  `@tanstack/query/exhaustive-deps` requires a key to name everything its
+  `queryFn` uses.  Data that is not one project's — the project list, users,
+  installation settings, Oversight, Portfolio — has no project in its key and
+  needs no marker: `['getProjects']`.
+- **An async completion keeps the identity it started with — by
+  construction.**  The `projectId` in a closure is the one the component
+  rendered with: a save that answers after the reader switched project
+  writes `['getThing', projectId, id]` of ITS project, and the second request
+  of an operation (ids then a write, a note then its screenshots, a
+  page-by-page export) goes where the first went.  Nothing reads "the current
+  project" when a request is built; `getCurrentProjectId()` is the remembered
+  selection and is never used for a request.  (Until 5.353.0 the project was
+  mixed into the key's hash from a module variable, with a client proxy and a
+  hand-called guard to cover what that could not: three reviews found holes.)
+- **Another user's data is never in the cache**: it is cleared when the
+  signed-in user changes.
 - **Nothing is copied out of a query.**  The page renders `data`; sorting and
   grouping are `useMemo` over it.  A form seeded from the server keeps only
   the reader's EDITS in state and lays them over the data — no effect that
@@ -1129,9 +1132,10 @@ const save = useMutation({
   plain `useQuery` with `pollEvery((query) => …)`.
 - **What must stay on screen while another key loads is `useLastSettled`**
   (`lib/query`): `useLastSettled(query.data)` is that data while there is
-  some, else the last this component was given — forgotten on unmount, when
-  the project or user changes (`{ global: true }` for a `GLOBAL` key: kept
-  across projects), and when `resetKey` changes.  Never a ref or a state the
+  some, else the last this component was given — forgotten on unmount and
+  when `resetKey` changes (`{ resetKey: projectId }` for one project's data;
+  the list hooks take `within: projectId` for their kept rows and
+  `lastResponse`).  Never a ref or a state the
   page fills from the query itself.  What it returns may belong to another
   key than the one asked for: the page decides what that means (dim it, say
   the read failed).

@@ -99,7 +99,7 @@ describe('Delete scan — hosts with no work on them', () => {
 
     await user.click(deleteButton(dialog));
     await waitFor(() => expect(api.deleteScan).toHaveBeenCalledTimes(1));
-    expect(api.deleteScan).toHaveBeenCalledWith(9);
+    expect(api.deleteScan).toHaveBeenCalledWith(1, 9);
   });
 
   it('says how many DNS records and names go with the scan, and nothing when there are none', async () => {
@@ -126,7 +126,7 @@ describe('Delete scan — hosts with no work on them', () => {
     expect(within(dialog).queryByTestId('hosts-with-work')).not.toBeInTheDocument();
     expect(deleteButton(dialog)).toBeEnabled();
     await user.click(deleteButton(dialog));
-    await waitFor(() => expect(api.deleteScan).toHaveBeenCalledWith(9));
+    await waitFor(() => expect(api.deleteScan).toHaveBeenCalledWith(1, 9));
   });
 });
 
@@ -276,7 +276,7 @@ describe('Delete scan — hosts that carry work', () => {
     await user.click(within(block).getByRole('checkbox', { name: /I have reviewed these hosts/ }));
     expect(deleteButton(dialog)).toBeEnabled();
     await user.click(deleteButton(dialog));
-    await waitFor(() => expect(api.deleteScan).toHaveBeenCalledWith(9, { confirmHostsWithWork: true }));
+    await waitFor(() => expect(api.deleteScan).toHaveBeenCalledWith(1, 9, { confirmHostsWithWork: true }));
   });
 
   it('says nothing about "more" when the sample is every such host, and speaks of one host in the singular', async () => {
@@ -349,7 +349,7 @@ describe('Delete scan — the server refuses for hosts with work', () => {
     await user.click(within(block).getByRole('checkbox'));
     await user.click(deleteButton(dialog));
     await waitFor(() => expect(api.deleteScan).toHaveBeenCalledTimes(2));
-    expect(api.deleteScan).toHaveBeenLastCalledWith(9, { confirmHostsWithWork: true });
+    expect(api.deleteScan).toHaveBeenLastCalledWith(1, 9, { confirmHostsWithWork: true });
   });
 
   it('a preview that could not be read is not "no work": the refusal asks for the tick', async () => {
@@ -359,7 +359,7 @@ describe('Delete scan — the server refuses for hosts with work', () => {
 
     expect(within(dialog).getByText(/Couldn't load the removal summary/)).toBeInTheDocument();
     await user.click(deleteButton(dialog));
-    expect(api.deleteScan).toHaveBeenCalledWith(9);
+    expect(api.deleteScan).toHaveBeenCalledWith(1, 9);
 
     const block = await within(dialog).findByTestId('hosts-with-work');
     expect(block).toHaveTextContent('3 hosts this scan removes have work on them.');
@@ -367,7 +367,7 @@ describe('Delete scan — the server refuses for hosts with work', () => {
     expect(deleteButton(dialog)).toBeDisabled();
     await user.click(within(block).getByRole('checkbox'));
     await user.click(deleteButton(dialog));
-    await waitFor(() => expect(api.deleteScan).toHaveBeenLastCalledWith(9, { confirmHostsWithWork: true }));
+    await waitFor(() => expect(api.deleteScan).toHaveBeenLastCalledWith(1, 9, { confirmHostsWithWork: true }));
   });
 
   it('the delete waits while the preview is still loading', async () => {

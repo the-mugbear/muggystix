@@ -77,7 +77,7 @@ describe('HostInspector — tests on the host', () => {
     expect((await screen.findAllByText('todo-test')).length).toBeGreaterThan(0);
     // The command is resolved against THIS host's address.
     expect(screen.getByText('nmap -sV 10.0.0.1')).toBeInTheDocument();
-    expect(api.listHostTests).toHaveBeenCalledWith(expect.objectContaining({ host_id: 1 }), expect.any(AbortSignal));
+    expect(api.listHostTests).toHaveBeenCalledWith(1, expect.objectContaining({ host_id: 1 }), expect.any(AbortSignal));
   });
 });
 
@@ -157,7 +157,7 @@ describe('HostInspector — promoting a scanner observation', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /^Promote$/ }));
     await waitFor(() => expect(api.promoteVulnerability).toHaveBeenCalledWith(
-      77, expect.objectContaining({ status: 'confirmed', scope: 'host' }),
+      1, 77, expect.objectContaining({ status: 'confirmed', scope: 'host' }),
     ));
   });
 
@@ -186,7 +186,7 @@ describe('HostInspector — promoting a scanner observation', () => {
     fireEvent.click(await screen.findByRole('radio', { name: /All 2 hosts carrying this issue/ }));
     fireEvent.click(screen.getByRole('button', { name: /^Promote$/ }));
     await waitFor(() => expect(api.promoteVulnerability).toHaveBeenCalledWith(
-      77, expect.objectContaining({ status: 'confirmed', scope: 'issue' }),
+      1, 77, expect.objectContaining({ status: 'confirmed', scope: 'issue' }),
     ));
   });
 });
@@ -215,7 +215,7 @@ describe('HostInspector smoke', () => {
     const btn = await screen.findByRole('button', { name: 'Show 3 informational findings' });
     expect(btn).toHaveTextContent('3 informational hidden · show');
     fireEvent.click(btn);
-    await waitFor(() => expect(getHost).toHaveBeenLastCalledWith(1, { includeInfo: true }));
+    await waitFor(() => expect(getHost).toHaveBeenLastCalledWith(1, 1, { includeInfo: true }));
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Show 3 informational findings' })).not.toBeInTheDocument(),
     );
@@ -240,7 +240,7 @@ describe('HostInspector smoke', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Show 3 informational findings' }));
     // The request is sent a tick after the click; the mocked answers above are
     // handed out in the order the requests are made.
-    await waitFor(() => expect(getHost).toHaveBeenLastCalledWith(1, { includeInfo: true }));
+    await waitFor(() => expect(getHost).toHaveBeenLastCalledWith(1, 1, { includeInfo: true }));
     rerender(<MemoryRouter><HostInspector hostId={2} /></MemoryRouter>);
     await screen.findByRole('button', { name: 'Show 2 informational findings' });
 

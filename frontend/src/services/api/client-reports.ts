@@ -4,7 +4,7 @@
  * A draft's preview is an ordinary report job (poll with getReportJob,
  * download with downloadReportJob); an issued report's files download here.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 import { saveBlob } from '../../utils/download';
 import type { ReportJob } from '../api';
 
@@ -251,66 +251,68 @@ export interface ClientReportUpdate {
   settings?: EngagementSettings;
 }
 
-const base = () => `${p()}/client-reports`;
+const base = (projectId: number) => `${projectPath(projectId)}/client-reports`;
 
-export const listClientReports = async (signal?: AbortSignal): Promise<ClientReportList> =>
-  (await api.get<ClientReportList>(base(), { signal })).data;
+export const listClientReports = async (projectId: number, signal?: AbortSignal): Promise<ClientReportList> =>
+  (await api.get<ClientReportList>(base(projectId), { signal })).data;
 
-export const getClientReport = async (id: number, signal?: AbortSignal): Promise<ClientReport> =>
-  (await api.get<ClientReport>(`${base()}/${id}`, { signal })).data;
+export const getClientReport = async (projectId: number, id: number, signal?: AbortSignal): Promise<ClientReport> =>
+  (await api.get<ClientReport>(`${base(projectId)}/${id}`, { signal })).data;
 
-export const createClientReport = async (body: {
+export const createClientReport = async (projectId: number, body: {
   kind: ClientReportKind; title?: string; template?: string; baseline_report_id?: number;
-}): Promise<ClientReport> => (await api.post<ClientReport>(base(), body)).data;
+}): Promise<ClientReport> => (await api.post<ClientReport>(base(projectId), body)).data;
 
-export const updateClientReport = async (id: number, body: ClientReportUpdate): Promise<ClientReport> =>
-  (await api.patch<ClientReport>(`${base()}/${id}`, body)).data;
+export const updateClientReport = async (projectId: number, id: number, body: ClientReportUpdate): Promise<ClientReport> =>
+  (await api.patch<ClientReport>(`${base(projectId)}/${id}`, body)).data;
 
-export const deleteClientReport = async (id: number): Promise<void> => {
-  await api.delete(`${base()}/${id}`);
+export const deleteClientReport = async (projectId: number, id: number): Promise<void> => {
+  await api.delete(`${base(projectId)}/${id}`);
 };
 
-export const previewClientReport = async (id: number, format: ClientReportFormat): Promise<ReportJob> =>
-  (await api.post<ReportJob>(`${base()}/${id}/preview`, { format })).data;
+export const previewClientReport = async (projectId: number, id: number, format: ClientReportFormat): Promise<ReportJob> =>
+  (await api.post<ReportJob>(`${base(projectId)}/${id}/preview`, { format })).data;
 
-export const issueClientReport = async (id: number): Promise<ClientReport> =>
-  (await api.post<ClientReport>(`${base()}/${id}/issue`)).data;
+export const issueClientReport = async (projectId: number, id: number): Promise<ClientReport> =>
+  (await api.post<ClientReport>(`${base(projectId)}/${id}/issue`)).data;
 
-export const rerenderClientReport = async (id: number): Promise<ClientReport> =>
-  (await api.post<ClientReport>(`${base()}/${id}/render`)).data;
+export const rerenderClientReport = async (projectId: number, id: number): Promise<ClientReport> =>
+  (await api.post<ClientReport>(`${base(projectId)}/${id}/render`)).data;
 
-export const reviseClientReport = async (id: number): Promise<ClientReport> =>
-  (await api.post<ClientReport>(`${base()}/${id}/revise`)).data;
+export const reviseClientReport = async (projectId: number, id: number): Promise<ClientReport> =>
+  (await api.post<ClientReport>(`${base(projectId)}/${id}/revise`)).data;
 
-export const listReportTemplates = async (signal?: AbortSignal): Promise<ReportTemplate[]> =>
-  (await api.get<ReportTemplate[]>(`${base()}/templates`, { signal })).data;
+export const listReportTemplates = async (projectId: number, signal?: AbortSignal): Promise<ReportTemplate[]> =>
+  (await api.get<ReportTemplate[]>(`${base(projectId)}/templates`, { signal })).data;
 
 /** Upload a file a template expects (global administrators; instance-wide). */
 export const uploadReportTemplateAsset = async (
-  template: string, assetId: string, file: File,
+  projectId: number, template: string, assetId: string, file: File,
 ): Promise<ReportTemplateAssetChange> => {
   const form = new FormData();
   form.append('file', file);
   // The client's default Content-Type is JSON, and axios then serialises a
   // FormData body AS JSON — the file never arrives (422 "field required").
   return (await api.put<ReportTemplateAssetChange>(
-    `${base()}/templates/${encodeURIComponent(template)}/assets/${encodeURIComponent(assetId)}`, form,
+    `${base(projectId)}/templates/${encodeURIComponent(template)}/assets/${encodeURIComponent(assetId)}`, form,
     { headers: { 'Content-Type': 'multipart/form-data' } },
   )).data;
 };
 
 /** Remove an uploaded template file (it falls back to a server-installed one). */
-export const removeReportTemplateAsset = async (template: string, assetId: string): Promise<ReportTemplateAssetChange> =>
+export const removeReportTemplateAsset = async (
+  projectId: number, template: string, assetId: string,
+): Promise<ReportTemplateAssetChange> =>
   (await api.delete<ReportTemplateAssetChange>(
-    `${base()}/templates/${encodeURIComponent(template)}/assets/${encodeURIComponent(assetId)}`,
+    `${base(projectId)}/templates/${encodeURIComponent(template)}/assets/${encodeURIComponent(assetId)}`,
   )).data;
 
 /** The image the render would use for a template file (authenticated → blob). */
 export const fetchReportTemplateAssetPreview = async (
-  template: string, assetId: string, signal?: AbortSignal,
+  projectId: number, template: string, assetId: string, signal?: AbortSignal,
 ): Promise<Blob> =>
   (await api.get(
-    `${base()}/templates/${encodeURIComponent(template)}/assets/${encodeURIComponent(assetId)}/preview`,
+    `${base(projectId)}/templates/${encodeURIComponent(template)}/assets/${encodeURIComponent(assetId)}/preview`,
     { responseType: 'blob', signal },
   )).data as Blob;
 
@@ -320,33 +322,33 @@ export interface ReportTemplateProblem {
   error: string;
 }
 
-export const listReportTemplateProblems = async (signal?: AbortSignal): Promise<ReportTemplateProblem[]> =>
-  (await api.get<ReportTemplateProblem[]>(`${base()}/templates/problems`, { signal })).data;
+export const listReportTemplateProblems = async (projectId: number, signal?: AbortSignal): Promise<ReportTemplateProblem[]> =>
+  (await api.get<ReportTemplateProblem[]>(`${base(projectId)}/templates/problems`, { signal })).data;
 
 /** The project's analysts and admins as an assessment team (name, role, email). */
-export const getProjectReportTeam = async (signal?: AbortSignal): Promise<ReportTester[]> =>
-  (await api.get<ReportTester[]>(`${base()}/team`, { signal })).data;
+export const getProjectReportTeam = async (projectId: number, signal?: AbortSignal): Promise<ReportTester[]> =>
+  (await api.get<ReportTester[]>(`${base(projectId)}/team`, { signal })).data;
 
-export const getReportProfile = async (signal?: AbortSignal): Promise<ReportProfile> =>
-  (await api.get<ReportProfile>(`${base()}/profile`, { signal })).data;
+export const getReportProfile = async (projectId: number, signal?: AbortSignal): Promise<ReportProfile> =>
+  (await api.get<ReportProfile>(`${base(projectId)}/profile`, { signal })).data;
 
-export const saveReportProfile = async (body: Omit<ReportProfile, 'updated_at'>): Promise<ReportProfile> =>
-  (await api.put<ReportProfile>(`${base()}/profile`, body)).data;
+export const saveReportProfile = async (projectId: number, body: Omit<ReportProfile, 'updated_at'>): Promise<ReportProfile> =>
+  (await api.put<ReportProfile>(`${base(projectId)}/profile`, body)).data;
 
 /** v5.319.0 — save the report's complete scope as CSV: the file a report over its
  *  template's scope cutoff names.  A draft's is today's scope; an issued report's
  *  is the frozen one, so its SHA-256 is the one the report prints. */
 export const downloadClientReportScope = async (
-  id: number, filename: string, signal?: AbortSignal,
+  projectId: number, id: number, filename: string, signal?: AbortSignal,
 ): Promise<void> => {
-  const response = await api.get(`${base()}/${id}/scope.csv`, { responseType: 'blob', signal });
+  const response = await api.get(`${base(projectId)}/${id}/scope.csv`, { responseType: 'blob', signal });
   saveBlob(new Blob([response.data], { type: 'text/csv' }), filename);
 };
 
 /** Save an issued report's file (authenticated blob → browser download). */
 export const downloadClientReportFile = async (
-  id: number, file: ReportFile, signal?: AbortSignal,
+  projectId: number, id: number, file: ReportFile, signal?: AbortSignal,
 ): Promise<void> => {
-  const response = await api.get(`${base()}/${id}/files/${file.format}`, { responseType: 'blob', signal });
+  const response = await api.get(`${base(projectId)}/${id}/files/${file.format}`, { responseType: 'blob', signal });
   saveBlob(new Blob([response.data], { type: file.media_type }), file.filename);
 };

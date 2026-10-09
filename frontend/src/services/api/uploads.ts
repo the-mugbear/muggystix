@@ -5,7 +5,7 @@
  * everything from here so consumers can keep importing from
  * ``../services/api`` unchanged.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 
 
 
@@ -113,8 +113,8 @@ export interface DetectionResponse {
   formats: FormatOption[];
 }
 
-export const getJobDetection = async (jobId: number, signal?: AbortSignal): Promise<DetectionResponse> => {
-  const response = await api.get(`${p()}/upload/jobs/${jobId}/detection`, { signal });
+export const getJobDetection = async (projectId: number, jobId: number, signal?: AbortSignal): Promise<DetectionResponse> => {
+  const response = await api.get(`${projectPath(projectId)}/upload/jobs/${jobId}/detection`, { signal });
   return response.data;
 };
 
@@ -122,10 +122,11 @@ export const getJobDetection = async (jobId: number, signal?: AbortSignal): Prom
  *  scan record is created; the prior scan stays; the duplicate guard is
  *  bypassed on purpose. */
 export const reprocessIngestionJob = async (
+  projectId: number,
   jobId: number,
   options: { formatOverride?: string | null; sourceTool?: string | null } = {},
 ): Promise<IngestionJob> => {
-  const response = await api.post(`${p()}/upload/jobs/${jobId}/reprocess`, {
+  const response = await api.post(`${projectPath(projectId)}/upload/jobs/${jobId}/reprocess`, {
     format_override: options.formatOverride ?? null,
     source_tool: options.sourceTool ?? null,
   });
@@ -134,8 +135,8 @@ export const reprocessIngestionJob = async (
 
 /** v5.232.0 — discard a staged job: its file goes, the row stays as a
  *  dismissed failure (out of the queue, still in Ingestion Results). */
-export const discardIngestionJob = async (jobId: number): Promise<IngestionJob> => {
-  const response = await api.post(`${p()}/upload/jobs/${jobId}/discard`);
+export const discardIngestionJob = async (projectId: number, jobId: number): Promise<IngestionJob> => {
+  const response = await api.post(`${projectPath(projectId)}/upload/jobs/${jobId}/discard`);
   return response.data;
 };
 
@@ -143,26 +144,28 @@ export const discardIngestionJob = async (jobId: number): Promise<IngestionJob> 
  *  confirmed. Ids no longer staged (or not the caller's) are skipped; the
  *  response says what was discarded. */
 export const discardStagedJobs = async (
+  projectId: number,
   jobIds: number[],
 ): Promise<{ discarded: number; job_ids: number[] }> => {
-  const response = await api.post(`${p()}/upload/jobs/discard-staged`, { job_ids: jobIds });
+  const response = await api.post(`${projectPath(projectId)}/upload/jobs/discard-staged`, { job_ids: jobIds });
   return response.data;
 };
 
 /** Every format an operator can choose. Also rides on a detection response,
  *  but a failed inspection returns none — which is when it is needed. */
-export const getUploadFormats = async (signal?: AbortSignal): Promise<FormatOption[]> => {
-  const response = await api.get(`${p()}/upload/formats`, { signal });
+export const getUploadFormats = async (projectId: number, signal?: AbortSignal): Promise<FormatOption[]> => {
+  const response = await api.get(`${projectPath(projectId)}/upload/formats`, { signal });
   return response.data;
 };
 
 /** Start a staged job, or retry a failed one on its retained file, optionally
  *  as a chosen format (the worker then runs exactly that parser). */
 export const startIngestionJob = async (
+  projectId: number,
   jobId: number,
   options: { formatOverride?: string | null; sourceTool?: string | null } = {},
 ): Promise<IngestionJob> => {
-  const response = await api.post(`${p()}/upload/jobs/${jobId}/start`, {
+  const response = await api.post(`${projectPath(projectId)}/upload/jobs/${jobId}/start`, {
     format_override: options.formatOverride ?? null,
     source_tool: options.sourceTool ?? null,
   });
@@ -176,6 +179,7 @@ export { duplicateUploadOf } from '../../utils/duplicateUpload';
 export type { DuplicateUpload } from '../../utils/duplicateUpload';
 
 export const uploadFile = async (
+  projectId: number,
   file: File,
   onProgress?: (percent: number) => void,
   options: UploadOptions = {},
@@ -204,10 +208,10 @@ export const uploadFile = async (
   return new Promise<FileUploadResponse>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
 
-    // Build the URL the same way axios would.  ``p()`` already
-    // includes the project prefix; we prepend the api base URL.
+    // Build the URL the same way axios would.  ``projectPath`` is the
+    // project prefix; we prepend the api base URL.
     const baseUrl = (api.defaults.baseURL ?? '').replace(/\/$/, '');
-    xhr.open('POST', `${baseUrl}${p()}/upload/`, true);
+    xhr.open('POST', `${baseUrl}${projectPath(projectId)}/upload/`, true);
 
     // Match the request interceptor's auth header.
     const token = localStorage.getItem('auth_token');
@@ -289,18 +293,20 @@ export const uploadFile = async (
  * that no longer exists, is absent from the answer rather than an error — so
  * the caller can stop following it. The server takes at most 200 ids.
  */
-export const getIngestionJobsByIds = async (jobIds: number[], signal?: AbortSignal): Promise<IngestionJob[]> => {
+export const getIngestionJobsByIds = async (
+  projectId: number, jobIds: number[], signal?: AbortSignal,
+): Promise<IngestionJob[]> => {
   if (jobIds.length === 0) return [];
   const chunks: number[][] = [];
   for (let i = 0; i < jobIds.length; i += 200) chunks.push(jobIds.slice(i, i + 200));
   const pages = await Promise.all(
-    chunks.map((chunk) => api.get(`${p()}/upload/jobs`, { params: { ids: chunk.join(',') }, signal })),
+    chunks.map((chunk) => api.get(`${projectPath(projectId)}/upload/jobs`, { params: { ids: chunk.join(',') }, signal })),
   );
   return pages.flatMap((r) => r.data as IngestionJob[]);
 };
 
-export const getRecentIngestionJobs = async (limit = 5, signal?: AbortSignal): Promise<IngestionJob[]> => {
-  const response = await api.get(`${p()}/upload/jobs?limit=${limit}`, { signal });
+export const getRecentIngestionJobs = async (projectId: number, limit = 5, signal?: AbortSignal): Promise<IngestionJob[]> => {
+  const response = await api.get(`${projectPath(projectId)}/upload/jobs?limit=${limit}`, { signal });
   return response.data;
 };
 
@@ -310,12 +316,12 @@ export const getRecentIngestionJobs = async (limit = 5, signal?: AbortSignal): P
  * out of the queue, its "Review" and its "Discard".  Paged by the server's
  * 100-row cap; staged jobs expire after a day, so a few pages at most.
  */
-export const getStagedIngestionJobs = async (signal?: AbortSignal): Promise<IngestionJob[]> => {
+export const getStagedIngestionJobs = async (projectId: number, signal?: AbortSignal): Promise<IngestionJob[]> => {
   const PAGE = 100;
   const MAX_PAGES = 20;
   const jobs: IngestionJob[] = [];
   for (let page = 0; page < MAX_PAGES; page += 1) {
-    const response = await api.get(`${p()}/upload/jobs`, {
+    const response = await api.get(`${projectPath(projectId)}/upload/jobs`, {
       params: { status: 'staged', limit: PAGE, skip: page * PAGE },
       signal,
     });
@@ -329,8 +335,8 @@ export const getStagedIngestionJobs = async (signal?: AbortSignal): Promise<Inge
 // v2.86.2 — dismiss a failed ingestion job so it drops out of the
 // live queue.  Backend rejects non-failed status with 400 and other
 // users' jobs with 403 (admins can dismiss anyone's).
-export const dismissIngestionJob = async (jobId: number): Promise<IngestionJob> => {
-  const response = await api.post(`${p()}/upload/jobs/${jobId}/dismiss`);
+export const dismissIngestionJob = async (projectId: number, jobId: number): Promise<IngestionJob> => {
+  const response = await api.post(`${projectPath(projectId)}/upload/jobs/${jobId}/dismiss`);
   return response.data;
 };
 
@@ -338,17 +344,18 @@ export const dismissIngestionJob = async (jobId: number): Promise<IngestionJob> 
  *  the same file). Ids no longer superseded, already dismissed or not the
  *  caller's are skipped; the response says what was dismissed. */
 export const dismissSupersededJobs = async (
+  projectId: number,
   jobIds: number[],
 ): Promise<{ dismissed: number; job_ids: number[] }> => {
-  const response = await api.post(`${p()}/upload/jobs/dismiss-superseded`, { job_ids: jobIds });
+  const response = await api.post(`${projectPath(projectId)}/upload/jobs/dismiss-superseded`, { job_ids: jobIds });
   return response.data;
 };
 
 /** v5.289.0 — the jobs of an upload batch that did NOT import (failed,
  *  discarded, expired, cancelled, still running…), dismissed ones included,
  *  so an expanded batch can list which files failed and why. */
-export const getBatchUnimportedJobs = async (batchId: number, signal?: AbortSignal): Promise<IngestionJob[]> => {
-  const response = await api.get(`${p()}/upload/jobs`, { params: { batch_id: batchId }, signal });
+export const getBatchUnimportedJobs = async (projectId: number, batchId: number, signal?: AbortSignal): Promise<IngestionJob[]> => {
+  const response = await api.get(`${projectPath(projectId)}/upload/jobs`, { params: { batch_id: batchId }, signal });
   return response.data;
 };
 
@@ -356,9 +363,10 @@ export const getBatchUnimportedJobs = async (batchId: number, signal?: AbortSign
 // marks it failed and the worker's atomic completion guard won't resurrect it;
 // rejects already-terminal jobs (409) and non-owner/non-admin (403).
 export const cancelIngestionJob = async (
+  projectId: number,
   jobId: number,
 ): Promise<{ job_id: number; status: string; message: string }> => {
-  const response = await api.post(`${p()}/upload/jobs/${jobId}/cancel`);
+  const response = await api.post(`${projectPath(projectId)}/upload/jobs/${jobId}/cancel`);
   return response.data;
 };
 
@@ -366,9 +374,10 @@ export const cancelIngestionJob = async (
 // (POST /upload/jobs/{id}/retry) — re-queues without re-uploading. Backend
 // 409s if the job isn't failed or the file was already cleaned up.
 export const retryIngestionJob = async (
+  projectId: number,
   jobId: number,
 ): Promise<{ job_id: number; status: string; message: string }> => {
-  const response = await api.post(`${p()}/upload/jobs/${jobId}/retry`);
+  const response = await api.post(`${projectPath(projectId)}/upload/jobs/${jobId}/retry`);
   return response.data;
 };
 
@@ -477,6 +486,7 @@ export interface IngestionResultsQuery {
 }
 
 export const getIngestionResults = async (
+  projectId: number,
   query: IngestionResultsQuery = {},
   signal?: AbortSignal,
 ): Promise<IngestionResultsResponse> => {
@@ -489,7 +499,7 @@ export const getIngestionResults = async (
   if (query.sortBy) params.set('sort_by', query.sortBy);
   if (query.sortOrder) params.set('sort_order', query.sortOrder);
   const qs = params.toString();
-  const response = await api.get(`${p()}/parse-errors/ingestion-results${qs ? `?${qs}` : ''}`, { signal });
+  const response = await api.get(`${projectPath(projectId)}/parse-errors/ingestion-results${qs ? `?${qs}` : ''}`, { signal });
   return response.data;
 };
 
@@ -504,7 +514,7 @@ export interface UninterpretedLines {
   shapes: { kind: string; shape: string; count: number }[];
 }
 
-export const getUninterpretedLines = async (jobId: number, signal?: AbortSignal): Promise<UninterpretedLines> => {
-  const response = await api.get(`${p()}/parse-errors/ingestion-results/${jobId}/uninterpreted`, { signal });
+export const getUninterpretedLines = async (projectId: number, jobId: number, signal?: AbortSignal): Promise<UninterpretedLines> => {
+  const response = await api.get(`${projectPath(projectId)}/parse-errors/ingestion-results/${jobId}/uninterpreted`, { signal });
   return response.data;
 };

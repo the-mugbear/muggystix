@@ -45,6 +45,7 @@ import {
 import { runLimited } from '../../utils/runLimited';
 import { selectAllState } from '../../utils/selection';
 import { LIST_CURSOR_CLASS } from '../../hooks/useListCursor';
+import { useProjectId } from '../../hooks/useProjectId';
 import EndpointStateBar from './EndpointStateBar';
 import { jumpTargetStyle } from '../SectionJumpBar';
 import { Badge } from '../ui/badge';
@@ -114,7 +115,8 @@ const FindingEndpoints: React.FC<Props> = ({
   proposals = NO_PROPOSALS, canDecide = false, onProposalDecided,
 }) => {
   const toast = useToast();
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  const projectId = useProjectId();
+  const rootRef =useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [stateFilter, setStateFilter] = useState<EndpointStateFilter>('all');
   const [text, setText] = useState('');
@@ -147,11 +149,11 @@ const FindingEndpoints: React.FC<Props> = ({
   // (`bulkBusy`), each while its change waits its turn as well.
   const setEndpoint = useMutation({
     mutationFn: (v: { rowId: number; hostStatus: FindingHostStatus }) =>
-      setFindingEndpointStatus(finding.id, v.rowId, v.hostStatus),
+      setFindingEndpointStatus(projectId, finding.id, v.rowId, v.hostStatus),
   });
   const setEndpoints = useMutation({
     mutationFn: (body: { finding_host_ids: number[]; host_status: FindingHostStatus; summary?: string }) =>
-      setFindingEndpointsStatus(finding.id, body),
+      setFindingEndpointsStatus(projectId, finding.id, body),
   });
   const [bulkState, setBulkState] = useState<FindingHostStatus | ''>('');
   const [bulkSummary, setBulkSummary] = useState('');

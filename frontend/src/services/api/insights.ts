@@ -5,7 +5,7 @@
  * by subnet, plus a hygiene lens (EOL OS / TLS cert issues / weak auth /
  * risky services) that surfaces "lack of IT management".  Worst-first.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 import { filenameFromContentDisposition, saveBlob } from '../../utils/download';
 import { buildHostsUrl } from '../../utils/drilldownLinks';
 
@@ -83,11 +83,12 @@ export interface SubnetInsightsResponse {
 }
 
 export const getSubnetInsights = async (
+  projectId: number,
   limit = 50,
   offset = 0,
   signal?: AbortSignal,
 ): Promise<SubnetInsightsResponse> => {
-  const response = await api.get<SubnetInsightsResponse>(`${p()}/insights/subnets`, {
+  const response = await api.get<SubnetInsightsResponse>(`${projectPath(projectId)}/insights/subnets`, {
     params: { limit, offset },
     signal,
   });
@@ -172,8 +173,8 @@ export interface SystemicInsightsResponse {
   diagnostic_profiles?: DiagnosticProfile[];
 }
 
-export const getSystemicInsights = async (signal?: AbortSignal): Promise<SystemicInsightsResponse> => {
-  const response = await api.get<SystemicInsightsResponse>(`${p()}/insights/systemic`, { signal });
+export const getSystemicInsights = async (projectId: number, signal?: AbortSignal): Promise<SystemicInsightsResponse> => {
+  const response = await api.get<SystemicInsightsResponse>(`${projectPath(projectId)}/insights/systemic`, { signal });
   return response.data;
 };
 
@@ -272,9 +273,9 @@ export const gridCellHostsHref = (
  */
 /** Download the executive systemic briefing (standalone HTML, synchronous).
  *  `site` scopes the hotspot / outlier / profile sections to one site. */
-export const downloadSystemicReport = async (site?: string | null, signal?: AbortSignal): Promise<void> => {
+export const downloadSystemicReport = async (projectId: number, site?: string | null, signal?: AbortSignal): Promise<void> => {
   const qs = site ? `?site=${encodeURIComponent(site)}` : '';
-  const response = await api.get(`${p()}/reports/systemic.html${qs}`, { responseType: 'blob', signal });
+  const response = await api.get(`${projectPath(projectId)}/reports/systemic.html${qs}`, { responseType: 'blob', signal });
   saveBlob(new Blob([response.data], { type: 'text/html' }), filenameFromContentDisposition(
     response.headers['content-disposition'] as string | undefined,
     `systemic_insights_${new Date().toISOString().split('T')[0]}.html`,

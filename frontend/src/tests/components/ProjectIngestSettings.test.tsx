@@ -18,14 +18,13 @@ const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 
 import ProjectIngestSettings from '../../components/scans/ProjectIngestSettings';
-import { GLOBAL } from '../../lib/query';
 
 // The project list as the provider reads it (ProjectContext): the setting is
 // shown from it, so a save must put it out of date.  (This asserted a call of
 // the context's `refreshProjects`, which put the whole page behind a loader.)
 const readProjects = vi.fn();
 const ProjectListOnScreen = () => {
-  useQuery({ queryKey: [GLOBAL, 'getProjects'], queryFn: readProjects });
+  useQuery({ queryKey: ['getProjects'], queryFn: readProjects });
   return null;
 };
 

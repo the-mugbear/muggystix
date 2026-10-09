@@ -32,6 +32,7 @@ import type {
   ReviewFollowupRow, ReviewFollowupsResponse,
 } from '../../services/api';
 import { usePagedList, type PagedList } from '../../hooks/usePagedList';
+import { useProjectId } from '../../hooks/useProjectId';
 import { useUrlPage } from '../../hooks/useUrlPage';
 import type { ListPage } from '../../hooks/useListQuery';
 import {
@@ -75,14 +76,15 @@ const FindingsPanel: React.FC<{
   /** The workbench's count per kind of work, until this list has its own. */
   pageNeeds: Record<FindingNeed, number | null>;
 }> = ({ need, onNeed, pageNeeds }) => {
+  const projectId = useProjectId();
   const list = usePagedList<MyFindingItem, MyFindingsResponse & ListPage<MyFindingItem>>(
     'getMyFindingsPage',
     async (req) => {
-      const r = await getMyFindingsPage(need, req);
+      const r = await getMyFindingsPage(projectId, need, req);
       // The size of the list being paged: both kinds, or the chosen one.
       return { ...r, total: need ? (r.need_counts?.[need] ?? r.items.length) : r.total_open };
     },
-    [need],
+    [projectId, need],
     usePage(),
   );
   // The chips' counts are this list's own (the same statement as the rows'
@@ -92,13 +94,14 @@ const FindingsPanel: React.FC<{
 };
 
 const HostsPanel: React.FC<PanelProps> = ({ canWrite }) => {
+  const projectId = useProjectId();
   const list = usePagedList<MyAttentionHost, MyAttentionResponse & ListPage<MyAttentionHost>>(
     'getMyReviewHostsPage',
     async (req) => {
-      const r = await getMyReviewHostsPage(req);
+      const r = await getMyReviewHostsPage(projectId, req);
       return { ...r, total: r.in_review_count };
     },
-    [],
+    [projectId],
     usePage(),
   );
   return <ReviewHostsTable {...listProps(list)} canWrite={canWrite} />;
@@ -110,15 +113,16 @@ const TestsPanel: React.FC<PanelProps & {
   /** The workbench's count per kind, until this list has its own. */
   pageGroups: MyTasksReasonCounts | null;
 }> = ({ canWrite, kind, onKind, pageGroups }) => {
+  const projectId = useProjectId();
   const list = usePagedList<MyTaskItem, MyTasksResponse & ListPage<MyTaskItem>>(
     'getMyTestsPage',
     async (req) => {
-      const r = await getMyTestsPage(kind, req);
+      const r = await getMyTestsPage(projectId, kind, req);
       const groups = r.group_counts;
       // The size of the list being paged: every kind, or the chosen one.
       return { ...r, total: kind ? (groups?.[kind] ?? r.items.length) : r.total_open };
     },
-    [kind],
+    [projectId, kind],
     usePage(),
   );
   // The chips' counts are this list's own (the same statement as the rows'
@@ -139,10 +143,11 @@ const TestsPanel: React.FC<PanelProps & {
 };
 
 const ChangedPanel: React.FC<PanelProps> = ({ canWrite }) => {
+  const projectId = useProjectId();
   const list = usePagedList<ReviewFollowupRow, ReviewFollowupsResponse>(
     'getReviewFollowupsPage',
-    (req) => getReviewFollowupsPage(req),
-    [],
+    (req) => getReviewFollowupsPage(projectId, req),
+    [projectId],
     usePage(),
   );
   return <ChangedSinceReviewSection {...listProps(list)} canWrite={canWrite} />;
@@ -152,14 +157,15 @@ const PickUpPanel: React.FC<PanelProps & {
   tier: number | null;
   onTier: (tier: number | null) => void;
 }> = ({ canWrite, tier, onTier }) => {
+  const projectId = useProjectId();
   const list = usePagedList<InvestigateRow, InvestigationQueueResponse & ListPage<InvestigateRow>>(
     'getInvestigationQueue',
     async (req) => {
-      const r = await getInvestigationQueue(tier, req);
+      const r = await getInvestigationQueue(projectId, tier, req);
       // The size of the list being paged: the whole queue, or the tier's hosts.
       return { ...r, total: tier != null ? (r.tier_counts?.[tier - 1] ?? r.items.length) : r.queue_total };
     },
-    [tier],
+    [projectId, tier],
     usePage(),
   );
   return (

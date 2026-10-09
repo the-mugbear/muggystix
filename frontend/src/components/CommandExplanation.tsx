@@ -2,6 +2,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AlertOctagon, Code, Info, Loader2, ShieldAlert, Terminal, TriangleAlert } from 'lucide-react';
 import { getScanCommandExplanation } from '../services/api';
+import { useProjectId } from '../hooks/useProjectId';
 import { Alert, AlertDescription } from './ui/alert';
 import {
   Accordion,
@@ -72,9 +73,10 @@ const overallRiskVariant = (
 };
 
 const CommandExplanationComponent: React.FC<CommandExplanationProps> = ({ scanId }) => {
+  const projectId = useProjectId();
   const query = useQuery({
-    queryKey: ['getScanCommandExplanation', scanId],
-    queryFn: ({ signal }) => getScanCommandExplanation(scanId, signal),
+    queryKey: ['getScanCommandExplanation', projectId, scanId],
+    queryFn: ({ signal }) => getScanCommandExplanation(projectId, scanId, signal),
   });
   const explanation = query.data ?? null;
   const error = query.isError ? 'Failed to load command explanation' : null;

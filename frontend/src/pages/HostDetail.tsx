@@ -16,6 +16,7 @@ import { Button } from '../components/ui/button';
 import HostInspector from '../components/HostInspector';
 import { useToast } from '../contexts/ToastContext';
 import { useDiscardGuard } from '../hooks/useDiscardGuard';
+import { useProjectId } from '../hooks/useProjectId';
 import { formatApiError } from '../utils/apiErrors';
 import { isPageShortcutEvent } from '../utils/keyboard';
 import { operationsBackPath } from '../utils/operationsQueue';
@@ -101,8 +102,9 @@ export default function HostDetail() {
 
   // Prev / Next from a Hosts list: the neighbour is looked up by its position
   // in the list the reader came from — asked for by a click, so a mutation.
+  const projectId = useProjectId();
   const adjacentHost = useMutation({
-    mutationFn: (absoluteTargetIndex: number) => getHosts({
+    mutationFn: (absoluteTargetIndex: number) => getHosts(projectId, {
       ...navState?.queryContext,
       skip: absoluteTargetIndex,
       limit: 1,

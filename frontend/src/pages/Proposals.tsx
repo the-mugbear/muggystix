@@ -17,6 +17,7 @@ import {
   decideProposals, getProposalSummary, listProposals, Proposal, PROPOSAL_BULK_MAX, ProposalKind,
   ProposalStatus,
 } from '../services/api';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
@@ -64,6 +65,7 @@ export const proposalDestination = (pr: Proposal): string | null => {
 
 const Proposals: React.FC = () => {
   const toast = useToast();
+  const projectId = useProjectId();
   const { canWrite: canDecide } = useProjectRole();
   const [confirmDialog, confirm] = useConfirm();
   const [params, setParams] = useSearchParams();
@@ -98,8 +100,8 @@ const Proposals: React.FC = () => {
   // are one request and cannot disagree.  It does not depend on the filter:
   // the measures keep their value while another list loads.
   const summaryQuery = useQuery({
-    queryKey: ['getProposalSummary'],
-    queryFn: ({ signal }) => getProposalSummary(signal),
+    queryKey: ['getProposalSummary', projectId],
+    queryFn: ({ signal }) => getProposalSummary(projectId, signal),
     ...pollEvery(60_000),
   });
   const summary = summaryQuery.data ?? null;
@@ -117,8 +119,8 @@ const Proposals: React.FC = () => {
   const filter = { status, kind, agent_session_id: sessionId, mine: scope === 'mine' ? true : undefined };
   const list = useListQuery<Proposal>(
     'listProposals',
-    ({ offset, limit, signal }) => listProposals({ ...filter, limit, offset }, signal),
-    [filter],
+    ({ offset, limit, signal }) => listProposals(projectId, { ...filter, limit, offset }, signal),
+    [projectId, filter],
     {
       pageSize: PAGE, poll: 60_000,
       enabled: scope !== null,  // the default is still being read
@@ -139,7 +141,7 @@ const Proposals: React.FC = () => {
   // several (see `bulk`).
   const bulkDecide = useMutation({
     mutationFn: (v: { ids: number[]; action: 'accept' | 'reject'; note?: string }) =>
-      decideProposals(v.ids, v.action, v.note),
+      decideProposals(projectId, v.ids, v.action, v.note),
     onSuccess: (res, v) => {
       if (res.failed.length) {
         // 5.317.2 — "left pending" was wrong for one already decided or

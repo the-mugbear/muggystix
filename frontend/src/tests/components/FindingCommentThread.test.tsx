@@ -131,7 +131,7 @@ describe('FindingCommentThread — C3: failed attachments are kept and retried a
 
     await waitFor(() => expect(mocked.uploadFindingNoteAttachment).toHaveBeenCalledTimes(2));
     // Same note id both times, and still exactly one comment created.
-    expect(mocked.uploadFindingNoteAttachment.mock.calls[1]).toEqual([7, 42, file]);
+    expect(mocked.uploadFindingNoteAttachment.mock.calls[1]).toEqual([1, 7, 42, file]);
     expect(mocked.createFindingNote).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.queryByText('shot.png')).toBeNull());
   });
@@ -204,7 +204,7 @@ describe('FindingCommentThread — v5.256.0: a comment is its author\'s', () => 
     fireEvent.click(screen.getByRole('button', { name: /Edit/ }));
     fireEvent.change(screen.getByLabelText('Edit comment'), { target: { value: ' first draft ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mocked.updateFindingNote).toHaveBeenCalledWith(7, 1, 'first draft'));
+    await waitFor(() => expect(mocked.updateFindingNote).toHaveBeenCalledWith(1, 7, 1, 'first draft'));
     expect(await screen.findByText('first draft')).toBeInTheDocument();
     expect(screen.getByText(/edited/)).toBeInTheDocument();
   });
@@ -216,7 +216,7 @@ describe('FindingCommentThread — v5.256.0: a comment is its author\'s', () => 
     renderThread();
     await screen.findByText('mine');
     fireEvent.click(screen.getByRole('button', { name: /Delete comment/ }));
-    await waitFor(() => expect(mocked.deleteFindingNote).toHaveBeenCalledWith(7, 1));
+    await waitFor(() => expect(mocked.deleteFindingNote).toHaveBeenCalledWith(1, 7, 1));
     await waitFor(() => expect(screen.queryByText('mine')).toBeNull());
   });
 

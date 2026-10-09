@@ -9,13 +9,11 @@
  * one) — the last case here.
  */
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
-import { QueryObserver, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import React from 'react';
+import { QueryClientProvider, QueryObserver, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  GLOBAL, ProjectChanged, ScopedQueryClient, createQueryClient, getQueryScope, holdProject, invalidateReads,
-  pollEvery, scopedClient, setQueryScope, useLastSettled,
-} from '../../lib/query';
+import { createQueryClient, invalidateReads, pollEvery, useLastSettled } from '../../lib/query';
 
 const setVisibility = (state: 'visible' | 'hidden') => {
   Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
@@ -150,7 +148,7 @@ describe('pollEvery', () => {
 });
 
 describe('invalidateReads', () => {
-  it('re-reads by API-function name — the project\'s reads and the GLOBAL ones — and nothing else', async () => {
+  it('re-reads by API-function name — whatever the arguments, the project among them — and nothing else', async () => {
     const client = createQueryClient();
     const listA = vi.fn().mockResolvedValue(['a']);
     const listB = vi.fn().mockResolvedValue(['b']);
@@ -158,11 +156,11 @@ describe('invalidateReads', () => {
     const other = vi.fn().mockResolvedValue([]);
     const otherGlobal = vi.fn().mockResolvedValue([]);
     const stop = [
-      new QueryObserver(client, { queryKey: ['listThings', { status: 'open' }], queryFn: listA }).subscribe(() => {}),
-      new QueryObserver(client, { queryKey: ['listThings', { status: 'closed' }], queryFn: listB }).subscribe(() => {}),
-      new QueryObserver(client, { queryKey: [GLOBAL, 'getProjects'], queryFn: projects }).subscribe(() => {}),
-      new QueryObserver(client, { queryKey: ['getThing', 7], queryFn: other }).subscribe(() => {}),
-      new QueryObserver(client, { queryKey: [GLOBAL, 'getUsers'], queryFn: otherGlobal }).subscribe(() => {}),
+      new QueryObserver(client, { queryKey: ['listThings', 1, { status: 'open' }], queryFn: listA }).subscribe(() => {}),
+      new QueryObserver(client, { queryKey: ['listThings', 2, { status: 'closed' }], queryFn: listB }).subscribe(() => {}),
+      new QueryObserver(client, { queryKey: ['getProjects'], queryFn: projects }).subscribe(() => {}),
+      new QueryObserver(client, { queryKey: ['getThing', 1, 7], queryFn: other }).subscribe(() => {}),
+      new QueryObserver(client, { queryKey: ['getUsers'], queryFn: otherGlobal }).subscribe(() => {}),
     ];
     // Every first read has answered (a read still in flight would be joined, not repeated).
     await waitFor(() => expect(client.isFetching()).toBe(0));
@@ -178,149 +176,56 @@ describe('invalidateReads', () => {
   });
 });
 
-describe('the cache scope (setQueryScope)', () => {
-  const before = getQueryScope();
-  afterEach(() => setQueryScope(before));
+// 5.353.0 — the project is an ARGUMENT, so it is in the key.  These cases were
+// first guaranteed by a hidden partition of the cache (a scope mixed into the
+// key's hash) and a client proxy that dropped late writes; three reviews found
+// holes in that.  With the project in the key they hold by construction — the
+// tests stay, to say so.
+describe('the project is in the key', () => {
   // Kept, so that a second ask of the same thing would be answered from the cache.
   const kept = { staleTime: Infinity, gcTime: Infinity };
 
-  it('the same key under two projects is two entries: one project\'s rows never answer another\'s question', async () => {
+  it('the same read for two projects is two entries: one project\'s rows never answer another\'s question', async () => {
     const client = createQueryClient();
-    const read = vi.fn(async () => `rows of project ${getQueryScope().projectId}`);
-    setQueryScope({ userId: 1, projectId: 1 });
-    expect(await client.fetchQuery({ queryKey: ['listThings'], queryFn: read, ...kept })).toBe('rows of project 1');
-    expect(await client.fetchQuery({ queryKey: ['listThings'], queryFn: read, ...kept })).toBe('rows of project 1');
+    const read = vi.fn(async (project: number) => `rows of project ${project}`);
+    const ask = (project: number) => client.fetchQuery({ queryKey: ['listThings', project], queryFn: () => read(project), ...kept });
+    expect(await ask(1)).toBe('rows of project 1');
+    expect(await ask(1)).toBe('rows of project 1');
     expect(read).toHaveBeenCalledTimes(1);
 
-    setQueryScope({ userId: 1, projectId: 2 });
-    expect(client.getQueryData(['listThings'])).toBeUndefined();
-    expect(await client.fetchQuery({ queryKey: ['listThings'], queryFn: read, ...kept })).toBe('rows of project 2');
+    expect(client.getQueryData(['listThings', 2])).toBeUndefined();
+    expect(await ask(2)).toBe('rows of project 2');
     expect(read).toHaveBeenCalledTimes(2);
-
-    // Back on the first project its own rows are still its own.
-    setQueryScope({ userId: 1, projectId: 1 });
-    expect(client.getQueryData(['listThings'])).toBe('rows of project 1');
+    // The first project's rows are still its own.
+    expect(client.getQueryData(['listThings', 1])).toBe('rows of project 1');
   });
 
-  it('a GLOBAL key is shared across projects, and not across users', async () => {
+  it('a bulk read or write under one project\'s key reaches only that project\'s entries', async () => {
     const client = createQueryClient();
-    const read = vi.fn(async () => `projects of user ${getQueryScope().userId}`);
-    setQueryScope({ userId: 1, projectId: 1 });
-    await client.fetchQuery({ queryKey: [GLOBAL, 'getProjects'], queryFn: read, ...kept });
-    setQueryScope({ userId: 1, projectId: 2 });
-    expect(client.getQueryData([GLOBAL, 'getProjects'])).toBe('projects of user 1');
-    await client.fetchQuery({ queryKey: [GLOBAL, 'getProjects'], queryFn: read, ...kept });
-    expect(read).toHaveBeenCalledTimes(1);
+    await client.fetchQuery({ queryKey: ['listJobs', 1, 'open'], queryFn: async () => ['job of 1'], ...kept });
+    await client.fetchQuery({ queryKey: ['listJobs', 2, 'open'], queryFn: async () => ['job of 2'], ...kept });
 
-    setQueryScope({ userId: 2, projectId: 2 });
-    expect(client.getQueryData([GLOBAL, 'getProjects'])).toBeUndefined();
-    expect(await client.fetchQuery({ queryKey: [GLOBAL, 'getProjects'], queryFn: read, ...kept }))
-      .toBe('projects of user 2');
-    expect(read).toHaveBeenCalledTimes(2);
-  });
-});
-
-// Code review 2026-10-09: the scope is read when a key is hashed, so a write
-// that completes AFTER a project switch would file one project's row under
-// the other's key.  A component's client remembers the scope it was made under.
-describe('a late write keeps the identity it started with (scopedClient)', () => {
-  const before = getQueryScope();
-  afterEach(() => setQueryScope(before));
-  const kept = { staleTime: Infinity, gcTime: Infinity };
-
-  it('drops a data write made under another project, and answers "nothing" to a read of its cache', async () => {
-    const client = createQueryClient();
-    setQueryScope({ userId: 1, projectId: 1 });
-    const inProjectOne = scopedClient(client);
-    await client.fetchQuery({ queryKey: ['listJobs'], queryFn: async () => ['job of 1'], ...kept });
-
-    setQueryScope({ userId: 1, projectId: 2 });
-    await client.fetchQuery({ queryKey: ['listJobs'], queryFn: async () => ['job of 2'], ...kept });
-    // Project 1's save answers now.
-    inProjectOne.setQueryData<string[]>(['listJobs'], (prev) => ['late job of 1', ...(prev ?? [])]);
-    inProjectOne.setQueriesData<string[]>({ queryKey: ['listJobs'] }, () => ['late job of 1']);
-    expect(client.getQueryData(['listJobs'])).toEqual(['job of 2']);
-    expect(inProjectOne.getQueryData(['listJobs'])).toBeUndefined();
-    expect(inProjectOne.getQueriesData({ queryKey: ['listJobs'] })).toEqual([]);
-
-    // Its own project is untouched, and a view made under project 2 writes as usual.
-    scopedClient(client).setQueryData(['listJobs'], ['job of 2', 'another']);
-    expect(client.getQueryData(['listJobs'])).toEqual(['job of 2', 'another']);
-    setQueryScope({ userId: 1, projectId: 1 });
-    expect(client.getQueryData(['listJobs'])).toEqual(['job of 1']);
-  });
-
-  // Code review 2026-10-09 (second): a filter matches by KEY, and a
-  // remembered entry of another project has the same key.  The view checked
-  // the scope of the call, not the entry — so a bulk read returned both
-  // projects' entries and a bulk write ran on the other project's too.
-  it('a bulk read or write reaches only this project\'s entries, with another project\'s remembered beside them', async () => {
-    const client = createQueryClient();
-    setQueryScope({ userId: 1, projectId: 1 });
-    await client.fetchQuery({ queryKey: ['listJobs'], queryFn: async () => ['job of 1'], ...kept });
-    setQueryScope({ userId: 1, projectId: 2 });
-    await client.fetchQuery({ queryKey: ['listJobs'], queryFn: async () => ['job of 2'], ...kept });
-    const inProjectTwo = scopedClient(client);
-
-    expect(inProjectTwo.getQueriesData({ queryKey: ['listJobs'] })).toEqual([[['listJobs'], ['job of 2']]]);
+    expect(client.getQueriesData({ queryKey: ['listJobs', 2] })).toEqual([[['listJobs', 2, 'open'], ['job of 2']]]);
     const seen = vi.fn((prev: string[] | undefined) => [...(prev ?? []), 'added']);
-    inProjectTwo.setQueriesData<string[]>({ queryKey: ['listJobs'] }, seen);
+    client.setQueriesData<string[]>({ queryKey: ['listJobs', 2] }, seen);
     expect(seen).toHaveBeenCalledTimes(1);
-    expect(client.getQueryData(['listJobs'])).toEqual(['job of 2', 'added']);
-    setQueryScope({ userId: 1, projectId: 1 });
-    expect(client.getQueryData(['listJobs'])).toEqual(['job of 1']);
+    expect(client.getQueryData(['listJobs', 2, 'open'])).toEqual(['job of 2', 'added']);
+    expect(client.getQueryData(['listJobs', 1, 'open'])).toEqual(['job of 1']);
   });
 
-  it('holdProject: an operation of several requests stops when the project changes under it', () => {
-    setQueryScope({ userId: 1, projectId: 1 });
-    const stillHere = holdProject();
-    expect(() => stillHere()).not.toThrow();
-    setQueryScope({ userId: 1, projectId: 2 });
-    expect(() => stillHere()).toThrow(ProjectChanged);
-    // Back in the project it started in, it may go on.
-    setQueryScope({ userId: 1, projectId: 1 });
-    expect(() => stillHere()).not.toThrow();
-  });
-
-  it('still writes what is not one project\'s after a project switch — but not after another user signs in', async () => {
+  it('a save started in one project and answered in another writes its OWN project\'s list, not the one on screen (the reviewed case)', async () => {
     const client = createQueryClient();
-    setQueryScope({ userId: 1, projectId: 1 });
-    const view = scopedClient(client);
-    await client.fetchQuery({ queryKey: [GLOBAL, 'getProjects'], queryFn: async () => ['a'], ...kept });
-
-    setQueryScope({ userId: 1, projectId: 2 });
-    view.setQueryData([GLOBAL, 'getProjects'], ['a', 'renamed']);
-    expect(client.getQueryData([GLOBAL, 'getProjects'])).toEqual(['a', 'renamed']);
-
-    setQueryScope({ userId: 2, projectId: 2 });
-    await client.fetchQuery({ queryKey: [GLOBAL, 'getProjects'], queryFn: async () => ['theirs'], ...kept });
-    view.setQueryData([GLOBAL, 'getProjects'], ['user 1 again']);
-    expect(client.getQueryData([GLOBAL, 'getProjects'])).toEqual(['theirs']);
-  });
-
-  it('is the client for everything else: reads, invalidation and the library\'s own hooks go through', async () => {
-    const client = createQueryClient();
-    setQueryScope({ userId: 1, projectId: 1 });
-    const view = scopedClient(client);
-    const read = vi.fn(async () => 'rows');
-    expect(await view.fetchQuery({ queryKey: ['listThings'], queryFn: read, ...kept })).toBe('rows');
-    expect(view.getQueryData(['listThings'])).toBe('rows');
-    expect(view.getQueryCache()).toBe(client.getQueryCache());
-    await invalidateReads(view, 'listThings');
-    expect(client.getQueryState(['listThings'])?.isInvalidated).toBe(true);
-  });
-
-  it('a save started in one project and answered in another leaves the other project\'s list alone (the reviewed case)', async () => {
     const answer: { resolve: (job: string) => void } = { resolve: () => undefined };
     const enqueue = () => new Promise<string>((resolve) => { answer.resolve = resolve; });
     const answered = vi.fn();
-    const Dialog = () => {
+    const Dialog = ({ project }: { project: number }) => {
       const queryClient = useQueryClient();
-      const jobs = useQuery({ queryKey: ['listJobs'], queryFn: async () => [`job of ${getQueryScope().projectId}`], ...kept });
+      const jobs = useQuery({ queryKey: ['listJobs', project], queryFn: async () => [`job of ${project}`], ...kept });
       const queue = useMutation({
         mutationFn: enqueue,
         onSuccess: (job) => {
-          queryClient.setQueryData<string[]>(['listJobs'], (prev) => [job, ...(prev ?? [])]);
+          // `project` is the one this dialog rendered with — the save's own.
+          queryClient.setQueryData<string[]>(['listJobs', project], (prev) => [job, ...(prev ?? [])]);
           answered();
         },
       });
@@ -331,23 +236,24 @@ describe('a late write keeps the identity it started with (scopedClient)', () =>
         </div>
       );
     };
-    const App = ({ project }: { project: number }) => {
-      setQueryScope({ userId: 1, projectId: project });   // as ProjectProvider does, while rendering
-      return <ScopedQueryClient><Dialog key={project} /></ScopedQueryClient>;
-    };
-    const { rerender } = render(<App project={1} />);
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { rerender } = render(<Dialog key={1} project={1} />, { wrapper });
     expect(await screen.findByText('job of 1')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'queue' }));
 
-    rerender(<App project={2} />);                         // the reader switches project
+    rerender(<Dialog key={2} project={2} />);              // the reader switches project
     expect(await screen.findByText('job of 2')).toBeInTheDocument();
     await act(async () => { answer.resolve('queued in project 1'); });
     // The save's completion has run (it runs although its dialog is gone)…
     await waitFor(() => expect(answered).toHaveBeenCalledTimes(1));
 
-    // …and wrote nothing into the project now on screen.
+    // …wrote nothing into the project now on screen…
     expect(screen.queryByText('queued in project 1')).toBeNull();
     expect(screen.getAllByRole('listitem').map((li) => li.textContent)).toEqual(['job of 2']);
+    // …and is in the list of the project it was made in.
+    expect(client.getQueryData(['listJobs', 1])).toEqual(['queued in project 1', 'job of 1']);
   });
 });
 
@@ -355,9 +261,6 @@ describe('a late write keeps the identity it started with (scopedClient)', () =>
 // Oversight's figures, the scope under a search…): the last answer stays on
 // screen while another key loads or fails.
 describe('useLastSettled — the last answer this component was given', () => {
-  const before = getQueryScope();
-  afterEach(() => setQueryScope(before));
-
   /** A read per filter, answered by hand. */
   const reader = () => {
     const answers: Record<string, { resolve: (value: string) => void; reject: (error: unknown) => void }> = {};
@@ -422,40 +325,22 @@ describe('useLastSettled — the last answer this component was given', () => {
     expect(second.result.current).toBeUndefined();
   });
 
-  it('forgets with the project: a component that survives a switch shows nothing of the other project', () => {
-    setQueryScope({ userId: 1, projectId: 1 });
+  it('forgets with the project when the project is its resetKey: a component that survives a switch shows nothing of the other project', () => {
     const { result, rerender } = renderHook(
-      ({ data }: { data?: string }) => useLastSettled(data),
-      { initialProps: { data: 'rows of project 1' as string | undefined } },
+      ({ data, project }: { data?: string; project: number }) => useLastSettled(data, { resetKey: project }),
+      { initialProps: { data: 'rows of project 1' as string | undefined, project: 1 } },
     );
     expect(result.current).toBe('rows of project 1');
 
     // The reader switches project; the new project's read has not answered.
-    setQueryScope({ userId: 1, projectId: 2 });
-    rerender({ data: undefined });
+    rerender({ data: undefined, project: 2 });
     expect(result.current).toBeUndefined();
-    rerender({ data: 'rows of project 2' });
+    rerender({ data: 'rows of project 2', project: 2 });
     expect(result.current).toBe('rows of project 2');
 
     // Back on the first project nothing of the second is shown, and nothing
     // old is brought back either: the query is asked.
-    setQueryScope({ userId: 1, projectId: 1 });
-    rerender({ data: undefined });
-    expect(result.current).toBeUndefined();
-  });
-
-  it('global: kept across projects (the data is not one project\'s), forgotten with the user', () => {
-    setQueryScope({ userId: 1, projectId: 1 });
-    const { result, rerender } = renderHook(
-      ({ data }: { data?: string }) => useLastSettled(data, { global: true }),
-      { initialProps: { data: 'figures of user 1' as string | undefined } },
-    );
-    setQueryScope({ userId: 1, projectId: 2 });
-    rerender({ data: undefined });
-    expect(result.current).toBe('figures of user 1');
-
-    setQueryScope({ userId: 2, projectId: 2 });
-    rerender({ data: undefined });
+    rerender({ data: undefined, project: 1 });
     expect(result.current).toBeUndefined();
   });
 

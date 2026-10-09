@@ -34,7 +34,7 @@ import {
   getToolRegistry,
   ToolRegistryEntry,
 } from '../services/api';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { cn } from '../utils/cn';
 import { safeHttpHref } from '../utils/safeHref';
 
@@ -160,7 +160,7 @@ const ToolReference: React.FC = () => {
 
   // A vetted row is put back into this read by the dialog that saved it.
   const registry = useQuery({
-    queryKey: [GLOBAL, 'getToolRegistry'],
+    queryKey: ['getToolRegistry'],
     queryFn: ({ signal }) => getToolRegistry(undefined, signal),
   });
   const tools = useMemo(() => registry.data?.tools ?? [], [registry.data]);

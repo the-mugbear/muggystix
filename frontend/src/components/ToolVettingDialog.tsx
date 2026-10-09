@@ -38,7 +38,7 @@ import {
 import { Textarea } from './ui/textarea';
 import { Alert, AlertDescription } from './ui/alert';
 import { useToast } from '../contexts/ToastContext';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import {
   updateToolRegistryEntry,
   type ToolRegistryEntry,
@@ -79,7 +79,7 @@ const VettingForm: React.FC<Props & { tool: ToolRegistryEntry }> = ({ tool, open
     mutationFn: (update: ToolRegistryUpdate) => updateToolRegistryEntry(tool.name, update),
     onSuccess: (updated, sent) => {
       // The catalogue page shows the row as the server now has it.
-      queryClient.setQueryData<ToolRegistryResponse>([GLOBAL, 'getToolRegistry'], (old) => (old ? {
+      queryClient.setQueryData<ToolRegistryResponse>(['getToolRegistry'], (old) => (old ? {
         ...old,
         tools: old.tools.map((t) => (t.name === tool.name ? { ...t, ...updated } : t)),
       } : old));

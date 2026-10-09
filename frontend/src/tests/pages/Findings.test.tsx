@@ -256,7 +256,7 @@ describe('Findings — superseded responses', () => {
     type Resp = typeof currentResponse;
     const deferreds: Array<{ resolve: (r: Resp) => void; reject: (e: unknown) => void; signal?: AbortSignal }> = [];
     mocked.listFindings.mockImplementation(
-      (_filters: unknown, signal?: AbortSignal) =>
+      (_projectId: number, _filters: unknown, signal?: AbortSignal) =>
         new Promise<Resp>((resolve, reject) => {
           deferreds.push({ resolve, reject, signal });
           // Mirror axios: an aborted request rejects with CanceledError.
@@ -347,7 +347,7 @@ describe('Findings — a change is followed by the list as the server has it', (
     const cursorRow = () => document.querySelector('[data-list-cursor="true"]');
     expect(cursorRow()).toHaveTextContent('Finding 2');
     await chooseStatus('Finding 1', 'Confirmed');
-    await waitFor(() => expect(mocked.setFindingStatus).toHaveBeenCalledWith(1, 'confirmed', undefined));
+    await waitFor(() => expect(mocked.setFindingStatus).toHaveBeenCalledWith(1, 1, 'confirmed', undefined));
 
     // The list is asked for again; while it is, the rows are on screen as they were.
     await waitFor(() => expect(mocked.listFindings).toHaveBeenCalledTimes(2));
@@ -385,7 +385,7 @@ describe('Findings — while another filter loads', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocked.listProjectMembers.mockResolvedValue([]);
-    mocked.listFindings.mockImplementation((filters: { search?: string }) => (
+    mocked.listFindings.mockImplementation((_projectId: number, filters: { search?: string }) => (
       filters.search
         ? new Promise<Resp>((resolve, reject) => { answer = { resolve, reject }; })
         : Promise.resolve({ items: [makeFinding(1), makeFinding(2)], total: 2, severity_counts: EMPTY_SEV_COUNTS })
@@ -397,7 +397,7 @@ describe('Findings — while another filter loads', () => {
     await screen.findByText('Finding 1');
     searchFor('nine');
     await waitFor(
-      () => expect(mocked.listFindings.mock.calls.some(([f]) => f.search === 'nine')).toBe(true),
+      () => expect(mocked.listFindings.mock.calls.some(([, f]) => f.search === 'nine')).toBe(true),
       { timeout: 3000 },
     );
   };
@@ -456,7 +456,8 @@ describe('Findings — M1: row links carry the queue', () => {
     const from = decodeURIComponent(href.split('from=')[1]);
     expect(from).toBe('/findings?status=all&severity=high&page=3&sort=severity&dir=desc');
     // The URL page drove the request (page 3 of 50 → offset 100).
-    expect(mocked.listFindings.mock.calls[0][0]).toEqual(
+    expect(mocked.listFindings.mock.calls[0][0]).toBe(1);
+    expect(mocked.listFindings.mock.calls[0][1]).toEqual(
       expect.objectContaining({ offset: 100, limit: 50, sort: 'severity', dir: 'desc' }),
     );
   });
@@ -557,7 +558,7 @@ describe('Findings — presentation', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Owner$/ }));
     await waitFor(() => {
       const calls = mocked.listFindings.mock.calls;
-      const last = calls[calls.length - 1][0];
+      const last = calls[calls.length - 1][1];
       expect(last).toMatchObject({ sort: 'owner', dir: 'asc' });
     });
   });
@@ -591,11 +592,11 @@ describe('Findings — presentation', () => {
   it('defaults to severity order and keeps a chosen sort', async () => {
     renderFindings();
     await screen.findByText('Finding 1');
-    expect(mocked.listFindings.mock.calls[0][0]).toEqual(expect.objectContaining({ sort: 'severity', dir: 'asc' }));
+    expect(mocked.listFindings.mock.calls[0][1]).toEqual(expect.objectContaining({ sort: 'severity', dir: 'asc' }));
     expect(screen.getByRole('columnheader', { name: /Severity/ })).toHaveAttribute('aria-sort', 'ascending');
 
     fireEvent.click(screen.getByRole('button', { name: /^Age$/ }));
-    await waitFor(() => expect(mocked.listFindings.mock.lastCall?.[0]).toEqual(
+    await waitFor(() => expect(mocked.listFindings.mock.lastCall?.[1]).toEqual(
       expect.objectContaining({ sort: 'created_at', dir: 'desc' }),
     ));
   });

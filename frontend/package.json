@@ -1,6 +1,6 @@
 {
   "name": "networkMapper-frontend",
-  "version": "5.352.0",
+  "version": "5.353.0",
   "private": true,
   "dependencies": {
     "@observablehq/plot": "0.6.17",
@@ -34,6 +34,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.3.0",
+    "@tanstack/eslint-plugin-query": "5.103.3",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^14.3.1",
     "@testing-library/user-event": "^14.5.2",

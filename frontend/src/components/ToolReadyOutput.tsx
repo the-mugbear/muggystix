@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { copyToClipboard as copyText } from '../utils/clipboard';
 import { downloadTextFile } from '../utils/download';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { Code, Copy, Download, Loader2 } from 'lucide-react';
 import { getToolReadyOutput, ToolReadyResult } from '../services/api';
@@ -58,6 +59,7 @@ const PREVIEW_CHARS = 100_000;
 export default function ToolReadyOutput({
   open, onClose, filters, totalHosts, selectedCount,
 }: ToolReadyOutputProps) {
+  const projectId = useProjectId();
   const [selectedFormat, setSelectedFormat] = useState('ip-list');
   const [includePorts, setIncludePorts] = useState(false);
   // Default in-scope: a declared domain must cover a name before it becomes
@@ -67,7 +69,7 @@ export default function ToolReadyOutput({
   // Asked for by the button, so a mutation: its answer is the output shown,
   // and asking again starts from nothing.
   const generate = useMutation({
-    mutationFn: (format: string) => getToolReadyOutput(format, {
+    mutationFn: (format: string) => getToolReadyOutput(projectId, format, {
       ...filters,
       includePorts,
       ...(NAME_AWARE_FORMATS.has(format)

@@ -23,6 +23,7 @@ import {
   TableRow,
 } from '../components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { formatHostForUrl } from '../utils/webLinks';
 import { ScanTimeSourceNote } from '../components/scans/ScanTimeCells';
@@ -85,17 +86,18 @@ const ScanDetail: React.FC = () => {
   // now, the names it resolved and what it recorded per host.
   const id = scanId ? parseInt(scanId) : NaN;
   const known = !Number.isNaN(id);
-  const scanQuery = useQuery({ queryKey: ['getScan', id], queryFn: ({ signal }) => getScan(id, signal), enabled: known });
-  const hostsQuery = useQuery({ queryKey: ['getHostsByScan', id], queryFn: ({ signal }) => getHostsByScan(id, undefined, signal), enabled: known });
-  const dnsQuery = useQuery({ queryKey: ['getScanDnsRecords', id], queryFn: ({ signal }) => getScanDnsRecords(id, signal), enabled: known });
+  const projectId = useProjectId();
+  const scanQuery = useQuery({ queryKey: ['getScan', projectId, id], queryFn: ({ signal }) => getScan(projectId, id, signal), enabled: known });
+  const hostsQuery = useQuery({ queryKey: ['getHostsByScan', projectId, id], queryFn: ({ signal }) => getHostsByScan(projectId, id, undefined, signal), enabled: known });
+  const dnsQuery = useQuery({ queryKey: ['getScanDnsRecords', projectId, id], queryFn: ({ signal }) => getScanDnsRecords(projectId, id, signal), enabled: known });
   const snapshotsQuery = useQuery({
-    queryKey: ['getScanHostSnapshots', id], queryFn: ({ signal }) => getScanHostSnapshots(id, signal), enabled: known,
+    queryKey: ['getScanHostSnapshots', projectId, id], queryFn: ({ signal }) => getScanHostSnapshots(projectId, id, signal), enabled: known,
   });
   // v5.222.0 — the inventory's per-scan summary (hosts added, conflicts,
   // import quality) for the Import result card; not fatal if it fails.
   const summaryQuery = useQuery({
-    queryKey: ['getScans', { ids: [id] }, { limit: 1 }],
-    queryFn: ({ signal }) => getScans(0, 1, { ids: [id], signal }),
+    queryKey: ['getScans', projectId, { ids: [id] }, { limit: 1 }],
+    queryFn: ({ signal }) => getScans(projectId, 0, 1, { ids: [id], signal }),
     enabled: known,
   });
   const required = [scanQuery, hostsQuery, dnsQuery, snapshotsQuery];

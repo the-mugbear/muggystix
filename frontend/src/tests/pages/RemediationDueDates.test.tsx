@@ -131,6 +131,7 @@ describe('A — a due date set by hand', () => {
     await waitFor(() => expect(applyRemediation).toHaveBeenCalledTimes(1));
     // Only the changed field, as an overwrite, with the note in the same row.
     expect(applyRemediation.mock.calls[0]).toEqual([
+      1,
       [{ finding_host_id: 1, due_override_on: '2026-12-20',
         notes: [{ body: 'Change window agreed with the owner', request_key: expect.stringMatching(/:1$/) }] }],
       { overwrite: true },
@@ -154,7 +155,7 @@ describe('A — a due date set by hand', () => {
     fireEvent.change(within(dialog).getByLabelText('Note for the timeline (required)'), { target: { value: 'Extension withdrawn' } });
     fireEvent.click(save(dialog));
     await waitFor(() => expect(applyRemediation).toHaveBeenCalledTimes(1));
-    expect(applyRemediation.mock.calls[0][0]).toEqual([
+    expect(applyRemediation.mock.calls[0][1]).toEqual([
       { finding_host_id: 1, due_override_on: null, notes: [{ body: 'Extension withdrawn', request_key: expect.any(String) }] },
     ]);
   });
@@ -177,7 +178,7 @@ describe('A — a due date set by hand', () => {
     expect(within(dialog).getByLabelText('Note for the timeline (optional)')).toBeInTheDocument();
     fireEvent.click(save(dialog));
     await waitFor(() => expect(applyRemediation).toHaveBeenCalledTimes(1));
-    expect(applyRemediation.mock.calls[0][0]).toEqual([
+    expect(applyRemediation.mock.calls[0][1]).toEqual([
       { finding_host_id: 1, team: 'Web' }, { finding_host_id: 2, team: 'Web' },
     ]);
   });
@@ -199,7 +200,7 @@ describe('A — a due date set by hand', () => {
     fireEvent.click(save(dialog));
     await waitFor(() => expect(applyRemediation).toHaveBeenCalledTimes(1));
     // Both findings are on ONE host: the reason still goes in each row.
-    const sent = applyRemediation.mock.calls[0][0];
+    const sent = applyRemediation.mock.calls[0][1];
     expect(sent).toHaveLength(2);
     expect(sent.every((r: { due_override_on: unknown; notes?: unknown[] }) => r.due_override_on === null && r.notes?.length === 1)).toBe(true);
     expect(new Set(sent.map((r: { notes: Array<{ request_key: string }> }) => r.notes[0].request_key)).size).toBe(2);
@@ -241,7 +242,7 @@ describe('B — a deferral has a review date and a reason', () => {
     fireEvent.change(within(dialog).getByLabelText('Note for the timeline (required)'), { target: { value: 'Waiting for the vendor patch' } });
     fireEvent.click(save(dialog));
     await waitFor(() => expect(applyRemediation).toHaveBeenCalledTimes(1));
-    expect(applyRemediation.mock.calls[0][0]).toEqual([
+    expect(applyRemediation.mock.calls[0][1]).toEqual([
       { finding_host_id: 1, status: 'deferred', deferred_review_on: '2026-11-10',
         notes: [{ body: 'Waiting for the vendor patch', request_key: expect.any(String) }] },
     ]);
@@ -273,7 +274,7 @@ describe('B — a deferral has a review date and a reason', () => {
     expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
     fireEvent.click(save(dialog));
     await waitFor(() => expect(applyRemediation).toHaveBeenCalledTimes(1));
-    expect(applyRemediation.mock.calls[0][0]).toEqual([{ finding_host_id: 1, team: 'Web' }]);
+    expect(applyRemediation.mock.calls[0][1]).toEqual([{ finding_host_id: 1, team: 'Web' }]);
   });
 });
 
@@ -285,7 +286,7 @@ describe('C — deferrals to review and due dates set by hand, as openable count
     fireEvent.click(screen.getByRole('button', { name: '4 deferrals to review: show them' }));
     // Counted before the state and gap filters, so those go; severity stays.
     await waitFor(() => expect(listRemediation).toHaveBeenLastCalledWith(
-      expect.objectContaining({
+      1, expect.objectContaining({
         flag: 'deferral_review_due', state: undefined, overdue_band: undefined, verification: undefined,
         severity: 'high', offset: 0,
       }), expect.anything()));
@@ -293,27 +294,27 @@ describe('C — deferrals to review and due dates set by hand, as openable count
     expect(screen.getByRole('button', { name: 'About “Deferrals to review”' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '2 due date set by hand: show them' }));
     await waitFor(() => expect(listRemediation).toHaveBeenLastCalledWith(
-      expect.objectContaining({ flag: 'deadline_overridden' }), expect.anything()));
+      1, expect.objectContaining({ flag: 'deadline_overridden' }), expect.anything()));
     fireEvent.click(screen.getByRole('button', { name: 'Due date set by hand: remove this filter' }));
     await waitFor(() => expect(screen.getByTestId('where')).not.toHaveTextContent('flag='));
-    expect(listRemediation.mock.calls[listRemediation.mock.calls.length - 1][0]).not.toHaveProperty('flag');
+    expect(listRemediation.mock.calls[listRemediation.mock.calls.length - 1][1]).not.toHaveProperty('flag');
   });
 
   it('a count of 0 is absent, a value the page does not know is ignored, and the CSV follows the filter', async () => {
     listRemediation.mockResolvedValue(page([row(1)], { deferral_review_due: 0, deadline_overridden: 3 }));
     const first = show('/remediation?flag=deadline_overridden');
     await table();
-    expect(listRemediation.mock.calls[0][0]).toMatchObject({ flag: 'deadline_overridden' });
+    expect(listRemediation.mock.calls[0][1]).toMatchObject({ flag: 'deadline_overridden' });
     expect(screen.queryByText('Deferrals to review')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '3 due date set by hand: show them' })).toHaveAttribute('aria-pressed', 'true');
     fireEvent.click(screen.getByRole('button', { name: /CSV/ }));
     await waitFor(() => expect(saveBlob).toHaveBeenCalled());
-    expect(listRemediation).toHaveBeenLastCalledWith(expect.objectContaining({ flag: 'deadline_overridden', limit: 200 }));
+    expect(listRemediation).toHaveBeenLastCalledWith(1, expect.objectContaining({ flag: 'deadline_overridden', limit: 200 }));
     first.unmount();
     listRemediation.mockClear();
     show('/remediation?flag=everything');
     await table();
-    expect(listRemediation.mock.calls[0][0]).not.toHaveProperty('flag');
+    expect(listRemediation.mock.calls[0][1]).not.toHaveProperty('flag');
   });
 });
 
@@ -322,7 +323,7 @@ describe('D — search by finding or host', () => {
     listRemediation.mockResolvedValue({ ...page([row(1), row(2)]), total: 80, has_more: true });
     show('/remediation?page=3');
     await table();
-    expect(listRemediation).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50 }), expect.anything());
+    expect(listRemediation).toHaveBeenLastCalledWith(1, expect.objectContaining({ offset: 50 }), expect.anything());
     const box = screen.getByRole('searchbox', { name: 'Search by finding or host' });
     expect(box).toHaveAttribute('placeholder', 'Finding or host…');
     vi.useFakeTimers();
@@ -338,7 +339,7 @@ describe('D — search by finding or host', () => {
     vi.useRealTimers();
     await waitFor(() => expect(listRemediation).toHaveBeenCalled());
     // Debounced: "sm" was never asked for, and the page is the first again.
-    expect(listRemediation.mock.calls.every(([query]) => query.q === 'smb' && query.offset === 0)).toBe(true);
+    expect(listRemediation.mock.calls.every(([, query]) => query.q === 'smb' && query.offset === 0)).toBe(true);
     await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(/^q=smb$/));
     // The contact filter is still there.
     expect(screen.getByLabelText('Contact')).toBeInTheDocument();
@@ -350,7 +351,7 @@ describe('D — search by finding or host', () => {
     listRemediation.mockResolvedValue(page([]));
     show(`/remediation?q=${LONG}`);
     expect(await screen.findByText(`No finding or host matches “${LONG}”.`)).toBeInTheDocument();
-    expect(listRemediation.mock.calls[0][0]).toMatchObject({ q: LONG });
+    expect(listRemediation.mock.calls[0][1]).toMatchObject({ q: LONG });
     expect(screen.getByRole('searchbox', { name: 'Search by finding or host' })).toHaveValue(LONG);
     expect(screen.getByText(/in this selection/)).toBeInTheDocument();
   });
@@ -358,7 +359,7 @@ describe('D — search by finding or host', () => {
   it('a one-character search in the address is not sent', async () => {
     show('/remediation?q=x');
     await table();
-    expect(listRemediation.mock.calls[0][0]).not.toHaveProperty('q');
+    expect(listRemediation.mock.calls[0][1]).not.toHaveProperty('q');
   });
 });
 
@@ -378,7 +379,7 @@ describe('E — start the clock from a report', () => {
       items: [report(1), report(2), report(3, { status: 'draft', number: null, issued_at: null }), report(4, { status: 'superseded' })],
       latest_issued_id: 2, can_create: true, can_issue: true,
     });
-    assignRemediationFromReport.mockImplementation(async (body: { dry_run?: boolean; assigned_on?: string }) =>
+    assignRemediationFromReport.mockImplementation(async (_project: number, body: { dry_run?: boolean; assigned_on?: string }) =>
       answer({ dry_run: !!body.dry_run, assigned_on: body.assigned_on ?? '2026-10-02', assigned: body.assigned_on === '2026-10-05' ? 40 : 42 }));
     show('/remediation?page=3');
     fireEvent.click(await start());
@@ -390,21 +391,22 @@ describe('E — start the clock from a report', () => {
     expect(await within(dialog).findByTestId('rem-afr-preview')).toHaveTextContent(
       '42 findings on hosts will get this assigned date. 11 already have one and are left alone. 3 are no longer open.');
     // Only dry runs so far, and only one for the opening.
-    expect(assignRemediationFromReport.mock.calls.map(([body]) => body)).toEqual([{ report_id: 2, dry_run: true }]);
+    expect(assignRemediationFromReport.mock.calls.map(([, body]) => body)).toEqual([{ report_id: 2, dry_run: true }]);
+    expect(assignRemediationFromReport.mock.calls.map(([asked]) => asked)).toEqual([1]);
     // Another day is asked about before it can be confirmed.
     fireEvent.change(within(dialog).getByLabelText('Assigned on'), { target: { value: '2026-10-05' } });
     expect(within(dialog).getByRole('button', { name: 'Set the assigned date' })).toBeDisabled();
     await waitFor(() => expect(within(dialog).getByTestId('rem-afr-preview')).toHaveTextContent('40 findings on hosts'));
     expect(assignRemediationFromReport).toHaveBeenLastCalledWith(
-      { report_id: 2, dry_run: true, assigned_on: '2026-10-05' }, undefined, expect.anything());
+      1, { report_id: 2, dry_run: true, assigned_on: '2026-10-05' }, undefined, expect.anything());
     const reads = listRemediation.mock.calls.length;
     fireEvent.click(within(dialog).getByRole('button', { name: 'Set the assigned date' }));
-    await waitFor(() => expect(assignRemediationFromReport).toHaveBeenLastCalledWith({ report_id: 2, assigned_on: '2026-10-05' }));
+    await waitFor(() => expect(assignRemediationFromReport).toHaveBeenLastCalledWith(1, { report_id: 2, assigned_on: '2026-10-05' }));
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith(
       'Assigned date set on 40 findings on hosts. Their deadlines are running.'));
     // Re-read where the reader is: the same page, not the first.
     await waitFor(() => expect(listRemediation.mock.calls.length).toBeGreaterThan(reads));
-    expect(listRemediation).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50 }), expect.anything());
+    expect(listRemediation).toHaveBeenLastCalledWith(1, expect.objectContaining({ offset: 50 }), expect.anything());
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
@@ -463,7 +465,7 @@ describe('H — how far ahead a reminder looks', () => {
 
   it('reloads the message for the next 30 or 90 days, counts the upcoming ones, and records what was listed', async () => {
     listRemediationContacts.mockResolvedValue([contact]);
-    getRemediationFollowUp.mockImplementation(async (_e: string, _s: unknown, _p: unknown, _sig: unknown, ahead = 0) =>
+    getRemediationFollowUp.mockImplementation(async (_p: unknown, _e: string, _s: unknown, _sig: unknown, ahead = 0) =>
       followUp(ahead > 0 ? { upcoming: 3, text: `Hello Roger Smith\nDue in the next ${ahead} days` } : { upcoming: 0 }));
     recordRemediationFollowUp.mockResolvedValue({ recorded: 6, already_recorded: 0, followed_up_on: '2026-11-10', finding_host_ids: [] });
     show('/remediation?view=contacts');
@@ -479,7 +481,8 @@ describe('H — how far ahead a reminder looks', () => {
     expect(within(dialog).getByText(/^2 overdue, 1 due soon and 3 due in the next 30 days\. Copy the message/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Record follow-up' }));
     await waitFor(() => expect(recordRemediationFollowUp).toHaveBeenCalledTimes(1));
-    expect(recordRemediationFollowUp.mock.calls[0][0]).toEqual({
+    expect(recordRemediationFollowUp.mock.calls[0][0]).toBe(1);
+    expect(recordRemediationFollowUp.mock.calls[0][1]).toEqual({
       contact_email: 'roger@example.com', followed_up_on: '2026-11-10', upcoming_days: 30,
     });
     // One project's follow-up never goes through the cross-project route.
@@ -489,7 +492,7 @@ describe('H — how far ahead a reminder looks', () => {
   it('an answer for a horizon the reader has left is never shown', async () => {
     listRemediationContacts.mockResolvedValue([contact]);
     let late: (value: unknown) => void = () => undefined;
-    getRemediationFollowUp.mockImplementation((_e: string, _s: unknown, _p: unknown, _sig: unknown, ahead = 0) => (
+    getRemediationFollowUp.mockImplementation((_p: unknown, _e: string, _s: unknown, _sig: unknown, ahead = 0) => (
       ahead === 30 ? new Promise((resolve) => { late = resolve; }) : Promise.resolve(followUp({ text: `horizon ${ahead}` }))));
     show('/remediation?view=contacts');
     fireEvent.click(await screen.findByRole('button', { name: 'Follow up' }));
@@ -521,8 +524,8 @@ describe('a server that predates all of this', () => {
     // 3 are not assigned, but this server has no route to start the clock from.
     expect(screen.getByText(/due within 7 days/)).toHaveTextContent('3 have not been assigned, so no deadline is running.');
     expect(screen.queryByRole('button', { name: 'Start the clock from a report…' })).not.toBeInTheDocument();
-    expect(Object.keys(listRemediation.mock.calls[0][0])).not.toEqual(expect.arrayContaining(['flag']));
-    expect(Object.keys(listRemediation.mock.calls[0][0])).not.toEqual(expect.arrayContaining(['q']));
+    expect(Object.keys(listRemediation.mock.calls[0][1])).not.toEqual(expect.arrayContaining(['flag']));
+    expect(Object.keys(listRemediation.mock.calls[0][1])).not.toEqual(expect.arrayContaining(['q']));
   });
 
   it('an ordinary edit sends what it always sent, and asks for no note', async () => {
@@ -533,6 +536,6 @@ describe('a server that predates all of this', () => {
     fireEvent.change(within(dialog).getByLabelText('Contact name'), { target: { value: 'R. Smith' } });
     fireEvent.click(save(dialog));
     await waitFor(() => expect(applyRemediation).toHaveBeenCalledTimes(1));
-    expect(applyRemediation.mock.calls[0]).toEqual([[{ finding_host_id: 1, contact_name: 'R. Smith' }], { overwrite: true }]);
+    expect(applyRemediation.mock.calls[0]).toEqual([1, [{ finding_host_id: 1, contact_name: 'R. Smith' }], { overwrite: true }]);
   });
 });

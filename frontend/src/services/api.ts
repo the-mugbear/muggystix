@@ -9,10 +9,16 @@
  *
  * Add a new domain by:
  *   1. Creating ``services/api/<domain>.ts`` (use any sibling as a
- *      template — they all import ``api`` and optionally ``p`` from
- *      ``./client``).
+ *      template — they all import ``api`` and, when project-scoped,
+ *      ``projectPath`` from ``./client``).
  *   2. Re-exporting it from this barrel.
  *   3. New domain's types are then visible to every consumer.
+ *
+ * A project-scoped function takes ``projectId: number`` as its FIRST
+ * argument and builds its address with ``projectPath(projectId)``
+ * (5.353.0).  No request reads the "current project":
+ * ``getCurrentProjectId`` / ``setCurrentProjectId`` are only the
+ * remembered selection.
  *
  * NOTE: the axios instance is still the barrel's default export, for
  * ONE importer: ``contexts/AuthContext`` (sign-in, sign-out and
@@ -22,13 +28,13 @@
  * in a submodule (``api/users.ts`` and ``api/auth.ts`` hold the
  * account and sign-in ones), called from a ``queryFn`` / ``mutationFn``.
  */
-import { api, p, setCurrentProjectId, getCurrentProjectId } from './api/client';
+import { api, projectPath, setCurrentProjectId, getCurrentProjectId } from './api/client';
 import { serializeHostParams } from './api/hosts';
 import { asAxiosError } from '../utils/apiErrors';
 import { filenameFromContentDisposition, saveBlob } from '../utils/download';
 import type { Paginated } from './api/shared';  // local use; also re-exported via the barrel below
 
-// --- Core: axios instance + project scoping ---
+// --- Core: axios instance + the remembered project selection ---
 export { api, setCurrentProjectId, getCurrentProjectId };
 
 // --- Per-domain submodules.  Order doesn't matter; tsc resolves the
@@ -90,9 +96,9 @@ export interface DNSRecord {
 // `total`/`has_more` let the UI flag the rare truncation.  Empty page on
 // older deployments without the endpoint.
 const DNS_RECORDS_PAGE = 2000;
-export const getScanDnsRecords = async (scanId: number, signal?: AbortSignal): Promise<Paginated<DNSRecord>> => {
+export const getScanDnsRecords = async (projectId: number, scanId: number, signal?: AbortSignal): Promise<Paginated<DNSRecord>> => {
   try {
-    const response = await api.get(`${p()}/scans/${scanId}/dns-records`, {
+    const response = await api.get(`${projectPath(projectId)}/scans/${scanId}/dns-records`, {
       params: { skip: 0, limit: DNS_RECORDS_PAGE }, signal,
     });
     return response.data;
@@ -134,11 +140,12 @@ export interface ScanHostSnapshot {
 
 const SNAPSHOT_PAGE = 1000;
 export const getScanHostSnapshots = async (
+  projectId: number,
   scanId: number,
   signal?: AbortSignal,
 ): Promise<Paginated<ScanHostSnapshot>> => {
   try {
-    const response = await api.get(`${p()}/scans/${scanId}/host-snapshots`, {
+    const response = await api.get(`${projectPath(projectId)}/scans/${scanId}/host-snapshots`, {
       params: { skip: 0, limit: SNAPSHOT_PAGE }, signal,
     });
     return response.data;
@@ -164,14 +171,15 @@ export interface ProjectMember {
   created_at: string;
 }
 
-export const listProjectMembers = async (signal?: AbortSignal): Promise<ProjectMember[]> => {
-  const response = await api.get(`${p()}/members`, { signal });
+export const listProjectMembers = async (projectId: number, signal?: AbortSignal): Promise<ProjectMember[]> => {
+  const response = await api.get(`${projectPath(projectId)}/members`, { signal });
   return response.data;
 };
 
 // --- Cross-project member management (SoC manager / Portfolio) ---
-// Absolute project paths (not the active-project `p()`) so the Portfolio
-// can view/manage any project's roster.
+// The Portfolio views and manages any project's roster, so these always took
+// the project.  (`getProjectMembers` now asks the same address as
+// `listProjectMembers`; they differ only in that the latter refuses a 0 id.)
 
 export interface UserDirectoryEntry {
   id: number;
@@ -245,35 +253,36 @@ export interface WebhookTestResult {
   error?: string;
 }
 
-export const listWebhookEventTypes = async (signal?: AbortSignal): Promise<WebhookEventType[]> => {
-  const response = await api.get(`${p()}/webhooks/event-types`, { signal });
+export const listWebhookEventTypes = async (projectId: number, signal?: AbortSignal): Promise<WebhookEventType[]> => {
+  const response = await api.get(`${projectPath(projectId)}/webhooks/event-types`, { signal });
   return response.data;
 };
 
-export const listWebhooks = async (signal?: AbortSignal): Promise<WebhookConfig[]> => {
-  const response = await api.get(`${p()}/webhooks`, { signal });
+export const listWebhooks = async (projectId: number, signal?: AbortSignal): Promise<WebhookConfig[]> => {
+  const response = await api.get(`${projectPath(projectId)}/webhooks`, { signal });
   return response.data;
 };
 
-export const createWebhook = async (payload: WebhookCreatePayload): Promise<WebhookConfig> => {
-  const response = await api.post(`${p()}/webhooks`, payload);
+export const createWebhook = async (projectId: number, payload: WebhookCreatePayload): Promise<WebhookConfig> => {
+  const response = await api.post(`${projectPath(projectId)}/webhooks`, payload);
   return response.data;
 };
 
 export const updateWebhook = async (
+  projectId: number,
   id: number,
   payload: Partial<WebhookCreatePayload>,
 ): Promise<WebhookConfig> => {
-  const response = await api.patch(`${p()}/webhooks/${id}`, payload);
+  const response = await api.patch(`${projectPath(projectId)}/webhooks/${id}`, payload);
   return response.data;
 };
 
-export const deleteWebhook = async (id: number): Promise<void> => {
-  await api.delete(`${p()}/webhooks/${id}`);
+export const deleteWebhook = async (projectId: number, id: number): Promise<void> => {
+  await api.delete(`${projectPath(projectId)}/webhooks/${id}`);
 };
 
-export const testWebhook = async (id: number): Promise<WebhookTestResult> => {
-  const response = await api.post(`${p()}/webhooks/${id}/test`);
+export const testWebhook = async (projectId: number, id: number): Promise<WebhookTestResult> => {
+  const response = await api.post(`${projectPath(projectId)}/webhooks/${id}/test`);
   return response.data;
 };
 
@@ -301,15 +310,16 @@ export interface WebhookDeliveryRow {
 }
 
 export const listWebhookDeliveries = async (
+  projectId: number,
   params: { status?: string; limit?: number } = {},
   signal?: AbortSignal,
 ): Promise<WebhookDeliveryRow[]> => {
-  const response = await api.get(`${p()}/webhooks/deliveries`, { params, signal });
+  const response = await api.get(`${projectPath(projectId)}/webhooks/deliveries`, { params, signal });
   return response.data;
 };
 
-export const retryWebhookDelivery = async (id: number): Promise<WebhookDeliveryRow> => {
-  const response = await api.post(`${p()}/webhooks/deliveries/${id}/retry`);
+export const retryWebhookDelivery = async (projectId: number, id: number): Promise<WebhookDeliveryRow> => {
+  const response = await api.post(`${projectPath(projectId)}/webhooks/deliveries/${id}/retry`);
   return response.data;
 };
 
@@ -396,8 +406,8 @@ export interface CommandExplanation {
   }>;
 }
 
-export const getScanCommandExplanation = async (scanId: number, signal?: AbortSignal): Promise<CommandExplanation> => {
-  const response = await api.get(`${p()}/scans/${scanId}/command-explanation`, { signal });
+export const getScanCommandExplanation = async (projectId: number, scanId: number, signal?: AbortSignal): Promise<CommandExplanation> => {
+  const response = await api.get(`${projectPath(projectId)}/scans/${scanId}/command-explanation`, { signal });
   return response.data;
 };
 
@@ -416,9 +426,9 @@ export const getScanCommandExplanation = async (scanId: number, signal?: AbortSi
 export type InventoryFilters = Record<string, string | number | boolean | string[] | undefined>;
 
 /** One row per host, as CSV: streamed, then saved. */
-export const downloadInventoryCsv = async (filters: InventoryFilters): Promise<void> => {
+export const downloadInventoryCsv = async (projectId: number, filters: InventoryFilters): Promise<void> => {
   const queryParams = new URLSearchParams(serializeHostParams(filters));
-  const response = await api.get(`${p()}/reports/hosts/csv?${queryParams}`, {
+  const response = await api.get(`${projectPath(projectId)}/reports/hosts/csv?${queryParams}`, {
     responseType: 'blob'
   });
   saveBlob(new Blob([response.data]), filenameFromContentDisposition(
@@ -459,45 +469,45 @@ export interface ReportJob {
 /** Queue the inventory JSON: every matching host's full record (ports,
  *  scanner observations, findings, tests, notes), followed by the project's
  *  findings and site / subnet / systemic roll-ups.  Returns the queued job. */
-export const enqueueInventoryJson = async (filters: InventoryFilters): Promise<ReportJob> => {
+export const enqueueInventoryJson = async (projectId: number, filters: InventoryFilters): Promise<ReportJob> => {
   const query = new URLSearchParams(serializeHostParams(filters));
   query.set('format', 'json');
-  const response = await api.post(`${p()}/reports/jobs?${query}`);
+  const response = await api.post(`${projectPath(projectId)}/reports/jobs?${query}`);
   return response.data as ReportJob;
 };
 
-export const getReportJob = async (jobId: number, signal?: AbortSignal): Promise<ReportJob> => {
-  const response = await api.get(`${p()}/reports/jobs/${jobId}`, { signal });
+export const getReportJob = async (projectId: number, jobId: number, signal?: AbortSignal): Promise<ReportJob> => {
+  const response = await api.get(`${projectPath(projectId)}/reports/jobs/${jobId}`, { signal });
   return response.data as ReportJob;
 };
 
-export const downloadReportJob = async (jobId: number): Promise<void> => {
-  const response = await api.get(`${p()}/reports/jobs/${jobId}/download`, { responseType: 'blob' });
+export const downloadReportJob = async (projectId: number, jobId: number): Promise<void> => {
+  const response = await api.get(`${projectPath(projectId)}/reports/jobs/${jobId}/download`, { responseType: 'blob' });
   saveBlob(new Blob([response.data]), filenameFromContentDisposition(
     response.headers['content-disposition'] as string | undefined, `report_${jobId}`,
   ));
 };
 
-export const listReportJobs = async (limit = 20, signal?: AbortSignal): Promise<ReportJob[]> => {
-  const response = await api.get(`${p()}/reports/jobs?limit=${limit}`, { signal });
+export const listReportJobs = async (projectId: number, limit = 20, signal?: AbortSignal): Promise<ReportJob[]> => {
+  const response = await api.get(`${projectPath(projectId)}/reports/jobs?limit=${limit}`, { signal });
   return response.data as ReportJob[];
 };
 
-export const dismissReportJob = async (jobId: number): Promise<ReportJob> => {
-  const response = await api.post(`${p()}/reports/jobs/${jobId}/dismiss`);
+export const dismissReportJob = async (projectId: number, jobId: number): Promise<ReportJob> => {
+  const response = await api.post(`${projectPath(projectId)}/reports/jobs/${jobId}/dismiss`);
   return response.data as ReportJob;
 };
 
 // Re-queue a failed report job (409 if it isn't in a failed state).
-export const retryReportJob = async (jobId: number): Promise<ReportJob> => {
-  const response = await api.post(`${p()}/reports/jobs/${jobId}/retry`);
+export const retryReportJob = async (projectId: number, jobId: number): Promise<ReportJob> => {
+  const response = await api.post(`${projectPath(projectId)}/reports/jobs/${jobId}/retry`);
   return response.data as ReportJob;
 };
 
 // Cancel a queued report job before the worker claims it (409 if already
 // processing or terminal).
-export const cancelReportJob = async (jobId: number): Promise<ReportJob> => {
-  const response = await api.post(`${p()}/reports/jobs/${jobId}/cancel`);
+export const cancelReportJob = async (projectId: number, jobId: number): Promise<ReportJob> => {
+  const response = await api.post(`${projectPath(projectId)}/reports/jobs/${jobId}/cancel`);
   return response.data as ReportJob;
 };
 
@@ -533,12 +543,13 @@ export interface DraftReportResponse {
 }
 
 export const draftReportWithAI = async (
+  projectId: number,
   body: DraftReportRequest,
   // Optional axios opts so callers can pass an AbortController signal to
   // cancel a long (30-60s) draft mid-flight.
   opts?: { signal?: AbortSignal },
 ): Promise<DraftReportResponse> => {
-  const response = await api.post<DraftReportResponse>(`${p()}/reports/draft`, body, {
+  const response = await api.post<DraftReportResponse>(`${projectPath(projectId)}/reports/draft`, body, {
     signal: opts?.signal,
   });
   return response.data;
@@ -556,6 +567,7 @@ export interface ToolReadyResult {
 }
 
 export const getToolReadyOutput = async (
+  projectId: number,
   format: string,
   // Accepts the full Hosts query context (same shape buildHostQueryContext
   // emits) plus the two tool-ready-only keys.  Serialized generically so a
@@ -626,7 +638,7 @@ export const getToolReadyOutput = async (
     params.append(key, String(value));
   });
 
-  const response = await api.get(`${p()}/hosts/tool-ready/${format}?${params}`, {
+  const response = await api.get(`${projectPath(projectId)}/hosts/tool-ready/${format}?${params}`, {
     responseType: 'text'
   });
 

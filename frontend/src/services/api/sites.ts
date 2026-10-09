@@ -2,7 +2,7 @@
  * Site management API — the project-scoped Site metadata (criticality tier /
  * owner / expected host count) the attention model weights by.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 
 export interface Site {
   id: number;
@@ -14,15 +14,16 @@ export interface Site {
   subnet_count: number;
 }
 
-export const listSites = async (signal?: AbortSignal): Promise<Site[]> => {
-  const response = await api.get<Site[]>(`${p()}/sites`, { signal });
+export const listSites = async (projectId: number, signal?: AbortSignal): Promise<Site[]> => {
+  const response = await api.get<Site[]>(`${projectPath(projectId)}/sites`, { signal });
   return response.data;
 };
 
 export const updateSite = async (
+  projectId: number,
   siteId: number,
   payload: { criticality_tier?: number; owner_id?: number | null; expected_host_count?: number | null },
 ): Promise<Site> => {
-  const response = await api.patch<Site>(`${p()}/sites/${siteId}`, payload);
+  const response = await api.patch<Site>(`${projectPath(projectId)}/sites/${siteId}`, payload);
   return response.data;
 };

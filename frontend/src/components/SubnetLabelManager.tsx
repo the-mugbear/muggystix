@@ -13,6 +13,7 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 
@@ -128,13 +129,14 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
   const toast = useToast();
   const queryClient = useQueryClient();
   const [confirmDialog, confirm] = useConfirm();
+  const projectId = useProjectId();
 
   // The project's catalogue — the same read as the Scope page's (one key), so
   // a label created here is in the page's "Apply label…" menu without a
   // callback.  Read again each time the dialog opens.
   const catalogue = useQuery({
-    queryKey: ['listSubnetLabels'],
-    queryFn: ({ signal }) => listSubnetLabels(signal),
+    queryKey: ['listSubnetLabels', projectId],
+    queryFn: ({ signal }) => listSubnetLabels(projectId, signal),
     enabled: open,
   });
   const labels = catalogue.data ?? [];
@@ -145,9 +147,9 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
   // A change to a label changes the catalogue and the chips on the scope's
   // subnets (a rename shows there; a delete detaches server-side).
   const catalogueChanged = async () => {
-    await queryClient.invalidateQueries({ queryKey: ['listSubnetLabels'] });
-    void queryClient.invalidateQueries({ queryKey: ['getDefaultScope'] });
-    void queryClient.invalidateQueries({ queryKey: ['getScopeCoverage'] });
+    await queryClient.invalidateQueries({ queryKey: ['listSubnetLabels', projectId] });
+    void queryClient.invalidateQueries({ queryKey: ['getDefaultScope', projectId] });
+    void queryClient.invalidateQueries({ queryKey: ['getScopeCoverage', projectId] });
   };
 
   // Create form
@@ -160,7 +162,7 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
   const [editColor, setEditColor] = useState<string | null>(null);
 
   const create = useMutation({
-    mutationFn: ({ name, color }: { name: string; color: string | null }) => createSubnetLabel(name, color),
+    mutationFn: ({ name, color }: { name: string; color: string | null }) => createSubnetLabel(projectId, name, color),
     onSuccess: async (_created, { name }) => {
       setNewName('');
       setNewColor(null);
@@ -188,7 +190,7 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
   };
   const update = useMutation({
     mutationFn: ({ id, name, color }: { id: number; name: string; color: string | null }) =>
-      updateSubnetLabel(id, { name, color }),
+      updateSubnetLabel(projectId, id, { name, color }),
     onSuccess: () => {
       cancelEdit();
       return catalogueChanged();
@@ -204,7 +206,7 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
   };
 
   const remove = useMutation({
-    mutationFn: (label: SubnetLabelWithCounts) => deleteSubnetLabel(label.id),
+    mutationFn: (label: SubnetLabelWithCounts) => deleteSubnetLabel(projectId, label.id),
     onSuccess: async (_void, label) => {
       await catalogueChanged();
       toast.success(`Deleted "${label.name}".`);
@@ -372,6 +374,7 @@ export const SubnetLabelEditorPopover: React.FC<SubnetLabelEditorPopoverProps> =
 }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const projectId = useProjectId();
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>(() => currentLabels.map((l) => String(l.id)));
 
@@ -394,10 +397,10 @@ export const SubnetLabelEditorPopover: React.FC<SubnetLabelEditorPopoverProps> =
   );
 
   const save = useMutation({
-    mutationFn: (ids: number[]) => replaceSubnetLabels(subnetId, ids),
+    mutationFn: (ids: number[]) => replaceSubnetLabels(projectId, subnetId, ids),
     onSuccess: (next) => {
       onSaved(next);
-      void queryClient.invalidateQueries({ queryKey: ['listSubnetLabels'] });
+      void queryClient.invalidateQueries({ queryKey: ['listSubnetLabels', projectId] });
       setOpen(false);
     },
     onError: (err) => toast.error(formatApiError(err, `Failed to update labels for ${subnetCidr}.`)),

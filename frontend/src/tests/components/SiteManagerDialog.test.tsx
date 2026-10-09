@@ -77,7 +77,7 @@ describe('SiteManagerDialog — Expected hosts', () => {
     api.updateSite.mockResolvedValue(site({ expected_host_count: 25 }));
     fireEvent.click(within(alert).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
-    expect(api.updateSite).toHaveBeenLastCalledWith(1, { expected_host_count: 25 });
+    expect(api.updateSite).toHaveBeenLastCalledWith(1, 1, { expected_host_count: 25 });
     expect(expectedBox().value).toBe('25');
   });
 
@@ -92,7 +92,7 @@ describe('SiteManagerDialog — Expected hosts', () => {
     fireEvent.blur(expectedBox());
 
     await waitFor(() => expect(expectedBox().value).toBe('20'));
-    expect(api.updateSite).toHaveBeenCalledWith(1, { expected_host_count: 25 });
+    expect(api.updateSite).toHaveBeenCalledWith(1, 1, { expected_host_count: 25 });
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
@@ -110,7 +110,7 @@ describe('SiteManagerDialog — Expected hosts', () => {
 
     fireEvent.change(expectedBox(), { target: { value: '' } });
     fireEvent.blur(expectedBox());
-    await waitFor(() => expect(api.updateSite).toHaveBeenCalledWith(1, { expected_host_count: null }));
+    await waitFor(() => expect(api.updateSite).toHaveBeenCalledWith(1, 1, { expected_host_count: null }));
     await waitFor(() => expect(expectedBox().value).toBe(''));
   });
 });

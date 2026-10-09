@@ -8,6 +8,7 @@
 //
 // The gate runs `npm run lint -- --max-warnings 0`: a deliberate omission
 // from an effect's dependencies carries a disable comment that says why.
+import pluginQuery from '@tanstack/eslint-plugin-query';
 import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
@@ -36,12 +37,18 @@ export default [
     },
     // Registered so that the source's existing `eslint-disable` comments for
     // its rules resolve; none of its rules is switched on here.
-    plugins: { 'react-hooks': reactHooks, '@typescript-eslint': tseslint.plugin },
+    plugins: { 'react-hooks': reactHooks, '@typescript-eslint': tseslint.plugin, '@tanstack/query': pluginQuery },
     // Disable comments for rules this config does not run are left alone.
     linterOptions: { reportUnusedDisableDirectives: 'off' },
     rules: {
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
+      // A query key names everything its `queryFn` uses — the PROJECT first of
+      // all (5.353.0: `projectId` is an argument of the API function, so a key
+      // that leaves it out would let one project's rows answer another's
+      // question).  The official TanStack rule; it replaced a hidden partition
+      // of the cache that nothing at the call site could show.
+      '@tanstack/query/exhaustive-deps': 'error',
       'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT],
     },
   },

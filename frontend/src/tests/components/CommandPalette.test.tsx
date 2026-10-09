@@ -75,21 +75,21 @@ describe('CommandPalette finding search', () => {
     renderPalette();
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'default creds' } });
     const row = await screen.findByText('Critical finding — default creds', {}, { timeout: 2000 });
-    expect(api.listFindings).toHaveBeenCalledWith(expect.objectContaining({ search: 'default creds' }), expect.anything());
+    expect(api.listFindings).toHaveBeenCalledWith(1, expect.objectContaining({ search: 'default creds' }), expect.anything());
     fireEvent.click(row);
     await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('/findings/37'));
   });
 
   it('finds a finding by its number, "#37" or a single digit', async () => {
-    api.getFinding.mockImplementation(async (id: number) => finding(id, `Finding number ${id}`));
+    api.getFinding.mockImplementation(async (_projectId: number, id: number) => finding(id, `Finding number ${id}`));
     renderPalette();
     fireEvent.change(screen.getByRole('combobox'), { target: { value: '#37' } });
     expect(await screen.findByText('Finding number 37', {}, { timeout: 2000 })).toBeTruthy();
-    expect(api.getFinding).toHaveBeenCalledWith(37, expect.any(AbortSignal));
+    expect(api.getFinding).toHaveBeenCalledWith(1, 37, expect.any(AbortSignal));
 
     fireEvent.change(screen.getByRole('combobox'), { target: { value: '7' } });
     expect(await screen.findByText('Finding number 7', {}, { timeout: 2000 })).toBeTruthy();
     // One digit searches findings only — not every host with a 7 in its IP.
-    expect(api.getHosts).not.toHaveBeenCalledWith(expect.objectContaining({ search: '7' }), expect.anything());
+    expect(api.getHosts).not.toHaveBeenCalledWith(1, expect.objectContaining({ search: '7' }), expect.anything());
   });
 });

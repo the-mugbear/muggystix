@@ -91,7 +91,7 @@ describe('Evidence — domain × segment matrix', () => {
     await renderPage();
     const matrix = screen.getByText('Where the gaps are').closest('section')!;
     fireEvent.click(within(matrix).getByRole('button', { name: /Web \/ TLS · Outside scoped subnets: 0 of 18 .* show the 18 not assessed/ }));
-    await waitFor(() => expect(gapsMock).toHaveBeenCalledWith('web_tls', expect.objectContaining({ segment: 'unmapped' })));
+    await waitFor(() => expect(gapsMock).toHaveBeenCalledWith(1, 'web_tls', expect.objectContaining({ segment: 'unmapped' })));
     expect(await within(matrix).findByText('192.168.9.9')).toBeInTheDocument();
     expect(within(matrix).getByText(/18 of 18/)).toBeInTheDocument();
     // One host listed of 18: the buttons say what they act on.
@@ -99,7 +99,7 @@ describe('Evidence — domain × segment matrix', () => {
 
     // The whole-project figure opens the domain without a segment.
     fireEvent.click(within(matrix).getByRole('button', { name: /Web \/ TLS, whole project: 9 of 30/ }));
-    await waitFor(() => expect(gapsMock).toHaveBeenLastCalledWith('web_tls', expect.objectContaining({ segment: undefined })));
+    await waitFor(() => expect(gapsMock).toHaveBeenLastCalledWith(1, 'web_tls', expect.objectContaining({ segment: undefined })));
   });
 
   // From the first real screenshot: "Vulnerability assessment · Outside scoped
@@ -126,7 +126,7 @@ describe('Evidence — domain × segment matrix', () => {
     await renderPage();
     const list = screen.getByText('Largest gaps').closest('section')!;
     fireEvent.click(within(list).getByRole('button', { name: /^18 of 18 hosts not assessed — Web \/ TLS · Outside scoped subnets/ }));
-    await waitFor(() => expect(gapsMock).toHaveBeenCalledWith('web_tls', expect.objectContaining({ segment: 'unmapped' })));
+    await waitFor(() => expect(gapsMock).toHaveBeenCalledWith(1, 'web_tls', expect.objectContaining({ segment: 'unmapped' })));
   });
 
   it('counts imports by the needs-attention rule, never parse-error rows', async () => {

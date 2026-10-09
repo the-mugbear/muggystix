@@ -5,7 +5,7 @@
  * rollup card.  See backend
  * ``app/api/v1/endpoints/agent_sessions.py``.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 import type { McpClientSetup } from './assist';
 
 
@@ -79,8 +79,8 @@ export interface AgentSessionRow {
 
 /** v5.312.0 — one session as the list shows it (a project session or a legacy
  *  assist one); 404 for any other legacy per-workflow row. */
-export const getAgentSession = async (sessionId: number, signal?: AbortSignal): Promise<AgentSessionRow> => {
-  const response = await api.get<AgentSessionRow>(`${p()}/agent-sessions/${sessionId}`, { signal });
+export const getAgentSession = async (projectId: number, sessionId: number, signal?: AbortSignal): Promise<AgentSessionRow> => {
+  const response = await api.get<AgentSessionRow>(`${projectPath(projectId)}/agent-sessions/${sessionId}`, { signal });
   return response.data;
 };
 
@@ -102,12 +102,13 @@ export interface AgentSessionNotes {
 
 /** 5.328.0 — the notes a session wrote, newest first, by the session id. */
 export const getAgentSessionNotes = async (
+  projectId: number,
   sessionId: number,
   limit = 50,
   signal?: AbortSignal,
 ): Promise<AgentSessionNotes> => {
   const response = await api.get<AgentSessionNotes>(
-    `${p()}/agent-sessions/${sessionId}/notes`,
+    `${projectPath(projectId)}/agent-sessions/${sessionId}/notes`,
     { params: { limit }, signal },
   );
   return response.data;
@@ -118,11 +119,12 @@ export const getAgentSessionNotes = async (
  *  was addressed by that; only sessions from before then have one. 404 when
  *  nothing had the id. */
 export const getAgentSessionByLegacyAssistId = async (
+  projectId: number,
   legacyAssistSessionId: number,
   signal?: AbortSignal,
 ): Promise<AgentSessionRow> => {
   const response = await api.get<AgentSessionRow>(
-    `${p()}/assist-sessions/${legacyAssistSessionId}`,
+    `${projectPath(projectId)}/assist-sessions/${legacyAssistSessionId}`,
     { signal },
   );
   return response.data;
@@ -150,10 +152,11 @@ export interface ResumeAgentSessionResponse {
  *  answers 403 for anyone else and 409 for a session that is not active or
  *  is past its lifetime cap. */
 export const resumeAgentSession = async (
+  projectId: number,
   sessionId: number,
 ): Promise<ResumeAgentSessionResponse> => {
   const response = await api.post<ResumeAgentSessionResponse>(
-    `${p()}/agent-sessions/${sessionId}/resume`,
+    `${projectPath(projectId)}/agent-sessions/${sessionId}/resume`,
   );
   return response.data;
 };
@@ -178,11 +181,12 @@ export interface AgentSessionFilters {
 }
 
 export const listAgentSessions = async (
+  projectId: number,
   filters: AgentSessionFilters = {},
   options: { signal?: AbortSignal } = {},
 ): Promise<AgentSessionListResponse> => {
   const response = await api.get<AgentSessionListResponse>(
-    `${p()}/agent-sessions`,
+    `${projectPath(projectId)}/agent-sessions`,
     { params: filters, signal: options.signal },
   );
   return response.data;
@@ -191,8 +195,8 @@ export const listAgentSessions = async (
 /** v5.212.0 — the operator's kill switch for a unified project session:
  *  revokes its key and closes what it left open. Owner or project admin only;
  *  the backend enforces that and answers 403 otherwise. */
-export const endAgentSession = async (sessionId: number): Promise<void> => {
-  await api.post(`${p()}/agent-sessions/${sessionId}/end`);
+export const endAgentSession = async (projectId: number, sessionId: number): Promise<void> => {
+  await api.post(`${projectPath(projectId)}/agent-sessions/${sessionId}/end`);
 };
 
 export interface ModelToolSummaryRow {
@@ -208,9 +212,9 @@ export interface ModelToolSummaryResponse {
   summary: ModelToolSummaryRow[];
 }
 
-export const getAgentSessionSummary = async (signal?: AbortSignal): Promise<ModelToolSummaryResponse> => {
+export const getAgentSessionSummary = async (projectId: number, signal?: AbortSignal): Promise<ModelToolSummaryResponse> => {
   const response = await api.get<ModelToolSummaryResponse>(
-    `${p()}/agent-sessions/by-model-tool`,
+    `${projectPath(projectId)}/agent-sessions/by-model-tool`,
     { signal },
   );
   return response.data;

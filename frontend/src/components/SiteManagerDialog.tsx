@@ -10,6 +10,7 @@ import { Loader2 } from 'lucide-react';
 
 import { listSites, updateSite, type Site } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import {
@@ -28,7 +29,7 @@ interface SiteManagerDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-type SitePatch = Parameters<typeof updateSite>[1];
+type SitePatch = Parameters<typeof updateSite>[2];
 
 /** What an "Expected hosts" box holds, as the count it would store. */
 const expectedHostsOf = (raw: string): number | null => (raw.trim() === '' ? null : Number(raw.trim()));
@@ -37,9 +38,10 @@ export const SiteManagerDialog: React.FC<SiteManagerDialogProps> = ({ open, onOp
   const toast = useToast();
   const queryClient = useQueryClient();
   // Read each time the dialog opens; closed, it asks for nothing.
+  const projectId = useProjectId();
   const query = useQuery({
-    queryKey: ['listSites'],
-    queryFn: ({ signal }) => listSites(signal),
+    queryKey: ['listSites', projectId],
+    queryFn: ({ signal }) => listSites(projectId, signal),
     enabled: open,
   });
   const sites = query.data ?? [];
@@ -59,9 +61,9 @@ export const SiteManagerDialog: React.FC<SiteManagerDialogProps> = ({ open, onOp
   };
 
   const update = useMutation({
-    mutationFn: ({ id, payload }: { id: number; payload: SitePatch }) => updateSite(id, payload),
+    mutationFn: ({ id, payload }: { id: number; payload: SitePatch }) => updateSite(projectId, id, payload),
     onSuccess: (updated, { id, payload }) => {
-      queryClient.setQueryData<Site[]>(['listSites'], (prev) =>
+      queryClient.setQueryData<Site[]>(['listSites', projectId], (prev) =>
         prev?.map((s) => (s.id === updated.id ? updated : s)));
       if ('expected_host_count' in payload) {
         setExpectedEdits((prev) => without(prev, id));

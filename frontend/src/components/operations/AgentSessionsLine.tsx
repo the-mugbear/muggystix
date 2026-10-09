@@ -20,6 +20,7 @@ import { Bot } from 'lucide-react';
 
 import { listAgentSessions } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
+import { useProjectId } from '../../hooks/useProjectId';
 import { SESSIONS_LIST_PATH, liveSessionsSummary, myActiveSessionFilters } from '../../utils/agentRuns';
 import { cn } from '../../utils/cn';
 
@@ -29,9 +30,10 @@ const FRESH_FOR_MS = 30_000;
 const AgentSessionsLine: React.FC = () => {
   const { user } = useAuth();
   const userId = user?.id;
+  const projectId = useProjectId();
   const sessions = useQuery({
-    queryKey: ['listAgentSessions', userId == null ? null : myActiveSessionFilters(userId)],
-    queryFn: ({ signal }) => listAgentSessions(myActiveSessionFilters(userId as number), { signal }),
+    queryKey: ['listAgentSessions', projectId, userId == null ? null : myActiveSessionFilters(userId)],
+    queryFn: ({ signal }) => listAgentSessions(projectId, myActiveSessionFilters(userId as number), { signal }),
     // Without the reader's id there is no "mine" to ask for — and the
     // project-wide list is not this page's to show.
     enabled: userId != null,

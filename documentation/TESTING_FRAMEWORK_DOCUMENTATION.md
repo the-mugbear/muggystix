@@ -136,6 +136,10 @@ The contract is UI_STYLE_GUIDE §48; this is how a test meets it.
   promise resolves, and a mutation sends its request a tick after the click: use `findBy…` /
   `waitFor`, not a synchronous assertion right after the event. With fake timers advance with
   `await vi.advanceTimersByTimeAsync(n)`.
+- **A project-scoped call names its project FIRST** (5.353.0): the test's mocked `useProject`
+  gives `{ currentProject: { id: 1 } }` and an exact-argument assertion starts with that id —
+  `toHaveBeenCalledWith(1, filters, expect.any(AbortSignal))`. A test that renders with no
+  project gets `0` (`NO_PROJECT`); give the mock a project unless the test is about having none.
 - **A read also receives an `AbortSignal`** (last, or as `{ signal }` where the function takes
   an options object): assert `expect.any(AbortSignal)` in that position — never
   `expect.anything()`. `toHaveBeenCalledWith(expect.objectContaining(…))` alone no longer
@@ -154,8 +158,11 @@ The contract is UI_STYLE_GUIDE §48; this is how a test meets it.
   existed only to make a parent re-fetch is gone; do not reintroduce one to have something to
   assert.
 - **Scenarios every new shared mechanism needs** (each exists for the current ones):
-  - a write that completes after the reader switched project writes nothing into the other
-    project (`tests/lib/query.test.tsx`, "the reviewed case");
+  - a write that completes after the reader switched project lands in its OWN project's entry
+    and nothing of it shows in the other (`tests/lib/query.test.tsx`, "the reviewed case");
+  - an operation of several requests names the project it started in on every one of them
+    while `useProject` changes midway (`tests/pages/Remediation.test.tsx`, the CSV;
+    `tests/hooks/useUploadReview.test.ts`);
   - a "Show more" queued behind a reload does nothing once the filter changed
     (`tests/hooks/useListQuery.test.ts`);
   - a failed read is said, and what a second mount does with a REMEMBERED failure is pinned

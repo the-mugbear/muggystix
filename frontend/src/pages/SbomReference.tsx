@@ -11,7 +11,7 @@ import {
   ChevronsUpDown,
 } from 'lucide-react';
 import { getSbom, SbomComponent } from '../services/api';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { downloadTextFile } from '../utils/download';
 import { formatTimestamp } from '../utils/relativeTime';
 import { CardListSkeleton } from '../components/PageSkeleton';
@@ -49,7 +49,7 @@ const NO_LICENSE = '__none__';
 
 const SbomReference: React.FC = () => {
   const sbom = useQuery({
-    queryKey: [GLOBAL, 'getSbom'],
+    queryKey: ['getSbom'],
     queryFn: ({ signal }) => getSbom(signal),
   });
   const data = sbom.data ?? null;

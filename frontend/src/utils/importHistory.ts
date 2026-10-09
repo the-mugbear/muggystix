@@ -19,11 +19,12 @@ export interface HistoryFilters {
 
 export interface HistoryApi {
   getScans: (
+    projectId: number,
     skip: number,
     limit: number,
     options: HistoryFilters & { ids: number[] },
   ) => Promise<Scan[]>;
-  getScanBatches: (options: HistoryFilters & { ids: number[]; limit: number }) => Promise<ScanBatchSummary[]>;
+  getScanBatches: (projectId: number, options: HistoryFilters & { ids: number[]; limit: number }) => Promise<ScanBatchSummary[]>;
 }
 
 export interface HydratedHistory {
@@ -35,6 +36,7 @@ export interface HydratedHistory {
 }
 
 export async function hydrateHistoryRows(
+  projectId: number,
   items: ImportHistoryEntry[],
   filters: HistoryFilters,
   api: HistoryApi,
@@ -42,11 +44,11 @@ export async function hydrateHistoryRows(
   const scanIds = items.filter((e) => e.kind === 'scan').map((e) => e.id);
   const batchIds = items.filter((e) => e.kind === 'batch').map((e) => e.id);
   const [scanResult, batchResult] = await Promise.allSettled([
-    scanIds.length ? api.getScans(0, scanIds.length, { ids: scanIds }) : Promise.resolve([] as Scan[]),
+    scanIds.length ? api.getScans(projectId, 0, scanIds.length, { ids: scanIds }) : Promise.resolve([] as Scan[]),
     // A batch's counts are of its files MATCHING the page filters, so the
     // filters go with the ids; a single file is already a match by being listed.
     batchIds.length
-      ? api.getScanBatches({ ...filters, ids: batchIds, limit: batchIds.length })
+      ? api.getScanBatches(projectId, { ...filters, ids: batchIds, limit: batchIds.length })
       : Promise.resolve([] as ScanBatchSummary[]),
   ]);
   if (scanResult.status === 'rejected') console.error('Error loading history files:', scanResult.reason);

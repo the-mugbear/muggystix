@@ -6,7 +6,7 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { createProject, getProjects, setCurrentProjectId, getCurrentProjectId, Project } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
-import { GLOBAL, ScopedQueryClient, getQueryScope, queryErrorText, setQueryScope } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { useAuth } from './AuthContext';
 import { CharacterCount } from '../components/ui/character-count';
 import { Input } from '../components/ui/input';
@@ -120,10 +120,10 @@ const ProjectContext = createContext<ProjectContextType>({
 
 export const useProject = () => useContext(ProjectContext);
 
-// The project list is the reader's, not one project's: `GLOBAL` (lib/query).
+// The project list is the reader's, not one project's: the key names none.
 // Anything else that reads or invalidates the list uses this key and so
 // keeps the selector current.
-const PROJECTS_KEY = [GLOBAL, 'getProjects'];
+const PROJECTS_KEY = ['getProjects'];
 const NO_PROJECTS: Project[] = [];
 
 /** The project to work in when the reader has not chosen one in this tab:
@@ -175,14 +175,10 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
     }
     return pickProject(list.data, getCurrentProjectId(), readRecentProjectIds());
   }, [list.data, chosen]);
-  // The API client addresses the current project by this id (services/api
-  // `p()`): it must be the project on screen before any child asks for data,
-  // so it is set while rendering, like the cache scope below.
+  // The remembered selection (localStorage; what the next visit and
+  // `utils/scopedStorage` start from).  No request reads it: a component takes
+  // the project from `useProjectId()` and hands it to the API function.
   if (currentProject && getCurrentProjectId() !== currentProject.id) setCurrentProjectId(currentProject.id);
-  // The query cache is partitioned by project (lib/query): set while
-  // rendering, so every query under this provider is keyed for this project
-  // and one project's rows never answer another's question.
-  setQueryScope({ ...getQueryScope(), projectId: currentProject?.id ?? null });
 
   // The full-screen loader: the first read, and a refresh that was ASKED for
   // (`refreshProjects`).  Not every read in flight — another reader of the
@@ -262,7 +258,7 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
   );
 
   // Show loading state until projects are loaded and one is selected.
-  // This prevents data pages from calling p() before a project is available.
+  // This prevents data pages from asking for data before a project is available.
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center gap-sm text-muted-foreground">
@@ -322,10 +318,7 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
 
   return (
     <ProjectContext.Provider value={contextValue}>
-      {/* The client as THIS user and project see it: a save that answers
-          after the reader has switched project cannot write its row into the
-          other project's cache (lib/query `scopedClient`). */}
-      <ScopedQueryClient>{children}</ScopedQueryClient>
+      {children}
     </ProjectContext.Provider>
   );
 };

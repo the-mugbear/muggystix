@@ -38,6 +38,7 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useDiscardGuard } from '../hooks/useDiscardGuard';
+import { useProjectId } from '../hooks/useProjectId';
 import type { OnProposalDecided } from '../hooks/useProposalDecision';
 import { invalidateReads } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
@@ -120,6 +121,7 @@ const FindingReportTextCard: React.FC<Props> = ({
   drafts = NO_DRAFTS, canDecide = false, onProposalDecided, onDirtyChange,
 }) => {
   const toast = useToast();
+  const projectId = useProjectId();
   const text = finding.report_text;
   const draftsFor = (field: string) => drafts.get(field) ?? [];
   const [draft, setDraft] = useState<Draft | null>(() => ((startEditing || nothingWritten(text)) && canEdit ? toDraft(text) : null));
@@ -173,7 +175,7 @@ const FindingReportTextCard: React.FC<Props> = ({
   // Draft the required sections still empty as proposals — the same review
   // path an agent's drafts take; nothing is written until one is accepted.
   const drafter = useMutation({
-    mutationFn: (empty: FindingReportTextField[]) => draftFindingText(finding.id, empty),
+    mutationFn: (empty: FindingReportTextField[]) => draftFindingText(projectId, finding.id, empty),
     onMutate: () => setError(null),
     onSuccess: ({ proposals, declined: notDrafted = {} }) => {
       const skipped = Object.keys(notDrafted).length;
@@ -201,7 +203,7 @@ const FindingReportTextCard: React.FC<Props> = ({
   };
 
   const saver = useMutation({
-    mutationFn: (payload: FindingReportTextUpdate) => updateFinding(finding.id, payload),
+    mutationFn: (payload: FindingReportTextUpdate) => updateFinding(projectId, finding.id, payload),
     onMutate: () => setError(null),
     onSuccess: (updated) => {
       onSaved(updated);

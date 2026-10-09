@@ -14,6 +14,8 @@ vi.mock('../../services/api', () => ({
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
 }));
+// The project the controls are shown in (the rows' own): End names it first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1 } }) }));
 
 type Deferred = { promise: Promise<void>; resolve: () => void };
 const deferred = (): Deferred => {
@@ -36,7 +38,7 @@ describe('useAgentSessionControls', () => {
   it('tracks every End in flight, clearing each only when it settles', async () => {
     const a = deferred();
     const b = deferred();
-    endAgentSession.mockImplementation((id: number) => (id === 1 ? a.promise : b.promise));
+    endAgentSession.mockImplementation((_projectId: number, id: number) => (id === 1 ? a.promise : b.promise));
     const { result } = renderHook(() => useAgentSessionControls());
     const { rerender } = render(<>{result.current.dialogs}</>);
 

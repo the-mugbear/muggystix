@@ -23,7 +23,7 @@ import {
 import { useToast } from '../../contexts/ToastContext';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { setRemediationPolicy } from '../../hooks/useRemediationPolicy';
-import { GLOBAL, queryErrorText } from '../../lib/query';
+import { queryErrorText } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { invalidateRemediationReads, severityWord } from '../../utils/remediation';
 import PostureSection from '../posture/PostureSection';
@@ -121,7 +121,7 @@ const bodyOf = (from: Draft, stored: RemediationPolicy) => {
 };
 
 // The same read as `hooks/useRemediationPolicy` (the navigation's).
-const POLICY_KEY = [GLOBAL, 'getRemediationPolicy'];
+const POLICY_KEY = ['getRemediationPolicy'];
 
 export const RemediationSettingsSection: React.FC = () => {
   const toast = useToast();
@@ -169,7 +169,7 @@ export const RemediationSettingsSection: React.FC = () => {
   const asks = !!policy && !!draft && dirty && !problem && tracking;
   const body = policy && draft && !problem ? bodyOf(draft, policy) : null;
   const preview = useQuery({
-    queryKey: [GLOBAL, 'previewRemediationPolicy', body],
+    queryKey: ['previewRemediationPolicy', body],
     queryFn: ({ signal }) => previewRemediationPolicy(body as NonNullable<typeof body>, signal),
     enabled: asks && settledKey === draftKey,
   });

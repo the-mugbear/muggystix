@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Globe, Loader2 } from 'lucide-react';
 
 import { getHostDnsRecords, HostDnsRecordRow } from '../services/api';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -58,9 +59,10 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId, embedde
   const open = openFor === hostId;
   const setOpen = (update: (was: boolean) => boolean) =>
     setOpenFor((was) => (update(was === hostId) ? hostId : null));
+  const projectId = useProjectId();
   const query = useQuery({
-    queryKey: ['getHostDnsRecords', hostId],
-    queryFn: ({ signal }) => getHostDnsRecords(hostId, signal),
+    queryKey: ['getHostDnsRecords', projectId, hostId],
+    queryFn: ({ signal }) => getHostDnsRecords(projectId, hostId, signal),
   });
   const data = query.data ?? null;
   const loading = query.isPending;

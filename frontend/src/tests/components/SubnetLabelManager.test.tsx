@@ -91,7 +91,7 @@ describe('SubnetLabelEditorPopover — the selection is the reader’s while it 
     expect(screen.queryByRole('button', { name: 'Remove PCI' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(api.replaceSubnetLabels).toHaveBeenCalledWith(7, []));
+    await waitFor(() => expect(api.replaceSubnetLabels).toHaveBeenCalledWith(1, 7, []));
   });
 
   it('starts from the subnet’s labels again each time it opens', async () => {

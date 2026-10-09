@@ -68,7 +68,7 @@ describe('WebInterfacesCard — history stays reachable', () => {
 
     fireEvent.click(within(history).getByRole('button', { name: /View the screenshot from scan #19/ }));
     // The OLDER row's screenshot, by its own id — not the latest row's.
-    await waitFor(() => expect(api.fetchWebInterfaceScreenshot).toHaveBeenCalledWith(5));
+    await waitFor(() => expect(api.fetchWebInterfaceScreenshot).toHaveBeenCalledWith(1, 5));
   });
 });
 

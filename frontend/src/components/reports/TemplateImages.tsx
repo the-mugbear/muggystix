@@ -23,6 +23,7 @@ import {
   fetchReportTemplateAssetPreview, removeReportTemplateAsset, uploadReportTemplateAsset,
 } from '../../services/api';
 import type { ClientReportFormat, ReportTemplate, ReportTemplateAsset } from '../../services/api';
+import { useProjectId } from '../../hooks/useProjectId';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 
@@ -132,11 +133,12 @@ const uploadLine = (a: ReportTemplateAsset): string | null => {
 /** The image the render would use, fetched with the session (an <img> cannot
  *  send the token).  Refetched whenever the file changes. */
 const AssetThumbnail: React.FC<{ templateName: string; asset: ReportTemplateAsset }> = ({ templateName, asset }) => {
+  const projectId = useProjectId();
   const version = asset.upload?.sha256 ?? (asset.installed ? 'installed' : '');
   // `version` is in the key for the file it names, not for the request.
   const { data: blob } = useQuery({
-    queryKey: ['fetchReportTemplateAssetPreview', templateName, asset.id, version],
-    queryFn: ({ signal }) => fetchReportTemplateAssetPreview(templateName, asset.id, signal),
+    queryKey: ['fetchReportTemplateAssetPreview', projectId, templateName, asset.id, version],
+    queryFn: ({ signal }) => fetchReportTemplateAssetPreview(projectId, templateName, asset.id, signal),
     enabled: asset.present && PREVIEWABLE.has(asset.kind ?? ''),
   });
   // The object URL lives as long as its image is the one shown.
@@ -160,6 +162,7 @@ const AssetThumbnail: React.FC<{ templateName: string; asset: ReportTemplateAsse
 /** Upload / replace / remove one template file (global administrators). */
 const AssetUpload: React.FC<{ templateName: string; asset: ReportTemplateAsset }> = ({ templateName, asset }) => {
   const queryClient = useQueryClient();
+  const projectId = useProjectId();
   const input = useRef<HTMLInputElement>(null);
   // A file refused here, before it is sent.
   const [refused, setRefused] = useState<string | null>(null);
@@ -167,10 +170,10 @@ const AssetUpload: React.FC<{ templateName: string; asset: ReportTemplateAsset }
   // template as it now stands, which goes where the template list is read.
   const change = useMutation({
     mutationFn: (file: File | null) => (file
-      ? uploadReportTemplateAsset(templateName, asset.id, file)
-      : removeReportTemplateAsset(templateName, asset.id)),
+      ? uploadReportTemplateAsset(projectId, templateName, asset.id, file)
+      : removeReportTemplateAsset(projectId, templateName, asset.id)),
     onSuccess: ({ template }) => {
-      queryClient.setQueryData<ReportTemplate[]>(['listReportTemplates'],
+      queryClient.setQueryData<ReportTemplate[]>(['listReportTemplates', projectId],
         (all) => all?.map((x) => (x.name === template.name ? template : x)));
     },
   });

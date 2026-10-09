@@ -24,6 +24,7 @@ import type { ObservationIssue, ObservationIssueHost, WeaknessKind } from '../..
 import { useToast } from '../../contexts/ToastContext';
 import { useListCursor } from '../../hooks/useListCursor';
 import { useListQuery } from '../../hooks/useListQuery';
+import { useProjectId } from '../../hooks/useProjectId';
 import { formatApiError } from '../../utils/apiErrors';
 import { ENDPOINT_STATUS_LABEL, STATUS_LABEL } from '../../utils/findingStatus';
 import { selectAllState } from '../../utils/selection';
@@ -57,6 +58,7 @@ interface Props {
 
 const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const toast = useToast();
+  const projectId = useProjectId();
   // The filters live in the URL (review 2026-09-23 B-UI-3), as the Findings
   // list's do: "critical issues on 5+ hosts" can be bookmarked and shared.
   // Own keys, so switching views never mixes the two lists' filters.
@@ -107,8 +109,8 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   // belongs to the list it was asked for, never to the one on screen.
   const list = useListQuery<ObservationIssue>(
     'getObservationIssues',
-    ({ offset, limit, signal }) => getObservationIssues({ ...filters, ...(offset > 0 ? { skip: offset } : {}), limit }, signal),
-    [filters],
+    ({ offset, limit, signal }) => getObservationIssues(projectId, { ...filters, ...(offset > 0 ? { skip: offset } : {}), limit }, signal),
+    [projectId, filters],
     {
       pageSize: PAGE, errorMessage: 'Could not load the scanner observations.',
       // An issue that moved between two pages while they were read is listed once.
@@ -130,8 +132,8 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const expandedKeys = useMemo(() => [...expanded], [expanded]);
   const hostQueries = useQueries({
     queries: expandedKeys.map((key) => ({
-      queryKey: ['getObservationIssueHosts', key, HOST_CAP + 1],
-      queryFn: ({ signal }) => getObservationIssueHosts(key, HOST_CAP + 1, signal),
+      queryKey: ['getObservationIssueHosts', projectId, key, HOST_CAP + 1],
+      queryFn: ({ signal }) => getObservationIssueHosts(projectId, key, HOST_CAP + 1, signal),
     })),
   });
   const hostsOf = (key: string): ObservationIssueHost[] | 'loading' | 'error' | undefined => {
@@ -198,7 +200,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
 
   const queryClient = useQueryClient();
   const promotion = useMutation({
-    mutationFn: (items: { issue_key: string; host_ids?: number[] }[]) => promoteObservationIssues(items),
+    mutationFn: (items: { issue_key: string; host_ids?: number[] }[]) => promoteObservationIssues(projectId, items),
     onSuccess: (res) => {
       const created = res.results.filter((r) => r.created).length;
       const joined = res.results.length - created;

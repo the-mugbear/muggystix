@@ -30,6 +30,7 @@ import { useQuery } from '@tanstack/react-query';
 import { listAgentSessions, type AgentSessionRow } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { hasLiveKey, myActiveSessionFilters } from '../utils/agentRuns';
+import { useProjectId } from './useProjectId';
 
 const NONE: AgentSessionRow[] = [];
 
@@ -48,9 +49,10 @@ export const useMyAssistSessions = (
   const { user } = useAuth();
   const userId = user?.id;
   const on = enabled && userId != null;
+  const projectId = useProjectId();
   const query = useQuery({
-    queryKey: ['listAgentSessions', userId == null ? null : myActiveSessionFilters(userId)],
-    queryFn: ({ signal }) => listAgentSessions(myActiveSessionFilters(userId as number), { signal }),
+    queryKey: ['listAgentSessions', projectId, userId == null ? null : myActiveSessionFilters(userId)],
+    queryFn: ({ signal }) => listAgentSessions(projectId, myActiveSessionFilters(userId as number), { signal }),
     enabled: on,
   });
 

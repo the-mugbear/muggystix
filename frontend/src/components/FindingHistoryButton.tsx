@@ -10,6 +10,7 @@ import { History, Loader2 } from 'lucide-react';
 import { STATUS_LABEL } from '../utils/findingStatus';
 
 import { getFindingHistory } from '../services/api';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { Button } from './ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
@@ -20,13 +21,14 @@ import { formatTimestamp } from '../utils/relativeTime';
 const label = (s: string | null) => (s ? (STATUS_LABEL as Record<string, string>)[s] ?? s : '—');
 
 export const FindingHistoryButton: React.FC<{ findingId: number }> = ({ findingId }) => {
+  const projectId = useProjectId();
   const [open, setOpen] = React.useState(false);
   // Read on first open and kept while the button is there: the trail only
   // changes when the status does, and that change invalidates this query, so
   // the next open reads it again.
   const query = useQuery({
-    queryKey: ['getFindingHistory', findingId],
-    queryFn: ({ signal }) => getFindingHistory(findingId, signal),
+    queryKey: ['getFindingHistory', projectId, findingId],
+    queryFn: ({ signal }) => getFindingHistory(projectId, findingId, signal),
     enabled: open,
     staleTime: Infinity,
   });

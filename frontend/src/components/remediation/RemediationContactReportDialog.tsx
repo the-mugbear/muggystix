@@ -16,9 +16,11 @@ import { Download, Loader2 } from 'lucide-react';
 
 import {
   downloadContactReport, getContactReport, prepareContactReport, type ContactReportFormat, type ContactReportJob,
+  type RemediationMount,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useJobPoll } from '../../hooks/useJobPoll';
+import { useProjectId } from '../../hooks/useProjectId';
 import { formatApiError } from '../../utils/apiErrors';
 import { saveBlob } from '../../utils/download';
 import { Button } from '../ui/button';
@@ -46,8 +48,14 @@ export const RemediationContactReportDialog: React.FC<{
   projectId?: number;
   projectName?: string;
   onClose: () => void;
-}> = ({ contactEmail, contactName, projectId, projectName, onClose }) => {
+}> = ({ contactEmail, contactName, projectId: givenProjectId, projectName, onClose }) => {
   const toast = useToast();
+  // Given a project (the cross-project page): that one, through the overview
+  // mount, which also serves an archived project.  Not given: the project on
+  // screen, through its own routes.
+  const currentProjectId = useProjectId();
+  const projectId = givenProjectId ?? currentProjectId;
+  const mount: RemediationMount | undefined = givenProjectId != null ? 'overview' : undefined;
   const [format, setFormat] = useState<ContactReportFormat>('contact-docx');
   // The job this dialog follows, as the worker took it.
   const [started, setStarted] = useState<ContactReportJob | null>(null);
@@ -56,15 +64,15 @@ export const RemediationContactReportDialog: React.FC<{
   // from what the request answered; a finished job is not asked about again.
   // A missed poll is tried again; a job that is gone shows on the next one.
   const { job, running: waiting, error: pollError } = useJobPoll({
-    queryKey: ['getContactReport', started?.id, projectId],
-    queryFn: (asked, signal) => getContactReport(asked.id, projectId, signal),
+    queryKey: ['getContactReport', projectId, started?.id, mount],
+    queryFn: (asked, signal) => getContactReport(projectId, asked.id, mount, signal),
     job: started,
     interval: POLL_MS,
     isDone: (read) => !isWaiting(read),
   });
 
   const preparing = useMutation({
-    mutationFn: () => prepareContactReport({ contact_email: contactEmail, format }, projectId),
+    mutationFn: () => prepareContactReport(projectId, { contact_email: contactEmail, format }, mount),
     onSuccess: (job) => setStarted(job),
     onError: (err) => toast.error(formatApiError(err, 'The list could not be prepared.')),
   });
@@ -72,7 +80,7 @@ export const RemediationContactReportDialog: React.FC<{
 
   const downloading = useMutation({
     mutationFn: async (ready: ContactReportJob) =>
-      saveBlob(await downloadContactReport(ready.id, projectId), ready.filename ?? 'remediation-list'),
+      saveBlob(await downloadContactReport(projectId, ready.id, mount), ready.filename ?? 'remediation-list'),
     onError: (err) => toast.error(formatApiError(err, 'The document could not be downloaded.')),
   });
   const saving = downloading.isPending;

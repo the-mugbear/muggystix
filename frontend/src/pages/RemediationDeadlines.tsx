@@ -23,7 +23,7 @@ import { useProject } from '../contexts/ProjectContext';
 import { idParam } from '../utils/remediation';
 import RemediationTrend from '../components/remediation/RemediationTrend';
 import { useRemediationPolicy } from '../hooks/useRemediationPolicy';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { REPORTED_FIXED, timelineSummary } from '../utils/remediation';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import RemediationWorkList from '../components/remediation/RemediationWorkList';
@@ -56,7 +56,7 @@ const RemediationDeadlines: React.FC = () => {
   };
   // Re-read after a save by the write itself (`invalidateRemediationReads`).
   const query = useQuery({
-    queryKey: [GLOBAL, 'listRemediationProjects'],
+    queryKey: ['listRemediationProjects'],
     queryFn: ({ signal }) => listRemediationProjects(signal),
     enabled,
   });

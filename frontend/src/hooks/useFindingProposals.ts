@@ -12,6 +12,7 @@ import { useQuery } from '@tanstack/react-query';
 
 import { listProposals, Proposal } from '../services/api';
 import { pollEvery, queryErrorText } from '../lib/query';
+import { useProjectId } from './useProjectId';
 
 export interface FindingProposals {
   items: Proposal[] | null;
@@ -39,9 +40,10 @@ export const groupFindingProposals = (items: Proposal[]) => {
 };
 
 export const useFindingProposals = (findingId: number | null): FindingProposals => {
+  const projectId = useProjectId();
   const query = useQuery({
-    queryKey: ['listProposals', { finding_id: findingId, status: 'pending', limit: 200 }],
-    queryFn: ({ signal }) => listProposals({ finding_id: findingId as number, status: 'pending', limit: 200 }, signal),
+    queryKey: ['listProposals', projectId, { finding_id: findingId, status: 'pending', limit: 200 }],
+    queryFn: ({ signal }) => listProposals(projectId, { finding_id: findingId as number, status: 'pending', limit: 200 }, signal),
     enabled: findingId != null,
     ...pollEvery(30_000),
   });

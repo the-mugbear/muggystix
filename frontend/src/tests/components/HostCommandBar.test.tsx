@@ -52,7 +52,7 @@ describe('HostCommandBar', () => {
     const user = userEvent.setup();
     setup();
     await user.type(screen.getByLabelText('Host query'), 'port:80');
-    await waitFor(() => expect(mocked.validateHostQuery).toHaveBeenCalledWith('port:80', expect.anything()));
+    await waitFor(() => expect(mocked.validateHostQuery).toHaveBeenCalledWith(1, 'port:80', expect.anything()));
     await waitFor(() => expect(screen.getByText('3')).toBeInTheDocument());
   });
 
@@ -86,7 +86,7 @@ describe('HostCommandBar', () => {
     await user.type(input, '{Enter}');
     await waitFor(() => {
       expect(onChange).toHaveBeenCalledWith('has:web');
-      expect(mocked.recordHostQuery).toHaveBeenCalledWith('has:web', 3);
+      expect(mocked.recordHostQuery).toHaveBeenCalledWith(1, 'has:web', 3);
     });
   });
 
@@ -203,7 +203,7 @@ describe('HostCommandBar', () => {
     });
 
     it('asks the server for values the page facets do not have, and shows host counts', async () => {
-      mocked.suggestHostQueryValues.mockImplementation(async (field: string, prefix: string) => ({
+      mocked.suggestHostQueryValues.mockImplementation(async (_projectId: number, field: string, prefix: string) => ({
         field, supported: true, values: prefix === '84' ? [{ value: '8443', label: null, count: 2 }] : [],
       }));
       const user = userEvent.setup();
@@ -211,7 +211,7 @@ describe('HostCommandBar', () => {
       setup({ valueSuggestions: { port: ['80', '443'] } });
       await user.type(screen.getByLabelText('Host query'), 'port:84');
       await waitFor(() =>
-        expect(mocked.suggestHostQueryValues).toHaveBeenCalledWith('port', '84', expect.anything()),
+        expect(mocked.suggestHostQueryValues).toHaveBeenCalledWith(1, 'port', '84', expect.anything()),
       );
       const option = await screen.findByRole('option', { name: '8443, 2 hosts' });
       await user.click(option);

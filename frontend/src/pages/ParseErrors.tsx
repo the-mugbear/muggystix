@@ -34,7 +34,8 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '../components/ui/select';
 import { useToast } from '../contexts/ToastContext';
-import { holdProject, invalidateReads } from '../lib/query';
+import { useProjectId } from '../hooks/useProjectId';
+import { invalidateReads } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { INGESTION_JOB_READS } from '../utils/ingestionReads';
 import { Badge } from '../components/ui/badge';
@@ -187,6 +188,7 @@ const ParseErrors: React.FC = () => {
   const toast = useToast();
   // Retry, discard, dismiss and re-process are a project analyst's (R32).
   const { canWrite } = useProjectRole();
+  const projectId = useProjectId();
   const jobReadsChanged = useJobReadsChanged();
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
@@ -252,7 +254,7 @@ const ParseErrors: React.FC = () => {
   const appliedSearch = urlSearch;
   const list = useListQuery<IngestionResultItem, ListPage<IngestionResultItem> & IngestionResultsResponse>(
     'getIngestionResults',
-    ({ limit, signal }) => getIngestionResults({
+    ({ limit, signal }) => getIngestionResults(projectId, {
       skip: page * pageSize,
       limit,
       status: statusFilter === 'all' ? undefined : statusFilter,
@@ -260,7 +262,7 @@ const ParseErrors: React.FC = () => {
       sortBy,
       sortOrder,
     }, signal),
-    [statusFilter, appliedSearch, sortBy, sortOrder, page],
+    [projectId, statusFilter, appliedSearch, sortBy, sortOrder, page],
     { pageSize, errorMessage: 'Failed to load ingestion results.' },
   );
   const { loading, error, loadedAt } = list;
@@ -273,7 +275,7 @@ const ParseErrors: React.FC = () => {
   // they were inspecting backend data. The failure is said, and the dialog
   // opens only on what the server returned.
   const parseErrorDetail = useMutation({
-    mutationFn: ({ parseErrorId }: { jobId: number; parseErrorId: number }) => getParseError(parseErrorId),
+    mutationFn: ({ parseErrorId }: { jobId: number; parseErrorId: number }) => getParseError(projectId, parseErrorId),
     onSuccess: () => setDetailDialogOpen(true),
     onError: (err, { jobId }) => toast.error(
       formatApiError(err, `Couldn't load full details for ingestion #${jobId}.`),
@@ -357,12 +359,11 @@ const ParseErrors: React.FC = () => {
   const dismissRows = useMutation({
     mutationFn: async (rows: IngestionResultItem[]) => {
       let failed = 0;
-      const stillHere = holdProject();
       for (const item of rows) {
         try {
-          stillHere();
           // Sequential on purpose: small, and no burst of parallel writes.
-          await dismissIngestionJob(item.id);
+          // Every row is dismissed in the project the page was showing.
+          await dismissIngestionJob(projectId, item.id);
         } catch {
           failed += 1;
         }
@@ -400,7 +401,7 @@ const ParseErrors: React.FC = () => {
   // these ids are sent; the server skips any no longer superseded.
   const supersededShown = items.filter((i) => !i.dismissed_at && i.superseded_by_job_id != null);
   const dismissSupersededRows = useMutation({
-    mutationFn: (ids: number[]) => dismissSupersededJobs(ids),
+    mutationFn: (ids: number[]) => dismissSupersededJobs(projectId, ids),
     onSuccess: (res, ids) => {
       const n = ids.length;
       if (res.dismissed === n) {
@@ -898,9 +899,10 @@ const ParseErrors: React.FC = () => {
 const DismissAction: React.FC<{ item: IngestionResultItem }> = ({ item }) => {
   const toast = useToast();
   const { canWrite } = useProjectRole();
+  const projectId = useProjectId();
   const jobReadsChanged = useJobReadsChanged();
   const dismiss = useMutation({
-    mutationFn: () => dismissIngestionJob(item.id),
+    mutationFn: () => dismissIngestionJob(projectId, item.id),
     onSuccess: jobReadsChanged,
     onError: (err) => toast.error(formatApiError(err, 'Could not dismiss this import.')),
   });
@@ -936,9 +938,10 @@ const RowDetail: React.FC<{
 }> = ({ item, onViewParseError, navigate }) => {
   const toast = useToast();
   const { canWrite } = useProjectRole();
+  const projectId = useProjectId();
   const jobReadsChanged = useJobReadsChanged();
   const discard = useMutation({
-    mutationFn: () => discardIngestionJob(item.id),
+    mutationFn: () => discardIngestionJob(projectId, item.id),
     onSuccess: jobReadsChanged,
     // Said, not only logged (R34): the button used to do nothing.
     onError: (err) => toast.error(formatApiError(err, 'Could not discard the staged upload.')),
@@ -1124,9 +1127,10 @@ const RowDetail: React.FC<{
 /** Fetches the scan row's summary for a completed job and renders its
  *  import result. Quiet on failure: the fields beneath still say what parsed. */
 const CompletedImportResult: React.FC<{ scanId: number }> = ({ scanId }) => {
+  const projectId = useProjectId();
   const summary = useQuery({
-    queryKey: ['getScans', { ids: [scanId] }, { limit: 1 }],
-    queryFn: ({ signal }) => getScans(0, 1, { ids: [scanId], signal }),
+    queryKey: ['getScans', projectId, { ids: [scanId] }, { limit: 1 }],
+    queryFn: ({ signal }) => getScans(projectId, 0, 1, { ids: [scanId], signal }),
   });
   const row = summary.data?.[0] ?? null;
   if (!row) return null;

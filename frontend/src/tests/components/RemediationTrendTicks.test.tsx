@@ -10,6 +10,7 @@ const getRemediationTrend = vi.fn();
 vi.mock('../../services/api', () => ({
   getRemediationTrend: (...a: unknown[]) => getRemediationTrend(...a),
 }));
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1, name: 'P' } }) }));
 interface Captured { label: string; options: { x?: { type?: string; ticks?: Date[]; tickFormat?: (d: Date) => string; domain?: string[] } } }
 const figures = vi.hoisted(() => [] as unknown[]);
 vi.mock('../../components/charts/PlotFigure', () => ({

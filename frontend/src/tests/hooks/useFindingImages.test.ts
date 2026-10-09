@@ -40,7 +40,7 @@ describe('useFindingImages', () => {
     });
     const { result } = renderHook(() => useFindingImages(7, d));
     await waitFor(() => expect(result.current.images).toHaveLength(3));
-    expect(d.getFindingImages).toHaveBeenCalledWith(7, expect.any(AbortSignal));
+    expect(d.getFindingImages).toHaveBeenCalledWith(1, 7,expect.any(AbortSignal));
     expect(result.current.placeable.map((i) => i.id)).toEqual([1]);
     expect(result.current.captionMax).toBe(2000);
     // The preview's question: is this id an image the section may show?
@@ -66,7 +66,7 @@ describe('useFindingImages', () => {
     });
     await waitFor(() => expect(result.current.urls[1]).toBe('blob:one'));
     expect(d.getNoteAttachmentObjectUrl).toHaveBeenCalledTimes(1);
-    expect(d.getNoteAttachmentObjectUrl).toHaveBeenCalledWith(1);
+    expect(d.getNoteAttachmentObjectUrl).toHaveBeenCalledWith(1, 1);
     // The caption falls back to the file name, as the report does.
     expect(result.current.resolver.lookup(1)).toEqual({ caption: 'shot-1.png', src: 'blob:one' });
   });
@@ -88,7 +88,7 @@ describe('useFindingImages', () => {
   it('drops the images of the finding the page left', async () => {
     const d = deps();
     let release: (v: unknown) => void = () => {};
-    d.getFindingImages.mockImplementation((id: number) => (id === 7
+    d.getFindingImages.mockImplementation((_projectId: number, id: number) => (id === 7
       ? new Promise((resolve) => { release = resolve; })
       : Promise.resolve({ items: [image(20)], caption_max: 2000 })));
     const { result, rerender } = renderHook(({ id }) => useFindingImages(id, d), { initialProps: { id: 7 } });
@@ -121,7 +121,7 @@ describe('useFindingImages', () => {
 
   it('is loading again, at once, for another finding', async () => {
     const d = deps();
-    d.getFindingImages.mockImplementation((id: number) => (id === 7
+    d.getFindingImages.mockImplementation((_projectId: number, id: number) => (id === 7
       ? Promise.resolve({ items: [image(1)], caption_max: 2000 })
       : new Promise(() => undefined)));
     const { result, rerender } = renderHook(({ id }) => useFindingImages(id, d), { initialProps: { id: 7 } });
@@ -138,7 +138,7 @@ describe('useFindingImages', () => {
     let inFlight = 0;
     let peak = 0;
     const releases: Array<() => void> = [];
-    d.getNoteAttachmentObjectUrl.mockImplementation((id: number) => {
+    d.getNoteAttachmentObjectUrl.mockImplementation((_projectId: number, id: number) => {
       inFlight += 1;
       peak = Math.max(peak, inFlight);
       return new Promise<string>((resolve) => {
@@ -177,7 +177,7 @@ describe('useFindingImages', () => {
   it('serves the comment thread’s thumbnails from the same cache — any listed image, one fetch', async () => {
     const d = deps();
     d.getFindingImages.mockResolvedValue({ items: [image(1), image(2, { in_report: false })], caption_max: 2000 });
-    d.getNoteAttachmentObjectUrl.mockImplementation((id: number) => Promise.resolve(`blob:${id}`));
+    d.getNoteAttachmentObjectUrl.mockImplementation((_projectId: number, id: number) => Promise.resolve(`blob:${id}`));
     const { result } = renderHook(() => useFindingImages(7, d));
     await waitFor(() => expect(result.current.images).toHaveLength(2));
     expect(result.current.thumbnails.has(2)).toBe(true);
@@ -189,7 +189,7 @@ describe('useFindingImages', () => {
       result.current.resolver.ensure(1);      // the placed image: the same fetch
     });
     await waitFor(() => expect(result.current.thumbnails.urls[2]).toBe('blob:2'));
-    expect(d.getNoteAttachmentObjectUrl.mock.calls.map((c) => c[0]).sort()).toEqual([1, 2]);
+    expect(d.getNoteAttachmentObjectUrl.mock.calls.map((c) => c[1]).sort()).toEqual([1, 2]);
     expect(result.current.resolver.lookup(2)).toBeNull();
   });
 

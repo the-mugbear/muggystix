@@ -39,6 +39,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDiscardGuard } from '../hooks/useDiscardGuard';
 import { useJobPolls } from '../hooks/useJobPoll';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRoster } from '../hooks/useProjectMembers';
 import { pollEvery, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
@@ -186,10 +187,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
 
   // An issued report renders its files on the worker: it is read again every
   // three seconds until they are done, and not at all otherwise.
-  const reportKey = ['getClientReport', id];
+  const projectId = useProjectId();
+  const reportKey = ['getClientReport', projectId, id];
   const query = useQuery({
     queryKey: reportKey,
-    queryFn: ({ signal }) => getClientReport(id, signal),
+    queryFn: ({ signal }) => getClientReport(projectId, id, signal),
     ...pollEvery((q) => (isRendering(q.state.data) ? RENDER_POLL_MS : null)),
   });
   const report: ClientReport | null = query.data ?? null;
@@ -198,7 +200,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const error = queryErrorText(query.error, 'Could not load the report.');
   const putReport = (next: ClientReport) => queryClient.setQueryData(reportKey, next);
 
-  const templatesQuery = useQuery({ queryKey: ['listReportTemplates'], queryFn: ({ signal }) => listReportTemplates(signal) });
+  const templatesQuery = useQuery({
+    queryKey: ['listReportTemplates', projectId], queryFn: ({ signal }) => listReportTemplates(projectId, signal),
+  });
   const templates: ReportTemplate[] = templatesQuery.data ?? NO_TEMPLATES;
 
   // What the reader changed, over the report as stored: a save, an issue or a
@@ -214,8 +218,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const startedJobs = Object.entries(started) as Array<[ClientReportFormat, ReportJob]>;
   const followed = useJobPolls({
     jobs: startedJobs.map(([, job]) => job),
-    queryKey: (job) => ['getReportJob', job.id],
-    queryFn: (job, signal) => getReportJob(job.id, signal),
+    queryKey: (job) => ['getReportJob', projectId, job.id],
+    queryFn: (job, signal) => getReportJob(projectId, job.id, signal),
     interval: PREVIEW_POLL_MS,
     isDone: (job) => !isRunning(job),
   });
@@ -238,7 +242,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   );
 
   const saveDetails = useMutation({
-    mutationFn: (next: Form) => updateClientReport(reportId, {
+    mutationFn: (next: Form) => updateClientReport(projectId, reportId, {
       title: next.title.trim(),
       template: next.template,
       executive_summary: next.executive_summary.trim() || null,
@@ -261,7 +265,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   // The template is a rendering choice beside the Preview buttons, so it is
   // saved on its own at once — other unsaved edits stay unsaved.
   const templateChange = useMutation({
-    mutationFn: (name: string) => updateClientReport(reportId, { template: name }),
+    mutationFn: (name: string) => updateClientReport(projectId, reportId, { template: name }),
     onSuccess: (updated) => {
       putReport(updated);
       setStarted({});
@@ -275,24 +279,24 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   };
 
   const startPreview = useMutation({
-    mutationFn: (fmt: ClientReportFormat) => previewClientReport(reportId, fmt),
+    mutationFn: (fmt: ClientReportFormat) => previewClientReport(projectId, reportId, fmt),
     onSuccess: (job, fmt) => setStarted((prev) => ({ ...prev, [fmt]: job })),
     onError: (err) => toast.error(formatApiError(err, 'Could not start the preview.')),
   });
   const preview = (fmt: ClientReportFormat) => { if (report) startPreview.mutate(fmt); };
   const downloadPreview = useMutation({
-    mutationFn: (jobId: number) => downloadReportJob(jobId),
+    mutationFn: (jobId: number) => downloadReportJob(projectId, jobId),
     onError: (err) => toast.error(formatApiError(err, 'Could not download the preview.')),
   });
 
   const issuing = useMutation({
-    mutationFn: () => issueClientReport(reportId),
+    mutationFn: () => issueClientReport(projectId, reportId),
     onSuccess: (issued) => {
       putReport(issued);
       setEdits({});
       // The project's reports gained a number; "start the clock from a
       // report" and the Reports page read that list.
-      void queryClient.invalidateQueries({ queryKey: ['listClientReports'] });
+      void queryClient.invalidateQueries({ queryKey: ['listClientReports', projectId] });
       toast.success(`Issued as report #${issued.number}. Rendering its files…`);
     },
     onError: (err) => toast.error(formatApiError(err, 'Could not issue the report.')),
@@ -348,20 +352,20 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   };
 
   const revising = useMutation({
-    mutationFn: () => reviseClientReport(reportId),
+    mutationFn: () => reviseClientReport(projectId, reportId),
     onSuccess: (draft) => navigate(`/reports/${draft.id}`),
     onError: (err) => toast.error(formatApiError(err, 'Could not start a revision.')),
   });
 
   const rerendering = useMutation({
-    mutationFn: () => rerenderClientReport(reportId),
+    mutationFn: () => rerenderClientReport(projectId, reportId),
     onSuccess: (next) => { putReport(next); },
     onError: (err) => toast.error(formatApiError(err, 'Could not restart the rendering.')),
   });
 
   // 5.319.0 — the scope file an over-cutoff report names.
   const scopeDownload = useMutation({
-    mutationFn: (name: string) => downloadClientReportScope(reportId, name),
+    mutationFn: (name: string) => downloadClientReportScope(projectId, reportId, name),
     onError: (err) => toast.error(formatApiError(err, 'Could not download the scope file.')),
   });
   const downloadScope = () => {
@@ -370,7 +374,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   };
 
   const discarding = useMutation({
-    mutationFn: () => deleteClientReport(reportId),
+    mutationFn: () => deleteClientReport(projectId, reportId),
     onSuccess: () => navigate('/reports'),
     onError: (err) => toast.error(formatApiError(err, 'Could not discard the draft.')),
   });

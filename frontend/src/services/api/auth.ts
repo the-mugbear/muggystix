@@ -6,8 +6,8 @@
  * Signing in, verifying the token, signing out and renewing the session are
  * NOT here: `contexts/AuthContext` owns them, through the default client.
  *
- * Not one project's data: a query on these starts its key with `GLOBAL`
- * (`[GLOBAL, 'listOwnSessions']`).
+ * Not one project's data: these take no `projectId`, and a query on them has
+ * none in its key (`['listOwnSessions']`).
  */
 import { api } from './client';
 

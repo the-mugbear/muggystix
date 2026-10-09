@@ -68,7 +68,7 @@ describe('HostFindingsCard', () => {
     await user.type(screen.getByLabelText('Finding title'), '  Shared local admin password ');
     await user.click(submit);
 
-    await waitFor(() => expect(api.createFinding).toHaveBeenCalledWith({
+    await waitFor(() => expect(api.createFinding).toHaveBeenCalledWith(1, {
       title: 'Shared local admin password', severity: 'medium', status: 'open', host_ids: [HOST],
     }));
     // The list is read again, and the form is gone.
@@ -151,7 +151,7 @@ describe('HostFindingsCard', () => {
     await user.click(screen.getByLabelText('State of Weak TLS on this host'));
     await user.click(await screen.findByRole('option', { name: 'False positive here' }));
 
-    await waitFor(() => expect(api.setFindingEndpointStatus).toHaveBeenCalledWith(7, 31, 'false_positive'));
+    await waitFor(() => expect(api.setFindingEndpointStatus).toHaveBeenCalledWith(1, 7, 31, 'false_positive'));
     // Only this host's row — never the other hosts', never the issue.
     expect(api.setFindingEndpointStatus).toHaveBeenCalledTimes(1);
     expect(api.setFindingStatus).not.toHaveBeenCalled();
@@ -175,7 +175,9 @@ describe('HostFindingsCard', () => {
     await user.click(await screen.findByLabelText('State of Weak TLS on this host'));
     await user.click(await screen.findByRole('option', { name: 'Remediated here' }));
     await waitFor(() => expect(api.setFindingEndpointStatus).toHaveBeenCalledTimes(2));
-    expect(api.setFindingEndpointStatus.mock.calls.map((c) => c[1]).sort()).toEqual([31, 34]);
+    // (the project, the finding, then the endpoint row)
+    expect(api.setFindingEndpointStatus.mock.calls.map((c) => c[0])).toEqual([1, 1]);
+    expect(api.setFindingEndpointStatus.mock.calls.map((c) => c[2]).sort()).toEqual([31, 34]);
   });
 
   it('a finding that is only about this host keeps the issue status control', async () => {
@@ -188,7 +190,7 @@ describe('HostFindingsCard', () => {
     await user.click(await screen.findByLabelText('Status for Weak TLS'));
     expect(historyReread).not.toHaveBeenCalled();   // nothing is read again before a change
     await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
-    await waitFor(() => expect(api.setFindingStatus).toHaveBeenCalledWith(7, 'confirmed'));
+    await waitFor(() => expect(api.setFindingStatus).toHaveBeenCalledWith(1, 7, 'confirmed'));
     expect(api.setFindingEndpointStatus).not.toHaveBeenCalled();
     // The status change is on the finding's history: that trail is read again.
     await waitFor(() => expect(historyReread).toHaveBeenCalledTimes(1));
@@ -202,7 +204,7 @@ describe('HostFindingsCard', () => {
     const OpenHosts: React.FC = () => {
       useQueries({
         queries: [HOST, 6].map((id) => ({
-          queryKey: ['getHost', id], queryFn: () => { hostRead(id); return 1; }, initialData: 0, staleTime: Infinity,
+          queryKey: ['getHost', 1, id], queryFn: () => { hostRead(id); return 1; }, initialData: 0, staleTime: Infinity,
         })),
       });
       return null;
@@ -277,7 +279,7 @@ describe('HostFindingsCard', () => {
 
     it('a slow list for the host just left never replaces the new host’s findings', async () => {
       let releaseFirst!: (v: unknown) => void;
-      api.listFindings.mockImplementation(({ host_id }: { host_id: number }) => (host_id === HOST
+      api.listFindings.mockImplementation((_projectId: number, { host_id }: { host_id: number }) => (host_id === HOST
         ? new Promise((resolve) => { releaseFirst = resolve; })
         : Promise.resolve({ items: [titled('Second host finding', other)] })));
       const { rerender } = render(<Card hostId={HOST} />);
@@ -289,7 +291,7 @@ describe('HostFindingsCard', () => {
     });
 
     it('does not show the previous host’s findings while the new host’s load', async () => {
-      api.listFindings.mockImplementation(({ host_id }: { host_id: number }) => (host_id === HOST
+      api.listFindings.mockImplementation((_projectId: number, { host_id }: { host_id: number }) => (host_id === HOST
         ? Promise.resolve({ items: [titled('First host finding', HOST)] })
         : new Promise(() => undefined)));
       const { rerender } = render(<Card hostId={HOST} />);
@@ -302,7 +304,7 @@ describe('HostFindingsCard', () => {
       const user = userEvent.setup();
       const own = titled('First host finding', HOST);
       let releaseSave!: (v: unknown) => void;
-      api.listFindings.mockImplementation(({ host_id }: { host_id: number }) => Promise.resolve({
+      api.listFindings.mockImplementation((_projectId: number, { host_id }: { host_id: number }) => Promise.resolve({
         // The same finding id is on both hosts' lists (a shared issue).
         items: [host_id === HOST ? { ...own, status: 'open' } : { ...own, title: 'As listed for the second host', hosts: [row(32, other, 'open')], status: 'open' }],
       }));
@@ -335,13 +337,13 @@ describe('HostFindingsCard', () => {
 
     const state = await screen.findByLabelText('State of Weak TLS on this host');
     expect(state).toHaveTextContent('Remediated here');
-    // (The second argument is the query's abort signal.)
-    expect(api.listFindings).toHaveBeenCalledWith({ host_id: HOST, limit: 100 }, expect.any(AbortSignal));
+    // (The project first; the last argument is the query's abort signal.)
+    expect(api.listFindings).toHaveBeenCalledWith(1, { host_id: HOST, limit: 100 }, expect.any(AbortSignal));
     expect(api.getFinding).not.toHaveBeenCalled();
 
     await user.click(state);
     await user.click(await screen.findByRole('option', { name: 'Retest here' }));
-    await waitFor(() => expect(api.setFindingEndpointStatus).toHaveBeenCalledWith(7, 31, 'retest'));
+    await waitFor(() => expect(api.setFindingEndpointStatus).toHaveBeenCalledWith(1, 7, 31, 'retest'));
     expect(api.getFinding).not.toHaveBeenCalled();
   });
 
@@ -360,13 +362,13 @@ describe('HostFindingsCard', () => {
     renderCard();
 
     const state = await screen.findByLabelText('State of Weak TLS on this host');
-    await waitFor(() => expect(api.getFinding).toHaveBeenCalledWith(7, expect.any(AbortSignal)));
+    await waitFor(() => expect(api.getFinding).toHaveBeenCalledWith(1, 7, expect.any(AbortSignal)));
     await user.click(state);
     await user.click(await screen.findByRole('option', { name: 'Retest here' }));
     // Every one of this host's six rows — the sixth was not in the preview.
     await waitFor(() => expect(api.setFindingEndpointStatus).toHaveBeenCalledTimes(6));
-    expect(api.setFindingEndpointStatus).toHaveBeenCalledWith(7, 45, 'retest');
-    expect(api.setFindingEndpointStatus).not.toHaveBeenCalledWith(7, 90, 'retest');
+    expect(api.setFindingEndpointStatus).toHaveBeenCalledWith(1, 7, 45, 'retest');
+    expect(api.setFindingEndpointStatus).not.toHaveBeenCalledWith(1, 7, 90, 'retest');
   });
 
   it('does not read findings whose preview is already every endpoint', async () => {

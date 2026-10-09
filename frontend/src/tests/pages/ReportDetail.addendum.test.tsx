@@ -29,6 +29,8 @@ vi.mock('../../contexts/ToastContext', () => ({
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 1, username: 'admin' }, hasPermission: () => true }),
 }));
+// The project on screen: every request names it first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1, name: 'P' } }) }));
 
 import ReportDetail, { evidenceRecordsNotPrintedNotice, evidenceRecordsNotice } from '../../pages/ReportDetail';
 

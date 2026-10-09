@@ -65,9 +65,9 @@ describe('Activity — opening a notification', () => {
 // 5.351.0 — the page told the top bar through a window event
 // (`nm:notifications-marked-read`) that Layout listened for.  Marking read
 // now says the bell's count is out of date; this stands in for the bell's
-// read, which is the reader's whatever the project (a GLOBAL key).
+// read, which is the reader's whatever the project (its key names none).
 describe('Activity — the bell follows a notification marked read', () => {
-  const bell = () => readsOnScreen({ getUnreadNotificationCount: 'the bell’s count' }, { global: ['getUnreadNotificationCount'] });
+  const bell = () => readsOnScreen({ getUnreadNotificationCount: 'the bell’s count' });
   const openPage = async (ReadsOnScreen: React.FC) => {
     getNotifications.mockResolvedValue({
       notifications: [note({ id: 1, title: 'First' }), note({ id: 2, title: 'Second' })], total: 2, unread_count: 2,

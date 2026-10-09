@@ -2,7 +2,7 @@
  * The current project's members — the ONE loader for every owner / assignee
  * picker and for @mention autocomplete and highlighting.
  *
- * One query per project (`['listProjectMembers']`, lib/query), shared by
+ * One query per project (`['listProjectMembers', projectId]`), shared by
  * everything on the page and kept for a few minutes whether or not anything
  * shows it; after that the next reader asks again (a member added mid-session
  * appears without a reload).  A failure is not kept: the next reader, or
@@ -17,7 +17,7 @@ import { useCallback, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { listProjectMembers, type ProjectMember } from '../services/api';
-import { useProject } from '../contexts/ProjectContext';
+import { NO_PROJECT, useProjectId } from './useProjectId';
 import { queryClient, rememberFor } from '../lib/query';
 import type { MentionCandidate } from '../utils/mentions';
 
@@ -43,12 +43,12 @@ export interface ProjectRoster {
 /** `enabled: false` asks for nothing yet (a menu not opened, a role that has
  *  no picker); the status stays `loading`. */
 export function useProjectRoster({ enabled = true }: { enabled?: boolean } = {}): ProjectRoster {
-  const { currentProject } = useProject();
-  const on = enabled && currentProject?.id != null;
+  const projectId = useProjectId();
+  const on = enabled && projectId !== NO_PROJECT;
   const query = useQuery({
-    queryKey: ['listProjectMembers'],
+    queryKey: ['listProjectMembers', projectId],
     queryFn: async ({ signal }) => {
-      const rows = await listProjectMembers(signal);
+      const rows = await listProjectMembers(projectId, signal);
       return Array.isArray(rows) ? rows : EMPTY;
     },
     enabled: on,

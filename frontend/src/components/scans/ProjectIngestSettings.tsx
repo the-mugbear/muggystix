@@ -14,7 +14,7 @@ import { useLocation } from 'react-router-dom';
 import { updateProjectIngestSettings } from '../../services/api';
 import { useProject } from '../../contexts/ProjectContext';
 import { useToast } from '../../contexts/ToastContext';
-import { GLOBAL, invalidateReads } from '../../lib/query';
+import { invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import PostureSection from '../posture/PostureSection';
 import { Label } from '../ui/label';
@@ -35,7 +35,7 @@ export const ProjectIngestSettings: React.FC<{ canEdit: boolean }> = ({ canEdit 
     // — before the save is said to be done.
     onSuccess: async (updated, { next }) => {
       // The server's answer first: a failed re-read must not flip the switch back.
-      queryClient.setQueryData<Array<{ id: number }>>([GLOBAL, 'getProjects'], (list) => (
+      queryClient.setQueryData<Array<{ id: number }>>(['getProjects'],(list) => (
         list?.map((p) => (p.id === updated.id ? { ...p, ...updated } : p))
       ));
       await invalidateReads(queryClient, 'getProjects');

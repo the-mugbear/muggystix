@@ -40,6 +40,8 @@ vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
 // A global admin by default (server paths shown); tests switch to a member.
 const auth = vi.hoisted(() => ({ user: { id: 99, username: 'admin', full_name: 'Administrator', role: 'admin' } as Record<string, unknown> }));
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: auth.user }) }));
+// The project on screen: every request names it first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1, name: 'P' } }) }));
 
 import * as api from '../../services/api';
 import Reports from '../../pages/Reports';
@@ -106,7 +108,7 @@ describe('Reports list', () => {
 
     mocked.createClientReport.mockResolvedValue(report({ id: 11, kind: 'addendum' }));
     fireEvent.click(screen.getByRole('button', { name: /New addendum to #2/ }));
-    await waitFor(() => expect(mocked.createClientReport).toHaveBeenCalledWith({ kind: 'addendum' }));
+    await waitFor(() => expect(mocked.createClientReport).toHaveBeenCalledWith(1, { kind: 'addendum' }));
     expect(navigateSpy).toHaveBeenCalledWith('/reports/11');
   });
 
@@ -153,7 +155,7 @@ describe('Reports list', () => {
     const input = screen.getByLabelText('New title for draft #12');
     fireEvent.change(input, { target: { value: 'Internal network — round 2' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(12, { title: 'Internal network — round 2' }));
+    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 12,{ title: 'Internal network — round 2' }));
     expect(await screen.findByRole('link', { name: 'Internal network — round 2' })).toBeInTheDocument();
     expect(screen.queryByText('(same title)')).not.toBeInTheDocument();
   });
@@ -192,11 +194,11 @@ describe('Report detail — draft', () => {
     mocked.downloadReportJob.mockResolvedValue({ truncated: false });
     renderDetail();
     fireEvent.click(await screen.findByRole('button', { name: 'Preview Word' }));
-    await waitFor(() => expect(mocked.previewClientReport).toHaveBeenCalledWith(5, 'docx'));
+    await waitFor(() => expect(mocked.previewClientReport).toHaveBeenCalledWith(1, 5, 'docx'));
     // The job is asked about two seconds after it was queued (the page's own
     // poll, `pollEvery`).
     fireEvent.click(await screen.findByRole('button', { name: 'Download the Word preview' }, { timeout: 4000 }));
-    await waitFor(() => expect(mocked.downloadReportJob).toHaveBeenCalledWith(70));
+    await waitFor(() => expect(mocked.downloadReportJob).toHaveBeenCalledWith(1, 70));
   });
 
   // 5.352.0 (owner) — a status poll that fails was silent: the button went on
@@ -258,7 +260,7 @@ describe('Report detail — draft', () => {
     fireEvent.change(await screen.findByLabelText('Executive summary'), { target: { value: 'Two criticals.' } });
     expect(screen.getByRole('button', { name: /Issue report/ })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(5, expect.objectContaining({
+    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5,expect.objectContaining({
       executive_summary: 'Two criticals.', title: 'Example report',
     })));
     await waitFor(() => expect(screen.getByRole('button', { name: /Issue report/ })).toBeEnabled());
@@ -277,7 +279,7 @@ describe('Report detail — draft', () => {
     expect(mocked.issueClientReport).not.toHaveBeenCalled();
     confirmMock.mockResolvedValueOnce(true);
     fireEvent.click(issue);
-    await waitFor(() => expect(mocked.issueClientReport).toHaveBeenCalledWith(5));
+    await waitFor(() => expect(mocked.issueClientReport).toHaveBeenCalledWith(1, 5));
     expect(await screen.findByText('Issued #3')).toBeInTheDocument();
   });
 });
@@ -327,7 +329,7 @@ describe('Report detail — issued', () => {
     renderDetail();
     expect(await screen.findByText('Quarto failed')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Render again/ }));
-    await waitFor(() => expect(mocked.rerenderClientReport).toHaveBeenCalledWith(5));
+    await waitFor(() => expect(mocked.rerenderClientReport).toHaveBeenCalledWith(1, 5));
   });
 });
 
@@ -386,7 +388,7 @@ describe('Report detail — layout review (v5.286.0)', () => {
     fireEvent.change(await screen.findByLabelText('Executive summary'), { target: { value: 'Not saved yet.' } });
     fireEvent.keyDown(screen.getByRole('combobox', { name: 'Template' }), { key: 'Enter' });
     fireEvent.click(await screen.findByRole('option', { name: 'Brief report' }));
-    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(5, { template: 'brief' }));
+    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5,{ template: 'brief' }));
     expect(screen.getByLabelText('Executive summary')).toHaveValue('Not saved yet.');
   });
 
@@ -412,7 +414,7 @@ describe('Report detail — layout review (v5.286.0)', () => {
     expect(screen.getByDisplayValue('Administrator')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Add yourself/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(5, expect.objectContaining({
+    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5,expect.objectContaining({
       settings: expect.objectContaining({ testers: [{ user_id: 99, name: 'Administrator', role: null, email: null }] }),
     })));
   });
@@ -457,7 +459,7 @@ describe('Report detail — TODOs and the team (v5.263.0)', () => {
     await waitFor(() => expect(screen.getByDisplayValue('Ben')).toBeInTheDocument());
     expect(screen.queryByDisplayValue('Ana')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(5, expect.objectContaining({
+    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5,expect.objectContaining({
       settings: expect.objectContaining({ testers: [
         { user_id: 1, name: 'Ana (edited)', role: 'Lead', email: null },
         { user_id: 2, name: 'Ben', role: 'Tester', email: 'ben@example.com' },
@@ -632,7 +634,7 @@ describe('Template images', () => {
     await listPage();
     const file = new File(['png'], 'square.png', { type: 'image/png' });
     fireEvent.change(screen.getByLabelText('Upload Company logo'), { target: { files: [file] } });
-    await waitFor(() => expect(mocked.uploadReportTemplateAsset).toHaveBeenCalledWith('pentest', 'logo', file));
+    await waitFor(() => expect(mocked.uploadReportTemplateAsset).toHaveBeenCalledWith(1, 'pentest', 'logo', file));
     expect(await screen.findByText('Uploaded')).toBeInTheDocument();
     expect(screen.getByText(/this place is shaped 3.4:1/)).toBeInTheDocument();
     expect(screen.getByText(/Uploaded by admin/).textContent).toMatch(/500 × 500 px, 4 KB · square.png/);
@@ -643,7 +645,7 @@ describe('Template images', () => {
       warnings: [],
     });
     fireEvent.click(screen.getByRole('button', { name: 'Remove upload' }));
-    await waitFor(() => expect(mocked.removeReportTemplateAsset).toHaveBeenCalledWith('pentest', 'logo'));
+    await waitFor(() => expect(mocked.removeReportTemplateAsset).toHaveBeenCalledWith(1, 'pentest', 'logo'));
     expect(await screen.findByText('Not installed · optional')).toBeInTheDocument();
   });
 

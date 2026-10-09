@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { Loader2, Tag } from 'lucide-react';
 
 import { getHostNames, HostNameBinding } from '../services/api';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -53,9 +54,10 @@ const BindingRow: React.FC<{ b: HostNameBinding }> = ({ b }) => (
 );
 
 const HostNamesCard: React.FC<HostNamesCardProps> = ({ hostId }) => {
+  const projectId = useProjectId();
   const query = useQuery({
-    queryKey: ['getHostNames', hostId],
-    queryFn: ({ signal }) => getHostNames(hostId, signal),
+    queryKey: ['getHostNames', projectId, hostId],
+    queryFn: ({ signal }) => getHostNames(projectId, hostId, signal),
   });
   const data = query.data ?? null;
   const loading = query.isPending;

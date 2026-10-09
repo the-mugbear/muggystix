@@ -25,6 +25,7 @@ import { updateHostTest } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
 import { useListCursor } from '../../hooks/useListCursor';
+import { useProjectId } from '../../hooks/useProjectId';
 import { formatApiError } from '../../utils/apiErrors';
 import { TEST_KINDS, TEST_KIND_LABEL } from '../../utils/operationsTabs';
 import { formatRelativeTime } from '../../utils/relativeTime';
@@ -84,6 +85,7 @@ export const MyTestsTable: React.FC<MyTestsTableProps> = ({
   const { user } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
+  const projectId = useProjectId();
   // After a claim (or its undo): the list and the page's counts are read
   // again, in place (5.351.0 — there is no `onChanged` for the parent to wire).
   const changed = useOperationsChanged();
@@ -99,13 +101,13 @@ export const MyTestsTable: React.FC<MyTestsTableProps> = ({
 
   const undoClaim = useMutation({
     mutationFn: (claimed: { test_id: number; revision: number }) =>
-      updateHostTest(claimed.test_id, { assigned_to_id: null, expected_revision: claimed.revision }),
+      updateHostTest(projectId, claimed.test_id, { assigned_to_id: null, expected_revision: claimed.revision }),
     onSuccess: changed,
     onError: (err) => toast.error(formatApiError(err, 'Could not undo the claim.')),
   });
   const claiming = useMutation({
     mutationFn: ({ test, userId }: { test: MyTaskItem; userId: number }) =>
-      updateHostTest(test.test_id, { assigned_to_id: userId, expected_revision: test.revision }),
+      updateHostTest(projectId, test.test_id, { assigned_to_id: userId, expected_revision: test.revision }),
     onSuccess: (claimed, { test }) => {
       // Undoable: the test was unassigned before the claim.
       toast.success("Claimed — it's now in your assigned tests", {

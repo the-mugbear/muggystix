@@ -5,9 +5,9 @@
  * which the pickers showed as "No members".
  *
  * 5.351.0 — the cache is the query cache: readers share it when they are
- * under one client (one render here; every `render` has a client of its own),
- * and "per project" is the cache scope the real ProjectProvider sets, which
- * `switchTo` sets here in its place.
+ * under one client (one render here; every `render` has a client of its own).
+ * 5.353.0 — "per project" is the key: `['listProjectMembers', projectId]`,
+ * the project `useProject` gives when the hook renders.
  */
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -20,12 +20,10 @@ vi.mock('../../contexts/ProjectContext', () => ({
 }));
 
 import { resetProjectMembersCache, useProjectMembers, useProjectRoster } from '../../hooks/useProjectMembers';
-import { getQueryScope, setQueryScope } from '../../lib/query';
 
-/** What ProjectProvider does on a switch: the project, and the cache scope with it. */
+/** A project switch: what `useProject` gives on the next render. */
 const switchTo = (id: number) => {
   project.id = id;
-  setQueryScope({ ...getQueryScope(), projectId: id });
 };
 
 const member = (user_id: number, username: string | null, full_name: string | null = null) => ({
@@ -111,6 +109,9 @@ describe('useProjectRoster', () => {
     rerender();
     await waitFor(() => expect(result.current.members).toEqual([ANA]));
     expect(listProjectMembers).toHaveBeenCalledTimes(2);
+    // Each request named the project it was for.
+    expect(listProjectMembers).toHaveBeenNthCalledWith(1, 1, expect.any(AbortSignal));
+    expect(listProjectMembers).toHaveBeenNthCalledWith(2, 2, expect.any(AbortSignal));
   });
 
   it('asks for nothing until it is enabled', async () => {

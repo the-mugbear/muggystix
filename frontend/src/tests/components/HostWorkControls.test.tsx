@@ -23,7 +23,7 @@ import { readsOnScreen } from '../helpers/readsOnScreen';
 import { AssigneeControl, TagControl } from '../../components/host-inspector/HostWorkControls';
 
 // What is on screen behind the inspector when it is the Hosts page's side
-// sheet.  (The host in the sheet is `['getHost', hostId]`, read again as
+// sheet.  (The host in the sheet is `['getHost', projectId, hostId]`, read again as
 // before — by its own id, which a stand-in for "any read of that name" does
 // not carry.)
 const { reread, ReadsOnScreen } = readsOnScreen({
@@ -43,7 +43,7 @@ describe('HostWorkControls — a write is read back wherever the host is shown',
     api.bulkTagHosts.mockResolvedValue({ affected: 1 });
     render(<><ReadsOnScreen /><TagControl hostId={5} canEdit tags={[{ id: 3, name: 'web', color: null }]} /></>);
     fireEvent.click(screen.getByRole('button', { name: 'Remove tag web' }));
-    await waitFor(() => expect(api.bulkTagHosts).toHaveBeenCalledWith([5], { tag_ids: [3], action: 'remove' }));
+    await waitFor(() => expect(api.bulkTagHosts).toHaveBeenCalledWith(1, [5], { tag_ids: [3], action: 'remove' }));
     await waitFor(() => expect(asked()).toEqual(everything));
   });
 
@@ -53,7 +53,7 @@ describe('HostWorkControls — a write is read back wherever the host is shown',
     render(<><ReadsOnScreen /><AssigneeControl hostId={5} canEdit assignees={[]} /></>);
     await user.click(screen.getByRole('button', { name: 'Assign this host' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Assign to me' }));
-    await waitFor(() => expect(api.bulkAssignHosts).toHaveBeenCalledWith([5], 7));
+    await waitFor(() => expect(api.bulkAssignHosts).toHaveBeenCalledWith(1, [5], 7));
     await waitFor(() => expect(asked()).toEqual(everything));
   });
 

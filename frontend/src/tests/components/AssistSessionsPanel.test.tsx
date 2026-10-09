@@ -13,6 +13,9 @@ vi.mock('../../services/api', () => ({
   endAgentSession: (...args: unknown[]) => endAgentSession(...args),
 }));
 
+// The project the panel is shown in (the sessions' own): End names it first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1 } }) }));
+
 const success = vi.fn();
 const error = vi.fn();
 vi.mock('../../contexts/ToastContext', () => ({
@@ -118,7 +121,7 @@ describe('AssistSessionsPanel', () => {
     // Revoking a key mid-conversation is disruptive enough to confirm.
     fireEvent.click(await screen.findByRole('button', { name: /^end session$/i }));
 
-    await waitFor(() => expect(endAgentSession).toHaveBeenCalledWith(12));
+    await waitFor(() => expect(endAgentSession).toHaveBeenCalledWith(1, 12));
     // The lists of sessions are read again — once — and the caller is told.
     await waitFor(() => expect(reread).toHaveBeenCalledWith('sessions'));
     await waitFor(() => expect(onEnded).toHaveBeenCalledTimes(1));
@@ -199,7 +202,7 @@ describe('AssistSessionsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: /end agent session 72/i }));
     expect(await screen.findByText(/Paste this to it first/)).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: /^end session$/i }));
-    await waitFor(() => expect(endAgentSession).toHaveBeenCalledWith(72));
+    await waitFor(() => expect(endAgentSession).toHaveBeenCalledWith(1, 72));
   });
 
   it('every row can be opened and ended: a session has one id, so none lacks it', () => {

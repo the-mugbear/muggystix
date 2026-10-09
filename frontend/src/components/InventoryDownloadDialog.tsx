@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from './ui/dialog';
 import { pollEvery, queryErrorText } from '../lib/query';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
@@ -76,6 +77,7 @@ const JOB_POLL_MS = 2500;
 const jobError = (job: ReportJob) => job.error_message || job.last_error || null;
 
 const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open, onClose, filters, totalHosts }) => {
+  const projectId = useProjectId();
   const queryClient = useQueryClient();
   // The JSON job started from this dialog.  Its row in the list below is the
   // source of truth for status; this id only decides which job gets the
@@ -97,8 +99,8 @@ const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open,
   // only, slower while failing) so it advances queued → preparing → ready
   // without a manual refresh; with none running nothing polls.
   const jobsQuery = useQuery({
-    queryKey: ['listReportJobs', RECENT_JOBS],
-    queryFn: ({ signal }) => listReportJobs(RECENT_JOBS, signal),
+    queryKey: ['listReportJobs', projectId, RECENT_JOBS],
+    queryFn: ({ signal }) => listReportJobs(projectId, RECENT_JOBS, signal),
     enabled: open,
     ...pollEvery((query) => (holdsRunningJob(query.state.data) ? JOB_POLL_MS : null)),
   });
@@ -115,20 +117,20 @@ const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open,
   const activeFilters = useMemo(() => describeInventoryFilters(filters), [filters]);
 
   const csv = useMutation({
-    mutationFn: () => downloadInventoryCsv(filters),
+    mutationFn: () => downloadInventoryCsv(projectId, filters),
     onMutate: () => setError(null),
     onSuccess: () => onClose(),
     onError: (err) => setError(formatApiError(err, 'The CSV could not be downloaded.')),
   });
 
   const json = useMutation({
-    mutationFn: () => enqueueInventoryJson(filters),
+    mutationFn: () => enqueueInventoryJson(projectId, filters),
     onMutate: () => setError(null),
     onSuccess: (job) => {
       setTrackedJobId(job.id);
       // Listed at once; the re-read then says what the server holds.
       queryClient.setQueryData<ReportJob[]>(
-        ['listReportJobs', RECENT_JOBS], (prev) => [job, ...(prev ?? []).filter((j) => j.id !== job.id)],
+        ['listReportJobs', projectId, RECENT_JOBS], (prev) => [job, ...(prev ?? []).filter((j) => j.id !== job.id)],
       );
       void refreshRecentJobs();
     },
@@ -138,7 +140,7 @@ const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open,
   // One way to fetch a finished file, for the panel and for a row: a refusal
   // (the file expired, the role changed) is said, never an unhandled rejection.
   const download = useMutation({
-    mutationFn: ({ job }: { job: ReportJob; closeAfter: boolean }) => downloadReportJob(job.id),
+    mutationFn: ({ job }: { job: ReportJob; closeAfter: boolean }) => downloadReportJob(projectId, job.id),
     onMutate: () => setError(null),
     onSuccess: (_file, { closeAfter }) => {
       if (closeAfter) {
@@ -157,13 +159,13 @@ const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open,
   // just claimed a queued job) — say so and refresh, so the row is true.
   const jobAction = useMutation({
     mutationFn: ({ action, jobId }: { action: 'retry' | 'cancel'; jobId: number }) =>
-      (action === 'retry' ? retryReportJob(jobId) : cancelReportJob(jobId)),
+      (action === 'retry' ? retryReportJob(projectId, jobId) : cancelReportJob(projectId, jobId)),
     onError: (err) => setError(formatApiError(err, 'That could not be done — the job may have changed state.')),
     onSettled: () => { void refreshRecentJobs(); },
   });
 
   const dismiss = useMutation({
-    mutationFn: (jobId: number) => dismissReportJob(jobId),
+    mutationFn: (jobId: number) => dismissReportJob(projectId, jobId),
     onSuccess: () => { void refreshRecentJobs(); },
     // Said (R34): the ✕ used to do nothing on a refusal.
     onError: (err) => setError(formatApiError(err, 'That job could not be dismissed.')),

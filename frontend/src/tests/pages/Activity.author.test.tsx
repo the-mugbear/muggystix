@@ -56,9 +56,9 @@ beforeEach(() => {
 describe('Collaboration — author filter in the URL', () => {
   it('?author=me asks both feeds for the signed-in account’s messages', async () => {
     renderAt('/activity?author=me');
-    await waitFor(() => expect(getNoteActivity).toHaveBeenCalledWith(expect.objectContaining({ author_id: 7 }), expect.any(AbortSignal)));
+    await waitFor(() => expect(getNoteActivity).toHaveBeenCalledWith(91, expect.objectContaining({ author_id: 7 }), expect.any(AbortSignal)));
     await waitFor(() => expect(getFindingDiscussions).toHaveBeenCalledWith(
-      expect.objectContaining({ author_id: 7 }), expect.anything(),
+      91, expect.objectContaining({ author_id: 7 }), expect.anything(),
     ));
     expect(await screen.findByRole('combobox', { name: 'Author' })).toHaveTextContent('Mine');
     // The link's parameter is kept as it was given.
@@ -67,17 +67,19 @@ describe('Collaboration — author filter in the URL', () => {
 
   it('?author=<id> filters to that author; no parameter asks for everyone', async () => {
     const first = renderAt('/activity?author=2');
-    await waitFor(() => expect(getNoteActivity).toHaveBeenCalledWith(expect.objectContaining({ author_id: 2 }), expect.any(AbortSignal)));
+    await waitFor(() => expect(getNoteActivity).toHaveBeenCalledWith(91, expect.objectContaining({ author_id: 2 }), expect.any(AbortSignal)));
     first.unmount();
     getNoteActivity.mockClear();
     renderAt('/activity');
     await waitFor(() => expect(getNoteActivity).toHaveBeenCalled());
-    expect(getNoteActivity.mock.calls[0][0]).not.toHaveProperty('author_id');
+    expect(getNoteActivity.mock.calls[0][0]).toBe(91);
+    expect(getNoteActivity.mock.calls[0][1]).not.toHaveProperty('author_id');
   });
 
   it('ignores a value that is neither "me" nor an id', async () => {
     renderAt('/activity?author=%27%3B--');
     await waitFor(() => expect(getNoteActivity).toHaveBeenCalled());
-    expect(getNoteActivity.mock.calls[0][0]).not.toHaveProperty('author_id');
+    expect(getNoteActivity.mock.calls[0][0]).toBe(91);
+    expect(getNoteActivity.mock.calls[0][1]).not.toHaveProperty('author_id');
   });
 });

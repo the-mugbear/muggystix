@@ -77,7 +77,7 @@ describe('Ingestion Results — the counts are the filter', () => {
     const chip = await screen.findByRole('button', { name: /Needs attention\s*2/ });
     expect(chip).toHaveAttribute('aria-pressed', 'true');
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'needs_attention' }), expect.any(AbortSignal),
+      1, expect.objectContaining({ status: 'needs_attention' }), expect.any(AbortSignal),
     ));
   });
 
@@ -89,12 +89,12 @@ describe('Ingestion Results — the counts are the filter', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Failed\s*3/ }));
     await waitFor(() => expect(screen.getByRole('button', { name: /Failed\s*3/ })).toHaveAttribute('aria-pressed', 'true'));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: 'failed' }), expect.any(AbortSignal),
+      1, expect.objectContaining({ status: 'failed' }), expect.any(AbortSignal),
     ));
     fireEvent.click(screen.getByRole('button', { name: /Failed\s*3/ }));
     await waitFor(() => expect(screen.getByRole('button', { name: /All uploads/ })).toHaveAttribute('aria-pressed', 'true'));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: undefined }), expect.any(AbortSignal),
+      1, expect.objectContaining({ status: undefined }), expect.any(AbortSignal),
     ));
   });
 
@@ -131,7 +131,7 @@ describe('Ingestion Results — a partial import', () => {
     expect(await screen.findByText(/hosts after this point are MISSING/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
-    await waitFor(() => expect(api.dismissIngestionJob).toHaveBeenCalledWith(9));
+    await waitFor(() => expect(api.dismissIngestionJob).toHaveBeenCalledWith(1, 9));
     // …and the list reloads, so the row shows its new state.
     await waitFor(() => expect(api.getIngestionResults.mock.calls.length).toBeGreaterThan(1));
   });
@@ -164,7 +164,9 @@ describe('Ingestion Results — a partial import', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Dismiss' }));
     await waitFor(() => expect(api.dismissIngestionJob).toHaveBeenCalledTimes(2));
     // The ids on screen — not the already-dismissed row, not "everything matching".
-    expect(api.dismissIngestionJob.mock.calls.map((c) => c[0])).toEqual([9, 11]);
+    // Each in the project the page was showing.
+    expect(api.dismissIngestionJob.mock.calls.map((c) => c[0])).toEqual([1, 1]);
+    expect(api.dismissIngestionJob.mock.calls.map((c) => c[1])).toEqual([9, 11]);
   });
 
   it('offers no bulk dismiss on the unfiltered list', async () => {
@@ -225,7 +227,7 @@ describe('Ingestion Results — rows readable without expanding', () => {
     expect(screen.getByRole('button', { name: /All uploads\s*40/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Expired\s*31/ }));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: 'expired' }), expect.any(AbortSignal),
+      1, expect.objectContaining({ status: 'expired' }), expect.any(AbortSignal),
     ));
     expect(screen.getByRole('button', { name: /Discarded\s*2/ })).toBeInTheDocument();
   });
@@ -262,7 +264,7 @@ describe('Ingestion Results — rows readable without expanding', () => {
 
   it('asks for 25 rows a page and sits in a section, not a card', async () => {
     renderPage();
-    await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(expect.objectContaining({ limit: 25 }), expect.any(AbortSignal)));
+    await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(1, expect.objectContaining({ limit: 25 }), expect.any(AbortSignal)));
     expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
   });
 
@@ -311,14 +313,14 @@ describe('Ingestion Results — superseded failures and specific reasons', () =>
     const chip = await screen.findByRole('button', { name: /Superseded\s*4/ });
     fireEvent.click(chip);
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'superseded' }), expect.any(AbortSignal),
+      1, expect.objectContaining({ status: 'superseded' }), expect.any(AbortSignal),
     ));
 
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss 1 superseded' }));
     const dialog = await screen.findByRole('dialog');
     expect(api.dismissSupersededJobs).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Dismiss 1' }));
-    await waitFor(() => expect(api.dismissSupersededJobs).toHaveBeenCalledWith([478]));
+    await waitFor(() => expect(api.dismissSupersededJobs).toHaveBeenCalledWith(1, [478]));
   });
 
   // Browser walkthrough 2026-09-24: "Dismiss 1 superseded" sat beside
@@ -330,7 +332,7 @@ describe('Ingestion Results — superseded failures and specific reasons', () =>
     expect(screen.queryByRole('button', { name: /^Dismiss \d+ superseded$/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Review 4 superseded' }));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'superseded' }), expect.any(AbortSignal),
+      1, expect.objectContaining({ status: 'superseded' }), expect.any(AbortSignal),
     ));
   });
 

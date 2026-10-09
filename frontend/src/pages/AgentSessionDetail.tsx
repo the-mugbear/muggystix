@@ -34,6 +34,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { formatTimestamp } from '../utils/relativeTime';
 import { safeFallback } from '../utils/uiStyles';
@@ -81,9 +82,10 @@ const AgentSessionDetail: React.FC = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
   const id = Number(sessionId);
   const validId = Number.isFinite(id) && id > 0;
+  const projectId = useProjectId();
   const session = useQuery({
-    queryKey: ['getAgentSession', id],
-    queryFn: ({ signal }) => getAgentSession(id, signal),
+    queryKey: ['getAgentSession', projectId, id],
+    queryFn: ({ signal }) => getAgentSession(projectId, id, signal),
     enabled: validId,
   });
   const row = session.data ?? null;
@@ -91,8 +93,8 @@ const AgentSessionDetail: React.FC = () => {
   // The notes are their own read: when it fails, the session, its controls
   // and its calls still show.
   const written = useQuery({
-    queryKey: ['getAgentSessionNotes', rowId],
-    queryFn: ({ signal }) => getAgentSessionNotes(rowId as number, undefined, signal),
+    queryKey: ['getAgentSessionNotes', projectId, rowId],
+    queryFn: ({ signal }) => getAgentSessionNotes(projectId, rowId as number, undefined, signal),
     enabled: rowId != null,
   });
   const notesError = queryErrorText(written.error, 'Could not load the session’s notes.');

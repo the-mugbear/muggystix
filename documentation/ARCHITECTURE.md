@@ -561,6 +561,8 @@ frontend/src/
 │   ├── useListQuery.ts      # a "Show more" list (on useInfiniteQuery; error distinct from empty; options for the
 │   │                        # previous filter's rows staying dimmed, the last response, de-duplication by id)
 │   ├── usePagedList.ts, useUrlPage.ts  # one page of a list at a time (on useQuery); its page kept in the address (?page=)
+│   ├── useProjectId.ts      # the current project's id, read while rendering: the first argument of a
+│   │                        # project-scoped API function and of its query key
 │   ├── useJobPoll.ts        # follow a server-side job from its POST's answer until it is finished (useJobPolls: several)
 │   ├── useDebouncedValue.ts, useKeyboardShortcuts.ts
 │   └── useConfirm.tsx       # destructive-action confirmation dialog
@@ -575,8 +577,9 @@ frontend/src/
 ├── data/                    # uploadFormats.ts — test-pinned to documentation/UPLOAD_FORMATS.md
 ├── lib/
 │   └── query.ts             # SERVER STATE (v5.351.0): the TanStack Query client and its defaults (no retry, nothing
-│                            # kept after unmount, never paused offline), the cache scope (per user + project, in the
-│                            # key's hash), GLOBAL, pollEvery, invalidateReads, useLastSettled, SECRET_MUTATION. Reads are useQuery, writes useMutation;
+│                            # kept after unmount, never paused offline), pollEvery,
+│                            # invalidateReads, useLastSettled, SECRET_MUTATION. Reads are useQuery, writes useMutation;
+│                            # the PROJECT is an argument of every project-scoped API function (5.353.0) and so of its key;
 │                            # an API function is called only inside a queryFn / mutationFn (lint: eslint-rules/)
 ├── utils/                   # pure helpers (no HTTP client) — `ls` is the source; notably:
 │   ├── uiStyles.ts          # safeFallback + stickyBelowChrome (truncation is Tailwind + cn())

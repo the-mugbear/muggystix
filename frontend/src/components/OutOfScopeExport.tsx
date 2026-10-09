@@ -5,6 +5,7 @@ import { downloadTextFile } from '../utils/download';
 import { queryErrorText } from '../lib/query';
 import { Copy, Download, Loader2, ShieldOff } from 'lucide-react';
 import { getOutOfScopeHostList } from '../services/api';
+import { useProjectId } from '../hooks/useProjectId';
 import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
 import {
@@ -42,8 +43,9 @@ export default function OutOfScopeExport({ open, onClose }: OutOfScopeExportProp
   const [copied, setCopied] = useState(false);
   // Asked for by the button, so a mutation: its answer is the list shown, and
   // asking again starts from nothing.
+  const projectId = useProjectId();
   const generate = useMutation({
-    mutationFn: (format: ExportFormat) => getOutOfScopeHostList(format),
+    mutationFn: (format: ExportFormat) => getOutOfScopeHostList(projectId, format),
     onError: (err) => console.error('Error fetching out-of-scope hosts:', err),
   });
   // The format the text on screen was MADE in — the request's own argument,

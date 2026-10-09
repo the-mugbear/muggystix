@@ -12,10 +12,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
 import {
-  addRemediationNote, deleteRemediationNote, listRemediationEvents, type RemediationEvent,
+  addRemediationNote, deleteRemediationNote, listRemediationEvents, type RemediationEvent, type RemediationMount,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useConfirm } from '../../hooks/useConfirm';
+import { useProjectId } from '../../hooks/useProjectId';
 import { queryErrorText, useLastSettled } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { formatDate, formatTimestamp } from '../../utils/relativeTime';
@@ -118,9 +119,12 @@ const Entry: React.FC<{
 const TimelineBody: React.FC<{
   hostId: number;
   canWrite: boolean;
-  projectId?: number;
+  /** The host's project. */
+  projectId: number;
+  /** `'overview'` on the cross-project page; left out, the project's own routes. */
+  mount?: RemediationMount;
   confirm: ReturnType<typeof useConfirm>[1];
-}> = ({ hostId, canWrite, projectId, confirm }) => {
+}> = ({ hostId, canWrite, projectId, mount, confirm }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [note, setNote] = useState('');
@@ -129,11 +133,11 @@ const TimelineBody: React.FC<{
   const [limit, setLimit] = useState(PAGE);
 
   const query = useQuery({
-    queryKey: ['listRemediationEvents', hostId, { limit }, projectId],
-    queryFn: ({ signal }) => listRemediationEvents(hostId, { limit }, signal, projectId),
+    queryKey: ['listRemediationEvents', projectId, hostId, { limit }, mount],
+    queryFn: ({ signal }) => listRemediationEvents(projectId, hostId, { limit }, mount, signal),
   });
   // The entries stay on screen while more are asked for, and when that fails.
-  const page = useLastSettled(query.data) ?? null;
+  const page = useLastSettled(query.data, { resetKey: projectId }) ?? null;
   const events = page ? page.items : null;
   const total = page ? page.total : 0;
   const error = queryErrorText(query.error, 'The timeline could not be loaded.');
@@ -160,10 +164,10 @@ const TimelineBody: React.FC<{
   };
 
   const adding = useMutation({
-    mutationFn: (body: string) => addRemediationNote({
+    mutationFn: (body: string) => addRemediationNote(projectId, {
       host_id: hostId, body,
       ...(when ? { occurred_at: new Date(when).toISOString() } : {}),
-    }, projectId),
+    }, mount),
     // The button stays busy until the list shows the note.
     onSuccess: () => {
       setNote('');
@@ -180,7 +184,7 @@ const TimelineBody: React.FC<{
   };
 
   const removing = useMutation({
-    mutationFn: (event: RemediationEvent) => deleteRemediationNote(event.id, projectId),
+    mutationFn: (event: RemediationEvent) => deleteRemediationNote(projectId, event.id, mount),
     onSuccess: () => reread(Math.max(PAGE, events?.length ?? 0)),
   });
   const remove = async (event: RemediationEvent) => {
@@ -269,6 +273,10 @@ export const RemediationTimeline: React.FC<{
   projectId?: number;
 }> = ({ host, canWrite, onClose, projectId }) => {
   const [confirmDialog, confirm] = useConfirm();
+  // Given a project (the cross-project page): that one, through the overview
+  // mount.  Not given: the project on screen, through its own routes.
+  const currentProjectId = useProjectId();
+  const mount: RemediationMount | undefined = projectId != null ? 'overview' : undefined;
 
   return (
     <SideSheet open={host != null} onOpenChange={(v) => { if (!v) onClose(); }}>
@@ -285,7 +293,7 @@ export const RemediationTimeline: React.FC<{
         <SideSheetBody>
           {host && (
             <TimelineBody key={`${projectId ?? ''}:${host.host_id}`} hostId={host.host_id} canWrite={canWrite}
-              projectId={projectId} confirm={confirm} />
+              projectId={projectId ?? currentProjectId} mount={mount} confirm={confirm} />
           )}
         </SideSheetBody>
       </SideSheetContent>

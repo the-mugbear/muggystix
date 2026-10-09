@@ -52,6 +52,7 @@ import LastUpdated from '../components/LastUpdated';
 import { ListPageSkeleton } from '../components/PageSkeleton';
 import { useToast } from '../contexts/ToastContext';
 import { useProject } from '../contexts/ProjectContext';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
@@ -154,6 +155,7 @@ export default function Scans() {
   const navigate = useNavigate();
   const toast = useToast();
   const queryClient = useQueryClient();
+  const projectId = useProjectId();
   const [confirmDialog, confirm] = useConfirm();
   const invalidate = useCallback((names: readonly string[]) => {
     void invalidateReads(queryClient, ...names);
@@ -175,9 +177,9 @@ export default function Scans() {
   // blanket wipe.
   const deleteId = scanToDelete?.id ?? null;
   const impactQuery = useQuery({
-    queryKey: ['getScanDeletionImpact', deleteId],
+    queryKey: ['getScanDeletionImpact', projectId, deleteId],
     queryFn: async ({ signal }) => {
-      const impact = await getScanDeletionImpact(deleteId as number, signal);
+      const impact = await getScanDeletionImpact(projectId, deleteId as number, signal);
       // An answer that is not about this scan is not a summary of it.
       if (impact?.scan_id !== deleteId) throw new Error('The removal summary is not about this scan.');
       return impact;
@@ -249,13 +251,13 @@ export default function Scans() {
     return autoRefresh ? AUTO_QUEUE_POLL_MS : null;
   };
   const recentQuery = useQuery({
-    queryKey: ['getRecentIngestionJobs', 25],
-    queryFn: ({ signal }) => getRecentIngestionJobs(25, signal),
+    queryKey: ['getRecentIngestionJobs', projectId, 25],
+    queryFn: ({ signal }) => getRecentIngestionJobs(projectId, 25, signal),
     ...pollEvery((query) => queuePollMs(query.state.data)),
   });
   const stagedQuery = useQuery({
-    queryKey: ['getStagedIngestionJobs'],
-    queryFn: ({ signal }) => getStagedIngestionJobs(signal),
+    queryKey: ['getStagedIngestionJobs', projectId],
+    queryFn: ({ signal }) => getStagedIngestionJobs(projectId, signal),
     ...pollEvery(queuePollMs(recentQuery.data)),
   });
   // The two are shown together, so the queue never appears first without the
@@ -400,11 +402,11 @@ export default function Scans() {
   // said as one (it used to read "No scans uploaded yet").
   const historyQuery = useInfiniteQuery<HistoryPage, unknown, InfiniteData<HistoryPage, number>, unknown[], number>({
     queryKey: showBatchFiles
-      ? ['getScans', { ...listFilters, sortBy, sortOrder, unbatched: false }, { limit: SCAN_LIMIT }]
-      : ['getImportHistory', listFilters, { limit: HISTORY_PAGE }],
+      ? ['getScans', projectId, { ...listFilters, sortBy, sortOrder, unbatched: false }, { limit: SCAN_LIMIT }]
+      : ['getImportHistory', projectId, listFilters, { limit: HISTORY_PAGE }],
     queryFn: async ({ pageParam, signal }) => {
       if (showBatchFiles) {
-        const files = await getScans(pageParam, SCAN_LIMIT, {
+        const files = await getScans(projectId, pageParam, SCAN_LIMIT, {
           ...listFilters, sortBy, sortOrder, unbatched: false, signal,
         });
         return {
@@ -412,10 +414,10 @@ export default function Scans() {
           hasMore: files.length === SCAN_LIMIT,
         };
       }
-      const page = await getImportHistory({
+      const page = await getImportHistory(projectId, {
         ...listFilters, ...(pageParam > 0 ? { skip: pageParam } : {}), limit: HISTORY_PAGE, signal,
       });
-      const rows = await hydrateHistoryRows(page.items, listFilters, { getScans, getScanBatches });
+      const rows = await hydrateHistoryRows(projectId, page.items, listFilters, { getScans, getScanBatches });
       return {
         flat: false, entries: page.items, scans: rows.scans, batches: rows.batches, partial: rows.partial,
         total: typeof page.total === 'number' ? page.total : null,
@@ -472,8 +474,8 @@ export default function Scans() {
   // read: a failure here must not block the table.  When it fails its counts
   // are shown as not known, never as the previous filter's or the loaded rows'.
   const summaryQuery = useQuery({
-    queryKey: ['getScansSummary', listFilters],
-    queryFn: ({ signal }) => getScansSummary({ ...listFilters, signal }),
+    queryKey: ['getScansSummary', projectId, listFilters],
+    queryFn: ({ signal }) => getScansSummary(projectId, { ...listFilters, signal }),
     placeholderData: keepPreviousData,
   });
   const summaryFailed = summaryQuery.isError || (summaryQuery.isPending && summaryQuery.errorUpdateCount > 0);
@@ -592,7 +594,7 @@ export default function Scans() {
   // The import results of files that just finished: a lookup by id, asked
   // once per batch of finished files.
   const { mutateAsync: lookUpResults } = useMutation({
-    mutationFn: (ids: number[]) => getScans(0, ids.length, { ids }),
+    mutationFn: (ids: number[]) => getScans(projectId, 0, ids.length, { ids }),
   });
 
   // v5.222.0 — the banner entry that submitted a job follows it: queued /
@@ -678,8 +680,8 @@ export default function Scans() {
   // 4 s while the tab is visible.  It was one GET per job on a fixed interval:
   // 30 files meant 30 requests a tick, and a hidden tab kept going.
   const followedQuery = useQuery({
-    queryKey: ['getIngestionJobsByIds', activeJobIds],
-    queryFn: ({ signal }) => getIngestionJobsByIds(activeJobIds, signal),
+    queryKey: ['getIngestionJobsByIds', projectId, activeJobIds],
+    queryFn: ({ signal }) => getIngestionJobsByIds(projectId, activeJobIds, signal),
     enabled: activeJobIds.length > 0,
     ...pollEvery(4000),
   });
@@ -708,8 +710,8 @@ export default function Scans() {
   // count + newest-id marker (one indexed query) while the tab is visible;
   // the first answer is the baseline.
   const markerQuery = useQuery({
-    queryKey: ['getScanInventoryMarker'],
-    queryFn: ({ signal }) => getScanInventoryMarker(signal),
+    queryKey: ['getScanInventoryMarker', projectId],
+    queryFn: ({ signal }) => getScanInventoryMarker(projectId, signal),
     ...pollEvery(15_000),
   });
   const markerKey = markerQuery.data ? markerKeyOf(markerQuery.data) : null;
@@ -828,7 +830,7 @@ export default function Scans() {
   const { refetch: reloadMarker } = markerQuery;
   const deletion = useMutation({
     mutationFn: ({ scan, confirmed }: { scan: Scan; confirmed: boolean }) =>
-      (confirmed ? deleteScan(scan.id, { confirmHostsWithWork: true }) : deleteScan(scan.id)),
+      (confirmed ? deleteScan(projectId, scan.id, { confirmHostsWithWork: true }) : deleteScan(projectId, scan.id)),
     onSuccess: (_result, { scan }) => {
       toast.success(`Scan "${scan.filename}" deleted.`);
       setDeleteDialogOpen(false);
@@ -882,7 +884,7 @@ export default function Scans() {
   // change or go.
   const jobsReRead = () => invalidateReads(queryClient, ...INGESTION_JOB_READS);
   const discardStaged = useMutation({
-    mutationFn: (ids: number[]) => discardStagedJobs(ids),
+    mutationFn: (ids: number[]) => discardStagedJobs(projectId, ids),
     onSuccess: (res, ids) => {
       const n = ids.length;
       toast.info(
@@ -896,7 +898,7 @@ export default function Scans() {
   });
   const discardJob = useMutation({
     mutationKey: QUEUE_JOB_ACTION,
-    mutationFn: (job: IngestionJob) => discardIngestionJob(job.id),
+    mutationFn: (job: IngestionJob) => discardIngestionJob(projectId, job.id),
     onSuccess: () => {
       toast.info('Staged upload discarded');
       return jobsReRead();
@@ -905,7 +907,7 @@ export default function Scans() {
   });
   const cancelJob = useMutation({
     mutationKey: QUEUE_JOB_ACTION,
-    mutationFn: (job: IngestionJob) => cancelIngestionJob(job.id),
+    mutationFn: (job: IngestionJob) => cancelIngestionJob(projectId, job.id),
     onSuccess: () => {
       toast.info('Ingestion cancelled');
       return jobsReRead();
@@ -914,7 +916,7 @@ export default function Scans() {
   });
   const retryJob = useMutation({
     mutationKey: QUEUE_JOB_ACTION,
-    mutationFn: (job: IngestionJob) => retryIngestionJob(job.id),
+    mutationFn: (job: IngestionJob) => retryIngestionJob(projectId, job.id),
     onSuccess: () => {
       toast.info('Re-queued for parsing');
       return jobsReRead();
@@ -925,7 +927,7 @@ export default function Scans() {
   });
   const dismissJob = useMutation({
     mutationKey: QUEUE_JOB_ACTION,
-    mutationFn: (job: IngestionJob) => dismissIngestionJob(job.id),
+    mutationFn: (job: IngestionJob) => dismissIngestionJob(projectId, job.id),
     onSuccess: () => jobsReRead(),
     onError: (err) => toast.error(formatApiError(err, 'Could not dismiss the failed import')),
   });
@@ -2270,9 +2272,10 @@ export default function Scans() {
  */
 export const ScanCommandDetail: React.FC<{ scan: Scan }> = ({ scan }) => {
   const hasCommand = !!(scan.command_line && scan.command_line.trim());
+  const projectId = useProjectId();
   const explained = useQuery({
-    queryKey: ['getScanCommandExplanation', scan.id],
-    queryFn: ({ signal }) => getScanCommandExplanation(scan.id, signal),
+    queryKey: ['getScanCommandExplanation', projectId, scan.id],
+    queryFn: ({ signal }) => getScanCommandExplanation(projectId, scan.id, signal),
     enabled: hasCommand,
     ...rememberFor(30 * 60_000),
     // This query's own lifecycle: the answer is remembered for the visit, so a

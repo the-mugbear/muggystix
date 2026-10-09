@@ -21,6 +21,8 @@ const getAgentSessionByLegacyAssistId = vi.fn();
 vi.mock('../../services/api', () => ({
   getAgentSessionByLegacyAssistId: (...a: unknown[]) => getAgentSessionByLegacyAssistId(...a),
 }));
+// The project the old link is opened in: the look-up names it first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1 } }) }));
 
 const Where = () => {
   const loc = useLocation();
@@ -55,7 +57,7 @@ describe('AssistSessions (redirect)', () => {
     getAgentSessionByLegacyAssistId.mockResolvedValue({ kind: 'project', id: 72, project_id: 1, status: 'ended' });
     renderAt('52');
     expect(await screen.findByTestId('where')).toHaveTextContent('/agent-sessions/72');
-    expect(getAgentSessionByLegacyAssistId).toHaveBeenCalledWith(52, expect.any(AbortSignal));
+    expect(getAgentSessionByLegacyAssistId).toHaveBeenCalledWith(1, 52, expect.any(AbortSignal));
   });
 
   it('opens a legacy assist session too: it has the same page now', async () => {

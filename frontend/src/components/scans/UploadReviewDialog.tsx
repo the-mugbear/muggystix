@@ -7,6 +7,7 @@ import { ACCEPTED_EXTENSIONS, ACCEPTED_EXTENSION_LIST, SUPPORTED_FORMATS } from 
 import {
   BASIS_LABEL, otherFormats, useUploadReview, isImportable, type ReviewRow, type StagedJobRef, type StartedUpload,
 } from '../../hooks/useUploadReview';
+import { useProjectId } from '../../hooks/useProjectId';
 import type { FormatOption } from '../../services/api';
 import { cn } from '../../utils/cn';
 import { IMPORT_SETTINGS_ANCHOR } from './ProjectIngestSettings';
@@ -70,7 +71,8 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
   onViewScan,
   resume,
 }) => {
-  const review = useUploadReview({ skipInformational, onStarted });
+  const projectId = useProjectId();
+  const review = useUploadReview({ projectId, skipInformational, onStarted });
   const { rows, addStaged } = review;
   useEffect(() => {
     if (open && resume && resume.jobs.length > 0) void addStaged(resume.jobs);

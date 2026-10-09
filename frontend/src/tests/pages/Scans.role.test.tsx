@@ -157,7 +157,7 @@ describe('Scans — a queue action is sent once', () => {
     await waitFor(() => expect(button(name)).toBeDisabled());
     fireEvent.click(button(name));
     expect(api[fn]).toHaveBeenCalledTimes(1);
-    expect(api[fn]).toHaveBeenCalledWith(id);
+    expect(api[fn]).toHaveBeenCalledWith(1, id);
     // Only this job's controls: the rest of the queue is still the reader's.
     expect(button(/Retry failed ingestion for other.xml/)).toBeEnabled();
     expect(button(/Cancel ingestion for waiting.xml/)).toBeEnabled();
@@ -222,7 +222,7 @@ describe('Scans — a queue action is sent once', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Discard 1' }));
     await waitFor(() => expect(button(/^Discard 1 staged$/)).toBeDisabled());
     expect(api.discardStagedJobs).toHaveBeenCalledTimes(1);
-    expect(api.discardStagedJobs).toHaveBeenCalledWith([3]);
+    expect(api.discardStagedJobs).toHaveBeenCalledWith(1, [3]);
     expect(button(/Discard staged upload staged.xml/)).toBeDisabled();
     expect(button(/Retry failed ingestion for broken.xml/)).toBeEnabled();
 

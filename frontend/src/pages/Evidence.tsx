@@ -33,6 +33,7 @@ import { useToast } from '../contexts/ToastContext';
 import { copyToClipboard } from '../utils/clipboard';
 import { agentInstruction } from '../utils/agentRuns';
 import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -95,9 +96,10 @@ const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ sel
   const toast = useToast();
   // One gap's hosts: another cell is another read, and never shows the
   // previous cell's hosts while it loads.
+  const projectId = useProjectId();
   const gapsQuery = useQuery({
-    queryKey: ['getEvidenceGaps', selection.domain, { segment: selection.segment }],
-    queryFn: ({ signal }) => getEvidenceGaps(selection.domain, { segment: selection.segment, signal }),
+    queryKey: ['getEvidenceGaps', projectId, selection.domain, { segment: selection.segment }],
+    queryFn: ({ signal }) => getEvidenceGaps(projectId, selection.domain, { segment: selection.segment, signal }),
   });
   const gaps = gapsQuery.data ?? null;
   const loading = gapsQuery.isPending;
@@ -382,11 +384,12 @@ const EvidenceLead: React.FC<{
 
 const Evidence: React.FC = () => {
   // One project's coverage: another project's (or its selected cell) never
-  // stays on screen — the cache is partitioned by project, and `Layout`
-  // remounts the page per project.
+  // stays on screen — the key names the project, and `Layout` remounts the
+  // page per project.
+  const projectId = useProjectId();
   const coverage = useQuery({
-    queryKey: ['getEvidenceCoverage'],
-    queryFn: ({ signal }) => getEvidenceCoverage({ signal }),
+    queryKey: ['getEvidenceCoverage', projectId],
+    queryFn: ({ signal }) => getEvidenceCoverage(projectId, { signal }),
   });
   const data = coverage.data ?? null;
   const loading = coverage.isFetching;

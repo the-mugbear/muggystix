@@ -22,6 +22,7 @@ import {
   compareScans,
   getScans,
 } from '../services/api';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { TableSkeleton } from '../components/PageSkeleton';
@@ -308,9 +309,10 @@ const ScanPicker: React.FC = () => {
   const navigate = useNavigate();
   const [aSel, setASel] = useState<string>('');
   const [bSel, setBSel] = useState<string>('');
+  const projectId = useProjectId();
   const list = useQuery({
-    queryKey: ['getScans', {}, { limit: 200 }],
-    queryFn: ({ signal }) => getScans(0, 200, { signal }),
+    queryKey: ['getScans', projectId, {}, { limit: 200 }],
+    queryFn: ({ signal }) => getScans(projectId, 0, 200, { signal }),
   });
   const scans: Scan[] | null = list.data ?? null;
   const error = queryErrorText(list.error, 'Failed to load scans.');
@@ -399,9 +401,10 @@ const ScanDiff: React.FC = () => {
   const bId = bRaw ? parseInt(bRaw, 10) : NaN;
   const haveParams = !Number.isNaN(aId) && !Number.isNaN(bId) && aId !== bId;
 
+  const projectId = useProjectId();
   const comparison = useQuery({
-    queryKey: ['compareScans', aId, bId],
-    queryFn: ({ signal }) => compareScans(aId, bId, signal),
+    queryKey: ['compareScans', projectId, aId, bId],
+    queryFn: ({ signal }) => compareScans(projectId, aId, bId, signal),
     enabled: haveParams,
   });
   const diff: ScanDiffResponse | null = haveParams ? comparison.data ?? null : null;

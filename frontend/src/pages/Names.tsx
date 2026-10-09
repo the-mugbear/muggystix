@@ -18,6 +18,7 @@ import {
   NamesSummary,
   NameStateFilter,
 } from '../services/api';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useToast } from '../contexts/ToastContext';
 import { invalidateReads, queryErrorText } from '../lib/query';
@@ -239,6 +240,7 @@ const NAME_READS = ['listNames', 'getNamesSummary'] as const;
 const ImportDialog: React.FC<ImportDialogProps> = ({ open, onOpenChange }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const projectId = useProjectId();
   const [text, setText] = useState('');
   const [declareScope, setDeclareScope] = useState(false);
   const [includeSub, setIncludeSub] = useState(false);
@@ -252,7 +254,7 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onOpenChange }) => {
   );
 
   const importing = useMutation({
-    mutationFn: (body: NameImportRequest) => importNames(body),
+    mutationFn: (body: NameImportRequest) => importNames(projectId, body),
     onMutate: () => setFileError(null),
     onSuccess: (res) => {
       const parts = [`${res.names_created} new`, `${res.names_existing} already known`];
@@ -434,10 +436,11 @@ const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, 
   const toast = useToast();
   const queryClient = useQueryClient();
   const [confirmDialog, confirm] = useConfirm();
+  const projectId = useProjectId();
 
   const query = useQuery({
-    queryKey: ['getName', nameId],
-    queryFn: ({ signal }) => getName(nameId as number, signal),
+    queryKey: ['getName', projectId, nameId],
+    queryFn: ({ signal }) => getName(projectId, nameId as number, signal),
     enabled: nameId != null,
     // Only for the sheet that is closing (no name): it keeps the name it
     // showed while it slides out.  Another name starts from nothing.
@@ -448,7 +451,7 @@ const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, 
   const error = nameId != null ? queryErrorText(query.error, 'Name could not be loaded.') : null;
 
   const remove = useMutation({
-    mutationFn: (name: NameDetail) => deleteName(name.id),
+    mutationFn: (name: NameDetail) => deleteName(projectId, name.id),
     onSuccess: (_void, name) => {
       toast.success(`Deleted ${name.fqdn}`);
       void invalidateReads(queryClient, ...NAME_READS);
@@ -641,6 +644,7 @@ const Names: React.FC = () => {
   // The PROJECT role (R32).  Data egress — the server gates at AUDITOR+ (same
   // policy as the Hosts tool-ready export); this only hides the affordance.
   const { canWrite: canEdit, canExport } = useProjectRole();
+  const projectId = useProjectId();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [state, setState] = useState<NameStateFilter>((searchParams.get('state') as NameStateFilter) || 'all');
@@ -652,8 +656,8 @@ const Names: React.FC = () => {
   // new filter it is the first page at once (usePagedList).
   const list = usePagedList<NameRow>(
     'listNames',
-    ({ offset, limit, signal }) => listNames({ skip: offset, limit, search: debouncedSearch, state }, signal),
-    [state, debouncedSearch],
+    ({ offset, limit, signal }) => listNames(projectId, { skip: offset, limit, search: debouncedSearch, state }, signal),
+    [projectId, state, debouncedSearch],
     { pageSize: PAGE_SIZE, errorMessage: 'Failed to load names.', page: useUrlPage() },
   );
   const { page, setPage, loading, error } = list;
@@ -686,8 +690,8 @@ const Names: React.FC = () => {
   // A failed summary is said (R34): the chips used to lose their counts with
   // nothing to tell "no counts" from "could not be loaded".
   const summaryQuery = useQuery({
-    queryKey: ['getNamesSummary'],
-    queryFn: ({ signal }) => getNamesSummary(signal),
+    queryKey: ['getNamesSummary', projectId],
+    queryFn: ({ signal }) => getNamesSummary(projectId, signal),
   });
   const summaryError = queryErrorText(summaryQuery.error, 'The counts could not be loaded.');
   // Counts that could not be re-read are not shown as if they had been.
@@ -712,7 +716,7 @@ const Names: React.FC = () => {
 
   const exportList = useMutation({
     mutationFn: (format: 'txt' | 'csv') =>
-      exportNames(format, { search: debouncedSearch.trim() || undefined, state }),
+      exportNames(projectId, format, { search: debouncedSearch.trim() || undefined, state }),
     onError: (err) => toast.error(formatApiError(err, 'Failed to export names.')),
   });
   const exporting = exportList.isPending ? exportList.variables : null;

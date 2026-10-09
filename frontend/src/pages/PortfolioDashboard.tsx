@@ -10,7 +10,7 @@ import {
   getPortfolioDashboard,
   ProjectCard,
 } from '../services/api';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { useProject } from '../contexts/ProjectContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatStatusLabel } from '../utils/statusMeta';
@@ -237,7 +237,7 @@ const PortfolioDashboard: React.FC = () => {
   const { hasRole } = useAuth();
 
   const query = useQuery({
-    queryKey: [GLOBAL, 'getPortfolioDashboard'],
+    queryKey: ['getPortfolioDashboard'],
     queryFn: ({ signal }) => getPortfolioDashboard(signal),
   });
   const data = query.data ?? null;

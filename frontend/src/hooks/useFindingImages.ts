@@ -21,7 +21,7 @@
  * `ready`, `failed`.  "Not one of this finding's images" may only be said
  * when the list is `ready`.
  *
- * The list is a query (`['getFindingImages', findingId]`, lib/query).  The
+ * The list is a query (`['getFindingImages', projectId, findingId]`, lib/query).  The
  * object URLs are NOT server state and are this hook's: it makes them, and
  * it must revoke them.
  *
@@ -38,6 +38,7 @@ import {
   EvidenceImages, IMAGE_FETCH_CONCURRENCY, ImageListStatus, ImageThumbnails,
 } from '../utils/evidenceImages';
 import { runLimited } from '../utils/runLimited';
+import { useProjectId } from './useProjectId';
 
 export interface FindingImagesDeps {
   getFindingImages: typeof getFindingImages;
@@ -77,12 +78,13 @@ export function useFindingImages(
   injected?: FindingImagesDeps,
 ): FindingImagesState {
   const deps = useMemo(() => injected ?? defaultDeps(), [injected]);
+  const projectId = useProjectId();
   // The list: one query per finding, so another finding's first render is
   // already "loading" and a late answer for the one the page left lands
   // nowhere.
   const list = useQuery({
-    queryKey: ['getFindingImages', findingId],
-    queryFn: ({ signal }) => deps.getFindingImages(findingId as number, signal),
+    queryKey: ['getFindingImages', projectId, findingId],
+    queryFn: ({ signal }) => deps.getFindingImages(projectId, findingId as number, signal),
     enabled: findingId != null,
   });
   const images = list.data?.items ?? NO_IMAGES;
@@ -98,7 +100,7 @@ export function useFindingImages(
   // not a read to cache: what comes back is an object URL this hook must
   // revoke), a few at a time from the queue below.
   const { mutateAsync: fetchBytes } = useMutation({
-    mutationFn: (id: number) => deps.getNoteAttachmentObjectUrl(id),
+    mutationFn: (id: number) => deps.getNoteAttachmentObjectUrl(projectId, id),
     gcTime: 0,
   });
   const [urls, setUrls] = useState<Record<number, string>>({});

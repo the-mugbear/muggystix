@@ -22,10 +22,11 @@ import {
   type RemediationRow, type RemediationState, type RemediationTeam,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
-import { GLOBAL, holdProject, queryErrorText } from '../../lib/query';
+import { queryErrorText } from '../../lib/query';
 import { copyToClipboard } from '../../utils/clipboard';
 import { saveBlob } from '../../utils/download';
 import { usePagedList } from '../../hooks/usePagedList';
+import { useProjectId } from '../../hooks/useProjectId';
 import { useUrlPage } from '../../hooks/useUrlPage';
 import { useListCursor } from '../../hooks/useListCursor';
 import { formatDate } from '../../utils/relativeTime';
@@ -104,6 +105,10 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
 }) => {
   const toast = useToast();
   const across = scope === 'all';
+  // The project page's own project, read while rendering: the list, the
+  // contacts, the teams and every page of the CSV are asked of it.  (Across
+  // projects nothing here reads it; `projectId` below is that page's filter.)
+  const currentProjectId = useProjectId();
   const [params, setParams] = useSearchParams();
 
   // A value the page does not know (a typo, an old link) is the default,
@@ -201,12 +206,11 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     across ? 'listRemediationOverview' : 'listRemediation',
     ({ offset, limit, signal }) => {
       const query = { ...filters, group, offset, limit };
-      return across ? listRemediationOverview(query, signal) : listRemediation(query, signal);
+      return across ? listRemediationOverview(query, signal) : listRemediation(currentProjectId, query, signal);
     },
-    [filters, group, pageSize, view === 'rows'],
-    // Across projects the rows are not one project's: a GLOBAL key, like the
-    // contacts and the teams below.
-    { pageSize, errorMessage: 'The remediation list could not be loaded.', page: urlPage, global: across },
+    // Across projects the rows are not one project's, and the key names none.
+    across ? [filters, group, pageSize, view === 'rows'] : [currentProjectId, filters, group, pageSize, view === 'rows'],
+    { pageSize, errorMessage: 'The remediation list could not be loaded.', page: urlPage },
   );
   const rows = list.rows ?? NO_ROWS;
   const counts = list.lastResponse?.state_counts ?? null;
@@ -217,21 +221,21 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [list.lastResponse]);
 
-  // The contacts and the teams, each read only while its view is open.
+  // The contacts and the teams, each read only while its view is open.  The
+  // project page asks its own project; across projects it is the chosen one,
+  // or none (`null`) for every project.
+  const asked = across ? projectId : currentProjectId;
+  const every = across ? 'all' : undefined;
   const people = useQuery({
-    queryKey: across
-      ? [GLOBAL, 'listRemediationContacts', 'all', projectId ?? undefined]
-      : ['listRemediationContacts', undefined, projectId ?? undefined],
-    queryFn: ({ signal }) => listRemediationContacts(across ? 'all' : undefined, projectId ?? undefined, signal),
+    queryKey: ['listRemediationContacts', asked, every],
+    queryFn: ({ signal }) => listRemediationContacts(asked, every, signal),
     enabled: view === 'contacts',
   });
   const contacts = people.data ?? NO_CONTACTS;
 
   const groups = useQuery({
-    queryKey: across
-      ? [GLOBAL, 'listRemediationTeams', 'all', projectId ?? undefined]
-      : ['listRemediationTeams', undefined, projectId ?? undefined],
-    queryFn: ({ signal }) => listRemediationTeams(across ? 'all' : undefined, projectId ?? undefined, signal),
+    queryKey: ['listRemediationTeams', asked, every],
+    queryFn: ({ signal }) => listRemediationTeams(asked, every, signal),
     enabled: view === 'teams',
   });
   const teams = groups.data ?? NO_TEAMS;
@@ -265,15 +269,13 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     mutationFn: async (): Promise<{ all: RemediationRow[]; total: number }> => {
       const all: RemediationRow[] = [];
       let total = Infinity;
-      // One project's rows only: a page asked for after the reader switched
-      // project would be the other project's (the cross-project list names
-      // no project in its address and is not held).
-      const stillHere = across ? () => {} : holdProject();
-      // The same filters, 200 rows a call, one call at a time.
+      // The same filters, 200 rows a call, one call at a time.  Every page
+      // is asked of the project this list was showing when the export began
+      // (`currentProjectId`, read while rendering), whatever the reader
+      // selects meanwhile.
       while (all.length < Math.min(total, CSV_MAX_ROWS)) {
         const query = { ...filters, group, offset: all.length, limit: 200 };
-        const next = await (across ? listRemediationOverview(query) : listRemediation(query));
-        stillHere();
+        const next = await (across ? listRemediationOverview(query) : listRemediation(currentProjectId, query));
         total = next.total;
         if (next.items.length === 0) break;
         all.push(...next.items);

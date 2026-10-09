@@ -11,14 +11,14 @@ import { describe, it, expect, vi } from 'vitest';
 const { put } = vi.hoisted(() => ({
   put: vi.fn((..._args: unknown[]) => Promise.resolve({ data: { template: {}, warnings: [] } })),
 }));
-vi.mock('../../services/api/client', () => ({ api: { put }, p: () => '/projects/7' }));
+vi.mock('../../services/api/client', () => ({ api: { put }, projectPath: (id: number) => `/projects/${id}` }));
 
 import { uploadReportTemplateAsset } from '../../services/api/client-reports';
 
 describe('uploadReportTemplateAsset', () => {
   it('puts the file as multipart form data to the asset’s path', async () => {
     const file = new File(['png'], 'logo.png', { type: 'image/png' });
-    await uploadReportTemplateAsset('pentest', 'logo', file);
+    await uploadReportTemplateAsset(7, 'pentest', 'logo', file);
     const [url, body, config] = put.mock.calls[0] as [string, FormData, { headers?: Record<string, string> }];
     expect(url).toBe('/projects/7/client-reports/templates/pentest/assets/logo');
     expect(body).toBeInstanceOf(FormData);

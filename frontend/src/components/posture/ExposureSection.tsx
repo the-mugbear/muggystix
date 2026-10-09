@@ -18,6 +18,7 @@ import { Link } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 
 import { getDashboardStats, getProjectCoverage } from '../../services/api';
+import { useProjectId } from '../../hooks/useProjectId';
 import { queryErrorText } from '../../lib/query';
 import { buildHostsUrl } from '../../utils/drilldownLinks';
 import { InfoTip } from '../ui/info-tip';
@@ -40,8 +41,15 @@ const ScopeStateLink: React.FC<{ n: number | undefined; q: string; label: string
 const ExposureSection: React.FC = () => {
   // Two reads, each half on its own.  The page's Refresh reaches them by
   // name (`getDashboardStats`, `getProjectCoverage`).
-  const statsQuery = useQuery({ queryKey: ['getDashboardStats'], queryFn: ({ signal }) => getDashboardStats(signal) });
-  const coverageQuery = useQuery({ queryKey: ['getProjectCoverage'], queryFn: ({ signal }) => getProjectCoverage(signal) });
+  const projectId = useProjectId();
+  const statsQuery = useQuery({
+    queryKey: ['getDashboardStats', projectId],
+    queryFn: ({ signal }) => getDashboardStats(projectId, signal),
+  });
+  const coverageQuery = useQuery({
+    queryKey: ['getProjectCoverage', projectId],
+    queryFn: ({ signal }) => getProjectCoverage(projectId, signal),
+  });
   // A failed count is said BEFORE anything else below (the error branch comes
   // first), so an old bar is never shown under it: it would read as current.
   const stats = statsQuery.data ?? null;

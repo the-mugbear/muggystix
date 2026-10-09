@@ -12,6 +12,7 @@ import { acceptProposal, Proposal, rejectProposal } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { invalidateReads } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
+import { useProjectId } from './useProjectId';
 
 /** What a decision puts out of date, by API function: the lists of proposals
  *  (the Proposals page, a finding's own), the pending counts (the top bar),
@@ -48,14 +49,15 @@ export type OnProposalDecided = (updated: Proposal, reread: Promise<void>) => vo
 
 export const useProposalDecision = (pr: Proposal, onDecided?: OnProposalDecided): ProposalDecision => {
   const toast = useToast();
+  const projectId = useProjectId();
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<string | null>(null);
   const [rejecting, setRejecting] = useState<string | null>(null);
 
   const deciding = useMutation({
     mutationFn: (decision: Decision) => (decision.action === 'accept'
-      ? acceptProposal(pr.id, decision.editedValue !== undefined ? { editedValue: decision.editedValue } : {})
-      : rejectProposal(pr.id, decision.note?.trim() || undefined)),
+      ? acceptProposal(projectId, pr.id, decision.editedValue !== undefined ? { editedValue: decision.editedValue } : {})
+      : rejectProposal(projectId, pr.id,decision.note?.trim() || undefined)),
     onSuccess: (updated, { action }) => {
       setEditing(null);
       setRejecting(null);

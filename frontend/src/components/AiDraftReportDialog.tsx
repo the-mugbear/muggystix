@@ -16,11 +16,13 @@ import {
 import {
   draftReportWithAI,
   listLLMProviders,
+  type DraftReportRequest,
   type DraftReportResponse,
   type LLMProviderEntry,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { useProjectId } from '../hooks/useProjectId';
+import { queryErrorText } from '../lib/query';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -80,10 +82,11 @@ const wasCancelled = (err: unknown): boolean => {
 const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ open, onClose, onUse, useLabel }) => {
   const navigate = useNavigate();
   const toast = useToast();
+  const projectId = useProjectId();
 
   // The providers are the installation's, read each time the dialog opens.
   const providersQuery = useQuery({
-    queryKey: [GLOBAL, 'listLLMProviders'],
+    queryKey: ['listLLMProviders'],
     queryFn: ({ signal }) => listLLMProviders(signal),
     enabled: open,
   });
@@ -104,10 +107,10 @@ const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ open, onClose
   // Cancel is the operator's: the request in flight is theirs to stop.
   const abortRef = useRef<AbortController | null>(null);
   const generate = useMutation({
-    mutationFn: (request: Parameters<typeof draftReportWithAI>[0]) => {
+    mutationFn: (request: DraftReportRequest) => {
       const controller = new AbortController();
       abortRef.current = controller;
-      return draftReportWithAI(request, { signal: controller.signal });
+      return draftReportWithAI(projectId, request, { signal: controller.signal });
     },
     onMutate: () => setEdited(null),
     onSuccess: (res) => {

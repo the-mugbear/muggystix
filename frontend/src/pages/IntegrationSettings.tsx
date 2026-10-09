@@ -24,7 +24,7 @@ import {
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
 import { Button } from '../components/ui/button';
@@ -116,13 +116,13 @@ const IntegrationSettings: React.FC = () => {
   const [confirmEl, confirm] = useConfirm();
   const queryClient = useQueryClient();
   // Integrations are the installation's, not a project's (nothing here asks
-  // for one project's): the keys are GLOBAL.
+  // for one project's): the keys name no project.
   const integrationsQuery = useQuery({
-    queryKey: [GLOBAL, 'listIntegrations'],
+    queryKey: ['listIntegrations'],
     queryFn: ({ signal }) => listIntegrations(undefined, signal),
   });
   const typesQuery = useQuery({
-    queryKey: [GLOBAL, 'listIntegrationTypes'],
+    queryKey: ['listIntegrationTypes'],
     queryFn: ({ signal }) => listIntegrationTypes(signal),
   });
   const integrations: IntegrationEntry[] = integrationsQuery.data ?? [];
@@ -238,7 +238,7 @@ const IntegrationSettings: React.FC = () => {
     extra_config: buildExtraConfig(),
   });
 
-  const integrationsChanged = () => queryClient.invalidateQueries({ queryKey: [GLOBAL, 'listIntegrations'] });
+  const integrationsChanged = () => queryClient.invalidateQueries({ queryKey: ['listIntegrations'] });
 
   const save = useMutation({
     // What is saved is what was handed over with the click, not whatever the

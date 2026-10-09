@@ -45,7 +45,8 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { useAuth } from '../contexts/AuthContext';
-import { GLOBAL, invalidateReads, queryErrorText } from '../lib/query';
+import { invalidateReads, queryErrorText } from '../lib/query';
+import { useProjectId } from '../hooks/useProjectId';
 import { notificationHref } from '../utils/notificationLinks';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useListCursor } from '../hooks/useListCursor';
@@ -95,7 +96,7 @@ const NOTES_PAGE_SIZE = 100;
 /** How many unread notifications the panel asks for. */
 const UNREAD_LIMIT = 50;
 /** The reader's unread notifications: theirs, whatever the project. */
-const UNREAD_KEY = [GLOBAL, 'getNotifications', true, UNREAD_LIMIT] as const;
+const UNREAD_KEY = ['getNotifications', true, UNREAD_LIMIT] as const;
 
 const NO_NOTES: NoteActivityItem[] = [];
 const NO_NOTIFICATIONS: NotificationItem[] = [];
@@ -158,6 +159,7 @@ const Activity: React.FC = () => {
   const mentionsFilter = searchParams.get('mentions');
   const mentionsPanelRef = useRef<HTMLDivElement | null>(null);
   const queryClient = useQueryClient();
+  const projectId = useProjectId();
   // The author filter lives in the URL (`?author=<id>` or `?author=me`,
   // 5.329.0), so "my activity" is a link (Operations' "My work" heading
   // carried one until the page became tabs, 5.331.0) and the choice survives
@@ -185,10 +187,10 @@ const Activity: React.FC = () => {
       const params: { limit: number; skip: number; author_id?: number; search?: string } = { limit, skip: offset };
       if (authorFilter) params.author_id = Number(authorFilter);
       if (debouncedSearch) params.search = debouncedSearch;
-      const data = await getNoteActivity(params, signal);
+      const data = await getNoteActivity(projectId, params, signal);
       return { ...data, items: data.notes, total: data.total_notes };
     },
-    [authorFilter, debouncedSearch],
+    [projectId, authorFilter, debouncedSearch],
     { pageSize: NOTES_PAGE_SIZE, errorMessage: 'Failed to load activity.' },
   );
   const notes = noteList.rows ?? NO_NOTES;
@@ -212,8 +214,8 @@ const Activity: React.FC = () => {
     limit: DISCUSSION_LIMIT,
   }), [debouncedSearch, authorFilter]);
   const discussionsQuery = useQuery({
-    queryKey: ['getFindingDiscussions', discussionFilters],
-    queryFn: ({ signal }) => getFindingDiscussions(discussionFilters, signal),
+    queryKey: ['getFindingDiscussions', projectId, discussionFilters],
+    queryFn: ({ signal }) => getFindingDiscussions(projectId, discussionFilters, signal),
   });
   const discussions = discussionsQuery.data ?? null;
   const discussionError = queryErrorText(discussionsQuery.error, 'Finding comments could not be loaded.');
@@ -243,7 +245,7 @@ const Activity: React.FC = () => {
 
   // Opening the page marks the activity FEED seen (the "since last visit"
   // cursor) — once, whatever comes of it.
-  const { mutate: markSeen } = useMutation({ mutationFn: () => markActivitySeen() });
+  const { mutate: markSeen } = useMutation({ mutationFn: () => markActivitySeen(projectId) });
   useEffect(() => { markSeen(); }, [markSeen]);
 
   // A notification leaves the panel at once; the server is told, and the

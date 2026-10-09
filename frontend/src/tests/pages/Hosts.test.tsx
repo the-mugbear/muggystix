@@ -264,7 +264,7 @@ const findHostsTable = () => waitFor(() => {
 describe('Hosts', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockedApi.getHosts.mockImplementation(async (params?: Record<string, any>) => buildHostResponse(params));
+    mockedApi.getHosts.mockImplementation(async (_projectId: number, params?: Record<string, any>) => buildHostResponse(params));
     mockedApi.getHostFilterData.mockResolvedValue({
       common_ports: [],
       services: [],
@@ -323,7 +323,7 @@ describe('Hosts', () => {
     await user.click(screen.getByRole('checkbox', { name: 'Critical' }));
     await user.click(screen.getByRole('button', { name: 'Apply condition' }));
     await waitFor(() => expect(mockedApi.getHosts).toHaveBeenLastCalledWith(
-      expect.objectContaining({ has_critical_vulns: true }), expect.anything(),
+      1, expect.objectContaining({ has_critical_vulns: true }), expect.anything(),
     ));
 
     expect(columnArgs.calls.length).toBeGreaterThan(2);
@@ -364,9 +364,9 @@ describe('Hosts', () => {
     renderHosts();
     await findHostsTable();
     await waitFor(() => expect(mockedApi.getHosts).toHaveBeenCalledWith(
-      expect.objectContaining({ skip: 25, limit: 25 }), expect.anything(),
+      1, expect.objectContaining({ skip: 25, limit: 25 }), expect.anything(),
     ));
-    expect(mockedApi.getHosts.mock.calls.every(([p]) => (p as { skip: number }).skip === 25)).toBe(true);
+    expect(mockedApi.getHosts.mock.calls.every(([, p]) => (p as { skip: number }).skip === 25)).toBe(true);
   });
 
   it('writes the page into the URL, leaves it out for the first page, and a filter change goes back to it', async () => {
@@ -383,7 +383,7 @@ describe('Hosts', () => {
     expect(lastSearch()).toContain('sort_by=critical_vulns');
     // A replacement, never a history entry per page.
     expect(navigateSpy).toHaveBeenLastCalledWith(expect.anything(), { replace: true });
-    expect(mockedApi.getHosts).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 25 }), expect.anything());
+    expect(mockedApi.getHosts).toHaveBeenLastCalledWith(1, expect.objectContaining({ skip: 25 }), expect.anything());
 
     await user.click(screen.getByRole('button', { name: /Add filter/i }));
     await user.click(await screen.findByRole('button', { name: /Scanner severity/ }));
@@ -391,7 +391,7 @@ describe('Hosts', () => {
     await user.click(screen.getByRole('button', { name: 'Apply condition' }));
     await waitFor(() => expect(lastSearch()).toContain('has_critical_vulns=true'));
     expect(lastSearch()).not.toContain('page=');
-    expect(mockedApi.getHosts).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 0 }), expect.anything());
+    expect(mockedApi.getHosts).toHaveBeenLastCalledWith(1, expect.objectContaining({ skip: 0 }), expect.anything());
   });
 
   it('remembers rows per page for the viewer, and works when nothing is stored', async () => {
@@ -399,7 +399,7 @@ describe('Hosts', () => {
     const { unmount } = renderHosts();
     await findHostsTable();
     await waitFor(() => expect(mockedApi.getHosts).toHaveBeenCalledWith(
-      expect.objectContaining({ skip: 0, limit: 50 }), expect.anything(),
+      1, expect.objectContaining({ skip: 0, limit: 50 }), expect.anything(),
     ));
     unmount();
 
@@ -410,7 +410,7 @@ describe('Hosts', () => {
     mockedApi.getHosts.mockClear();
     renderHosts();
     await findHostsTable();
-    expect(mockedApi.getHosts).toHaveBeenCalledWith(expect.objectContaining({ limit: 25 }), expect.anything());
+    expect(mockedApi.getHosts).toHaveBeenCalledWith(1, expect.objectContaining({ limit: 25 }), expect.anything());
   });
 
   // A "service ftp" filter listed hosts whose rows never said FTP: the
@@ -511,7 +511,7 @@ describe('Hosts', () => {
     // request cancellation on rapid filter changes.  Match params
     // explicitly and let the signal pass through.
     expect(mockedApi.getHosts).toHaveBeenCalledWith(
-      expect.objectContaining({ skip: 0, limit: 25, sort_by: 'critical_vulns', sort_order: 'desc' }),
+      1, expect.objectContaining({ skip: 0, limit: 25, sort_by: 'critical_vulns', sort_order: 'desc' }),
       expect.anything(),
     );
   });
@@ -533,7 +533,7 @@ describe('Hosts', () => {
 
     await waitFor(() => {
       expect(mockedApi.getHosts).toHaveBeenLastCalledWith(
-        expect.objectContaining({ has_critical_vulns: true, has_high_vulns: true, skip: 0, limit: 25 }),
+        1, expect.objectContaining({ has_critical_vulns: true, has_high_vulns: true, skip: 0, limit: 25 }),
         expect.anything(),
       );
     });
@@ -556,7 +556,7 @@ describe('Hosts', () => {
 
     await waitFor(() => {
       const calls = mockedApi.getHosts.mock.calls;
-      const lastParams = calls[calls.length - 1][0];
+      const lastParams = calls[calls.length - 1][1];
       expect(lastParams).toMatchObject({ has_critical_vulns: true });
       expect(lastParams.ports).toBeUndefined();
     });
@@ -591,7 +591,7 @@ describe('Hosts', () => {
 
       expect(within(dialog).getByText(/make one the project default/)).toBeInTheDocument();
       await user.click(within(dialog).getByRole('button', { name: 'Set "Web tier" as project default' }));
-      await waitFor(() => expect(mockedApi.promoteProjectDefaultView).toHaveBeenCalledWith(4));
+      await waitFor(() => expect(mockedApi.promoteProjectDefaultView).toHaveBeenCalledWith(1, 4));
 
       await user.click(await within(dialog).findByRole('button', { name: 'Clear project default' }));
       await waitFor(() => expect(mockedApi.clearProjectDefaultView).toHaveBeenCalledTimes(1));
@@ -622,7 +622,7 @@ describe('Hosts', () => {
     });
     const lastParams = () => {
       const calls = mockedApi.getHosts.mock.calls;
-      return calls[calls.length - 1][0];
+      return calls[calls.length - 1][1];
     };
     renderHosts();
 
@@ -689,7 +689,7 @@ describe('Hosts', () => {
     await findHostsTable();
     await waitFor(() => {
       const calls = mockedApi.getHosts.mock.calls;
-      expect(calls[calls.length - 1][0]).toMatchObject({ q: 'has:critical' });
+      expect(calls[calls.length - 1][1]).toMatchObject({ q: 'has:critical' });
     });
     expect(screen.queryByText(/Project default view applied/)).not.toBeInTheDocument();
   });
@@ -704,7 +704,7 @@ describe('Hosts', () => {
     await waitFor(
       () => {
         expect(mockedApi.getHosts).toHaveBeenLastCalledWith(
-          expect.objectContaining({ q: 'port:443' }),
+          1, expect.objectContaining({ q: 'port:443' }),
           expect.anything(),
         );
       },
@@ -719,7 +719,7 @@ describe('Hosts', () => {
   describe('the list follows the address', () => {
     const lastParams = () => {
       const calls = mockedApi.getHosts.mock.calls;
-      return calls[calls.length - 1]?.[0] as Record<string, unknown>;
+      return calls[calls.length - 1]?.[1] as Record<string, unknown>;
     };
 
     it('a new /hosts address while the page is open is a new list, and stays the address', async () => {
@@ -740,7 +740,7 @@ describe('Hosts', () => {
 
     it('a page named by a new address is not cut to the previous list’s last page', async () => {
       // 30 hosts under the first filter (2 pages), 200 under the second.
-      mockedApi.getHosts.mockImplementation(async (params?: Record<string, any>) => (
+      mockedApi.getHosts.mockImplementation(async (_projectId: number, params?: Record<string, any>) => (
         params?.q
           ? { ...buildHostResponse({ ...params, skip: 0 }), total: 200, skip: params.skip }
           : buildHostResponse(params)
@@ -753,7 +753,7 @@ describe('Hosts', () => {
       await waitFor(() => expect(lastParams()).toMatchObject({ q: 'port:22', skip: 75 }));
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(routerState.search).toBe('?q=port%3A22&page=4');
-      expect(mockedApi.getHosts.mock.calls.filter(([p]) => p.q).every(([p]) => p.skip === 75)).toBe(true);
+      expect(mockedApi.getHosts.mock.calls.filter(([, p]) => p.q).every(([, p]) => p.skip === 75)).toBe(true);
     });
 
     it('"hosts with this weakness" in the inspector goes to that address and closes the inspector', async () => {
@@ -809,7 +809,8 @@ describe('Hosts', () => {
       expect(routerState.search).toContain('has_critical_vulns=true');
       expect(routerState.search).toContain('follow_status=in_review');
       expect(mockedApi.getHosts.mock.calls.length).toBeGreaterThan(0);
-      for (const [params] of mockedApi.getHosts.mock.calls) {
+      for (const [projectId, params] of mockedApi.getHosts.mock.calls) {
+        expect(projectId).toBe(1);
         expect(params).toMatchObject({ has_critical_vulns: true, follow_status: 'in_review' });
       }
     });
@@ -828,7 +829,7 @@ describe('Hosts', () => {
 
     const lastCall = () => {
       const calls = mockedApi.getHosts.mock.calls;
-      return calls[calls.length - 1]?.[0] as Record<string, any> | undefined;
+      return calls[calls.length - 1]?.[1] as Record<string, any> | undefined;
     };
     await waitFor(() => {
       expect(lastCall()?.q).toBe('port:443');
@@ -850,7 +851,9 @@ describe('Hosts', () => {
     renderHosts();
     await waitFor(() => expect(mockedApi.getHostFilterData).toHaveBeenCalled());
     const calls = mockedApi.getHostFilterData.mock.calls;
-    const lastParams = calls[calls.length - 1]?.[0] as Record<string, any> | undefined;
+    // (the project, then the conditions the options are counted under)
+    expect(calls[calls.length - 1]?.[0]).toBe(1);
+    const lastParams = calls[calls.length - 1]?.[1] as Record<string, any> | undefined;
     expect(lastParams).toMatchObject({ has_critical_vulns: true });
   });
 
@@ -867,7 +870,7 @@ describe('Hosts', () => {
 
     await waitFor(() => {
       expect(mockedApi.getHosts).toHaveBeenLastCalledWith(
-        expect.objectContaining({ skip: 25, limit: 25, sort_by: 'critical_vulns', sort_order: 'desc' }),
+        1, expect.objectContaining({ skip: 25, limit: 25, sort_by: 'critical_vulns', sort_order: 'desc' }),
         expect.anything(),
       );
     });
@@ -1045,7 +1048,7 @@ describe('Hosts', () => {
     await waitFor(() => expect(screen.queryByTestId('hosts-restored-notice')).toBeNull());
     await waitFor(() => {
       const calls = mockedApi.getHosts.mock.calls;
-      expect((calls[calls.length - 1]?.[0] as Record<string, any>).has_critical_vulns).toBeUndefined();
+      expect((calls[calls.length - 1]?.[1] as Record<string, any>).has_critical_vulns).toBeUndefined();
     });
   });
 
@@ -1067,7 +1070,7 @@ describe('Hosts', () => {
     renderHosts();
     await waitFor(() =>
       expect(mockedApi.getHosts).toHaveBeenCalledWith(
-        expect.objectContaining({ has_critical_vulns: true }),
+        1, expect.objectContaining({ has_critical_vulns: true }),
         expect.anything(),
       ),
     );

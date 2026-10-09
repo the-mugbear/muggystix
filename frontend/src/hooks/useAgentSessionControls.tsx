@@ -21,6 +21,7 @@ import { invalidateReads } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { AGENT_SESSION_READS, WRAP_UP_PROMPT, agentConnected } from '../utils/agentRuns';
 import { useConfirm } from './useConfirm';
+import { useProjectId } from './useProjectId';
 
 export interface AgentSessionControls {
   /** Render once: the confirm dialog and the resume dialog. */
@@ -47,10 +48,11 @@ export function useAgentSessionControls(): AgentSessionControls {
   const [endingIds, setEndingIds] = useState<ReadonlySet<number>>(() => new Set());
   const [resumeRow, setResumeRow] = useState<AgentSessionRow | null>(null);
   const queryClient = useQueryClient();
+  const projectId = useProjectId();
   // Several Ends can be in flight (one per session), so which rows are busy
   // is `endingIds`, not this mutation's one `isPending`.
   const { mutateAsync: end } = useMutation({
-    mutationFn: (sessionId: number) => endAgentSession(sessionId),
+    mutationFn: (sessionId: number) => endAgentSession(projectId, sessionId),
   });
 
   const requestEnd = async (row: AgentSessionRow): Promise<boolean> => {

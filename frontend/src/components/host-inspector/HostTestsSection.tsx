@@ -30,6 +30,7 @@ import {
   type HostTest,
 } from '../../services/api';
 import { useListQuery } from '../../hooks/useListQuery';
+import { useProjectId } from '../../hooks/useProjectId';
 import { queryErrorText } from '../../lib/query';
 import { agentInstruction } from '../../utils/agentRuns';
 import { formatApiError } from '../../utils/apiErrors';
@@ -113,6 +114,7 @@ const PromoteEvidence: React.FC<{
   test: HostTest;
   onCreated: (made: PromotedEvidence) => void;
 }> = ({ rec, test, onCreated }) => {
+  const projectId = useProjectId();
   const linked = !!test.issue_key;
   // The result says what was found; the test's description says what was
   // checked ("Confirm missing X…"), which is not a finding's name.
@@ -126,7 +128,7 @@ const PromoteEvidence: React.FC<{
     // Title and severity go with a linked test too, but the server uses
     // them only if the observation it named has since left the host: while
     // it is there, the observation names and rates its own finding.
-    mutationFn: () => createFindingFromEvidence(rec.id, { title: title.trim(), severity }),
+    mutationFn: () => createFindingFromEvidence(projectId, rec.id, { title: title.trim(), severity }),
     // Said wherever the reader is by then: the finding was made.
     onSuccess: onCreated,
   });
@@ -183,6 +185,7 @@ const PromoteEvidence: React.FC<{
 
 /** The evidence records that answer one test, loaded when the test is opened. */
 const TestEvidence: React.FC<{ test: HostTest; ctl: HostTestsController }> = ({ test, ctl }) => {
+  const projectId = useProjectId();
   const testId = test.id;
   const count = test.evidence_count;
   // The test's count of results is in the key: a result added to the test is
@@ -190,10 +193,10 @@ const TestEvidence: React.FC<{ test: HostTest; ctl: HostTestsController }> = ({ 
   // it lands (`keepPrevious`).
   const list = useListQuery<EvidenceRecord, EvidenceList>(
     'listEvidenceRecords',
-    ({ offset, limit, signal }) => listEvidenceRecords({ host_test_id: testId, limit, offset }, signal),
-    [{ host_test_id: testId, limit: EVIDENCE_PAGE }, { results: count }],
+    ({ offset, limit, signal }) => listEvidenceRecords(projectId, { host_test_id: testId, limit, offset }, signal),
+    [projectId, { host_test_id: testId, limit: EVIDENCE_PAGE }, { results: count }],
     {
-      pageSize: EVIDENCE_PAGE, enabled: count > 0, keepPrevious: true,
+      pageSize: EVIDENCE_PAGE, enabled: count > 0, keepPrevious: true, within: projectId,
       errorMessage: 'Could not load the evidence for this test.',
     },
   );
@@ -274,6 +277,7 @@ export const HostTestRow: React.FC<{
   linked?: boolean;
   onDirty?: (id: number, dirty: boolean) => void;
 }> = ({ test, ctl, defaultOpen = false, linked = false, onDirty }) => {
+  const projectId = useProjectId();
   const needsDecision = (test.unpromoted_findings ?? 0) > 0;
   const [open, setOpen] = useState(defaultOpen || needsDecision);
   // A link can arrive while the row is already mounted (the inspector stays
@@ -292,7 +296,7 @@ export const HostTestRow: React.FC<{
   // Every change carries the revision it was made on (`expected_revision`);
   // the server refuses it with a 409 when the test has moved since.
   const change = useMutation({
-    mutationFn: (body: Parameters<typeof updateHostTest>[1]) => updateHostTest(test.id, body),
+    mutationFn: (body: Parameters<typeof updateHostTest>[2]) => updateHostTest(projectId, test.id, body),
     onSuccess: (updated) => {
       ctl.replace(updated);
       setDismissing(false);

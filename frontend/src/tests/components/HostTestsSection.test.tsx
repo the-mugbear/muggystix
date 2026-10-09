@@ -99,7 +99,7 @@ describe('HostTestsSection — the list', () => {
     renderSection();
     await screen.findByText('Check response headers');
     expect(api.listHostTests).toHaveBeenCalledTimes(1);
-    expect(api.listHostTests).toHaveBeenCalledWith({ host_id: 5, limit: 200 }, expect.any(AbortSignal));
+    expect(api.listHostTests).toHaveBeenCalledWith(1, { host_id: 5, limit: 200 }, expect.any(AbortSignal));
     // The command is resolved against this host and is on the closed row.
     expect(within(rowOf(11)).getByText('curl -sI https://10.0.0.5/')).toBeInTheDocument();
     expect(within(rowOf(11)).getByRole('button', { name: 'Copy command' })).toBeInTheDocument();
@@ -257,7 +257,8 @@ describe('HostTestsSection — recording a result', () => {
     await userEvent.click(save);
 
     await waitFor(() => expect(api.recordHostTestResult).toHaveBeenCalledTimes(1));
-    const [id, body] = api.recordHostTestResult.mock.calls[0];
+    const [projectId, id, body] = api.recordHostTestResult.mock.calls[0];
+    expect(projectId).toBe(1);
     expect(id).toBe(11);
     expect(body).toMatchObject({
       expected_revision: 3, outcome: 'no_finding', summary: 'Header is set',
@@ -315,12 +316,13 @@ describe('HostTestsSection — recording a result', () => {
     expect(within(panel()).getByLabelText('Summary')).toHaveValue('Header is set');
     await userEvent.click(within(panel()).getByRole('button', { name: /Save result/ }));
     await waitFor(() => expect(api.recordHostTestResult).toHaveBeenCalledTimes(2));
-    expect(api.recordHostTestResult.mock.calls[1][1].expected_revision).toBe(8);
+    expect(api.recordHostTestResult.mock.calls[1][0]).toBe(1);
+    expect(api.recordHostTestResult.mock.calls[1][2].expected_revision).toBe(8);
     // A refusal stored nothing under the first key, or stored a result the
     // analyst has since changed; either way the next save is its own result
     // (the server refuses changed content under a used key).
-    expect(api.recordHostTestResult.mock.calls[1][1].request_key)
-      .not.toBe(api.recordHostTestResult.mock.calls[0][1].request_key);
+    expect(api.recordHostTestResult.mock.calls[1][2].request_key)
+      .not.toBe(api.recordHostTestResult.mock.calls[0][2].request_key);
   });
 
   it('shows the server\'s reason when a result cannot be saved', async () => {
@@ -362,7 +364,7 @@ describe('HostTestsSection — the row\'s menu', () => {
     renderSection();
     await screen.findByText('Check response headers');
     await pick(11, 'Claim');
-    await waitFor(() => expect(api.updateHostTest).toHaveBeenCalledWith(11, { expected_revision: 3, assigned_to_id: 1 }));
+    await waitFor(() => expect(api.updateHostTest).toHaveBeenCalledWith(1, 11, { expected_revision: 3, assigned_to_id: 1 }));
     expect(await menuItems(11)).toEqual(['Dismiss…']);
   });
 
@@ -377,7 +379,7 @@ describe('HostTestsSection — the row\'s menu', () => {
     await userEvent.type(screen.getByLabelText('Why this test should not be run'), 'Out of scope');
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(true));
     await userEvent.click(dismiss);
-    await waitFor(() => expect(api.updateHostTest).toHaveBeenCalledWith(11, {
+    await waitFor(() => expect(api.updateHostTest).toHaveBeenCalledWith(1, 11, {
       expected_revision: 3, status: 'dismissed', dismissed_reason: 'Out of scope',
     }));
     expect(await screen.findByText('No tests to do on this host.')).toBeInTheDocument();
@@ -401,7 +403,7 @@ describe('HostTestsSection — from a result to a finding', () => {
     renderSection();
     expect(await screen.findByText('No X-Frame-Options header.')).toBeInTheDocument();
     expect(tab(/To do/)).toHaveTextContent('To do 1');
-    expect(api.listEvidenceRecords).toHaveBeenCalledWith({ host_test_id: 11, limit: 10, offset: 0 }, expect.any(AbortSignal));
+    expect(api.listEvidenceRecords).toHaveBeenCalledWith(1, { host_test_id: 11, limit: 10, offset: 0 }, expect.any(AbortSignal));
   });
 
   it('a test about no scanned weakness makes a new finding, prefilled, and links it once made', async () => {
@@ -415,7 +417,7 @@ describe('HostTestsSection — from a result to a finding', () => {
     expect(screen.getAllByRole('button', { name: 'Create finding' })).toHaveLength(1);
     api.listHostTests.mockResolvedValue(page([shown({ unpromoted_findings: 0, finding_ids: [77] })]));
     await userEvent.click(screen.getByRole('button', { name: 'Create finding' }));
-    await waitFor(() => expect(api.createFindingFromEvidence).toHaveBeenCalledWith(90, {
+    await waitFor(() => expect(api.createFindingFromEvidence).toHaveBeenCalledWith(1, 90, {
       title: 'No X-Frame-Options header.', severity: 'high',
     }));
     // The page is told which finding — and what the server made of it (joined
@@ -456,7 +458,7 @@ describe('HostTestsSection — from a result to a finding', () => {
     api.listProposals.mockResolvedValue({ items: [{ id: 31, evidence_ids: [90] }], total: 1, has_more: false });
     renderSection();
     expect(await screen.findByRole('link', { name: /Review proposal #31/ })).toHaveAttribute('href', '/proposals');
-    expect(api.listProposals).toHaveBeenCalledWith({ host_id: 5, status: 'pending', kind: 'finding_create', limit: 100 }, expect.any(AbortSignal));
+    expect(api.listProposals).toHaveBeenCalledWith(1, { host_id: 5, status: 'pending', kind: 'finding_create', limit: 100 }, expect.any(AbortSignal));
   });
 
   it('a reader is shown the result and offered no promotion', async () => {
@@ -513,7 +515,8 @@ describe('HostTestsSection — a person adds a test', () => {
     await userEvent.click(save);
 
     await waitFor(() => expect(api.createHostTests).toHaveBeenCalledTimes(1));
-    const [body] = api.createHostTests.mock.calls[0][0];
+    expect(api.createHostTests.mock.calls[0][0]).toBe(1);
+    const [body] = api.createHostTests.mock.calls[0][1];
     expect(body).toMatchObject({
       host_id: 5, tool: 'ftp', description: 'Anonymous FTP login', rationale: 'Port 21 is open.',
       priority: 'medium', assigned_to_id: 1,
@@ -552,7 +555,7 @@ describe('HostTestsSection — stepping to another host', () => {
   );
 
   it('a test saved for the host that was left is not put in this host\'s list', async () => {
-    api.listHostTests.mockImplementation(({ host_id }: { host_id: number }) => Promise.resolve(
+    api.listHostTests.mockImplementation((_projectId: number, { host_id }: { host_id: number }) => Promise.resolve(
       host_id === 5 ? page([]) : page([test({ id: 61, host_id: 6, description: 'On host six' })]),
     ));
     let finish: (value: unknown) => void = () => {};
@@ -583,7 +586,7 @@ describe('HostTestsSection — stepping to another host', () => {
   });
 
   it('a result saved for the host that was left does not close this host\'s result panel', async () => {
-    api.listHostTests.mockImplementation(({ host_id }: { host_id: number }) => Promise.resolve(
+    api.listHostTests.mockImplementation((_projectId: number, { host_id }: { host_id: number }) => Promise.resolve(
       page([test({ id: host_id === 5 ? 51 : 61, host_id, host_ip: `10.0.0.${host_id}` })]),
     ));
     let finish: (value: unknown) => void = () => {};
@@ -607,7 +610,7 @@ describe('HostTestsSection — stepping to another host', () => {
 
   it('an answer for the host that was left never replaces this host\'s tests', async () => {
     const answers: Record<number, (value: unknown) => void> = {};
-    api.listHostTests.mockImplementation(({ host_id }: { host_id: number }) =>
+    api.listHostTests.mockImplementation((_projectId: number, { host_id }: { host_id: number }) =>
       new Promise((resolve) => { answers[host_id] = resolve; }));
     const view = renderSection({ hostId: 5 });
     view.rerender(

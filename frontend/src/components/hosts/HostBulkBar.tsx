@@ -22,12 +22,13 @@ import {
   getMatchingHostIds,
   listHostTags,
 } from '../../services/api';
+import { useProjectId } from '../../hooks/useProjectId';
 import { useProjectRoster } from '../../hooks/useProjectMembers';
 import { MEMBERS_LOAD_ERROR } from '../MembersLoadError';
 import { useAuth } from '../../contexts/AuthContext';
 import { useProjectRole } from '../../hooks/useProjectRole';
 import { useToast } from '../../contexts/ToastContext';
-import { holdProject, invalidateReads } from '../../lib/query';
+import { invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { cn } from '../../utils/cn';
 import { copyToClipboard } from '../../utils/clipboard';
@@ -122,6 +123,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   // Review status is the caller's own, and copying IPs changes nothing, so a
   // viewer or auditor keeps those two.
   const { canWrite } = useProjectRole();
+  const projectId = useProjectId();
   const toast = useToast();
   const queryClient = useQueryClient();
   const [allMatching, setAllMatching] = useState(false);
@@ -148,8 +150,8 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
 
   // A failed read is an empty picker: a tag can still be made by name.
   const tags = useQuery({
-    queryKey: ['listHostTags'],
-    queryFn: ({ signal }) => listHostTags(signal),
+    queryKey: ['listHostTags', projectId],
+    queryFn: ({ signal }) => listHostTags(projectId, signal),
     enabled: canWrite,  // the picker this fills is not rendered otherwise
   }).data ?? NO_TAGS;
   const roster = useProjectRoster({ enabled: canWrite });
@@ -175,7 +177,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   // "Every matching host" as ids: asked of the server when an action (or the
   // hand-off to an agent) needs them, under the filters of that moment.
   const { mutateAsync: readMatchingIds } = useMutation({
-    mutationFn: () => getMatchingHostIds(queryContext),
+    mutationFn: () => getMatchingHostIds(projectId, queryContext),
   });
   const resolveIds = useCallback(async (): Promise<number[]> => {
     if (!allMatching) return selectedIds;
@@ -190,20 +192,19 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   // `null` when the selection turned out to hold nothing.
   const bulk = useMutation({
     mutationFn: async (action: BulkAction) => {
-      // The ids are this project's: they are not sent to another one.
-      const stillHere = holdProject();
+      // The ids are this project's, and so is the write: both requests carry
+      // the project this bar was rendered in.
       const ids = await resolveIds();
-      stillHere();
       if (!ids.length) return null;
       switch (action.kind) {
         case 'tags':
-          return bulkTagHosts(ids, { tag_ids: action.tagIds, names: action.names, action: action.action });
+          return bulkTagHosts(projectId, ids, { tag_ids: action.tagIds, names: action.names, action: action.action });
         case 'assign':
-          return bulkAssignHosts(ids, action.userId);
+          return bulkAssignHosts(projectId, ids, action.userId);
         case 'unassign':
-          return bulkUnassignHosts(ids);
+          return bulkUnassignHosts(projectId, ids);
         default:
-          return bulkFollowHosts(ids, action.status);
+          return bulkFollowHosts(projectId, ids, action.status);
       }
     },
     onSuccess: (res, action) => {

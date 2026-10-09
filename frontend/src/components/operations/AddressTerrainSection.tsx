@@ -27,6 +27,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Map as MapIcon, Minus, Plus, RefreshCw, RotateCcw, Table2 } from 'lucide-react';
 
 import { getAddressTerrain, type TerrainBlock } from '../../services/api';
+import { useProjectId } from '../../hooks/useProjectId';
 import PostureSection, { SectionCount } from '../posture/PostureSection';
 import { Button } from '../ui/button';
 import { InfoTip } from '../ui/info-tip';
@@ -116,9 +117,10 @@ const AddressTerrainSection: React.FC = () => {
   // Nothing is asked for until the section nears the viewport.  The page's
   // Refresh reaches this read by its name (`getAddressTerrain`) — and only
   // once it has been asked for.
+  const projectId = useProjectId();
   const terrain = useQuery({
-    queryKey: ['getAddressTerrain'],
-    queryFn: ({ signal }) => getAddressTerrain(signal),
+    queryKey: ['getAddressTerrain', projectId],
+    queryFn: ({ signal }) => getAddressTerrain(projectId, signal),
     enabled: near,
   });
   const data = terrain.data ?? null;

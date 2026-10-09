@@ -30,6 +30,7 @@ import {
   type PromotedEvidence,
 } from '../../services/api';
 import { useAgentTask } from '../../hooks/useAgentTask';
+import { useProjectId } from '../../hooks/useProjectId';
 import { queryErrorText } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { copyToClipboard } from '../../utils/clipboard';
@@ -54,8 +55,8 @@ import {
 export const HOST_TESTS_LIMIT = 200;
 
 /** The key of the one read of a host's tests. */
-const hostTestsKey = (hostId: number) =>
-  ['listHostTests', { host_id: hostId, limit: HOST_TESTS_LIMIT }] as const;
+const hostTestsKey = (projectId: number, hostId: number) =>
+  ['listHostTests', projectId, { host_id: hostId, limit: HOST_TESTS_LIMIT }] as const;
 
 export {
   HostTestsProvider, OPEN_HOST_TEST_EVENT, openHostTest, useHostTests,
@@ -111,6 +112,7 @@ const isStaleTest = (err: unknown): err is StaleTest =>
   err instanceof Error && (err as Partial<StaleTest>).staleTest === true;
 
 const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onStale, onDraft }) => {
+  const projectId = useProjectId();
   const [current, setCurrent] = useState<HostTest | null>(test);
   const [outcome, setOutcome] = useState<HostTestOutcome | ''>('');
   const [summary, setSummary] = useState('');
@@ -141,7 +143,7 @@ const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onSta
   const record = useMutation({
     mutationFn: async ({ id, body }: { id: number; body: HostTestResultBody }) => {
       try {
-        return await recordHostTestResult(id, body);
+        return await recordHostTestResult(projectId, id, body);
       } catch (err) {
         const status = (err as { response?: { status?: number } })?.response?.status;
         if (status === 409) throw staleTest(await onStale(id));
@@ -303,7 +305,8 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
   const [mine, setMine] = useState(true);
   // One key per opening, so a double click stores one test.
   const [requestKey, setRequestKey] = useState(newKey);
-  const create = useMutation({ mutationFn: (body: HostTestCreateBody) => createHostTests([body]) });
+  const projectId = useProjectId();
+  const create = useMutation({ mutationFn: (body: HostTestCreateBody) => createHostTests(projectId, [body]) });
   const { reset: forgetFailure } = create;
   const saving = create.isPending;
   const error = queryErrorText(create.error, 'Could not add the test.');
@@ -460,6 +463,7 @@ export interface HostTestsControllerOptions {
 export const useHostTestsController = ({
   hostId, canEdit, userId, onResultRecorded, onFindingCreated,
 }: HostTestsControllerOptions): { controller: HostTestsController; element: React.ReactNode } => {
+  const projectId = useProjectId();
   const queryClient = useQueryClient();
   const [staleNotice, setStaleNotice] = useState(false);
   const [resultFor, setResultFor] = useState<HostTest | null>(null);
@@ -471,8 +475,8 @@ export const useHostTestsController = ({
   // THE read of this host's tests: the Weaknesses rows and the Tests section
   // both get it from the controller, so there is one query for it.
   const testsQuery = useQuery({
-    queryKey: hostTestsKey(hostId),
-    queryFn: ({ signal }) => listHostTests({ host_id: hostId, limit: HOST_TESTS_LIMIT }, signal),
+    queryKey: hostTestsKey(projectId, hostId),
+    queryFn: ({ signal }) => listHostTests(projectId, { host_id: hostId, limit: HOST_TESTS_LIMIT }, signal),
   });
   const tests = testsQuery.data?.items ?? null;
   const total = testsQuery.data?.total ?? 0;
@@ -487,12 +491,12 @@ export const useHostTestsController = ({
   // An agent's pending "this is a finding" proposals, by the evidence they
   // cite. A failure here only hides a shortcut to the Proposals page.
   const proposalsKey = useMemo(
-    () => ['listProposals', { host_id: hostId, status: 'pending', kind: 'finding_create', limit: 100 }] as const,
-    [hostId],
+    () => ['listProposals', projectId, { host_id: hostId, status: 'pending', kind: 'finding_create', limit: 100 }] as const,
+    [projectId, hostId],
   );
   const proposalsQuery = useQuery({
     queryKey: proposalsKey,
-    queryFn: ({ signal }) => listProposals({ host_id: hostId, status: 'pending', kind: 'finding_create', limit: 100 }, signal),
+    queryFn: ({ signal }) => listProposals(projectId, { host_id: hostId, status: 'pending', kind: 'finding_create', limit: 100 }, signal),
   });
   const pendingProposals = proposalsQuery.isError ? undefined : proposalsQuery.data?.items;
   const proposalByEvidence = useMemo(() => {
@@ -503,19 +507,19 @@ export const useHostTestsController = ({
 
   const replace = useCallback((updated: HostTest) => {
     setStaleNotice(false);
-    queryClient.setQueryData<HostTestPage>(hostTestsKey(hostId), (prev) => (
+    queryClient.setQueryData<HostTestPage>(hostTestsKey(projectId, hostId), (prev) => (
       prev ? { ...prev, items: prev.items.map((t) => (t.id === updated.id ? updated : t)) } : prev
     ));
-  }, [queryClient, hostId]);
+  }, [queryClient, projectId, hostId]);
 
   // What else on the host page a result changes: the host's "tested" fact and
   // the scanner row a linked result promotes (the inspector's `getHost`), and
   // the evidence that answers no test.  Nothing is listening when the Tests
   // section stands alone.
   const hostEvidenceChanged = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: ['getHost', hostId] });
-    void queryClient.invalidateQueries({ queryKey: hostEvidenceKey(hostId) });
-  }, [queryClient, hostId]);
+    void queryClient.invalidateQueries({ queryKey: ['getHost', projectId, hostId] });
+    void queryClient.invalidateQueries({ queryKey: hostEvidenceKey(projectId, hostId) });
+  }, [queryClient, projectId, hostId]);
 
   const controller = useMemo<HostTestsController>(() => ({
     hostId, canEdit, userId, tests, total, loading, error, reload, replace,
@@ -532,7 +536,7 @@ export const useHostTestsController = ({
       onFindingCreated?.(findingId, made);
       // The test now names its finding, the agent's proposal for the same
       // result may be settled, and the host has a finding it did not.
-      void queryClient.invalidateQueries({ queryKey: hostTestsKey(hostId) });
+      void queryClient.invalidateQueries({ queryKey: hostTestsKey(projectId, hostId) });
       void queryClient.invalidateQueries({ queryKey: proposalsKey });
       void queryClient.invalidateQueries({ queryKey: ['listFindings'] });
       hostEvidenceChanged();
@@ -540,7 +544,7 @@ export const useHostTestsController = ({
   }), [
     hostId, canEdit, userId, tests, total, loading, error, reload, replace, staleNotice,
     proposalByEvidence, giveAgent, canAskAgent, resultDraft, addDraft, onFindingCreated,
-    queryClient, proposalsKey, hostEvidenceChanged,
+    queryClient, projectId, proposalsKey, hostEvidenceChanged,
   ]);
 
   const element = (
@@ -565,7 +569,7 @@ export const useHostTestsController = ({
         onDraft={setAddDraft}
         onSaved={(created) => {
           setStaleNotice(false);
-          const key = hostTestsKey(hostId);
+          const key = hostTestsKey(projectId, hostId);
           if (queryClient.getQueryData<HostTestPage>(key)) {
             queryClient.setQueryData<HostTestPage>(key, (prev) => (prev ? {
               ...prev,

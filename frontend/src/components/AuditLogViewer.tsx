@@ -20,7 +20,7 @@ import {
   getAuditStats,
   listAuditLogs,
 } from '../services/api';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { formatAuditDetails } from '../utils/auditDetails';
 import { personName } from '../utils/people';
@@ -59,7 +59,7 @@ const AuditLogViewer: React.FC = () => {
     ...(resourceType ? { resource_type: resourceType } : {}),
   };
   const query = useQuery({
-    queryKey: [GLOBAL, 'listAuditLogs', params],
+    queryKey: ['listAuditLogs', params],
     queryFn: ({ signal }) => listAuditLogs(params, signal),
     // The page on screen stays until the next one answers.
     placeholderData: keepPreviousData,
@@ -82,7 +82,7 @@ const AuditLogViewer: React.FC = () => {
 
   // Stats are a nicety; the table is the feature — a failure shows none.
   const { data: stats = null } = useQuery({
-    queryKey: [GLOBAL, 'getAuditStats'],
+    queryKey: ['getAuditStats'],
     queryFn: ({ signal }) => getAuditStats(signal),
   });
 

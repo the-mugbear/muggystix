@@ -10,6 +10,7 @@ import { Link } from 'react-router-dom';
 
 import { listHostTests, type HostTest } from '../../services/api';
 import { useListQuery } from '../../hooks/useListQuery';
+import { useProjectId } from '../../hooks/useProjectId';
 import { queryErrorText } from '../../lib/query';
 import { hostTestStatusLabel, hostTestStatusVariant } from '../../utils/hostTests';
 import { Badge } from '../ui/badge';
@@ -20,10 +21,11 @@ const PAGE = 25;
 const FAILED = 'Could not load the tests this session proposed.';
 
 export const SessionTests: React.FC<{ sessionId: number; ended: boolean }> = ({ sessionId, ended }) => {
+  const projectId = useProjectId();
   const list = useListQuery<HostTest>(
     'listHostTests',
-    ({ offset, limit, signal }) => listHostTests({ agent_session_id: sessionId, limit, offset }, signal),
-    [{ agent_session_id: sessionId }],
+    ({ offset, limit, signal }) => listHostTests(projectId, { agent_session_id: sessionId, limit, offset }, signal),
+    [projectId, { agent_session_id: sessionId }],
     { pageSize: PAGE, errorMessage: FAILED },
   );
   // A failed "Show more" keeps the rows that are shown and says so under them.

@@ -98,7 +98,7 @@ describe('FindingDetail — C2: metadata edits keep the comment draft', () => {
     await user.click(screen.getByLabelText('Finding status'));
     await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
 
-    await waitFor(() => expect(mocked.setFindingStatus).toHaveBeenCalledWith(7, 'confirmed', undefined));
+    await waitFor(() => expect(mocked.setFindingStatus).toHaveBeenCalledWith(1, 7, 'confirmed', undefined));
     // Refresh happened (finding + history re-fetched) …
     await waitFor(() => expect(mocked.getFinding).toHaveBeenCalledTimes(2));
     // … and the draft the analyst typed is still in the still-mounted composer.
@@ -176,7 +176,7 @@ describe('FindingDetail — item 7: each endpoint has its own state', () => {
     await user.click(screen.getByLabelText('State of 10.0.0.5'));
     await user.click(await screen.findByRole('option', { name: 'Retest here' }));
 
-    await waitFor(() => expect(mocked.setFindingEndpointStatus).toHaveBeenCalledWith(7, 31, 'retest'));
+    await waitFor(() => expect(mocked.setFindingEndpointStatus).toHaveBeenCalledWith(1, 7, 31, 'retest'));
     expect(mocked.setFindingStatus).not.toHaveBeenCalled();
     // C2 — the row comes from the route's response; the finding (every
     // endpoint of it) is not read a second time.  Only the history is.
@@ -261,7 +261,8 @@ describe('FindingDetail — many endpoints', () => {
     await user.click(screen.getByRole('button', { name: 'Set 100 endpoints' }));
 
     await waitFor(() => expect(mocked.setFindingEndpointsStatus).toHaveBeenCalledTimes(1));
-    const [id, body] = mocked.setFindingEndpointsStatus.mock.calls[0];
+    const [projectId, id, body] = mocked.setFindingEndpointsStatus.mock.calls[0];
+    expect(projectId).toBe(1);
     expect(id).toBe(7);
     expect(body.host_status).toBe('remediated');
     expect(body.summary).toBe('retest 2026-10-01');
@@ -292,7 +293,7 @@ describe('FindingDetail — many endpoints', () => {
     await user.click(screen.getByRole('button', { name: 'Set 1,200 endpoints' }));
 
     await waitFor(() => expect(mocked.setFindingEndpointsStatus).toHaveBeenCalledTimes(3));
-    const sizes = mocked.setFindingEndpointsStatus.mock.calls.map((c) => c[1].finding_host_ids.length);
+    const sizes = mocked.setFindingEndpointsStatus.mock.calls.map((c) => c[2].finding_host_ids.length);
     expect(sizes).toEqual([500, 500, 200]);
     await waitFor(() => expect(toastMock.warning).toHaveBeenCalled());
     const said = toastMock.warning.mock.calls[0][0] as string;
@@ -487,7 +488,7 @@ describe('FindingDetail — each proposal is reviewed where it applies (5.334.0)
     const drafts = await screen.findByTestId('drafts-recommendation');
     const calls = mocked.listProposals.mock.calls.length;
     fireEvent.click(within(drafts).getByRole('button', { name: /^Accept$/ }));
-    await waitFor(() => expect(mocked.acceptProposal).toHaveBeenCalledWith(1, {}));
+    await waitFor(() => expect(mocked.acceptProposal).toHaveBeenCalledWith(1, 1, {}));
     await waitFor(() => expect(mocked.getFinding.mock.calls.length).toBeGreaterThan(1));
     await waitFor(() => expect(mocked.listProposals.mock.calls.length).toBeGreaterThan(calls));
   });
@@ -621,7 +622,7 @@ describe('FindingDetail — v5.256.0: the author renames or deletes', () => {
     fireEvent.click(screen.getByRole('button', { name: /Rename/ }));
     fireEvent.change(screen.getByLabelText('Finding title'), { target: { value: '  TLS 1.0 on portal ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mocked.updateFinding).toHaveBeenCalledWith(7, { title: 'TLS 1.0 on portal' }));
+    await waitFor(() => expect(mocked.updateFinding).toHaveBeenCalledWith(1, 7, { title: 'TLS 1.0 on portal' }));
     expect(await screen.findByText('TLS 1.0 on portal')).toBeInTheDocument();
   });
 
@@ -638,7 +639,7 @@ describe('FindingDetail — v5.256.0: the author renames or deletes', () => {
 
     confirmMock.mockResolvedValueOnce(true);
     fireEvent.click(screen.getByRole('button', { name: /Delete/ }));
-    await waitFor(() => expect(mocked.deleteFinding).toHaveBeenCalledWith(7));
+    await waitFor(() => expect(mocked.deleteFinding).toHaveBeenCalledWith(1, 7));
     await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/findings'));
   });
 
@@ -674,7 +675,7 @@ describe('FindingDetail — v5.256.0: the author renames or deletes', () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Actions for 10.0.0.5' }));
     await user.click(await screen.findByRole('menuitem', { name: /Remove from finding/ }));
-    await waitFor(() => expect(mocked.removeFindingEndpoint).toHaveBeenCalledWith(7, 31));
+    await waitFor(() => expect(mocked.removeFindingEndpoint).toHaveBeenCalledWith(1, 7, 31));
     await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith(REFUSAL));
     expect(toastMock.success).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Actions for 10.0.0.5' })).toBeInTheDocument();
@@ -706,7 +707,7 @@ describe('FindingDetail — report text (v5.260.0)', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
     fireEvent.change(screen.getByLabelText('Impact'), { target: { value: 'Traffic can be read.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save report text' }));
-    await waitFor(() => expect(mocked.updateFinding).toHaveBeenCalledWith(7, { impact: 'Traffic can be read.' }));
+    await waitFor(() => expect(mocked.updateFinding).toHaveBeenCalledWith(1, 7, { impact: 'Traffic can be read.' }));
     expect(await screen.findByText('Traffic can be read.')).toBeInTheDocument();
   });
 
@@ -733,7 +734,7 @@ describe('FindingDetail — report text (v5.260.0)', () => {
       report_text: reportText({ description: 'Relayed.\n\n![](evidence:57)\n\n![x](evidence:999)' }),
     }));
     renderAt('/findings/7');
-    await waitFor(() => expect(mocked.getFindingImages).toHaveBeenCalledWith(7, expect.any(AbortSignal)));
+    await waitFor(() => expect(mocked.getFindingImages).toHaveBeenCalledWith(1, 7, expect.any(AbortSignal)));
     // The section shows the picture (fetched through the attachment route for
     // an id on the finding's list) and says so for a reference that is not one.
     const placed = await screen.findByTestId('evidence-image-57');
@@ -834,7 +835,7 @@ describe('FindingDetail — add affected hosts', () => {
   it('searches, picks several hosts across searches, and adds them in one request', async () => {
     const user = userEvent.setup();
     mocked.getFinding.mockResolvedValue(finding({ host_count: 1, hosts: [attached] }));
-    mocked.getHosts.mockImplementation(async ({ search }: { search?: string }) => ({
+    mocked.getHosts.mockImplementation(async (_projectId: number, { search }: { search?: string }) => ({
       items: search === 'web'
         ? [hostRow(13, '10.0.0.13', 'web01.' + 'x'.repeat(200))]
         : [hostRow(11, '10.0.0.11', 'dc01'), hostRow(12, '10.0.0.12', 'dc02')],
@@ -864,7 +865,7 @@ describe('FindingDetail — add affected hosts', () => {
     expect(screen.getByLabelText('Selected hosts')).toHaveTextContent('10.0.0.12');
 
     await user.click(screen.getByRole('button', { name: 'Add 2 hosts' }));
-    await waitFor(() => expect(mocked.addFindingHosts).toHaveBeenCalledWith(7, [12, 13]));
+    await waitFor(() => expect(mocked.addFindingHosts).toHaveBeenCalledWith(1, 7, [12, 13]));
     const heading = await screen.findByRole('heading', { name: /Affected hosts/ });
     await waitFor(() => expect(heading).toHaveTextContent('Affected hosts3'));
     expect(toastMock.success).toHaveBeenCalledWith('Added 2 hosts.');
@@ -987,7 +988,7 @@ describe('FindingDetail — removing an endpoint from its row menu', () => {
 
     await user.click(screen.getByRole('button', { name: 'Actions for a.example.com on 10.0.0.5' }));
     await user.click(await screen.findByRole('menuitem', { name: /Remove from finding/ }));
-    await waitFor(() => expect(mocked.removeFindingEndpoint).toHaveBeenCalledWith(7, 31));
+    await waitFor(() => expect(mocked.removeFindingEndpoint).toHaveBeenCalledWith(1, 7, 31));
     expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({ title: 'Remove endpoint from finding?', severity: 'danger' }));
     await waitFor(() => expect(document.querySelector('[data-endpoint-row="31"]')).toBeNull());
 
@@ -995,7 +996,7 @@ describe('FindingDetail — removing an endpoint from its row menu', () => {
     expect(message).toBe('Removed a.example.com (10.0.0.5) from the finding.');
     expect(options.action.label).toBe('Undo');
     await act(async () => { options.action.onClick(); });
-    expect(mocked.addFindingHosts).toHaveBeenCalledWith(7, [], [{ host_id: 5, name_id: 9, host_status: 'retest' }]);
+    expect(mocked.addFindingHosts).toHaveBeenCalledWith(1, 7, [], [{ host_id: 5, name_id: 9, host_status: 'retest' }]);
     await waitFor(() => expect(document.querySelector('[data-endpoint-row="31"]')).not.toBeNull());
   });
 });

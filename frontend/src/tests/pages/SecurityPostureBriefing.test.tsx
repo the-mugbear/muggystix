@@ -40,7 +40,7 @@ describe('SecurityPosture — Create briefing', () => {
     const btn = await screen.findByRole('button', { name: /Create briefing/ });
     await userEvent.click(btn);
     await waitFor(() => expect(downloadMock).toHaveBeenCalledTimes(1));
-    expect(downloadMock).toHaveBeenCalledWith();
+    expect(downloadMock).toHaveBeenCalledWith(1);
     expect(toastMock.error).not.toHaveBeenCalled();
   });
 

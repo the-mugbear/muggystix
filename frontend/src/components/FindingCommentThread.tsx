@@ -24,7 +24,8 @@ import { Button } from './ui/button';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useToast } from '../contexts/ToastContext';
-import { holdProject, invalidateReads, queryErrorText } from '../lib/query';
+import { useProjectId } from '../hooks/useProjectId';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { announceMentionOutcome } from '../utils/mentions';
 import { safeFallback } from '../utils/uiStyles';
@@ -56,6 +57,7 @@ interface PendingFile {
 
 const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, canManage, reportMarking, onCount }) => {
   const toast = useToast();
+  const projectId = useProjectId();
   const { user } = useAuth();
   const [confirmDialog, confirm] = useConfirm();
   // v5.256.0 — a comment is its author's: only they edit or delete it.
@@ -68,8 +70,8 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const queryClient = useQueryClient();
-  const notesKey = ['getFindingNotes', findingId];
-  const query = useQuery({ queryKey: notesKey, queryFn: ({ signal }) => getFindingNotes(findingId, signal) });
+  const notesKey = ['getFindingNotes', projectId, findingId];
+  const query = useQuery({ queryKey: notesKey, queryFn: ({ signal }) => getFindingNotes(projectId, findingId, signal) });
   // `notes === null` = never loaded successfully; distinct from "loaded, and
   // there are none" so a failed fetch is never presented as an empty record
   // (UX review H1).  A failed re-read keeps whatever was on screen and says
@@ -122,14 +124,10 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
   // Upload one file against an already-saved comment; on failure keep it in
   // the queue with the reason. Never creates a second comment.
   const upload = useMutation({
-    mutationFn: (v: { noteId: number; file: File }) => uploadFindingNoteAttachment(findingId, v.noteId, v.file),
+    mutationFn: (v: { noteId: number; file: File }) => uploadFindingNoteAttachment(projectId, findingId, v.noteId, v.file),
   });
-  const attachOne = async (
-    entry: PendingFile, noteId: number, stillHere: () => void = () => {},
-  ): Promise<PendingFile | null> => {
+  const attachOne = async (entry: PendingFile, noteId: number): Promise<PendingFile | null> => {
     try {
-      // After a comment was posted: not sent once the reader has switched project.
-      stillHere();
       await upload.mutateAsync({ noteId, file: entry.file });
       return null;
     } catch (err) {
@@ -162,11 +160,10 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
   // file is attached to it in turn.
   const post = useMutation({
     mutationFn: async (v: { text: string; parentId: number | null; fresh: PendingFile[]; leftovers: PendingFile[] }) => {
-      const stillHere = holdProject();
-      const note = await createFindingNote(findingId, v.text, v.parentId);
+      const note = await createFindingNote(projectId, findingId, v.text, v.parentId);
       const failed: PendingFile[] = [];
       for (const entry of v.fresh) {
-        const f = await attachOne(entry, note.id, stillHere);
+        const f = await attachOne(entry, note.id);
         if (f) failed.push(f);
       }
       return { note, failed };
@@ -202,7 +199,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
   };
 
   const edit = useMutation({
-    mutationFn: (v: { id: number; text: string }) => updateFindingNote(findingId, v.id, v.text),
+    mutationFn: (v: { id: number; text: string }) => updateFindingNote(projectId, findingId, v.id, v.text),
     onSuccess: (updated) => {
       if (updated.mention_warning) toast.warning(updated.mention_warning);
       else announceMentionOutcome(toast, updated);
@@ -213,7 +210,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
   });
 
   const remove = useMutation({
-    mutationFn: (note: Annotation) => deleteFindingNote(findingId, note.id),
+    mutationFn: (note: Annotation) => deleteFindingNote(projectId, findingId, note.id),
     onSuccess: (_done, note) => {
       setNotes((prev) => prev.filter((n) => n.id !== note.id));
       setReplyTo((current) => (current?.id === note.id ? null : current));
@@ -362,7 +359,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
           noteId={note.id}
           attachments={note.attachments ?? []}
           canManage={canManage}
-          uploadFn={(file) => uploadFindingNoteAttachment(findingId, note.id, file)}
+          uploadFn={(file) => uploadFindingNoteAttachment(projectId, findingId, note.id, file)}
           onChanged={() => void load()}
           reportMarking={reportMarking}
         />

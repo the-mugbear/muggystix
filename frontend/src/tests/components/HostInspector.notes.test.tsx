@@ -29,7 +29,7 @@ const api = vi.hoisted(() => ({
 }));
 
 vi.mock('../../services/api', () => ({
-  getHost: vi.fn().mockImplementation((id: number) => Promise.resolve(hostFixture(id))),
+  getHost: vi.fn().mockImplementation((_projectId: number, id: number) => Promise.resolve(hostFixture(id))),
   getHostConflicts: vi.fn().mockResolvedValue([]),
   listHostTests: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
   listProposals: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
@@ -97,7 +97,7 @@ describe('HostInspector note composer — draft bound to host, recoverable attac
     fireEvent.change(textarea, { target: { value: 'who owns this box?' } });
     expect(screen.queryByLabelText('Status')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /save note/i }));
-    await waitFor(() => expect(api.createAnnotation).toHaveBeenCalledWith(1, { body: 'who owns this box?' }));
+    await waitFor(() => expect(api.createAnnotation).toHaveBeenCalledWith(1, 1, { body: 'who owns this box?' }));
   });
 
   it('C1: switching host clears pending screenshots and revokes their previews', async () => {
@@ -145,7 +145,7 @@ describe('HostInspector note composer — draft bound to host, recoverable attac
     fireEvent.click(screen.getByRole('button', { name: /retry uploading pasted image 1/i }));
     await waitFor(() => expect(api.uploadNoteAttachment).toHaveBeenCalledTimes(2));
     // Same host, same note — never a second note.
-    expect(api.uploadNoteAttachment).toHaveBeenLastCalledWith(1, 77, file);
+    expect(api.uploadNoteAttachment).toHaveBeenLastCalledWith(1, 1, 77, file);
     expect(api.createAnnotation).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.queryByText(/attachment failed/)).not.toBeInTheDocument());
     expect(screen.queryByAltText('Pasted image 1')).not.toBeInTheDocument();
@@ -199,7 +199,7 @@ describe('HostInspector note composer — draft bound to host, recoverable attac
     // Retry the FIRST file: it must go to note 77 even though 88 failed later.
     fireEvent.click(screen.getByRole('button', { name: /retry uploading pasted image 1/i }));
     await waitFor(() => expect(api.uploadNoteAttachment).toHaveBeenCalledTimes(3));
-    expect(api.uploadNoteAttachment).toHaveBeenLastCalledWith(1, 77, fileA);
+    expect(api.uploadNoteAttachment).toHaveBeenLastCalledWith(1, 1, 77, fileA);
     expect(api.createAnnotation).toHaveBeenCalledTimes(2);
   });
 });
@@ -221,7 +221,7 @@ describe('HostInspector — a late completion is for the host it was sent for', 
     await waitFor(() => expect(screen.getByText('10.0.0.1')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /Start review/ }));
     // (A mutation sends its request a tick after the click.)
-    await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(1, 'in_review', undefined));
+    await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(1, 1, 'in_review', undefined));
 
     rerender(<MemoryRouter><HostInspector hostId={2} onFollowChange={onFollowChange} /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText('10.0.0.2')).toBeInTheDocument());
@@ -252,7 +252,7 @@ describe('HostInspector — a late completion is for the host it was sent for', 
     fireEvent.click(screen.getByRole('button', { name: 'Reply to note' }));
     fireEvent.change(screen.getByPlaceholderText('Write your reply…'), { target: { value: 'late reply' } });
     fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
-    await waitFor(() => expect(api.createAnnotation).toHaveBeenLastCalledWith(1, { body: 'late reply', parent_id: 70 }));
+    await waitFor(() => expect(api.createAnnotation).toHaveBeenLastCalledWith(1, 1, { body: 'late reply', parent_id: 70 }));
 
     rerender(<MemoryRouter><HostInspector hostId={2} /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText('10.0.0.2')).toBeInTheDocument());

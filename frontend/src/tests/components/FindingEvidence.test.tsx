@@ -28,7 +28,7 @@ describe('FindingEvidence', () => {
     api.listEvidenceRecords.mockResolvedValue({ items: [record()], total: 1, has_more: false });
     renderIt();
     expect(await screen.findByText('No X-Frame-Options header.')).toBeInTheDocument();
-    expect(api.listEvidenceRecords).toHaveBeenCalledWith(expect.objectContaining({ finding_id: 37 }), expect.any(AbortSignal));
+    expect(api.listEvidenceRecords).toHaveBeenCalledWith(1, expect.objectContaining({ finding_id: 37 }), expect.any(AbortSignal));
     expect(screen.getByRole('link', { name: 'The test on 10.0.0.5' })).toHaveAttribute('href', '/hosts/5#host-test-11');
     // Already on the finding: no link to itself.
     expect(screen.queryByRole('link', { name: 'Finding #37' })).not.toBeInTheDocument();

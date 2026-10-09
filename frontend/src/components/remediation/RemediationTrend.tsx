@@ -17,7 +17,8 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import * as Plot from '@observablehq/plot';
 
 import { getRemediationTrend } from '../../services/api';
-import { GLOBAL, queryErrorText } from '../../lib/query';
+import { useProjectId } from '../../hooks/useProjectId';
+import { queryErrorText } from '../../lib/query';
 import { formatDate } from '../../utils/relativeTime';
 import PlotFigure from '../charts/PlotFigure';
 import { useWidth } from '../oversight/GrowthCharts';
@@ -69,11 +70,16 @@ export const RemediationTrend: React.FC<RemediationTrendProps> = ({ scope, proje
   const [ref, width] = useWidth();
   const [showTable, setShowTable] = useState(false);
   const across = scope === 'all';
+  const currentProjectId = useProjectId();
+  // The project page reads its own project; across projects it is the chosen
+  // one, or none (`null`) for every project.
+  const asked = across ? projectId ?? null : currentProjectId;
+  const every = across ? 'all' : undefined;
   // Re-read after a save by the write itself (`invalidateRemediationReads`).
   // Another project's history replaces the one on screen when it arrives.
   const query = useQuery({
-    queryKey: across ? [GLOBAL, 'getRemediationTrend', 'all', projectId] : ['getRemediationTrend', undefined, projectId],
-    queryFn: ({ signal }) => getRemediationTrend(across ? 'all' : undefined, projectId, signal),
+    queryKey: ['getRemediationTrend', asked, every],
+    queryFn: ({ signal }) => getRemediationTrend(asked, every, signal),
     placeholderData: keepPreviousData,
   });
   const trend = query.data ?? null;

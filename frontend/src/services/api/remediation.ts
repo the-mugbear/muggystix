@@ -1,4 +1,4 @@
-import { api, p } from './client';
+import { api, projectPath } from './client';
 
 /** Where the fix stands, as the contact reports it — not the finding's own
  *  status.  `closed` is the contact's claim and is shown as "Reported fixed". */
@@ -42,10 +42,15 @@ export const previewRemediationPolicy = async (
 ): Promise<RemediationPolicyPreview> =>
   (await api.post<RemediationPolicyPreview>('/remediation-policy/preview', body, { signal })).data;
 
-/** The cross-project mount of one project's remediation routes: it also
- *  serves ARCHIVED projects, which the project routes refuse (410). */
-const base = (projectId?: number): string =>
-  (projectId == null ? p() : `/remediation-overview/projects/${projectId}`);
+/** Which routes serve one project's remediation.  Left out: the project's own
+ *  (`/projects/{id}/remediation/…`).  `'overview'`: the cross-project mount of
+ *  the same routes (`/remediation-overview/projects/{id}/remediation/…`), which
+ *  also serves ARCHIVED projects — the project routes refuse those (410).  The
+ *  cross-project pages pass it; a project page does not. */
+export type RemediationMount = 'overview';
+
+const base = (projectId: number, mount?: RemediationMount): string =>
+  (mount === 'overview' ? `/remediation-overview/projects/${projectId}` : projectPath(projectId));
 
 /** One finding on one host, with what was recorded about fixing it. */
 export interface RemediationRow {
@@ -159,8 +164,10 @@ const serialize = (query: object): URLSearchParams => {
   return out;
 };
 
-export const listRemediation = async (query: RemediationQuery = {}, signal?: AbortSignal): Promise<RemediationPage> =>
-  (await api.get<RemediationPage>(`${p()}/remediation`, { params: serialize(query), signal })).data;
+export const listRemediation = async (
+  projectId: number, query: RemediationQuery = {}, signal?: AbortSignal,
+): Promise<RemediationPage> =>
+  (await api.get<RemediationPage>(`${projectPath(projectId)}/remediation`, { params: serialize(query), signal })).data;
 
 /** The same rows across every project the caller administers (archived included). */
 export const listRemediationOverview = async (
@@ -197,12 +204,15 @@ export interface RemediationContact {
   last_follow_up_on: string | null;
   projects: number;
 }
-/** `projectId` undefined = the current project; `'all'` = every project the caller administers. */
+/** Without `scope`: the project `projectId`'s own contacts.  With `'all'`:
+ *  every project the caller administers, narrowed to `projectId` when it is
+ *  a number and not narrowed when it is `null`.  The same three cases for
+ *  `listRemediationTeams`, `getRemediationTrend` and `getRemediationFollowUp`. */
 export const listRemediationContacts = async (
-  scope?: 'all', projectId?: number, signal?: AbortSignal,
+  projectId: number | null, scope?: 'all', signal?: AbortSignal,
 ): Promise<RemediationContact[]> =>
   (await api.get<{ items: RemediationContact[] }>(
-    scope === 'all' ? '/remediation-overview/contacts' : `${p()}/remediation/contacts`,
+    scope === 'all' ? '/remediation-overview/contacts' : `${projectPath(projectId)}/remediation/contacts`,
     { params: scope === 'all' && projectId != null ? { project_id: projectId } : undefined, signal },
   )).data.items;
 
@@ -225,15 +235,19 @@ export interface ContactReportJob {
   ready: boolean;
 }
 export const prepareContactReport = async (
-  body: { contact_email: string; format: ContactReportFormat }, projectId?: number,
+  projectId: number, body: { contact_email: string; format: ContactReportFormat }, mount?: RemediationMount,
 ): Promise<ContactReportJob> =>
-  (await api.post<ContactReportJob>(`${base(projectId)}/remediation/contact-report`, body)).data;
+  (await api.post<ContactReportJob>(`${base(projectId, mount)}/remediation/contact-report`, body)).data;
 
-export const getContactReport = async (jobId: number, projectId?: number, signal?: AbortSignal): Promise<ContactReportJob> =>
-  (await api.get<ContactReportJob>(`${base(projectId)}/remediation/contact-report/${jobId}`, { signal })).data;
+export const getContactReport = async (
+  projectId: number, jobId: number, mount?: RemediationMount, signal?: AbortSignal,
+): Promise<ContactReportJob> =>
+  (await api.get<ContactReportJob>(`${base(projectId, mount)}/remediation/contact-report/${jobId}`, { signal })).data;
 
-export const downloadContactReport = async (jobId: number, projectId?: number, signal?: AbortSignal): Promise<Blob> =>
-  (await api.get(`${base(projectId)}/remediation/contact-report/${jobId}/download`, { responseType: 'blob', signal })).data;
+export const downloadContactReport = async (
+  projectId: number, jobId: number, mount?: RemediationMount, signal?: AbortSignal,
+): Promise<Blob> =>
+  (await api.get(`${base(projectId, mount)}/remediation/contact-report/${jobId}/download`, { responseType: 'blob', signal })).data;
 
 /** One team with its findings on hosts by state; `team: null` = a contact and no team. */
 export interface RemediationTeam {
@@ -249,10 +263,10 @@ export interface RemediationTeam {
   projects: number;
 }
 export const listRemediationTeams = async (
-  scope?: 'all', projectId?: number, signal?: AbortSignal,
+  projectId: number | null, scope?: 'all', signal?: AbortSignal,
 ): Promise<RemediationTeam[]> =>
   (await api.get<{ items: RemediationTeam[] }>(
-    scope === 'all' ? '/remediation-overview/teams' : `${p()}/remediation/teams`,
+    scope === 'all' ? '/remediation-overview/teams' : `${projectPath(projectId)}/remediation/teams`,
     { params: scope === 'all' && projectId != null ? { project_id: projectId } : undefined, signal },
   )).data.items;
 
@@ -264,10 +278,10 @@ export interface RemediationTrend {
   closed_by_month: Array<{ month: string; on_time: number; late: number; no_deadline: number }>;
 }
 export const getRemediationTrend = async (
-  scope?: 'all', projectId?: number, signal?: AbortSignal,
+  projectId: number | null, scope?: 'all', signal?: AbortSignal,
 ): Promise<RemediationTrend> =>
   (await api.get<RemediationTrend>(
-    scope === 'all' ? '/remediation-overview/trend' : `${p()}/remediation/trend`,
+    scope === 'all' ? '/remediation-overview/trend' : `${projectPath(projectId)}/remediation/trend`,
     { params: scope === 'all' && projectId != null ? { project_id: projectId } : undefined, signal },
   )).data;
 
@@ -287,10 +301,10 @@ export interface RemediationFollowUp {
 }
 /** `upcomingDays` (0–365): also remind of on-track rows due within that many days. */
 export const getRemediationFollowUp = async (
-  contactEmail: string, scope?: 'all', projectId?: number, signal?: AbortSignal, upcomingDays = 0,
+  projectId: number | null, contactEmail: string, scope?: 'all', signal?: AbortSignal, upcomingDays = 0,
 ): Promise<RemediationFollowUp> =>
   (await api.get<RemediationFollowUp>(
-    scope === 'all' ? '/remediation-overview/follow-up' : `${p()}/remediation/follow-up`,
+    scope === 'all' ? '/remediation-overview/follow-up' : `${projectPath(projectId)}/remediation/follow-up`,
     {
       params: {
         contact_email: contactEmail,
@@ -308,13 +322,14 @@ export interface RemediationFollowUpResult {
   finding_host_ids: number[];
 }
 export const recordRemediationFollowUp = async (
+  projectId: number,
   body: {
     contact_email: string; followed_up_on?: string; note?: string; finding_host_ids?: number[];
     upcoming_days?: number;
   },
-  projectId?: number,
+  mount?: RemediationMount,
 ): Promise<RemediationFollowUpResult> =>
-  (await api.post<RemediationFollowUpResult>(`${base(projectId)}/remediation/follow-up`, body)).data;
+  (await api.post<RemediationFollowUpResult>(`${base(projectId, mount)}/remediation/follow-up`, body)).data;
 
 /** One contact's follow-up recorded in every project the caller administers
  *  where the reminder listed rows — all or nothing. */
@@ -342,9 +357,10 @@ export interface RemediationAssignFromReport {
   dry_run: boolean;
 }
 export const assignRemediationFromReport = async (
-  body: { report_id: number; assigned_on?: string; dry_run?: boolean }, projectId?: number, signal?: AbortSignal,
+  projectId: number, body: { report_id: number; assigned_on?: string; dry_run?: boolean },
+  mount?: RemediationMount, signal?: AbortSignal,
 ): Promise<RemediationAssignFromReport> =>
-  (await api.post<RemediationAssignFromReport>(`${base(projectId)}/remediation/assign-from-report`, body, { signal })).data;
+  (await api.post<RemediationAssignFromReport>(`${base(projectId, mount)}/remediation/assign-from-report`, body, { signal })).data;
 
 /** The tracked fields.  A field left out is not touched; `null` clears it. */
 export interface RemediationFields {
@@ -395,9 +411,10 @@ export interface RemediationApplyResult {
 /** The one write path.  The page's own edits replace what is there
  *  (`overwrite`), because the person editing is looking at it. */
 export const applyRemediation = async (
-  rows: RemediationApplyRow[], options: { overwrite?: boolean; dry_run?: boolean } = {}, projectId?: number,
+  projectId: number, rows: RemediationApplyRow[], options: { overwrite?: boolean; dry_run?: boolean } = {},
+  mount?: RemediationMount,
 ): Promise<RemediationApplyResult> =>
-  (await api.post<RemediationApplyResult>(`${base(projectId)}/remediation/apply`, { rows, ...options })).data;
+  (await api.post<RemediationApplyResult>(`${base(projectId, mount)}/remediation/apply`, { rows, ...options })).data;
 
 export interface RemediationEvent {
   id: number;
@@ -427,17 +444,20 @@ export interface RemediationEventPage {
 }
 
 export const listRemediationEvents = async (
-  hostId: number, query: { finding_host_id?: number; limit?: number; offset?: number } = {}, signal?: AbortSignal,
-  projectId?: number,
+  projectId: number, hostId: number, query: { finding_host_id?: number; limit?: number; offset?: number } = {},
+  mount?: RemediationMount, signal?: AbortSignal,
 ): Promise<RemediationEventPage> =>
-  (await api.get<RemediationEventPage>(`${base(projectId)}/remediation/hosts/${hostId}/events`, { params: query, signal })).data;
+  (await api.get<RemediationEventPage>(`${base(projectId, mount)}/remediation/hosts/${hostId}/events`, { params: query, signal })).data;
 
 export const addRemediationNote = async (
+  projectId: number,
   body: { host_id: number; body: string; finding_host_id?: number; occurred_at?: string; request_key?: string },
-  projectId?: number,
+  mount?: RemediationMount,
 ): Promise<RemediationEvent> =>
-  (await api.post<RemediationEvent>(`${base(projectId)}/remediation/events`, body)).data;
+  (await api.post<RemediationEvent>(`${base(projectId, mount)}/remediation/events`, body)).data;
 
-export const deleteRemediationNote = async (eventId: number, projectId?: number): Promise<void> => {
-  await api.delete(`${base(projectId)}/remediation/events/${eventId}`);
+export const deleteRemediationNote = async (
+  projectId: number, eventId: number, mount?: RemediationMount,
+): Promise<void> => {
+  await api.delete(`${base(projectId, mount)}/remediation/events/${eventId}`);
 };

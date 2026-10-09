@@ -61,7 +61,7 @@ describe('FindingReportTextCard — drafting', () => {
     await waitFor(() => expect(reread).toHaveBeenCalledWith('proposals'));
     await waitFor(() => expect(reread).toHaveBeenCalledWith('count'));
     expect(reread).toHaveBeenCalledTimes(2);
-    expect(draftFindingText).toHaveBeenCalledWith(42, ['impact', 'recommendation']);
+    expect(draftFindingText).toHaveBeenCalledWith(1, 42,['impact', 'recommendation']);
     // No editor was opened and nothing was saved: the drafts wait as proposals.
     expect(screen.queryByLabelText('Impact')).not.toBeInTheDocument();
     expect(updateFinding).not.toHaveBeenCalled();
@@ -354,7 +354,7 @@ describe('FindingReportTextCard — drafts waiting (5.334.0)', () => {
     draftFindingText.mockResolvedValue({ proposals: [{ id: 3, field: 'recommendation' }] });
     renderCard({ drafts: new Map([['impact', [draft(1, 'impact', 'Relay.')]]]) });
     fireEvent.click(screen.getByRole('button', { name: /Draft empty sections/ }));
-    await waitFor(() => expect(draftFindingText).toHaveBeenCalledWith(42, ['recommendation']));
+    await waitFor(() => expect(draftFindingText).toHaveBeenCalledWith(1, 42,['recommendation']));
   });
 
   it('no draft button when every empty section already has a draft', () => {

@@ -31,10 +31,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   let next = 1;
   api.createScanBatch.mockResolvedValue({ id: 3, label: 'b' });
-  api.uploadFile.mockImplementation(async (f: File) => ({
+  api.uploadFile.mockImplementation(async (_projectId: number, f: File) => ({
     job_id: next++, filename: f.name, status: 'staged', message: 'staged', scan_id: null,
   }));
-  api.getJobDetection.mockImplementation(async (jobId: number) => detectionFor(jobId, `host-of-job-${jobId}: 1 open port`));
+  api.getJobDetection.mockImplementation(async (_projectId: number, jobId: number) => detectionFor(jobId, `host-of-job-${jobId}: 1 open port`));
 });
 
 const renderDialog = () =>
@@ -187,7 +187,7 @@ describe('UploadReviewDialog flow', () => {
     expect(screen.getByRole('button', { name: 'Save name' })).toBeDisabled();
     fireEvent.change(field, { target: { value: 'DMZ sweep' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save name' }));
-    await waitFor(() => expect(api.renameScanBatch).toHaveBeenCalledWith(3, 'DMZ sweep'));
+    await waitFor(() => expect(api.renameScanBatch).toHaveBeenCalledWith(1, 3, 'DMZ sweep'));
     expect(await screen.findByRole('button', { name: 'Saved' })).toBeDisabled();
   });
 
@@ -196,7 +196,7 @@ describe('UploadReviewDialog flow', () => {
     const { container } = renderDialog();
     drop(container, ['a.xml']);
     fireEvent.click(await screen.findByRole('button', { name: 'Discard staged file a.xml' }));
-    await waitFor(() => expect(api.discardIngestionJob).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(api.discardIngestionJob).toHaveBeenCalledWith(1, 1));
     await waitFor(() => expect(screen.queryByText('a.xml')).not.toBeInTheDocument());
   });
 
@@ -204,7 +204,7 @@ describe('UploadReviewDialog flow', () => {
   // started, the dialog sat on a disabled "Import 0 ready files".
   it('says the review is over, and offers Done, when only refused duplicates remain', async () => {
     api.startIngestionJob.mockResolvedValue({ id: 1, status: 'queued' });
-    api.uploadFile.mockImplementationOnce(async (f: File) => ({
+    api.uploadFile.mockImplementationOnce(async (_projectId: number, f: File) => ({
       job_id: 1, filename: f.name, status: 'staged', message: 'staged', scan_id: null,
     }));
     api.uploadFile.mockImplementationOnce(async () => {

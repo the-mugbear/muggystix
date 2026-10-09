@@ -11,7 +11,6 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ListPage, ListPageRequest, useListQuery } from '../../hooks/useListQuery';
-import { getQueryScope, setQueryScope } from '../../lib/query';
 
 type Row = { id: number; filter: string };
 type Deferred<T> = { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void };
@@ -433,9 +432,6 @@ describe('useListQuery', () => {
 // What Scopes and a test's evidence read `useInfiniteQuery` directly for:
 // the rows under a search box stay while the next search loads.
 describe('useListQuery — keepPrevious', () => {
-  const scopeBefore = getQueryScope();
-  afterEach(() => setQueryScope(scopeBefore));
-
   it('keeps the previous filter’s rows while the new one loads, and says they are the previous ones', async () => {
     type Page = ListPage<Row> & { summary: string };
     const slow = deferred<Page>();
@@ -530,19 +526,19 @@ describe('useListQuery — keepPrevious', () => {
     expect(result.current.isPrevious).toBe(false);
   });
 
-  it('never keeps one project’s rows under another project', async () => {
-    setQueryScope({ userId: 1, projectId: 1 });
+  it('never keeps one project’s rows under another project (`within`)', async () => {
     const never = new Promise<ListPage<Row>>(() => undefined);
     const { result, rerender } = renderHook(
       ({ project }) => useListQuery<Row>(
-        'listRows', project === 1 ? server('project 1') : () => never, [], { keepPrevious: true },
+        'listRows', project === 1 ? server('project 1') : () => never, [project],
+        { keepPrevious: true, within: project },
       ),
       { initialProps: { project: 1 } },
     );
     await waitFor(() => expect(result.current.rows).toHaveLength(50));
 
-    // The component survives the switch (the key does not name the project).
-    setQueryScope({ userId: 1, projectId: 2 });
+    // The component survives the switch: the project is a dep like a filter,
+    // and `within` says the kept rows were the other project's.
     rerender({ project: 2 });
     expect(result.current.rows).toBeNull();
     expect(result.current.isPrevious).toBe(false);

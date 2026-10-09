@@ -71,7 +71,7 @@ describe('HostInspector — stepping to a host that cannot be loaded', () => {
   });
 
   it('says the host could not be loaded, shows nothing of the host that was left, and offers nothing to save', async () => {
-    api.getHost.mockImplementation((id: number) => (id === 1 ? Promise.resolve(hostFixture(1)) : unavailable()));
+    api.getHost.mockImplementation((_projectId: number, id: number) => (id === 1 ? Promise.resolve(hostFixture(1)) : unavailable()));
     const { rerender } = render(inspector(1));
     await waitFor(() => expect(screen.getByText('10.0.0.1')).toBeInTheDocument());
     // Something typed on the host being read.
@@ -91,7 +91,7 @@ describe('HostInspector — stepping to a host that cannot be loaded', () => {
 
   it('Retry reads the host that was asked for', async () => {
     let fail = true;
-    api.getHost.mockImplementation((id: number) => (
+    api.getHost.mockImplementation((_projectId: number, id: number) => (
       id === 2 && fail ? unavailable() : Promise.resolve(hostFixture(id))
     ));
     const { rerender } = render(inspector(1));
@@ -105,8 +105,8 @@ describe('HostInspector — stepping to a host that cannot be loaded', () => {
   });
 
   it('a conflict count read for the host that was left is not shown on the next host', async () => {
-    api.getHost.mockImplementation((id: number) => Promise.resolve(hostFixture(id)));
-    api.getHostConflicts.mockImplementation((id: number) => (id === 1
+    api.getHost.mockImplementation((_projectId: number, id: number) => Promise.resolve(hostFixture(id)));
+    api.getHostConflicts.mockImplementation((_projectId: number, id: number) => (id === 1
       ? Promise.resolve({ confidence: [], conflict_history: [], conflict_count: 3 })
       : Promise.reject(new Error('unavailable'))));
     const { rerender } = render(inspector(1));
@@ -114,7 +114,7 @@ describe('HostInspector — stepping to a host that cannot be loaded', () => {
     await waitFor(() => expect(screen.getAllByText(/3 conflicts/i).length).toBeGreaterThan(0));
     rerender(inspector(2));
     await waitFor(() => expect(screen.getByText('10.0.0.2')).toBeInTheDocument());
-    await waitFor(() => expect(api.getHostConflicts).toHaveBeenCalledWith(2, expect.any(AbortSignal)));
+    await waitFor(() => expect(api.getHostConflicts).toHaveBeenCalledWith(1, 2, expect.any(AbortSignal)));
     expect(screen.queryByText(/3 conflicts/i)).not.toBeInTheDocument();
   });
 });

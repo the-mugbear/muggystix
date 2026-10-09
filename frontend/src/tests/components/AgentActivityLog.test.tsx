@@ -12,6 +12,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({ getAgentSessionApiActivity: vi.fn() }));
 vi.mock('../../services/api', () => api);
+// The project the log is shown in: every request names it first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 9 } }) }));
 
 import AgentActivityLog from '../../components/AgentActivityLog';
 import { TooltipProvider } from '../../components/ui/tooltip';
@@ -38,7 +40,7 @@ const call = (id: number) => ({
 /** The server: `TOTAL` calls, paged by the request's own offset and limit. */
 const serve = (total = TOTAL) => {
   api.getAgentSessionApiActivity.mockImplementation(
-    async (_sessionId: number, filters: { limit?: number; offset?: number } = {}) => {
+    async (_projectId: number, _sessionId: number, filters: { limit?: number; offset?: number } = {}) => {
       const offset = filters.offset ?? 0;
       const limit = filters.limit ?? PAGE;
       const count = Math.max(0, Math.min(limit, total - offset));
@@ -69,7 +71,7 @@ describe('AgentActivityLog', () => {
     expect(screen.queryByText(endpoint(101))).not.toBeInTheDocument();
     // The page is not the total.
     expect(screen.getByTestId('agent-activity-count')).toHaveTextContent('Showing 100 of 230');
-    expect(api.getAgentSessionApiActivity).toHaveBeenCalledWith(72, { limit: PAGE, offset: 0 }, expect.any(AbortSignal));
+    expect(api.getAgentSessionApiActivity).toHaveBeenCalledWith(9, 72, { limit: PAGE, offset: 0 }, expect.any(AbortSignal));
     // A section on the session's page, not a card.
     expect(screen.getByRole('heading', { level: 2, name: 'API activity' })).toBeInTheDocument();
   });
@@ -82,7 +84,7 @@ describe('AgentActivityLog', () => {
 
     await user.click(screen.getByRole('button', { name: 'Show more (130 left)' }));
     expect(await screen.findByText(endpoint(200))).toBeInTheDocument();
-    expect(api.getAgentSessionApiActivity).toHaveBeenLastCalledWith(72, { limit: PAGE, offset: 100 }, expect.any(AbortSignal));
+    expect(api.getAgentSessionApiActivity).toHaveBeenLastCalledWith(9, 72, { limit: PAGE, offset: 100 }, expect.any(AbortSignal));
     // Appended: the first page is still there.
     expect(screen.getByText(endpoint(1))).toBeInTheDocument();
     expect(screen.getByTestId('agent-activity-count')).toHaveTextContent('Showing 200 of 230');
@@ -129,7 +131,7 @@ describe('AgentActivityLog', () => {
     api.getAgentSessionApiActivity.mockClear();
     await user.click(screen.getByRole('button', { name: 'Refresh API activity' }));
     await waitFor(() => expect(api.getAgentSessionApiActivity).toHaveBeenCalledTimes(2));
-    expect(api.getAgentSessionApiActivity.mock.calls.map((c) => c[1].offset)).toEqual([0, 100]);
+    expect(api.getAgentSessionApiActivity.mock.calls.map((c) => c[2].offset)).toEqual([0, 100]);
     await waitFor(() => expect(screen.getByTestId('agent-activity-count')).toHaveTextContent('Showing 200 of 230'));
   });
 });

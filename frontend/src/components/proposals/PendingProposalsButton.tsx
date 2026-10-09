@@ -13,19 +13,20 @@ import { useQuery } from '@tanstack/react-query';
 import { ListChecks } from 'lucide-react';
 
 import { getProposalSummary } from '../../services/api';
-import { useProject } from '../../contexts/ProjectContext';
+import { NO_PROJECT, useProjectId } from '../../hooks/useProjectId';
 import { pollEvery } from '../../lib/query';
 import { Button } from '../ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
 const PendingProposalsButton: React.FC = () => {
   const navigate = useNavigate();
-  const { currentProject } = useProject();
+  const projectId = useProjectId();
+  const hasProject = projectId !== NO_PROJECT;
   // A failed read keeps the last count; the Proposals page reports its own failures.
   const { data: summary } = useQuery({
-    queryKey: ['getProposalSummary'],
-    queryFn: ({ signal }) => getProposalSummary(signal),
-    enabled: !!currentProject,
+    queryKey: ['getProposalSummary', projectId],
+    queryFn: ({ signal }) => getProposalSummary(projectId, signal),
+    enabled: hasProject,
     ...pollEvery(60_000),
   });
   // 5.318.0 — your own (proposals about findings you authored or own); a
@@ -34,7 +35,7 @@ const PendingProposalsButton: React.FC = () => {
   // member's top bar.
   const all = !!summary?.viewer_is_project_admin;
   const scope: 'mine' | 'all' = all ? 'all' : 'mine';
-  const pending = !currentProject || !summary ? 0 : all ? summary.pending : summary.pending_mine;
+  const pending = !hasProject || !summary ? 0 : all ? summary.pending : summary.pending_mine;
 
   if (pending <= 0) return null;
   return (

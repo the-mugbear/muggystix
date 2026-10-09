@@ -208,7 +208,7 @@ describe('FindingEndpoints — the selection is of rows the filter shows (S3)', 
     fireEvent.change(screen.getByLabelText('Set the selected endpoints to'), { target: { value: 'retest' } });
     fireEvent.click(screen.getByRole('button', { name: 'Set 1 endpoint' }));
     await waitFor(() => expect(setFindingEndpointsStatus).toHaveBeenCalledTimes(1));
-    expect(setFindingEndpointsStatus.mock.calls[0][1].finding_host_ids).toEqual([2]);
+    expect(setFindingEndpointsStatus.mock.calls[0][2].finding_host_ids).toEqual([2]);
     // …and the row is not ticked when the filter is taken off again.
     await waitFor(() => expect(bar()).toBeNull());
     fireEvent.click(chip(/All/));
@@ -278,14 +278,14 @@ describe('FindingEndpoints — requests in flight (M4 / M5)', () => {
     expect(stateOf(3)).not.toBeDisabled();
     // The second change waits for the first one's answer.
     await waitFor(() => expect(setFindingEndpointStatus).toHaveBeenCalledTimes(1));
-    expect(setFindingEndpointStatus).toHaveBeenLastCalledWith(7, 1, 'retest');
+    expect(setFindingEndpointStatus).toHaveBeenLastCalledWith(1, 7, 1, 'retest');
 
     await act(async () => { first.resolve(withState(start, { 1: 'retest' })); });
     expect(stateOf(1).value).toBe('retest');
     expect(stateOf(1)).not.toBeDisabled();
     expect(stateOf(2)).toBeDisabled();
     expect(setFindingEndpointStatus).toHaveBeenCalledTimes(2);
-    expect(setFindingEndpointStatus).toHaveBeenLastCalledWith(7, 2, 'remediated');
+    expect(setFindingEndpointStatus).toHaveBeenLastCalledWith(1, 7, 2, 'remediated');
 
     await act(async () => { second.resolve(withState(start, { 1: 'retest', 2: 'remediated' })); });
     // Every answer is applied: none is "older news" when they come in turn.
@@ -311,10 +311,10 @@ describe('FindingEndpoints — requests in flight (M4 / M5)', () => {
       });
       return d.promise;
     };
-    setFindingEndpointStatus.mockImplementation((_f: number, id: number, state: FindingHostStatus) =>
+    setFindingEndpointStatus.mockImplementation((_p: number, _f: number, id: number, state: FindingHostStatus) =>
       receive(`one:${id}`, () => ({ [id]: state })));
     setFindingEndpointsStatus.mockImplementation(
-      (_f: number, body: { finding_host_ids: number[]; host_status: FindingHostStatus }) =>
+      (_p: number, _f: number, body: { finding_host_ids: number[]; host_status: FindingHostStatus }) =>
         receive(`bulk:${body.finding_host_ids.join(',')}`,
           () => Object.fromEntries(body.finding_host_ids.map((id) => [id, body.host_status]))));
     /** Settle the request the server received LAST among those waiting. */
@@ -445,7 +445,7 @@ describe('FindingEndpoints — a proposed endpoint change sits on its row', () =
     fireEvent.click(within(row).getByRole('button', { name: /Reject…/ }));
     fireEvent.change(within(row).getByRole('textbox', { name: /Why reject it/ }), { target: { value: 'Not retested yet.' } });
     fireEvent.click(within(row).getByRole('button', { name: /^Reject$/ }));
-    await waitFor(() => expect(rejectProposal).toHaveBeenCalledWith(9, 'Not retested yet.'));
+    await waitFor(() => expect(rejectProposal).toHaveBeenCalledWith(1, 9, 'Not retested yet.'));
     // …with the promise of the re-read the decision asked for (5.351.0: the
     // page no longer re-reads from this callback).
     expect(onProposalDecided).toHaveBeenCalledWith(

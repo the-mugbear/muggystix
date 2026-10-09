@@ -35,7 +35,7 @@ import {
   listAgentSessions,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { useProject } from '../contexts/ProjectContext';
+import { NO_PROJECT, useProjectId } from '../hooks/useProjectId';
 import { pollEvery } from '../lib/query';
 import { cn } from '../utils/cn';
 import { Badge } from './ui/badge';
@@ -54,8 +54,6 @@ const PEEK_LIMIT = 8;
 
 const RECENT_FILTERS: AgentSessionFilters = { limit: PEEK_LIMIT };
 const ACTIVE_FILTERS: AgentSessionFilters = { status: 'active', kind: 'project', limit: 1 };
-const RECENT_KEY = ['listAgentSessions', RECENT_FILTERS] as const;
-const ACTIVE_KEY = ['listAgentSessions', ACTIVE_FILTERS] as const;
 const NO_SESSIONS: AgentSessionRow[] = [];
 
 const KIND_LABEL: Record<string, string> = {
@@ -96,9 +94,10 @@ const detailPath = (row: AgentSessionRow): string =>
 const AgentActivityRail: React.FC = () => {
   const navigate = useNavigate();
   const { isAuthenticated } = useAuth();
-  const { currentProject } = useProject();
+  const projectId = useProjectId();
+  const hasProject = projectId !== NO_PROJECT;
   const [open, setOpen] = useState(false);
-  const enabled = isAuthenticated && !!currentProject;
+  const enabled = isAuthenticated && hasProject;
 
   // Two cheap reads of the same endpoint — the recent list, and just the
   // active count for the badge.  5.313.0 — the badge counts agent SESSIONS
@@ -112,16 +111,16 @@ const AgentActivityRail: React.FC = () => {
   // so the rail isn't waking the browser every minute on a normal page.
   const cadence = (liveCount: number) => (open || liveCount > 0 ? ACTIVE_POLL_MS : IDLE_POLL_MS);
   const active = useQuery({
-    queryKey: ACTIVE_KEY,
-    queryFn: ({ signal }) => listAgentSessions(ACTIVE_FILTERS, { signal }),
+    queryKey: ['listAgentSessions', projectId, ACTIVE_FILTERS],
+    queryFn: ({ signal }) => listAgentSessions(projectId, ACTIVE_FILTERS, { signal }),
     enabled,
     // Its own answer is the live count that sets the cadence.
     ...pollEvery((query) => cadence((query.state.data as AgentSessionListResponse | undefined)?.total ?? 0)),
   });
   const activeCount = active.data?.total ?? 0;
   const recent = useQuery({
-    queryKey: RECENT_KEY,
-    queryFn: ({ signal }) => listAgentSessions(RECENT_FILTERS, { signal }),
+    queryKey: ['listAgentSessions', projectId, RECENT_FILTERS],
+    queryFn: ({ signal }) => listAgentSessions(projectId, RECENT_FILTERS, { signal }),
     enabled,
     ...pollEvery(cadence(activeCount)),
   });
@@ -138,7 +137,7 @@ const AgentActivityRail: React.FC = () => {
 
   // Hide the trigger entirely until the first fetch returns AND we
   // know the project has at least one agent session on file.
-  if (!isAuthenticated || !currentProject) return null;
+  if (!isAuthenticated || !hasProject) return null;
   if (loaded && totalShown === 0 && activeCount === 0) return null;
 
   return (

@@ -17,6 +17,7 @@ import {
   assignRemediationFromReport, listClientReports, type ClientReport, type RemediationAssignFromReport,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
+import { useProjectId } from '../../hooks/useProjectId';
 import { queryErrorText } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { formatDate } from '../../utils/relativeTime';
@@ -59,7 +60,11 @@ export const RemediationAssignFromReportDialog: React.FC<{
 }> = ({ today, onClose }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
-  const list = useQuery({ queryKey: ['listClientReports'], queryFn: ({ signal }) => listClientReports(signal) });
+  // The project page's dialog: this project's reports, this project's rows.
+  const projectId = useProjectId();
+  const list = useQuery({
+    queryKey: ['listClientReports', projectId], queryFn: ({ signal }) => listClientReports(projectId, signal),
+  });
   const loadError = queryErrorText(list.error, 'The reports could not be loaded.');
   const reports = useMemo((): ClientReport[] | null => (list.data
     ? list.data.items.filter((r) => r.status === 'issued')
@@ -79,8 +84,8 @@ export const RemediationAssignFromReportDialog: React.FC<{
   // server answers with the report's issue day.
   const dryRun = { report_id: reportId as number, dry_run: true, ...(typed ? { assigned_on: typed } : {}) };
   const preview = useQuery({
-    queryKey: ['assignRemediationFromReport', dryRun],
-    queryFn: ({ signal }) => assignRemediationFromReport(dryRun, undefined, signal),
+    queryKey: ['assignRemediationFromReport', projectId, dryRun],
+    queryFn: ({ signal }) => assignRemediationFromReport(projectId, dryRun, undefined, signal),
     enabled: reportId != null && !future,
   });
   const shown = preview.data ?? null;
@@ -89,7 +94,7 @@ export const RemediationAssignFromReportDialog: React.FC<{
   const date = typed || shown?.assigned_on || '';
 
   const assigning = useMutation({
-    mutationFn: (body: { report_id: number; assigned_on: string }) => assignRemediationFromReport(body),
+    mutationFn: (body: { report_id: number; assigned_on: string }) => assignRemediationFromReport(projectId, body),
     onSuccess: (result) => {
       toast.success(result.assigned === 0
         ? 'Nothing needed an assigned date.'

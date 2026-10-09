@@ -18,9 +18,9 @@ import {
   listHostTags,
   updateHostTag,
 } from '../services/api';
-import { useProject } from '../contexts/ProjectContext';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
+import { NO_PROJECT, useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
@@ -34,7 +34,7 @@ import { Input } from './ui/input';
 const NO_TAGS: HostTagWithCount[] = [];
 
 const TagManagement: React.FC = () => {
-  const { currentProject } = useProject();
+  const projectId = useProjectId();
   // Renaming and deleting a tag need the project analyst on the server
   // (`host_tags`: PATCH and DELETE); the list is every member's.  A role that
   // has not loaded leaves the decision to the server (style guide §40).
@@ -45,12 +45,10 @@ const TagManagement: React.FC = () => {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draftName, setDraftName] = useState('');
 
-  const projectId = currentProject?.id;
-
   const tagsQuery = useQuery({
-    queryKey: ['listHostTags'],
-    queryFn: ({ signal }) => listHostTags(signal),
-    enabled: !!projectId,
+    queryKey: ['listHostTags', projectId],
+    queryFn: ({ signal }) => listHostTags(projectId, signal),
+    enabled: projectId !== NO_PROJECT,
   });
   // A read that failed shows its error and no rows — not the rows of before.
   const tags = (!tagsQuery.isError && tagsQuery.data) || NO_TAGS;
@@ -73,7 +71,7 @@ const TagManagement: React.FC = () => {
   };
 
   const rename = useMutation({
-    mutationFn: ({ tag, name }: { tag: HostTagWithCount; name: string }) => updateHostTag(tag.id, { name }),
+    mutationFn: ({ tag, name }: { tag: HostTagWithCount; name: string }) => updateHostTag(projectId, tag.id, { name }),
     onSuccess: (_updated, { name }) => {
       toast.success(`Renamed to “${name}”.`);
       cancelEdit();
@@ -84,7 +82,7 @@ const TagManagement: React.FC = () => {
     onError: (err) => toast.error(formatApiError(err, 'Failed to rename tag.')),
   });
   const remove = useMutation({
-    mutationFn: (tag: HostTagWithCount) => deleteHostTag(tag.id),
+    mutationFn: (tag: HostTagWithCount) => deleteHostTag(projectId, tag.id),
     onSuccess: (_done, tag) => {
       toast.success(`Deleted “${tag.name}”.`);
       return tagsChanged();
@@ -116,7 +114,7 @@ const TagManagement: React.FC = () => {
     if (ok) remove.mutate(tag);
   };
 
-  if (!projectId) return null;
+  if (projectId === NO_PROJECT) return null;
 
   return (
     // v5.265.0 — a section of Project settings, not a card; the page header

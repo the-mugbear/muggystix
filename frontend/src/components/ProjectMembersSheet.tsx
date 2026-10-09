@@ -17,7 +17,7 @@ import {
   updateProjectMemberRole,
   removeProjectMember,
 } from '../services/api';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import {
   SideSheet,
@@ -61,16 +61,16 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
   const [addRole, setAddRole] = React.useState<string>('viewer');
 
   // The project is this sheet's argument (any project on Portfolio), not the
-  // one the app is in — so it is in the key, and the key is GLOBAL.
+  // one the app is in: the key names the project it was given.
   const roster = useQuery({
-    queryKey: [GLOBAL, 'getProjectMembers', projectId],
+    queryKey: ['getProjectMembers', projectId],
     queryFn: ({ signal }) => getProjectMembers(projectId as number, signal),
     enabled: open && projectId != null,
   });
   // The picker is optional: asked for once the roster is there, and a failure
   // leaves it empty.
   const users = useQuery({
-    queryKey: [GLOBAL, 'getUserDirectory'],
+    queryKey: ['getUserDirectory'],
     queryFn: ({ signal }) => getUserDirectory(signal),
     enabled: open && projectId != null && canManage && roster.isSuccess,
   });
@@ -85,9 +85,9 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
   // Who is on a project is shown here, in the pickers of that project
   // (`listProjectMembers`, the roster hook's key) and as Portfolio's count.
   const rosterChanged = () => Promise.all([
-    queryClient.invalidateQueries({ queryKey: [GLOBAL, 'getProjectMembers'] }),
+    queryClient.invalidateQueries({ queryKey: ['getProjectMembers'] }),
     queryClient.invalidateQueries({ queryKey: ['listProjectMembers'] }),
-    queryClient.invalidateQueries({ queryKey: [GLOBAL, 'getPortfolioDashboard'] }),
+    queryClient.invalidateQueries({ queryKey: ['getPortfolioDashboard'] }),
   ]);
 
   const adding = useMutation({

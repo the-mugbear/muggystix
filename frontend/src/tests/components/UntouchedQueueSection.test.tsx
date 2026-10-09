@@ -33,6 +33,8 @@ import type { InvestigateRow, InvestigationQueueResponse } from '../../services/
 vi.mock('react-router-dom', async () => vi.importActual<typeof import('react-router-dom')>('react-router-dom'));
 const api = vi.hoisted(() => ({ followHost: vi.fn(), unfollowHost: vi.fn() }));
 vi.mock('../../services/api', () => api);
+// The project the tab is shown in: every request names it first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 9 } }) }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }));
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 
@@ -253,13 +255,13 @@ describe('Untouched, with a reason — actions', () => {
   it('"Review" takes the host into review under the reader and refreshes', async () => {
     renderIt();
     fireEvent.click(within(rowOf('10.0.0.7')).getByRole('button', { name: 'Review' }));
-    await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(7, 'in_review'));
+    await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(9, 7, 'in_review'));
     await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
     await waitFor(() => expect(reread).toHaveBeenCalledWith('counts'));
   });
 
   it('bulk Review takes every selected host, and reports a partial failure honestly', async () => {
-    api.followHost.mockImplementation(async (id: number) => {
+    api.followHost.mockImplementation(async (_projectId: number, id: number) => {
       if (id === 8) throw { response: { status: 403, data: { detail: 'not a member' } } };
       return { status: 'in_review' };
     });

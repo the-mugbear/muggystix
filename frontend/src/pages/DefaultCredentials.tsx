@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { GLOBAL } from '../lib/query';
 import { copyToClipboard as copyText } from '../utils/clipboard';
 import { parseCsv } from '../utils/csv';
 import {
@@ -69,7 +68,7 @@ const loadDefaultCredentials = async (signal: AbortSignal): Promise<CredentialEn
 const DefaultCredentials: React.FC = () => {
   const toast = useToast();
   const sheet = useQuery({
-    queryKey: [GLOBAL, 'defaultCredentialsSheet'],
+    queryKey: ['defaultCredentialsSheet'],
     queryFn: ({ signal }) => loadDefaultCredentials(signal),
   });
   const credentials = sheet.data ?? NO_CREDENTIALS;

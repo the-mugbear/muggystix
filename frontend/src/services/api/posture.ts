@@ -1,9 +1,10 @@
 /**
  * Security Posture API client — the manager-facing roll-up. One composed
  * snapshot (deterministic label + headline measures + ranked priorities +
- * site/systemic/disposition breakdowns). Project-scoped via p().
+ * site/systemic/disposition breakdowns). Project-scoped: the project is each
+ * function's first argument.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 import type { SystemicCondition, SeverityCounts } from './insights';
 
 export type PostureLabel =
@@ -152,9 +153,10 @@ export interface PostureResponse {
 }
 
 export const getPosture = async (
+  projectId: number,
   options: { signal?: AbortSignal } = {},
 ): Promise<PostureResponse> => {
-  const response = await api.get<PostureResponse>(`${p()}/posture`, {
+  const response = await api.get<PostureResponse>(`${projectPath(projectId)}/posture`, {
     signal: options.signal,
   });
   return response.data;
@@ -238,13 +240,14 @@ export interface EvidenceGapsResponse {
 }
 
 export const getEvidenceGaps = async (
+  projectId: number,
   domain: string,
   options: { limit?: number; segment?: string; signal?: AbortSignal } = {},
 ): Promise<EvidenceGapsResponse> => {
   const params: Record<string, string | number> = {};
   if (options.limit) params.limit = options.limit;
   if (options.segment) params.segment = options.segment;
-  const response = await api.get<EvidenceGapsResponse>(`${p()}/posture/evidence/${domain}/gaps`, {
+  const response = await api.get<EvidenceGapsResponse>(`${projectPath(projectId)}/posture/evidence/${domain}/gaps`, {
     params: Object.keys(params).length ? params : undefined,
     signal: options.signal,
   });
@@ -252,9 +255,10 @@ export const getEvidenceGaps = async (
 };
 
 export const getEvidenceCoverage = async (
+  projectId: number,
   options: { signal?: AbortSignal } = {},
 ): Promise<EvidenceCoverageResponse> => {
-  const response = await api.get<EvidenceCoverageResponse>(`${p()}/posture/evidence`, {
+  const response = await api.get<EvidenceCoverageResponse>(`${projectPath(projectId)}/posture/evidence`, {
     signal: options.signal,
   });
   return response.data;

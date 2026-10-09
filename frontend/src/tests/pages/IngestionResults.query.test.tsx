@@ -71,7 +71,7 @@ describe('Ingestion Results — the view is in the URL (B15)', () => {
   it('a link with search, sort, direction and page restores all four', async () => {
     renderPage('/parse-errors?status=failed&search=dmz&sort=file_size&dir=asc&page=3');
     await screen.findByText('scan.xml');
-    expect(api.getIngestionResults).toHaveBeenLastCalledWith({
+    expect(api.getIngestionResults).toHaveBeenLastCalledWith(1, {
       skip: 50, limit: 25, status: 'failed', search: 'dmz', sortBy: 'file_size', sortOrder: 'asc',
     }, expect.any(AbortSignal));
     expect(screen.getByLabelText('Search ingestion results by filename or error message')).toHaveValue('dmz');
@@ -82,18 +82,18 @@ describe('Ingestion Results — the view is in the URL (B15)', () => {
   it.each(['1.5', '-2', '0', 'abc', '1e3', '2 ', ''])('a page of "%s" is the first page', async (value) => {
     renderPage(`/parse-errors?page=${encodeURIComponent(value)}`);
     await screen.findByText('scan.xml');
-    expect(api.getIngestionResults.mock.calls.every(([q]) => q.skip === 0)).toBe(true);
+    expect(api.getIngestionResults.mock.calls.every(([, q]) => q.skip === 0)).toBe(true);
   });
 
   it('typing a search writes it to the URL, and a new filter goes back to the first page', async () => {
     renderPage('/parse-errors?page=2');
     await screen.findByText('scan.xml');
-    expect(api.getIngestionResults).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 25 }), expect.any(AbortSignal));
+    expect(api.getIngestionResults).toHaveBeenLastCalledWith(1, expect.objectContaining({ skip: 25 }), expect.any(AbortSignal));
 
     fireEvent.change(screen.getByLabelText('Search ingestion results by filename or error message'), { target: { value: 'nessus' } });
     await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('search=nessus'));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
-      expect.objectContaining({ skip: 0, search: 'nessus' }), expect.any(AbortSignal),
+      1, expect.objectContaining({ skip: 0, search: 'nessus' }), expect.any(AbortSignal),
     ));
   });
 
@@ -106,14 +106,14 @@ describe('Ingestion Results — the view is in the URL (B15)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Next/ }));
     await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('dir=asc&page=2'));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
-      expect.objectContaining({ skip: 25, sortOrder: 'asc' }), expect.any(AbortSignal),
+      1, expect.objectContaining({ skip: 25, sortOrder: 'asc' }), expect.any(AbortSignal),
     ));
   });
 
   it('ignores a sort key the server does not have', async () => {
     renderPage('/parse-errors?sort=drop_table');
     await screen.findByText('scan.xml');
-    expect(api.getIngestionResults).toHaveBeenLastCalledWith(expect.objectContaining({ sortBy: 'created_at' }), expect.any(AbortSignal));
+    expect(api.getIngestionResults).toHaveBeenLastCalledWith(1, expect.objectContaining({ sortBy: 'created_at' }), expect.any(AbortSignal));
   });
 });
 
@@ -121,7 +121,7 @@ describe('Ingestion Results — the latest filter wins (R33)', () => {
   it('a slow response for "all" never replaces the rows of the filter chosen after it', async () => {
     let releaseAll!: (v: unknown) => void;
     const slowAll = new Promise((resolve) => { releaseAll = resolve; });
-    api.getIngestionResults.mockImplementation(({ status }: { status?: string }) =>
+    api.getIngestionResults.mockImplementation((_projectId: number, { status }: { status?: string }) =>
       (status === 'failed'
         ? Promise.resolve(response([row({ id: 2, original_filename: 'failed.xml', status: 'failed' })]))
         : slowAll));

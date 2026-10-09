@@ -21,7 +21,7 @@ import { useQuery } from '@tanstack/react-query';
 import { RefreshCw, Users } from 'lucide-react';
 
 import { TeamMember, getPortfolioTeam } from '../services/api';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { projectRoleLabel } from '../utils/projectMembers';
 import PostureEmpty from './posture/PostureEmpty';
 import PostureMeasure from './posture/PostureMeasure';
@@ -85,7 +85,7 @@ const MemberRow: React.FC<{ m: TeamMember }> = ({ m }) => {
 
 export const PortfolioTeam: React.FC = () => {
   const query = useQuery({
-    queryKey: [GLOBAL, 'getPortfolioTeam'],
+    queryKey: ['getPortfolioTeam'],
     queryFn: ({ signal }) => getPortfolioTeam(signal),
   });
   const members = query.data?.members;

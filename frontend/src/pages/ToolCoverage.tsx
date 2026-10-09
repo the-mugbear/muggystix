@@ -19,7 +19,7 @@ import {
   CoverageSignal,
   getParserCoverage,
 } from '../services/api';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { cn } from '../utils/cn';
 import {
   FilteredTool,
@@ -196,7 +196,7 @@ const ToolCoverage: React.FC = () => {
   };
 
   const coverage = useQuery({
-    queryKey: [GLOBAL, 'getParserCoverage'],
+    queryKey: ['getParserCoverage'],
     queryFn: ({ signal }) => getParserCoverage(signal),
   });
   const data = coverage.data ?? null;

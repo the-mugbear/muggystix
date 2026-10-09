@@ -10,6 +10,7 @@ import {
   type HostQueryHistoryEntry,
 } from '../../services/api';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
+import { useProjectId } from '../../hooks/useProjectId';
 
 const DEBOUNCE_MS = 350;
 const NO_HISTORY: HostQueryHistoryEntry[] = [];
@@ -25,16 +26,17 @@ const NO_HISTORY: HostQueryHistoryEntry[] = [];
  * no-op without a round-trip.
  */
 export function useQueryAssist(draft: string) {
+  const projectId = useProjectId();
   const queryClient = useQueryClient();
   // Non-fatal when it fails: the command bar degrades to free typing.
   const schema = useQuery({
-    queryKey: ['getHostQuerySchema'],
-    queryFn: ({ signal }) => getHostQuerySchema(signal),
+    queryKey: ['getHostQuerySchema', projectId],
+    queryFn: ({ signal }) => getHostQuerySchema(projectId, signal),
   }).data ?? null;
   // Best-effort: a failed read is an empty history.
   const history = useQuery({
-    queryKey: ['listHostQueryHistory'],
-    queryFn: ({ signal }) => listHostQueryHistory(undefined, signal),
+    queryKey: ['listHostQueryHistory', projectId],
+    queryFn: ({ signal }) => listHostQueryHistory(projectId, undefined, signal),
   }).data ?? NO_HISTORY;
 
   const trimmed = draft.trim();
@@ -42,8 +44,8 @@ export function useQueryAssist(draft: string) {
   // The answer carries the draft it describes, so the previous one — kept on
   // screen while the next is asked for — is never taken for the current.
   const check = useQuery({
-    queryKey: ['validateHostQuery', settled],
-    queryFn: async ({ signal }) => ({ query: settled, validation: await validateHostQuery(settled, signal) }),
+    queryKey: ['validateHostQuery', projectId, settled],
+    queryFn: async ({ signal }) => ({ query: settled, validation: await validateHostQuery(projectId, settled, signal) }),
     enabled: settled !== '',
     placeholderData: keepPreviousData,
   });
@@ -67,8 +69,8 @@ export function useQueryAssist(draft: string) {
 
   // The history's writes are best-effort: a failure is not said.
   const { mutate: record } = useMutation({
-    mutationFn: ({ q, resultCount }: { q: string; resultCount?: number | null }) => recordHostQuery(q, resultCount),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['listHostQueryHistory'] }),
+    mutationFn: ({ q, resultCount }: { q: string; resultCount?: number | null }) => recordHostQuery(projectId, q, resultCount),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['listHostQueryHistory', projectId] }),
   });
   const recordQuery = useCallback((q: string, resultCount?: number | null) => {
     const text = q.trim();
@@ -76,17 +78,17 @@ export function useQueryAssist(draft: string) {
   }, [record]);
 
   const { mutate: removeHistory } = useMutation({
-    mutationFn: (id: number) => deleteHostQuery(id),
+    mutationFn: (id: number) => deleteHostQuery(projectId, id),
     onSuccess: (_done, id) => {
       queryClient.setQueryData<HostQueryHistoryEntry[]>(
-        ['listHostQueryHistory'], (entries) => entries?.filter((h) => h.id !== id),
+        ['listHostQueryHistory', projectId], (entries) => entries?.filter((h) => h.id !== id),
       );
     },
   });
 
   const { mutate: clearHistory } = useMutation({
-    mutationFn: () => clearHostQueryHistory(),
-    onSuccess: () => { queryClient.setQueryData<HostQueryHistoryEntry[]>(['listHostQueryHistory'], []); },
+    mutationFn: () => clearHostQueryHistory(projectId),
+    onSuccess: () => { queryClient.setQueryData<HostQueryHistoryEntry[]>(['listHostQueryHistory', projectId], []); },
   });
 
   return { schema, validation, validatedQuery, validating, validationError, retryValidation, history, recordQuery, removeHistory, clearHistory };

@@ -16,6 +16,7 @@ import { listAgentSessions, type AgentSessionRow } from '../services/api';
 import { hasLiveKey, myActiveSessionFilters } from '../utils/agentRuns';
 import { copyToClipboard } from '../utils/clipboard';
 import { useCanStartAgentSession } from './useCanStartAgentSession';
+import { useProjectId } from './useProjectId';
 
 export interface AgentTask {
   /** False below project auditor: there is nothing to offer. */
@@ -33,8 +34,9 @@ export const useAgentTask = (): AgentTask => {
 
   // Asked at the moment of the click, not read from a list that may be a
   // minute old: whether to copy or to open the dialog turns on it.
+  const projectId = useProjectId();
   const { mutateAsync: lookUp } = useMutation({
-    mutationFn: (userId: number) => listAgentSessions(myActiveSessionFilters(userId)),
+    mutationFn: (userId: number) => listAgentSessions(projectId, myActiveSessionFilters(userId)),
   });
 
   /** This operator's sessions whose key still works (as `useMyAssistSessions`). */

@@ -60,11 +60,11 @@ describe('Names page export', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Export names as text' }));
     await waitFor(() => expect(mocked.exportNames).toHaveBeenCalledTimes(1));
-    expect(mocked.exportNames).toHaveBeenCalledWith('txt', { search: 'portal', state: 'in_scope' });
+    expect(mocked.exportNames).toHaveBeenCalledWith(1, 'txt', { search: 'portal', state: 'in_scope' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Export names as CSV' }));
     await waitFor(() => expect(mocked.exportNames).toHaveBeenCalledTimes(2));
-    expect(mocked.exportNames).toHaveBeenLastCalledWith('csv', { search: 'portal', state: 'in_scope' });
+    expect(mocked.exportNames).toHaveBeenLastCalledWith(1, 'csv', { search: 'portal', state: 'in_scope' });
   });
 
   it('hides export from viewers (server enforces AUDITOR+; this is the affordance)', async () => {
@@ -217,11 +217,11 @@ describe('Names page — screenshot review (v5.288.0)', () => {
     renderAt('/names?page=2');
     await screen.findByText('portal.example-corp.com');
     expect(mocked.listNames).toHaveBeenCalledTimes(1);
-    // (The second argument is the query's abort signal.)
-    expect(mocked.listNames).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 100 }), expect.anything());
+    // (The project first; the last argument is the query's abort signal.)
+    expect(mocked.listNames).toHaveBeenLastCalledWith(1, expect.objectContaining({ skip: 100 }), expect.anything());
     expect(screen.getByText('101–200 of 250')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-    await waitFor(() => expect(mocked.listNames).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 200 }), expect.anything()));
+    await waitFor(() => expect(mocked.listNames).toHaveBeenLastCalledWith(1, expect.objectContaining({ skip: 200 }), expect.anything()));
   });
 
   // The filter changed first and the page was put back to the first one
@@ -234,7 +234,7 @@ describe('Names page — screenshot review (v5.288.0)', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Unresolved/ }));
     await waitFor(() => expect(mocked.listNames).toHaveBeenCalled());
     await screen.findByText('1–100 of 250');
-    expect(mocked.listNames.mock.calls.map(([q]) => [q.state, q.skip])).toEqual([['unresolved', 0]]);
+    expect(mocked.listNames.mock.calls.map(([projectId, q]) => [projectId, q.state, q.skip])).toEqual([[1, 'unresolved', 0]]);
   });
 });
 

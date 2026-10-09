@@ -48,7 +48,7 @@ describe('FormatRetryDialog', () => {
     fireEvent.change(screen.getByLabelText('Parse as'), { target: { value: 'amass_output' } });
     fireEvent.change(screen.getByLabelText('Source tool (optional)'), { target: { value: 'subfinder' } });
     fireEvent.click(screen.getByRole('button', { name: 'Retry import' }));
-    await waitFor(() => expect(api.startIngestionJob).toHaveBeenCalledWith(9, { formatOverride: 'amass_output', sourceTool: 'subfinder' }));
+    await waitFor(() => expect(api.startIngestionJob).toHaveBeenCalledWith(1, 9, { formatOverride: 'amass_output', sourceTool: 'subfinder' }));
     expect(api.reprocessIngestionJob).not.toHaveBeenCalled();
     // Done: the dialog closes.  (It used to call an `onDone` prop whose only
     // job was the parent's re-fetch; the dialog now says itself which reads
@@ -70,7 +70,7 @@ describe('FormatRetryDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm suggested format' }));
     expect(screen.getByLabelText('Parse as')).toHaveValue('naabu_output');
     fireEvent.click(screen.getByRole('button', { name: 'Re-process' }));
-    await waitFor(() => expect(api.reprocessIngestionJob).toHaveBeenCalledWith(9, { formatOverride: 'naabu_output', sourceTool: null }));
+    await waitFor(() => expect(api.reprocessIngestionJob).toHaveBeenCalledWith(1, 9, { formatOverride: 'naabu_output', sourceTool: null }));
     expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('job #42'), expect.anything());
   });
 
@@ -85,7 +85,7 @@ describe('FormatRetryDialog', () => {
     await waitFor(() => expect(screen.getByText(/recognised by structure/)).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Confirm suggested format' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry import' }));
-    await waitFor(() => expect(api.startIngestionJob).toHaveBeenCalledWith(9, { formatOverride: null, sourceTool: null }));
+    await waitFor(() => expect(api.startIngestionJob).toHaveBeenCalledWith(1, 9, { formatOverride: null, sourceTool: null }));
   });
 
   it('fallback candidates are not suggested and not called a detection', async () => {

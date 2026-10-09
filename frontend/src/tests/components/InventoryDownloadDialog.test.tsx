@@ -66,7 +66,7 @@ describe('InventoryDownloadDialog', () => {
     const onClose = vi.fn();
     render(<InventoryDownloadDialog open onClose={onClose} filters={{ state: 'up' }} totalHosts={10} />);
     fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }));
-    await waitFor(() => expect(mocked.downloadInventoryCsv).toHaveBeenCalledWith({ state: 'up' }));
+    await waitFor(() => expect(mocked.downloadInventoryCsv).toHaveBeenCalledWith(1, { state: 'up' }));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(mocked.enqueueInventoryJson).not.toHaveBeenCalled();
   });
@@ -94,7 +94,7 @@ describe('InventoryDownloadDialog', () => {
     render(<InventoryDownloadDialog open onClose={onClose} filters={{ state: 'up' }} totalHosts={10} />);
     fireEvent.click(screen.getByRole('button', { name: 'Prepare JSON' }));
 
-    await waitFor(() => expect(mocked.enqueueInventoryJson).toHaveBeenCalledWith({ state: 'up' }));
+    await waitFor(() => expect(mocked.enqueueInventoryJson).toHaveBeenCalledWith(1, { state: 'up' }));
     await waitFor(() => expect(screen.getByTestId('tracked-job-running')).toHaveTextContent(/queued/));
     expect(within(screen.getByTestId('inventory-job-7')).getByText('Queued')).toBeInTheDocument();
     expect(mocked.downloadReportJob).not.toHaveBeenCalled();
@@ -118,7 +118,7 @@ describe('InventoryDownloadDialog', () => {
     const row = await screen.findByTestId('inventory-job-9');
     expect(within(row).getByText('Ready')).toBeInTheDocument();
     fireEvent.click(within(row).getByRole('button', { name: 'Download' }));
-    await waitFor(() => expect(mocked.downloadReportJob).toHaveBeenCalledWith(9));
+    await waitFor(() => expect(mocked.downloadReportJob).toHaveBeenCalledWith(1, 9));
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -152,7 +152,7 @@ describe('InventoryDownloadDialog', () => {
 
     const ready = await screen.findByTestId('tracked-job-ready');
     fireEvent.click(within(ready).getByRole('button', { name: 'Download JSON' }));
-    await waitFor(() => expect(mocked.downloadReportJob).toHaveBeenCalledWith(11));
+    await waitFor(() => expect(mocked.downloadReportJob).toHaveBeenCalledWith(1, 11));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 

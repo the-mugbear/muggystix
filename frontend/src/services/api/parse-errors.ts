@@ -5,7 +5,7 @@
  * everything from here so consumers can keep importing from
  * ``../services/api`` unchanged.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 
 
 
@@ -36,7 +36,7 @@ export interface ParseErrorSummary {
 
 
 // consumer appears.
-export const getParseError = async (errorId: number, signal?: AbortSignal): Promise<ParseError> => {
-  const response = await api.get(`${p()}/parse-errors/${errorId}`, { signal });
+export const getParseError = async (projectId: number, errorId: number, signal?: AbortSignal): Promise<ParseError> => {
+  const response = await api.get(`${projectPath(projectId)}/parse-errors/${errorId}`, { signal });
   return response.data;
 };

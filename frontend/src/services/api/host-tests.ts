@@ -1,4 +1,4 @@
-import { api, p } from './client';
+import { api, projectPath } from './client';
 
 export type HostTestStatus = 'proposed' | 'in_progress' | 'done' | 'dismissed';
 export interface HostTest {
@@ -38,10 +38,10 @@ export interface HostTest {
   created_at: string;
 }
 export interface HostTestPage { items: HostTest[]; total: number; has_more: boolean }
-export const listHostTests = async (query: { host_id?: number; status?: HostTestStatus; active_only?: boolean; label?: string; mine?: boolean; agent_session_id?: number; limit?: number; offset?: number } = {}, signal?: AbortSignal): Promise<HostTestPage> =>
-  (await api.get<HostTestPage>(`${p()}/host-tests`, { params: query, signal })).data;
-export const updateHostTest = async (id: number, change: { expected_revision: number; status?: HostTestStatus; assigned_to_id?: number | null; tester_summary?: string; dismissed_reason?: string }): Promise<HostTest> =>
-  (await api.patch<HostTest>(`${p()}/host-tests/${id}`, change)).data;
+export const listHostTests = async (projectId: number, query: { host_id?: number; status?: HostTestStatus; active_only?: boolean; label?: string; mine?: boolean; agent_session_id?: number; limit?: number; offset?: number } = {}, signal?: AbortSignal): Promise<HostTestPage> =>
+  (await api.get<HostTestPage>(`${projectPath(projectId)}/host-tests`, { params: query, signal })).data;
+export const updateHostTest = async (projectId: number, id: number, change: { expected_revision: number; status?: HostTestStatus; assigned_to_id?: number | null; tester_summary?: string; dismissed_reason?: string }): Promise<HostTest> =>
+  (await api.patch<HostTest>(`${projectPath(projectId)}/host-tests/${id}`, change)).data;
 
 export type HostTestPriority = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export interface HostTestCreateBody {
@@ -59,8 +59,8 @@ export interface HostTestCreateBody {
   vulnerability_id?: number;
 }
 /** Add tests to hosts by hand — the same route an agent proposes through. */
-export const createHostTests = async (tests: HostTestCreateBody[]): Promise<{ items: HostTest[] }> =>
-  (await api.post<{ items: HostTest[] }>(`${p()}/host-tests`, { tests })).data;
+export const createHostTests = async (projectId: number, tests: HostTestCreateBody[]): Promise<{ items: HostTest[] }> =>
+  (await api.post<{ items: HostTest[] }>(`${projectPath(projectId)}/host-tests`, { tests })).data;
 
 export type HostTestOutcome ='finding' | 'no_finding' | 'inconclusive' | 'failed';
 export interface HostTestResultBody {
@@ -75,5 +75,5 @@ export interface HostTestResultBody {
 }
 /** A person's result for a test: records the evidence and moves the test on
  *  (finding / no finding close it; the others leave it in progress). */
-export const recordHostTestResult = async (id: number, body: HostTestResultBody): Promise<{ test: HostTest }> =>
-  (await api.post<{ test: HostTest }>(`${p()}/host-tests/${id}/result`, body)).data;
+export const recordHostTestResult = async (projectId: number, id: number, body: HostTestResultBody): Promise<{ test: HostTest }> =>
+  (await api.post<{ test: HostTest }>(`${projectPath(projectId)}/host-tests/${id}/result`, body)).data;

@@ -7,7 +7,7 @@ import {
   disableTwoFactor, enableTwoFactor, getTwoFactorStatus, regenerateRecoveryCodes, startTwoFactorSetup,
   type TwoFactorSetup,
 } from '../services/api';
-import { GLOBAL, SECRET_MUTATION, invalidateReads, queryErrorText } from '../lib/query';
+import { SECRET_MUTATION, invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useToast } from '../contexts/ToastContext';
 import PostureSection from './posture/PostureSection';
@@ -40,7 +40,7 @@ const TwoFactorCard: React.FC = () => {
 
   // The signed-in user's own 2FA state — not a project's.
   const statusQuery = useQuery({
-    queryKey: [GLOBAL, 'getTwoFactorStatus'],
+    queryKey: ['getTwoFactorStatus'],
     queryFn: ({ signal }) => getTwoFactorStatus(signal),
   });
   const status = statusQuery.data ?? null;

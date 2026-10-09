@@ -12,6 +12,7 @@ import { Link } from 'react-router-dom';
 import { FileTerminal, Loader2 } from 'lucide-react';
 
 import { EvidenceRecord, getEvidenceRawOutput, listEvidenceRecords } from '../../services/api';
+import { useProjectId } from '../../hooks/useProjectId';
 import { queryErrorText } from '../../lib/query';
 import { formatRelativeTime } from '../../utils/relativeTime';
 import { Badge } from '../ui/badge';
@@ -28,7 +29,8 @@ const OUTCOME: Record<string, { label: string; variant: 'warning-outline' | 'suc
 
 const Output: React.FC<{ rec: EvidenceRecord }> = ({ rec }) => {
   // Asked for by the button, once; the preview is what the record carries.
-  const whole = useMutation({ mutationFn: () => getEvidenceRawOutput(rec.id) });
+  const projectId = useProjectId();
+  const whole = useMutation({ mutationFn: () => getEvidenceRawOutput(projectId, rec.id) });
   const full = whole.data ?? null;
   const busy = whole.isPending;
   const error = queryErrorText(whole.error, 'Could not load the output.');
@@ -87,13 +89,14 @@ export const EvidenceItem: React.FC<{ rec: EvidenceRecord; hideFindingLink?: boo
 
 /** The key of a host's evidence that answers no test — what this section
  *  reads.  A write that may change it (a result, a promotion) invalidates it. */
-export const hostEvidenceKey = (hostId: number) =>
-  ['listEvidenceRecords', { host_id: hostId, unlinked: true, limit: 100 }] as const;
+export const hostEvidenceKey = (projectId: number, hostId: number) =>
+  ['listEvidenceRecords', projectId, { host_id: hostId, unlinked: true, limit: 100 }] as const;
 
 const HostEvidenceSection: React.FC<{ hostId: number }> = ({ hostId }) => {
+  const projectId = useProjectId();
   const query = useQuery({
-    queryKey: hostEvidenceKey(hostId),
-    queryFn: ({ signal }) => listEvidenceRecords({ host_id: hostId, unlinked: true, limit: 100 }, signal),
+    queryKey: hostEvidenceKey(projectId, hostId),
+    queryFn: ({ signal }) => listEvidenceRecords(projectId, { host_id: hostId, unlinked: true, limit: 100 }, signal),
   });
   const items = query.data?.items ?? null;
   const total = query.data?.total ?? 0;

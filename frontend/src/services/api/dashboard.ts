@@ -8,7 +8,7 @@
  * Extracted from the api.ts monolith.  Consumers still import these from
  * ``../services/api`` — the barrel re-exports this module.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 
 export interface VulnerabilityStats {
   total_vulnerabilities: number;
@@ -35,8 +35,8 @@ export interface DashboardStats {
   vulnerability_stats?: VulnerabilityStats;
 }
 
-export const getDashboardStats = async (signal?: AbortSignal): Promise<DashboardStats> => {
-  const response = await api.get(`${p()}/dashboard/stats`, { signal });
+export const getDashboardStats = async (projectId: number, signal?: AbortSignal): Promise<DashboardStats> => {
+  const response = await api.get(`${projectPath(projectId)}/dashboard/stats`, { signal });
   return response.data;
 };
 
@@ -281,6 +281,7 @@ export interface ReviewFollowupsResponse {
 }
 
 export const getWorkbench = async (
+  projectId: number,
   opts: { includeInvestigate?: boolean; includeRows?: boolean } = {},
   signal?: AbortSignal,
 ): Promise<WorkbenchResponse> => {
@@ -292,7 +293,7 @@ export const getWorkbench = async (
   const params: Record<string, boolean> = {};
   if (opts.includeInvestigate === false) params.include_investigate = false;
   if (opts.includeRows === false) params.include_rows = false;
-  const response = await api.get(`${p()}/workbench`, {
+  const response = await api.get(`${projectPath(projectId)}/workbench`, {
     params: Object.keys(params).length ? params : undefined,
     signal,
   });
@@ -317,12 +318,13 @@ const pageParams = (page: WorkbenchPage): Record<string, number | string> => {
  *  callers show "unavailable", never an empty queue. `offset` pages it in
  *  the queue's own order; the totals stay whole-queue. */
 export const getInvestigationQueue = async (
+  projectId: number,
   tier?: number | null,
   page: WorkbenchPage = {},
 ): Promise<InvestigationQueueResponse> => {
   const params = pageParams(page);
   if (tier) params.tier = tier;
-  const response = await api.get(`${p()}/workbench/investigate`, {
+  const response = await api.get(`${projectPath(projectId)}/workbench/investigate`, {
     params: Object.keys(params).length ? params : undefined,
     signal: page.signal,
   });
@@ -336,18 +338,19 @@ export const getInvestigationQueue = async (
 /** Findings the caller owns that need them. With `need`, only that kind of
  *  work; the list's size is `total_open` (both kinds) or `need_counts[need]`. */
 export const getMyFindingsPage = async (
+  projectId: number,
   need: FindingNeed | null = null,
   page: WorkbenchPage = {},
 ): Promise<MyFindingsResponse> => {
   const params = pageParams(page);
   if (need) params.need = need;
-  const response = await api.get(`${p()}/workbench/findings`, { params, signal: page.signal });
+  const response = await api.get(`${projectPath(projectId)}/workbench/findings`, { params, signal: page.signal });
   return response.data;
 };
 
 /** Hosts the caller has In Review; `in_review_count` is the whole list. */
-export const getMyReviewHostsPage = async (page: WorkbenchPage = {}): Promise<MyAttentionResponse> => {
-  const response = await api.get(`${p()}/workbench/hosts`, { params: pageParams(page), signal: page.signal });
+export const getMyReviewHostsPage = async (projectId: number, page: WorkbenchPage = {}): Promise<MyAttentionResponse> => {
+  const response = await api.get(`${projectPath(projectId)}/workbench/hosts`, { params: pageParams(page), signal: page.signal });
   return response.data;
 };
 
@@ -355,27 +358,28 @@ export const getMyReviewHostsPage = async (page: WorkbenchPage = {}): Promise<My
  *  under its strongest reason. With `kind`, only that kind; the list's size
  *  is `total_open` (every kind) or `group_counts[kind]`. */
 export const getMyTestsPage = async (
+  projectId: number,
   kind: MyTaskReason | null = null,
   page: WorkbenchPage = {},
 ): Promise<MyTasksResponse> => {
   const params = pageParams(page);
   if (kind) params.kind = kind;
-  const response = await api.get(`${p()}/workbench/tests`, { params, signal: page.signal });
+  const response = await api.get(`${projectPath(projectId)}/workbench/tests`, { params, signal: page.signal });
   return response.data;
 };
 
 /** The caller's finished reviews that are not done. Rejects (503) when they
  *  could not be checked — never an empty list. */
-export const getReviewFollowupsPage = async (page: WorkbenchPage = {}): Promise<ReviewFollowupsResponse> => {
-  const response = await api.get(`${p()}/workbench/followups`, { params: pageParams(page), signal: page.signal });
+export const getReviewFollowupsPage = async (projectId: number, page: WorkbenchPage = {}): Promise<ReviewFollowupsResponse> => {
+  const response = await api.get(`${projectPath(projectId)}/workbench/followups`, { params: pageParams(page), signal: page.signal });
   return response.data;
 };
 
 /** "Still reviewed": the caller looked at what changed after their review and
  *  it stands — the review date moves to now, the conclusion stays. All or
  *  nothing (409 names the hosts that could not be confirmed). */
-export const markStillReviewed = async (hostIds: number[]): Promise<{ host_ids: number[] }> => {
-  const response = await api.post(`${p()}/workbench/followups/still-reviewed`, { host_ids: hostIds });
+export const markStillReviewed = async (projectId: number, hostIds: number[]): Promise<{ host_ids: number[] }> => {
+  const response = await api.post(`${projectPath(projectId)}/workbench/followups/still-reviewed`, { host_ids: hostIds });
   return response.data;
 };
 
@@ -385,9 +389,10 @@ export const markStillReviewed = async (hostIds: number[]): Promise<{ host_ids: 
 // via GET /posture. The backend routes remain for that composition.)
 
 export const markWorkbenchSeen = async (
+  projectId: number,
   asOf?: string | null,
 ): Promise<{ last_viewed_at: string }> => {
-  const response = await api.post(`${p()}/workbench/seen`, asOf ? { as_of: asOf } : undefined);
+  const response = await api.post(`${projectPath(projectId)}/workbench/seen`, asOf ? { as_of: asOf } : undefined);
   return response.data;
 };
 
@@ -447,10 +452,11 @@ export interface AgentActivitySummary {
 }
 
 export const getAgentActivitySummary = async (
+  projectId: number,
   windowDays = 14,
   signal?: AbortSignal,
 ): Promise<AgentActivitySummary> => {
-  const response = await api.get(`${p()}/agent-activity/summary`, {
+  const response = await api.get(`${projectPath(projectId)}/agent-activity/summary`, {
     params: { window_days: windowDays },
     signal,
   });
@@ -479,7 +485,7 @@ export interface AddressTerrainResponse {
 }
 
 /** Rejects (503) when it could not be computed — never an empty map. */
-export const getAddressTerrain = async (signal?: AbortSignal): Promise<AddressTerrainResponse> => {
-  const response = await api.get(`${p()}/workbench/terrain`, { signal });
+export const getAddressTerrain = async (projectId: number, signal?: AbortSignal): Promise<AddressTerrainResponse> => {
+  const response = await api.get(`${projectPath(projectId)}/workbench/terrain`, { signal });
   return response.data;
 };

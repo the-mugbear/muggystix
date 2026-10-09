@@ -6,7 +6,7 @@ vi.mock('../../services/api/client', () => {
   const get = vi.fn().mockResolvedValue({ data: '' });
   return {
     api: { get },
-    p: () => '/api/v1/projects/1',
+    projectPath: (projectId: number) => `/projects/${projectId}`,
     setCurrentProjectId: () => {},
     getCurrentProjectId: () => 1,
   };
@@ -26,7 +26,7 @@ describe('getToolReadyOutput serialization', () => {
   });
 
   it('sends every active filter to the tool-ready endpoint', async () => {
-    await getToolReadyOutput('targets', {
+    await getToolReadyOutput(1, 'targets', {
       q: 'port:443',
       tags: '3,7',
       tech: 'nginx',
@@ -59,7 +59,7 @@ describe('getToolReadyOutput serialization', () => {
   });
 
   it('omits empty/undefined values', async () => {
-    await getToolReadyOutput('targets', { q: 'port:80', tags: '', includePorts: false });
+    await getToolReadyOutput(1, 'targets', { q: 'port:80', tags: '', includePorts: false });
     const url = (api.get as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
     expect(url).toContain('q=port%3A80');
     expect(url).not.toContain('tags=');
@@ -67,9 +67,9 @@ describe('getToolReadyOutput serialization', () => {
   });
 
   it('maps namesScope to the names_scope wire name (name-aware formats)', async () => {
-    await getToolReadyOutput('web-targets', { q: 'port:443', namesScope: 'all' });
+    await getToolReadyOutput(1, 'web-targets', { q: 'port:443', namesScope: 'all' });
     const url = (api.get as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-    expect(url).toContain('/hosts/tool-ready/web-targets?');
+    expect(url).toContain('/projects/1/hosts/tool-ready/web-targets?');
     expect(url).toContain('names_scope=all');
     expect(url).not.toContain('namesScope');
   });
@@ -89,7 +89,7 @@ describe('getToolReadyOutput counts', () => {
         'x-tool-ready-limit': '50000',
       },
     });
-    const r = await getToolReadyOutput('host-port', {});
+    const r = await getToolReadyOutput(1, 'host-port', {});
     expect(r).toEqual({ output: '10.0.0.1:22', total: 96542, returned: 50000, limit: 50000 });
   });
 
@@ -98,13 +98,13 @@ describe('getToolReadyOutput counts', () => {
       data: '10.0.0.1\n10.0.0.2',
       headers: { 'x-tool-ready-total': '2', 'x-tool-ready-returned': '2', 'x-tool-ready-limit': '50000' },
     });
-    const r = await getToolReadyOutput('ip-list', {});
+    const r = await getToolReadyOutput(1, 'ip-list', {});
     expect(r).toEqual({ output: '10.0.0.1\n10.0.0.2', total: 2, returned: 2, limit: null });
   });
 
   it('tolerates missing headers', async () => {
     (api.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ data: 'x' });
-    const r = await getToolReadyOutput('ip-list', {});
+    const r = await getToolReadyOutput(1, 'ip-list', {});
     expect(r).toEqual({ output: 'x', total: null, returned: null, limit: null });
   });
 });

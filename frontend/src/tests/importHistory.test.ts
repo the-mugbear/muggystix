@@ -14,18 +14,19 @@ describe('hydrateHistoryRows', () => {
       getScanBatches: vi.fn().mockResolvedValue([batch(4)]),
     };
     const items = [entry('scan', 9), entry('batch', 4), entry('scan', 3)];
-    const rows = await hydrateHistoryRows(items, { tool: 'NMAP' }, api);
+    const rows = await hydrateHistoryRows(5, items, { tool: 'NMAP' }, api);
 
-    expect(api.getScans).toHaveBeenCalledWith(0, 2, { ids: [9, 3] });
+    // Both kinds are asked of the project the page was read for.
+    expect(api.getScans).toHaveBeenCalledWith(5, 0, 2, { ids: [9, 3] });
     // A batch's counts are of its files matching the filters.
-    expect(api.getScanBatches).toHaveBeenCalledWith({ tool: 'NMAP', ids: [4], limit: 1 });
+    expect(api.getScanBatches).toHaveBeenCalledWith(5, { tool: 'NMAP', ids: [4], limit: 1 });
     expect(rows).toMatchObject({ partial: false });
     expect(rows.scans).toHaveLength(2);
   });
 
   it('makes no request for a kind the page does not contain', async () => {
     const api = { getScans: vi.fn(), getScanBatches: vi.fn().mockResolvedValue([batch(4)]) };
-    await hydrateHistoryRows([entry('batch', 4)], {}, api);
+    await hydrateHistoryRows(5, [entry('batch', 4)], {}, api);
     expect(api.getScans).not.toHaveBeenCalled();
   });
 
@@ -35,7 +36,7 @@ describe('hydrateHistoryRows', () => {
       getScanBatches: vi.fn().mockResolvedValue([batch(4)]),
     };
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const rows = await hydrateHistoryRows([entry('scan', 9), entry('batch', 4)], {}, api);
+    const rows = await hydrateHistoryRows(5, [entry('scan', 9), entry('batch', 4)], {}, api);
     spy.mockRestore();
     expect(rows.partial).toBe(true);
     expect(rows.batches).toHaveLength(1);

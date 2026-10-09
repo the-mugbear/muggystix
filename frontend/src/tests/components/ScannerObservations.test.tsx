@@ -54,7 +54,7 @@ describe('ScannerObservations', () => {
     expect(screen.getByRole('link', { name: /Finding #12/ })).toHaveAttribute('href', '/findings/12');
     // Defaults to issues on ANY number of hosts, still waiting (v5.288.0: the
     // old 2+ default hid every single-host issue, criticals included).
-    expect(mocked.getObservationIssues).toHaveBeenCalledWith(expect.objectContaining({ minHosts: 1, includeJudged: false }), expect.any(AbortSignal));
+    expect(mocked.getObservationIssues).toHaveBeenCalledWith(1, expect.objectContaining({ minHosts: 1, includeJudged: false }), expect.any(AbortSignal));
     expect(screen.getByTestId('observations-count')).not.toHaveTextContent(/or more hosts/);
   });
 
@@ -90,7 +90,7 @@ describe('ScannerObservations', () => {
     expect(within(dialog).getByText(/all 2 hosts · joins finding #12/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Promote 2 issues' }));
 
-    await waitFor(() => expect(mocked.promoteObservationIssues).toHaveBeenCalledWith([
+    await waitFor(() => expect(mocked.promoteObservationIssues).toHaveBeenCalledWith(1, [
       { issue_key: SMB.issue_key, host_ids: [1, 2] },
       { issue_key: TLS.issue_key },
     ]));
@@ -113,7 +113,7 @@ describe('ScannerObservations', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select SMB Signing not required' }));
     fireEvent.click(screen.getByRole('button', { name: 'Promote to findings' }));
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Promote 1 issue' }));
-    await waitFor(() => expect(mocked.promoteObservationIssues).toHaveBeenCalledWith([{ issue_key: SMB.issue_key }]));
+    await waitFor(() => expect(mocked.promoteObservationIssues).toHaveBeenCalledWith(1, [{ issue_key: SMB.issue_key }]));
   });
 
   it('a host list longer than it shows cannot be narrowed, and links to all of them', async () => {
@@ -128,7 +128,7 @@ describe('ScannerObservations', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show the hosts carrying SMB Signing/ }));
     const note = await screen.findByTestId('observation-hosts-cut');
     expect(note).toHaveTextContent('The first 100 of 4,000 hosts');
-    expect(mocked.getObservationIssueHosts).toHaveBeenCalledWith(SMB.issue_key, 101, expect.any(AbortSignal));
+    expect(mocked.getObservationIssueHosts).toHaveBeenCalledWith(1, SMB.issue_key, 101,expect.any(AbortSignal));
     expect(screen.queryByRole('checkbox', { name: /^Include / })).not.toBeInTheDocument();
     expect(within(note).getByRole('link')).toHaveAttribute(
       'href', `/hosts?q=${encodeURIComponent('issue:"title:smb signing not required"')}`,
@@ -144,6 +144,7 @@ describe('ScannerObservations', () => {
     );
     await screen.findByText('SMB Signing not required');
     expect(mocked.getObservationIssues).toHaveBeenCalledWith(
+      1,
       expect.objectContaining({ severity: 'critical', minHosts: 5, includeJudged: true, search: 'ssh' }),
       expect.any(AbortSignal),
     );

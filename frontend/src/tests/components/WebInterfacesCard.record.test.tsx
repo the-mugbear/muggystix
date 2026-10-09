@@ -81,7 +81,7 @@ describe('WebInterfacesCard — source record', () => {
     expect(api.getWebInterfaceRecord).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: `Show the testssl source record for ${row.url}` }));
     expect(await screen.findByText(/cipher_order/)).toBeInTheDocument();
-    expect(api.getWebInterfaceRecord).toHaveBeenCalledWith(7, expect.any(AbortSignal));
+    expect(api.getWebInterfaceRecord).toHaveBeenCalledWith(1, 7, expect.any(AbortSignal));
     expect(screen.getByText(/As testssl reported it in testssl-run\.json/)).toBeInTheDocument();
     expect(screen.queryByText(/Showing the first/)).not.toBeInTheDocument();
   });

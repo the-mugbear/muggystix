@@ -16,6 +16,7 @@ import { ArrowLeft, Loader2 } from 'lucide-react';
 import { getAgentSessionByLegacyAssistId } from '../services/api';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
+import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { SESSIONS_LIST_PATH, agentSessionPath } from '../utils/agentRuns';
 
@@ -23,9 +24,10 @@ const AssistSessions: React.FC = () => {
   const { sessionId } = useParams<{ sessionId?: string }>();
   const legacyId = sessionId ? Number(sessionId) : null;
   const known = legacyId != null && Number.isFinite(legacyId);
+  const projectId = useProjectId();
   const session = useQuery({
-    queryKey: ['getAgentSessionByLegacyAssistId', legacyId],
-    queryFn: ({ signal }) => getAgentSessionByLegacyAssistId(legacyId as number, signal),
+    queryKey: ['getAgentSessionByLegacyAssistId', projectId, legacyId],
+    queryFn: ({ signal }) => getAgentSessionByLegacyAssistId(projectId, legacyId as number, signal),
     enabled: known,
   });
   const error = queryErrorText(

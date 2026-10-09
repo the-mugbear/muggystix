@@ -26,7 +26,7 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
-import { GLOBAL, SECRET_MUTATION } from '../lib/query';
+import { SECRET_MUTATION } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import QueueHealthCard from '../components/QueueHealthCard';
 import RemediationSettingsSection from '../components/remediation/RemediationSettingsSection';
@@ -119,7 +119,7 @@ const DateTimeCell: React.FC<{ value: string | null }> = ({ value }) => {
 };
 
 /** Every account on the installation — not a project's. */
-const USERS_KEY = [GLOBAL, 'listUsers'];
+const USERS_KEY = ['listUsers'];
 
 const TABS = ['users', 'remediation', 'report-writing'] as const;
 const DEFAULT_TAB = 'users';

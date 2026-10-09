@@ -22,7 +22,7 @@ import {
   type QueueSnapshot,
 } from '../services/api';
 import { useProject } from '../contexts/ProjectContext';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import PostureSection from './posture/PostureSection';
 import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
@@ -229,7 +229,7 @@ const VerdictRow: React.FC<{ verdict: Verdict }> = ({ verdict }) => {
 
 export const QueueHealthCard: React.FC = () => {
   const query = useQuery({
-    queryKey: [GLOBAL, 'getQueueMetrics'],
+    queryKey: ['getQueueMetrics'],
     queryFn: ({ signal }) => getQueueMetrics(signal),
   });
   const metrics = query.data ?? null;

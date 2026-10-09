@@ -15,6 +15,8 @@ const api = vi.hoisted(() => ({ listAgentSessions: vi.fn() }));
 vi.mock('../../services/api', () => api);
 const auth = vi.hoisted(() => ({ user: { id: 7 } as { id: number } | null }));
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: auth.user }) }));
+// The project the hook is used in: the read names it first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1 } }) }));
 
 import { useMyAssistSessions } from '../../hooks/useMyAssistSessions';
 import { invalidateReads } from '../../lib/query';
@@ -60,7 +62,7 @@ describe('useMyAssistSessions', () => {
     await waitFor(() => expect(result.current.sessions.map((s) => s.id)).toEqual([72]));
     // Narrowed on the server, not by filtering the whole project's rows here.
     expect(api.listAgentSessions).toHaveBeenCalledWith(
-      { kind: 'project', status: 'active', user_id: 7 }, { signal: expect.any(AbortSignal) },
+      1, { kind: 'project', status: 'active', user_id: 7 }, { signal: expect.any(AbortSignal) },
     );
     expect(result.current.failed).toBe(false);
   });

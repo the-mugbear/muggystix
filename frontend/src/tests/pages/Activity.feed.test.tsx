@@ -157,7 +157,7 @@ describe('Collaboration — one feed', () => {
     expect(screen.queryByRole('button', { name: /\d+ (open|resolved|in progress)$/ })).not.toBeInTheDocument();
     const noteRow = container.querySelector('a[data-thread]') as HTMLElement;
     expect(noteRow).not.toHaveTextContent(/Open|Resolved|In Progress/);
-    expect(getNoteActivity.mock.calls.every(([params]) => !('status' in (params ?? {})))).toBe(true);
+    expect(getNoteActivity.mock.calls.every(([, params]) => !('status' in (params ?? {})))).toBe(true);
   });
 
   it('while notes remain to load, an older finding discussion waits instead of jumping the queue', async () => {
@@ -184,8 +184,8 @@ describe('Collaboration — one feed', () => {
     await screen.findByText('a note');
     fireEvent.change(screen.getByLabelText('Search discussions'), { target: { value: 'relay' } });
     await waitFor(() => {
-      expect(getNoteActivity).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'relay' }), expect.any(AbortSignal));
-      expect(getFindingDiscussions).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'relay' }), expect.anything());
+      expect(getNoteActivity).toHaveBeenLastCalledWith(91, expect.objectContaining({ search: 'relay' }), expect.any(AbortSignal));
+      expect(getFindingDiscussions).toHaveBeenLastCalledWith(91, expect.objectContaining({ search: 'relay' }), expect.anything());
     });
   });
 });

@@ -2,10 +2,11 @@
  * Axios client + project-scoping helpers.
  *
  * v2.29.0 — extracted from the monolithic ``services/api.ts``.  The
- * configured axios instance and the ``p()`` project-prefix helper
- * are used by every submodule under ``services/api/``.  ``api.ts``
- * itself is now a barrel re-exporting from those submodules so
- * consumers can keep importing from ``../services/api`` unchanged.
+ * configured axios instance and the ``projectPath(projectId)``
+ * project-prefix helper are used by the submodules under
+ * ``services/api/``.  ``api.ts`` itself is now a barrel re-exporting
+ * from those submodules so consumers can keep importing from
+ * ``../services/api`` unchanged.
  */
 import axios from 'axios';
 
@@ -71,9 +72,10 @@ api.interceptors.response.use(
   }
 );
 
-// --- Project scoping ---
-// All data endpoints require a project_id prefix.
-// Call setCurrentProjectId() when the user selects a project.
+// --- The remembered project selection ---
+// Which project the reader last chose, kept across reloads (localStorage).
+// It is ONLY that: no request reads it (5.353.0).  A request is addressed by
+// the project its caller passes — see `projectPath` below.
 let _currentProjectId: number | null = null;
 
 export function setCurrentProjectId(id: number | null) {
@@ -95,12 +97,16 @@ export function getCurrentProjectId(): number | null {
   return null;
 }
 
-/** Throws if no project is selected.  Submodules call ``p()`` inline
- *  to build the ``/projects/{id}`` prefix.  Kept internal (not
- *  re-exported from the barrel) — consumers should call the typed
- *  wrappers, not assemble URLs by hand. */
-export function p(): string {
-  const id = getCurrentProjectId();
-  if (!id) throw new Error('No project selected');
-  return `/projects/${id}`;
+/**
+ * The address prefix of ONE project's data (5.353.0).  Every project-scoped
+ * API function takes the project as its FIRST argument and builds its address
+ * with this — the project a request goes to is the one its caller named when
+ * it rendered, never "whichever is current when the request happens to be
+ * built" (the code review of 2026-10-09: a second request made after an
+ * `await` went to the project the reader had switched to).
+ * `0` / null is "no project selected" (`hooks/useProjectId` gives 0 then).
+ */
+export function projectPath(projectId: number | null | undefined): string {
+  if (!projectId) throw new Error('No project selected');
+  return `/projects/${projectId}`;
 }

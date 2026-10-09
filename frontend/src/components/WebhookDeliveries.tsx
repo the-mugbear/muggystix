@@ -18,7 +18,7 @@ import {
   listWebhookDeliveries,
   retryWebhookDelivery,
 } from '../services/api';
-import { useProject } from '../contexts/ProjectContext';
+import { NO_PROJECT, useProjectId } from '../hooks/useProjectId';
 import { useToast } from '../contexts/ToastContext';
 import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
@@ -63,18 +63,16 @@ function statusBadge(status: string) {
 }
 
 const WebhookDeliveries: React.FC = () => {
-  const { currentProject } = useProject();
+  const projectId = useProjectId();
   const toast = useToast();
   const queryClient = useQueryClient();
   const [status, setStatus] = useState('all');
 
-  const projectId = currentProject?.id;
-
   const params = status === 'all' ? { limit: 100 } : { status, limit: 100 };
   const query = useQuery({
-    queryKey: ['listWebhookDeliveries', params],
-    queryFn: ({ signal }) => listWebhookDeliveries(params, signal),
-    enabled: !!projectId,
+    queryKey: ['listWebhookDeliveries', projectId, params],
+    queryFn: ({ signal }) => listWebhookDeliveries(projectId, params, signal),
+    enabled: projectId !== NO_PROJECT,
     // The rows of the previous filter stay until the next ones answer.
     placeholderData: keepPreviousData,
   });
@@ -86,17 +84,17 @@ const WebhookDeliveries: React.FC = () => {
   const reload = () => query.refetch();
 
   const retrying = useMutation({
-    mutationFn: (row: WebhookDeliveryRow) => retryWebhookDelivery(row.id),
+    mutationFn: (row: WebhookDeliveryRow) => retryWebhookDelivery(projectId, row.id),
     onSuccess: (_requeued, row) => {
       toast.success(`Delivery #${row.id} requeued.`);
-      return queryClient.invalidateQueries({ queryKey: ['listWebhookDeliveries'] });
+      return queryClient.invalidateQueries({ queryKey: ['listWebhookDeliveries', projectId] });
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to requeue delivery.')),
   });
   const handleRetry = (row: WebhookDeliveryRow) => retrying.mutate(row);
   const busyId = retrying.isPending ? retrying.variables.id : null;
 
-  if (!projectId) return null;
+  if (projectId === NO_PROJECT) return null;
 
   const failedCount = rows.filter((r) => (r.status || '').toLowerCase() === 'failed').length;
 

@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { suggestHostQueryValues, type HostQueryValueSuggestion } from '../../services/api';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
+import { useProjectId } from '../../hooks/useProjectId';
 import { rememberFor } from '../../lib/query';
 
 const DEBOUNCE_MS = 200;
@@ -27,14 +28,15 @@ export function useQueryValueSuggest(
   valueSource: string | null,
   partial: string,
 ): HostQueryValueSuggestion[] | null {
+  const projectId = useProjectId();
   const asked = !!field && !!valueSource && !LOCAL_ONLY.has(valueSource);
   const typed = `${field ?? ''}\u0000${partial}`;
   // The request waits for a pause in typing; the key does not, so an answer
   // that is remembered shows without one.
   const settled = useDebouncedValue(typed, DEBOUNCE_MS);
   const query = useQuery({
-    queryKey: ['suggestHostQueryValues', field, partial],
-    queryFn: ({ signal }) => suggestHostQueryValues(field ?? '', partial, signal),
+    queryKey: ['suggestHostQueryValues', projectId, field, partial],
+    queryFn: ({ signal }) => suggestHostQueryValues(projectId, field ?? '', partial, signal),
     enabled: asked && settled === typed,
     ...rememberFor(REMEMBER_MS),
   });

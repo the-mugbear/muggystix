@@ -133,6 +133,10 @@ export const suggestionOf = (detection: DetectionResponse): string | null => {
 };
 
 export interface UseUploadReviewOptions {
+  /** The project the files go to.  Taken ONCE, when the review is created:
+   *  every step of an upload (batch, stage, inspect, name, start, discard) is
+   *  asked of that project, and the rows the review holds are its jobs. */
+  projectId: number;
   skipInformational: boolean;
   onStarted: (started: StartedUpload) => void;
   deps?: Partial<UploadReviewDeps>;
@@ -149,7 +153,8 @@ export const overrideFor = (row: Pick<ReviewRow, 'phase' | 'chosen' | 'detection
 export const isImportable = (row: ReviewRow): boolean =>
   row.phase === 'ready' || (row.phase === 'choose' && !!row.chosen);
 
-export function useUploadReview({ skipInformational, onStarted, deps }: UseUploadReviewOptions) {
+export function useUploadReview({ projectId: givenProjectId, skipInformational, onStarted, deps }: UseUploadReviewOptions) {
+  const [projectId] = useState(givenProjectId);
   const api = useMemo<UploadReviewDeps>(() => ({ ...DEFAULT_DEPS, ...(deps ?? {}) }), [deps]);
   const [rows, setRows] = useState<ReviewRow[]>([]);
   // The rows as last rendered, for a resume that must not add a job twice.
@@ -175,16 +180,16 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
   const ensureFormats = useCallback(() => {
     if (formatsRequestedRef.current) return;
     formatsRequestedRef.current = true;
-    api.getUploadFormats()
+    api.getUploadFormats(projectId)
       .then((list) => setFormats((prev) => (prev.length > 0 ? prev : list)))
       .catch(() => { formatsRequestedRef.current = false; });
-  }, [api]);
+  }, [api, projectId]);
 
   const detectOne = useCallback(
     async (key: string, jobId: number) => {
       patch(key, { phase: 'detecting', error: undefined, detectionFailed: false });
       try {
-        const detection = await api.getJobDetection(jobId);
+        const detection = await api.getJobDetection(projectId, jobId);
         setFormats((prev) => (prev.length > 0 ? prev : detection.formats));
         patch(key, {
           detection,
@@ -205,7 +210,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
         });
       }
     },
-    [api, patch, ensureFormats],
+    [api, projectId, patch, ensureFormats],
   );
 
   // One controller per upload in flight, so a 1–2 GB file can be cancelled:
@@ -221,6 +226,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
       uploadsRef.current.set(row.key, controller);
       try {
         const res = await api.uploadFile(
+          projectId,
           row.file,
           (percent) => patch(row.key, { percent }),
           { ...options, stage: true, skipInformational, signal: controller.signal },
@@ -242,7 +248,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
         return false;
       }
     },
-    [api, patch, skipInformational, detectOne],
+    [api, projectId, patch, skipInformational, detectOne],
   );
 
   const addFiles = useCallback(
@@ -270,6 +276,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
           // is what IMPORTED (a re-processed file later joins the batch), so
           // the generated name must not read as the same figure.
           const created = await api.createScanBatch(
+            projectId,
             `${files.length} files uploaded · ${formatInstant(new Date(startedAt))}`,
           );
           batchId = created.id;
@@ -288,7 +295,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
         setBatch((current) => (current?.id === batchId ? null : current));
       }
     },
-    [api, stageOne],
+    [api, projectId, stageOne],
   );
 
   // v5.271.0 — files already staged on the server (closed review, a refused
@@ -342,7 +349,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
       if (!batch || !name || name === batch.label) return false;
       setBatchError(null);
       try {
-        const saved = await api.renameScanBatch(batch.id, name);
+        const saved = await api.renameScanBatch(projectId, batch.id, name);
         setBatch({ id: saved.id, label: saved.label, named: true });
         return true;
       } catch (err) {
@@ -350,7 +357,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
         return false;
       }
     },
-    [api, batch],
+    [api, projectId, batch],
   );
 
   const importAgain = useCallback(
@@ -390,7 +397,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
       const staged = row.jobId != null && (row.phase === 'ready' || row.phase === 'choose');
       if (staged) {
         try {
-          await api.discardIngestionJob(row.jobId!);
+          await api.discardIngestionJob(projectId, row.jobId!);
         } catch (err) {
           patch(key, { error: formatApiError(err, 'Could not discard the staged file.') });
           return;
@@ -398,7 +405,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
       }
       setRows((prev) => prev.filter((r) => r.key !== key));
     },
-    [rows, api, patch],
+    [rows, api, projectId, patch],
   );
 
   /** Stop an upload in flight and drop its row.  Nothing was staged for it
@@ -424,7 +431,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
       if (row.jobId == null || !isImportable(row)) return;
       patch(row.key, { phase: 'starting', error: undefined });
       try {
-        await api.startIngestionJob(row.jobId, {
+        await api.startIngestionJob(projectId, row.jobId, {
           formatOverride: overrideFor(row),
           sourceTool: row.sourceTool.trim() || null,
         });
@@ -444,7 +451,7 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
         });
       }
     },
-    [api, patch, onStarted],
+    [api, projectId, patch, onStarted],
   );
 
   const importReady = useCallback(async () => {

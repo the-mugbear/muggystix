@@ -1,8 +1,9 @@
 /**
  * Findings API client — the unified finding spine (promote-from-note,
- * triage, cross-host). Project-scoped via p().
+ * triage, cross-host). Project-scoped: the project is each function's first
+ * argument.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 import type { Annotation, NoteAttachment } from './hosts';
 import type { Proposal } from './proposals';
 
@@ -115,12 +116,13 @@ export interface FindingTextDraft {
 }
 
 export const draftFindingText = async (
+  projectId: number,
   findingId: number,
   fields?: FindingReportTextField[],
   opts?: { signal?: AbortSignal },
 ): Promise<FindingTextDraft> => {
   const response = await api.post<FindingTextDraft>(
-    `${p()}/reports/draft/finding-text`,
+    `${projectPath(projectId)}/reports/draft/finding-text`,
     { finding_id: findingId, ...(fields ? { fields } : {}) },
     { signal: opts?.signal },
   );
@@ -180,6 +182,7 @@ export interface FindingDiscussionList {
 
 /** The project's finding discussions, most recently active first. */
 export const getFindingDiscussions = async (
+  projectId: number,
   params: { search?: string; author_id?: number; limit?: number } = {},
   signal?: AbortSignal,
 ): Promise<FindingDiscussionList> => {
@@ -189,12 +192,13 @@ export const getFindingDiscussions = async (
   });
   const q = qs.toString();
   const response = await api.get<FindingDiscussionList>(
-    `${p()}/findings/comments/activity${q ? `?${q}` : ''}`, { signal },
+    `${projectPath(projectId)}/findings/comments/activity${q ? `?${q}` : ''}`, { signal },
   );
   return response.data;
 };
 
 export const listFindings = async (
+  projectId: number,
   filters: FindingFilters = {},
   // Lets the caller abort a superseded request (Findings page: a newer filter
   // set cancels the in-flight one so a slow response can't overwrite it).
@@ -205,12 +209,12 @@ export const listFindings = async (
     if (v !== undefined && v !== null) params.set(k, String(v));
   });
   const qs = params.toString();
-  const response = await api.get<FindingListResponse>(`${p()}/findings${qs ? `?${qs}` : ''}`, { signal });
+  const response = await api.get<FindingListResponse>(`${projectPath(projectId)}/findings${qs ? `?${qs}` : ''}`, { signal });
   return response.data;
 };
 
-export const getFinding = async (findingId: number, signal?: AbortSignal): Promise<Finding> => {
-  const response = await api.get<Finding>(`${p()}/findings/${findingId}`, { signal });
+export const getFinding = async (projectId: number, findingId: number, signal?: AbortSignal): Promise<Finding> => {
+  const response = await api.get<Finding>(`${projectPath(projectId)}/findings/${findingId}`, { signal });
   return response.data;
 };
 
@@ -222,44 +226,47 @@ export interface FindingCreatePayload {
   host_ids?: number[];
 }
 /** v5.346.0 — write a finding directly (the host page's "Add finding"). */
-export const createFinding = async (payload: FindingCreatePayload): Promise<Finding> => {
-  const response = await api.post<Finding>(`${p()}/findings`, payload);
+export const createFinding = async (projectId: number, payload: FindingCreatePayload): Promise<Finding> => {
+  const response = await api.post<Finding>(`${projectPath(projectId)}/findings`, payload);
   return response.data;
 };
 
 export const updateFinding = async (
+  projectId: number,
   findingId: number,
   payload: { title?: string; severity?: FindingSeverity; owner_id?: number | null } & FindingReportTextUpdate,
 ): Promise<Finding> => {
-  const response = await api.patch<Finding>(`${p()}/findings/${findingId}`, payload);
+  const response = await api.patch<Finding>(`${projectPath(projectId)}/findings/${findingId}`, payload);
   return response.data;
 };
 
 /** v5.256.0 — delete a finding recorded in error (its author or a project
  *  admin). Its comments and history go with it; the evidence it pointed at
  *  (source note, scanner rows) stays. */
-export const deleteFinding = async (findingId: number): Promise<void> => {
-  await api.delete(`${p()}/findings/${findingId}`);
+export const deleteFinding = async (projectId: number, findingId: number): Promise<void> => {
+  await api.delete(`${projectPath(projectId)}/findings/${findingId}`);
 };
 
 export const setFindingStatus = async (
+  projectId: number,
   findingId: number,
   status: FindingStatus,
   summary?: string,
 ): Promise<Finding> => {
-  const response = await api.post<Finding>(`${p()}/findings/${findingId}/status`, { status, summary });
+  const response = await api.post<Finding>(`${projectPath(projectId)}/findings/${findingId}/status`, { status, summary });
   return response.data;
 };
 
 /** v5.225.0 — set ONE endpoint row's state (open / remediated / retest)
  *  without touching the finding's own status. */
 export const setFindingEndpointStatus = async (
+  projectId: number,
   findingId: number,
   findingHostId: number,
   hostStatus: FindingHostStatus,
 ): Promise<Finding> => {
   const response = await api.patch<Finding>(
-    `${p()}/findings/${findingId}/endpoints/${findingHostId}`,
+    `${projectPath(projectId)}/findings/${findingId}/endpoints/${findingHostId}`,
     { host_status: hostStatus },
   );
   return response.data;
@@ -270,10 +277,11 @@ export const setFindingEndpointStatus = async (
  *  same rules as the single-endpoint route.  `summary` is recorded with each
  *  endpoint's history line.  Returns the finding with every endpoint. */
 export const setFindingEndpointsStatus = async (
+  projectId: number,
   findingId: number,
   body: { finding_host_ids: number[]; host_status: FindingHostStatus; summary?: string },
 ): Promise<Finding> => {
-  const response = await api.patch<Finding>(`${p()}/findings/${findingId}/endpoints`, body);
+  const response = await api.patch<Finding>(`${projectPath(projectId)}/findings/${findingId}/endpoints`, body);
   return response.data;
 };
 
@@ -284,11 +292,12 @@ export interface FindingEndpointRef {
 }
 
 export const addFindingHosts = async (
+  projectId: number,
   findingId: number,
   hostIds: number[],
   endpoints: FindingEndpointRef[] = [],
 ): Promise<Finding> => {
-  const response = await api.post<Finding>(`${p()}/findings/${findingId}/hosts`, {
+  const response = await api.post<Finding>(`${projectPath(projectId)}/findings/${findingId}/hosts`, {
     host_ids: hostIds,
     endpoints,
   });
@@ -296,8 +305,8 @@ export const addFindingHosts = async (
 };
 
 /** v5.195.0 — detach exactly one affected endpoint (a FindingHost row). */
-export const removeFindingEndpoint = async (findingId: number, findingHostId: number): Promise<Finding> => {
-  const response = await api.delete<Finding>(`${p()}/findings/${findingId}/endpoints/${findingHostId}`);
+export const removeFindingEndpoint = async (projectId: number, findingId: number, findingHostId: number): Promise<Finding> => {
+  const response = await api.delete<Finding>(`${projectPath(projectId)}/findings/${findingId}/endpoints/${findingHostId}`);
   return response.data;
 };
 
@@ -312,10 +321,11 @@ export interface FindingStatusHistoryEntry {
 }
 
 export const getFindingHistory = async (
+  projectId: number,
   findingId: number,
   signal?: AbortSignal,
 ): Promise<FindingStatusHistoryEntry[]> => {
-  const response = await api.get<FindingStatusHistoryEntry[]>(`${p()}/findings/${findingId}/history`, { signal });
+  const response = await api.get<FindingStatusHistoryEntry[]>(`${projectPath(projectId)}/findings/${findingId}/history`, { signal });
   return response.data;
 };
 
@@ -323,17 +333,18 @@ export const getFindingHistory = async (
 // A finding hosts its own annotation thread (the notes→findings→reports flow):
 // discussion + repro/rationale + screenshots, refined here before reports.
 
-export const getFindingNotes = async (findingId: number, signal?: AbortSignal): Promise<Annotation[]> => {
-  const response = await api.get<Annotation[]>(`${p()}/findings/${findingId}/notes`, { signal });
+export const getFindingNotes = async (projectId: number, findingId: number, signal?: AbortSignal): Promise<Annotation[]> => {
+  const response = await api.get<Annotation[]>(`${projectPath(projectId)}/findings/${findingId}/notes`, { signal });
   return response.data;
 };
 
 export const createFindingNote = async (
+  projectId: number,
   findingId: number,
   body: string,
   parentId?: number | null,
 ): Promise<Annotation> => {
-  const response = await api.post<Annotation>(`${p()}/findings/${findingId}/notes`, {
+  const response = await api.post<Annotation>(`${projectPath(projectId)}/findings/${findingId}/notes`, {
     body,
     parent_id: parentId ?? null,
   });
@@ -342,20 +353,22 @@ export const createFindingNote = async (
 
 /** v5.256.0 — the comment's author only. */
 export const updateFindingNote = async (
+  projectId: number,
   findingId: number,
   noteId: number,
   body: string,
 ): Promise<Annotation> => {
-  const response = await api.patch<Annotation>(`${p()}/findings/${findingId}/notes/${noteId}`, { body });
+  const response = await api.patch<Annotation>(`${projectPath(projectId)}/findings/${findingId}/notes/${noteId}`, { body });
   return response.data;
 };
 
 /** v5.256.0 — the comment's author only; 409 while it has replies. */
-export const deleteFindingNote = async (findingId: number, noteId: number): Promise<void> => {
-  await api.delete(`${p()}/findings/${findingId}/notes/${noteId}`);
+export const deleteFindingNote = async (projectId: number, findingId: number, noteId: number): Promise<void> => {
+  await api.delete(`${projectPath(projectId)}/findings/${findingId}/notes/${noteId}`);
 };
 
 export const uploadFindingNoteAttachment = async (
+  projectId: number,
   findingId: number,
   noteId: number,
   file: File,
@@ -363,7 +376,7 @@ export const uploadFindingNoteAttachment = async (
   const form = new FormData();
   form.append('file', file);
   const response = await api.post(
-    `${p()}/findings/${findingId}/notes/${noteId}/attachments`,
+    `${projectPath(projectId)}/findings/${findingId}/notes/${noteId}/attachments`,
     form,
     { headers: { 'Content-Type': 'multipart/form-data' } },
   );
@@ -399,8 +412,8 @@ export interface FindingImageList {
 }
 
 /** The finding's images with where each is placed in its report text. */
-export const getFindingImages = async (findingId: number, signal?: AbortSignal): Promise<FindingImageList> => {
-  const response = await api.get<FindingImageList>(`${p()}/findings/${findingId}/images`, { signal });
+export const getFindingImages = async (projectId: number, findingId: number, signal?: AbortSignal): Promise<FindingImageList> => {
+  const response = await api.get<FindingImageList>(`${projectPath(projectId)}/findings/${findingId}/images`, { signal });
   return response.data;
 };
 
@@ -427,11 +440,12 @@ export interface PromoteVulnerabilityPreview {
 // issue, not the plugin, so it matches what promote actually does: a
 // plugin-keyed preview under-reported whenever two scanners saw one problem.
 export const previewPromoteVulnerability = async (
+  projectId: number,
   vulnId: number,
   signal?: AbortSignal,
 ): Promise<PromoteVulnerabilityPreview> => {
   const response = await api.get<PromoteVulnerabilityPreview>(
-    `${p()}/vulnerabilities/${vulnId}/promote-preview`,
+    `${projectPath(projectId)}/vulnerabilities/${vulnId}/promote-preview`,
     { signal },
   );
   return response.data;
@@ -478,10 +492,11 @@ export interface ObservationIssueFilters {
 }
 
 export const getObservationIssues = async (
+  projectId: number,
   filters: ObservationIssueFilters = {},
   signal?: AbortSignal,
 ): Promise<{ items: ObservationIssue[]; total: number }> => {
-  const response = await api.get(`${p()}/scanner-observations`, {
+  const response = await api.get(`${projectPath(projectId)}/scanner-observations`, {
     params: {
       search: filters.search || undefined,
       severity: filters.severity || undefined,
@@ -498,17 +513,18 @@ export const getObservationIssues = async (
 
 /** The first `limit` hosts by address (omitted = all). */
 export const getObservationIssueHosts = async (
-  issueKey: string, limit?: number, signal?: AbortSignal,
+  projectId: number, issueKey: string, limit?: number, signal?: AbortSignal,
 ): Promise<ObservationIssueHost[]> => {
-  const response = await api.get(`${p()}/scanner-observations/hosts`, { params: { issue_key: issueKey, limit }, signal });
+  const response = await api.get(`${projectPath(projectId)}/scanner-observations/hosts`, { params: { issue_key: issueKey, limit }, signal });
   return response.data;
 };
 
 /** Each issue becomes (or joins) its finding; `host_ids` omitted = every host carrying it. */
 export const promoteObservationIssues = async (
+  projectId: number,
   items: { issue_key: string; host_ids?: number[] }[],
 ): Promise<{ results: { issue_key: string; finding_id: number; created: boolean; host_count: number }[] }> => {
-  const response = await api.post(`${p()}/scanner-observations/promote`, { items });
+  const response = await api.post(`${projectPath(projectId)}/scanner-observations/promote`, { items });
   return response.data;
 };
 
@@ -516,6 +532,7 @@ export const promoteObservationIssues = async (
 // to the vuln's own; a terminal status (false_positive/accepted_risk)
 // dismisses it. Idempotent per vuln.
 export const promoteVulnerability = async (
+  projectId: number,
   vulnId: number,
   payload: {
     severity?: string;
@@ -529,7 +546,7 @@ export const promoteVulnerability = async (
   } = {},
 ): Promise<Finding> => {
   const response = await api.post<Finding>(
-    `${p()}/vulnerabilities/${vulnId}/promote`,
+    `${projectPath(projectId)}/vulnerabilities/${vulnId}/promote`,
     { vuln_id: vulnId, ...payload },
   );
   return response.data;
@@ -552,11 +569,12 @@ export interface BulkFindingResult {
 }
 
 export const bulkSetFindingStatus = async (
+  projectId: number,
   findingIds: number[],
   status: FindingStatus,
   summary?: string,
 ): Promise<BulkFindingResult> => {
-  const res = await api.post<BulkFindingResult>(`${p()}/findings/bulk/status`, {
+  const res = await api.post<BulkFindingResult>(`${projectPath(projectId)}/findings/bulk/status`, {
     finding_ids: findingIds,
     status,
     summary,
@@ -567,10 +585,11 @@ export const bulkSetFindingStatus = async (
 /** `assigneeUserId: null` unassigns — the single-finding PATCH can't express
  *  that, since it skips owner_id when null. */
 export const bulkAssignFindings = async (
+  projectId: number,
   findingIds: number[],
   assigneeUserId: number | null,
 ): Promise<BulkFindingResult> => {
-  const res = await api.post<BulkFindingResult>(`${p()}/findings/bulk/assign`, {
+  const res = await api.post<BulkFindingResult>(`${projectPath(projectId)}/findings/bulk/assign`, {
     finding_ids: findingIds,
     assignee_user_id: assigneeUserId,
   });

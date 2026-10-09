@@ -30,7 +30,7 @@ import {
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
-import { GLOBAL, invalidateReads, queryErrorText } from '../lib/query';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -116,12 +116,12 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
   // Both lists belong to the open dialog: asked for when it opens on a user,
   // gone when it closes.
   const membershipsQuery = useQuery({
-    queryKey: [GLOBAL, 'getUserMemberships', userId],
+    queryKey: ['getUserMemberships', userId],
     queryFn: ({ signal }) => getUserMemberships(userId as number, signal),
     enabled: userId != null,
   });
   const projectsQuery = useQuery({
-    queryKey: [GLOBAL, 'getProjects'],
+    queryKey: ['getProjects'],
     queryFn: ({ signal }) => getProjects(signal),
     enabled: userId != null,
   });
@@ -183,7 +183,7 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
     if (row.role === 'admin') {
       try {
         const roster = await queryClient.fetchQuery({
-          queryKey: [GLOBAL, 'getProjectMembers', row.project_id],
+          queryKey: ['getProjectMembers', row.project_id],
           queryFn: () => getProjectMembers(row.project_id),
         });
         adminCount = countProjectAdmins(roster);

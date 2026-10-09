@@ -16,7 +16,7 @@ import {
   getReportWritingGuidance, updateReportWritingGuidance, type ReportWritingGuidance,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
-import { GLOBAL, queryErrorText } from '../../lib/query';
+import { queryErrorText } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { formatTimestamp } from '../../utils/relativeTime';
 import PostureSection from '../posture/PostureSection';
@@ -42,7 +42,7 @@ export const ReportWritingGuidanceSection: React.FC = () => {
   const toast = useToast();
   const queryClient = useQueryClient();
   const query = useQuery({
-    queryKey: [GLOBAL, 'getReportWritingGuidance'],
+    queryKey: ['getReportWritingGuidance'],
     queryFn: ({ signal }) => getReportWritingGuidance(signal),
   });
   const guidance = query.data ?? null;
@@ -62,7 +62,7 @@ export const ReportWritingGuidanceSection: React.FC = () => {
   const saving = useMutation({
     mutationFn: (sections: Record<string, string>) => updateReportWritingGuidance(sections),
     onSuccess: (next) => {
-      queryClient.setQueryData([GLOBAL, 'getReportWritingGuidance'], next);
+      queryClient.setQueryData(['getReportWritingGuidance'], next);
       setEdits({});
       toast.success('Writing guidance saved. The next draft is written to it.');
     },

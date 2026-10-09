@@ -15,7 +15,7 @@ import {
   changeOwnPassword, getOwnProjectMemberships, listOwnSessions, revokeOwnSession, updateOwnProfile,
   type UserProjectMembership, type UserSession,
 } from '../services/api';
-import { GLOBAL, SECRET_MUTATION, queryErrorText } from '../lib/query';
+import { SECRET_MUTATION, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { personInitials } from '../utils/people';
 import { useToast } from '../contexts/ToastContext';
@@ -64,7 +64,7 @@ const roleVariant = (
 const formatDate = (s: string | null | undefined) => formatTimestamp(s);
 
 /** The signed-in user's own sessions — not a project's. */
-const SESSIONS_KEY = [GLOBAL, 'listOwnSessions'];
+const SESSIONS_KEY = ['listOwnSessions'];
 
 const Profile: React.FC = () => {
   const { user, updateUser, logout } = useAuth();
@@ -107,7 +107,7 @@ const Profile: React.FC = () => {
   // their per-project role. Refreshable via the Refresh button on the section
   // so a freshly-added project shows up without a full page reload.
   const membershipsQuery = useQuery({
-    queryKey: [GLOBAL, 'getOwnProjectMemberships'],
+    queryKey: ['getOwnProjectMemberships'],
     queryFn: ({ signal }) => getOwnProjectMemberships(signal),
   });
   const membershipsLoading = membershipsQuery.isFetching;

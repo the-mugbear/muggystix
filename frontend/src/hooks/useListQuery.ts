@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 
-import { GLOBAL, pollEvery, queryErrorText, useLastSettled } from '../lib/query';
+import { pollEvery, queryErrorText, useLastSettled } from '../lib/query';
 
 /**
  * useListQuery — a list read a page at a time with "Show more", on
@@ -68,9 +68,11 @@ export interface UseListQueryOptions<T = unknown> {
   enabled?: boolean;
   /** The fallback for `error` when the failure carries no message. */
   errorMessage?: string;
-  /** The list is not one project's (lib/query `GLOBAL`): the key is
-   *  `[GLOBAL, name, ...deps]`. */
-  global?: boolean;
+  /** What the kept answers belong to — the project, for one project's list
+   *  (`within: projectId`).  `lastResponse` and the `keepPrevious` rows are
+   *  forgotten when it changes, so a component that survives a project switch
+   *  never shows one project's rows or counts under another. */
+  within?: unknown;
   /** While new `deps` load, and when that read fails, `rows` / `total` /
    *  `response` stay the previous deps' and `isPrevious` says so.  Default
    *  false: the rows are the current deps' or `null`. */
@@ -120,15 +122,15 @@ export function useListQuery<T, P extends ListPage<T> = ListPage<T>>(
   fetcher: ListFetcher<T, P>,
   deps: ReadonlyArray<unknown>,
   {
-    pageSize = 50, poll = null, enabled = true, errorMessage = 'Could not load the list.', global: isGlobal = false,
+    pageSize = 50, poll = null, enabled = true, errorMessage = 'Could not load the list.', within,
     keepPrevious = false, dedupeBy,
   }: UseListQueryOptions<T> = {},
 ): ListQuery<T, P> {
   const queryClient = useQueryClient();
   const queryKey = useMemo(
-    () => [...(isGlobal ? [GLOBAL] : []), name, ...deps, { pageSize }],
+    () => [name, ...deps, { pageSize }],
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the key is its parts
-    [isGlobal, name, JSON.stringify(deps), pageSize],
+    [name, JSON.stringify(deps), pageSize],
   );
   const query = useInfiniteQuery<P, unknown, InfiniteData<P, number>, unknown[], number>({
     queryKey,
@@ -143,9 +145,9 @@ export function useListQuery<T, P extends ListPage<T> = ListPage<T>>(
   });
 
   const pages = query.data?.pages;
-  // The last pages any deps brought (this component's, and one project's:
-  // `useLastSettled`).  A parked hook shows nothing, kept or not.
-  const lastPages = useLastSettled(pages, { global: isGlobal });
+  // The last pages any deps brought (this component's: `useLastSettled`).  A
+  // parked hook shows nothing, kept or not.
+  const lastPages = useLastSettled(pages, { resetKey: within });
   const shown = pages ?? (keepPrevious && enabled ? lastPages : undefined);
   const isPrevious = !pages && shown !== undefined;
   // The caller's function is new on every render; the rows are not.

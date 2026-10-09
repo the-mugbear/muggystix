@@ -35,6 +35,9 @@ vi.mock('../../services/api', () => ({
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }),
 }));
+// The project the page is shown in (the session's own): every request names
+// it first.
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1 } }) }));
 
 const HOUR = 1000 * 60 * 60;
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -112,10 +115,10 @@ describe('AgentSessionDetail', () => {
   it('reads the session, its notes and its calls by the one session id', async () => {
     renderAt('72');
     expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent('Agent session #72');
-    expect(getAgentSession).toHaveBeenCalledWith(72, expect.any(AbortSignal));
-    await waitFor(() => expect(getAgentSessionNotes).toHaveBeenCalledWith(72, undefined, expect.any(AbortSignal)));
+    expect(getAgentSession).toHaveBeenCalledWith(1, 72, expect.any(AbortSignal));
+    await waitFor(() => expect(getAgentSessionNotes).toHaveBeenCalledWith(1, 72, undefined, expect.any(AbortSignal)));
     await waitFor(() => expect(getAgentSessionApiActivity).toHaveBeenCalled());
-    expect(getAgentSessionApiActivity.mock.calls.every((c) => c[0] === 72)).toBe(true);
+    expect(getAgentSessionApiActivity.mock.calls.every((c) => c[0] === 1 && c[1] === 72)).toBe(true);
     expect(await screen.findByText('Anonymous FTP login accepted on 21.')).toBeInTheDocument();
     expect(screen.getByText('map the DMZ')).toBeInTheDocument();
     // The call count is the row's own.
@@ -135,7 +138,7 @@ describe('AgentSessionDetail', () => {
     }));
     renderAt('31');
     expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent('Agent session #31');
-    await waitFor(() => expect(getAgentSessionNotes).toHaveBeenCalledWith(31, undefined, expect.any(AbortSignal)));
+    await waitFor(() => expect(getAgentSessionNotes).toHaveBeenCalledWith(1, 31, undefined, expect.any(AbortSignal)));
     expect(screen.getByText('Connected via curl')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^End$/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Resume/ })).not.toBeInTheDocument();
@@ -162,7 +165,7 @@ describe('AgentSessionDetail', () => {
   it('lists the tests it proposed, each opening the test on its host', async () => {
     renderAt('72');
     const table = await screen.findByTestId('session-tests');
-    expect(listHostTests).toHaveBeenCalledWith(expect.objectContaining({ agent_session_id: 72 }), expect.any(AbortSignal));
+    expect(listHostTests).toHaveBeenCalledWith(1, expect.objectContaining({ agent_session_id: 72 }), expect.any(AbortSignal));
     expect(within(table).getByRole('link', { name: '10.0.0.5' })).toHaveAttribute('href', '/hosts/5#host-test-31');
     expect(within(table).getByText('SMB signing')).toBeInTheDocument();
     expect(within(table).getByText('In progress')).toBeInTheDocument();
@@ -175,7 +178,7 @@ describe('AgentSessionDetail', () => {
     await user.click(await screen.findByRole('button', { name: /^End$/ }));
     await screen.findByText(/Agent still connected\? Paste this to it first/);
     await user.click(screen.getByRole('button', { name: 'End session' }));
-    await waitFor(() => expect(endAgentSession).toHaveBeenCalledWith(72));
+    await waitFor(() => expect(endAgentSession).toHaveBeenCalledWith(1, 72));
     // Re-read after ending.
     await waitFor(() => expect(getAgentSession).toHaveBeenCalledTimes(2));
   });
@@ -233,11 +236,11 @@ describe('AgentSessionDetail', () => {
       </MemoryRouter>,
     );
     expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent('Agent session #80');
-    await waitFor(() => expect(getAgentSessionNotes).toHaveBeenCalledWith(80, undefined, expect.any(AbortSignal)));
+    await waitFor(() => expect(getAgentSessionNotes).toHaveBeenCalledWith(1, 80, undefined, expect.any(AbortSignal)));
     await screen.findByText(/Could not load the session’s notes/);
     expect(screen.queryByText('Anonymous FTP login accepted on 21.')).not.toBeInTheDocument();
     // The calls are a separate read: a failed notes read does not hide them.
-    await waitFor(() => expect(getAgentSessionApiActivity.mock.calls.some((c) => c[0] === 80)).toBe(true));
+    await waitFor(() => expect(getAgentSessionApiActivity.mock.calls.some((c) => c[0] === 1 && c[1] === 80)).toBe(true));
   });
 
   // Defect 1.17 — a failed Refresh replaced the whole page with the error.

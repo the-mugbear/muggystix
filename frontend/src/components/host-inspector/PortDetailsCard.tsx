@@ -26,6 +26,7 @@ import {
   getHostNetexecResults, getHostWebInterfaces, getHostWebPaths,
   type HostVulnerability, type NetexecResult, type Port, type WebInterface, type WebPath,
 } from '../../services/api';
+import { useProjectId } from '../../hooks/useProjectId';
 import { foldNetexecRows } from '../NetExecCard';
 import { SEVERITY_BADGE_VARIANT, type Severity } from '../../utils/severity';
 import {
@@ -294,6 +295,7 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   // What follows is one host's view state: the inspector that renders this
   // card is keyed by the host, so another host starts clean.
   // Which endpoint a port's commands address; absent = the default below.
+  const projectId = useProjectId();
   const [helperTarget, setHelperTarget] = useState<Record<number, string>>({});
   const [showNotOpen, setShowNotOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
@@ -307,18 +309,18 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   // fetch error reads differently from "no TLS evidence") rather than breaking
   // the port table.
   const web = useQuery({
-    queryKey: ['getHostWebInterfaces', hostId],
-    queryFn: ({ signal }) => getHostWebInterfaces(hostId, signal),
+    queryKey: ['getHostWebInterfaces', projectId, hostId],
+    queryFn: ({ signal }) => getHostWebInterfaces(projectId, hostId, signal),
   });
   // NetExec / SMBMap results and discovered paths: only when the host has any.
   const netexec = useQuery({
-    queryKey: ['getHostNetexecResults', hostId],
-    queryFn: ({ signal }) => getHostNetexecResults(hostId, signal),
+    queryKey: ['getHostNetexecResults', projectId, hostId],
+    queryFn: ({ signal }) => getHostNetexecResults(projectId, hostId, signal),
     enabled: netexecCount > 0,
   });
   const paths = useQuery({
-    queryKey: ['getHostWebPaths', hostId],
-    queryFn: ({ signal }) => getHostWebPaths(hostId, signal),
+    queryKey: ['getHostWebPaths', projectId, hostId],
+    queryFn: ({ signal }) => getHostWebPaths(projectId, hostId, signal),
     enabled: webPathCount > 0,
   });
   const webRows = web.data ?? NO_WEB;

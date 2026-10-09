@@ -8,7 +8,7 @@
  * Evidence records are what an agent ran against a host and what came back.
  * Backend: app/api/v1/endpoints/proposals.py.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 
 export type ProposalKind =
   | 'finding_text'
@@ -82,8 +82,8 @@ export interface ProposalQuery {
   offset?: number;
 }
 
-export const listProposals = async (query: ProposalQuery = {}, signal?: AbortSignal): Promise<ProposalList> =>
-  (await api.get<ProposalList>(`${p()}/proposals`, { params: query, signal })).data;
+export const listProposals = async (projectId: number, query: ProposalQuery = {}, signal?: AbortSignal): Promise<ProposalList> =>
+  (await api.get<ProposalList>(`${projectPath(projectId)}/proposals`, { params: query, signal })).data;
 
 export interface ProposalSummary {
   /** The whole project's pending proposals. */
@@ -96,20 +96,20 @@ export interface ProposalSummary {
   viewer_is_project_admin: boolean;
 }
 
-export const getProposalSummary = async (signal?: AbortSignal): Promise<ProposalSummary> =>
-  (await api.get<ProposalSummary>(`${p()}/proposals/summary`, { signal })).data;
+export const getProposalSummary = async (projectId: number, signal?: AbortSignal): Promise<ProposalSummary> =>
+  (await api.get<ProposalSummary>(`${projectPath(projectId)}/proposals/summary`, { signal })).data;
 
 /** Apply it as you.  `editedValue` (report text only) accepts with your edit. */
 export const acceptProposal = async (
-  id: number, opts: { note?: string; editedValue?: string } = {},
+  projectId: number, id: number, opts: { note?: string; editedValue?: string } = {},
 ): Promise<Proposal> =>
-  (await api.post<Proposal>(`${p()}/proposals/${id}/accept`, {
+  (await api.post<Proposal>(`${projectPath(projectId)}/proposals/${id}/accept`, {
     ...(opts.note ? { note: opts.note } : {}),
     ...(opts.editedValue !== undefined ? { edited_value: opts.editedValue } : {}),
   })).data;
 
-export const rejectProposal = async (id: number, note?: string): Promise<Proposal> =>
-  (await api.post<Proposal>(`${p()}/proposals/${id}/reject`, note ? { note } : {})).data;
+export const rejectProposal = async (projectId: number, id: number, note?: string): Promise<Proposal> =>
+  (await api.post<Proposal>(`${projectPath(projectId)}/proposals/${id}/reject`, note ? { note } : {})).data;
 
 export interface BulkDecision {
   decided: number[];
@@ -124,9 +124,9 @@ export const PROPOSAL_BULK_MAX = 200;
 
 /** Each is decided on its own; one refusal does not stop the rest. */
 export const decideProposals = async (
-  ids: number[], action: 'accept' | 'reject', note?: string,
+  projectId: number, ids: number[], action: 'accept' | 'reject', note?: string,
 ): Promise<BulkDecision> =>
-  (await api.post<BulkDecision>(`${p()}/proposals/bulk`, { ids, action, ...(note ? { note } : {}) })).data;
+  (await api.post<BulkDecision>(`${projectPath(projectId)}/proposals/bulk`, { ids, action, ...(note ? { note } : {}) })).data;
 
 export type EvidenceOutcome = 'finding' | 'no_finding' | 'inconclusive' | 'failed' | 'info';
 
@@ -160,14 +160,15 @@ export interface EvidenceList {
 }
 
 export const listEvidenceRecords = async (
+  projectId: number,
   query: { host_id?: number; host_test_id?: number; finding_id?: number; agent_session_id?: number; unlinked?: boolean; limit?: number; offset?: number } = {},
   signal?: AbortSignal,
 ): Promise<EvidenceList> =>
-  (await api.get<EvidenceList>(`${p()}/evidence`, { params: query, signal })).data;
+  (await api.get<EvidenceList>(`${projectPath(projectId)}/evidence`, { params: query, signal })).data;
 
 /** The whole raw output (the list carries a 2,000-character preview). */
-export const getEvidenceRawOutput = async (id: number, signal?: AbortSignal): Promise<string> =>
-  (await api.get<string>(`${p()}/evidence/${id}/raw`, { responseType: 'text', signal })).data;
+export const getEvidenceRawOutput = async (projectId: number, id: number, signal?: AbortSignal): Promise<string> =>
+  (await api.get<string>(`${projectPath(projectId)}/evidence/${id}/raw`, { responseType: 'text', signal })).data;
 
 /** What promoting a result made.  `status` is the finding's as it now stands:
  *  a result that JOINED a finding the team already concluded leaves that
@@ -181,7 +182,8 @@ export interface PromotedEvidence {
 /** Promote an evidence record whose outcome is a finding (409 when it already
  *  belongs to one, 422 for any other outcome). */
 export const createFindingFromEvidence = async (
+  projectId: number,
   evidenceId: number,
   body: { title?: string; severity?: 'critical' | 'high' | 'medium' | 'low' | 'info'; status?: 'open' | 'confirmed' },
 ): Promise<PromotedEvidence> =>
-  (await api.post<PromotedEvidence>(`${p()}/evidence/${evidenceId}/finding`, body)).data;
+  (await api.post<PromotedEvidence>(`${projectPath(projectId)}/evidence/${evidenceId}/finding`, body)).data;

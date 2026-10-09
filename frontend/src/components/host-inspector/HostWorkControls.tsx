@@ -20,6 +20,7 @@ import {
   type HostTagInfo,
   type HostTagWithCount,
 } from '../../services/api';
+import { useProjectId } from '../../hooks/useProjectId';
 import { useProjectRoster } from '../../hooks/useProjectMembers';
 import { MEMBERS_LOAD_ERROR } from '../MembersLoadError';
 import { useAuth } from '../../contexts/AuthContext';
@@ -49,12 +50,13 @@ interface CommonProps {
 function useHostWrite<V>(
   hostId: number, { mutationFn, failure }: { mutationFn: (value: V) => Promise<unknown>; failure: string },
 ) {
+  const projectId = useProjectId();
   const toast = useToast();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn,
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['getHost', hostId] });
+      void queryClient.invalidateQueries({ queryKey: ['getHost', projectId, hostId] });
       void invalidateReads(queryClient, 'getHosts', 'getHostFilterData');
     },
     onError: (err) => toast.error(formatApiError(err, failure)),
@@ -64,12 +66,13 @@ function useHostWrite<V>(
 export const AssigneeControl: React.FC<CommonProps & { assignees: HostAssignee[] }> = ({
   hostId, canEdit, assignees,
 }) => {
+  const projectId = useProjectId();
   const { user } = useAuth();
   const assign = useHostWrite(hostId, {
-    mutationFn: (userId: number) => bulkAssignHosts([hostId], userId), failure: 'Could not assign the host.',
+    mutationFn: (userId: number) => bulkAssignHosts(projectId, [hostId], userId), failure: 'Could not assign the host.',
   });
   const unassign = useHostWrite<void>(hostId, {
-    mutationFn: () => bulkUnassignHosts([hostId]), failure: 'Could not remove your assignment.',
+    mutationFn: () => bulkUnassignHosts(projectId, [hostId]), failure: 'Could not remove your assignment.',
   });
   const busy = assign.isPending || unassign.isPending;
   // Asked for when the menu is first opened; shared with every other picker.
@@ -136,13 +139,14 @@ export const AssigneeControl: React.FC<CommonProps & { assignees: HostAssignee[]
 export const TagControl: React.FC<CommonProps & { tags: HostTagInfo[] }> = ({
   hostId, canEdit, tags,
 }) => {
+  const projectId = useProjectId();
   const queryClient = useQueryClient();
   const addTag = useHostWrite(hostId, {
-    mutationFn: (body: { tag_ids?: number[]; names?: string[] }) => bulkTagHosts([hostId], { ...body, action: 'add' }),
+    mutationFn: (body: { tag_ids?: number[]; names?: string[] }) => bulkTagHosts(projectId, [hostId], { ...body, action: 'add' }),
     failure: 'Could not tag the host.',
   });
   const removeTag = useHostWrite(hostId, {
-    mutationFn: (tagId: number) => bulkTagHosts([hostId], { tag_ids: [tagId], action: 'remove' }),
+    mutationFn: (tagId: number) => bulkTagHosts(projectId, [hostId], { tag_ids: [tagId], action: 'remove' }),
     failure: 'Could not remove the tag.',
   });
   const busy = addTag.isPending || removeTag.isPending;
@@ -152,8 +156,8 @@ export const TagControl: React.FC<CommonProps & { tags: HostTagInfo[] }> = ({
   // The project's tags, read when the picker is first opened and again only
   // after a tag was added here (its count, or the tag itself, is new).
   const tagsQuery = useQuery({
-    queryKey: ['listHostTags'],
-    queryFn: ({ signal }) => listHostTags(signal),
+    queryKey: ['listHostTags', projectId],
+    queryFn: ({ signal }) => listHostTags(projectId, signal),
     enabled: open,
     staleTime: Infinity,
   });

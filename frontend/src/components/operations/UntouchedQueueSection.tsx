@@ -29,6 +29,7 @@ import type { InvestigateRow, InvestigationQueueResponse } from '../../services/
 import { followHost, unfollowHost } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useListCursor } from '../../hooks/useListCursor';
+import { useProjectId } from '../../hooks/useProjectId';
 import { formatApiError } from '../../utils/apiErrors';
 import { buildHostsUrl } from '../../utils/drilldownLinks';
 import { isPageShortcutEvent } from '../../utils/keyboard';
@@ -74,6 +75,7 @@ export const UntouchedQueueSection: React.FC<UntouchedQueueSectionProps> = ({
 }) => {
   const toast = useToast();
   const navigate = useNavigate();
+  const projectId = useProjectId();
   // After an action (or its undo): the queue and the page's counts are read
   // again, in place (5.351.0 — there is no `onChanged` for the parent to wire).
   const changed = useOperationsChanged();
@@ -108,12 +110,12 @@ export const UntouchedQueueSection: React.FC<UntouchedQueueSectionProps> = ({
   // Take the host: In Review under the reader.  The queue lists only hosts
   // nobody follows, so removing the new review is an exact undo.
   const undoTake = useMutation({
-    mutationFn: (hostId: number) => unfollowHost(hostId),
+    mutationFn: (hostId: number) => unfollowHost(projectId, hostId),
     onSuccess: changed,
     onError: (err) => toast.error(formatApiError(err, 'Could not undo.')),
   });
   const taking = useMutation({
-    mutationFn: (row: InvestigateRow) => followHost(row.host_id, 'in_review'),
+    mutationFn: (row: InvestigateRow) => followHost(projectId, row.host_id, 'in_review'),
     onSuccess: (_follow, row) => {
       toast.success(`${row.ip_address} is now in your review queue`, {
         autoHideMs: 6000,
@@ -130,7 +132,7 @@ export const UntouchedQueueSection: React.FC<UntouchedQueueSectionProps> = ({
   // settles with every host's own outcome.
   const takingMany = useMutation({
     mutationFn: (hostIds: number[]) =>
-      runLimited(hostIds, BULK_CONCURRENCY, (id) => followHost(id, 'in_review')),
+      runLimited(hostIds, BULK_CONCURRENCY, (id) => followHost(projectId, id, 'in_review')),
     onSuccess: (results) => {
       const failed = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
       const done = results.length - failed.length;

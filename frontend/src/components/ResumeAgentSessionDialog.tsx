@@ -38,6 +38,7 @@ import {
   DialogTitle,
 } from './ui/dialog';
 import { resumeAgentSession, type AgentSessionRow } from '../services/api';
+import { useProjectId } from '../hooks/useProjectId';
 import { SECRET_MUTATION, invalidateReads, queryErrorText } from '../lib/query';
 import { AGENT_SESSION_READS } from '../utils/agentRuns';
 import { formatTimestamp } from '../utils/relativeTime';
@@ -67,11 +68,12 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
   onOpenChange,
 }) => {
   const queryClient = useQueryClient();
+  const projectId = useProjectId();
   // The replacement key is shown once: it is this dialog's mutation result
   // and nothing else's — never a query, and dropped with the dialog
   // (`reset`, `gcTime: 0`).
   const rotate = useMutation({
-    mutationFn: (sessionId: number) => resumeAgentSession(sessionId),
+    mutationFn: (sessionId: number) => resumeAgentSession(projectId, sessionId),
     ...SECRET_MUTATION,
     onSuccess: () => {
       // Every read of sessions is out of date (the session's page and its

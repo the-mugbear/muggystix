@@ -9,7 +9,6 @@ import type {
 } from '../services/api';
 import type { QueryClient } from '@tanstack/react-query';
 
-import { GLOBAL } from '../lib/query';
 import { formatDate } from './relativeTime';
 
 /** Every read that shows remediation records, by API function name.  Not a
@@ -24,12 +23,13 @@ const REMEDIATION_READS = new Set([
  * After a write to remediation records (the edit dialog, a recorded
  * follow-up, "start the clock from a report"): every remediation read on
  * screen is out of date — the list in place, the contacts, the teams, the
- * projects table, the trend.  One list, so a new read is added once.  The
- * cross-project page's reads are `GLOBAL` keys; both forms are reached.
+ * projects table, the trend.  One list, so a new read is added once.  A key
+ * starts with its API function's name, the project's reads and the
+ * cross-project page's alike.
  */
 export const invalidateRemediationReads = (queryClient: QueryClient): Promise<void> =>
   queryClient.invalidateQueries({
-    predicate: ({ queryKey }) => REMEDIATION_READS.has(String(queryKey[0] === GLOBAL ? queryKey[1] : queryKey[0])),
+    predicate: ({ queryKey }) => REMEDIATION_READS.has(String(queryKey[0])),
   });
 
 export const REMEDIATION_PAGE_SIZE = 25;

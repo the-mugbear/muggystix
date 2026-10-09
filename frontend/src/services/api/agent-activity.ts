@@ -6,7 +6,7 @@
  * removed; the per-plan feed went with them.  services/api.ts re-exports
  * everything from here so consumers keep importing from ``../services/api``.
  */
-import { api, p } from './client';
+import { api, projectPath } from './client';
 
 /** One captured agent → BlueStick request. */
 export interface AgentApiCallRow {
@@ -54,12 +54,13 @@ export interface AgentActivityFilters {
 /** The audit feed for one agent session (v5.173.0), by the session id
  *  (5.328.0 — it was keyed by a second id, the session's detail row). */
 export const getAgentSessionApiActivity = async (
+  projectId: number,
   sessionId: number,
   filters: AgentActivityFilters = {},
   signal?: AbortSignal,
 ): Promise<AgentApiCallListResponse> => {
   const response = await api.get<AgentApiCallListResponse>(
-    `${p()}/agent-sessions/${sessionId}/api-activity`,
+    `${projectPath(projectId)}/agent-sessions/${sessionId}/api-activity`,
     { params: filters, signal },
   );
   return response.data;

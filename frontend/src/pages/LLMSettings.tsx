@@ -20,7 +20,7 @@ import {
   LLMProviderCreatePayload,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
 import { Button } from '../components/ui/button';
@@ -91,11 +91,11 @@ const LLMSettings: React.FC = () => {
   const [confirmEl, confirm] = useConfirm();
   const queryClient = useQueryClient();
   const providersQuery = useQuery({
-    queryKey: [GLOBAL, 'listLLMProviders'],
+    queryKey: ['listLLMProviders'],
     queryFn: ({ signal }) => listLLMProviders(signal),
   });
   const typesQuery = useQuery({
-    queryKey: [GLOBAL, 'listLLMProviderTypes'],
+    queryKey: ['listLLMProviderTypes'],
     queryFn: ({ signal }) => listLLMProviderTypes(signal),
   });
   const providers: LLMProviderEntry[] = providersQuery.data ?? [];
@@ -137,7 +137,7 @@ const LLMSettings: React.FC = () => {
     setDialogOpen(true);
   };
 
-  const providersChanged = () => queryClient.invalidateQueries({ queryKey: [GLOBAL, 'listLLMProviders'] });
+  const providersChanged = () => queryClient.invalidateQueries({ queryKey: ['listLLMProviders'] });
 
   const save = useMutation({
     // What is saved is what was handed over with the click, not whatever the

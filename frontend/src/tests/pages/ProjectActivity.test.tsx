@@ -98,7 +98,7 @@ const legacyRun = (overrides: Record<string, unknown> = {}) => ({
 /** The live call is `{kind: 'project', status: 'active'}`; everything else is
  *  the history. */
 const serve = (live: unknown[], history: unknown[], total = history.length) => {
-  mockedApi.listAgentSessions.mockImplementation(async (filters: Record<string, unknown> = {}) =>
+  mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Record<string, unknown> = {}) =>
     filters.kind === 'project' && filters.status === 'active'
       ? { project_id: 1, sessions: live, total: live.length }
       : { project_id: 1, sessions: history, total });
@@ -186,7 +186,7 @@ describe('Agent Sessions', () => {
     expect(screen.getByText(/submit_feedback/)).toBeInTheDocument();
     expect(mockedApi.endAgentSession).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'End session' }));
-    await waitFor(() => expect(mockedApi.endAgentSession).toHaveBeenCalledWith(72));
+    await waitFor(() => expect(mockedApi.endAgentSession).toHaveBeenCalledWith(1, 72));
   });
 
   it('opens the resume dialog on the same session', async () => {
@@ -295,7 +295,7 @@ describe('Agent Sessions', () => {
     await user.click(await screen.findByRole('option', { name: 'claude-opus-4-7' }));
     await waitFor(() =>
       expect(mockedApi.listAgentSessions).toHaveBeenCalledWith(
-        expect.objectContaining({ model: 'claude-opus-4-7' }), { signal: expect.any(AbortSignal) },
+        1, expect.objectContaining({ model: 'claude-opus-4-7' }), { signal: expect.any(AbortSignal) },
       ),
     );
   });
@@ -305,7 +305,7 @@ describe('Agent Sessions', () => {
     const user = userEvent.setup();
     let releaseOld!: () => void;
     const oldDone = new Promise<void>((res) => { releaseOld = res; });
-    mockedApi.listAgentSessions.mockImplementation(async (filters: Record<string, unknown> = {}) => {
+    mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Record<string, unknown> = {}) => {
       if (filters.kind === 'project' && filters.status === 'active') {
         return { project_id: 1, sessions: [], total: 0 };
       }
@@ -408,7 +408,7 @@ describe('Agent Sessions', () => {
   // Defect 1.7 — the history read "0 of 0 shown" before its first answer.
   it('does not count the history before it has answered: "…", then the count', async () => {
     let answer: (value: unknown) => void = () => undefined;
-    mockedApi.listAgentSessions.mockImplementation((filters: Record<string, unknown> = {}) => (
+    mockedApi.listAgentSessions.mockImplementation((_projectId: number, filters: Record<string, unknown> = {}) => (
       filters.kind === 'project' && filters.status === 'active'
         ? Promise.resolve({ project_id: 1, sessions: [], total: 0 })
         : new Promise((resolve) => { answer = resolve; })
@@ -424,7 +424,7 @@ describe('Agent Sessions', () => {
   });
 
   it('says "—", not a count, for a history that could not be read', async () => {
-    mockedApi.listAgentSessions.mockImplementation(async (filters: Record<string, unknown> = {}) => {
+    mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Record<string, unknown> = {}) => {
       if (filters.kind === 'project' && filters.status === 'active') return { project_id: 1, sessions: [], total: 0 };
       throw new Error('boom');
     });
@@ -460,6 +460,7 @@ describe('Agent Sessions — filters in the URL', () => {
     renderAt('/agent-activity?kind=assist&model=claude-opus-4-7&tool=claude-code');
     await screen.findByTestId('runs-table');
     expect(mockedApi.listAgentSessions).toHaveBeenCalledWith(
+      1,
       expect.objectContaining({ kind: 'assist', model: 'claude-opus-4-7', tool: 'claude-code' }),
       { signal: expect.any(AbortSignal) },
     );
@@ -485,7 +486,8 @@ describe('Agent Sessions — filters in the URL', () => {
     serve([], [legacyRun()]);
     renderAt('/agent-activity?kind=recon');
     await screen.findByTestId('runs-table');
-    const history = mockedApi.listAgentSessions.mock.calls.map((c) => c[0]).filter((f) => f?.status !== 'active');
+    expect(mockedApi.listAgentSessions.mock.calls.every((c) => c[0] === 1)).toBe(true);
+    const history = mockedApi.listAgentSessions.mock.calls.map((c) => c[1]).filter((f) => f?.status !== 'active');
     expect(history.every((f) => f.kind === undefined)).toBe(true);
   });
 });

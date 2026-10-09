@@ -35,6 +35,7 @@ import type { ReviewFollowupRow } from '../../services/api';
 import { followHost, markStillReviewed } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useListCursor } from '../../hooks/useListCursor';
+import { useProjectId } from '../../hooks/useProjectId';
 import { formatApiError } from '../../utils/apiErrors';
 import { cn } from '../../utils/cn';
 import { buildHostsUrl } from '../../utils/drilldownLinks';
@@ -76,6 +77,7 @@ export const ChangedSinceReviewSection: React.FC<{
 }> = ({ rows: loaded, state, pager, canWrite, keysActive = true }) => {
   const toast = useToast();
   const navigate = useNavigate();
+  const projectId = useProjectId();
   // After an action: the list and the counts are read again, in place.
   const changed = useOperationsChanged();
   const rows = loaded ?? NO_ROWS;
@@ -118,7 +120,7 @@ export const ChangedSinceReviewSection: React.FC<{
   // nothing on the server).  `row` names the row whose own button asked.
   const confirm = useMutation({
     mutationFn: ({ targets }: { targets: ReviewFollowupRow[]; row: string | null }) =>
-      markStillReviewed([...new Set(targets.map((r) => r.host_id))]),
+      markStillReviewed(projectId, [...new Set(targets.map((r) => r.host_id))]),
     onSuccess: (_saved, { targets }) => {
       const count = new Set(targets.map((r) => r.host_id)).size;
       toast.success(
@@ -140,7 +142,7 @@ export const ChangedSinceReviewSection: React.FC<{
   };
 
   const reopen = useMutation({
-    mutationFn: (row: ReviewFollowupRow) => followHost(row.host_id, 'in_review'),
+    mutationFn: (row: ReviewFollowupRow) => followHost(projectId, row.host_id, 'in_review'),
     onSuccess: (_follow, row) => {
       toast.success(`${row.ip_address} is back in your review queue`, { autoHideMs: 2500 });
       changed();
@@ -165,7 +167,7 @@ export const ChangedSinceReviewSection: React.FC<{
   // settles with every host's own outcome.
   const reopenBulk = useMutation({
     mutationFn: (hostIds: number[]) =>
-      runLimited(hostIds, BULK_CONCURRENCY, (id) => followHost(id, 'in_review')),
+      runLimited(hostIds, BULK_CONCURRENCY, (id) => followHost(projectId, id, 'in_review')),
     onSuccess: (results) => {
       const failed = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
       const done = results.length - failed.length;

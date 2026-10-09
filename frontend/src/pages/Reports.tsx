@@ -35,6 +35,7 @@ import TimeAgo from '../components/TimeAgo';
 import { Input } from '../components/ui/input';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRoster } from '../hooks/useProjectMembers';
 import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
@@ -78,12 +79,13 @@ const DraftTitle: React.FC<{
 }> = ({ report, duplicate }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const projectId = useProjectId();
   const [value, setValue] = useState<string | null>(null);
   const renaming = useMutation({
-    mutationFn: (title: string) => updateClientReport(report.id, { title }),
+    mutationFn: (title: string) => updateClientReport(projectId, report.id, { title }),
     onSuccess: (updated) => {
       // The new title goes where the list is read; the row keeps its place.
-      queryClient.setQueryData<ClientReportList>(['listClientReports'], (d) => (d
+      queryClient.setQueryData<ClientReportList>(['listClientReports', projectId], (d) => (d
         ? { ...d, items: d.items.map((x) => (x.id === updated.id ? { ...x, title: updated.title } : x)) }
         : d));
       setValue(null);
@@ -144,8 +146,9 @@ export const reportKindLabel = (r: Pick<ClientReport, 'kind' | 'baseline' | 'rev
 
 export const FileButtons: React.FC<{ report: ClientReport }> = ({ report }) => {
   const toast = useToast();
+  const projectId = useProjectId();
   const download = useMutation({
-    mutationFn: (file: ReportFile) => downloadClientReportFile(report.id, file),
+    mutationFn: (file: ReportFile) => downloadClientReportFile(projectId, report.id, file),
     onError: (err) => toast.error(formatApiError(err, 'Could not download the file.')),
   });
   if (report.render_status === 'pending') {
@@ -175,14 +178,17 @@ export const FileButtons: React.FC<{ report: ClientReport }> = ({ report }) => {
 const Reports: React.FC = () => {
   const toast = useToast();
   const navigate = useNavigate();
-  const query = useQuery({ queryKey: ['listClientReports'], queryFn: ({ signal }) => listClientReports(signal) });
+  const projectId = useProjectId();
+  const query = useQuery({
+    queryKey: ['listClientReports', projectId], queryFn: ({ signal }) => listClientReports(projectId, signal),
+  });
   const data: ClientReportList | null = query.data ?? null;
   const error = queryErrorText(query.error, 'Could not load the reports.');
 
   // The new draft's own page is where it goes; this list is read again when
   // the reader comes back to it.
   const starting = useMutation({
-    mutationFn: (kind: ClientReportKind) => createClientReport({ kind }),
+    mutationFn: (kind: ClientReportKind) => createClientReport(projectId, { kind }),
     onSuccess: (report) => navigate(`/reports/${report.id}`),
     onError: (err) => toast.error(formatApiError(err, 'Could not start the report.')),
   });
@@ -355,12 +361,19 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   const [draft, setDraft] = useState<ReportProfile | null>(null);
   const roster = useProjectRoster({ enabled: canEdit });
 
-  const profileQuery = useQuery({ queryKey: ['getReportProfile'], queryFn: ({ signal }) => getReportProfile(signal) });
-  const templatesQuery = useQuery({ queryKey: ['listReportTemplates'], queryFn: ({ signal }) => listReportTemplates(signal) });
+  const projectId = useProjectId();
+  const profileQuery = useQuery({
+    queryKey: ['getReportProfile', projectId], queryFn: ({ signal }) => getReportProfile(projectId, signal),
+  });
+  const templatesQuery = useQuery({
+    queryKey: ['listReportTemplates', projectId], queryFn: ({ signal }) => listReportTemplates(projectId, signal),
+  });
   // Only an administrator can put a folder on the server, so only they are
   // told which ones could not be offered.
   const problemsQuery = useQuery({
-    queryKey: ['listReportTemplateProblems'], queryFn: ({ signal }) => listReportTemplateProblems(signal), enabled: isAdmin,
+    queryKey: ['listReportTemplateProblems', projectId],
+    queryFn: ({ signal }) => listReportTemplateProblems(projectId, signal),
+    enabled: isAdmin,
   });
   // The defaults name a template: they are shown once both are known.
   const templates: ReportTemplate[] = templatesQuery.data ?? NO_TEMPLATES;
@@ -369,9 +382,9 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   const error = queryErrorText(profileQuery.error ?? templatesQuery.error, 'Could not load the report defaults.');
 
   const savingDefaults = useMutation({
-    mutationFn: (next: ReportProfile) => saveReportProfile({ ...cleanSettings(next), template: next.template }),
+    mutationFn: (next: ReportProfile) => saveReportProfile(projectId, { ...cleanSettings(next), template: next.template }),
     onSuccess: (saved) => {
-      queryClient.setQueryData(['getReportProfile'], saved);
+      queryClient.setQueryData(['getReportProfile', projectId], saved);
       setDraft(null);
       toast.success('Report defaults saved. Existing drafts keep their own details.');
     },

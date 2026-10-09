@@ -41,6 +41,7 @@ import { useToast } from '../contexts/ToastContext';
 import { cn } from '../utils/cn';
 import { safeFallback } from '../utils/uiStyles';
 import { useProject } from '../contexts/ProjectContext';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -159,7 +160,11 @@ const Patterns: React.FC = () => {
   const { currentProject } = useProject();
   const toast = useToast();
   const { canExport } = useProjectRole();
-  const patterns = useQuery({ queryKey: ['getSystemicInsights'], queryFn: ({ signal }) => getSystemicInsights(signal) });
+  const projectId = useProjectId();
+  const patterns = useQuery({
+    queryKey: ['getSystemicInsights', projectId],
+    queryFn: ({ signal }) => getSystemicInsights(projectId, signal),
+  });
   const data = patterns.data ?? null;
   const loading = patterns.isFetching;
   const error = queryErrorText(patterns.error, 'Could not load the patterns.');
@@ -183,7 +188,7 @@ const Patterns: React.FC = () => {
   }, [data]);
 
   const briefing = useMutation({
-    mutationFn: () => downloadSystemicReport(),
+    mutationFn: () => downloadSystemicReport(projectId),
     onError: (e) => toast.error(formatApiError(e, 'Could not create the briefing.')),
   });
   const exporting = briefing.isPending;

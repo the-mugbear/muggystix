@@ -31,6 +31,7 @@ import { useAppTheme, type AppThemeName } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useRoleGate } from '../hooks/useProjectRole';
 import { useProject } from '../contexts/ProjectContext';
+import { useProjectId } from '../hooks/useProjectId';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useRemediationPolicy } from '../hooks/useRemediationPolicy';
 import {
@@ -65,6 +66,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
   const allowed = useRoleGate();
   const { enabled: remediationEnabled } = useRemediationPolicy();
   const { projects, currentProject, selectProject } = useProject();
+  // The palette survives a project switch: the project is read on each
+  // render, so its keys and requests follow the switch.
+  const projectId = useProjectId();
   const { themeName, setThemeName, availableThemes } = useAppTheme();
   const [search, setSearch] = useState('');
 
@@ -91,14 +95,14 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
   // One query per group, so one group's failure is said in that group.  The
   // rows of the previous search stay while the next one is read.
   const hosts = useQuery({
-    queryKey: ['getHosts', { search: q, limit: 5, include_total: false }],
-    queryFn: ({ signal }) => getHosts({ search: q, limit: 5, include_total: false }, signal),
+    queryKey: ['getHosts', projectId, { search: q, limit: 5, include_total: false }],
+    queryFn: ({ signal }) => getHosts(projectId, { search: q, limit: 5, include_total: false }, signal),
     enabled: wide,
     placeholderData: keepPreviousData,
   });
   const scans = useQuery({
-    queryKey: ['getScans', 0, 5, { search: q }],
-    queryFn: ({ signal }) => getScans(0, 5, { search: q, signal }),
+    queryKey: ['getScans', projectId, 0, 5, { search: q }],
+    queryFn: ({ signal }) => getScans(projectId, 0, 5, { search: q, signal }),
     enabled: wide,
     placeholderData: keepPreviousData,
   });
@@ -106,14 +110,14 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
   // by number when the query is one ("#37" / "37"); the numbered one first.
   // A number nobody has is a 404, which is simply no match.
   const findingByNumber = useQuery({
-    queryKey: ['getFinding', findingNumber],
-    queryFn: ({ signal }) => getFinding(findingNumber as number, signal),
+    queryKey: ['getFinding', projectId, findingNumber],
+    queryFn: ({ signal }) => getFinding(projectId, findingNumber as number, signal),
     enabled: byNumber,
     placeholderData: keepPreviousData,
   });
   const findingsByTitle = useQuery({
-    queryKey: ['listFindings', { search: q, limit: 5 }],
-    queryFn: ({ signal }) => listFindings({ search: q, limit: 5 }, signal),
+    queryKey: ['listFindings', projectId, { search: q, limit: 5 }],
+    queryFn: ({ signal }) => listFindings(projectId, { search: q, limit: 5 }, signal),
     enabled: wide,
     placeholderData: keepPreviousData,
   });

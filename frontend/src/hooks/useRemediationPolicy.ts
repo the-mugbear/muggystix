@@ -2,7 +2,7 @@
  * This installation's remediation settings — whether remediation tracking
  * exists here at all, and the timeline per severity (5.340.0).
  *
- * One query for the session (`[GLOBAL, 'getRemediationPolicy']`, lib/query),
+ * One query for the session (`['getRemediationPolicy']`, lib/query),
  * shared by the navigation, the pages and the dialogs.  Until it answers — and
  * when it fails — the feature reads as OFF: an installation that did not opt
  * in must never flash a Remediation link.
@@ -20,9 +20,10 @@
 import { useQuery } from '@tanstack/react-query';
 
 import { getRemediationPolicy, type RemediationPolicy } from '../services/api';
-import { GLOBAL, pollEvery, queryClient, queryErrorText, rememberFor } from '../lib/query';
+import { pollEvery, queryClient, queryErrorText, rememberFor } from '../lib/query';
 
-const KEY = [GLOBAL, 'getRemediationPolicy'];
+// The installation's, not a project's: the key names no project.
+const KEY = ['getRemediationPolicy'];
 
 /** Replace the shared value (after a save): every reader follows. */
 export function setRemediationPolicy(policy: RemediationPolicy | null): void {

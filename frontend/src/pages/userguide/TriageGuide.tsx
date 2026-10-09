@@ -11,6 +11,7 @@ import {
 } from '../../components/ui/table';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import { getHostQuerySchema } from '../../services/api';
+import { useProjectId } from '../../hooks/useProjectId';
 import {
   UserGuideShell,
   GuidePage,
@@ -27,9 +28,10 @@ import {
 // deployment with no project selected the fetch fails and we point the reader
 // at the in-page syntax help instead.
 const DslFieldReference: React.FC = () => {
+  const projectId = useProjectId();
   const { data: schema, isError: failed } = useQuery({
-    queryKey: ['getHostQuerySchema'],
-    queryFn: ({ signal }) => getHostQuerySchema(signal),
+    queryKey: ['getHostQuerySchema', projectId],
+    queryFn: ({ signal }) => getHostQuerySchema(projectId, signal),
   });
 
   if (failed) {

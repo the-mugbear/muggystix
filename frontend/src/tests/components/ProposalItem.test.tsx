@@ -50,7 +50,7 @@ describe('ProposalItem', () => {
     expect(reason).toHaveAccessibleDescription(/The agent that proposed it reads this/);
     fireEvent.change(reason, { target: { value: 'Cite the evidence.' } });
     fireEvent.click(screen.getByRole('button', { name: /^Reject$/ }));
-    await waitFor(() => expect(rejectProposal).toHaveBeenCalledWith(7, 'Cite the evidence.'));
+    await waitFor(() => expect(rejectProposal).toHaveBeenCalledWith(1, 7,'Cite the evidence.'));
   });
 
   it('names its source and model, and cites its evidence', () => {
@@ -71,7 +71,7 @@ describe('ProposalItem', () => {
     fireEvent.change(box, { target: { value: 'NTLM relay to any host.' } });
     fireEvent.click(screen.getByRole('button', { name: /Accept with my edit/ }));
     await waitFor(() => expect(onDecided).toHaveBeenCalled());
-    expect(acceptProposal).toHaveBeenCalledWith(7, { editedValue: 'NTLM relay to any host.' });
+    expect(acceptProposal).toHaveBeenCalledWith(1, 7,{ editedValue: 'NTLM relay to any host.' });
   });
 
   it('shows why an accept was refused and stays decidable', async () => {
@@ -165,7 +165,7 @@ describe('5.317.1 — a rejection can say why (the agent reads it back)', () => 
     });
     fireEvent.click(screen.getByRole('button', { name: /^Reject$/ }));
     await waitFor(() => expect(onDecided).toHaveBeenCalled());
-    expect(rejectProposal).toHaveBeenCalledWith(7, 'Remove the relay claim until the raw artifact is verified.');
+    expect(rejectProposal).toHaveBeenCalledWith(1, 7,'Remove the relay claim until the raw artifact is verified.');
   });
 
   it('a reason is optional, and Cancel leaves it pending', async () => {
@@ -177,7 +177,7 @@ describe('5.317.1 — a rejection can say why (the agent reads it back)', () => 
     expect(screen.getByRole('button', { name: /^Accept$/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /^Reject…$/ }));
     fireEvent.click(screen.getByRole('button', { name: /^Reject$/ }));
-    await waitFor(() => expect(rejectProposal).toHaveBeenCalledWith(7, undefined));
+    await waitFor(() => expect(rejectProposal).toHaveBeenCalledWith(1, 7,undefined));
   });
 });
 

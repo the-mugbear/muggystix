@@ -31,6 +31,7 @@ import { buildFindingsUrl, buildHostsUrl, reviewedHostsUrl } from '../utils/dril
 import { formatApiError } from '../utils/apiErrors';
 import { invalidateReads, queryErrorText } from '../lib/query';
 import { safeFallback } from '../utils/uiStyles';
+import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
@@ -86,12 +87,13 @@ const EvidenceCurrency: React.FC<{ evidence: PostureResponse['evidence'] }> = ({
 
 const SecurityPosture: React.FC = () => {
   const queryClient = useQueryClient();
-  // One project's posture: the cache is partitioned by project, so a switch
-  // asks again and never shows the previous project's answer (a Refresh keeps
-  // the data on screen; it is the same project).
+  // One project's posture: the key names the project, so a switch asks again
+  // and never shows the previous project's answer (a Refresh keeps the data
+  // on screen; it is the same project).
+  const projectId = useProjectId();
   const posture = useQuery({
-    queryKey: ['getPosture'],
-    queryFn: ({ signal }) => getPosture({ signal }),
+    queryKey: ['getPosture', projectId],
+    queryFn: ({ signal }) => getPosture(projectId, { signal }),
   });
   const data = posture.data ?? null;
   const loading = posture.isFetching;
@@ -108,7 +110,7 @@ const SecurityPosture: React.FC = () => {
   // Overview has no site selection, so it is estate-wide here (Segments
   // offers the per-site variant).
   const briefing = useMutation({
-    mutationFn: () => downloadSystemicReport(),
+    mutationFn: () => downloadSystemicReport(projectId),
     onError: (e) => toast.error(formatApiError(e, 'Could not create the briefing.')),
   });
   // Refresh and Retry: the posture, and the sections further down that read

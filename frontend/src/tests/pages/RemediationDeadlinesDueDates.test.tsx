@@ -34,7 +34,12 @@ vi.mock('../../services/api', () => ({
   addRemediationNote: vi.fn(),
   deleteRemediationNote: vi.fn(),
 }));
-const projectCtx = vi.hoisted(() => ({ projects: [] as Array<{ id: number; name: string }>, selectProject: vi.fn() }));
+// The project selected in the app (77) is none of the rows': this page reads
+// and writes each row through ITS project, never the selected one.
+const projectCtx = vi.hoisted(() => ({
+  currentProject: { id: 77, name: 'Selected' },
+  projects: [] as Array<{ id: number; name: string }>, selectProject: vi.fn(),
+}));
 vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => projectCtx }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }));
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
@@ -116,7 +121,8 @@ describe('H — one contact, several projects', () => {
   it('shows the server’s message, grouped by project, as it is — and records it once for every project', async () => {
     recordRemediationFollowUpOverview.mockResolvedValue({ projects: 2, recorded: 9, already_today: 0 });
     const dialog = await open();
-    expect(getRemediationFollowUp.mock.calls[0].slice(0, 3)).toEqual(['roger@example.com', 'all', undefined]);
+    // No project (null), every project ('all').
+    expect(getRemediationFollowUp.mock.calls[0].slice(0, 3)).toEqual([null, 'roger@example.com', 'all']);
     expect(within(dialog).getByText(/^4 overdue and 2 due soon across 2 projects\. Copy the message/)).toBeInTheDocument();
     fireEvent.change(within(dialog).getByLabelText('What was said (optional)'), { target: { value: 'Mailed' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Record follow-up' }));
@@ -129,7 +135,7 @@ describe('H — one contact, several projects', () => {
   });
 
   it('carries the horizon the reminder listed into what is recorded', async () => {
-    getRemediationFollowUp.mockImplementation(async (_e: string, _s: unknown, _p: unknown, _sig: unknown, ahead = 0) =>
+    getRemediationFollowUp.mockImplementation(async (_p: unknown, _e: string, _s: unknown, _sig: unknown, ahead = 0) =>
       followUp({ upcoming: ahead > 0 ? 3 : 0 }));
     recordRemediationFollowUpOverview.mockResolvedValue({ projects: 1, recorded: 1, already_today: 8 });
     const dialog = await open();
@@ -151,7 +157,10 @@ describe('H — one contact, several projects', () => {
     const dialog = await open('/remediation-deadlines?view=contacts&project=9');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Record follow-up' }));
     await waitFor(() => expect(recordRemediationFollowUp).toHaveBeenCalledTimes(1));
-    expect(recordRemediationFollowUp.mock.calls[0][1]).toBe(9);
+    // The chosen project first, through the mount that serves archived ones.
+    expect(recordRemediationFollowUp.mock.calls[0][0]).toBe(9);
+    expect(recordRemediationFollowUp.mock.calls[0][2]).toBe('overview');
+    expect(getRemediationFollowUp.mock.calls[0].slice(0, 3)).toEqual([9, 'roger@example.com', 'all']);
     expect(recordRemediationFollowUpOverview).not.toHaveBeenCalled();
   });
 
@@ -161,7 +170,8 @@ describe('H — one contact, several projects', () => {
     const dialog = await open();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Record follow-up' }));
     await waitFor(() => expect(recordRemediationFollowUp).toHaveBeenCalledTimes(2));
-    expect(recordRemediationFollowUp.mock.calls.map((call) => call[1])).toEqual([4, 9]);
+    expect(recordRemediationFollowUp.mock.calls.map((call) => call[0])).toEqual([4, 9]);
+    expect(recordRemediationFollowUp.mock.calls.map((call) => call[2])).toEqual(['overview', 'overview']);
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Follow-up recorded on 4 findings on hosts.'));
   });
 
