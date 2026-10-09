@@ -64,6 +64,7 @@ from app.db.models_reports import (
     RenderStatus, Report, ReportImage, ReportKind, ReportProfile, ReportStatus,
 )
 from app.db.models_vulnerability import Vulnerability
+from app.services.report_text import REPORT_TEXT_FIELDS, internal_references
 from app.services import (
     proposal_service, quarto_render, report_images, report_scope, report_template_service,
 )
@@ -101,6 +102,23 @@ def missing_required_text(values: Any) -> List[str]:
     me" both read it."""
     get = values.get if hasattr(values, "get") else (lambda k: getattr(values, k, None))
     return [k for k in REQUIRED_TEXT if not (get(k) or "").strip()]
+
+
+def internal_reference_warnings(items: List[dict]) -> List[dict]:
+    """The findings whose written text names a BlueStick record, with the
+    section and the phrases (``report_text.internal_references``, the rule a
+    proposal is refused by): text a person wrote, or accepted before the
+    refusal existed."""
+    out = []
+    for item in items:
+        fields = [
+            {"field": f, "phrases": phrases}
+            for f in REPORT_TEXT_FIELDS
+            if (phrases := internal_references(item.get(f)))
+        ]
+        if fields:
+            out.append({"id": item["id"], "ref": item["ref"], "title": item["title"], "fields": fields})
+    return out
 
 
 def reportable_finding_condition():
@@ -1273,6 +1291,9 @@ class ClientReportService:
                 {"id": item["id"], "ref": item["ref"], "title": item["title"], "count": pending[item["id"]]}
                 for item in items if pending.get(item["id"])
             ],
+            # Written text that names a BlueStick record ("Finding #277"),
+            # which the reader cannot look up — a warning, never a block.
+            "internal_references": internal_reference_warnings(items),
             # v2.441.0 — over the template's cutoff the report names a scope
             # file instead of listing the scope: the operator must send it.
             "scope_external": {

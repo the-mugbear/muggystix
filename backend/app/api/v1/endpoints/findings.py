@@ -216,19 +216,18 @@ def create_finding(
     current_user: User = Depends(get_current_user),
     viewer: FindingActor = Depends(get_finding_viewer),
 ):
-    """Create a finding directly, without promoting an annotation.
-
-    **API-only by design, not an orphan** (v2.244.0). In the product,
-    findings arrive by promotion from an annotation, which is what carries the
-    evidence trail; nothing in the UI calls this. It stays available for
-    scripted/agent use and because closing it off would narrow the product
-    without anyone asking for that. If a UI ever wants manual creation, this is
-    the endpoint — do not "clean it up" as unreachable.
+    """Write a finding directly — one that is neither a promoted scanner
+    observation nor a test's result.  The host page's "Add finding" calls it
+    (2.467.0) with that host; an accepted ``finding_create`` proposal runs the
+    same ``FindingService.create_finding``.
     """
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="A finding needs a title.")
     resolve_project_assignee(db, project.id, body.owner_id)
     svc = FindingService(db)
     finding = svc.create_finding(
-        project_id=project.id, title=body.title, severity=body.severity,
+        project_id=project.id, title=title, severity=body.severity,
         status=body.status or FindingStatus.OPEN.value, owner_id=body.owner_id,
         host_ids=body.host_ids, actor_id=current_user.id,
     )

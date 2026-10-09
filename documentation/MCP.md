@@ -174,7 +174,11 @@ of the finding's own images with `![caption](evidence:<id>)`:
 that list. Both report-text tools tell the agent that "not enough to write
 this" is a valid answer (2.455.0): a section the finding's data does not
 support is left out — never a guess or a placeholder — and what is missing goes
-in `rationale` and to the operator.
+in `rationale` and to the operator. They also say who reads it (2.467.0): the
+client, who has never seen BlueStick — a section that names a BlueStick record
+by its number ("Finding #277", "evidence record 57") or names BlueStick is
+refused with a 422 quoting the phrase; code spans and fenced blocks are not
+checked.
 
 Each tool also carries a `workflows` grouping tag — `assist`, `testing` (the
 `host_tests_*` tools) or `scope` (scope reads and uploads) — which the tool reference page groups by. It is

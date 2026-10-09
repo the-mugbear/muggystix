@@ -44,7 +44,9 @@ from app.services.finding_actions import (
 )
 from app.services import report_images
 from app.services.finding_service import FindingService, validate_severity
-from app.services.report_text import REPORT_TEXT_FIELDS, REPORT_TEXT_MAX
+from app.services.report_text import (
+    REPORT_TEXT_FIELDS, REPORT_TEXT_MAX, internal_reference_message, internal_references,
+)
 
 #: Evidence records one proposal may cite (review 2026-10-01 R11; the list
 #: was uncapped and each id is checked and stored on the row).
@@ -301,6 +303,18 @@ def _notify_project_admins(db: Session, project_id: int, who: Attribution) -> No
 # Proposing
 # ---------------------------------------------------------------------------
 
+def _refuse_internal_references(fields: Dict[str, str]) -> None:
+    """A proposed section goes into the client report word for word, so one
+    that names a BlueStick record ("Finding #277") is refused here: the
+    proposer rewrites it, and the ids go in ``rationale``."""
+    for field, value in fields.items():
+        if field not in REPORT_TEXT_FIELDS:
+            continue
+        phrases = internal_references(value)
+        if phrases:
+            raise HTTPException(status_code=422, detail=f"{field}: {internal_reference_message(phrases)}")
+
+
 def propose_finding_text(
     db: Session, project_id: int, who: Attribution, *, finding_id: int,
     fields: Dict[str, str], rationale: Optional[str] = None,
@@ -329,6 +343,7 @@ def propose_finding_text(
     report_images.check_references(
         db, finding, {f: v for f, v in fields.items() if f in REPORT_TEXT_FIELDS}, require_marked=False,
     )
+    _refuse_internal_references(fields)
     out = []
     for field, value in fields.items():
         value = (value or "").strip()
@@ -392,6 +407,7 @@ def propose_finding(
             raise HTTPException(status_code=422, detail=f"{field}: longer than {REPORT_TEXT_MAX} characters.")
     # A finding that does not exist yet has no images to place.
     report_images.check_references(db, None, text, require_marked=False)
+    _refuse_internal_references(text)
     proposal = _add(
         db, project_id, ProposalKind.FINDING_CREATE.value, who,
         payload={"title": title[:500], "severity": severity, "status": status,

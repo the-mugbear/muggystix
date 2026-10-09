@@ -302,6 +302,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           {!!s?.pending_proposals?.length && (
             <p className="mt-xs">{s.pending_proposals.length} finding{s.pending_proposals.length === 1 ? ' has' : 's have'} proposed changes nobody has decided — it is issued as the findings stand now.</p>
           )}
+          {!!s?.internal_references?.length && (
+            <p className="mt-xs">{s.internal_references.length} finding{s.internal_references.length === 1 ? ' names' : 's name'} a BlueStick record in its text, which the reader cannot look up.</p>
+          )}
           {!!s?.agent_images && (
             <p className="mt-xs">{s.agent_images} image{s.agent_images === 1 ? ' comes' : 's come'} from notes an agent wrote.</p>
           )}
@@ -412,6 +415,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const missingText = s.missing_text ?? [];
   const missingDetails = s.missing_details ?? [];
   const pendingProposals = s.pending_proposals ?? [];
+  const internalReferences = s.internal_references ?? [];
   // Issue is the main action only once nothing prints as TODO; until then
   // the page leads to the gaps and to previewing, not to freezing them.
   const ready = !missingText.length && !missingDetails.length;
@@ -529,6 +533,24 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                 <Link to={`/findings/${m.id}#proposals`} className="min-w-0 truncate text-info hover:underline"
                   title={m.title}>{m.title}</Link>
                 <span className="text-caption text-muted-foreground">{m.count} proposal{m.count === 1 ? '' : 's'}</span>
+              </li>
+            ))}
+          </ul>
+        </PostureSection>
+      )}
+
+      {isDraft && internalReferences.length > 0 && (
+        <PostureSection title="Text the reader cannot follow"
+          description="These sections name a BlueStick record. The report’s reader has never seen BlueStick: name a finding by its title and a system by its address.">
+          <ul className="space-y-xxs">
+            {internalReferences.map((m) => (
+              <li key={m.id} className="flex min-w-0 flex-wrap items-baseline gap-x-xs text-body">
+                <span className="tabular-nums text-muted-foreground">{m.ref}</span>
+                <Link to={`/findings/${m.id}?edit=report-text`} className="min-w-0 truncate text-info hover:underline"
+                  title={m.title}>{m.title}</Link>
+                <span className="min-w-0 break-words text-caption text-muted-foreground">
+                  {m.fields.map((f) => `${REPORT_FIELD_LABELS[f.field] ?? f.field}: ${f.phrases.map((p) => `“${p}”`).join(', ')}`).join(' · ')}
+                </span>
               </li>
             ))}
           </ul>

@@ -7,13 +7,16 @@
  * changes (the inspector bumps it after a promote).
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
+import { SEVERITY_BADGE_VARIANT, SEVERITY_LABEL, SEVERITY_ORDER } from '../utils/severity';
 import { useNavigate } from 'react-router-dom';
+import { Loader2, Plus } from 'lucide-react';
 import { AlertHexIcon } from './AppIcons';
 
 import {
+  createFinding,
   Finding,
   FindingHostStatus,
+  FindingSeverity,
   FindingStatus,
   getFinding,
   listFindings,
@@ -27,8 +30,11 @@ import { useToast } from '../contexts/ToastContext';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from './ui/badge';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Label } from './ui/label';
 import { FindingHistoryButton } from './FindingHistoryButton';
-import { InspectorSection } from './host-inspector/InspectorSection';
+import { InspectorSection, openInspectorSection } from './host-inspector/InspectorSection';
 import {
   Select,
   SelectContent,
@@ -45,6 +51,80 @@ interface HostFindingsCardProps {
   refreshKey?: number;
 }
 
+/** What a finding written by hand may start as: the two a proposed finding
+ *  may (`proposal_service.NEW_FINDING_STATUSES`). */
+const NEW_STATUSES: Array<{ value: FindingStatus; label: string }> = [
+  { value: 'open', label: 'Under investigation' },
+  { value: 'confirmed', label: 'Confirmed' },
+];
+
+/** Write a finding on this host: a title, a severity and whether it is
+ *  confirmed.  Its report text is written on the finding's own page. */
+const AddFindingForm: React.FC<{
+  hostId: number;
+  onAdded: (made: Finding) => void;
+  onCancel: () => void;
+}> = ({ hostId, onAdded, onCancel }) => {
+  const [title, setTitle] = useState('');
+  const [severity, setSeverity] = useState<FindingSeverity>('medium');
+  const [status, setStatus] = useState<FindingStatus>('open');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const create = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      onAdded(await createFinding({ title: title.trim(), severity, status, host_ids: [hostId] }));
+    } catch (err) {
+      setError(formatApiError(err, 'Could not add the finding.'));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      className="mb-sm space-y-xs rounded-panel border border-border p-xs"
+      onSubmit={(e) => { e.preventDefault(); if (!busy && title.trim()) void create(); }}
+    >
+      <div className="flex min-w-0 flex-wrap items-end gap-xs">
+        <div className="min-w-0 flex-1 basis-64">
+          <Label htmlFor="add-finding-title">Finding title</Label>
+          <Input id="add-finding-title" value={title} maxLength={500} autoFocus onChange={(e) => setTitle(e.target.value)} />
+        </div>
+        <div>
+          <Label htmlFor="add-finding-severity">Severity</Label>
+          <Select value={severity} onValueChange={(v) => setSeverity(v as FindingSeverity)}>
+            <SelectTrigger id="add-finding-severity" className="h-9 w-32"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {SEVERITY_ORDER.map((sev) => <SelectItem key={sev} value={sev}>{SEVERITY_LABEL[sev]}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label htmlFor="add-finding-status">State</Label>
+          <Select value={status} onValueChange={(v) => setStatus(v as FindingStatus)}>
+            <SelectTrigger id="add-finding-status" className="h-9 w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {NEW_STATUSES.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <p className="text-caption text-muted-foreground">
+        For an issue no scanner row or test result on this host stands for. Write its report text, and add further hosts, on the finding.
+      </p>
+      <div className="flex flex-wrap gap-xs">
+        <Button type="submit" size="sm" disabled={busy || title.trim().length === 0}>
+          {busy && <Loader2 className="size-3.5 animate-spin" aria-hidden />} Add finding
+        </Button>
+        <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={onCancel}>Cancel</Button>
+      </div>
+      {error && <p role="alert" className="break-words text-caption text-destructive">{error}</p>}
+    </form>
+  );
+};
+
 /** One host's findings.  Keyed by the host, so another host starts empty and
  *  an answer for the host that was left has no list to land in. */
 const HostFindingsCard: React.FC<HostFindingsCardProps> = (props) => (
@@ -57,6 +137,7 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId, refresh
   const { canWrite: canManage } = useProjectRole();
   const [findings, setFindings] = useState<Finding[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [adding, setAdding] = useState(false);
 
   // A refresh supersedes the read before it: only the latest may write.
   const generation = useRef(0);
@@ -132,9 +213,19 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId, refresh
     }
   };
 
-  // Gate on presence (mirrors WebInterfaces/NetExec cards) — no findings,
-  // no card noise.  Appears once a note here is promoted.
-  if (!loaded || findings.length === 0) return null;
+  // No findings and nothing to do here: no section.  Someone who can write
+  // always has it, because "Add finding" is how a finding that is neither a
+  // scanner observation nor a test's result gets onto this host (5.346.0).
+  if (!loaded || (findings.length === 0 && !canManage)) return null;
+
+  const onAdded = (made: Finding) => {
+    setAdding(false);
+    toast.success(`Finding added: ${made.title}`, {
+      autoHideMs: 8000,
+      action: { label: 'Write it up', onClick: () => navigate(`/findings/${made.id}?edit=report-text`) },
+    });
+    void fetchFindings();
+  };
 
   return (
     <InspectorSection
@@ -142,7 +233,16 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId, refresh
       title="Findings"
       icon={<AlertHexIcon className="size-4 shrink-0 text-warning" aria-hidden />}
       count={findings.length}
+      actions={canManage && !adding ? (
+        <Button variant="ghost" size="sm" className="h-7" onClick={() => { openInspectorSection('host-detail-findings'); setAdding(true); }}>
+          <Plus className="size-3.5" aria-hidden /> Add finding
+        </Button>
+      ) : undefined}
     >
+      {adding && <AddFindingForm hostId={hostId} onAdded={onAdded} onCancel={() => setAdding(false)} />}
+      {findings.length === 0 && !adding && (
+        <p className="text-metadata text-muted-foreground">No finding is recorded on this host.</p>
+      )}
       <div className="flex flex-col gap-xs">
         {findings.map((f) => (
           <div key={f.id} className="flex flex-wrap items-center gap-xs border-b border-border pb-xs last:border-0 last:pb-0">

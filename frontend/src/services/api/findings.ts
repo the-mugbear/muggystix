@@ -221,6 +221,12 @@ export interface FindingCreatePayload {
   owner_id?: number | null;
   host_ids?: number[];
 }
+/** v5.346.0 — write a finding directly (the host page's "Add finding"). */
+export const createFinding = async (payload: FindingCreatePayload): Promise<Finding> => {
+  const response = await api.post<Finding>(`${p()}/findings`, payload);
+  return response.data;
+};
+
 export const updateFinding = async (
   findingId: number,
   payload: { title?: string; severity?: FindingSeverity; owner_id?: number | null } & FindingReportTextUpdate,

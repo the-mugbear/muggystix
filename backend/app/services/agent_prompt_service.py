@@ -33,23 +33,20 @@ logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.16.0"
+PROMPT_VERSION = "4.17.0"
 
 # What PROMPT_VERSION changed (the current version only).
 PROMPT_CHANGES = (
-    "Remediation tracking has one word per fact. A remediation row's `status: "
-    "closed` means the contact REPORTED it fixed: say 'reported fixed', never "
-    "'closed' or 'remediated'. `endpoint_status: remediated` is the "
-    "assessment's own conclusion: say 'remediated'. The stored values and "
-    "every call are unchanged (`open` / `closed` / `deferred`). Each row of "
-    "the remediation list now carries `verification` — "
-    "`reported_fixed_not_retested` (the record is closed, the endpoint is not "
-    "remediated and not a false positive), `remediated_record_open` (the "
-    "endpoint is remediated, the record is open, deferred or was never "
-    "written), or null — the list carries `verification_counts`, and "
-    "`verification=<value>` lists exactly those rows. The server derives it; "
-    "report a gap to the operator and never set one status because of the "
-    "other."
+    "Report text is written for a reader who has never seen BlueStick. A "
+    "proposed section (`propose_finding_text`, a new finding's `report_text`) "
+    "that names a BlueStick record by its number — 'Finding #277', 'evidence "
+    "record 57', 'host #12', 'proposal #9' — or names BlueStick is refused "
+    "with a 422 that quotes the phrase. Name another finding by its title and "
+    "a system by its address or hostname; say nothing about how the text was "
+    "produced; record ids belong in `rationale`. Text inside a code span or a "
+    "fenced block is not checked. A client report's `summary` now carries "
+    "`internal_references`: the reported findings whose written text still "
+    "names such a record, by section."
 )
 
 
@@ -419,7 +416,10 @@ def build_session_instructions(
         f"goes into the client report word for word: when the data is too thin "
         f"for a section, do NOT propose it (no guesses, no placeholders) — say "
         f"what is missing in `rationale` and to {user_label}. \"Not enough to "
-        f"write this\" is a valid answer.\n"
+        f"write this\" is a valid answer. Its reader has never seen BlueStick: "
+        f"no record numbers or ids (\"Finding #277\"), no mention of BlueStick "
+        f"or of how the text was produced — name a finding by its title and a "
+        f"system by its address (a section that names a record is refused, 422).\n"
         f"- **Scan and upload.** Run scanners locally from the working directory "
         f"and `POST /agent/uploads` (multipart; poll `GET /agent/uploads/{{id}}`) — "
         f"nothing needs to be open first. `GET /agent/scopes` lists the declared scopes; "

@@ -81,7 +81,7 @@ const sections: GuideSection[] = [
         <Subhead>Move faster</Subhead>
         <UnorderedList>
           <li><strong>Command palette</strong> (<Mono>Ctrl</Mono>/<Mono>⌘</Mono> + <Mono>K</Mono>) — jump to any page or run an action without the mouse. The fastest way around once you know the page names.</li>
-          <li><strong>Project selector</strong> — switch the active project from the sidebar; every data page re-scopes to it.</li>
+          <li><strong>Project selector</strong> — switch the active project from the sidebar; every data page re-scopes to it. Once projects span more than one year the menu lists them by the year they start (a project with no start date counts under the year it was created): it opens on the current project&rsquo;s year, and another year or <em>All</em> is one click.</li>
           <li><strong>Themes</strong> — the theme picker in the top bar offers several looks, including a phosphor terminal mode.</li>
           <li><strong>One account per browser</strong> — the sign-in is shared by every tab. Signing in as a different account (or signing out) in one tab reloads the others, so no tab keeps showing the previous account's project.</li>
         </UnorderedList>

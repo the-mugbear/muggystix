@@ -7,7 +7,8 @@ existing findings can use exactly the functions promotion uses.
 from __future__ import annotations
 
 import json
-from typing import Optional
+import re
+from typing import List, Optional
 
 from app.services.cvss_service import normalize_cvss
 
@@ -16,6 +17,58 @@ from app.services.cvss_service import normalize_cvss
 REPORT_TEXT_FIELDS = ("description", "impact", "recommendation", "references", "steps_to_reproduce")
 # Longest accepted value per field — a report section, not an evidence dump.
 REPORT_TEXT_MAX = 32768
+
+
+# A BlueStick record named by its number ("Finding #277", "evidence record
+# 57", "host test #12"), or the product itself.  The report's reader has never
+# seen BlueStick: such a phrase points at nothing they can open.  Only forms
+# that cannot be the client's own subject matter — a bare "session ID 4821" or
+# "user_id=5" is what a finding may be about, and is left alone.
+_RECORD = (
+    r"(?:findings?|evidence(?:\s+records?)?|proposals?|host\s+tests?|"
+    r"(?:scanner\s+)?observations?|hosts?|agent\s+sessions?|vulnerabilit(?:y|ies))"
+)
+INTERNAL_REFERENCE = re.compile(
+    rf"\b{_RECORD}\s*#\s?\d+"
+    r"|\b(?:finding|evidence(?:\s+record)?|proposal|host\s+test|(?:scanner\s+)?observation)\s+ids?\s*[:=#]?\s*\d+"
+    r"|\bevidence\s+records?\s+\d+"
+    r"|\bBlueStick\b",
+    re.IGNORECASE,
+)
+#: How many phrases a message quotes.
+INTERNAL_REFERENCE_QUOTED = 3
+
+
+def internal_references(text: Optional[str]) -> List[str]:
+    """The phrases of ``text`` that name a BlueStick record or BlueStick
+    itself, in order, each once.  Code spans and fenced blocks are not read:
+    a command's output is shown as it was."""
+    if not text or not INTERNAL_REFERENCE.search(text):
+        return []
+    from app.services.report_images import code_spans
+
+    code = code_spans(text)
+    found: List[str] = []
+    for match in INTERNAL_REFERENCE.finditer(text):
+        if any(a <= match.start() < b for a, b in code):
+            continue
+        phrase = " ".join(match.group(0).split())
+        if phrase.casefold() not in {p.casefold() for p in found}:
+            found.append(phrase)
+    return found
+
+
+def internal_reference_message(phrases: List[str]) -> str:
+    """Why text holding ``phrases`` is not report text, and what to write."""
+    quoted = ", ".join(f"“{p}”" for p in phrases[:INTERNAL_REFERENCE_QUOTED])
+    more = len(phrases) - INTERNAL_REFERENCE_QUOTED
+    if more > 0:
+        quoted += f" and {more} more"
+    return (
+        f"{quoted} means nothing to the report's reader, who has never seen BlueStick. "
+        "Name a finding by its title and a system by its address or hostname, "
+        "and leave record numbers out of report text."
+    )
 
 
 def report_text_of(finding) -> dict:

@@ -67,7 +67,9 @@ export const DropdownMenuContent = React.forwardRef<
       ref={ref}
       sideOffset={sideOffset}
       className={cn(
-        'z-50 min-w-40 overflow-hidden rounded-control border border-border bg-popover p-xxs text-popover-foreground shadow-overlay',
+        // Never taller than the room Radix measured beside the trigger: a long
+        // menu scrolls inside itself instead of running off the window.
+        'z-50 max-h-[var(--radix-dropdown-menu-content-available-height)] min-w-40 overflow-y-auto overflow-x-hidden rounded-control border border-border bg-popover p-xxs text-popover-foreground shadow-overlay',
         'animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
         'data-[side=bottom]:slide-in-from-top-2',
         'data-[side=top]:slide-in-from-bottom-2',

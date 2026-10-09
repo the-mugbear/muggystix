@@ -175,6 +175,11 @@ export interface ReportSummary {
   agent_images?: number;
   /** v5.316.0 — reported findings with proposals nobody has decided yet. A warning, never a block. */
   pending_proposals?: Array<{ id: number; ref: string; title: string; count: number }>;
+  /** v5.346.0 — reported findings whose written text names a BlueStick record
+   *  ("Finding #277"), by section. A warning, never a block. */
+  internal_references?: Array<{
+    id: number; ref: string; title: string; fields: Array<{ field: string; phrases: string[] }>;
+  }>;
   /** v5.319.0 — the scope is over the template's cutoff: the report summarises it
    *  and names this file (with its SHA-256), which must be sent with the report. */
   scope_external?: {

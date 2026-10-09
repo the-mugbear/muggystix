@@ -90,7 +90,7 @@ _BLANK_LINE = re.compile(r'\n[ \t]*\n')
 _UNESCAPED_BRACKET = re.compile(r'(\\.)|([\[\]])', re.S)
 
 
-def _code_spans(text: str) -> List[Tuple[int, int]]:
+def code_spans(text: str) -> List[Tuple[int, int]]:
     """``(start, end)`` of every fenced code block and inline code span:
     what is written there is shown as typed, so it is never rewritten."""
     spans: List[Tuple[int, int]] = []
@@ -161,7 +161,7 @@ def normalise_references(text: Optional[str]) -> Optional[str]:
     given."""
     if not text or "evidence:" not in text:
         return text
-    code = _code_spans(text)
+    code = code_spans(text)
 
     def in_code(pos: int) -> bool:
         return any(a <= pos < b for a, b in code)
@@ -186,7 +186,7 @@ def normalise_references(text: Optional[str]) -> Optional[str]:
 
     out = _LOOSE.sub(inline, text)
     if labels:
-        code = _code_spans(out)           # offsets moved with the rewrite above
+        code = code_spans(out)           # offsets moved with the rewrite above
         out = _BY_LABEL.sub(by_label, out)
     return out
 
@@ -221,7 +221,7 @@ def iter_placements(text: Optional[str]) -> Iterator["re.Match[str]"]:
     ranges."""
     if not text or "evidence:" not in text:
         return
-    code = _code_spans(text) if ("`" in text or "~~~" in text) else []
+    code = code_spans(text) if ("`" in text or "~~~" in text) else []
     for match in REFERENCE.finditer(text):
         if any(a <= match.start() < b for a, b in code):
             continue

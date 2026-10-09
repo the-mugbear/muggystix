@@ -175,7 +175,8 @@ export const listRemediationContacts = async (
 export type ContactReportFormat = 'contact-docx' | 'contact-html';
 export interface ContactReportJob {
   id: number;
-  status: string;
+  /** The report job's status as the server stores it (`report_jobs.status`). */
+  status: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
   format: ContactReportFormat;
   message: string | null;
   error: string | null;

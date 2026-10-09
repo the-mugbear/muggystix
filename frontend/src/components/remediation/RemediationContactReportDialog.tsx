@@ -31,7 +31,9 @@ const FORMATS: Array<{ value: ContactReportFormat; label: string }> = [
   { value: 'contact-docx', label: 'Word (.docx)' },
   { value: 'contact-html', label: 'HTML (one file)' },
 ];
-const WAITING = new Set(['queued', 'running']);
+// The worker's statuses, typed: this set once held 'running', which the server
+// never sends, so a poll that landed mid-render read as a failure (5.346.0).
+const WAITING = new Set<ContactReportJob['status']>(['queued', 'processing']);
 
 export const RemediationContactReportDialog: React.FC<{
   contactEmail: string;
@@ -90,6 +92,9 @@ export const RemediationContactReportDialog: React.FC<{
   };
 
   const who = contactName ? `${contactName} (${contactEmail})` : contactEmail;
+  // Finished without a file to download: the render failed (the worker says
+  // why), or it completed and its file is gone (expired, or not readable here).
+  const gone = job?.status === 'completed' && !job.ready;
   const failed = job != null && !waiting && !job.ready;
 
   return (
@@ -131,7 +136,9 @@ export const RemediationContactReportDialog: React.FC<{
             )}
             {failed && (
               <p role="alert" className="break-words text-destructive">
-                The document could not be prepared{job?.error ? `: ${job.error}` : '.'}
+                {gone
+                  ? 'The document was prepared, but its file is no longer available. Prepare it again.'
+                  : `The document could not be prepared: ${job?.error || 'the report worker gave no reason'}.`}
               </p>
             )}
           </div>

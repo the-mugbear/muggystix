@@ -13,12 +13,16 @@ const api = vi.hoisted(() => ({
   getFinding: vi.fn(),
   setFindingStatus: vi.fn(),
   setFindingEndpointStatus: vi.fn(),
+  createFinding: vi.fn(),
 }));
 vi.mock('../../services/api', () => api);
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ hasPermission: () => true }) }));
-vi.mock('../../contexts/ToastContext', () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
+const projectRole = vi.hoisted(() => ({ value: 'analyst' as string }));
+vi.mock('../../contexts/ProjectContext', () => ({
+  useProject: () => ({ currentProject: { id: 1, name: 'P', my_role: projectRole.value } }),
 }));
+const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }));
+vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 vi.mock('../../components/FindingHistoryButton', () => ({ FindingHistoryButton: () => null }));
 
 import HostFindingsCard from '../../components/HostFindingsCard';
@@ -36,9 +40,61 @@ const renderCard = () => render(<MemoryRouter><HostFindingsCard hostId={HOST} />
 
 beforeEach(() => {
   vi.clearAllMocks();
+  projectRole.value = 'analyst';
 });
 
 describe('HostFindingsCard', () => {
+  it('a writer adds a finding on a host that has none, and is offered the write-up', async () => {
+    const user = userEvent.setup();
+    const made = finding({ id: 41, title: 'Shared local admin password', severity: 'medium', status: 'open', source: 'manual' });
+    api.listFindings.mockResolvedValueOnce({ items: [] }).mockResolvedValue({ items: [made] });
+    api.createFinding.mockResolvedValue(made);
+    renderCard();
+
+    expect(await screen.findByText('No finding is recorded on this host.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Add finding' }));
+    const submit = screen.getByRole('button', { name: 'Add finding' });
+    expect(submit).toBeDisabled();                       // a finding needs a title
+    await user.type(screen.getByLabelText('Finding title'), '  Shared local admin password ');
+    await user.click(submit);
+
+    await waitFor(() => expect(api.createFinding).toHaveBeenCalledWith({
+      title: 'Shared local admin password', severity: 'medium', status: 'open', host_ids: [HOST],
+    }));
+    // The list is read again, and the form is gone.
+    expect(await screen.findByText('Shared local admin password')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Finding title')).toBeNull();
+    const [, options] = toast.success.mock.calls[0];
+    options.action.onClick();
+    expect(navigate).toHaveBeenCalledWith('/findings/41?edit=report-text');
+  });
+
+  it('a refused finding says why and keeps what was typed', async () => {
+    const user = userEvent.setup();
+    api.listFindings.mockResolvedValue({ items: [] });
+    api.createFinding.mockRejectedValue({ response: { data: { detail: 'Hosts [5] are not in this project.' } } });
+    renderCard();
+    await user.click(await screen.findByRole('button', { name: 'Add finding' }));
+    await user.type(screen.getByLabelText('Finding title'), 'Open share');
+    await user.click(screen.getByRole('button', { name: 'Add finding' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Hosts [5] are not in this project.');
+    expect(screen.getByLabelText('Finding title')).toHaveValue('Open share');
+  });
+
+  it('someone who cannot write sees no section on a host without findings, and no Add finding on one with', async () => {
+    projectRole.value = 'viewer';
+    api.listFindings.mockResolvedValue({ items: [] });
+    const { unmount } = renderCard();
+    await waitFor(() => expect(api.listFindings).toHaveBeenCalled());
+    expect(screen.queryByText('Findings')).toBeNull();
+    unmount();
+
+    api.listFindings.mockResolvedValue({ items: [finding({})] });
+    renderCard();
+    expect(await screen.findByText('Weak TLS')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add finding' })).toBeNull();
+  });
+
   it('a finding shared with other hosts is not re-judged from here: the control is THIS host\'s state', async () => {
     const user = userEvent.setup();
     const shared = finding({ host_count: 3, hosts: [row(31, HOST, 'open'), row(32, 6, 'open'), row(33, 8, 'open')] });

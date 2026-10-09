@@ -634,6 +634,52 @@ describe('Remediation', () => {
     await waitFor(() => expect(saveBlob).toHaveBeenCalledWith(expect.any(Blob), 'remediation-roger-2026-11-10.docx'));
   });
 
+  // 5.346.0 — the worker's status while it renders is `processing`; the
+  // dialog waited on `running`, so a poll that landed mid-render stopped the
+  // poll and said "The document could not be prepared." with no reason.
+  it('keeps waiting while the worker renders, then says why a render failed', async () => {
+    listRemediationContacts.mockResolvedValue([
+      { contact_email: 'roger@example.com', contact_name: 'Roger Smith', total: 3, open: 3, overdue: 2, due_soon: 1,
+        on_track: 0, deferred: 0, closed: 0, last_follow_up_on: null, projects: 1 },
+    ]);
+    const job = { id: 7, status: 'queued', format: 'contact-docx', message: null, error: null, filename: null,
+      contact_email: 'roger@example.com', created_at: null, images_withheld: 0, ready: false };
+    prepareContactReport.mockReset().mockResolvedValue(job);
+    getContactReport.mockReset()
+      .mockResolvedValueOnce({ ...job, status: 'processing' })
+      .mockResolvedValue({ ...job, status: 'failed', error: 'Quarto render failed' });
+    show('/remediation?view=contacts');
+    const table = await screen.findByRole('table', { name: /contacts/i });
+    fireEvent.click(within(table).getByRole('button', { name: 'Document' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Prepare' }));
+    expect(await within(dialog).findByText('Preparing the document…', undefined, { timeout: 4000 })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Prepare' })).toBeDisabled();
+    expect(await within(dialog).findByRole('alert', undefined, { timeout: 8000 }))
+      .toHaveTextContent('The document could not be prepared: Quarto render failed.');
+    expect(getContactReport).toHaveBeenCalledTimes(2);
+    expect(within(dialog).getByRole('button', { name: 'Try again' })).toBeEnabled();
+  }, 15000);
+
+  it('a prepared document whose file is gone says so, not that the render failed', async () => {
+    listRemediationContacts.mockResolvedValue([
+      { contact_email: 'roger@example.com', contact_name: 'Roger Smith', total: 3, open: 3, overdue: 2, due_soon: 1,
+        on_track: 0, deferred: 0, closed: 0, last_follow_up_on: null, projects: 1 },
+    ]);
+    prepareContactReport.mockReset().mockResolvedValue({
+      id: 7, status: 'completed', format: 'contact-docx', message: null, error: null, filename: 'list.docx',
+      contact_email: 'roger@example.com', created_at: null, images_withheld: 0, ready: false,
+    });
+    show('/remediation?view=contacts');
+    const table = await screen.findByRole('table', { name: /contacts/i });
+    fireEvent.click(within(table).getByRole('button', { name: 'Document' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Prepare' }));
+    expect(await within(dialog).findByRole('alert'))
+      .toHaveTextContent('The document was prepared, but its file is no longer available. Prepare it again.');
+  });
+
   it.each([
     [0, null],
     [1, '1 image was left out because its finding also affects other contacts’ systems.'],

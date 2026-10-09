@@ -40,6 +40,7 @@ from app.services.llm_provider_service import (
     chat_completion,
 )
 from app.services.prompt_sanitizer import sanitize_for_llm
+from app.services.report_text import internal_reference_message, internal_references
 
 logger = logging.getLogger(__name__)
 
@@ -355,6 +356,13 @@ class ReportDraftService:
         suggestions, declined = parse_finding_text_answer(result.get("content", ""), fields)
         if not suggestions and not declined:
             raise RuntimeError("The provider's answer could not be read as the requested sections.")
+        # A section that names a BlueStick record is not report text (the
+        # proposal would be refused for it): it is declined, with the reason.
+        for field in list(suggestions):
+            phrases = internal_references(suggestions[field])
+            if phrases:
+                del suggestions[field]
+                declined[field] = ("The draft was left out: " + internal_reference_message(phrases))[:DECLINED_REASON_MAX]
         raw = result.get("raw") or {}
         return {
             "suggestions": suggestions,
@@ -385,6 +393,11 @@ _FINDING_TEXT_PROMPT = (
     "goes into the client report word for word, so it never holds a guess, a "
     "placeholder (\"TBD\", \"[needs confirmation]\") or a note about what is "
     "missing.\n"
+    "- The reader is the client, who has never seen the assessment tooling: "
+    "never mention it, a record number or id from it (\"Finding #277\", "
+    "\"evidence record 57\"), the analysts' notes, or how this text was "
+    "produced. Name another finding by its title and a system by its address "
+    "or hostname.\n"
     "- Plain, factual Markdown; no headings (the report supplies them).\n"
     "- This is a DRAFT a human reviews and edits before it is used.\n"
     "- Answer with the JSON object requested and nothing else.\n"
