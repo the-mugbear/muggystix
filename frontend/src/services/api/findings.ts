@@ -134,6 +134,11 @@ export interface FindingListResponse {
   total: number;
   // Per-severity counts for the rollup header (all filters except severity).
   severity_counts?: Partial<Record<FindingSeverity, number>>;
+  /** Who owns the listed findings and how many each — every filter except
+   *  the owner, independent of the page.  `owner_id: null` = unowned.  Each
+   *  count is the total of the list that owner opens.  (An older server
+   *  sends none.) */
+  owner_counts?: Array<{ owner_id: number | null; owner_name: string | null; count: number }>;
 }
 
 export type FindingSortField = 'severity' | 'status' | 'title' | 'host_count' | 'source' | 'created_at' | 'owner';

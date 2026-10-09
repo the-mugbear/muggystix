@@ -335,22 +335,37 @@ const FindingsList: React.FC = () => {
     placeholderData: keepPreviousData,
   });
   const findings = useMemo<Finding[]>(() => listQuery.data?.items ?? [], [listQuery.data]);
-  // The people the Owner filter offers besides the reader: the project's
-  // members, by name.  An owner the address names who is not on the roster
-  // (it failed to load, or they left the project) is offered too, by the name
-  // the listed rows carry, so the select is never blank over a filtered list.
+  // The Owner filter offers the people who OWN one of the listed findings,
+  // each with how many (5.357.0) — the server's `owner_counts`, taken under
+  // every filter but the owner, so each number is the size of the list its
+  // choice opens and everyone stays listed while one is chosen.  (It first
+  // offered every project member: on a real project that is mostly people
+  // who own nothing.)  The counts of "Assigned to me" and "Unowned" come from
+  // the same answer; `null` = not known (still loading, or an older server).
+  const ownerCounts = listQuery.data?.owner_counts ?? null;
+  const countOf = (ownerId: number | null): number | null => (
+    ownerCounts ? ownerCounts.find((c) => c.owner_id === ownerId)?.count ?? 0 : null
+  );
+  const withCount = (label: string, n: number | null) => (n == null ? label : `${label} (${n.toLocaleString()})`);
   const ownerOptions = useMemo(() => {
-    const options = members
-      .filter((m) => m.user_id !== user?.id)
-      .map((m) => ({ value: String(m.user_id), label: m.full_name || m.username || `User ${m.user_id}` }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+    const options = (ownerCounts ?? [])
+      .filter((c) => c.owner_id != null && c.owner_id !== user?.id)
+      .map((c) => ({
+        value: String(c.owner_id),
+        label: `${c.owner_name || `User ${c.owner_id}`} (${c.count.toLocaleString()})`,
+      }));
+    // The owner the address names stays offered when nothing listed is theirs
+    // (another filter left them none) — named from the roster — so the select
+    // is never blank over a filtered list.
     if (ownerFilter !== 'any' && ownerFilter !== 'me' && ownerFilter !== 'unowned'
       && !options.some((o) => o.value === ownerFilter)) {
-      const named = findings.find((f) => String(f.owner_id) === ownerFilter)?.owner_name;
-      options.push({ value: ownerFilter, label: named || `User ${ownerFilter}` });
+      const member = members.find((m) => String(m.user_id) === ownerFilter);
+      const name = member?.full_name || member?.username
+        || findings.find((f) => String(f.owner_id) === ownerFilter)?.owner_name || `User ${ownerFilter}`;
+      options.push({ value: ownerFilter, label: ownerCounts ? `${name} (0)` : name });
     }
     return options;
-  }, [members, user?.id, ownerFilter, findings]);
+  }, [ownerCounts, members, user?.id, ownerFilter, findings]);
   const total = listQuery.data?.total ?? 0;
   const sevCounts: Partial<Record<FindingSeverity, number>> = listQuery.data?.severity_counts ?? {};
   const previousRows = listQuery.isPlaceholderData;
@@ -583,8 +598,8 @@ const FindingsList: React.FC = () => {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="any">Any owner</SelectItem>
-            <SelectItem value="me">Assigned to me</SelectItem>
-            <SelectItem value="unowned">Unowned</SelectItem>
+            <SelectItem value="me">{withCount('Assigned to me', user?.id != null ? countOf(user.id) : null)}</SelectItem>
+            <SelectItem value="unowned">{withCount('Unowned', countOf(null))}</SelectItem>
             {ownerOptions.map((o) => (
               <SelectItem key={o.value} value={o.value}>
                 <span className="block max-w-[16rem] truncate">{o.label}</span>

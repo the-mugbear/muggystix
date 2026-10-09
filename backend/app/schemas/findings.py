@@ -137,12 +137,23 @@ class EndpointStatusBulkUpdate(BaseModel):
     summary: Optional[str] = Field(None, max_length=2000)
 
 
+class FindingOwnerCount(BaseModel):
+    # None = the findings nobody owns.
+    owner_id: Optional[int] = None
+    owner_name: Optional[str] = None
+    count: int
+
+
 class FindingListResponse(BaseModel):
     items: List[FindingResponse]
     total: int
     # Per-severity counts for the rollup header (respects all filters except
     # severity; independent of pagination). Keys: critical/high/medium/low/info.
     severity_counts: dict = {}
+    # Who owns the listed findings and how many each (v2.474.0): every filter
+    # except the owner, independent of pagination — the Owner filter's options.
+    # Each count is the `total` of the list `owner_id=` / `unowned=true` opens.
+    owner_counts: List[FindingOwnerCount] = []
 
 
 class FindingStatusHistoryEntry(BaseModel):

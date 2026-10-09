@@ -1013,6 +1013,38 @@ class FindingService:
         self.db.flush()
         return note_ids
 
+    @staticmethod
+    def _selection(
+        q, *, project_id: int,
+        status: Optional[str] = None, severity: Optional[str] = None,
+        owner_id: Optional[int] = None, unowned: bool = False,
+        source: Optional[str] = None, host_id: Optional[int] = None,
+        search: Optional[str] = None,
+    ):
+        """The Findings list's filters, in ONE place (v2.474.0).
+
+        The list, its severity roll-up and its owner counts are the same
+        selection with one filter left out each (the roll-up ignores
+        ``severity``, the owner counts ignore the owner) — so each calls this
+        and simply does not pass the filter it ignores.  It was written out
+        twice; a third copy for the owner counts would have been a third
+        definition of what a filter means."""
+        q = q.filter(Finding.project_id == project_id)
+        q = _apply_status_filter(q, status)
+        if severity:
+            q = q.filter(Finding.severity == severity)
+        if unowned:
+            q = q.filter(Finding.owner_id.is_(None))
+        elif owner_id is not None:
+            q = q.filter(Finding.owner_id == owner_id)
+        if source:
+            q = q.filter(Finding.source == source)
+        if host_id is not None:
+            q = q.filter(Finding.hosts.any(FindingHost.host_id == host_id))
+        if search and search.strip():
+            q = q.filter(Finding.title.ilike(f"%{escape_like(search.strip())}%", escape="\\"))
+        return q
+
     def list_findings(
         self, *, project_id: int,
         status: Optional[str] = None, severity: Optional[str] = None,
@@ -1029,24 +1061,11 @@ class FindingService:
         lists rows takes :meth:`endpoint_summaries` (the page) or
         :meth:`address_summaries` (the agents' list) for the page's ids."""
         options = [selectinload(Finding.owner), selectinload(Finding.created_by)]
-        q = (
-            self.db.query(Finding)
-            .options(*options)
-            .filter(Finding.project_id == project_id)
+        q = self._selection(
+            self.db.query(Finding).options(*options), project_id=project_id,
+            status=status, severity=severity, owner_id=owner_id, unowned=unowned,
+            source=source, host_id=host_id, search=search,
         )
-        q = _apply_status_filter(q, status)
-        if severity:
-            q = q.filter(Finding.severity == severity)
-        if unowned:
-            q = q.filter(Finding.owner_id.is_(None))
-        elif owner_id is not None:
-            q = q.filter(Finding.owner_id == owner_id)
-        if source:
-            q = q.filter(Finding.source == source)
-        if host_id is not None:
-            q = q.filter(Finding.hosts.any(FindingHost.host_id == host_id))
-        if search and search.strip():
-            q = q.filter(Finding.title.ilike(f"%{escape_like(search.strip())}%", escape="\\"))
         total = q.count()
         q = q.order_by(*_finding_order(sort, sort_dir))
         rows = q.offset(offset).limit(limit).all()
@@ -1174,22 +1193,40 @@ class FindingService:
         filter EXCEPT severity (the point is to show the full severity
         breakdown within the current status/source/host/owner scope) and
         ignores pagination."""
-        q = (
-            self.db.query(Finding.severity, func.count(Finding.id))
-            .filter(Finding.project_id == project_id)
+        q = self._selection(
+            self.db.query(Finding.severity, func.count(Finding.id)), project_id=project_id,
+            status=status, owner_id=owner_id, unowned=unowned,
+            source=source, host_id=host_id, search=search,
         )
-        q = _apply_status_filter(q, status)
-        if unowned:
-            q = q.filter(Finding.owner_id.is_(None))
-        elif owner_id is not None:
-            q = q.filter(Finding.owner_id == owner_id)
-        if source:
-            q = q.filter(Finding.source == source)
-        if host_id is not None:
-            q = q.filter(Finding.hosts.any(FindingHost.host_id == host_id))
-        if search and search.strip():
-            q = q.filter(Finding.title.ilike(f"%{escape_like(search.strip())}%", escape="\\"))
         return {sev: int(c) for sev, c in q.group_by(Finding.severity).all()}
+
+    def owner_counts(
+        self, *, project_id: int,
+        status: Optional[str] = None, severity: Optional[str] = None,
+        source: Optional[str] = None, host_id: Optional[int] = None,
+        search: Optional[str] = None,
+    ) -> List[dict]:
+        """Who owns the listed findings, and how many each (v2.474.0) — what
+        the page's Owner filter offers.
+
+        Respects every filter EXCEPT the owner (so everyone stays listed while
+        one is chosen) and ignores pagination: each count is the size of the
+        list its owner opens.  One grouped statement.  ``owner_id`` None is
+        the unowned findings.  Named owners first, by name; unowned last."""
+        q = self._selection(
+            self.db.query(Finding.owner_id, User.full_name, User.username, func.count(Finding.id))
+            .outerjoin(User, User.id == Finding.owner_id),
+            project_id=project_id, status=status, severity=severity,
+            source=source, host_id=host_id, search=search,
+        )
+        rows = [
+            {"owner_id": owner_id, "owner_name": (full_name or username) if owner_id is not None else None,
+             "count": int(n)}
+            for owner_id, full_name, username, n in
+            q.group_by(Finding.owner_id, User.full_name, User.username).all()
+        ]
+        rows.sort(key=lambda r: (r["owner_id"] is None, (r["owner_name"] or "").lower(), r["owner_id"] or 0))
+        return rows
 
     # ------------------------------------------------------------------
     # Comment / evidence thread (notes targeting the finding itself)

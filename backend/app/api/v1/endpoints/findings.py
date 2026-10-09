@@ -194,6 +194,12 @@ def list_findings(
             for f in rows
         ],
         total=total, severity_counts=sev_counts,
+        # The Owner filter's options: taken before the owner filter, so each
+        # count is the size of the list that owner opens.
+        owner_counts=svc.owner_counts(
+            project_id=project.id, status=status, severity=severity,
+            source=source, host_id=host_id, search=search,
+        ),
     )
 
 
