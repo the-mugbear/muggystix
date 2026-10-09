@@ -81,10 +81,16 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
               verification: Optional[str] = None, flag: Optional[str] = None,
               q: Optional[str] = None, upcoming_days: Optional[int] = None,
               group: str = "host", limit: int = 50, offset: int = 0,
-              policy: Optional[deadlines.Policy] = None, today: Optional[date] = None) -> dict:
+              policy: Optional[deadlines.Policy] = None, today: Optional[date] = None,
+              with_counts: bool = True) -> dict:
     """``upcoming_days`` is the reminder's own narrowing, not a page filter:
     with it the rows are the at-risk ones plus the on-track ones whose
-    deadline falls within that many days."""
+    deadline falls within that many days.
+
+    ``with_counts=False`` is the export (:func:`export_rows`): the same
+    selection, rows and order, WITHOUT the two grouped count statements — the
+    counts in the answer are then zeros and must not be read; ``total`` is
+    counted on its own."""
     policy = policy or deadlines.load(db)
     today = today or policy.today()
     state_of, due = deadlines.state_expr(db, policy, today), deadlines.due_expr(db, policy)
@@ -139,7 +145,7 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
     for sev, value, band, stale, n in (
         selection.filter(at_risk).with_entities(severity_of, state_of, band_of, never_or_long_ago, func.count())
         .group_by(severity_of, state_of, band_of, never_or_long_ago)
-    ):
+    ) if with_counts else ():
         if sev in severity_counts:
             severity_counts[sev][value] += n
         if severity and sev != severity:
@@ -165,7 +171,7 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
     flag_counts = {name: 0 for name in deadlines.FLAGS}
     flagged = [case((flags[name], 1), else_=0) for name in deadlines.FLAGS]
     for value, gap, *raised, n in (query.with_entities(state_of, verification_of, *flagged, func.count())
-                                   .group_by(state_of, verification_of, *flagged)):
+                                   .group_by(state_of, verification_of, *flagged)) if with_counts else ():
         has = {name for name, yes in zip(deadlines.FLAGS, raised) if yes}
         if gap in verification_counts:
             verification_counts[gap] += n
@@ -191,7 +197,7 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
         query = query.filter(_to_remind(db, policy, today, upcoming_days))
     if state or status:
         query = query.filter(state_of.in_(sorted(wanted)))
-    total = (query.count() if narrowed
+    total = (query.count() if narrowed or not with_counts
              else sum(n for name, n in state_counts.items() if name in wanted))
 
     rows = (
@@ -223,6 +229,26 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
             "not_followed_up": not_followed_up,
             "not_followed_up_days": no_follow_up_days or policy.due_soon_days,
             "as_of": today.isoformat()}
+
+
+#: The most rows one export hands over — the ceiling the page's CSV always
+#: had (it read them 200 at a time).  The answer says the true ``total``.
+EXPORT_MAX_ROWS = 20_000
+
+
+def export_rows(db, project_ids: Sequence[int], **filters) -> dict:
+    """The list's rows for a file, in ONE statement (v2.475.0).
+
+    The page built its CSV by reading the list 200 rows at a time — up to a
+    hundred requests, each of which also recounted the page's states, flags
+    and severities.  This is the same function with the counts left out: the
+    same selection, the same row shape and the same order as the list, up to
+    ``EXPORT_MAX_ROWS``, so what is exported cannot differ from what is shown.
+    Only the rows are returned (with ``total`` and ``as_of``): the labels of a
+    CSV are the page's, not the server's."""
+    listing = list_rows(db, project_ids, **filters, limit=EXPORT_MAX_ROWS, offset=0, with_counts=False)
+    return {"items": listing["items"], "total": listing["total"], "limit": EXPORT_MAX_ROWS,
+            "as_of": listing["as_of"]}
 
 
 def _not_followed_up(db, days: int, today: date):

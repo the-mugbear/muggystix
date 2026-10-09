@@ -9,6 +9,7 @@ import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const listRemediation = vi.fn();
+const exportRemediation = vi.fn();
 const applyRemediation = vi.fn();
 const getRemediationPolicy = vi.fn();
 const listRemediationContacts = vi.fn();
@@ -22,6 +23,8 @@ const saveBlob = vi.hoisted(() => vi.fn());
 vi.mock('../../utils/download', () => ({ saveBlob }));
 vi.mock('../../services/api', () => ({
   listRemediation: (...a: unknown[]) => listRemediation(...a),
+  exportRemediation: (...a: unknown[]) => exportRemediation(...a),
+  exportRemediationOverview: vi.fn(),
   applyRemediation: (...a: unknown[]) => applyRemediation(...a),
   getRemediationPolicy: (...a: unknown[]) => getRemediationPolicy(...a),
   listRemediationContacts: (...a: unknown[]) => listRemediationContacts(...a),
@@ -97,6 +100,7 @@ const save = (dialog: HTMLElement) => within(dialog).getByRole('button', { name:
 
 beforeEach(() => {
   projectRole.value = 'admin';
+  exportRemediation.mockReset().mockResolvedValue({ items: [], total: 0, limit: 20000, as_of: '2026-11-10' });
   [listRemediation, applyRemediation, getRemediationPolicy, listRemediationContacts, getRemediationFollowUp,
     recordRemediationFollowUp, recordRemediationFollowUpOverview, listClientReports, assignRemediationFromReport, saveBlob]
     .forEach((m) => m.mockReset());
@@ -309,7 +313,8 @@ describe('C — deferrals to review and due dates set by hand, as openable count
     expect(screen.getByRole('button', { name: '3 due date set by hand: show them' })).toHaveAttribute('aria-pressed', 'true');
     fireEvent.click(screen.getByRole('button', { name: /CSV/ }));
     await waitFor(() => expect(saveBlob).toHaveBeenCalled());
-    expect(listRemediation).toHaveBeenLastCalledWith(1, expect.objectContaining({ flag: 'deadline_overridden', limit: 200 }));
+    expect(exportRemediation).toHaveBeenCalledTimes(1);
+    expect(exportRemediation).toHaveBeenCalledWith(1, expect.objectContaining({ flag: 'deadline_overridden' }));
     first.unmount();
     listRemediation.mockClear();
     show('/remediation?flag=everything');

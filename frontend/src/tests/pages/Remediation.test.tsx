@@ -8,6 +8,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const listRemediation = vi.fn();
+const exportRemediation = vi.fn();
 const applyRemediation = vi.fn();
 const listRemediationEvents = vi.fn();
 const addRemediationNote = vi.fn();
@@ -35,6 +36,8 @@ vi.mock('../../services/api', () => ({
   recordRemediationFollowUp: (...a: unknown[]) => recordRemediationFollowUp(...a),
   listRemediationOverview: vi.fn(),
   listRemediation: (...a: unknown[]) => listRemediation(...a),
+  exportRemediation: (...a: unknown[]) => exportRemediation(...a),
+  exportRemediationOverview: vi.fn(),
   applyRemediation: (...a: unknown[]) => applyRemediation(...a),
   listRemediationEvents: (...a: unknown[]) => listRemediationEvents(...a),
   addRemediationNote: (...a: unknown[]) => addRemediationNote(...a),
@@ -88,6 +91,7 @@ beforeEach(() => {
     getRemediationPolicy, listRemediationContacts, getRemediationFollowUp, recordRemediationFollowUp]
     .forEach((m) => m.mockReset());
   resetRemediationPolicy();
+  exportRemediation.mockReset().mockResolvedValue({ items: [], total: 0, limit: 20000, as_of: '2026-11-10' });
   listRemediationTeams.mockReset().mockResolvedValue([]);
   getRemediationTrend.mockReset().mockResolvedValue({ as_of: '2026-11-10', days: 90, daily: [], closed_by_month: [] });
   getRemediationPolicy.mockResolvedValue(POLICY);
@@ -832,8 +836,12 @@ describe('Remediation', () => {
       expect(screen.queryByRole('button', { name: /remediated, record still open: show them/ })).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /CSV/ }));
       await waitFor(() => expect(saveBlob).toHaveBeenCalled());
-      expect(listRemediation).toHaveBeenLastCalledWith(
-        1, expect.objectContaining({ verification: 'reported_fixed_not_retested', limit: 200 }));
+      // One request for the file, under the page's filters, with no paging.
+      expect(exportRemediation).toHaveBeenCalledTimes(1);
+      expect(exportRemediation).toHaveBeenCalledWith(
+        1, expect.objectContaining({ verification: 'reported_fixed_not_retested', group: 'due' }));
+      expect(exportRemediation.mock.calls[0][1]).not.toHaveProperty('limit');
+      expect(exportRemediation.mock.calls[0][1]).not.toHaveProperty('offset');
       first.unmount();
       listRemediation.mockClear();
       showWithTips('/remediation?verification=closed');
@@ -841,12 +849,13 @@ describe('Remediation', () => {
       expect(listRemediation.mock.calls[0][1]).toMatchObject({ verification: undefined });
     });
 
-    // Code review 2026-10-09: the export pages through the list, and a switch
+    // Code review 2026-10-09: the export paged through the list, and a switch
     // of project between two pages once put two projects' rows in one file.
-    // 5.353.0: every page is asked of the project the export started in — the
-    // request names it — so the file is that project's, whole, whatever the
-    // reader selects meanwhile.
-    it('every page of the CSV is asked of the project it started in, even when the project changes between two of them', async () => {
+    // 5.353.0: the request names the project the export started in.  5.359.0:
+    // the file is ONE request, so there are no two pages to come apart — what
+    // remains to pin is that it is asked of the project on screen when CSV was
+    // pressed, and saved, whatever the reader selects before it answers.
+    it('the CSV is one request, of the project it was started in, even when the project changes before it answers', async () => {
       listRemediation.mockResolvedValue(gaps([row(1)], { reported_fixed_not_retested: 0, remediated_record_open: 0 }));
       const tree = () => (
         <TooltipProvider><MemoryRouter initialEntries={['/remediation']}><Remediation /></MemoryRouter></TooltipProvider>
@@ -855,9 +864,8 @@ describe('Remediation', () => {
       await screen.findByRole('table', { name: /remediation deadlines$/i });
       saveBlob.mockReset();
       listRemediation.mockClear();
-      // The export's first page says there are more; the reader switches before it answers.
-      let answer!: (page: unknown) => void;
-      listRemediation.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+      let answer!: (rows: unknown) => void;
+      exportRemediation.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
       fireEvent.click(screen.getByRole('button', { name: /CSV/ }));
       await waitFor(() => expect(answer).toBeDefined());
       project.id = 2;
@@ -865,15 +873,28 @@ describe('Remediation', () => {
       // The page now shows — and reads — the other project.
       await waitFor(() => expect(listRemediation).toHaveBeenCalledWith(
         2, expect.objectContaining({ limit: 25 }), expect.anything()));
-      answer({ ...gaps([row(1)], { reported_fixed_not_retested: 0, remediated_record_open: 0 }), total: 500 });
+      // More rows match than the server hands over: the reader is told.
+      answer({ items: [row(1), row(2)], total: 500, limit: 2, as_of: '2026-11-10' });
 
-      // The file is saved, and both of its pages (200 rows a call) named project 1.
       await waitFor(() => expect(saveBlob).toHaveBeenCalledTimes(1));
-      const exportCalls = listRemediation.mock.calls.filter(([, query]) => (query as { limit?: number }).limit === 200);
-      expect(exportCalls).toHaveLength(2);
-      expect(exportCalls.map(([asked]) => asked)).toEqual([1, 1]);
-      expect(exportCalls.map(([, query]) => (query as { offset: number }).offset)).toEqual([0, 1]);
+      expect(exportRemediation).toHaveBeenCalledTimes(1);
+      expect(exportRemediation.mock.calls[0][0]).toBe(1);
+      // The list was never read page by page for the file.
+      expect(listRemediation.mock.calls.every(([, query]) => (query as { limit?: number }).limit === 25)).toBe(true);
+      expect(toast.warning).toHaveBeenCalledWith(
+        'The file holds the first 2 of 500 rows. Narrow the list to get the rest.');
       expect(toast.error).not.toHaveBeenCalled();
+    });
+
+    it('a CSV that could not be read says so and saves nothing', async () => {
+      listRemediation.mockResolvedValue(gaps([row(1)], { reported_fixed_not_retested: 0, remediated_record_open: 0 }));
+      showWithTips('/remediation');
+      await screen.findByRole('table', { name: /remediation deadlines$/i });
+      saveBlob.mockReset();
+      exportRemediation.mockRejectedValueOnce(new Error('boom'));
+      fireEvent.click(screen.getByRole('button', { name: /CSV/ }));
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('The CSV could not be built. Nothing was saved.'));
+      expect(saveBlob).not.toHaveBeenCalled();
     });
 
     it('shows no gap line when neither has a row', async () => {

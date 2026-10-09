@@ -159,6 +159,7 @@ READ_FLOORS = {
     f"{_A}/assist/client-reports/{{report_id}}/scope.csv": "auditor",
     # Remediation tracking (its page's floor; the same router factory).
     f"{_A}/remediation": "auditor",
+    f"{_A}/remediation/export": "auditor",
     f"{_A}/remediation/contacts": "auditor",
     f"{_A}/remediation/follow-up": "auditor",
     f"{_A}/remediation/teams": "auditor",

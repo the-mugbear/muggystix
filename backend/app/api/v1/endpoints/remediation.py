@@ -120,6 +120,29 @@ def make_router(reader, admin, *, dependencies=()):
             overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, verification=verification,
             flag=flag, q=q, group=group, limit=limit, offset=offset)
 
+    @router.get("/remediation/export",
+                summary="The list's rows for a file, in one answer (no counts; up to 20,000 rows)")
+    def export(status: Optional[RemediationStatus] = _STATUS,
+               state: Optional[List[RemediationState]] = _STATE,
+               contact: Optional[str] = _CONTACT,
+               unassigned: bool = Query(False, description="Only rows with no contact."),
+               host_id: Optional[int] = Query(None, gt=0), finding_id: Optional[int] = Query(None, gt=0),
+               severity: Optional[Severity] = None, team: Optional[str] = _TEAM,
+               overdue_band: Optional[OverdueBand] = _BAND, no_follow_up_days: Optional[int] = _STALE,
+               verification: Optional[Verification] = _VERIFICATION,
+               flag: Optional[Flag] = _FLAG, q: Optional[str] = _SEARCH,
+               group: Grouping = "host",
+               actor: Actor = Depends(reader), db: Session = Depends(get_db)):
+        """Every filter of the list, the same rows in the same order — without
+        `limit` / `offset` and without the counts: `items`, `total` (every
+        matching row; `items` holds at most `limit` of them) and `as_of`."""
+        require_project_host(db, actor.project_id, host_id)
+        return remediation.export_rows(
+            db, [actor.project_id], status=status, state=state, contact=contact, unassigned=unassigned,
+            host_id=host_id, finding_id=finding_id, severity=severity, team=team,
+            overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, verification=verification,
+            flag=flag, q=q, group=group)
+
     @router.get("/remediation/contacts", summary="The contacts in use, with their counts")
     def contact_list(actor: Actor = Depends(reader), db: Session = Depends(get_db)):
         return {"items": remediation.contacts(db, [actor.project_id])}
@@ -372,6 +395,28 @@ def overview(project_id: Optional[int] = Query(None, gt=0),
         contact_email=contact_email, unassigned=unassigned, severity=severity, team=team,
         overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, verification=verification,
         flag=flag, q=q, group=group, limit=limit, offset=offset)
+
+
+@account_router.get("/remediation-overview/export",
+                    summary="The cross-project list's rows for a file, in one answer (no counts)")
+def overview_export(project_id: Optional[int] = Query(None, gt=0),
+                    status: Optional[RemediationStatus] = _STATUS,
+                    state: Optional[List[RemediationState]] = _STATE,
+                    contact: Optional[str] = _CONTACT,
+                    contact_email: Optional[str] = Query(None, min_length=3, max_length=254,
+                                                         description="Exactly this contact."),
+                    unassigned: bool = False, severity: Optional[Severity] = None,
+                    team: Optional[str] = _TEAM,
+                    overdue_band: Optional[OverdueBand] = _BAND, no_follow_up_days: Optional[int] = _STALE,
+                    verification: Optional[Verification] = _VERIFICATION,
+                    flag: Optional[Flag] = _FLAG, q: Optional[str] = _SEARCH,
+                    group: Grouping = "due",
+                    projects: List[Project] = Depends(administered_projects), db: Session = Depends(get_db)):
+    return remediation.export_rows(
+        db, _selected(projects, project_id), status=status, state=state, contact=contact,
+        contact_email=contact_email, unassigned=unassigned, severity=severity, team=team,
+        overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, verification=verification,
+        flag=flag, q=q, group=group)
 
 
 @account_router.get("/remediation-overview/projects",

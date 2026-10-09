@@ -17,6 +17,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { Copy, Download, History, Search, X } from 'lucide-react';
 
 import {
+  exportRemediation, exportRemediationOverview,
   listRemediation, listRemediationContacts, listRemediationOverview, listRemediationTeams,
   type RemediationContact, type RemediationPage, type RemediationPolicy, type RemediationQuery,
   type RemediationRow, type RemediationState, type RemediationTeam,
@@ -57,8 +58,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 const NO_ROWS: RemediationRow[] = [];
 const NO_CONTACTS: RemediationContact[] = [];
 const NO_TEAMS: RemediationTeam[] = [];
-/** The most rows one CSV holds; beyond it the page says to narrow the list. */
-export const CSV_MAX_ROWS = 20000;
 const LINK = 'rounded text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 const ALL_PROJECTS = '__all__';
 // How far ahead "Remind" looks for a contact with nothing overdue or due soon
@@ -260,19 +259,15 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   // --- handing it to someone else -----------------------------------------
   const csv = useMutation({
     mutationFn: async (): Promise<{ all: RemediationRow[]; total: number }> => {
-      const all: RemediationRow[] = [];
-      let total = Infinity;
-      // The same filters, 200 rows a call, one call at a time.  Every page
-      // is asked of the project this list was showing when the export began
-      // (`currentProjectId`, read while rendering), whatever the reader
-      // selects meanwhile.
-      while (all.length < Math.min(total, CSV_MAX_ROWS)) {
-        const query = { ...filters, group, offset: all.length, limit: 200 };
-        const next = await (across ? listRemediationOverview(query) : listRemediation(currentProjectId, query));
-        total = next.total;
-        if (next.items.length === 0) break;
-        all.push(...next.items);
-      }
+      // The list's rows under the same filters, in ONE request (5.359.0): the
+      // server answers them without the page's counts, up to its ceiling, and
+      // says the true total.  (It was the list read 200 rows at a time — up
+      // to a hundred requests, each recounting the page.)  The words of the
+      // file are still made here, where the page's words are.
+      const query = { ...filters, group };
+      const { items: all, total } = await (across
+        ? exportRemediationOverview(query)
+        : exportRemediation(currentProjectId, query));
       saveBlob(new Blob([`\uFEFF${remediationCsv(all)}`], { type: 'text/csv;charset=utf-8' }),
         `remediation-${list.lastResponse?.as_of ?? 'export'}.csv`);
       return { all, total };

@@ -175,6 +175,30 @@ export const listRemediationOverview = async (
 ): Promise<RemediationPage> =>
   (await api.get<RemediationPage>('/remediation-overview', { params: serialize(query), signal })).data;
 
+/** The list's rows for a file: every filter of the list, the same rows in the
+ *  same order, in ONE answer and without the page's counts.  `items` holds at
+ *  most `limit` rows (the server's ceiling); `total` is every matching row. */
+export interface RemediationExport {
+  items: RemediationRow[];
+  total: number;
+  limit: number;
+  as_of: string;
+}
+type RemediationExportQuery = Omit<RemediationQuery, 'limit' | 'offset'>;
+
+export const exportRemediation = async (
+  projectId: number, query: RemediationExportQuery = {}, signal?: AbortSignal,
+): Promise<RemediationExport> =>
+  (await api.get<RemediationExport>(
+    `${projectPath(projectId)}/remediation/export`, { params: serialize(query), signal },
+  )).data;
+
+/** …across every project the caller administers. */
+export const exportRemediationOverview = async (
+  query: RemediationExportQuery = {}, signal?: AbortSignal,
+): Promise<RemediationExport> =>
+  (await api.get<RemediationExport>('/remediation-overview/export', { params: serialize(query), signal })).data;
+
 export interface RemediationProjectRow {
   project_id: number;
   name: string;
