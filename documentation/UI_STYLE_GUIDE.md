@@ -681,7 +681,12 @@ address of the current render, so two writes in one tick lose the first — a
 (`vi.importActual('react-router-dom')` + `createMemoryRouter`; setupTests
 replaces `useLocation`) and covers a same-page link and Back
 (`tests/pages/*.address.test.tsx`).  Names, Scans, Feedback, Tool activity,
-Findings, Scanner observations and Remediation follow this since 5.354.0.
+Findings, Scanner observations and Remediation follow this since 5.354.0;
+Scope's subnet search since 5.358.0; Segments (page, Site / Subnet view),
+Oversight's project table (search, sort, page), the audit log (action,
+resource type, page) and the SBOM reference (search, filters, sort, rows per
+page, page) since 5.360.0.  A page number past the end is the last page,
+never an empty list.
 
 **The Hosts page derives its state from the address.**  Filters, sort and
 page are read from the URL on every render, never copied into component

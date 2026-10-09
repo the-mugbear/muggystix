@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -130,6 +130,30 @@ describe('Profile', () => {
     expect(screen.getByText('10.0.0.9')).toBeInTheDocument();
     expect(apiMock.listOwnSessions).toHaveBeenCalledTimes(1);
     expect(logout).not.toHaveBeenCalled();
+  });
+
+  // A failed read was a toast over "No active sessions found." — which is
+  // not true of someone reading the page — with nothing to press.
+  it('says in the section that the sessions could not be read, with Retry — not "none", and not as a toast', async () => {
+    apiMock.listOwnSessions.mockRejectedValueOnce({
+      response: { status: 503, data: { detail: 'The session store is not answering.' } },
+    });
+    renderPage();
+
+    const alert = await screen.findByText('The session store is not answering.');
+    expect(alert).toHaveAttribute('role', 'alert');
+    expect(screen.queryByText('No active sessions found.')).toBeNull();
+    expect(toast.error).not.toHaveBeenCalled();
+
+    apiMock.listOwnSessions.mockResolvedValue([
+      { id: 12, ip_address: '10.0.0.9', user_agent: 'Chrome', created_at: '2026-09-22T10:00:00Z',
+        last_activity: '2026-09-22T11:00:00Z', expires_at: '2026-09-23T10:00:00Z', current: true },
+    ]);
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('10.0.0.9')).toBeInTheDocument();
+    expect(screen.queryByText('The session store is not answering.')).toBeNull();
+    expect(apiMock.listOwnSessions).toHaveBeenCalledTimes(2);
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   // 1.15 — `POST /auth/change-password` revokes EVERY session of the user,

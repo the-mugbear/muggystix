@@ -1,5 +1,5 @@
 import { formatDate } from '../utils/relativeTime';
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import {
@@ -26,7 +26,7 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
-import { SECRET_MUTATION } from '../lib/query';
+import { SECRET_MUTATION, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import QueueHealthCard from '../components/QueueHealthCard';
 import RemediationSettingsSection from '../components/remediation/RemediationSettingsSection';
@@ -161,8 +161,8 @@ const SystemSettings: React.FC = () => {
   // Reset Password flows that share selectedUser.
   const [membershipsUser, setMembershipsUser] = useState<User | null>(null);
 
-  // Every account on the installation.  A failed read is a toast over an
-  // empty table, as it always was.
+  // Every account on the installation.  A failed read is said where the
+  // table would be, with Retry — never a toast over an empty table.
   const usersQuery = useQuery({
     queryKey: USERS_KEY,
     queryFn: ({ signal }) => listUsers(signal),
@@ -170,14 +170,19 @@ const SystemSettings: React.FC = () => {
   });
   const users: User[] = usersQuery.data ?? [];
   const loading = isAdmin && usersQuery.isPending;
-  const usersFailure = usersQuery.error;
-  useEffect(() => {
-    if (usersFailure) toast.error(formatApiError(usersFailure, 'Failed to load users.'));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- said once per failure; the toast API is not part of it
-  }, [usersFailure]);
-  /** Put what a write returned (or is known to have done) into the table. */
+  const usersError = queryErrorText(usersQuery.error, 'Failed to load users.');
+  /** The accounts were never read: there is no table to show, only the failure. */
+  const usersUnread = usersQuery.data == null && usersError != null;
+  /** Put what a write returned (or is known to have done) into the table.
+   *  With no table read yet there is nothing to put it into — a list made of
+   *  the one account just written would pass for every account — so the list
+   *  is asked for instead. */
   const setUsers = (update: (prev: User[]) => User[]) => {
-    queryClient.setQueryData<User[]>(USERS_KEY, (prev) => update(prev ?? []));
+    if (queryClient.getQueryData<User[]>(USERS_KEY) == null) {
+      void queryClient.invalidateQueries({ queryKey: USERS_KEY });
+      return;
+    }
+    queryClient.setQueryData<User[]>(USERS_KEY, (prev) => (prev ? update(prev) : prev));
   };
   const replaceUser = (updated: User) => setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
 
@@ -438,12 +443,18 @@ const SystemSettings: React.FC = () => {
 
         <TabsContent value="users" className="space-y-lg">
       <PostureSection
-        title={<>User management{!loading && <SectionCount>{users.length}</SectionCount>}</>}
+        title={<>User management{!loading && !usersUnread && <SectionCount>{users.length}</SectionCount>}</>}
         description="Account roles are global; what a user can do with project data is set per project."
       >
+          {usersError && (
+            <p role="alert" className="break-words text-metadata text-destructive">
+              {usersError}{' '}
+              <button type="button" className="text-info hover:underline" onClick={() => { void usersQuery.refetch(); }}>Retry</button>
+            </p>
+          )}
           {loading ? (
             <InlineLoader label="Loading users…" size="lg" centered />
-          ) : (
+          ) : usersUnread ? null : (
             <div className="overflow-x-auto">
               {/* Fixed columns + a floor so the User column never collapses;
                   a narrow window scrolls this table, not the page. */}

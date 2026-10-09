@@ -11,7 +11,7 @@ import {
 } from '../../components/ui/table';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import { getHostQuerySchema } from '../../services/api';
-import { useProjectId } from '../../hooks/useProjectId';
+import { NO_PROJECT, useProjectId } from '../../hooks/useProjectId';
 import {
   UserGuideShell,
   GuidePage,
@@ -29,15 +29,27 @@ import {
 // at the in-page syntax help instead.
 const DslFieldReference: React.FC = () => {
   const projectId = useProjectId();
-  const { data: schema, isError: failed } = useQuery({
+  const { data: schema, isError: failed, refetch } = useQuery({
     queryKey: ['getHostQuerySchema', projectId],
     queryFn: ({ signal }) => getHostQuerySchema(projectId, signal),
   });
 
   if (failed) {
+    // With no project there is nothing to read; with one, the read failed —
+    // "Select a project" would be the wrong advice, and it can be asked again.
     return (
       <Para>
-        Select a project to load the live field list. Every field is also listed in
+        {projectId === NO_PROJECT ? (
+          <>Select a project to load the live field list. </>
+        ) : (
+          <>
+            The live field list could not be loaded.{' '}
+            <button type="button" className="text-info hover:underline" onClick={() => { void refetch(); }}>
+              Retry
+            </button>{' '}
+          </>
+        )}
+        Every field is also listed in
         the Hosts query bar’s <strong>syntax help</strong> (the <Mono>?</Mono> button),
         which reads the same source.
       </Para>
@@ -81,7 +93,7 @@ const DslFieldReference: React.FC = () => {
           <UnorderedList>
             {hasField.enum_values.map((v) => (
               <li key={v}>
-                <Mono>has:{v}</Mono> — {hasField.enum_descriptions[v]}
+                <Mono>has:{v}</Mono>{hasField.enum_descriptions[v] ? <> — {hasField.enum_descriptions[v]}</> : null}
               </li>
             ))}
           </UnorderedList>

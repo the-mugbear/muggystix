@@ -15,9 +15,9 @@
  * action cells truncate or clamp; every state (loading / error / not-adopted /
  * empty) renders a safe fallback.
  */
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Copy, Download, FileText, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 
 import {
@@ -41,6 +41,7 @@ import { safeFallback } from '../utils/uiStyles';
 import { useProject } from '../contexts/ProjectContext';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
+import { useUrlPage } from '../hooks/useUrlPage';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { InfoTip } from '../components/ui/info-tip';
@@ -127,11 +128,29 @@ const Segments: React.FC = () => {
   const { currentProject } = useProject();
   const projectId = useProjectId();
   const toast = useToast();
-  const [lens, setLens] = useState<Lens | null>(null);
-  const [offset, setOffset] = useState(0);
+  // The lens the operator picked and the page of subnets live in the address
+  // (`?lens=`, `?page=`; UI_STYLE_GUIDE §39): a reload, a shared link and
+  // Back from a subnet's hosts show the same rows.  Both are read from it on
+  // every render and changed by writing it.
+  const [params, setParams] = useSearchParams();
+  const lensParam = params.get('lens');
+  const lens: Lens | null = lensParam === 'site' || lensParam === 'subnet' ? lensParam : null;
+  // The page is the subnet table's, whichever lens is shown: choosing a lens
+  // keeps it (the lead and the measures read the same page of subnets).
+  const setLens = useCallback((next: Lens) => {
+    setParams((prev) => {
+      const out = new URLSearchParams(prev);
+      out.set('lens', next);
+      return out;
+    }, { replace: true });
+  }, [setParams]);
+  const { page, setPage } = useUrlPage();
+  const offset = page * PAGE_SIZE;
+  const setOffset = useCallback((next: number) => setPage(Math.floor(next / PAGE_SIZE)), [setPage]);
 
   // (A project switch starts over — first page, the lens chosen again, the
-  // new project's reads — because `Layout` remounts the page per project.)
+  // new project's reads — because `Layout` remounts the page per project and
+  // a project page drops its query.)
 
   // Two reads, each failing on its own: the subnets a page at a time (the
   // page on screen stays while the next one loads), and the posture, for its
@@ -146,6 +165,14 @@ const Segments: React.FC = () => {
     queryFn: ({ signal }) => getPosture(projectId, { signal }),
   });
   const subnetData = subnetsQuery.data ?? null;
+  // A page the address names past the end (an old link; subnets were removed)
+  // steps back to the last page that exists — never "no hosts are mapped".
+  const pastTheEnd = !!subnetData && !subnetsQuery.isPlaceholderData && offset > 0
+    && subnetData.subnets.length === 0 && subnetData.total > 0;
+  const subnetTotal = subnetData?.total ?? 0;
+  useEffect(() => {
+    if (pastTheEnd) setPage(Math.max(0, Math.ceil(subnetTotal / PAGE_SIZE) - 1));
+  }, [pastTheEnd, subnetTotal, setPage]);
   const subnetError = queryErrorText(subnetsQuery.error, 'Could not load the subnets.');
   const posture = postureQuery.data;
   const sites: PostureSite[] | null = useMemo(

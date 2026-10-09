@@ -387,6 +387,121 @@ describe('Scopes page — the label catalogue could not be loaded', () => {
   });
 });
 
+// The app does not ask again by itself, so a first load that failed left a
+// page with a message and nothing to press but the browser's reload.
+describe('Scopes page — the first load could not be read', () => {
+  const down = (detail: string) => ({ response: { status: 503, data: { detail } } });
+
+  it('the scope: says so with Retry, which reads it again', async () => {
+    mocked.getDefaultScope.mockRejectedValueOnce(down('The database is restarting.'));
+    renderPage();
+    const alert = (await screen.findByText(/The database is restarting\./)).closest('[role="alert"]') as HTMLElement;
+    expect(alert).not.toBeNull();
+    expect(screen.queryByText('10.77.1.0/24')).toBeNull();
+    const coverageReads = mocked.getScopeCoverage.mock.calls.length;
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('10.77.1.0/24')).toBeInTheDocument();
+    expect(screen.queryByText(/The database is restarting\./)).toBeNull();
+    // Only what did not answer is asked again.
+    expect(mocked.getScopeCoverage.mock.calls.length).toBe(coverageReads);
+  });
+
+  it('the coverage: says so with Retry, which reads it again', async () => {
+    mocked.getScopeCoverage.mockRejectedValueOnce(down('Coverage timed out.'));
+    renderPage();
+    const alert = (await screen.findByText(/Coverage timed out\./)).closest('[role="alert"]') as HTMLElement;
+    expect(alert).not.toBeNull();
+    const scopeReads = mocked.getDefaultScope.mock.calls.length;
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText(/Coverage timed out\./)).toBeNull());
+    expect(mocked.getDefaultScope.mock.calls.length).toBe(scopeReads);
+  });
+});
+
+// A read that failed with the scope on screen was a toast: gone in seconds,
+// with nothing to press ("refresh the page").  Each is said where it applies,
+// with a control that reads again, and the rows already shown stay.
+describe('Scopes page — a read that fails with the scope on screen', () => {
+  const down = (detail: string) => ({ response: { status: 503, data: { detail } } });
+  const found = { ...scope, subnets: [{ ...scope.subnets[0], id: 99, cidr: '172.16.9.0/24', description: 'found by search' }] };
+
+  it('a search that could not be read is said under the search box, with Retry, over the rows that were shown', async () => {
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    let fail = true;
+    mocked.getDefaultScope.mockImplementation((_projectId: number, { subnetsSearch }: { subnetsSearch: string }) => {
+      if (!subnetsSearch) return Promise.resolve(scope);
+      if (fail) { fail = false; return Promise.reject(down('The search timed out.')); }
+      return Promise.resolve(found);
+    });
+    fireEvent.change(screen.getByLabelText('Search subnets by CIDR or description'), { target: { value: '172' } });
+
+    const alert = await screen.findByText(/The search timed out\./);
+    expect(alert).toHaveAttribute('role', 'alert');
+    // The rows of the search before it stay; it is not "No subnets match".
+    expect(screen.getByText('10.77.1.0/24')).toBeInTheDocument();
+    expect(screen.queryByText(/No subnets match/)).toBeNull();
+    expect(toastMock.error).not.toHaveBeenCalled();
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('172.16.9.0/24')).toBeInTheDocument();
+    expect(screen.queryByText(/The search timed out\./)).toBeNull();
+    expect(screen.getByLabelText('Search subnets by CIDR or description')).toHaveValue('172');
+    expect(toastMock.error).not.toHaveBeenCalled();
+  });
+
+  it('a change that was saved but could not be read back says so, with Retry — not "refresh the page"', async () => {
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    const after = {
+      ...scope, subnets_total: 2,
+      subnets: [...scope.subnets, { ...scope.subnets[0], id: 12, cidr: '10.9.9.0/24', description: 'just added' }],
+    };
+    mocked.getDefaultScope.mockRejectedValueOnce(down('Bad gateway')).mockResolvedValue(after);
+    mocked.addScopeSubnets.mockResolvedValue({});
+    fireEvent.change(screen.getByLabelText('CIDR or IP'), { target: { value: '10.9.9.0/24' } });
+    fireEvent.click(screen.getAllByRole('button', { name: /^Add$/ })[0]);
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Added 10.9.9.0/24.'));
+
+    const alert = await screen.findByText(/The change was saved, but the scope could not be reloaded\./);
+    expect(alert).toHaveAttribute('role', 'alert');
+    expect(alert).not.toHaveTextContent(/refresh the page/);
+    // What was on screen before the change stays.
+    expect(screen.getByText('10.77.1.0/24')).toBeInTheDocument();
+    expect(toastMock.error).not.toHaveBeenCalled();
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('10.9.9.0/24')).toBeInTheDocument();
+    expect(screen.queryByText(/could not be reloaded/)).toBeNull();
+    expect(toastMock.error).not.toHaveBeenCalled();
+  });
+
+  it('a "Load more" that failed is said beside the button, and pressing it again reads the page', async () => {
+    const second = { ...scope.subnets[0], id: 12, cidr: '10.77.2.0/24', description: 'West segment' };
+    let fail = true;
+    mocked.getDefaultScope.mockImplementation((_projectId: number, { subnetsSkip }: { subnetsSkip: number }) => {
+      if (!subnetsSkip) return Promise.resolve({ ...scope, subnets_total: 2 });
+      if (fail) { fail = false; return Promise.reject(down('The next page timed out.')); }
+      return Promise.resolve({ ...scope, subnets_total: 2, subnets: [second] });
+    });
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    const alert = await screen.findByText('The next page timed out.');
+    expect(alert).toHaveAttribute('role', 'alert');
+    expect(screen.getByText('10.77.1.0/24')).toBeInTheDocument();
+    expect(toastMock.error).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('10.77.2.0/24')).toBeInTheDocument();
+    expect(screen.queryByText('The next page timed out.')).toBeNull();
+    expect(toastMock.error).not.toHaveBeenCalled();
+  });
+});
+
 // B15 / R33 — the subnet search is in the URL, and the latest request wins.
 describe('Scopes page — subnet search', () => {
   // (setupTests replaces useLocation; the search params are the real ones.)

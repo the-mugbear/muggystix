@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { formatTimestamp } from '../../utils/relativeTime';
@@ -12,6 +13,10 @@ import * as api from '../../services/api';
 import AuditLogViewer, { AUDIT_PAGE_SIZE } from '../../components/AuditLogViewer';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+
+// The viewer keeps its filters and its page in the address, so it needs a
+// router above it (what the address does is `tests/pages/AuditLog.address.test.tsx`).
+const mount = () => render(<MemoryRouter><AuditLogViewer /></MemoryRouter>);
 
 const row = (over: Record<string, unknown> = {}) => ({
   id: 1,
@@ -50,14 +55,14 @@ describe('AuditLogViewer', () => {
   // The backend field is `recent_logs_24h`; the viewer read `recent_logs` and
   // printed "…selected project. undefined in the last 24 hours."
   it('states the last-24-hours count from the field the backend returns', async () => {
-    render(<AuditLogViewer />);
+    mount();
     expect(await screen.findByText(/7 in the last 24 hours\./)).toBeInTheDocument();
     expect(screen.queryByText(/undefined/)).toBeNull();
   });
 
   it('never prints "undefined" when the count is missing', async () => {
     mocked.getAuditStats.mockResolvedValue({ ...stats({ recent_logs_24h: undefined }), recent_logs: 7 });
-    render(<AuditLogViewer />);
+    mount();
     await screen.findByText('Ana Ortiz');
     await waitFor(() => expect(mocked.getAuditStats).toHaveBeenCalled());
     expect(screen.queryByText(/undefined/)).toBeNull();
@@ -76,7 +81,7 @@ describe('AuditLogViewer', () => {
       ],
       total: 3, skip: 0, limit: AUDIT_PAGE_SIZE,
     });
-    render(<AuditLogViewer />);
+    mount();
     const table = await screen.findByRole('table');
     const rows = within(table).getAllByRole('row').slice(1);
 
@@ -98,7 +103,7 @@ describe('AuditLogViewer', () => {
 
   // A page of login events was a Resource column of dashes.
   it('hides the Resource column when no row on the page has a resource', async () => {
-    render(<AuditLogViewer />);
+    mount();
     const table = await screen.findByRole('table');
     expect(within(table).queryByRole('columnheader', { name: 'Resource' })).toBeNull();
   });
@@ -108,7 +113,7 @@ describe('AuditLogViewer', () => {
       logs: [row(), row({ id: 2, action: 'user_updated', resource_type: 'user', resource_id: '7' })],
       total: 2, skip: 0, limit: AUDIT_PAGE_SIZE,
     });
-    render(<AuditLogViewer />);
+    mount();
     const table = await screen.findByRole('table');
     expect(within(table).getByRole('columnheader', { name: 'Resource' })).toBeInTheDocument();
     expect(within(table).getByText('#7')).toBeInTheDocument();
@@ -126,7 +131,7 @@ describe('AuditLogViewer', () => {
       ],
       total: 2, skip: 0, limit: AUDIT_PAGE_SIZE,
     });
-    render(<AuditLogViewer />);
+    mount();
     const table = await screen.findByRole('table');
     const rows = within(table).getAllByRole('row').slice(1);
     expect(within(rows[0]).getByText('method: password')).toBeInTheDocument();
@@ -135,7 +140,7 @@ describe('AuditLogViewer', () => {
   });
 
   it('pages by 20 and keeps the total', async () => {
-    render(<AuditLogViewer />);
+    mount();
     expect(await screen.findByText('1–20 of 101')).toBeInTheDocument();
     expect(AUDIT_PAGE_SIZE).toBe(20);
     expect(mocked.listAuditLogs).toHaveBeenCalledWith(expect.objectContaining({ skip: 0, limit: 20 }), expect.any(AbortSignal));
@@ -144,7 +149,7 @@ describe('AuditLogViewer', () => {
   // 1.10 — the viewer had its own `when()` on a bare `toLocaleString()`
   // ("9/22/2026, 8:49:37 PM"); an absolute moment is `formatTimestamp`.
   it('prints when an event happened in the one timestamp format', async () => {
-    render(<AuditLogViewer />);
+    mount();
     const table = await screen.findByRole('table');
     const cell = within(within(table).getAllByRole('row')[1]).getAllByRole('cell')[0];
     expect(cell.textContent).toBe(formatTimestamp('2026-09-22T20:49:37Z'));
@@ -155,14 +160,14 @@ describe('AuditLogViewer', () => {
     mocked.listAuditLogs.mockResolvedValue({
       logs: [row({ created_at: null }), row({ id: 2, created_at: 'not a date' })], total: 2, skip: 0, limit: AUDIT_PAGE_SIZE,
     });
-    render(<AuditLogViewer />);
+    mount();
     const rows = within(await screen.findByRole('table')).getAllByRole('row').slice(1);
     expect(rows.map((r) => within(r).getAllByRole('cell')[0].textContent)).toEqual(['—', '—']);
   });
 
   // 1.10 — the resource-type box asked the server once per keystroke.
   it('asks once for a typed resource type, after the typing stops', async () => {
-    render(<AuditLogViewer />);
+    mount();
     await screen.findByRole('table');
     mocked.listAuditLogs.mockClear();
 
@@ -179,7 +184,7 @@ describe('AuditLogViewer', () => {
   });
 
   it('a new resource type starts from the first page, in one request', async () => {
-    render(<AuditLogViewer />);
+    mount();
     await screen.findByText('1–20 of 101');
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     await waitFor(() => expect(mocked.listAuditLogs).toHaveBeenCalledWith(expect.objectContaining({ skip: 20 }), expect.any(AbortSignal)));

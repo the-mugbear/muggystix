@@ -4,7 +4,7 @@
  * was opened: after "Remove the stored API key" it still offered to remove a
  * key that was gone.
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../services/api', () => ({
@@ -45,6 +45,40 @@ const openEdit = async () => {
   fireEvent.click(await screen.findByRole('button', { name: 'Edit provider Work OpenAI' }));
   return screen.findByRole('dialog');
 };
+
+// A failed read was a toast over "No LLM providers configured yet." — gone in
+// seconds, with nothing to press.  It is said where the providers would be.
+describe('LLM providers — the list could not be read', () => {
+  const down = { response: { status: 503, data: { detail: 'The provider store is not answering.' } } };
+
+  it('says so in place of the list, with Retry — not "none configured", and not as a toast', async () => {
+    mocked.listLLMProviders.mockRejectedValueOnce(down);
+    render(<LLMSettings />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The provider store is not answering.');
+    expect(screen.queryByText('No LLM providers configured yet.')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Add Your First Provider/ })).toBeNull();
+    expect(toast.error).not.toHaveBeenCalled();
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Work OpenAI')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(mocked.listLLMProviders).toHaveBeenCalledTimes(2);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('keeps the providers it has when a later read fails, and says so beside them', async () => {
+    await openEdit();
+    mocked.listLLMProviders.mockRejectedValueOnce(down);
+    fireEvent.click(screen.getByRole('button', { name: CLEAR }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('API key cleared.'));
+
+    expect(await screen.findByText('The provider store is not answering.')).toBeInTheDocument();
+    expect(screen.getByText('Work OpenAI')).toBeInTheDocument();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+});
 
 describe('LLM providers — the edit dialog', () => {
   it('stops offering to remove the stored key once it has been removed', async () => {

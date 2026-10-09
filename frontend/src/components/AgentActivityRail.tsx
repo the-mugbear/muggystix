@@ -217,8 +217,15 @@ const AgentActivityRail: React.FC = () => {
 
         <div className="max-h-[24rem] overflow-y-auto">
           {sessions.length === 0 ? (
+            // "None" is said only of a list that was read: the rail stays
+            // quiet about a failed poll, but its open popover must not claim
+            // there are no sessions when it could not find out.
             <p className="px-sm py-md text-center text-caption text-muted-foreground">
-              No recent agent sessions.
+              {recent.data !== undefined
+                ? 'No recent agent sessions.'
+                : recent.isError
+                  ? 'The agent sessions could not be loaded. Use Refresh to try again.'
+                  : 'Loading…'}
             </p>
           ) : (
             <ul className="divide-y divide-border">

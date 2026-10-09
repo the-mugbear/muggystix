@@ -11,8 +11,9 @@
  * since 5.350.0; a section of System Settings before) and not a project one.
  * Login attempts and user administration aren't project events.
  */
-import React, { useState } from 'react';
+import React, { useEffect } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { AlertCircle, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
 import {
   AuditLogPage,
@@ -21,7 +22,8 @@ import {
   listAuditLogs,
 } from '../services/api';
 import { queryErrorText } from '../lib/query';
-import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useUrlPage } from '../hooks/useUrlPage';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { formatAuditDetails } from '../utils/auditDetails';
 import { personName } from '../utils/people';
 import { formatTimestamp } from '../utils/relativeTime';
@@ -40,17 +42,28 @@ export const AUDIT_PAGE_SIZE = 20;
 const PAGE_SIZE = AUDIT_PAGE_SIZE;
 
 const AuditLogViewer: React.FC = () => {
-  const [actionFilter, setActionFilter] = useState('all');
-  // The box shows what is typed; the server is asked once the typing stops
-  // (it was asked once per keystroke).
-  const [resourceFilter, setResourceFilter] = useState('');
-  const resourceType = useDebouncedValue(resourceFilter, 300).trim();
-  // Which page is asked for, and of which filters: a new filter starts from
-  // the first page in the same request, with nothing to reset.
-  const filters = `${actionFilter}\n${resourceType}`;
-  const [position, setPosition] = useState({ skip: 0, filters });
-  const asked = position.filters === filters ? position.skip : 0;
-  const setAsked = (skip: number) => setPosition({ skip, filters });
+  // The filters and the page live in the address (`?action=`, `?resource=`,
+  // `?page=`; UI_STYLE_GUIDE §39): a reload, a shared link and Back show the
+  // same events.  They are read from it on every render and changed by
+  // writing it; a filter write drops `page`, so a new filter starts from the
+  // first page in the same request, with nothing to reset.  The viewer is the
+  // one list of its page (`pages/AuditLog.tsx`), so the address is its own.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const actionFilter = searchParams.get('action')?.trim() || 'all';
+  const setActionFilter = (next: string) => {
+    setSearchParams((prev) => {
+      const out = new URLSearchParams(prev);
+      if (next === 'all') out.delete('action'); else out.set('action', next);
+      out.delete('page');
+      return out;
+    }, { replace: true });
+  };
+  // The box shows what is typed; the address — and so the server — gets it
+  // once the typing stops (it was asked once per keystroke).
+  const resource = useUrlSearchDraft('resource');
+  const resourceType = resource.value;
+  const { page: pageIndex, setPage } = useUrlPage();
+  const asked = pageIndex * PAGE_SIZE;
 
   const params = {
     skip: asked,
@@ -77,8 +90,16 @@ const AuditLogViewer: React.FC = () => {
   const skip = query.isPlaceholderData ? page?.skip ?? asked : asked;
   const reload = (nextSkip: number) => {
     if (nextSkip === asked) void query.refetch();
-    else setAsked(nextSkip);
+    else setPage(Math.floor(nextSkip / PAGE_SIZE));
   };
+  // A page the address names past the end (an old link) steps back to the
+  // last page that exists — never "no events match" over a trail that has some.
+  const pastTheEnd = !!query.data && !query.isPlaceholderData && asked > 0
+    && query.data.logs.length === 0 && query.data.total > 0;
+  const answeredTotal = query.data?.total ?? 0;
+  useEffect(() => {
+    if (pastTheEnd) setPage(Math.max(0, Math.ceil(answeredTotal / PAGE_SIZE) - 1));
+  }, [pastTheEnd, answeredTotal, setPage]);
 
   // Stats are a nicety; the table is the feature — a failure shows none.
   const { data: stats = null } = useQuery({
@@ -86,7 +107,11 @@ const AuditLogViewer: React.FC = () => {
     queryFn: ({ signal }) => getAuditStats(signal),
   });
 
-  const actionOptions = stats?.top_actions?.map((a) => a.action) ?? [];
+  // The most frequent actions — and the one the address names, which need not
+  // be among them (or loaded yet): the select never shows a blank.
+  const topActions = stats?.top_actions?.map((a) => a.action) ?? [];
+  const actionOptions = actionFilter === 'all' || topActions.includes(actionFilter)
+    ? topActions : [actionFilter, ...topActions];
   const pageEnd = Math.min(skip + PAGE_SIZE, total);
 
   const recent = typeof stats?.recent_logs_24h === 'number' ? stats.recent_logs_24h : null;
@@ -143,8 +168,8 @@ const AuditLogViewer: React.FC = () => {
             </label>
             <Input
               id="audit-resource"
-              value={resourceFilter}
-              onChange={(e) => setResourceFilter(e.target.value)}
+              value={resource.draft}
+              onChange={(e) => resource.setDraft(e.target.value)}
               placeholder="e.g. user"
               className="h-8 w-[180px]"
               maxLength={60}

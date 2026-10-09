@@ -1,5 +1,6 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useCallback, useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import {
   Search,
   Download,
@@ -12,6 +13,8 @@ import {
 } from 'lucide-react';
 import { getSbom, SbomComponent } from '../services/api';
 import { queryErrorText } from '../lib/query';
+import { useUrlPage } from '../hooks/useUrlPage';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { downloadTextFile } from '../utils/download';
 import { formatTimestamp } from '../utils/relativeTime';
 import { CardListSkeleton } from '../components/PageSkeleton';
@@ -37,15 +40,25 @@ import {
 } from '../components/ui/table';
 import { cn } from '../utils/cn';
 
-type LayerFilter = 'all' | 'backend' | 'frontend';
-type SourceFilter = 'all' | 'direct' | 'transitive';
+const LAYERS = ['all', 'backend', 'frontend'] as const;
+type LayerFilter = typeof LAYERS[number];
+const SOURCES = ['all', 'direct', 'transitive'] as const;
+type SourceFilter = typeof SOURCES[number];
 
 // Columns the user can sort by.  `source` sorts on the direct/transitive
 // classification; everything else is the obvious field.
-type SortKey = 'name' | 'version' | 'ecosystem' | 'layer' | 'source' | 'license';
+const SORT_KEYS = ['name', 'version', 'ecosystem', 'layer', 'source', 'license'] as const;
+type SortKey = typeof SORT_KEYS[number];
 type SortDir = 'asc' | 'desc';
 
+const PAGE_SIZES: readonly number[] = [25, 50, 100, 250];
+const DEFAULT_PAGE_SIZE = 50;
+
 const NO_LICENSE = '__none__';
+
+/** What the address says, when it is one of the values it can mean. */
+const pick = <T extends string>(allowed: readonly T[], value: string | null, fallback: T): T =>
+  allowed.find((v) => v === value) ?? fallback;
 
 const SbomReference: React.FC = () => {
   const sbom = useQuery({
@@ -56,16 +69,41 @@ const SbomReference: React.FC = () => {
   const loading = sbom.isPending;
   const error = queryErrorText(sbom.error, 'Could not load the SBOM.');
 
-  const [search, setSearch] = useState('');
-  const [layer, setLayer] = useState<LayerFilter>('all');
-  const [source, setSource] = useState<SourceFilter>('all');
-  const [license, setLicense] = useState<string>('all');
+  // The list's state lives in the address (`?search=`, `?layer=`, `?source=`,
+  // `?license=`, `?sort=` + `?dir=`, `?per=`, `?page=`; UI_STYLE_GUIDE §39): a
+  // reload, a shared link ("is package X in the app?") and Back show the same
+  // rows.  It is read from the address on every render and changed by writing
+  // it; a value the address cannot mean is the default.  Only the text being
+  // typed in the search box is state.
+  const [params, setParams] = useSearchParams();
+  const searchBox = useUrlSearchDraft('search');
+  const search = searchBox.value;
+  const layer: LayerFilter = pick(LAYERS, params.get('layer'), 'all');
+  const source: SourceFilter = pick(SOURCES, params.get('source'), 'all');
+  const licenseParam = params.get('license');
+  const sortKey: SortKey = pick(SORT_KEYS, params.get('sort'), 'name');
+  const sortDir: SortDir = params.get('dir') === 'desc' ? 'desc' : 'asc';
+  const perParam = Number(params.get('per'));
+  const rowsPerPage = PAGE_SIZES.includes(perParam) ? perParam : DEFAULT_PAGE_SIZE;
+  const { page: askedPage, setPage } = useUrlPage();
 
-  const [sortKey, setSortKey] = useState<SortKey>('name');
-  const [sortDir, setSortDir] = useState<SortDir>('asc');
+  // One write per change, replacing the entry; a filter, a sort or another
+  // page size changes which rows a page holds, so each starts from the first
+  // (`page` is dropped) — there is no effect to reset it.  A default is left
+  // out of the address.
+  const writeParams = useCallback((updates: Record<string, string | null>) => {
+    setParams((prev) => {
+      const out = new URLSearchParams(prev);
+      Object.entries(updates).forEach(([k, v]) => (v == null ? out.delete(k) : out.set(k, v)));
+      out.delete('page');
+      return out;
+    }, { replace: true });
+  }, [setParams]);
+  const setLayer = (v: LayerFilter) => writeParams({ layer: v === 'all' ? null : v });
+  const setSource = (v: SourceFilter) => writeParams({ source: v === 'all' ? null : v });
+  const setLicense = (v: string) => writeParams({ license: v === 'all' ? null : v });
+  const setRowsPerPage = (n: number) => writeParams({ per: n === DEFAULT_PAGE_SIZE ? null : String(n) });
 
-  const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(50);
   const [showProvenance, setShowProvenance] = useState(false);
 
   // Distinct licenses present in the build, for the license filter dropdown.
@@ -92,10 +130,12 @@ const SbomReference: React.FC = () => {
       });
     return entries;
   }, [data]);
+  // A licence the build does not have (an old link) is "all", not an empty list.
+  const license = licenseOptions.some((o) => o.value === licenseParam) ? (licenseParam as string) : 'all';
 
   const filtered = useMemo<SbomComponent[]>(() => {
     if (!data) return [];
-    const q = search.trim().toLowerCase();
+    const q = search.toLowerCase();
     const rows = data.components.filter((c) => {
       if (layer !== 'all' && c.application_layer !== layer) return false;
       if (source === 'direct' && !c.direct) return false;
@@ -145,18 +185,10 @@ const SbomReference: React.FC = () => {
     });
   }, [data, search, layer, source, license, sortKey, sortDir]);
 
-  // Drop back to page 0 whenever filters/sort narrow or reorder the set.
-  useEffect(() => {
-    setPage(0);
-  }, [search, layer, source, license, sortKey, sortDir]);
-
+  // The column sorted by, again: the other direction.  Another column: ascending.
   const toggleSort = (key: SortKey) => {
-    if (sortKey === key) {
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortKey(key);
-      setSortDir('asc');
-    }
+    const dir: SortDir = sortKey === key && sortDir === 'asc' ? 'desc' : 'asc';
+    writeParams({ sort: key === 'name' ? null : key, dir: dir === 'desc' ? 'desc' : null });
   };
 
   const handleDownload = () => {
@@ -182,6 +214,8 @@ const SbomReference: React.FC = () => {
   }
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / rowsPerPage));
+  // A page the address names past the end shows the last one.
+  const page = Math.min(askedPage, totalPages - 1);
   const pageRows = filtered.slice(page * rowsPerPage, (page + 1) * rowsPerPage);
 
   return (
@@ -304,8 +338,8 @@ const SbomReference: React.FC = () => {
           <Input
             type="search"
             placeholder="Search by name…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={searchBox.draft}
+            onChange={(e) => searchBox.setDraft(e.target.value)}
             className="pl-xl"
             aria-label="Search SBOM by package name"
           />
@@ -315,7 +349,7 @@ const SbomReference: React.FC = () => {
           label="Layer"
           ariaLabel="Filter by application layer"
           value={layer}
-          options={['all', 'backend', 'frontend'] as const}
+          options={LAYERS}
           onChange={setLayer}
         />
 
@@ -323,7 +357,7 @@ const SbomReference: React.FC = () => {
           label="Source"
           ariaLabel="Filter by source (direct or transitive)"
           value={source}
-          options={['all', 'direct', 'transitive'] as const}
+          options={SOURCES}
           onChange={setSource}
         />
 
@@ -419,16 +453,13 @@ const SbomReference: React.FC = () => {
             </Label>
             <Select
               value={String(rowsPerPage)}
-              onValueChange={(v) => {
-                setRowsPerPage(Number(v));
-                setPage(0);
-              }}
+              onValueChange={(v) => setRowsPerPage(Number(v))}
             >
               <SelectTrigger id="sbom-rows-per-page" className="w-20">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {[25, 50, 100, 250].map((n) => (
+                {PAGE_SIZES.map((n) => (
                   <SelectItem key={n} value={String(n)}>
                     {n}
                   </SelectItem>
@@ -445,7 +476,7 @@ const SbomReference: React.FC = () => {
               variant="outline"
               size="icon"
               disabled={page === 0}
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              onClick={() => setPage(Math.max(0, page - 1))}
               aria-label="Previous page"
             >
               <ChevronLeft className="size-4" aria-hidden />
@@ -454,7 +485,7 @@ const SbomReference: React.FC = () => {
               variant="outline"
               size="icon"
               disabled={page >= totalPages - 1}
-              onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+              onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
               aria-label="Next page"
             >
               <ChevronRight className="size-4" aria-hidden />

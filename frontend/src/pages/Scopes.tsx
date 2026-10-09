@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
 import { Link } from 'react-router-dom';
@@ -235,7 +235,9 @@ const Scopes: React.FC = () => {
       return { ...page, items: page.subnets, total: page.subnets_total ?? offset + page.subnets.length };
     },
     [projectId, { subnetsSearch: subnetSearch }],
-    { pageSize: SUBNET_PAGE_SIZE, keepPrevious: true, within: projectId },
+    // `errorMessage` words `loadMoreError` only: every other failure of this
+    // list is worded here, by what the reader was doing (`failure`).
+    { pageSize: SUBNET_PAGE_SIZE, keepPrevious: true, within: projectId, errorMessage: 'Failed to load more subnets.' },
   );
   const { response: scopePage, rows: subnetRows, total: subnetsTotal } = subnetList;
   const scope = useMemo<Scope | null>(
@@ -257,20 +259,27 @@ const Scopes: React.FC = () => {
   const loading = !coverageQuery.isFetched || (scope == null && subnetList.failure == null);
   const firstLoadError = (scope == null ? subnetList.failure : null) ?? (coverage == null ? coverageQuery.error : null);
   const error = queryErrorText(firstLoadError, 'Failed to load scope data');
+  // Nothing asks again by itself (no retry, no poll): without this the reader
+  // reloads the page.  Reads again whichever of the two did not answer.
+  const retryFirstLoad = () => {
+    if (scope == null && subnetList.failure != null) void subnetList.reload();
+    if (coverage == null && coverageQuery.isError) void coverageQuery.refetch();
+  };
 
-  // A search that could not be read: said, and the rows that were shown stay.
-  const searchError = scopeIsPrevious ? subnetList.failure : null;
-  useEffect(() => {
-    if (searchError) toast.error(formatApiError(searchError, 'Failed to search subnets.'));
-  }, [searchError, toast]);
+  // A search that could not be read: said under the search box, with Retry,
+  // and the rows that were shown stay (they are the previous search's).
+  const searchError = queryErrorText(scopeIsPrevious ? subnetList.failure : null, 'Failed to search subnets.');
 
   // Nothing re-reads the scope but a change (no poll, no Refresh), so a
-  // failed re-read is a change that the page does not show.  Said, not only
-  // logged: the page otherwise keeps the state from before the change.
-  const reloadFailed = (scope != null && !scopeIsPrevious && subnetList.failure != null) || coverageQuery.isRefetchError;
-  useEffect(() => {
-    if (reloadFailed) toast.error('The change was saved, but the scope could not be reloaded — refresh the page.');
-  }, [reloadFailed, toast]);
+  // failed re-read is a change that the page does not show: the page keeps
+  // the state from before it.  Said above the scope, with a Retry that reads
+  // again whichever of the two did not answer — not "refresh the page".
+  const subnetsReloadFailed = scope != null && !scopeIsPrevious && subnetList.failure != null;
+  const reloadFailed = subnetsReloadFailed || coverageQuery.isRefetchError;
+  const retryReload = () => {
+    if (subnetsReloadFailed) void subnetList.reload();
+    if (coverageQuery.isRefetchError) void coverageQuery.refetch();
+  };
 
   /** After a change to the scope: its subnets and where the hosts stand. */
   const scopeChanged = () => Promise.all([
@@ -279,13 +288,11 @@ const Scopes: React.FC = () => {
   ]);
 
   const loadingMore = subnetList.loadingMore;
-  const loadMoreSubnets = async () => {
+  // A failed "Load more" is said beside the button (`loadMoreError`), which
+  // is its own retry; the rejection carries nothing more.
+  const loadMoreSubnets = () => {
     if (!scope || loadingMore) return;
-    try {
-      await subnetList.loadMore();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to load more subnets.'));
-    }
+    subnetList.loadMore().catch(() => undefined);
   };
 
   const addSubnet = useMutation({
@@ -579,8 +586,17 @@ const Scopes: React.FC = () => {
       )}
       {error && (
         <Alert variant="destructive" className="mb-sm">
-          <AlertDescription>{error}</AlertDescription>
+          <AlertDescription>
+            {error}{' '}
+            <button type="button" className="underline hover:no-underline" onClick={retryFirstLoad}>Retry</button>
+          </AlertDescription>
         </Alert>
+      )}
+      {reloadFailed && (
+        <p role="alert" className="mb-sm break-words text-metadata text-destructive">
+          The change was saved, but the scope could not be reloaded.{' '}
+          <button type="button" className="text-info hover:underline" onClick={retryReload}>Retry</button>
+        </p>
       )}
 
       {/* v5.269.0 — the Posture layout (UI_STYLE_GUIDE §7): one sentence,
@@ -763,6 +779,12 @@ const Scopes: React.FC = () => {
                 </Button>
               )}
             </div>
+            {searchError && (
+              <p role="alert" className="mb-xs break-words text-caption text-destructive">
+                {searchError} The subnets below are the previous search’s.{' '}
+                <button type="button" className="text-info hover:underline" onClick={() => { void subnetList.reload(); }}>Retry</button>
+              </p>
+            )}
 
             {/* v2.86.0 — bulk-action bar: hidden until at least one
                 subnet is checked.  Mirrors the ScopeDetail surface so
@@ -1067,7 +1089,12 @@ const Scopes: React.FC = () => {
             </div>
             {scope.subnets_total !== undefined &&
               scope.subnets.length < scope.subnets_total && (
-                <div className="flex items-center justify-center gap-sm border-t p-sm">
+                <div className="flex flex-wrap items-center justify-center gap-sm border-t p-sm">
+                  {subnetList.loadMoreError && (
+                    <p role="alert" className="min-w-0 basis-full break-words text-center text-caption text-destructive">
+                      {subnetList.loadMoreError}
+                    </p>
+                  )}
                   <span className="text-caption text-muted-foreground">
                     Showing {scope.subnets.length} of {scope.subnets_total}
                   </span>

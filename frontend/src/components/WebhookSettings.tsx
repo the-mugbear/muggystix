@@ -21,7 +21,7 @@ import {
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useProjectId } from '../hooks/useProjectId';
-import { queryErrorText } from '../lib/query';
+import { SECRET_MUTATION, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -57,6 +57,13 @@ const WebhookSettings: React.FC = () => {
   const eventTypes: WebhookEventType[] = typesQuery.data ?? [];
   const loading = hooksQuery.isFetching || typesQuery.isFetching;
   const error = loading ? null : queryErrorText(hooksQuery.error ?? typesQuery.error, 'Failed to load webhooks.');
+  // A list that could not be read is not an empty one: "No webhooks
+  // configured." is said only of a list that was read.
+  const listUnread = hooksQuery.data === undefined;
+  const retry = () => {
+    if (hooksQuery.isError) void hooksQuery.refetch();
+    if (typesQuery.isError) void typesQuery.refetch();
+  };
   /** Patch the list in place with what a write is known to have done. */
   const setWebhooks = (update: (prev: WebhookConfig[]) => WebhookConfig[]) => {
     queryClient.setQueryData<WebhookConfig[]>(['listWebhooks', projectId], (prev) => (prev ? update(prev) : prev));
@@ -70,7 +77,10 @@ const WebhookSettings: React.FC = () => {
     setShowForm(false);
   };
 
+  // It carries the signing secret: nothing of it is kept once it has settled
+  // (`SECRET_MUTATION`, and the `reset` where it is called).
   const create = useMutation({
+    ...SECRET_MUTATION,
     mutationFn: (payload: WebhookCreatePayload) => createWebhook(projectId, payload),
     onSuccess: () => {
       toast.success('Webhook created');
@@ -86,7 +96,7 @@ const WebhookSettings: React.FC = () => {
     secret: secret.trim() || null,
     events: Array.from(selectedEvents),
     is_active: true,
-  });
+  }, { onSettled: () => create.reset() });
 
   const toggle = useMutation({
     mutationFn: (hook: WebhookConfig) => updateWebhook(projectId, hook.id,{ is_active: !hook.is_active }),
@@ -172,7 +182,12 @@ const WebhookSettings: React.FC = () => {
           (<code className="text-caption">X-BlueStick-Signature</code>, HMAC-SHA256).
         </p>
 
-        {error && <p className="mb-sm text-metadata text-destructive">{error}</p>}
+        {error && (
+          <p role="alert" className="mb-sm break-words text-metadata text-destructive">
+            {error}{' '}
+            <button type="button" className="text-info hover:underline" onClick={retry}>Retry</button>
+          </p>
+        )}
 
         {showForm && (
           <div className="mb-md space-y-sm rounded-control border border-border bg-muted/30 p-sm">
@@ -220,7 +235,7 @@ const WebhookSettings: React.FC = () => {
           <div className="flex items-center gap-xs text-metadata text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden /> Loading webhooks…
           </div>
-        ) : webhooks.length === 0 ? (
+        ) : listUnread ? null : webhooks.length === 0 ? (
           <p className="text-metadata text-muted-foreground">No webhooks configured.</p>
         ) : (
           <ul className="flex flex-col gap-xs">

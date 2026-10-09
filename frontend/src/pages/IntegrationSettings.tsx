@@ -131,11 +131,13 @@ const IntegrationSettings: React.FC = () => {
   const error = loading
     ? null
     : queryErrorText(integrationsQuery.error ?? typesQuery.error, 'Failed to load integrations.');
-  // A failed load is said on the page and as a toast (once per attempt: the
-  // message is gone while the next one is in flight).
-  useEffect(() => {
-    if (error) toast.error(error);
-  }, [error, toast]);
+  // A failed load is said on the page, where the integrations would be, with
+  // Retry — never as a toast over "No integrations configured yet."  Retry
+  // asks again for what failed; integrations already read stay beside it.
+  const retryLoad = () => {
+    if (integrationsQuery.isError) void integrationsQuery.refetch();
+    if (typesQuery.isError) void typesQuery.refetch();
+  };
 
   const [dialogOpen, setDialogOpen] = useState(false);
   // WHICH integration is being edited (null: a new one).  The integration
@@ -334,14 +336,15 @@ const IntegrationSettings: React.FC = () => {
       </div>
 
       {error && (
-        <Alert variant="destructive" className="mb-md">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <p role="alert" className="mb-md break-words text-metadata text-destructive">
+          {error}{' '}
+          <button type="button" className="text-info hover:underline" onClick={retryLoad}>Retry</button>
+        </p>
       )}
 
       {loading ? (
         <CardListSkeleton count={3} cardHeight={180} />
-      ) : integrations.length === 0 ? (
+      ) : integrations.length === 0 ? !error && (
         <Card>
           <CardContent className="flex flex-col items-center gap-sm p-xxl text-center">
             <KeyRound className="size-12 text-muted-foreground" aria-hidden />

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -89,19 +89,18 @@ const Profile: React.FC = () => {
     passwordForm.confirm_password.length > 0 &&
     passwordForm.new_password !== passwordForm.confirm_password;
 
-  // The signed-in user's own sessions.  A failed read is a toast over an empty
-  // list, as it always was.
+  // The signed-in user's own sessions.  A failed read is said in the section,
+  // with Retry — never a toast over "No active sessions found." (the reader
+  // has at least this one).
   const sessionsQuery = useQuery({
     queryKey: SESSIONS_KEY,
     queryFn: ({ signal }) => listOwnSessions(signal),
   });
   const sessions = sessionsQuery.data ?? [];
   const sessionsLoading = sessionsQuery.isPending;
-  const sessionsFailure = sessionsQuery.error;
-  useEffect(() => {
-    if (sessionsFailure) toast.error(formatApiError(sessionsFailure, 'Failed to load sessions.'));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- said once per failure; the toast API is not part of it
-  }, [sessionsFailure]);
+  const sessionsError = queryErrorText(sessionsQuery.error, 'Failed to load sessions.');
+  /** The sessions were never read: there is no list to show, only the failure. */
+  const sessionsUnread = sessionsQuery.data == null && sessionsError != null;
 
   // Project associations — the projects this user is a member of, with
   // their per-project role. Refreshable via the Refresh button on the section
@@ -392,13 +391,19 @@ const Profile: React.FC = () => {
 
         {/* Active Sessions */}
         <PostureSection
-          title={<>Active sessions{!sessionsLoading && <SectionCount>{sessions.length}</SectionCount>}</>}
+          title={<>Active sessions{!sessionsLoading && !sessionsUnread && <SectionCount>{sessions.length}</SectionCount>}</>}
         >
+            {sessionsError && (
+              <p role="alert" className="break-words text-metadata text-destructive">
+                {sessionsError}{' '}
+                <button type="button" className="text-info hover:underline" onClick={() => { void sessionsQuery.refetch(); }}>Retry</button>
+              </p>
+            )}
             {sessionsLoading ? (
               <div className="flex justify-center py-md">
                 <Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden />
               </div>
-            ) : sessions.length === 0 ? (
+            ) : sessionsUnread ? null : sessions.length === 0 ? (
               <p className="text-metadata text-muted-foreground">No active sessions found.</p>
             ) : (
               <ul className="flex flex-col">

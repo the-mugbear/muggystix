@@ -6,7 +6,7 @@
  * project).  Adding, editing and deleting need the GLOBAL administrator; the
  * page does not render those controls for anyone else.
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TooltipProvider } from '../../components/ui/tooltip';
@@ -74,6 +74,28 @@ describe('Scanner Integrations — a member reads, a global admin changes', () =
     expect(screen.getByRole('button', { name: /Add Integration/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Edit integration Client X Nessus' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete integration Client X Nessus' })).toBeInTheDocument();
+  });
+});
+
+// A failed read was a toast over "No integrations configured yet." — gone in
+// seconds, with nothing to press.  It is said where the integrations would be.
+describe('Scanner Integrations — the list could not be read', () => {
+  it('says so in place of the list, with Retry — not "none configured", and not as a toast', async () => {
+    mocked.listIntegrations.mockRejectedValueOnce({
+      response: { status: 503, data: { detail: 'The integration store is not answering.' } },
+    });
+    renderPage();
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The integration store is not answering.');
+    expect(screen.queryByText('No integrations configured yet.')).toBeNull();
+    expect(toast.error).not.toHaveBeenCalled();
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Client X Nessus')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(mocked.listIntegrations).toHaveBeenCalledTimes(2);
+    expect(toast.error).not.toHaveBeenCalled();
   });
 });
 

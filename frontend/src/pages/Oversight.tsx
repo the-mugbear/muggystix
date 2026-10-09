@@ -64,6 +64,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { formatStatusLabel } from '../utils/statusMeta';
 import { describeProjects, parseProjectIds, serializeProjectIds } from '../utils/oversightProjects';
 import { queryErrorText, useLastSettled } from '../lib/query';
+import { useUrlPage } from '../hooks/useUrlPage';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { formatDate } from '../utils/relativeTime';
 import {
   DATE_PRESETS, DEFAULT_PRESET, DatePreset, customRangeError, presetRange,
@@ -115,7 +117,9 @@ const SevCells: React.FC<{ s: OversightSeverity; only?: readonly Sev[] }> = ({ s
 // Projects table
 // ---------------------------------------------------------------------------
 
-type ProjectSort = 'critical' | 'name' | 'targets' | 'tested' | 'last_import';
+/** `?sort=` — anything else in the address is the default, `critical`. */
+const PROJECT_SORTS = ['critical', 'name', 'targets', 'tested', 'last_import'] as const;
+type ProjectSort = typeof PROJECT_SORTS[number];
 
 const sortProjects = (rows: OversightProjectRow[], sort: ProjectSort): OversightProjectRow[] => {
   const byName = (a: OversightProjectRow, b: OversightProjectRow) => a.name.localeCompare(b.name);
@@ -430,19 +434,27 @@ const Oversight: React.FC = () => {
   const loading = dashboard.isFetching;
   const error = loading ? null : queryErrorText(dashboard.error, 'Failed to load Oversight.');
   const refresh = () => { void dashboard.refetch(); };
-  const [search, setSearch] = useState('');
-  const [sort, setSort] = useState<ProjectSort>('critical');
-  const [page, setPage] = useState(0);
+  // The project table's search, sort and page live in the address with the
+  // filters (`?q=`, `?sort=`, `?page=`; UI_STYLE_GUIDE §39): a reload, a
+  // shared link and Back from a project show the same rows.  Only the text
+  // being typed in the box is state.
+  const search = useUrlSearchDraft('q');
+  const sortParam = params.get('sort');
+  const sort: ProjectSort = PROJECT_SORTS.find((s) => s === sortParam) ?? 'critical';
+  const { page: askedPage, setPage } = useUrlPage();
   const [shareOpen, setShareOpen] = useState(false);
 
+  // One write per change; any of them starts the table from its first page.
   const setParam = useCallback((updates: Record<string, string | null>) => {
     const next = new URLSearchParams(params);
     Object.entries(updates).forEach(([k, v]) => (v == null || v === '' ? next.delete(k) : next.set(k, v)));
+    next.delete('page');
     setParams(next, { replace: true });
-    setPage(0);
   }, [params, setParams]);
 
-  const reset = () => { setParams(new URLSearchParams(), { replace: true }); setSearch(''); setPage(0); };
+  // ONE address write clears the filters and the table's search, sort and
+  // page; the box is emptied beside it, so it agrees and writes nothing.
+  const reset = () => { setParams(new URLSearchParams(), { replace: true }); search.setDraft(''); };
 
   const openProject = (row: OversightProjectRow) => {
     const proj = projects.find((p) => p.id === row.id);
@@ -452,12 +464,12 @@ const Oversight: React.FC = () => {
 
   const filteredProjects = useMemo(() => {
     if (!data) return [];
-    const q = search.trim().toLowerCase();
+    const q = search.value.toLowerCase();
     let rows = data.projects;
     if (attn) rows = rows.filter((r) => r.attention_reasons.includes(attn));
     if (q) rows = rows.filter((r) => r.name.toLowerCase().includes(q));
     return sortProjects(rows, sort);
-  }, [data, search, attn, sort]);
+  }, [data, search.value, attn, sort]);
 
   // The Overview's two tables are previews (the first PREVIEW_SIZE); the
   // section says "N of M shown" whenever rows are left out.
@@ -506,8 +518,10 @@ const Oversight: React.FC = () => {
   const activeFilters = projectIds.length > 0 || statusFilter !== ALL || testerFilter !== ALL || overlap || preset !== DEFAULT_PRESET || !!attn;
 
   const s = data?.summary;
-  const pageRows = filteredProjects.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const pages = Math.max(1, Math.ceil(filteredProjects.length / PAGE_SIZE));
+  // A page the address names past the end shows the last one.
+  const page = Math.min(askedPage, pages - 1);
+  const pageRows = filteredProjects.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
   return (
     // v5.294.0 — the standard page gutter (p-md md:p-lg); it was p-md alone,
@@ -821,9 +835,9 @@ const Oversight: React.FC = () => {
             <ListFilterBar
               summary={`${n(filteredProjects.length)} of ${n(data.projects.length)} projects · search is local to this table`}
             >
-              <ListFilterSearch value={search} onChange={(v) => { setSearch(v); setPage(0); }}
+              <ListFilterSearch value={search.draft} onChange={search.setDraft}
                 placeholder="Search this table" label="Search projects in this table" />
-              <Select value={sort} onValueChange={(v) => setSort(v as ProjectSort)}>
+              <Select value={sort} onValueChange={(v) => setParam({ sort: v === 'critical' ? null : v })}>
                 <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-60`} aria-label="Sort projects"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="critical">Most critical, then high</SelectItem>
@@ -843,9 +857,9 @@ const Oversight: React.FC = () => {
             <ProjectsTable rows={pageRows} onOpen={openProject} caption="All projects in the cohort" />
             {pages > 1 && (
               <div className="flex items-center justify-end gap-xs text-caption text-muted-foreground">
-                <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>Previous</Button>
+                <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage(page - 1)}>Previous</Button>
                 <span>Page {page + 1} of {pages}</span>
-                <Button size="sm" variant="outline" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>Next</Button>
+                <Button size="sm" variant="outline" disabled={page >= pages - 1} onClick={() => setPage(page + 1)}>Next</Button>
               </div>
             )}
           </TabsContent>

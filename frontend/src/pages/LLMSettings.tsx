@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Plus,
@@ -28,7 +28,6 @@ import { Card, CardContent } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
-import { Alert, AlertDescription } from '../components/ui/alert';
 import { CardListSkeleton } from '../components/PageSkeleton';
 import { Switch } from '../components/ui/switch';
 import { Separator } from '../components/ui/separator';
@@ -104,11 +103,13 @@ const LLMSettings: React.FC = () => {
   const error = loading
     ? null
     : queryErrorText(providersQuery.error ?? typesQuery.error, 'Failed to load LLM providers.');
-  // A failed load is said on the page and as a toast (once per attempt: the
-  // message is gone while the next one is in flight).
-  useEffect(() => {
-    if (error) toast.error(error);
-  }, [error, toast]);
+  // A failed load is said on the page, where the providers would be, with
+  // Retry — never as a toast over "No LLM providers configured yet."  Retry
+  // asks again for what failed; providers already read stay beside it.
+  const retryLoad = () => {
+    if (providersQuery.isError) void providersQuery.refetch();
+    if (typesQuery.isError) void typesQuery.refetch();
+  };
 
   const [dialogOpen, setDialogOpen] = useState(false);
   // WHICH provider is being edited (null: a new one).  The provider itself is
@@ -239,14 +240,15 @@ const LLMSettings: React.FC = () => {
       </div>
 
       {error && (
-        <Alert variant="destructive" className="mb-md">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <p role="alert" className="mb-md break-words text-metadata text-destructive">
+          {error}{' '}
+          <button type="button" className="text-info hover:underline" onClick={retryLoad}>Retry</button>
+        </p>
       )}
 
       {loading ? (
         <CardListSkeleton count={3} cardHeight={200} />
-      ) : providers.length === 0 ? (
+      ) : providers.length === 0 ? !error && (
         <Card>
           <CardContent className="flex flex-col items-center gap-sm p-xxl text-center">
             <p className="text-metadata text-muted-foreground">No LLM providers configured yet.</p>
