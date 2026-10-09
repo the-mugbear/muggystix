@@ -47,8 +47,8 @@ export function useProjectRoster({ enabled = true }: { enabled?: boolean } = {})
   const on = enabled && currentProject?.id != null;
   const query = useQuery({
     queryKey: ['listProjectMembers'],
-    queryFn: async () => {
-      const rows = await listProjectMembers();
+    queryFn: async ({ signal }) => {
+      const rows = await listProjectMembers(signal);
       return Array.isArray(rows) ? rows : EMPTY;
     },
     enabled: on,

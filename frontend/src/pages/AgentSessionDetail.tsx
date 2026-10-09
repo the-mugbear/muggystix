@@ -83,7 +83,7 @@ const AgentSessionDetail: React.FC = () => {
   const validId = Number.isFinite(id) && id > 0;
   const session = useQuery({
     queryKey: ['getAgentSession', id],
-    queryFn: () => getAgentSession(id),
+    queryFn: ({ signal }) => getAgentSession(id, signal),
     enabled: validId,
   });
   const row = session.data ?? null;
@@ -92,7 +92,7 @@ const AgentSessionDetail: React.FC = () => {
   // and its calls still show.
   const written = useQuery({
     queryKey: ['getAgentSessionNotes', rowId],
-    queryFn: () => getAgentSessionNotes(rowId as number),
+    queryFn: ({ signal }) => getAgentSessionNotes(rowId as number, undefined, signal),
     enabled: rowId != null,
   });
   const notesError = queryErrorText(written.error, 'Could not load the session’s notes.');

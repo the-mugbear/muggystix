@@ -50,7 +50,7 @@ export const useMyAssistSessions = (
   const on = enabled && userId != null;
   const query = useQuery({
     queryKey: ['listAgentSessions', userId == null ? null : myActiveSessionFilters(userId)],
-    queryFn: () => listAgentSessions(myActiveSessionFilters(userId as number)),
+    queryFn: ({ signal }) => listAgentSessions(myActiveSessionFilters(userId as number), { signal }),
     enabled: on,
   });
 

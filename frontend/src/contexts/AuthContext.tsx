@@ -6,7 +6,7 @@ import { createAuthLogger } from '../utils/logger';
 import { accountChangedElsewhere, reloadForAccountChange } from '../utils/authSession';
 import { returnPathAfterLogin } from '../utils/loginReturn';
 import api, { setCurrentProjectId } from '../services/api';
-import { getQueryScope, setQueryScope } from '../lib/query';
+import { SECRET_MUTATION, getQueryScope, setQueryScope } from '../lib/query';
 
 interface User {
   id: number;
@@ -264,11 +264,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   // let go of it as soon as the request has settled.
   const { mutateAsync: requestLogin, reset: forgetLogin } = useMutation({
     mutationFn: (body: { username: string; password: string }) => api.post('/auth/login', body),
-    gcTime: 0,
+    ...SECRET_MUTATION,
   });
   const { mutateAsync: requestSecondFactor, reset: forgetSecondFactor } = useMutation({
     mutationFn: (body: { challenge_token: string; code: string }) => api.post('/auth/login/2fa', body),
-    gcTime: 0,
+    ...SECRET_MUTATION,
   });
   const { mutateAsync: requestLogout } = useMutation({
     mutationFn: () => api.post('/auth/logout'),

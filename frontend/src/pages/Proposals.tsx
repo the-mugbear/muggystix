@@ -99,7 +99,7 @@ const Proposals: React.FC = () => {
   // the measures keep their value while another list loads.
   const summaryQuery = useQuery({
     queryKey: ['getProposalSummary'],
-    queryFn: () => getProposalSummary(),
+    queryFn: ({ signal }) => getProposalSummary(signal),
     ...pollEvery(60_000),
   });
   const summary = summaryQuery.data ?? null;
@@ -117,7 +117,7 @@ const Proposals: React.FC = () => {
   const filter = { status, kind, agent_session_id: sessionId, mine: scope === 'mine' ? true : undefined };
   const list = useListQuery<Proposal>(
     'listProposals',
-    ({ offset, limit }) => listProposals({ ...filter, limit, offset }),
+    ({ offset, limit, signal }) => listProposals({ ...filter, limit, offset }, signal),
     [filter],
     {
       pageSize: PAGE, poll: 60_000,

@@ -22,7 +22,7 @@ import {
   type RemediationRow, type RemediationState, type RemediationTeam,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
-import { GLOBAL, queryErrorText } from '../../lib/query';
+import { GLOBAL, holdProject, queryErrorText } from '../../lib/query';
 import { copyToClipboard } from '../../utils/clipboard';
 import { saveBlob } from '../../utils/download';
 import { usePagedList } from '../../hooks/usePagedList';
@@ -265,10 +265,15 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     mutationFn: async (): Promise<{ all: RemediationRow[]; total: number }> => {
       const all: RemediationRow[] = [];
       let total = Infinity;
+      // One project's rows only: a page asked for after the reader switched
+      // project would be the other project's (the cross-project list names
+      // no project in its address and is not held).
+      const stillHere = across ? () => {} : holdProject();
       // The same filters, 200 rows a call, one call at a time.
       while (all.length < Math.min(total, CSV_MAX_ROWS)) {
         const query = { ...filters, group, offset: all.length, limit: 200 };
         const next = await (across ? listRemediationOverview(query) : listRemediation(query));
+        stillHere();
         total = next.total;
         if (next.items.length === 0) break;
         all.push(...next.items);

@@ -56,10 +56,11 @@ export interface AgentActivityFilters {
 export const getAgentSessionApiActivity = async (
   sessionId: number,
   filters: AgentActivityFilters = {},
+  signal?: AbortSignal,
 ): Promise<AgentApiCallListResponse> => {
   const response = await api.get<AgentApiCallListResponse>(
     `${p()}/agent-sessions/${sessionId}/api-activity`,
-    { params: filters },
+    { params: filters, signal },
   );
   return response.data;
 };

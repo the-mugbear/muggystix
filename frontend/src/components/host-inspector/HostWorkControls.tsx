@@ -153,7 +153,7 @@ export const TagControl: React.FC<CommonProps & { tags: HostTagInfo[] }> = ({
   // after a tag was added here (its count, or the tag itself, is new).
   const tagsQuery = useQuery({
     queryKey: ['listHostTags'],
-    queryFn: () => listHostTags(),
+    queryFn: ({ signal }) => listHostTags(signal),
     enabled: open,
     staleTime: Infinity,
   });

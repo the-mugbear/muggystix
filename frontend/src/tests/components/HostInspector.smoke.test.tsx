@@ -77,7 +77,7 @@ describe('HostInspector — tests on the host', () => {
     expect((await screen.findAllByText('todo-test')).length).toBeGreaterThan(0);
     // The command is resolved against THIS host's address.
     expect(screen.getByText('nmap -sV 10.0.0.1')).toBeInTheDocument();
-    expect(api.listHostTests).toHaveBeenCalledWith(expect.objectContaining({ host_id: 1 }));
+    expect(api.listHostTests).toHaveBeenCalledWith(expect.objectContaining({ host_id: 1 }), expect.any(AbortSignal));
   });
 });
 

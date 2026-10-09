@@ -119,10 +119,10 @@ const FindingDetail: React.FC = () => {
   // The finding is ONE query.  A write route that answers with the finding
   // replaces it (`replaceFinding`); the others read it again (`reread`).
   // The skeleton shows only while there is no finding yet.
-  const findingQuery = useQuery({ queryKey: ['getFinding', id], queryFn: () => getFinding(id) });
+  const findingQuery = useQuery({ queryKey: ['getFinding', id], queryFn: ({ signal }) => getFinding(id, signal) });
   const finding = findingQuery.data ?? null;
   // M2 — history is ancillary: its own query, it never gates the finding.
-  const historyQuery = useQuery({ queryKey: ['getFindingHistory', id], queryFn: () => getFindingHistory(id) });
+  const historyQuery = useQuery({ queryKey: ['getFindingHistory', id], queryFn: ({ signal }) => getFindingHistory(id, signal) });
   const history = historyQuery.data ?? [];
   const historyLoading = historyQuery.isFetching;
   const historyError = queryErrorText(historyQuery.error, 'History unavailable.');
@@ -184,7 +184,7 @@ const FindingDetail: React.FC = () => {
   const evidenceRootId = finding?.source === 'note' ? finding.evidence_annotation_id ?? null : null;
   const hostNotesQuery = useQuery({
     queryKey: ['getHostNotes', evidenceHostId],
-    queryFn: () => getHostNotes(evidenceHostId as number),
+    queryFn: ({ signal }) => getHostNotes(evidenceHostId as number, signal),
     enabled: !!evidenceRootId && !!evidenceHostId,
   });
   const evidenceError = queryErrorText(hostNotesQuery.error, 'Evidence note unavailable.');

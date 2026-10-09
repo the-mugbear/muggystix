@@ -105,6 +105,37 @@ describe('HostFindingsCard', () => {
     expect(screen.queryByRole('button', { name: 'Add finding' })).toBeNull();
   });
 
+  // Code review 2026-10-09: a failed read was shown as "No finding is
+  // recorded on this host" to a writer, and as no section at all to a reader.
+  it.each(['analyst', 'viewer'])('a failed read is said, with Retry — never "no finding" (%s)', async (role) => {
+    projectRole.value = role;
+    api.listFindings.mockRejectedValueOnce(new Error('boom')).mockResolvedValue({ items: [finding({})], total: 1 });
+    renderCard();
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/boom|Could not load this host’s findings/);
+    expect(screen.queryByText('No finding is recorded on this host.')).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Weak TLS')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('says when the host has more findings than it shows', async () => {
+    api.listFindings.mockResolvedValue({ items: [finding({})], total: 240 });
+    renderCard();
+    expect(await screen.findByText('Showing the first 1 of 240 findings on this host.')).toBeInTheDocument();
+  });
+
+  it('says when a finding\'s state on this host could not be read in full', async () => {
+    // A cut preview that is all this host's rows needs the whole finding; that read fails.
+    const listed = finding({ host_count: 9, hosts: [1, 2, 3, 4, 5].map((n) => row(40 + n, HOST, 'open', `n${n}.example.com`)) });
+    api.listFindings.mockResolvedValue({ items: [listed], total: 1 });
+    api.getFinding.mockRejectedValue(new Error('boom'));
+    renderCard();
+    expect(await screen.findByText(/state on 1 finding could not be read in full/)).toBeInTheDocument();
+    expect(screen.getByText('Weak TLS')).toBeInTheDocument();
+  });
+
   it('a finding shared with other hosts is not re-judged from here: the control is THIS host\'s state', async () => {
     const user = userEvent.setup();
     const shared = finding({ host_count: 3, hosts: [row(31, HOST, 'open'), row(32, 6, 'open'), row(33, 8, 'open')] });
@@ -329,7 +360,7 @@ describe('HostFindingsCard', () => {
     renderCard();
 
     const state = await screen.findByLabelText('State of Weak TLS on this host');
-    await waitFor(() => expect(api.getFinding).toHaveBeenCalledWith(7));
+    await waitFor(() => expect(api.getFinding).toHaveBeenCalledWith(7, expect.any(AbortSignal)));
     await user.click(state);
     await user.click(await screen.findByRole('option', { name: 'Retest here' }));
     // Every one of this host's six rows — the sixth was not in the preview.

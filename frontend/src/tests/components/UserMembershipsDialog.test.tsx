@@ -9,9 +9,8 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const apiMock = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock('../../services/api', () => ({
-  default: apiMock,
+  getUserMemberships: vi.fn(),
   getProjects: vi.fn(),
   getProjectMembers: vi.fn(),
   addProjectMember: vi.fn(),
@@ -51,7 +50,7 @@ const chooseRole = async (project: string, role: string) => {
 beforeEach(() => {
   vi.clearAllMocks();
   me.id = 1;
-  apiMock.get.mockResolvedValue({ data: [membership(), membership({ project_id: 8, project_name: 'Borealis', role: 'analyst' })] });
+  mocked.getUserMemberships.mockResolvedValue([membership(), membership({ project_id: 8, project_name: 'Borealis', role: 'analyst' })]);
   mocked.getProjects.mockResolvedValue([{ id: 7, name: 'Acme' }, { id: 8, name: 'Borealis' }]);
   // Acme's roster: ben (5) is its only project admin.
   mocked.getProjectMembers.mockResolvedValue([rosterRow(5, 'admin'), rosterRow(6, 'viewer')]);
@@ -60,6 +59,13 @@ beforeEach(() => {
 });
 
 describe('UserMembershipsDialog — the member rules of Project settings', () => {
+  it('reads the memberships of the user it was opened on', async () => {
+    renderDialog();
+    await rowOf('Acme');
+    expect(mocked.getUserMemberships).toHaveBeenCalledTimes(1);
+    expect(mocked.getUserMemberships.mock.calls[0][0]).toBe(5);
+  });
+
   it('asks before a project\'s only admin is demoted, and sends nothing on "no"', async () => {
     confirmMock.mockResolvedValue(false);
     renderDialog();

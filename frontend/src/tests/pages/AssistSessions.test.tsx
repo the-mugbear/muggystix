@@ -55,7 +55,7 @@ describe('AssistSessions (redirect)', () => {
     getAgentSessionByLegacyAssistId.mockResolvedValue({ kind: 'project', id: 72, project_id: 1, status: 'ended' });
     renderAt('52');
     expect(await screen.findByTestId('where')).toHaveTextContent('/agent-sessions/72');
-    expect(getAgentSessionByLegacyAssistId).toHaveBeenCalledWith(52);
+    expect(getAgentSessionByLegacyAssistId).toHaveBeenCalledWith(52, expect.any(AbortSignal));
   });
 
   it('opens a legacy assist session too: it has the same page now', async () => {

@@ -50,14 +50,14 @@ export interface IntegrationUpdatePayload {
   is_active?: boolean;
 }
 
-export const listIntegrations = async (projectId?: number): Promise<IntegrationEntry[]> => {
+export const listIntegrations = async (projectId?: number, signal?: AbortSignal): Promise<IntegrationEntry[]> => {
   const params = projectId != null ? { project_id: projectId } : undefined;
-  const r = await api.get<IntegrationEntry[]>('/integrations/', { params });
+  const r = await api.get<IntegrationEntry[]>('/integrations/', { params, signal });
   return r.data;
 };
 
-export const listIntegrationTypes = async (): Promise<Array<{ value: string; label: string }>> => {
-  const r = await api.get<Array<{ value: string; label: string }>>('/integrations/types');
+export const listIntegrationTypes = async (signal?: AbortSignal): Promise<Array<{ value: string; label: string }>> => {
+  const r = await api.get<Array<{ value: string; label: string }>>('/integrations/types', { signal });
   return r.data;
 };
 

@@ -164,6 +164,7 @@ export const getDefaultScope = async (
     withFindingsOnly?: boolean;
     subnetsSearch?: string;
   } = {},
+  signal?: AbortSignal,
 ): Promise<Scope> => {
   const params = new URLSearchParams();
   if (opts.subnetsSkip !== undefined) params.set('subnets_skip', String(opts.subnetsSkip));
@@ -173,7 +174,7 @@ export const getDefaultScope = async (
     params.set('subnets_search', opts.subnetsSearch.trim());
   }
   const qs = params.toString();
-  const response = await api.get<Scope>(`${p()}/scopes/default${qs ? `?${qs}` : ''}`);
+  const response = await api.get<Scope>(`${p()}/scopes/default${qs ? `?${qs}` : ''}`, { signal });
   return response.data;
 };
 
@@ -221,25 +222,29 @@ export const uploadSubnetFile = async (
 
   return response.data;
 };
-export const getScopeCoverage = async (limit: number = 25): Promise<ScopeCoverageSummary> => {
-  const response = await api.get(`${p()}/scopes/coverage?limit=${limit}`);
+export const getScopeCoverage = async (limit: number = 25, signal?: AbortSignal): Promise<ScopeCoverageSummary> => {
+  const response = await api.get(`${p()}/scopes/coverage?limit=${limit}`, { signal });
   return response.data;
 };
 
-export const getScopeHostList = async (scopeId: number, format: 'txt' | 'csv' | 'json' = 'txt'): Promise<string> => {
-  const response = await api.get(`${p()}/export/scope/${scopeId}?format_type=${format}`, { responseType: 'text' });
+export const getScopeHostList = async (
+  scopeId: number, format: 'txt' | 'csv' | 'json' = 'txt', signal?: AbortSignal,
+): Promise<string> => {
+  const response = await api.get(`${p()}/export/scope/${scopeId}?format_type=${format}`, { responseType: 'text', signal });
   return response.data;
 };
 
-export const getOutOfScopeHostList = async (format: 'txt' | 'csv' | 'json' = 'txt'): Promise<string> => {
-  const response = await api.get(`${p()}/export/out-of-scope?format_type=${format}`, { responseType: 'text' });
+export const getOutOfScopeHostList = async (
+  format: 'txt' | 'csv' | 'json' = 'txt', signal?: AbortSignal,
+): Promise<string> => {
+  const response = await api.get(`${p()}/export/out-of-scope?format_type=${format}`, { responseType: 'text', signal });
   return response.data;
 };
 
 // --- Subnet labels ---
 
-export const listSubnetLabels = async (): Promise<SubnetLabelWithCounts[]> => {
-  const response = await api.get(`${p()}/scopes/subnet-labels`);
+export const listSubnetLabels = async (signal?: AbortSignal): Promise<SubnetLabelWithCounts[]> => {
+  const response = await api.get(`${p()}/scopes/subnet-labels`, { signal });
   return response.data;
 };
 

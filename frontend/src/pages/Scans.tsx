@@ -176,8 +176,8 @@ export default function Scans() {
   const deleteId = scanToDelete?.id ?? null;
   const impactQuery = useQuery({
     queryKey: ['getScanDeletionImpact', deleteId],
-    queryFn: async () => {
-      const impact = await getScanDeletionImpact(deleteId as number);
+    queryFn: async ({ signal }) => {
+      const impact = await getScanDeletionImpact(deleteId as number, signal);
       // An answer that is not about this scan is not a summary of it.
       if (impact?.scan_id !== deleteId) throw new Error('The removal summary is not about this scan.');
       return impact;
@@ -250,12 +250,12 @@ export default function Scans() {
   };
   const recentQuery = useQuery({
     queryKey: ['getRecentIngestionJobs', 25],
-    queryFn: () => getRecentIngestionJobs(25),
+    queryFn: ({ signal }) => getRecentIngestionJobs(25, signal),
     ...pollEvery((query) => queuePollMs(query.state.data)),
   });
   const stagedQuery = useQuery({
     queryKey: ['getStagedIngestionJobs'],
-    queryFn: () => getStagedIngestionJobs(),
+    queryFn: ({ signal }) => getStagedIngestionJobs(signal),
     ...pollEvery(queuePollMs(recentQuery.data)),
   });
   // The two are shown together, so the queue never appears first without the
@@ -679,7 +679,7 @@ export default function Scans() {
   // 30 files meant 30 requests a tick, and a hidden tab kept going.
   const followedQuery = useQuery({
     queryKey: ['getIngestionJobsByIds', activeJobIds],
-    queryFn: () => getIngestionJobsByIds(activeJobIds),
+    queryFn: ({ signal }) => getIngestionJobsByIds(activeJobIds, signal),
     enabled: activeJobIds.length > 0,
     ...pollEvery(4000),
   });
@@ -709,7 +709,7 @@ export default function Scans() {
   // the first answer is the baseline.
   const markerQuery = useQuery({
     queryKey: ['getScanInventoryMarker'],
-    queryFn: () => getScanInventoryMarker(),
+    queryFn: ({ signal }) => getScanInventoryMarker(signal),
     ...pollEvery(15_000),
   });
   const markerKey = markerQuery.data ? markerKeyOf(markerQuery.data) : null;
@@ -2272,7 +2272,7 @@ export const ScanCommandDetail: React.FC<{ scan: Scan }> = ({ scan }) => {
   const hasCommand = !!(scan.command_line && scan.command_line.trim());
   const explained = useQuery({
     queryKey: ['getScanCommandExplanation', scan.id],
-    queryFn: () => getScanCommandExplanation(scan.id),
+    queryFn: ({ signal }) => getScanCommandExplanation(scan.id, signal),
     enabled: hasCommand,
     ...rememberFor(30 * 60_000),
     // This query's own lifecycle: the answer is remembered for the visit, so a

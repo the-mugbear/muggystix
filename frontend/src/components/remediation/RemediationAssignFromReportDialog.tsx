@@ -59,7 +59,7 @@ export const RemediationAssignFromReportDialog: React.FC<{
 }> = ({ today, onClose }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
-  const list = useQuery({ queryKey: ['listClientReports'], queryFn: () => listClientReports() });
+  const list = useQuery({ queryKey: ['listClientReports'], queryFn: ({ signal }) => listClientReports(signal) });
   const loadError = queryErrorText(list.error, 'The reports could not be loaded.');
   const reports = useMemo((): ClientReport[] | null => (list.data
     ? list.data.items.filter((r) => r.status === 'issued')

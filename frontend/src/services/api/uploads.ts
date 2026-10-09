@@ -113,8 +113,8 @@ export interface DetectionResponse {
   formats: FormatOption[];
 }
 
-export const getJobDetection = async (jobId: number): Promise<DetectionResponse> => {
-  const response = await api.get(`${p()}/upload/jobs/${jobId}/detection`);
+export const getJobDetection = async (jobId: number, signal?: AbortSignal): Promise<DetectionResponse> => {
+  const response = await api.get(`${p()}/upload/jobs/${jobId}/detection`, { signal });
   return response.data;
 };
 
@@ -151,8 +151,8 @@ export const discardStagedJobs = async (
 
 /** Every format an operator can choose. Also rides on a detection response,
  *  but a failed inspection returns none — which is when it is needed. */
-export const getUploadFormats = async (): Promise<FormatOption[]> => {
-  const response = await api.get(`${p()}/upload/formats`);
+export const getUploadFormats = async (signal?: AbortSignal): Promise<FormatOption[]> => {
+  const response = await api.get(`${p()}/upload/formats`, { signal });
   return response.data;
 };
 
@@ -289,18 +289,18 @@ export const uploadFile = async (
  * that no longer exists, is absent from the answer rather than an error — so
  * the caller can stop following it. The server takes at most 200 ids.
  */
-export const getIngestionJobsByIds = async (jobIds: number[]): Promise<IngestionJob[]> => {
+export const getIngestionJobsByIds = async (jobIds: number[], signal?: AbortSignal): Promise<IngestionJob[]> => {
   if (jobIds.length === 0) return [];
   const chunks: number[][] = [];
   for (let i = 0; i < jobIds.length; i += 200) chunks.push(jobIds.slice(i, i + 200));
   const pages = await Promise.all(
-    chunks.map((chunk) => api.get(`${p()}/upload/jobs`, { params: { ids: chunk.join(',') } })),
+    chunks.map((chunk) => api.get(`${p()}/upload/jobs`, { params: { ids: chunk.join(',') }, signal })),
   );
   return pages.flatMap((r) => r.data as IngestionJob[]);
 };
 
-export const getRecentIngestionJobs = async (limit = 5): Promise<IngestionJob[]> => {
-  const response = await api.get(`${p()}/upload/jobs?limit=${limit}`);
+export const getRecentIngestionJobs = async (limit = 5, signal?: AbortSignal): Promise<IngestionJob[]> => {
+  const response = await api.get(`${p()}/upload/jobs?limit=${limit}`, { signal });
   return response.data;
 };
 
@@ -310,13 +310,14 @@ export const getRecentIngestionJobs = async (limit = 5): Promise<IngestionJob[]>
  * out of the queue, its "Review" and its "Discard".  Paged by the server's
  * 100-row cap; staged jobs expire after a day, so a few pages at most.
  */
-export const getStagedIngestionJobs = async (): Promise<IngestionJob[]> => {
+export const getStagedIngestionJobs = async (signal?: AbortSignal): Promise<IngestionJob[]> => {
   const PAGE = 100;
   const MAX_PAGES = 20;
   const jobs: IngestionJob[] = [];
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const response = await api.get(`${p()}/upload/jobs`, {
       params: { status: 'staged', limit: PAGE, skip: page * PAGE },
+      signal,
     });
     const rows = response.data as IngestionJob[];
     jobs.push(...rows);
@@ -346,8 +347,8 @@ export const dismissSupersededJobs = async (
 /** v5.289.0 — the jobs of an upload batch that did NOT import (failed,
  *  discarded, expired, cancelled, still running…), dismissed ones included,
  *  so an expanded batch can list which files failed and why. */
-export const getBatchUnimportedJobs = async (batchId: number): Promise<IngestionJob[]> => {
-  const response = await api.get(`${p()}/upload/jobs`, { params: { batch_id: batchId } });
+export const getBatchUnimportedJobs = async (batchId: number, signal?: AbortSignal): Promise<IngestionJob[]> => {
+  const response = await api.get(`${p()}/upload/jobs`, { params: { batch_id: batchId }, signal });
   return response.data;
 };
 
@@ -477,6 +478,7 @@ export interface IngestionResultsQuery {
 
 export const getIngestionResults = async (
   query: IngestionResultsQuery = {},
+  signal?: AbortSignal,
 ): Promise<IngestionResultsResponse> => {
   const params = new URLSearchParams();
   if (query.skip !== undefined) params.set('skip', String(query.skip));
@@ -487,7 +489,7 @@ export const getIngestionResults = async (
   if (query.sortBy) params.set('sort_by', query.sortBy);
   if (query.sortOrder) params.set('sort_order', query.sortOrder);
   const qs = params.toString();
-  const response = await api.get(`${p()}/parse-errors/ingestion-results${qs ? `?${qs}` : ''}`);
+  const response = await api.get(`${p()}/parse-errors/ingestion-results${qs ? `?${qs}` : ''}`, { signal });
   return response.data;
 };
 
@@ -502,7 +504,7 @@ export interface UninterpretedLines {
   shapes: { kind: string; shape: string; count: number }[];
 }
 
-export const getUninterpretedLines = async (jobId: number): Promise<UninterpretedLines> => {
-  const response = await api.get(`${p()}/parse-errors/ingestion-results/${jobId}/uninterpreted`);
+export const getUninterpretedLines = async (jobId: number, signal?: AbortSignal): Promise<UninterpretedLines> => {
+  const response = await api.get(`${p()}/parse-errors/ingestion-results/${jobId}/uninterpreted`, { signal });
   return response.data;
 };

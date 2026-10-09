@@ -112,7 +112,7 @@ function appendAttribution(
   if (params.target && params.target.trim()) search.set('target', params.target.trim());
 }
 
-export async function getScansAt(params: ScansAtParams): Promise<ActivityResponse> {
+export async function getScansAt(params: ScansAtParams, signal?: AbortSignal): Promise<ActivityResponse> {
   const search = new URLSearchParams();
   search.set('ts', params.ts);
   if (params.toleranceSeconds !== undefined) {
@@ -121,17 +121,19 @@ export async function getScansAt(params: ScansAtParams): Promise<ActivityRespons
   appendAttribution(search, params);
   const { data } = await api.get<ActivityResponse>(
     `/activity/scans-at?${search.toString()}`,
+    { signal },
   );
   return data;
 }
 
-export async function getScansBetween(params: ScansBetweenParams): Promise<ActivityResponse> {
+export async function getScansBetween(params: ScansBetweenParams, signal?: AbortSignal): Promise<ActivityResponse> {
   const search = new URLSearchParams();
   search.set('from', params.from);
   search.set('to', params.to);
   appendAttribution(search, params);
   const { data } = await api.get<ActivityResponse>(
     `/activity/scans-between?${search.toString()}`,
+    { signal },
   );
   return data;
 }

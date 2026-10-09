@@ -93,7 +93,7 @@ export const hostEvidenceKey = (hostId: number) =>
 const HostEvidenceSection: React.FC<{ hostId: number }> = ({ hostId }) => {
   const query = useQuery({
     queryKey: hostEvidenceKey(hostId),
-    queryFn: () => listEvidenceRecords({ host_id: hostId, unlinked: true, limit: 100 }),
+    queryFn: ({ signal }) => listEvidenceRecords({ host_id: hostId, unlinked: true, limit: 100 }, signal),
   });
   const items = query.data?.items ?? null;
   const total = query.data?.total ?? 0;

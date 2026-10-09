@@ -601,6 +601,29 @@ The same on every list:
 - **A reload keeps what "Show more" had loaded** (it re-reads each loaded
   page).
 
+What a list needs beyond that is an option or a field of the hook — a page
+does not use `useInfiniteQuery` directly, and does not keep its own copy of
+the last answer:
+
+- **`keepPrevious: true`** — while another filter loads, and when that read
+  fails, the rows that were on screen stay, and `isPrevious` is true: they
+  are not the answer to what is asked now.  The page dims them and makes
+  them inert (no checkbox, picker or cursor acts on them), and reads
+  `isPrevious && error` as "this could not be loaded".  A scope's subnets
+  under its search box, a test's evidence.
+- **`lastResponse`** — the last first-page response of any filter, for what
+  must not blink while the next list loads: filter chips and their counts, a
+  filter's options.  (`response` is the current filter's, or `null`.)
+- **`loadMoreError`** — why the last "Show more" failed, for a page that says
+  it beside the list; `loadMore()` still rejects for one that toasts.
+- **`dedupeBy: (row) => id`** — a row an earlier page already gave is dropped
+  (offset paging over a list that moves).  `total` stays the server's.
+- **`failure`** — the error as thrown, for a page that words it by what the
+  reader was doing.
+- An endpoint that answers a parent and one page of its children (a scope and
+  its subnets) is mapped to `{ items, total }` in the fetcher, the rest of the
+  payload riding on the page object and read from `response`.
+
 **A list that polls or reloads anchors its keyboard cursor by id.**  Rows move
 under an index: pass `useListCursor(count, onOpen, { getId })` the id of row `index`
 and the cursor follows its row through a reload (`cursorId`), instead of
@@ -1059,6 +1082,14 @@ const save = useMutation({
   provider that is `scopedClient`, which drops a `setQueryData` made under
   another scope — and never writes project data through the module's
   `queryClient`.
+- **An operation of several requests stays in the project it started in.**
+  An API function builds its address from the project that is current when
+  it is CALLED, so a `mutationFn` that awaits one request and then makes
+  another takes `const stillHere = holdProject()` (`lib/query`) at its start
+  and calls `stillHere()` after each `await`: it throws `ProjectChanged`
+  and nothing more is sent.  `utils/runLimited` does this itself for a
+  fanned-out selection.  A `queryFn` that passes its `signal` needs nothing:
+  it is cancelled when its page goes with the project.
 - **Nothing is copied out of a query.**  The page renders `data`; sorting and
   grouping are `useMemo` over it.  A form seeded from the server keeps only
   the reader's EDITS in state and lays them over the data — no effect that
@@ -1087,8 +1118,39 @@ const save = useMutation({
   one-off lookup) is a `useMutation` too: it carries the pending and error
   state.  A preview that follows what is typed is a `useQuery` with the
   debounced input in its key.
-- **A secret shown once** (a new agent key, a password being sent) lives in a
-  mutation with `gcTime: 0` that is `reset()` when done — never in a query.
+- **A job is followed with `hooks/useJobPoll`** (`useJobPolls` for several
+  side by side): the answer of the request that started it is the first
+  reading, it is asked about once per interval while it runs, and never again
+  once finished — not by the tab, not by an invalidation.  A failed poll
+  keeps the last reading and returns `error`; the page says "Status may be
+  stale — <reason>" and carries on (the report page's preview jobs, a
+  contact's remediation list).  A LIST polled while any row in it runs (the
+  inventory download dialog) has no first reading to start from: it is a
+  plain `useQuery` with `pollEvery((query) => …)`.
+- **What must stay on screen while another key loads is `useLastSettled`**
+  (`lib/query`): `useLastSettled(query.data)` is that data while there is
+  some, else the last this component was given — forgotten on unmount, when
+  the project or user changes (`{ global: true }` for a `GLOBAL` key: kept
+  across projects), and when `resetKey` changes.  Never a ref or a state the
+  page fills from the query itself.  What it returns may belong to another
+  key than the one asked for: the page decides what that means (dim it, say
+  the read failed).
+- **A read passes its `signal`**: a GET function in `services/api` takes a
+  `signal?: AbortSignal` — last, or in its options object where it has one
+  (`getHost`, `listAgentSessions`) — and a `queryFn` hands the query's on
+  (`({ signal }) => getThing(id, signal)`), so a read nobody waits for any
+  longer is cancelled.  A `mutationFn` passes none: what a click started is
+  not cancelled by navigating away (the three functions that save a file or
+  generate text from a click — `downloadInventoryCsv`, `downloadReportJob`,
+  `getToolReadyOutput` — take none).  A `queryFn` whose own `catch` counts or
+  logs a failure must tell a cancellation from one before it passes the
+  signal; the notification count in `Layout` and the project list in
+  `ProjectContext` do not pass it yet for that reason.
+- **A secret** (a password or one-time code being sent, recovery codes or a
+  new agent key coming back) lives in a mutation with `...SECRET_MUTATION`
+  (`lib/query`: nothing kept in the mutation cache) that is `reset()` when it
+  has been used — at once where nothing reads the answer, when the reader
+  dismisses it where it is shown once — never in a query.
 - **Tests** mock the `services/api` barrel as before; `setupTests.ts` wraps
   every `render` / `renderHook` in a fresh client, so an ordinary test does
   not wrap its renders, and no test mocks the library.  A test of what is

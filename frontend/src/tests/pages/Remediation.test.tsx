@@ -54,6 +54,7 @@ import Remediation from '../../pages/Remediation';
 import { TooltipProvider } from '../../components/ui/tooltip';
 import { LIST_CURSOR_CLASS } from '../../hooks/useListCursor';
 import { resetRemediationPolicy } from '../../hooks/useRemediationPolicy';
+import { getQueryScope, setQueryScope } from '../../lib/query';
 import type { RemediationPage, RemediationRow } from '../../services/api';
 
 const LONG = 'a'.repeat(200);
@@ -179,6 +180,21 @@ describe('Remediation', () => {
     expect(await screen.findByText(/not turned on for this installation/)).toBeInTheDocument();
     expect(listRemediation).not.toHaveBeenCalled();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  });
+
+  // Code review 2026-10-09: a failed read of the policy read as "off" for the
+  // whole session, with nothing to press.
+  it('says that the setting could not be read — not that the feature is off — and Retry reads it', async () => {
+    getRemediationPolicy.mockRejectedValueOnce(new Error('Network Error'));
+    show();
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Could not reach the server/);
+    expect(screen.queryByText(/not turned on for this installation/)).not.toBeInTheDocument();
+    expect(listRemediation).not.toHaveBeenCalled();
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByRole('table', { name: /remediation/i })).toBeInTheDocument();
+    expect(getRemediationPolicy).toHaveBeenCalledTimes(2);
   });
 
   it('previews the deadline before saving, and starts the clock today when a contact is first named', async () => {
@@ -637,6 +653,35 @@ describe('Remediation', () => {
     await waitFor(() => expect(saveBlob).toHaveBeenCalledWith(expect.any(Blob), 'remediation-roger-2026-11-10.docx'));
   });
 
+  // 5.352.0 (owner) — a status poll that fails was silent; the dialog now says
+  // the status may be stale (as the inventory download does) and keeps asking.
+  it('says the status may be stale when the document cannot be re-read, and carries on', async () => {
+    listRemediationContacts.mockResolvedValue([
+      { contact_email: 'roger@example.com', contact_name: 'Roger Smith', total: 3, open: 3, overdue: 2, due_soon: 1,
+        on_track: 0, deferred: 0, closed: 0, last_follow_up_on: null, projects: 1 },
+    ]);
+    const job = { id: 9, status: 'queued', format: 'contact-docx', message: null, error: null, filename: null,
+      contact_email: 'roger@example.com', created_at: null, images_withheld: 0, ready: false };
+    prepareContactReport.mockReset().mockResolvedValue(job);
+    getContactReport.mockReset()
+      .mockRejectedValueOnce(Object.assign(new Error('boom'), {
+        isAxiosError: true, response: { status: 503, data: { detail: 'The server is busy.' } },
+      }))
+      .mockResolvedValue({ ...job, status: 'completed', ready: true, filename: 'remediation-roger.docx' });
+    show('/remediation?view=contacts');
+    const table = await screen.findByRole('table', { name: /contacts/i });
+    fireEvent.click(within(within(table).getAllByRole('row')[1]).getByRole('button', { name: 'Document' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Prepare' }));
+
+    const stale = await within(dialog).findByText(/Status may be stale/, undefined, { timeout: 4000 });
+    expect(stale).toHaveTextContent('Status may be stale — The server is busy.');
+    expect(within(dialog).getByText('Waiting for the report worker…')).toBeInTheDocument();
+
+    expect(await within(dialog).findByText('remediation-roger.docx', undefined, { timeout: 8000 })).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Status may be stale/)).toBeNull();
+  }, 15000);
+
   // 5.346.0 — the worker's status while it renders is `processing`; the
   // dialog waited on `running`, so a poll that landed mid-render stopped the
   // poll and said "The document could not be prepared." with no reason.
@@ -788,6 +833,33 @@ describe('Remediation', () => {
       showWithTips('/remediation?verification=closed');
       await screen.findByRole('table', { name: /remediation deadlines$/i });
       expect(listRemediation.mock.calls[0][0]).toMatchObject({ verification: undefined });
+    });
+
+    // Code review 2026-10-09: the export pages through the list, and each
+    // page's address is the project that is current when it is asked for — a
+    // switch between two pages put two projects' rows in one file.
+    it('the CSV stops, and saves nothing, when the project changes between two of its pages', async () => {
+      const scopeBefore = getQueryScope();
+      setQueryScope({ userId: 1, projectId: 1 });
+      listRemediation.mockResolvedValue(gaps([row(1)], { reported_fixed_not_retested: 0, remediated_record_open: 0 }));
+      showWithTips('/remediation');
+      await screen.findByRole('table', { name: /remediation deadlines$/i });
+      saveBlob.mockReset();
+      listRemediation.mockClear();
+      // The export's first page says there are more; the reader switches before it answers.
+      let answer!: (page: unknown) => void;
+      listRemediation.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+      fireEvent.click(screen.getByRole('button', { name: /CSV/ }));
+      await waitFor(() => expect(answer).toBeDefined());
+      setQueryScope({ userId: 1, projectId: 2 });
+      answer({ ...gaps([row(1)], { reported_fixed_not_retested: 0, remediated_record_open: 0 }), total: 500 });
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('The CSV could not be built. Nothing was saved.'));
+      expect(saveBlob).not.toHaveBeenCalled();
+      // No second page of the export (200 rows a call) was asked of the other project.
+      const exportCalls = listRemediation.mock.calls.filter(([query]) => (query as { limit?: number }).limit === 200);
+      expect(exportCalls).toHaveLength(1);
+      setQueryScope(scopeBefore);
     });
 
     it('shows no gap line when neither has a row', async () => {

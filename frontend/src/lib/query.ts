@@ -24,7 +24,7 @@
  *   - **No automatic retry, no refetch on focus**: a failure is said, with
  *     Retry (`refetch`).  A list that must stay current polls (`pollEvery`).
  */
-import { createElement, useMemo, type ReactNode } from 'react';
+import { createElement, useMemo, useRef, type ReactNode } from 'react';
 import {
   QueryClient, QueryClientProvider, hashKey, useQueryClient, type Query, type QueryKey,
 } from '@tanstack/react-query';
@@ -86,6 +86,50 @@ function sameData(madeUnder: string, key: QueryKey | undefined): boolean {
   return user === userNow && key?.[0] === GLOBAL;
 }
 
+/** Is this cache ENTRY the data of `madeUnder`?  An entry does not carry its
+ *  scope, but its hash was made with it: the entry is `madeUnder`'s when
+ *  hashing its key under `madeUnder` gives that hash.  (A remembered entry of
+ *  another project has the same key and another hash.) */
+function entryOf(madeUnder: string, query: Query): boolean {
+  const key = query.queryKey;
+  return query.queryHash === hashKey([key[0] === GLOBAL ? madeUnder.split(':')[0] : madeUnder, ...key]);
+}
+
+/**
+ * The project an operation of SEVERAL requests started in.
+ *
+ * An API function builds its address from the current project when it is
+ * CALLED.  One request is therefore safe; a `mutationFn` that awaits one
+ * request and then makes another is not — if the reader switches project in
+ * between, the second goes to the other project (an export would stitch two
+ * projects' pages into one file).  Such an operation takes this at its start
+ * and calls it after each `await`, before it uses the answer or sends the
+ * next request:
+ *
+ *   mutationFn: async () => {
+ *     const stillHere = holdProject();
+ *     const ids = await getMatchingHostIds(filters);
+ *     stillHere();                       // throws ProjectChanged: nothing more is sent
+ *     return bulkTagHosts(ids, body);
+ *   }
+ *
+ * A `queryFn` does not need it when it passes its `signal`: its component
+ * unmounts with the project and the read is cancelled.
+ */
+export class ProjectChanged extends Error {
+  constructor() {
+    super('The project was changed before this finished. Nothing more was sent.');
+    this.name = 'ProjectChanged';
+  }
+}
+
+export function holdProject(): () => void {
+  const held = scope;
+  return () => {
+    if (scope !== held) throw new ProjectChanged();
+  };
+}
+
 /**
  * The client as a component under ONE user and project sees it.
  *
@@ -108,17 +152,21 @@ export function scopedClient(client: QueryClient, madeUnder: string = scope): Qu
     ),
     getQueryData: (key: QueryKey) => (sameData(madeUnder, key) ? client.getQueryData(key) : undefined),
     getQueryState: (key: QueryKey) => (sameData(madeUnder, key) ? client.getQueryState(key) : undefined),
-    // By filter: only the entries that are still the same data.
+    // By filter: only the ENTRIES that are this view's data.  A filter matches
+    // by key, and a remembered entry of another project has the same key —
+    // so each entry is checked by its own hash, not by the scope of the call.
     setQueriesData: (filters: any, ...rest: unknown[]) => (client.setQueriesData as any)(
       {
         ...filters,
-        predicate: (query: Query) => sameData(madeUnder, query.queryKey) && (filters?.predicate?.(query) ?? true),
+        predicate: (query: Query) => sameData(madeUnder, query.queryKey) && entryOf(madeUnder, query)
+          && (filters?.predicate?.(query) ?? true),
       },
       ...rest,
     ),
     getQueriesData: (filters: any) => client.getQueriesData({
       ...filters,
-      predicate: (query: Query) => sameData(madeUnder, query.queryKey) && (filters?.predicate?.(query) ?? true),
+      predicate: (query: Query) => sameData(madeUnder, query.queryKey) && entryOf(madeUnder, query)
+        && (filters?.predicate?.(query) ?? true),
     }),
   };
   return new Proxy(client, {
@@ -192,6 +240,23 @@ export function invalidateReads(client: QueryClient, ...names: string[]): Promis
   });
 }
 
+/**
+ * Options for a mutation that CARRIES OR RETURNS A SECRET — a password, a
+ * one-time code, a freshly minted key.  The library keeps a mutation's
+ * variables and answer in its cache (five minutes by default) and on the
+ * observer for as long as the component is mounted; a secret must be in
+ * neither once it has been used.
+ *
+ *   const change = useMutation({ ...SECRET_MUTATION, mutationFn: … });
+ *   change.mutate(body, { onSettled: () => change.reset() });   // nothing reads it afterwards
+ *
+ * `gcTime: 0` drops it from the cache the moment nothing observes it;
+ * `reset()` clears the observer's copy.  Where the page SHOWS the answer once
+ * (a new agent key), `reset()` goes where the reader dismisses it instead.
+ * A secret never goes in a query: a query can be read again.
+ */
+export const SECRET_MUTATION = { gcTime: 0 } as const;
+
 /** A failed query's or mutation's message, or null when there is none. */
 export function queryErrorText(error: unknown, fallback: string): string | null {
   return error ? formatApiError(error, fallback) : null;
@@ -202,4 +267,42 @@ export function queryErrorText(error: unknown, fallback: string): string | null 
  *  settings). */
 export function rememberFor(ms: number) {
   return { staleTime: ms, gcTime: ms } as const;
+}
+
+/**
+ * The last answer this component was given — for what must stay on screen
+ * while ANOTHER key loads, or fails: the figures under a filter that is
+ * changing, a dropdown's options, the rows under a search box.
+ *
+ *   const dashboard = useQuery({ queryKey: [GLOBAL, 'getOversightDashboard', query], … });
+ *   const data = useLastSettled(dashboard.data, { global: true }) ?? null;
+ *
+ * Give it the query's `data` (or a value made from it): it returns that value
+ * while there is one, and otherwise the last one it was given.  What it
+ * returns may therefore belong to another key than the one being asked for —
+ * the page decides what that means (dim it, make it inert, say that the read
+ * failed).  `data === theQuery.data` tells the two apart.
+ *
+ * What is remembered is this component's and one identity's:
+ *   - it is gone when the component unmounts (a page is remounted per project
+ *     and per route, a record's panel per record);
+ *   - it is forgotten when the cache scope changes — another project, another
+ *     user — so a component that SURVIVES a project switch (the shell, a
+ *     cross-project page) cannot show one project's answer under another's.
+ *     `global: true` for data that is not one project's (a `GLOBAL` key):
+ *     kept across projects, forgotten with the user;
+ *   - `resetKey` forgets it when the value changes — for a component that
+ *     stays mounted across records and is not keyed by them.
+ */
+export function useLastSettled<T>(
+  data: T | null | undefined,
+  { global: isGlobal = false, resetKey }: { global?: boolean; resetKey?: unknown } = {},
+): T | undefined {
+  const under = isGlobal ? scope.split(':')[0] : scope;
+  const held = useRef<{ value: T; under: string; resetKey: unknown } | null>(null);
+  if (held.current && (held.current.under !== under || !Object.is(held.current.resetKey, resetKey))) {
+    held.current = null;
+  }
+  if (data != null) held.current = { value: data, under, resetKey };
+  return held.current?.value;
 }

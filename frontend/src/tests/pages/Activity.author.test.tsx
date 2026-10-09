@@ -56,7 +56,7 @@ beforeEach(() => {
 describe('Collaboration — author filter in the URL', () => {
   it('?author=me asks both feeds for the signed-in account’s messages', async () => {
     renderAt('/activity?author=me');
-    await waitFor(() => expect(getNoteActivity).toHaveBeenCalledWith(expect.objectContaining({ author_id: 7 })));
+    await waitFor(() => expect(getNoteActivity).toHaveBeenCalledWith(expect.objectContaining({ author_id: 7 }), expect.any(AbortSignal)));
     await waitFor(() => expect(getFindingDiscussions).toHaveBeenCalledWith(
       expect.objectContaining({ author_id: 7 }), expect.anything(),
     ));
@@ -67,7 +67,7 @@ describe('Collaboration — author filter in the URL', () => {
 
   it('?author=<id> filters to that author; no parameter asks for everyone', async () => {
     const first = renderAt('/activity?author=2');
-    await waitFor(() => expect(getNoteActivity).toHaveBeenCalledWith(expect.objectContaining({ author_id: 2 })));
+    await waitFor(() => expect(getNoteActivity).toHaveBeenCalledWith(expect.objectContaining({ author_id: 2 }), expect.any(AbortSignal)));
     first.unmount();
     getNoteActivity.mockClear();
     renderAt('/activity');

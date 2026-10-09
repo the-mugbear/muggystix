@@ -92,11 +92,11 @@ const LLMSettings: React.FC = () => {
   const queryClient = useQueryClient();
   const providersQuery = useQuery({
     queryKey: [GLOBAL, 'listLLMProviders'],
-    queryFn: () => listLLMProviders(),
+    queryFn: ({ signal }) => listLLMProviders(signal),
   });
   const typesQuery = useQuery({
     queryKey: [GLOBAL, 'listLLMProviderTypes'],
-    queryFn: () => listLLMProviderTypes(),
+    queryFn: ({ signal }) => listLLMProviderTypes(signal),
   });
   const providers: LLMProviderEntry[] = providersQuery.data ?? [];
   const types: LLMProviderTypeOption[] = typesQuery.data ?? [];

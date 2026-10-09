@@ -49,7 +49,7 @@ const TagManagement: React.FC = () => {
 
   const tagsQuery = useQuery({
     queryKey: ['listHostTags'],
-    queryFn: () => listHostTags(),
+    queryFn: ({ signal }) => listHostTags(signal),
     enabled: !!projectId,
   });
   // A read that failed shows its error and no rows — not the rows of before.

@@ -55,7 +55,7 @@ const BindingRow: React.FC<{ b: HostNameBinding }> = ({ b }) => (
 const HostNamesCard: React.FC<HostNamesCardProps> = ({ hostId }) => {
   const query = useQuery({
     queryKey: ['getHostNames', hostId],
-    queryFn: () => getHostNames(hostId),
+    queryFn: ({ signal }) => getHostNames(hostId, signal),
   });
   const data = query.data ?? null;
   const loading = query.isPending;

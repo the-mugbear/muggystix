@@ -32,8 +32,8 @@ export interface Project {
   skip_informational_effective?: boolean;
 }
 
-export const getProjects = async (): Promise<Project[]> => {
-  const response = await api.get('/projects/');
+export const getProjects = async (signal?: AbortSignal): Promise<Project[]> => {
+  const response = await api.get('/projects/', { signal });
   return response.data;
 };
 

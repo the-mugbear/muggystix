@@ -25,7 +25,7 @@ const AssistSessions: React.FC = () => {
   const known = legacyId != null && Number.isFinite(legacyId);
   const session = useQuery({
     queryKey: ['getAgentSessionByLegacyAssistId', legacyId],
-    queryFn: () => getAgentSessionByLegacyAssistId(legacyId as number),
+    queryFn: ({ signal }) => getAgentSessionByLegacyAssistId(legacyId as number, signal),
     enabled: known,
   });
   const error = queryErrorText(

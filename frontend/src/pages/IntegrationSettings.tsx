@@ -119,11 +119,11 @@ const IntegrationSettings: React.FC = () => {
   // for one project's): the keys are GLOBAL.
   const integrationsQuery = useQuery({
     queryKey: [GLOBAL, 'listIntegrations'],
-    queryFn: () => listIntegrations(),
+    queryFn: ({ signal }) => listIntegrations(undefined, signal),
   });
   const typesQuery = useQuery({
     queryKey: [GLOBAL, 'listIntegrationTypes'],
-    queryFn: () => listIntegrationTypes(),
+    queryFn: ({ signal }) => listIntegrationTypes(signal),
   });
   const integrations: IntegrationEntry[] = integrationsQuery.data ?? [];
   const types: Array<{ value: string; label: string }> = typesQuery.data ?? [];

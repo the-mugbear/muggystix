@@ -2,9 +2,17 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const apiMock = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() }));
-vi.mock('../../services/api', () => ({ default: apiMock }));
+import { createQueryClient } from '../../lib/query';
+import { heldByMutations, withClient } from '../helpers/heldByMutations';
 
+const apiMock = vi.hoisted(() => ({
+  listOwnSessions: vi.fn(),
+  getOwnProjectMemberships: vi.fn(),
+  updateOwnProfile: vi.fn(),
+  changeOwnPassword: vi.fn(),
+  revokeOwnSession: vi.fn(),
+}));
+vi.mock('../../services/api', () => apiMock);
 const updateUser = vi.fn();
 const logout = vi.fn();
 const user = {
@@ -32,17 +40,12 @@ import Profile from '../../pages/Profile';
 describe('Profile', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    apiMock.get.mockImplementation((url: string) =>
-      Promise.resolve({
-        data: url === '/users/profile/projects'
-          ? [{
-            project_id: 5, project_name: 'Acme', project_slug: 'acme', project_status: 'active',
-            project_is_default: false, project_is_archived: false, role: 'analyst', joined_at: null,
-          }]
-          : [],
-      }),
-    );
-    apiMock.put.mockResolvedValue({ data: {} });
+    apiMock.getOwnProjectMemberships.mockResolvedValue([{
+      project_id: 5, project_name: 'Acme', project_slug: 'acme', project_status: 'active',
+      project_is_default: false, project_is_archived: false, role: 'analyst', joined_at: null,
+    }]);
+    apiMock.listOwnSessions.mockResolvedValue([]);
+    apiMock.updateOwnProfile.mockResolvedValue(undefined);
   });
 
   const renderPage = () => render(<MemoryRouter><Profile /></MemoryRouter>);
@@ -60,12 +63,12 @@ describe('Profile', () => {
     fireEvent.change(input, { target: { value: ' Ana Ortiz ' } });
     expect(save).toBeDisabled();
     fireEvent.submit(input.closest('form')!);
-    expect(apiMock.put).not.toHaveBeenCalled();
+    expect(apiMock.updateOwnProfile).not.toHaveBeenCalled();
 
     fireEvent.change(input, { target: { value: 'Ana M. Ortiz' } });
     fireEvent.click(save);
     await waitFor(() =>
-      expect(apiMock.put).toHaveBeenCalledWith('/users/profile', { full_name: 'Ana M. Ortiz' }),
+      expect(apiMock.updateOwnProfile).toHaveBeenCalledWith({ full_name: 'Ana M. Ortiz' }),
     );
   });
 
@@ -92,9 +95,8 @@ describe('Profile', () => {
       { id: 12, ip_address: '10.0.0.9', user_agent: 'Chrome', created_at: '2026-09-22T10:00:00Z',
         last_activity: '2026-09-22T11:00:00Z', expires_at: '2026-09-23T10:00:00Z', current: true },
     ];
-    apiMock.get.mockImplementation((url: string) =>
-      Promise.resolve({ data: url === '/auth/sessions' ? sessions : [] }),
-    );
+    apiMock.listOwnSessions.mockResolvedValue(sessions);
+    apiMock.getOwnProjectMemberships.mockResolvedValue([]);
     renderPage();
 
     expect(await screen.findByText('This session')).toBeInTheDocument();
@@ -105,21 +107,66 @@ describe('Profile', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
 
     await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
-    expect(apiMock.delete).not.toHaveBeenCalled();
+    expect(apiMock.revokeOwnSession).not.toHaveBeenCalled();
+  });
+
+  it('revokes another session by its id and takes it off the list', async () => {
+    apiMock.listOwnSessions.mockResolvedValue([
+      { id: 11, ip_address: '10.0.0.5', user_agent: 'Firefox', created_at: '2026-09-22T10:00:00Z',
+        last_activity: '2026-09-22T11:00:00Z', expires_at: '2026-09-23T10:00:00Z', current: false },
+      { id: 12, ip_address: '10.0.0.9', user_agent: 'Chrome', created_at: '2026-09-22T10:00:00Z',
+        last_activity: '2026-09-22T11:00:00Z', expires_at: '2026-09-23T10:00:00Z', current: true },
+    ]);
+    apiMock.revokeOwnSession.mockResolvedValue(undefined);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke session from 10.0.0.5' }));
+    expect(await screen.findByText('This will sign out the session on 10.0.0.5.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
+
+    await waitFor(() => expect(apiMock.revokeOwnSession).toHaveBeenCalledWith(11));
+    // Removed from what is shown (the cache under the read's own key), not re-read.
+    await waitFor(() => expect(screen.queryByText('10.0.0.5')).toBeNull());
+    expect(screen.getByText('10.0.0.9')).toBeInTheDocument();
+    expect(apiMock.listOwnSessions).toHaveBeenCalledTimes(1);
+    expect(logout).not.toHaveBeenCalled();
   });
 
   // 1.15 — `POST /auth/change-password` revokes EVERY session of the user,
   // this browser's included (auth.py).  The dialog said "You'll stay signed
   // in" and left the page on a dead token: the next request was a 401.
   describe('changing the password', () => {
-    const fillAndSubmit = async () => {
-      renderPage();
+    const fill = async () => {
       fireEvent.click(screen.getByRole('button', { name: /Change Password/ }));
       const dialog = await screen.findByRole('dialog');
       fireEvent.change(screen.getByLabelText('Current Password'), { target: { value: 'old-Passw0rd!' } });
       fireEvent.change(screen.getByLabelText('New Password'), { target: { value: 'new-Passw0rd!42' } });
       fireEvent.change(screen.getByLabelText('Confirm New Password'), { target: { value: 'new-Passw0rd!42' } });
-      fireEvent.submit(dialog.querySelector('form')!);
+      return dialog;
+    };
+    const fillAndSubmit = async () => {
+      renderPage();
+      fireEvent.submit((await fill()).querySelector('form')!);
+    };
+    // The same, with the client in hand: what it still holds can be looked at.
+    const fillAndSubmitWatched = async () => {
+      const client = createQueryClient();
+      render(<MemoryRouter><Profile /></MemoryRouter>, { wrapper: withClient(client) });
+      fireEvent.submit((await fill()).querySelector('form')!);
+      return client;
+    };
+    /** Neither password is held by a mutation any more. */
+    const expectForgotten = async (client: ReturnType<typeof createQueryClient>) => {
+      await waitFor(() => {
+        const held = heldByMutations(client);
+        expect(held).not.toContain('old-Passw0rd!');
+        expect(held).not.toContain('new-Passw0rd!42');
+      });
+    };
+    const expectEmptyFields = () => {
+      expect(screen.getByLabelText('Current Password')).toHaveValue('');
+      expect(screen.getByLabelText('New Password')).toHaveValue('');
+      expect(screen.getByLabelText('Confirm New Password')).toHaveValue('');
     };
 
     it('says beforehand that it signs the reader out, and never that they stay signed in', async () => {
@@ -133,9 +180,9 @@ describe('Profile', () => {
     });
 
     it('signs this browser out after the change, and says why', async () => {
-      apiMock.post.mockResolvedValue({ data: {} });
+      apiMock.changeOwnPassword.mockResolvedValue(undefined);
       await fillAndSubmit();
-      await waitFor(() => expect(apiMock.post).toHaveBeenCalledWith('/auth/change-password', {
+      await waitFor(() => expect(apiMock.changeOwnPassword).toHaveBeenCalledWith({
         current_password: 'old-Passw0rd!', new_password: 'new-Passw0rd!42',
       }));
       await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
@@ -143,10 +190,47 @@ describe('Profile', () => {
     });
 
     it('stays signed in, with the reason shown, when the change is refused', async () => {
-      apiMock.post.mockRejectedValue({ response: { status: 400, data: { detail: 'Invalid current password' } } });
+      apiMock.changeOwnPassword.mockRejectedValue({ response: { status: 400, data: { detail: 'Invalid current password' } } });
       await fillAndSubmit();
       expect(await screen.findByText('Invalid current password')).toBeInTheDocument();
       expect(logout).not.toHaveBeenCalled();
+    });
+
+    // The request carries both passwords, and the page stays mounted after
+    // it: the library must hold neither once it has settled
+    // (`SECRET_MUTATION` + `reset()`, lib/query).
+    it('keeps neither password once the change has gone through, in the client or in the form', async () => {
+      apiMock.changeOwnPassword.mockResolvedValue(undefined);
+      const client = await fillAndSubmitWatched();
+      await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
+      await expectForgotten(client);
+
+      // (Sign-out is mocked here, so the page is still up to look at.)
+      fireEvent.click(screen.getByRole('button', { name: /Change Password/ }));
+      await screen.findByRole('dialog');
+      expectEmptyFields();
+    });
+
+    it('keeps neither password in the client after a refusal, and still says why', async () => {
+      apiMock.changeOwnPassword.mockRejectedValue({ response: { status: 400, data: { detail: 'Invalid current password' } } });
+      const client = await fillAndSubmitWatched();
+      expect(await screen.findByText('Invalid current password')).toBeInTheDocument();
+      await expectForgotten(client);
+      expect(screen.getByText('Invalid current password')).toBeInTheDocument();
+      // What was typed stays in the form, to correct.
+      expect(screen.getByLabelText('Current Password')).toHaveValue('old-Passw0rd!');
+    });
+
+    it('empties the form when the dialog is left without changing anything', async () => {
+      renderPage();
+      await fill();
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(apiMock.changeOwnPassword).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: /Change Password/ }));
+      await screen.findByRole('dialog');
+      expectEmptyFields();
     });
   });
 

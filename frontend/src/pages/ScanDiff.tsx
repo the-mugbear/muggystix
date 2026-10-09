@@ -401,7 +401,7 @@ const ScanDiff: React.FC = () => {
 
   const comparison = useQuery({
     queryKey: ['compareScans', aId, bId],
-    queryFn: () => compareScans(aId, bId),
+    queryFn: ({ signal }) => compareScans(aId, bId, signal),
     enabled: haveParams,
   });
   const diff: ScanDiffResponse | null = haveParams ? comparison.data ?? null : null;

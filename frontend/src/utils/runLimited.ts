@@ -6,7 +6,15 @@
  * HTTP/2, so a 200-file drop was 200 concurrent uploads against a handful of
  * API workers and one database pool. Results keep the input order; a task
  * that throws or rejects settles as `rejected` and never stops the others.
+ *
+ * The run belongs to the project it started in (`lib/query` `holdProject`):
+ * a task that has not started when the reader switches project is not
+ * started — it settles as `rejected` with `ProjectChanged` — because an API
+ * function builds its address from the project that is current when it is
+ * called, and the rest of one project's selection must not be sent to another.
  */
+import { holdProject } from '../lib/query';
+
 export async function runLimited<T, R>(
   items: readonly T[],
   limit: number,
@@ -14,10 +22,12 @@ export async function runLimited<T, R>(
 ): Promise<PromiseSettledResult<R>[]> {
   const results: PromiseSettledResult<R>[] = new Array(items.length);
   let next = 0;
+  const stillHere = holdProject();
   const worker = async () => {
     while (next < items.length) {
       const index = next++;
       try {
+        stillHere();
         results[index] = { status: 'fulfilled', value: await task(items[index], index) };
       } catch (reason) {
         results[index] = { status: 'rejected', reason };

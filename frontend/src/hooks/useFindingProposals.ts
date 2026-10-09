@@ -41,7 +41,7 @@ export const groupFindingProposals = (items: Proposal[]) => {
 export const useFindingProposals = (findingId: number | null): FindingProposals => {
   const query = useQuery({
     queryKey: ['listProposals', { finding_id: findingId, status: 'pending', limit: 200 }],
-    queryFn: () => listProposals({ finding_id: findingId as number, status: 'pending', limit: 200 }),
+    queryFn: ({ signal }) => listProposals({ finding_id: findingId as number, status: 'pending', limit: 200 }, signal),
     enabled: findingId != null,
     ...pollEvery(30_000),
   });

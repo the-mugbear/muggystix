@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, Fragment } from 'react';
+import React, { useState, useEffect, useCallback, Fragment } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { copyToClipboard } from '../utils/clipboard';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
@@ -34,7 +34,7 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '../components/ui/select';
 import { useToast } from '../contexts/ToastContext';
-import { invalidateReads } from '../lib/query';
+import { holdProject, invalidateReads } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { INGESTION_JOB_READS } from '../utils/ingestionReads';
 import { Badge } from '../components/ui/badge';
@@ -252,23 +252,21 @@ const ParseErrors: React.FC = () => {
   const appliedSearch = urlSearch;
   const list = useListQuery<IngestionResultItem, ListPage<IngestionResultItem> & IngestionResultsResponse>(
     'getIngestionResults',
-    ({ limit }) => getIngestionResults({
+    ({ limit, signal }) => getIngestionResults({
       skip: page * pageSize,
       limit,
       status: statusFilter === 'all' ? undefined : statusFilter,
       search: appliedSearch || undefined,
       sortBy,
       sortOrder,
-    }),
+    }, signal),
     [statusFilter, appliedSearch, sortBy, sortOrder, page],
     { pageSize, errorMessage: 'Failed to load ingestion results.' },
   );
   const { loading, error, loadedAt } = list;
   const loadData = list.reload;
   // The chips keep their last counts while the next query loads.
-  const lastSummary = useRef<IngestionResultsResponse['summary'] | undefined>(undefined);
-  if (list.response?.summary) lastSummary.current = list.response.summary;
-  const summary = lastSummary.current;
+  const summary = list.lastResponse?.summary;
 
   // Audit CRIT-8 — a failed lookup used to open the dialog on a ParseError
   // synthesized from row data ("No details available"): operators believed
@@ -359,8 +357,10 @@ const ParseErrors: React.FC = () => {
   const dismissRows = useMutation({
     mutationFn: async (rows: IngestionResultItem[]) => {
       let failed = 0;
+      const stillHere = holdProject();
       for (const item of rows) {
         try {
+          stillHere();
           // Sequential on purpose: small, and no burst of parallel writes.
           await dismissIngestionJob(item.id);
         } catch {

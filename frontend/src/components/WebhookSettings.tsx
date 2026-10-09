@@ -43,8 +43,8 @@ const WebhookSettings: React.FC = () => {
   const [secret, setSecret] = useState('');
   const [selectedEvents, setSelectedEvents] = useState<Set<string>>(new Set());
 
-  const hooksQuery = useQuery({ queryKey: ['listWebhooks'], queryFn: () => listWebhooks() });
-  const typesQuery = useQuery({ queryKey: ['listWebhookEventTypes'], queryFn: () => listWebhookEventTypes() });
+  const hooksQuery = useQuery({ queryKey: ['listWebhooks'], queryFn: ({ signal }) => listWebhooks(signal) });
+  const typesQuery = useQuery({ queryKey: ['listWebhookEventTypes'], queryFn: ({ signal }) => listWebhookEventTypes(signal) });
   const webhooks: WebhookConfig[] = hooksQuery.data ?? [];
   const eventTypes: WebhookEventType[] = typesQuery.data ?? [];
   const loading = hooksQuery.isFetching || typesQuery.isFetching;

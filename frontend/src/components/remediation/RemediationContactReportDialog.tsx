@@ -11,14 +11,14 @@
  * is recorded on each of the contact's hosts' timelines.
  */
 import React, { useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation } from '@tanstack/react-query';
 import { Download, Loader2 } from 'lucide-react';
 
 import {
   downloadContactReport, getContactReport, prepareContactReport, type ContactReportFormat, type ContactReportJob,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
-import { pollEvery } from '../../lib/query';
+import { useJobPoll } from '../../hooks/useJobPoll';
 import { formatApiError } from '../../utils/apiErrors';
 import { saveBlob } from '../../utils/download';
 import { Button } from '../ui/button';
@@ -35,7 +35,7 @@ const FORMATS: Array<{ value: ContactReportFormat; label: string }> = [
 // The worker's statuses, typed: this set once held 'running', which the server
 // never sends, so a poll that landed mid-render read as a failure (5.346.0).
 const WAITING = new Set<ContactReportJob['status']>(['queued', 'processing']);
-const isWaiting = (job: ContactReportJob | null | undefined): boolean => job != null && WAITING.has(job.status);
+const isWaiting = (job: ContactReportJob): boolean => WAITING.has(job.status);
 /** How often a job still on the worker is asked about. */
 const POLL_MS = 2000;
 
@@ -55,16 +55,13 @@ export const RemediationContactReportDialog: React.FC<{
   // Asked about every two seconds while it is queued or rendering, starting
   // from what the request answered; a finished job is not asked about again.
   // A missed poll is tried again; a job that is gone shows on the next one.
-  const followed = useQuery({
+  const { job, running: waiting, error: pollError } = useJobPoll({
     queryKey: ['getContactReport', started?.id, projectId],
-    queryFn: ({ signal }) => getContactReport((started as ContactReportJob).id, projectId, signal),
-    initialData: started ?? undefined,
-    staleTime: POLL_MS,
-    enabled: (query) => started != null && isWaiting(query.state.data),
-    ...pollEvery(POLL_MS),
+    queryFn: (asked, signal) => getContactReport(asked.id, projectId, signal),
+    job: started,
+    interval: POLL_MS,
+    isDone: (read) => !isWaiting(read),
   });
-  const job = started ? followed.data ?? started : null;
-  const waiting = isWaiting(job);
 
   const preparing = useMutation({
     mutationFn: () => prepareContactReport({ contact_email: contactEmail, format }, projectId),
@@ -113,6 +110,13 @@ export const RemediationContactReportDialog: React.FC<{
               <p className="flex items-center gap-xs text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" aria-hidden />
                 {job?.status === 'queued' ? 'Waiting for the report worker…' : 'Preparing the document…'}
+              </p>
+            )}
+            {/* The last reading stays; the reader is told it may be old (as the
+                inventory download does), and it is asked again by itself. */}
+            {waiting && pollError != null && (
+              <p role="status" className="break-words text-caption text-warning">
+                Status may be stale — {formatApiError(pollError, 'Could not refresh the status.')}
               </p>
             )}
             {job?.ready && <p className="break-words">Ready: <span className="font-medium">{job.filename}</span></p>}

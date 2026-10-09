@@ -11,8 +11,11 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useProject } from '../contexts/ProjectContext';
-import apiClient from '../services/api';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import {
+  changeOwnPassword, getOwnProjectMemberships, listOwnSessions, revokeOwnSession, updateOwnProfile,
+  type UserProjectMembership, type UserSession,
+} from '../services/api';
+import { GLOBAL, SECRET_MUTATION, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { personInitials } from '../utils/people';
 import { useToast } from '../contexts/ToastContext';
@@ -38,28 +41,6 @@ import { DetailSkeleton } from '../components/PageSkeleton';
 import { PasswordRulesChecklist } from '../components/PasswordRulesChecklist';
 import TwoFactorCard from '../components/TwoFactorCard';
 
-interface UserSession {
-  id: number;
-  ip_address: string;
-  user_agent: string;
-  created_at: string;
-  last_activity: string;
-  expires_at: string;
-  /** v5.288.0 — true for the session this browser's token belongs to. */
-  current?: boolean;
-}
-
-interface MyProjectMembership {
-  project_id: number;
-  project_name: string;
-  project_slug: string;
-  project_status: string;
-  project_is_default: boolean;
-  project_is_archived: boolean;
-  role: string;
-  joined_at: string | null;
-}
-
 const roleVariant = (
   role: string,
 ): 'destructive' | 'warning' | 'info' | 'success' | 'muted' => {
@@ -83,7 +64,7 @@ const roleVariant = (
 const formatDate = (s: string | null | undefined) => formatTimestamp(s);
 
 /** The signed-in user's own sessions — not a project's. */
-const SESSIONS_KEY = [GLOBAL, '/auth/sessions'];
+const SESSIONS_KEY = [GLOBAL, 'listOwnSessions'];
 
 const Profile: React.FC = () => {
   const { user, updateUser, logout } = useAuth();
@@ -112,7 +93,7 @@ const Profile: React.FC = () => {
   // list, as it always was.
   const sessionsQuery = useQuery({
     queryKey: SESSIONS_KEY,
-    queryFn: async () => (await apiClient.get<UserSession[]>('/auth/sessions')).data,
+    queryFn: ({ signal }) => listOwnSessions(signal),
   });
   const sessions = sessionsQuery.data ?? [];
   const sessionsLoading = sessionsQuery.isPending;
@@ -126,22 +107,22 @@ const Profile: React.FC = () => {
   // their per-project role. Refreshable via the Refresh button on the section
   // so a freshly-added project shows up without a full page reload.
   const membershipsQuery = useQuery({
-    queryKey: [GLOBAL, '/users/profile/projects'],
-    queryFn: async () => (await apiClient.get<MyProjectMembership[]>('/users/profile/projects')).data,
+    queryKey: [GLOBAL, 'getOwnProjectMemberships'],
+    queryFn: ({ signal }) => getOwnProjectMemberships(signal),
   });
   const membershipsLoading = membershipsQuery.isFetching;
   const membershipsError = membershipsLoading
     ? null
     : queryErrorText(membershipsQuery.error, 'Failed to load project associations.');
   // A failed refresh shows the failure, not the list it could not confirm.
-  const memberships: MyProjectMembership[] | null = membershipsQuery.isError ? null : membershipsQuery.data ?? null;
+  const memberships: UserProjectMembership[] | null = membershipsQuery.isError ? null : membershipsQuery.data ?? null;
   const fetchMemberships = () => { void membershipsQuery.refetch(); };
 
   // Save only means something when the name differs from what is saved.
   const profileDirty = profileForm.full_name.trim() !== (user?.full_name ?? '').trim();
 
   const profileSave = useMutation({
-    mutationFn: (form: { full_name: string }) => apiClient.put('/users/profile', form),
+    mutationFn: (form: { full_name: string }) => updateOwnProfile(form),
     onSuccess: (_response, form) => {
       if (user) updateUser({ ...user, full_name: form.full_name });
       toast.success('Profile updated.');
@@ -155,12 +136,21 @@ const Profile: React.FC = () => {
     profileSave.mutate(profileForm);
   };
 
+  // Leaving the dialog ends the attempt: the passwords typed into it go too.
+  const closePasswordDialog = () => {
+    setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
+    setPasswordDialogOpen(false);
+  };
+
+  // Carries both passwords: kept nowhere once the request has settled
+  // (`SECRET_MUTATION`, and the `reset` where it is called).  Why it failed
+  // is this page's own state (`passwordError`), so the reset hides nothing.
   const passwordChange = useMutation({
+    ...SECRET_MUTATION,
     mutationFn: (body: { current_password: string; new_password: string }) =>
-      apiClient.post('/auth/change-password', body),
+      changeOwnPassword(body),
     onSuccess: () => {
-      setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
-      setPasswordDialogOpen(false);
+      closePasswordDialog();
       // The server has revoked every session of this account, this browser's
       // included: say so and sign out (as ForceChangePassword does), instead
       // of leaving the page on a token whose next request is a 401.
@@ -177,14 +167,14 @@ const Profile: React.FC = () => {
       setPasswordError('New passwords do not match.');
       return;
     }
-    passwordChange.mutate({
-      current_password: passwordForm.current_password,
-      new_password: passwordForm.new_password,
-    });
+    passwordChange.mutate(
+      { current_password: passwordForm.current_password, new_password: passwordForm.new_password },
+      { onSettled: () => passwordChange.reset() },
+    );
   };
 
   const revoke = useMutation({
-    mutationFn: (session: UserSession) => apiClient.delete(`/auth/sessions/${session.id}`),
+    mutationFn: (session: UserSession) => revokeOwnSession(session.id),
     onSuccess: (_response, session) => {
       queryClient.setQueryData<UserSession[]>(SESSIONS_KEY, (prev) => prev?.filter((s) => s.id !== session.id));
       toast.success('Session revoked.');
@@ -453,7 +443,7 @@ const Profile: React.FC = () => {
       {/* Password Change Dialog */}
       <Dialog
         open={passwordDialogOpen}
-        onOpenChange={(next) => !next && !passwordSaving && setPasswordDialogOpen(false)}
+        onOpenChange={(next) => !next && !passwordSaving && closePasswordDialog()}
       >
         <DialogContent>
           <DialogHeader>
@@ -523,7 +513,7 @@ const Profile: React.FC = () => {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setPasswordDialogOpen(false)}
+                onClick={closePasswordDialog}
                 disabled={passwordSaving}
               >
                 Cancel

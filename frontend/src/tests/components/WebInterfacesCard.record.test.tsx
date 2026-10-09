@@ -3,7 +3,7 @@
  * testssl's OK/INFO checks, WhatWeb's plugin strings and httpx's DNS / CDN
  * data were stored and unreachable.  Fetched on request, cut visibly.
  */
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -29,6 +29,48 @@ const renderCard = () =>
 
 beforeEach(() => vi.clearAllMocks());
 
+// Code review 2026-10-09: the screenshot is an object URL made by the request;
+// only the one on show was ever revoked.
+describe('WebInterfacesCard — a screenshot nobody is looking at', () => {
+  const shot = { ...row, has_screenshot: true };
+  const renderShot = () => render(
+    <MemoryRouter><TooltipProvider>
+      <WebInterfacesCard hostId={1} count={1} rows={[shot] as never} embedded />
+    </TooltipProvider></MemoryRouter>,
+  );
+
+  it('is released when it arrives after the card has gone', async () => {
+    const revoke = vi.fn();
+    Object.defineProperty(URL, 'revokeObjectURL', { value: revoke, configurable: true, writable: true });
+    let answer!: (url: string) => void;
+    api.fetchWebInterfaceScreenshot.mockImplementation(() => new Promise<string>((resolve) => { answer = resolve; }));
+    const { unmount } = renderShot();
+    fireEvent.click(screen.getByRole('button', { name: `View screenshot of ${row.url}` }));
+    await waitFor(() => expect(answer).toBeDefined());
+    unmount();
+    answer('blob:late');
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith('blob:late'));
+  });
+
+  it('is released when the reader asked for another meanwhile', async () => {
+    const revoke = vi.fn();
+    Object.defineProperty(URL, 'revokeObjectURL', { value: revoke, configurable: true, writable: true });
+    const answers: Array<(url: string) => void> = [];
+    api.fetchWebInterfaceScreenshot.mockImplementation(() => new Promise<string>((resolve) => { answers.push(resolve); }));
+    renderShot();
+    const open = screen.getByRole('button', { name: `View screenshot of ${row.url}` });
+    fireEvent.click(open);
+    await waitFor(() => expect(answers).toHaveLength(1));
+    fireEvent.click(open);
+    await waitFor(() => expect(answers).toHaveLength(2));
+    answers[0]('blob:first');
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith('blob:first'));
+    answers[1]('blob:second');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(revoke).not.toHaveBeenCalledWith('blob:second');
+  });
+});
+
 describe('WebInterfacesCard — source record', () => {
   it('fetches the record only when asked for, and shows it as text', async () => {
     api.getWebInterfaceRecord.mockResolvedValue({
@@ -39,7 +81,7 @@ describe('WebInterfacesCard — source record', () => {
     expect(api.getWebInterfaceRecord).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: `Show the testssl source record for ${row.url}` }));
     expect(await screen.findByText(/cipher_order/)).toBeInTheDocument();
-    expect(api.getWebInterfaceRecord).toHaveBeenCalledWith(7);
+    expect(api.getWebInterfaceRecord).toHaveBeenCalledWith(7, expect.any(AbortSignal));
     expect(screen.getByText(/As testssl reported it in testssl-run\.json/)).toBeInTheDocument();
     expect(screen.queryByText(/Showing the first/)).not.toBeInTheDocument();
   });

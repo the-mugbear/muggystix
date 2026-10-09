@@ -50,13 +50,13 @@ export interface LLMProviderUpdatePayload {
   is_default?: boolean;
 }
 
-export const listLLMProviders = async (): Promise<LLMProviderEntry[]> => {
-  const r = await api.get<LLMProviderEntry[]>('/llm-providers/');
+export const listLLMProviders = async (signal?: AbortSignal): Promise<LLMProviderEntry[]> => {
+  const r = await api.get<LLMProviderEntry[]>('/llm-providers/', { signal });
   return r.data;
 };
 
-export const listLLMProviderTypes = async (): Promise<LLMProviderTypeOption[]> => {
-  const r = await api.get<LLMProviderTypeOption[]>('/llm-providers/types');
+export const listLLMProviderTypes = async (signal?: AbortSignal): Promise<LLMProviderTypeOption[]> => {
+  const r = await api.get<LLMProviderTypeOption[]>('/llm-providers/types', { signal });
   return r.data;
 };
 

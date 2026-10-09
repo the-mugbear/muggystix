@@ -136,7 +136,7 @@ const Segments: React.FC = () => {
   // sites.
   const subnetsQuery = useQuery({
     queryKey: ['getSubnetInsights', PAGE_SIZE, offset],
-    queryFn: () => getSubnetInsights(PAGE_SIZE, offset),
+    queryFn: ({ signal }) => getSubnetInsights(PAGE_SIZE, offset, signal),
     placeholderData: keepPreviousData,
   });
   const postureQuery = useQuery({ queryKey: ['getPosture'], queryFn: ({ signal }) => getPosture({ signal }) });

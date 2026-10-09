@@ -366,9 +366,11 @@ describe('Operations page', () => {
       renderPage();
       await screen.findByRole('table');
       // No rows and no queue in the workbench; the queue's size on its own.
-      expect(mockedApi.getWorkbench).toHaveBeenCalledWith({ includeInvestigate: false, includeRows: false });
+      expect(mockedApi.getWorkbench).toHaveBeenCalledWith(
+        { includeInvestigate: false, includeRows: false }, expect.any(AbortSignal),
+      );
       expect(mockedApi.getWorkbench).toHaveBeenCalledTimes(1);
-      expect(mockedApi.getInvestigationQueue).toHaveBeenCalledWith(null, { limit: 1 });
+      expect(mockedApi.getInvestigationQueue).toHaveBeenCalledWith(null, { limit: 1, signal: expect.any(AbortSignal) });
     });
 
     it('requests only the selected tab’s rows', async () => {

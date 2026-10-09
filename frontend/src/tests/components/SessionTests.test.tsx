@@ -35,7 +35,7 @@ describe('SessionTests', () => {
     api.listHostTests.mockResolvedValue({ items: [test()], total: 1, has_more: false });
     renderList();
     const table = await screen.findByTestId('session-tests');
-    expect(api.listHostTests).toHaveBeenCalledWith(expect.objectContaining({ agent_session_id: 72, offset: 0 }));
+    expect(api.listHostTests).toHaveBeenCalledWith(expect.objectContaining({ agent_session_id: 72, offset: 0 }), expect.any(AbortSignal));
     expect(within(table).getByRole('link', { name: '10.0.0.5' })).toHaveAttribute('href', '/hosts/5#host-test-31');
     expect(within(table).getByText('SMB signing')).toBeInTheDocument();
     expect(within(table).getByText('In progress')).toBeInTheDocument();
@@ -70,7 +70,7 @@ describe('SessionTests', () => {
     renderList();
     await screen.findByTestId('session-tests');
     fireEvent.click(screen.getByRole('button', { name: 'Show more (2 left)' }));
-    await waitFor(() => expect(api.listHostTests).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1 })));
+    await waitFor(() => expect(api.listHostTests).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1 }), expect.any(AbortSignal)));
     expect(await screen.findByRole('link', { name: '10.0.0.7' })).toHaveAttribute('href', '/hosts/7#host-test-33');
     expect(screen.getByRole('link', { name: '10.0.0.5' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Show more/ })).not.toBeInTheDocument();

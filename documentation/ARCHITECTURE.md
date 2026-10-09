@@ -558,13 +558,17 @@ frontend/src/
 │   ├── useUploadReview.ts   # the staged-upload state machine (API injected, so it tests with renderHook)
 │   ├── useProjectRole.ts    # the caller's PROJECT role (canWrite analyst+, canExport auditor+, isProjectAdmin)
 │   │                        # and useRoleGate, the route / nav gate — never the account role
-│   ├── useListQuery.ts      # a "Show more" list (on useInfiniteQuery; error distinct from empty)
+│   ├── useListQuery.ts      # a "Show more" list (on useInfiniteQuery; error distinct from empty; options for the
+│   │                        # previous filter's rows staying dimmed, the last response, de-duplication by id)
 │   ├── usePagedList.ts, useUrlPage.ts  # one page of a list at a time (on useQuery); its page kept in the address (?page=)
+│   ├── useJobPoll.ts        # follow a server-side job from its POST's answer until it is finished (useJobPolls: several)
 │   ├── useDebouncedValue.ts, useKeyboardShortcuts.ts
 │   └── useConfirm.tsx       # destructive-action confirmation dialog
 ├── services/
 │   └── api/                 # axios client split into per-domain modules
-│                            # (hosts, scans, scopes, dashboard, … + shared primitives)
+│                            # (hosts, scans, scopes, dashboard, … + shared primitives; users.ts = accounts and
+│                            # memberships, auth.ts = own sessions, password, two-factor). A read takes an
+│                            # AbortSignal (style guide §48). Only AuthContext still uses the raw client.
 ├── config/
 │   └── navigation.tsx       # single navigation manifest (hubs, roles, palette)
 ├── theme/                   # palettes.ts (the five palettes), tokens.ts, cssVars.ts
@@ -572,7 +576,7 @@ frontend/src/
 ├── lib/
 │   └── query.ts             # SERVER STATE (v5.351.0): the TanStack Query client and its defaults (no retry, nothing
 │                            # kept after unmount, never paused offline), the cache scope (per user + project, in the
-│                            # key's hash), GLOBAL, pollEvery, invalidateReads. Reads are useQuery, writes useMutation;
+│                            # key's hash), GLOBAL, pollEvery, invalidateReads, useLastSettled, SECRET_MUTATION. Reads are useQuery, writes useMutation;
 │                            # an API function is called only inside a queryFn / mutationFn (lint: eslint-rules/)
 ├── utils/                   # pure helpers (no HTTP client) — `ls` is the source; notably:
 │   ├── uiStyles.ts          # safeFallback + stickyBelowChrome (truncation is Tailwind + cn())

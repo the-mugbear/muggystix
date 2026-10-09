@@ -1,7 +1,7 @@
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 
-import { GLOBAL, pollEvery, queryErrorText } from '../lib/query';
+import { GLOBAL, pollEvery, queryErrorText, useLastSettled } from '../lib/query';
 
 /**
  * useListQuery — a list read a page at a time with "Show more", on
@@ -30,7 +30,21 @@ import { GLOBAL, pollEvery, queryErrorText } from '../lib/query';
  *     "Show more" in flight alone, and a "Show more" asked for during a
  *     re-read waits for it and appends after the fresh rows.
  *   - `response` is the first page's whole response, for a list endpoint
- *     that carries more than rows (a summary, counts).
+ *     that carries more than rows (a summary, counts); `lastResponse` is the
+ *     last one of ANY deps, for what must not blink while the next list loads
+ *     (filter chips and their counts, the options of a filter).
+ *   - `loadMoreError` is the message of a failed "Show more", for a page that
+ *     says it beside the list instead of in a toast (`loadMore` rejects all
+ *     the same).
+ *
+ * Two options change what `rows` are, for the lists that need it:
+ *   - `keepPrevious`: while new `deps` load — and when that read FAILS — the
+ *     rows that were on screen stay (with their `total` and `response`), and
+ *     `isPrevious` is true: they are not the answer to what is asked now.  The
+ *     page dims them or makes them inert, and reads `isPrevious && error` as
+ *     "this could not be loaded", never as the new list.
+ *   - `dedupeBy`: a row whose key was already seen in an earlier page is
+ *     dropped (offset paging over a list that moves can hand a row out twice).
  */
 export interface ListPage<T> {
   items: T[];
@@ -45,7 +59,7 @@ export interface ListPageRequest {
 
 export type ListFetcher<T, P extends ListPage<T> = ListPage<T>> = (request: ListPageRequest) => Promise<P>;
 
-export interface UseListQueryOptions {
+export interface UseListQueryOptions<T = unknown> {
   /** Rows per page (and per "load more").  Default 50. */
   pageSize?: number;
   /** Re-read every N ms while the tab is visible. */
@@ -57,23 +71,43 @@ export interface UseListQueryOptions {
   /** The list is not one project's (lib/query `GLOBAL`): the key is
    *  `[GLOBAL, name, ...deps]`. */
   global?: boolean;
+  /** While new `deps` load, and when that read fails, `rows` / `total` /
+   *  `response` stay the previous deps' and `isPrevious` says so.  Default
+   *  false: the rows are the current deps' or `null`. */
+  keepPrevious?: boolean;
+  /** A row's identity: a row whose key an earlier row already had is dropped
+   *  from `rows`.  (`total` is the server's and is not changed by it.) */
+  dedupeBy?: (row: T) => unknown;
 }
 
 export interface ListQuery<T, P extends ListPage<T> = ListPage<T>> {
-  /** `null` until a first page has loaded for the current `deps`. */
+  /** `null` until a first page has loaded for the current `deps` — or, with
+   *  `keepPrevious`, the previous deps' rows until then (see `isPrevious`). */
   rows: T[] | null;
   total: number;
   /** A read of the loaded rows (first load, new deps, a reload, the poll) is in flight. */
   loading: boolean;
   /** Why the last read failed; cleared by the next success. */
   error: string | null;
+  /** The failure behind `error`, as it was thrown — for a page that words it
+   *  by what the reader was doing, or tells one failure from the next. */
+  failure: unknown;
   /** Re-read the loaded rows in place.  Resolves when it settles. */
   reload: () => Promise<void>;
-  /** Append the next page.  Rejects if it fails (the caller toasts). */
+  /** Append the next page.  Rejects if it fails (the caller toasts, or shows
+   *  `loadMoreError`). */
   loadMore: () => Promise<void>;
   loadingMore: boolean;
+  /** Why the last "Show more" of THIS list failed; cleared when the next one
+   *  is asked for, and by `reload()`. */
+  loadMoreError: string | null;
+  /** True when `rows` are not the current deps' (`keepPrevious`): the current
+   *  list is still loading, or could not be loaded (`error`). */
+  isPrevious: boolean;
   /** The first page's response, whole. */
   response: P | null;
+  /** The last first-page response of ANY deps this list has shown. */
+  lastResponse: P | null;
   /** When the rows were last read successfully. */
   loadedAt: Date | null;
   /** Replace loaded rows in place (a row the server just returned): each row
@@ -87,7 +121,8 @@ export function useListQuery<T, P extends ListPage<T> = ListPage<T>>(
   deps: ReadonlyArray<unknown>,
   {
     pageSize = 50, poll = null, enabled = true, errorMessage = 'Could not load the list.', global: isGlobal = false,
-  }: UseListQueryOptions = {},
+    keepPrevious = false, dedupeBy,
+  }: UseListQueryOptions<T> = {},
 ): ListQuery<T, P> {
   const queryClient = useQueryClient();
   const queryKey = useMemo(
@@ -108,8 +143,31 @@ export function useListQuery<T, P extends ListPage<T> = ListPage<T>>(
   });
 
   const pages = query.data?.pages;
-  const rows = useMemo(() => (pages ? pages.flatMap((page) => page.items) : null), [pages]);
+  // The last pages any deps brought (this component's, and one project's:
+  // `useLastSettled`).  A parked hook shows nothing, kept or not.
+  const lastPages = useLastSettled(pages, { global: isGlobal });
+  const shown = pages ?? (keepPrevious && enabled ? lastPages : undefined);
+  const isPrevious = !pages && shown !== undefined;
+  // The caller's function is new on every render; the rows are not.
+  const identity = useRef(dedupeBy);
+  identity.current = dedupeBy;
+  const deduped = dedupeBy !== undefined;
+  const rows = useMemo(() => {
+    if (!shown) return null;
+    const all = shown.flatMap((page) => page.items);
+    const keyOf = deduped ? identity.current : undefined;
+    if (!keyOf) return all;
+    const seen = new Set<unknown>();
+    return all.filter((row) => {
+      const key = keyOf(row);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [shown, deduped]);
   const { refetch, fetchNextPage } = query;
+  // A failed "Show more", and the list it was asked of.
+  const [moreFailure, setMoreFailure] = useState<{ queryKey: unknown[]; error: unknown } | null>(null);
   // The list on screen NOW, for a continuation that waited (see `loadMore`).
   const live = useRef({ queryKey, enabled });
   live.current = { queryKey, enabled };
@@ -117,10 +175,12 @@ export function useListQuery<T, P extends ListPage<T> = ListPage<T>>(
   // A parked hook asks for nothing, by any door (`refetch` ignores `enabled`).
   const reload = useCallback(async () => {
     if (!enabled) return;
+    setMoreFailure(null);
     await refetch();
   }, [enabled, refetch]);
   const loadMore = useCallback(async () => {
     if (!enabled) return;
+    setMoreFailure(null);
     // A re-read in flight (a reload after a change, the poll): let it land and
     // append after the rows it brings.  Asked for at once, "more" would cancel
     // it and add a page at an offset that no longer matches the list.
@@ -134,7 +194,10 @@ export function useListQuery<T, P extends ListPage<T> = ListPage<T>>(
       if (live.current.queryKey !== queryKey || !live.current.enabled) return;
     }
     const result = await fetchNextPage();
-    if (result.isFetchNextPageError) throw result.error;
+    if (result.isFetchNextPageError) {
+      setMoreFailure({ queryKey, error: result.error });
+      throw result.error;
+    }
   }, [enabled, queryClient, queryKey, refetch, fetchNextPage]);
 
   const mapRows = useCallback((update: (row: T) => T) => {
@@ -143,16 +206,24 @@ export function useListQuery<T, P extends ListPage<T> = ListPage<T>>(
     ));
   }, [queryClient, queryKey]);
 
+  // A failed "Show more" is the caller's to say (it rejects); it is not a
+  // failure of the list on screen.  Over the PREVIOUS list's rows there is no
+  // next page to fail: what was asked for was the current list, and its
+  // failure is the list's.
+  const failure = query.isFetchNextPageError && !isPrevious ? null : (query.error ?? null);
   return {
     rows,
-    total: pages?.length ? pages[pages.length - 1].total : 0,
+    total: shown?.length ? shown[shown.length - 1].total : 0,
     loading: query.isFetching && !query.isFetchingNextPage,
-    // A failed "Show more" is the caller's to say (it rejects); it is not a
-    // failure of the list on screen.
-    error: query.isFetchNextPageError ? null : queryErrorText(query.error, errorMessage),
+    error: queryErrorText(failure, errorMessage),
+    failure,
     reload, loadMore,
     loadingMore: query.isFetchingNextPage,
-    response: pages?.[0] ?? null,
+    loadMoreError: moreFailure && moreFailure.queryKey === queryKey
+      ? queryErrorText(moreFailure.error, errorMessage) : null,
+    isPrevious,
+    response: shown?.[0] ?? null,
+    lastResponse: lastPages?.[0] ?? null,
     loadedAt: query.dataUpdatedAt ? new Date(query.dataUpdatedAt) : null,
     mapRows,
   };

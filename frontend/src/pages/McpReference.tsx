@@ -81,7 +81,7 @@ const paramSummary = (tool: McpToolDoc): Array<{ name: string; required: boolean
 const McpReference: React.FC = () => {
   const catalogQuery = useQuery({
     queryKey: [GLOBAL, 'getMcpTools'],
-    queryFn: () => getMcpTools(),
+    queryFn: ({ signal }) => getMcpTools(signal),
   });
   const catalog = catalogQuery.data ?? null;
   const loading = catalogQuery.isPending;

@@ -34,7 +34,7 @@ export function useQueryAssist(draft: string) {
   // Best-effort: a failed read is an empty history.
   const history = useQuery({
     queryKey: ['listHostQueryHistory'],
-    queryFn: () => listHostQueryHistory(),
+    queryFn: ({ signal }) => listHostQueryHistory(undefined, signal),
   }).data ?? NO_HISTORY;
 
   const trimmed = draft.trim();

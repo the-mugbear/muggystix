@@ -50,7 +50,7 @@ const NO_LICENSE = '__none__';
 const SbomReference: React.FC = () => {
   const sbom = useQuery({
     queryKey: [GLOBAL, 'getSbom'],
-    queryFn: () => getSbom(),
+    queryFn: ({ signal }) => getSbom(signal),
   });
   const data = sbom.data ?? null;
   const loading = sbom.isPending;

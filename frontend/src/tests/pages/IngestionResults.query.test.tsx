@@ -73,7 +73,7 @@ describe('Ingestion Results — the view is in the URL (B15)', () => {
     await screen.findByText('scan.xml');
     expect(api.getIngestionResults).toHaveBeenLastCalledWith({
       skip: 50, limit: 25, status: 'failed', search: 'dmz', sortBy: 'file_size', sortOrder: 'asc',
-    });
+    }, expect.any(AbortSignal));
     expect(screen.getByLabelText('Search ingestion results by filename or error message')).toHaveValue('dmz');
     expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveTextContent('Sort: File size');
   });
@@ -88,12 +88,12 @@ describe('Ingestion Results — the view is in the URL (B15)', () => {
   it('typing a search writes it to the URL, and a new filter goes back to the first page', async () => {
     renderPage('/parse-errors?page=2');
     await screen.findByText('scan.xml');
-    expect(api.getIngestionResults).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 25 }));
+    expect(api.getIngestionResults).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 25 }), expect.any(AbortSignal));
 
     fireEvent.change(screen.getByLabelText('Search ingestion results by filename or error message'), { target: { value: 'nessus' } });
     await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('search=nessus'));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
-      expect.objectContaining({ skip: 0, search: 'nessus' }),
+      expect.objectContaining({ skip: 0, search: 'nessus' }), expect.any(AbortSignal),
     ));
   });
 
@@ -106,14 +106,14 @@ describe('Ingestion Results — the view is in the URL (B15)', () => {
     fireEvent.click(screen.getByRole('button', { name: /Next/ }));
     await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('dir=asc&page=2'));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
-      expect.objectContaining({ skip: 25, sortOrder: 'asc' }),
+      expect.objectContaining({ skip: 25, sortOrder: 'asc' }), expect.any(AbortSignal),
     ));
   });
 
   it('ignores a sort key the server does not have', async () => {
     renderPage('/parse-errors?sort=drop_table');
     await screen.findByText('scan.xml');
-    expect(api.getIngestionResults).toHaveBeenLastCalledWith(expect.objectContaining({ sortBy: 'created_at' }));
+    expect(api.getIngestionResults).toHaveBeenLastCalledWith(expect.objectContaining({ sortBy: 'created_at' }), expect.any(AbortSignal));
   });
 });
 

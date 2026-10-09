@@ -279,7 +279,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
   // the page reached the rest.
   const list = useListQuery<AgentApiCallRow>(
     'getAgentSessionApiActivity',
-    ({ offset, limit }) => getAgentSessionApiActivity(sessionId, { ...filters, limit, offset }),
+    ({ offset, limit, signal }) => getAgentSessionApiActivity(sessionId, { ...filters, limit, offset }, signal),
     [sessionId, filters],
     { pageSize: PAGE_SIZE, errorMessage: FAILED },
   );

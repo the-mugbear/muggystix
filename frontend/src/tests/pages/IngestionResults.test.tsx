@@ -77,7 +77,7 @@ describe('Ingestion Results — the counts are the filter', () => {
     const chip = await screen.findByRole('button', { name: /Needs attention\s*2/ });
     expect(chip).toHaveAttribute('aria-pressed', 'true');
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'needs_attention' }),
+      expect.objectContaining({ status: 'needs_attention' }), expect.any(AbortSignal),
     ));
   });
 
@@ -89,12 +89,12 @@ describe('Ingestion Results — the counts are the filter', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Failed\s*3/ }));
     await waitFor(() => expect(screen.getByRole('button', { name: /Failed\s*3/ })).toHaveAttribute('aria-pressed', 'true'));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: 'failed' }),
+      expect.objectContaining({ status: 'failed' }), expect.any(AbortSignal),
     ));
     fireEvent.click(screen.getByRole('button', { name: /Failed\s*3/ }));
     await waitFor(() => expect(screen.getByRole('button', { name: /All uploads/ })).toHaveAttribute('aria-pressed', 'true'));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: undefined }),
+      expect.objectContaining({ status: undefined }), expect.any(AbortSignal),
     ));
   });
 
@@ -225,7 +225,7 @@ describe('Ingestion Results — rows readable without expanding', () => {
     expect(screen.getByRole('button', { name: /All uploads\s*40/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Expired\s*31/ }));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: 'expired' }),
+      expect.objectContaining({ status: 'expired' }), expect.any(AbortSignal),
     ));
     expect(screen.getByRole('button', { name: /Discarded\s*2/ })).toBeInTheDocument();
   });
@@ -262,7 +262,7 @@ describe('Ingestion Results — rows readable without expanding', () => {
 
   it('asks for 25 rows a page and sits in a section, not a card', async () => {
     renderPage();
-    await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(expect.objectContaining({ limit: 25 })));
+    await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(expect.objectContaining({ limit: 25 }), expect.any(AbortSignal)));
     expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
   });
 
@@ -311,7 +311,7 @@ describe('Ingestion Results — superseded failures and specific reasons', () =>
     const chip = await screen.findByRole('button', { name: /Superseded\s*4/ });
     fireEvent.click(chip);
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'superseded' }),
+      expect.objectContaining({ status: 'superseded' }), expect.any(AbortSignal),
     ));
 
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss 1 superseded' }));
@@ -330,7 +330,7 @@ describe('Ingestion Results — superseded failures and specific reasons', () =>
     expect(screen.queryByRole('button', { name: /^Dismiss \d+ superseded$/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Review 4 superseded' }));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'superseded' }),
+      expect.objectContaining({ status: 'superseded' }), expect.any(AbortSignal),
     ));
   });
 

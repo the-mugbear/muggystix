@@ -9,7 +9,7 @@
  * it once issued).
  */
 import React, { useMemo, useState } from 'react';
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isClientTemplate } from '../utils/reportTemplates';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Download, Loader2, RefreshCw, Sparkles, Stamp, Trash2 } from 'lucide-react';
@@ -38,6 +38,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDiscardGuard } from '../hooks/useDiscardGuard';
+import { useJobPolls } from '../hooks/useJobPoll';
 import { useProjectRoster } from '../hooks/useProjectMembers';
 import { pollEvery, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
@@ -168,8 +169,7 @@ const isRendering = (r: ClientReport | undefined): boolean =>
   r != null && r.status !== 'draft' && r.render_status === 'pending';
 /** How often a preview job still on the worker is asked about. */
 const PREVIEW_POLL_MS = 2000;
-const isRunning = (job: ReportJob | undefined): boolean =>
-  job != null && (job.status === 'queued' || job.status === 'processing');
+const isRunning = (job: ReportJob): boolean => job.status === 'queued' || job.status === 'processing';
 
 const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const toast = useToast();
@@ -189,7 +189,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const reportKey = ['getClientReport', id];
   const query = useQuery({
     queryKey: reportKey,
-    queryFn: () => getClientReport(id),
+    queryFn: ({ signal }) => getClientReport(id, signal),
     ...pollEvery((q) => (isRendering(q.state.data) ? RENDER_POLL_MS : null)),
   });
   const report: ClientReport | null = query.data ?? null;
@@ -198,7 +198,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const error = queryErrorText(query.error, 'Could not load the report.');
   const putReport = (next: ClientReport) => queryClient.setQueryData(reportKey, next);
 
-  const templatesQuery = useQuery({ queryKey: ['listReportTemplates'], queryFn: () => listReportTemplates() });
+  const templatesQuery = useQuery({ queryKey: ['listReportTemplates'], queryFn: ({ signal }) => listReportTemplates(signal) });
   const templates: ReportTemplate[] = templatesQuery.data ?? NO_TEMPLATES;
 
   // What the reader changed, over the report as stored: a save, an issue or a
@@ -212,19 +212,19 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   // from that answer on.
   const [started, setStarted] = useState<Partial<Record<ClientReportFormat, ReportJob>>>({});
   const startedJobs = Object.entries(started) as Array<[ClientReportFormat, ReportJob]>;
-  const followed = useQueries({
-    queries: startedJobs.map(([, job]) => ({
-      queryKey: ['getReportJob', job.id],
-      queryFn: () => getReportJob(job.id),
-      initialData: job,
-      staleTime: PREVIEW_POLL_MS,
-      enabled: (q: { state: { data?: ReportJob } }) => isRunning(q.state.data),
-      ...pollEvery(PREVIEW_POLL_MS),
-    })),
+  const followed = useJobPolls({
+    jobs: startedJobs.map(([, job]) => job),
+    queryKey: (job) => ['getReportJob', job.id],
+    queryFn: (job, signal) => getReportJob(job.id, signal),
+    interval: PREVIEW_POLL_MS,
+    isDone: (job) => !isRunning(job),
   });
   const previews: Partial<Record<ClientReportFormat, ReportJob>> = Object.fromEntries(
-    startedJobs.map(([fmt, job], i) => [fmt, followed[i]?.data ?? job]),
+    startedJobs.map(([fmt, job], i) => [fmt, followed[i]?.job ?? job]),
   );
+  // A preview whose status could not be re-read: the last reading stays on
+  // its button, and the reader is told it may be old (it is asked again).
+  const previewStale = followed.find((poll) => poll.running && poll.error != null)?.error;
 
   const dirty = useMemo(() => {
     if (!report || !form) return false;
@@ -679,7 +679,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           <div className="flex flex-wrap gap-sm">
             {formats.map((fmt) => {
               const job = previews[fmt];
-              const running = job && (job.status === 'queued' || job.status === 'processing');
+              const running = job != null && isRunning(job);
               return (
                 <div key={fmt} className="flex min-w-0 items-center gap-xs">
                   <Button variant="outline" size="sm" onClick={() => preview(fmt)}
@@ -703,6 +703,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               );
             })}
           </div>
+          {previewStale != null && (
+            <p role="status" className="mt-xs break-words text-caption text-warning">
+              Status may be stale — {formatApiError(previewStale, 'Could not refresh the status.')}
+            </p>
+          )}
           {formats.includes('docx') && (
             <p className="mt-xs text-caption text-muted-foreground">
               For a PDF, open the Word report and export it (File › Save as PDF): the PDF keeps the Word design.

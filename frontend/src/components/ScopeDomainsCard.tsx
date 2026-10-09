@@ -94,7 +94,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = 
   // entries, so the list loads a page at a time with a load-more affordance.
   const list = useListQuery<ScopeDomainRow, ScopeDomainPage>(
     'listScopeDomains',
-    ({ offset, limit }) => listScopeDomains(scopeId, { skip: offset, limit }),
+    ({ offset, limit, signal }) => listScopeDomains(scopeId, { skip: offset, limit }, signal),
     [scopeId],
     { pageSize: PAGE, errorMessage: 'Failed to load scope domains.' },
   );

@@ -74,8 +74,8 @@ export interface PortfolioDashboardResponse {
   projects: ProjectCard[];
 }
 
-export const getPortfolioDashboard = async (): Promise<PortfolioDashboardResponse> => {
-  const response = await api.get('/portfolio/dashboard');
+export const getPortfolioDashboard = async (signal?: AbortSignal): Promise<PortfolioDashboardResponse> => {
+  const response = await api.get('/portfolio/dashboard', { signal });
   return response.data;
 };
 
@@ -101,7 +101,7 @@ export interface TeamResponse {
   members: TeamMember[];
 }
 
-export const getPortfolioTeam = async (): Promise<TeamResponse> => {
-  const response = await api.get('/portfolio/team');
+export const getPortfolioTeam = async (signal?: AbortSignal): Promise<TeamResponse> => {
+  const response = await api.get('/portfolio/team', { signal });
   return response.data;
 };

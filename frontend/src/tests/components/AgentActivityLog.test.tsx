@@ -69,7 +69,7 @@ describe('AgentActivityLog', () => {
     expect(screen.queryByText(endpoint(101))).not.toBeInTheDocument();
     // The page is not the total.
     expect(screen.getByTestId('agent-activity-count')).toHaveTextContent('Showing 100 of 230');
-    expect(api.getAgentSessionApiActivity).toHaveBeenCalledWith(72, { limit: PAGE, offset: 0 });
+    expect(api.getAgentSessionApiActivity).toHaveBeenCalledWith(72, { limit: PAGE, offset: 0 }, expect.any(AbortSignal));
     // A section on the session's page, not a card.
     expect(screen.getByRole('heading', { level: 2, name: 'API activity' })).toBeInTheDocument();
   });
@@ -82,7 +82,7 @@ describe('AgentActivityLog', () => {
 
     await user.click(screen.getByRole('button', { name: 'Show more (130 left)' }));
     expect(await screen.findByText(endpoint(200))).toBeInTheDocument();
-    expect(api.getAgentSessionApiActivity).toHaveBeenLastCalledWith(72, { limit: PAGE, offset: 100 });
+    expect(api.getAgentSessionApiActivity).toHaveBeenLastCalledWith(72, { limit: PAGE, offset: 100 }, expect.any(AbortSignal));
     // Appended: the first page is still there.
     expect(screen.getByText(endpoint(1))).toBeInTheDocument();
     expect(screen.getByTestId('agent-activity-count')).toHaveTextContent('Showing 200 of 230');

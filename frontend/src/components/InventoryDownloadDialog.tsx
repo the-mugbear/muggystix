@@ -98,7 +98,7 @@ const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open,
   // without a manual refresh; with none running nothing polls.
   const jobsQuery = useQuery({
     queryKey: ['listReportJobs', RECENT_JOBS],
-    queryFn: () => listReportJobs(RECENT_JOBS),
+    queryFn: ({ signal }) => listReportJobs(RECENT_JOBS, signal),
     enabled: open,
     ...pollEvery((query) => (holdsRunningJob(query.state.data) ? JOB_POLL_MS : null)),
   });

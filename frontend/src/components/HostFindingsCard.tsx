@@ -30,7 +30,7 @@ import { endpointPreviewIsCut } from '../utils/findingEndpoints';
 import { runLimited } from '../utils/runLimited';
 import { useToast } from '../contexts/ToastContext';
 import { useProjectRole } from '../hooks/useProjectRole';
-import { invalidateReads, queryErrorText } from '../lib/query';
+import { holdProject, invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -125,6 +125,17 @@ const AddFindingForm: React.FC<{
 };
 
 const NO_FINDINGS: Finding[] = [];
+/** How many of the host's findings one read asks for. */
+const HOST_FINDINGS_LIMIT = 100;
+
+/** What the card's read answers: the rows, how many the host has in all, and
+ *  how many rows could not be completed (their whole read failed, so this
+ *  host's state on them is from a preview that does not hold all of it). */
+interface HostFindings {
+  findings: Finding[];
+  total: number;
+  incomplete: number;
+}
 
 /** One host's findings.  The read is keyed by the host; the component is too,
  *  so a half-written "Add finding" form does not follow to the next host. */
@@ -135,7 +146,7 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = (props) => (
 /** The key of this card's read.  It starts with `listFindings`, so whatever
  *  makes or changes a finding and invalidates that name re-reads this too. */
 const hostFindingsKey = (hostId: number) =>
-  ['listFindings', { host_id: hostId, limit: 100 }, 'this-host-whole'] as const;
+  ['listFindings', { host_id: hostId, limit: HOST_FINDINGS_LIMIT }, 'this-host-whole'] as const;
 
 const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
   const toast = useToast();
@@ -146,8 +157,8 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
 
   const query = useQuery({
     queryKey: hostFindingsKey(hostId),
-    queryFn: async ({ signal }) => {
-      const res = await listFindings({ host_id: hostId, limit: 100 }, signal);
+    queryFn: async ({ signal }): Promise<HostFindings> => {
+      const res = await listFindings({ host_id: hostId, limit: HOST_FINDINGS_LIMIT }, signal);
       // A list row's `hosts` is a preview of at most five endpoints (C2), and
       // with `host_id` the server puts THIS host's endpoint rows first
       // (`endpoint_summaries(first_host_id=)`), so the preview is enough: no
@@ -155,20 +166,29 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
       // that is ALL this host's rows — a host with more named endpoints on
       // the finding than the preview holds — where the rows beyond it would
       // be left out of this host's state and of a change to it.  Only then is
-      // the finding read whole; a failed read keeps the list row.
+      // the finding read whole; a failed read keeps the list row, and is
+      // counted (`incomplete`) so the section says so.
       const cut = res.items.filter((f) => {
         const shown = f.hosts ?? [];
         return endpointPreviewIsCut(f) && shown.length > 0 && shown.every((h) => h.host_id === hostId);
       });
-      const whole = await runLimited<Finding, Finding>(cut, 4, (f) => getFinding(f.id));
+      const whole = await runLimited<Finding, Finding>(cut, 4, (f) => getFinding(f.id, signal));
       const byId = new Map<number, Finding>();
       whole.forEach((r) => { if (r.status === 'fulfilled') byId.set(r.value.id, r.value); });
-      return res.items.map((f) => byId.get(f.id) ?? f);
+      return {
+        findings: res.items.map((f) => byId.get(f.id) ?? f),
+        total: res.total ?? res.items.length,
+        incomplete: cut.length - byId.size,
+      };
     },
   });
-  // Non-blocking surface — a failed read leaves it empty.
-  const findings = query.data ?? NO_FINDINGS;
+  const findings = query.data?.findings ?? NO_FINDINGS;
+  const total = Math.max(query.data?.total ?? 0, findings.length);
+  const incomplete = query.data?.incomplete ?? 0;
   const loaded = !query.isPending;
+  // A read that failed with nothing to show is NOT "no findings" (code review
+  // 2026-10-09): the section says so, to everyone, with Retry.
+  const loadError = query.data == null ? queryErrorText(query.error, 'Could not load this host’s findings.') : null;
 
   // A status or endpoint change answers with the finding (put in the list)
   // and appended to its history: the trail behind the history button is out
@@ -180,8 +200,9 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
     void queryClient.invalidateQueries({ queryKey: ['getHost', hostId] });
   };
   const put = (updated: Finding) => {
-    queryClient.setQueryData<Finding[]>(
-      hostFindingsKey(hostId), (prev) => prev?.map((f) => (f.id === updated.id ? updated : f)),
+    queryClient.setQueryData<HostFindings>(
+      hostFindingsKey(hostId),
+      (prev) => prev && { ...prev, findings: prev.findings.map((f) => (f.id === updated.id ? updated : f)) },
     );
     findingChanged();
   };
@@ -209,7 +230,9 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
   const endpointChange = useMutation({
     mutationFn: async ({ f, rowIds, hostStatus }: { f: Finding; rowIds: number[]; hostStatus: FindingHostStatus }) => {
       let updated: Finding = f;
+      const stillHere = holdProject();
       for (const rowId of rowIds) {
+        stillHere();
         updated = await setFindingEndpointStatus(f.id, rowId, hostStatus);
       }
       return updated;
@@ -232,7 +255,7 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
   // No findings and nothing to do here: no section.  Someone who can write
   // always has it, because "Add finding" is how a finding that is neither a
   // scanner observation nor a test's result gets onto this host (5.346.0).
-  if (!loaded || (findings.length === 0 && !canManage)) return null;
+  if (!loaded || (findings.length === 0 && !canManage && !loadError)) return null;
 
   const onAdded = (made: Finding) => {
     setAdding(false);
@@ -247,7 +270,7 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
       id="host-detail-findings"
       title="Findings"
       icon={<AlertHexIcon className="size-4 shrink-0 text-warning" aria-hidden />}
-      count={findings.length}
+      count={loadError ? undefined : total}
       actions={canManage && !adding ? (
         <Button variant="ghost" size="sm" className="h-7" onClick={() => { openInspectorSection('host-detail-findings'); setAdding(true); }}>
           <Plus className="size-3.5" aria-hidden /> Add finding
@@ -255,8 +278,27 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
       ) : undefined}
     >
       {adding && <AddFindingForm hostId={hostId} onAdded={onAdded} onCancel={() => setAdding(false)} />}
-      {findings.length === 0 && !adding && (
+      {loadError && (
+        <p role="alert" className="break-words text-metadata text-destructive">
+          {loadError}{' '}
+          <button type="button" className="text-info hover:underline" onClick={() => { void query.refetch(); }}>Retry</button>
+        </p>
+      )}
+      {!loadError && findings.length === 0 && !adding && (
         <p className="text-metadata text-muted-foreground">No finding is recorded on this host.</p>
+      )}
+      {total > findings.length && (
+        <p role="status" className="text-caption text-warning">
+          Showing the first {findings.length.toLocaleString()} of {total.toLocaleString()} findings on this host.
+        </p>
+      )}
+      {incomplete > 0 && (
+        <p role="status" className="break-words text-caption text-warning">
+          {incomplete === 1
+            ? 'This host’s state on 1 finding could not be read in full; what is shown for it may leave out some of its endpoints.'
+            : `This host’s state on ${incomplete.toLocaleString()} findings could not be read in full; what is shown for them may leave out some of their endpoints.`}{' '}
+          <button type="button" className="text-info hover:underline" onClick={() => { void query.refetch(); }}>Retry</button>
+        </p>
       )}
       <div className="flex flex-col gap-xs">
         {findings.map((f) => (

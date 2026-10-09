@@ -73,7 +73,7 @@ const WebhookDeliveries: React.FC = () => {
   const params = status === 'all' ? { limit: 100 } : { status, limit: 100 };
   const query = useQuery({
     queryKey: ['listWebhookDeliveries', params],
-    queryFn: () => listWebhookDeliveries(params),
+    queryFn: ({ signal }) => listWebhookDeliveries(params, signal),
     enabled: !!projectId,
     // The rows of the previous filter stay until the next ones answer.
     placeholderData: keepPreviousData,

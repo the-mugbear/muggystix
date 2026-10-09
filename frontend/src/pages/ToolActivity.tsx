@@ -219,8 +219,8 @@ type FocusedQuestion =
   | { fn: 'getScansAt'; params: { ts: string; toleranceSeconds: number } & AttributionFilters }
   | { fn: 'getScansBetween'; params: { from: string; to: string } & AttributionFilters };
 
-const answerQuestion = (question: FocusedQuestion): Promise<ActivityResponse> => (
-  question.fn === 'getScansAt' ? getScansAt(question.params) : getScansBetween(question.params)
+const answerQuestion = (question: FocusedQuestion, signal?: AbortSignal): Promise<ActivityResponse> => (
+  question.fn === 'getScansAt' ? getScansAt(question.params, signal) : getScansBetween(question.params, signal)
 );
 
 /** The week snapshot's question: the 7 days ending now. */
@@ -346,7 +346,7 @@ export const ToolActivity: React.FC = () => {
   // has nowhere to land (review 2026-10-01 follow-up).
   const focusedQuery = useQuery({
     queryKey: [GLOBAL, question?.fn ?? 'getScansAt', question?.params ?? null],
-    queryFn: () => answerQuestion(question as FocusedQuestion),
+    queryFn: ({ signal }) => answerQuestion(question as FocusedQuestion, signal),
     enabled: question != null,
     placeholderData: keepPreviousData,
   });
@@ -381,7 +381,7 @@ export const ToolActivity: React.FC = () => {
   const [weekAsked, setWeekAsked] = useState(() => pastWeek(filters));
   const weekQuery = useQuery({
     queryKey: [GLOBAL, 'getScansBetween', weekAsked],
-    queryFn: () => getScansBetween(weekAsked),
+    queryFn: ({ signal }) => getScansBetween(weekAsked, signal),
     placeholderData: keepPreviousData,
   });
   // v4.24.0 — a failed snapshot is said (a non-blocking warning above the

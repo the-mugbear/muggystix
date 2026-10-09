@@ -60,7 +60,7 @@ const AuditLogViewer: React.FC = () => {
   };
   const query = useQuery({
     queryKey: [GLOBAL, 'listAuditLogs', params],
-    queryFn: () => listAuditLogs(params),
+    queryFn: ({ signal }) => listAuditLogs(params, signal),
     // The page on screen stays until the next one answers.
     placeholderData: keepPreviousData,
   });
@@ -83,7 +83,7 @@ const AuditLogViewer: React.FC = () => {
   // Stats are a nicety; the table is the feature — a failure shows none.
   const { data: stats = null } = useQuery({
     queryKey: [GLOBAL, 'getAuditStats'],
-    queryFn: () => getAuditStats(),
+    queryFn: ({ signal }) => getAuditStats(signal),
   });
 
   const actionOptions = stats?.top_actions?.map((a) => a.action) ?? [];

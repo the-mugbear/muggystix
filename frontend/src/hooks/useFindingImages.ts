@@ -82,7 +82,7 @@ export function useFindingImages(
   // nowhere.
   const list = useQuery({
     queryKey: ['getFindingImages', findingId],
-    queryFn: () => deps.getFindingImages(findingId as number),
+    queryFn: ({ signal }) => deps.getFindingImages(findingId as number, signal),
     enabled: findingId != null,
   });
   const images = list.data?.items ?? NO_IMAGES;

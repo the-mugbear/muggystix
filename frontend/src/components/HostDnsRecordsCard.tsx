@@ -60,7 +60,7 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId, embedde
     setOpenFor((was) => (update(was === hostId) ? hostId : null));
   const query = useQuery({
     queryKey: ['getHostDnsRecords', hostId],
-    queryFn: () => getHostDnsRecords(hostId),
+    queryFn: ({ signal }) => getHostDnsRecords(hostId, signal),
   });
   const data = query.data ?? null;
   const loading = query.isPending;

@@ -3,8 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { copyToClipboard } from '../utils/clipboard';
 import { downloadTextFile } from '../utils/download';
 import { ShieldOff, Loader2, KeyRound, Copy, Download } from 'lucide-react';
-import apiClient from '../services/api';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import {
+  disableTwoFactor, enableTwoFactor, getTwoFactorStatus, regenerateRecoveryCodes, startTwoFactorSetup,
+  type TwoFactorSetup,
+} from '../services/api';
+import { GLOBAL, SECRET_MUTATION, invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useToast } from '../contexts/ToastContext';
 import PostureSection from './posture/PostureSection';
@@ -15,23 +18,7 @@ import { Label } from './ui/label';
 import { Badge } from './ui/badge';
 import { Alert, AlertDescription } from './ui/alert';
 
-interface Status {
-  enabled: boolean;
-  pending: boolean;
-  unused_recovery_codes: number;
-}
-
-interface SetupData {
-  secret: string;
-  otpauth_uri: string;
-  qr_svg: string;
-  imported: boolean;
-}
-
 type View = 'status' | 'setup' | 'recovery';
-
-/** The signed-in user's own 2FA state — not a project's. */
-const TWO_FACTOR_STATUS_KEY = [GLOBAL, '/auth/2fa/status'];
 
 const TwoFactorCard: React.FC = () => {
   const toast = useToast();
@@ -43,7 +30,7 @@ const TwoFactorCard: React.FC = () => {
   // Enrollment state.
   const [importSecret, setImportSecret] = useState('');
   const [showImport, setShowImport] = useState(false);
-  const [setupData, setSetupData] = useState<SetupData | null>(null);
+  const [setupData, setSetupData] = useState<TwoFactorSetup | null>(null);
   const [code, setCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
 
@@ -51,18 +38,25 @@ const TwoFactorCard: React.FC = () => {
   const [password, setPassword] = useState('');
   const [pwAction, setPwAction] = useState<null | 'disable' | 'regenerate'>(null);
 
+  // The signed-in user's own 2FA state — not a project's.
   const statusQuery = useQuery({
-    queryKey: TWO_FACTOR_STATUS_KEY,
-    queryFn: async () => (await apiClient.get<Status>('/auth/2fa/status')).data,
+    queryKey: [GLOBAL, 'getTwoFactorStatus'],
+    queryFn: ({ signal }) => getTwoFactorStatus(signal),
   });
   const status = statusQuery.data ?? null;
   const error = actionError ?? queryErrorText(statusQuery.error, 'Could not load 2FA status.');
   // Each step ends by reading the status again, and is busy until it has.
-  const rereadStatus = () => queryClient.invalidateQueries({ queryKey: TWO_FACTOR_STATUS_KEY });
+  const rereadStatus = () => invalidateReads(queryClient, 'getTwoFactorStatus');
 
+  // The three mutations below carry or return a secret — the TOTP secret, a
+  // one-time code, the password, the recovery codes — so none is kept by the
+  // library once it has settled (`SECRET_MUTATION`, and the `reset` where each
+  // is called).  What the reader is SHOWN once (the secret and QR, the
+  // recovery codes) is this component's own state, copied in `onSuccess` and
+  // cleared when they leave that step; why a step failed is `actionError`.
   const starting = useMutation({
-    mutationFn: async (body: { existing_secret?: string }) =>
-      (await apiClient.post<SetupData>('/auth/2fa/setup', body)).data,
+    ...SECRET_MUTATION,
+    mutationFn: (body: { existing_secret?: string }) => startTwoFactorSetup(body),
     onMutate: () => setError(null),
     onSuccess: (data) => {
       setSetupData(data);
@@ -72,35 +66,39 @@ const TwoFactorCard: React.FC = () => {
     onError: (err) => setError(formatApiError(err, 'Could not start 2FA setup.')),
   });
   const startSetup = () => {
-    starting.mutate(showImport && importSecret.trim() ? { existing_secret: importSecret.trim() } : {});
+    starting.mutate(
+      showImport && importSecret.trim() ? { existing_secret: importSecret.trim() } : {},
+      { onSettled: () => starting.reset() },
+    );
   };
 
   const enabling = useMutation({
-    mutationFn: async (enteredCode: string) =>
-      (await apiClient.post<{ recovery_codes: string[] }>('/auth/2fa/enable', { code: enteredCode })).data,
+    ...SECRET_MUTATION,
+    mutationFn: (enteredCode: string) => enableTwoFactor(enteredCode),
     onMutate: () => setError(null),
-    onSuccess: (data) => {
-      setRecoveryCodes(data.recovery_codes);
+    onSuccess: (codes) => {
+      setRecoveryCodes(codes);
       setView('recovery');
+      // Enrollment is over: the secret, its QR and the code that confirmed it go.
+      setSetupData(null);
+      setCode('');
       setImportSecret('');
       setShowImport(false);
       return rereadStatus();
     },
     onError: (err) => setError(formatApiError(err, 'That code was not accepted.')),
   });
-  const confirmEnable = () => enabling.mutate(code.trim());
+  const confirmEnable = () => enabling.mutate(code.trim(), { onSettled: () => enabling.reset() });
 
   // Disable, or new recovery codes: both ask for the password again.
   const reauthenticated = useMutation({
+    ...SECRET_MUTATION,
     mutationFn: async (body: { action: 'disable' | 'regenerate'; password: string }) => {
       if (body.action === 'disable') {
-        await apiClient.post('/auth/2fa/disable', { password: body.password });
+        await disableTwoFactor(body.password);
         return null;
       }
-      const { data } = await apiClient.post<{ recovery_codes: string[] }>(
-        '/auth/2fa/recovery-codes', { password: body.password },
-      );
-      return data.recovery_codes;
+      return regenerateRecoveryCodes(body.password);
     },
     onMutate: () => setError(null),
     onSuccess: (codes) => {
@@ -119,7 +117,7 @@ const TwoFactorCard: React.FC = () => {
   });
   const runPwAction = () => {
     if (!pwAction) return;
-    reauthenticated.mutate({ action: pwAction, password });
+    reauthenticated.mutate({ action: pwAction, password }, { onSettled: () => reauthenticated.reset() });
   };
   const busy = starting.isPending || enabling.isPending || reauthenticated.isPending;
 
@@ -262,7 +260,7 @@ const TwoFactorCard: React.FC = () => {
               <Button onClick={confirmEnable} disabled={busy || !code.trim()}>
                 {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Verify &amp; enable
               </Button>
-              <Button variant="ghost" onClick={() => { setView('status'); setSetupData(null); setError(null); }} disabled={busy}>
+              <Button variant="ghost" onClick={() => { setView('status'); setSetupData(null); setCode(''); setError(null); }} disabled={busy}>
                 Cancel
               </Button>
             </div>

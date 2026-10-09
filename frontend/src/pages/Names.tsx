@@ -437,7 +437,7 @@ const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, 
 
   const query = useQuery({
     queryKey: ['getName', nameId],
-    queryFn: () => getName(nameId as number),
+    queryFn: ({ signal }) => getName(nameId as number, signal),
     enabled: nameId != null,
     // Only for the sheet that is closing (no name): it keeps the name it
     // showed while it slides out.  Another name starts from nothing.
@@ -687,7 +687,7 @@ const Names: React.FC = () => {
   // nothing to tell "no counts" from "could not be loaded".
   const summaryQuery = useQuery({
     queryKey: ['getNamesSummary'],
-    queryFn: () => getNamesSummary(),
+    queryFn: ({ signal }) => getNamesSummary(signal),
   });
   const summaryError = queryErrorText(summaryQuery.error, 'The counts could not be loaded.');
   // Counts that could not be re-read are not shown as if they had been.

@@ -22,7 +22,7 @@ const FAILED = 'Could not load the tests this session proposed.';
 export const SessionTests: React.FC<{ sessionId: number; ended: boolean }> = ({ sessionId, ended }) => {
   const list = useListQuery<HostTest>(
     'listHostTests',
-    ({ offset, limit }) => listHostTests({ agent_session_id: sessionId, limit, offset }),
+    ({ offset, limit, signal }) => listHostTests({ agent_session_id: sessionId, limit, offset }, signal),
     [{ agent_session_id: sessionId }],
     { pageSize: PAGE, errorMessage: FAILED },
   );

@@ -24,7 +24,7 @@ const PendingProposalsButton: React.FC = () => {
   // A failed read keeps the last count; the Proposals page reports its own failures.
   const { data: summary } = useQuery({
     queryKey: ['getProposalSummary'],
-    queryFn: () => getProposalSummary(),
+    queryFn: ({ signal }) => getProposalSummary(signal),
     enabled: !!currentProject,
     ...pollEvery(60_000),
   });

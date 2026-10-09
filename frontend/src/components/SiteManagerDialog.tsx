@@ -39,7 +39,7 @@ export const SiteManagerDialog: React.FC<SiteManagerDialogProps> = ({ open, onOp
   // Read each time the dialog opens; closed, it asks for nothing.
   const query = useQuery({
     queryKey: ['listSites'],
-    queryFn: () => listSites(),
+    queryFn: ({ signal }) => listSites(signal),
     enabled: open,
   });
   const sites = query.data ?? [];

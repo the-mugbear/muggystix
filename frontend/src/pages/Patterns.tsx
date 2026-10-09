@@ -159,7 +159,7 @@ const Patterns: React.FC = () => {
   const { currentProject } = useProject();
   const toast = useToast();
   const { canExport } = useProjectRole();
-  const patterns = useQuery({ queryKey: ['getSystemicInsights'], queryFn: () => getSystemicInsights() });
+  const patterns = useQuery({ queryKey: ['getSystemicInsights'], queryFn: ({ signal }) => getSystemicInsights(signal) });
   const data = patterns.data ?? null;
   const loading = patterns.isFetching;
   const error = queryErrorText(patterns.error, 'Could not load the patterns.');

@@ -138,7 +138,7 @@ describe('AuditLogViewer', () => {
     render(<AuditLogViewer />);
     expect(await screen.findByText('1–20 of 101')).toBeInTheDocument();
     expect(AUDIT_PAGE_SIZE).toBe(20);
-    expect(mocked.listAuditLogs).toHaveBeenCalledWith(expect.objectContaining({ skip: 0, limit: 20 }));
+    expect(mocked.listAuditLogs).toHaveBeenCalledWith(expect.objectContaining({ skip: 0, limit: 20 }), expect.any(AbortSignal));
   });
 
   // 1.10 — the viewer had its own `when()` on a bare `toLocaleString()`
@@ -173,7 +173,7 @@ describe('AuditLogViewer', () => {
     expect(mocked.listAuditLogs).not.toHaveBeenCalled();
 
     await waitFor(() => expect(mocked.listAuditLogs).toHaveBeenCalledWith(
-      expect.objectContaining({ resource_type: 'user', skip: 0 }),
+      expect.objectContaining({ resource_type: 'user', skip: 0 }), expect.any(AbortSignal),
     ));
     expect(mocked.listAuditLogs).toHaveBeenCalledTimes(1);
   });
@@ -182,13 +182,13 @@ describe('AuditLogViewer', () => {
     render(<AuditLogViewer />);
     await screen.findByText('1–20 of 101');
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-    await waitFor(() => expect(mocked.listAuditLogs).toHaveBeenCalledWith(expect.objectContaining({ skip: 20 })));
+    await waitFor(() => expect(mocked.listAuditLogs).toHaveBeenCalledWith(expect.objectContaining({ skip: 20 }), expect.any(AbortSignal)));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
     mocked.listAuditLogs.mockClear();
 
     fireEvent.change(screen.getByLabelText('Resource type'), { target: { value: 'user' } });
     await waitFor(() => expect(mocked.listAuditLogs).toHaveBeenCalledWith(
-      expect.objectContaining({ resource_type: 'user', skip: 0 }),
+      expect.objectContaining({ resource_type: 'user', skip: 0 }), expect.any(AbortSignal),
     ));
     // Not also "page 1 of the old filter" on the way.
     expect(mocked.listAuditLogs).toHaveBeenCalledTimes(1);

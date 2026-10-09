@@ -308,17 +308,17 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   // the port table.
   const web = useQuery({
     queryKey: ['getHostWebInterfaces', hostId],
-    queryFn: () => getHostWebInterfaces(hostId),
+    queryFn: ({ signal }) => getHostWebInterfaces(hostId, signal),
   });
   // NetExec / SMBMap results and discovered paths: only when the host has any.
   const netexec = useQuery({
     queryKey: ['getHostNetexecResults', hostId],
-    queryFn: () => getHostNetexecResults(hostId),
+    queryFn: ({ signal }) => getHostNetexecResults(hostId, signal),
     enabled: netexecCount > 0,
   });
   const paths = useQuery({
     queryKey: ['getHostWebPaths', hostId],
-    queryFn: () => getHostWebPaths(hostId),
+    queryFn: ({ signal }) => getHostWebPaths(hostId, signal),
     enabled: webPathCount > 0,
   });
   const webRows = web.data ?? NO_WEB;

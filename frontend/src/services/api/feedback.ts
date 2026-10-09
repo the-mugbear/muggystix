@@ -67,14 +67,15 @@ export interface FeedbackStats {
 
 export const listAgentFeedback = async (
   params: AgentFeedbackListParams = {},
+  signal?: AbortSignal,
 ): Promise<Paginated<AgentFeedbackEntry>> => {
   // v2.428.2 — the standard Paginated envelope (was a bare array).
-  const response = await api.get<Paginated<AgentFeedbackEntry>>('/feedback/', { params });
+  const response = await api.get<Paginated<AgentFeedbackEntry>>('/feedback/', { params, signal });
   return response.data;
 };
 
-export const getAgentFeedbackStats = async (): Promise<FeedbackStats> => {
-  const response = await api.get<FeedbackStats>('/feedback/stats');
+export const getAgentFeedbackStats = async (signal?: AbortSignal): Promise<FeedbackStats> => {
+  const response = await api.get<FeedbackStats>('/feedback/stats', { signal });
   return response.data;
 };
 

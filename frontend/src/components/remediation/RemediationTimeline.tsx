@@ -13,11 +13,10 @@ import { Loader2 } from 'lucide-react';
 
 import {
   addRemediationNote, deleteRemediationNote, listRemediationEvents, type RemediationEvent,
-  type RemediationEventPage,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useConfirm } from '../../hooks/useConfirm';
-import { queryErrorText } from '../../lib/query';
+import { queryErrorText, useLastSettled } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { formatDate, formatTimestamp } from '../../utils/relativeTime';
 import {
@@ -134,9 +133,7 @@ const TimelineBody: React.FC<{
     queryFn: ({ signal }) => listRemediationEvents(hostId, { limit }, signal, projectId),
   });
   // The entries stay on screen while more are asked for, and when that fails.
-  const last = useRef<RemediationEventPage | null>(null);
-  if (query.data) last.current = query.data;
-  const page = query.data ?? last.current;
+  const page = useLastSettled(query.data) ?? null;
   const events = page ? page.items : null;
   const total = page ? page.total : 0;
   const error = queryErrorText(query.error, 'The timeline could not be loaded.');

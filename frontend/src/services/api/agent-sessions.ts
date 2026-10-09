@@ -79,8 +79,8 @@ export interface AgentSessionRow {
 
 /** v5.312.0 — one session as the list shows it (a project session or a legacy
  *  assist one); 404 for any other legacy per-workflow row. */
-export const getAgentSession = async (sessionId: number): Promise<AgentSessionRow> => {
-  const response = await api.get<AgentSessionRow>(`${p()}/agent-sessions/${sessionId}`);
+export const getAgentSession = async (sessionId: number, signal?: AbortSignal): Promise<AgentSessionRow> => {
+  const response = await api.get<AgentSessionRow>(`${p()}/agent-sessions/${sessionId}`, { signal });
   return response.data;
 };
 
@@ -104,10 +104,11 @@ export interface AgentSessionNotes {
 export const getAgentSessionNotes = async (
   sessionId: number,
   limit = 50,
+  signal?: AbortSignal,
 ): Promise<AgentSessionNotes> => {
   const response = await api.get<AgentSessionNotes>(
     `${p()}/agent-sessions/${sessionId}/notes`,
-    { params: { limit } },
+    { params: { limit }, signal },
   );
   return response.data;
 };
@@ -118,9 +119,11 @@ export const getAgentSessionNotes = async (
  *  nothing had the id. */
 export const getAgentSessionByLegacyAssistId = async (
   legacyAssistSessionId: number,
+  signal?: AbortSignal,
 ): Promise<AgentSessionRow> => {
   const response = await api.get<AgentSessionRow>(
     `${p()}/assist-sessions/${legacyAssistSessionId}`,
+    { signal },
   );
   return response.data;
 };
@@ -205,9 +208,10 @@ export interface ModelToolSummaryResponse {
   summary: ModelToolSummaryRow[];
 }
 
-export const getAgentSessionSummary = async (): Promise<ModelToolSummaryResponse> => {
+export const getAgentSessionSummary = async (signal?: AbortSignal): Promise<ModelToolSummaryResponse> => {
   const response = await api.get<ModelToolSummaryResponse>(
     `${p()}/agent-sessions/by-model-tool`,
+    { signal },
   );
   return response.data;
 };

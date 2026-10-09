@@ -232,8 +232,8 @@ export const prepareContactReport = async (
 export const getContactReport = async (jobId: number, projectId?: number, signal?: AbortSignal): Promise<ContactReportJob> =>
   (await api.get<ContactReportJob>(`${base(projectId)}/remediation/contact-report/${jobId}`, { signal })).data;
 
-export const downloadContactReport = async (jobId: number, projectId?: number): Promise<Blob> =>
-  (await api.get(`${base(projectId)}/remediation/contact-report/${jobId}/download`, { responseType: 'blob' })).data;
+export const downloadContactReport = async (jobId: number, projectId?: number, signal?: AbortSignal): Promise<Blob> =>
+  (await api.get(`${base(projectId)}/remediation/contact-report/${jobId}/download`, { responseType: 'blob', signal })).data;
 
 /** One team with its findings on hosts by state; `team: null` = a contact and no team. */
 export interface RemediationTeam {

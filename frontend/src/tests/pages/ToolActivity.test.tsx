@@ -208,6 +208,30 @@ describe('ToolActivity', () => {
     expect(screen.queryByText(/2 activities matched/)).toBeNull();
   });
 
+  // 5.352.0 — and the question nobody is waiting for any more is CANCELLED:
+  // the read's signal reaches the request, so the superseded one is aborted
+  // instead of running to completion on the server.
+  it('cancels the request of a question that was replaced before it answered', async () => {
+    getScansAt
+      .mockImplementationOnce(() => new Promise<ActivityResponse>(() => {}))
+      .mockResolvedValueOnce({ ...week([]), total: 0 });
+    renderPage();
+    await screen.findByTestId('activity-histogram');
+    fireEvent.click(screen.getByRole('button', { name: /Correlate/ }));
+    await waitFor(() => expect(getScansAt).toHaveBeenCalledTimes(1));
+    const firstSignal = getScansAt.mock.calls[0][1] as AbortSignal;
+    expect(firstSignal).toBeInstanceOf(AbortSignal);
+    expect(firstSignal.aborted).toBe(false);
+
+    fireEvent.change(screen.getByLabelText('Tool'), { target: { value: 'nmap' } });
+    fireEvent.submit(screen.getByLabelText('Tool').closest('form')!);
+    await waitFor(() => expect(getScansAt).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(firstSignal.aborted).toBe(true));
+    // The question being answered keeps its own, live signal.
+    expect((getScansAt.mock.calls[1][1] as AbortSignal).aborted).toBe(false);
+    expect(await screen.findByText(/0 activities matched/)).toBeInTheDocument();
+  });
+
   // B15 — "what ran at 14:32" is a link: the query lives in the URL.
   describe('the query is in the URL', () => {
     const Where = () => <output data-testid="where">{useSearchParams()[0].toString()}</output>;
@@ -223,11 +247,13 @@ describe('ToolActivity', () => {
       renderAt('/tool-activity?at=2026-09-30T14:32:00.000Z&tolerance=60&tool=nmap&target=10.0.0.5');
       await waitFor(() => expect(getScansAt).toHaveBeenCalledWith({
         ts: '2026-09-30T14:32:00.000Z', toleranceSeconds: 60, tool: 'nmap', target: '10.0.0.5',
-      }));
+      }, expect.any(AbortSignal)));
       expect(screen.getByLabelText('Tool')).toHaveValue('nmap');
       expect(screen.getByLabelText(/Target/)).toHaveValue('10.0.0.5');
       // The week snapshot is filtered the same way.
-      expect(getScansBetween).toHaveBeenCalledWith(expect.objectContaining({ tool: 'nmap', target: '10.0.0.5' }));
+      expect(getScansBetween).toHaveBeenCalledWith(
+        expect.objectContaining({ tool: 'nmap', target: '10.0.0.5' }), expect.any(AbortSignal),
+      );
       // …and the URL still names the query.
       expect(params().get('at')).toBe('2026-09-30T14:32:00.000Z');
       expect(params().get('tolerance')).toBe('60');
@@ -237,7 +263,7 @@ describe('ToolActivity', () => {
       renderAt('/tool-activity?from=2026-09-29T00:00:00.000Z&to=2026-09-30T00:00:00.000Z');
       await waitFor(() => expect(getScansBetween).toHaveBeenCalledWith(expect.objectContaining({
         from: '2026-09-29T00:00:00.000Z', to: '2026-09-30T00:00:00.000Z',
-      })));
+      }), expect.any(AbortSignal)));
       expect(getScansAt).not.toHaveBeenCalled();
     });
 
@@ -279,7 +305,7 @@ describe('ToolActivity', () => {
       // A backwards range and a bare year are not a window: no focused query.
       expect(getScansAt).not.toHaveBeenCalled();
       expect(getScansBetween).toHaveBeenCalledTimes(1);  // the week snapshot only
-      expect(getScansBetween).toHaveBeenCalledWith(expect.objectContaining({ tool: 'nmap' }));
+      expect(getScansBetween).toHaveBeenCalledWith(expect.objectContaining({ tool: 'nmap' }), expect.any(AbortSignal));
       await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('tool=nmap'));
     });
 

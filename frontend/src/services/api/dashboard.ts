@@ -35,8 +35,8 @@ export interface DashboardStats {
   vulnerability_stats?: VulnerabilityStats;
 }
 
-export const getDashboardStats = async (): Promise<DashboardStats> => {
-  const response = await api.get(`${p()}/dashboard/stats`);
+export const getDashboardStats = async (signal?: AbortSignal): Promise<DashboardStats> => {
+  const response = await api.get(`${p()}/dashboard/stats`, { signal });
   return response.data;
 };
 
@@ -282,6 +282,7 @@ export interface ReviewFollowupsResponse {
 
 export const getWorkbench = async (
   opts: { includeInvestigate?: boolean; includeRows?: boolean } = {},
+  signal?: AbortSignal,
 ): Promise<WorkbenchResponse> => {
   // v2.424.1 — Operations leaves the untouched queue out and loads it with
   // getInvestigationQueue(): on a large project it is most of the time, and
@@ -293,6 +294,7 @@ export const getWorkbench = async (
   if (opts.includeRows === false) params.include_rows = false;
   const response = await api.get(`${p()}/workbench`, {
     params: Object.keys(params).length ? params : undefined,
+    signal,
   });
   return response.data;
 };
@@ -446,9 +448,11 @@ export interface AgentActivitySummary {
 
 export const getAgentActivitySummary = async (
   windowDays = 14,
+  signal?: AbortSignal,
 ): Promise<AgentActivitySummary> => {
   const response = await api.get(`${p()}/agent-activity/summary`, {
     params: { window_days: windowDays },
+    signal,
   });
   return response.data;
 };

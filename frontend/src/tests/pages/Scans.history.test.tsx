@@ -420,7 +420,7 @@ describe('Scans — layout', () => {
     await user.click(screen.getByRole('button', { name: 'More actions for newest.xml' }));
     await user.click(await screen.findByRole('menuitem', { name: /Delete scan/ }));
     // Delete still goes through its confirmation (the impact dialog).
-    await waitFor(() => expect(api.getScanDeletionImpact).toHaveBeenCalledWith(9));
+    await waitFor(() => expect(api.getScanDeletionImpact).toHaveBeenCalledWith(9, expect.any(AbortSignal)));
     expect(api.deleteScan).not.toHaveBeenCalled();
   });
 });

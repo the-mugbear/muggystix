@@ -7,7 +7,7 @@
  * way, then records the follow-up so the next admin sees the contact was
  * already chased.
  */
-import React, { useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Copy, Loader2 } from 'lucide-react';
 
@@ -15,7 +15,7 @@ import {
   getRemediationFollowUp, recordRemediationFollowUp, recordRemediationFollowUpOverview, type RemediationFollowUp,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
-import { GLOBAL, queryErrorText } from '../../lib/query';
+import { GLOBAL, queryErrorText, useLastSettled } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { copyToClipboard } from '../../utils/clipboard';
 import { invalidateRemediationReads, localToday } from '../../utils/remediation';
@@ -73,9 +73,7 @@ export const RemediationFollowUpDialog: React.FC<{
   });
   // The last message prepared stays on screen while another horizon is asked
   // for — and when that fails, so the choice can be changed back.
-  const last = useRef<RemediationFollowUp | null>(null);
-  if (query.data) last.current = query.data;
-  const data = query.data ?? last.current;
+  const data = useLastSettled(query.data, { global: across }) ?? null;
   const loading = query.isFetching;
   const error = loading ? null : queryErrorText(query.error, 'The follow-up could not be prepared.');
 

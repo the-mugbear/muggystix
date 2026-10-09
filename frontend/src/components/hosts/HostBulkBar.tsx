@@ -27,7 +27,7 @@ import { MEMBERS_LOAD_ERROR } from '../MembersLoadError';
 import { useAuth } from '../../contexts/AuthContext';
 import { useProjectRole } from '../../hooks/useProjectRole';
 import { useToast } from '../../contexts/ToastContext';
-import { invalidateReads } from '../../lib/query';
+import { holdProject, invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { cn } from '../../utils/cn';
 import { copyToClipboard } from '../../utils/clipboard';
@@ -149,7 +149,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   // A failed read is an empty picker: a tag can still be made by name.
   const tags = useQuery({
     queryKey: ['listHostTags'],
-    queryFn: () => listHostTags(),
+    queryFn: ({ signal }) => listHostTags(signal),
     enabled: canWrite,  // the picker this fills is not rendered otherwise
   }).data ?? NO_TAGS;
   const roster = useProjectRoster({ enabled: canWrite });
@@ -190,7 +190,10 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   // `null` when the selection turned out to hold nothing.
   const bulk = useMutation({
     mutationFn: async (action: BulkAction) => {
+      // The ids are this project's: they are not sent to another one.
+      const stillHere = holdProject();
       const ids = await resolveIds();
+      stillHere();
       if (!ids.length) return null;
       switch (action.kind) {
         case 'tags':

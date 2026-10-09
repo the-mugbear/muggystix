@@ -14,9 +14,13 @@
  *   2. Re-exporting it from this barrel.
  *   3. New domain's types are then visible to every consumer.
  *
- * NOTE: ``import api from '../services/api'`` (the default import
- * pattern) still works — the barrel re-exports the axios instance
- * as the default below for code that hand-rolls a request.
+ * NOTE: the axios instance is still the barrel's default export, for
+ * ONE importer: ``contexts/AuthContext`` (sign-in, sign-out and
+ * session renewal, and ``verifyToken``, which reads the profile
+ * outside a query).
+ * Nothing else hand-rolls a request — a new call is a named function
+ * in a submodule (``api/users.ts`` and ``api/auth.ts`` hold the
+ * account and sign-in ones), called from a ``queryFn`` / ``mutationFn``.
  */
 import { api, p, setCurrentProjectId, getCurrentProjectId } from './api/client';
 import { serializeHostParams } from './api/hosts';
@@ -36,6 +40,7 @@ export * from './api/agent-sessions';
 // lifecycle, so nothing in the UI called it. The /agents/ endpoints remain
 // server-side for scripts.
 export * from './api/assist';
+export * from './api/auth';
 export * from './api/client-reports';
 export * from './api/coverage';
 export * from './api/dashboard';
@@ -64,6 +69,7 @@ export * from './api/system';
 export * from './api/host-tests';
 export * from './api/agent-activity';
 export * from './api/uploads';
+export * from './api/users';
 
 export interface DNSRecord {
   id: number;
@@ -84,10 +90,10 @@ export interface DNSRecord {
 // `total`/`has_more` let the UI flag the rare truncation.  Empty page on
 // older deployments without the endpoint.
 const DNS_RECORDS_PAGE = 2000;
-export const getScanDnsRecords = async (scanId: number): Promise<Paginated<DNSRecord>> => {
+export const getScanDnsRecords = async (scanId: number, signal?: AbortSignal): Promise<Paginated<DNSRecord>> => {
   try {
     const response = await api.get(`${p()}/scans/${scanId}/dns-records`, {
-      params: { skip: 0, limit: DNS_RECORDS_PAGE },
+      params: { skip: 0, limit: DNS_RECORDS_PAGE }, signal,
     });
     return response.data;
   } catch (error) {
@@ -129,10 +135,11 @@ export interface ScanHostSnapshot {
 const SNAPSHOT_PAGE = 1000;
 export const getScanHostSnapshots = async (
   scanId: number,
+  signal?: AbortSignal,
 ): Promise<Paginated<ScanHostSnapshot>> => {
   try {
     const response = await api.get(`${p()}/scans/${scanId}/host-snapshots`, {
-      params: { skip: 0, limit: SNAPSHOT_PAGE },
+      params: { skip: 0, limit: SNAPSHOT_PAGE }, signal,
     });
     return response.data;
   } catch (error) {
@@ -157,8 +164,8 @@ export interface ProjectMember {
   created_at: string;
 }
 
-export const listProjectMembers = async (): Promise<ProjectMember[]> => {
-  const response = await api.get(`${p()}/members`);
+export const listProjectMembers = async (signal?: AbortSignal): Promise<ProjectMember[]> => {
+  const response = await api.get(`${p()}/members`, { signal });
   return response.data;
 };
 
@@ -173,13 +180,13 @@ export interface UserDirectoryEntry {
   email?: string | null;
 }
 
-export const getProjectMembers = async (projectId: number): Promise<ProjectMember[]> => {
-  const response = await api.get(`/projects/${projectId}/members`);
+export const getProjectMembers = async (projectId: number, signal?: AbortSignal): Promise<ProjectMember[]> => {
+  const response = await api.get(`/projects/${projectId}/members`, { signal });
   return response.data;
 };
 
-export const getUserDirectory = async (): Promise<UserDirectoryEntry[]> => {
-  const response = await api.get('/users/directory');
+export const getUserDirectory = async (signal?: AbortSignal): Promise<UserDirectoryEntry[]> => {
+  const response = await api.get('/users/directory', { signal });
   return response.data;
 };
 
@@ -238,13 +245,13 @@ export interface WebhookTestResult {
   error?: string;
 }
 
-export const listWebhookEventTypes = async (): Promise<WebhookEventType[]> => {
-  const response = await api.get(`${p()}/webhooks/event-types`);
+export const listWebhookEventTypes = async (signal?: AbortSignal): Promise<WebhookEventType[]> => {
+  const response = await api.get(`${p()}/webhooks/event-types`, { signal });
   return response.data;
 };
 
-export const listWebhooks = async (): Promise<WebhookConfig[]> => {
-  const response = await api.get(`${p()}/webhooks`);
+export const listWebhooks = async (signal?: AbortSignal): Promise<WebhookConfig[]> => {
+  const response = await api.get(`${p()}/webhooks`, { signal });
   return response.data;
 };
 
@@ -295,8 +302,9 @@ export interface WebhookDeliveryRow {
 
 export const listWebhookDeliveries = async (
   params: { status?: string; limit?: number } = {},
+  signal?: AbortSignal,
 ): Promise<WebhookDeliveryRow[]> => {
-  const response = await api.get(`${p()}/webhooks/deliveries`, { params });
+  const response = await api.get(`${p()}/webhooks/deliveries`, { params, signal });
   return response.data;
 };
 
@@ -344,8 +352,9 @@ export const listAuditLogs = async (
     resource_type?: string;
     user_id?: number;
   } = {},
+  signal?: AbortSignal,
 ): Promise<AuditLogPage> => {
-  const response = await api.get('/audit/logs', { params });
+  const response = await api.get('/audit/logs', { params, signal });
   return response.data;
 };
 
@@ -364,8 +373,8 @@ export interface AuditStats {
   }>;
 }
 
-export const getAuditStats = async (): Promise<AuditStats> => {
-  const response = await api.get('/audit/stats');
+export const getAuditStats = async (signal?: AbortSignal): Promise<AuditStats> => {
+  const response = await api.get('/audit/stats', { signal });
   return response.data;
 };
 
@@ -387,8 +396,8 @@ export interface CommandExplanation {
   }>;
 }
 
-export const getScanCommandExplanation = async (scanId: number): Promise<CommandExplanation> => {
-  const response = await api.get(`${p()}/scans/${scanId}/command-explanation`);
+export const getScanCommandExplanation = async (scanId: number, signal?: AbortSignal): Promise<CommandExplanation> => {
+  const response = await api.get(`${p()}/scans/${scanId}/command-explanation`, { signal });
   return response.data;
 };
 
@@ -457,8 +466,8 @@ export const enqueueInventoryJson = async (filters: InventoryFilters): Promise<R
   return response.data as ReportJob;
 };
 
-export const getReportJob = async (jobId: number): Promise<ReportJob> => {
-  const response = await api.get(`${p()}/reports/jobs/${jobId}`);
+export const getReportJob = async (jobId: number, signal?: AbortSignal): Promise<ReportJob> => {
+  const response = await api.get(`${p()}/reports/jobs/${jobId}`, { signal });
   return response.data as ReportJob;
 };
 
@@ -469,8 +478,8 @@ export const downloadReportJob = async (jobId: number): Promise<void> => {
   ));
 };
 
-export const listReportJobs = async (limit = 20): Promise<ReportJob[]> => {
-  const response = await api.get(`${p()}/reports/jobs?limit=${limit}`);
+export const listReportJobs = async (limit = 20, signal?: AbortSignal): Promise<ReportJob[]> => {
+  const response = await api.get(`${p()}/reports/jobs?limit=${limit}`, { signal });
   return response.data as ReportJob[];
 };
 

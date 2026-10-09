@@ -99,7 +99,7 @@ describe('HostTestsSection — the list', () => {
     renderSection();
     await screen.findByText('Check response headers');
     expect(api.listHostTests).toHaveBeenCalledTimes(1);
-    expect(api.listHostTests).toHaveBeenCalledWith({ host_id: 5, limit: 200 });
+    expect(api.listHostTests).toHaveBeenCalledWith({ host_id: 5, limit: 200 }, expect.any(AbortSignal));
     // The command is resolved against this host and is on the closed row.
     expect(within(rowOf(11)).getByText('curl -sI https://10.0.0.5/')).toBeInTheDocument();
     expect(within(rowOf(11)).getByRole('button', { name: 'Copy command' })).toBeInTheDocument();
@@ -401,7 +401,7 @@ describe('HostTestsSection — from a result to a finding', () => {
     renderSection();
     expect(await screen.findByText('No X-Frame-Options header.')).toBeInTheDocument();
     expect(tab(/To do/)).toHaveTextContent('To do 1');
-    expect(api.listEvidenceRecords).toHaveBeenCalledWith({ host_test_id: 11, limit: 10, offset: 0 });
+    expect(api.listEvidenceRecords).toHaveBeenCalledWith({ host_test_id: 11, limit: 10, offset: 0 }, expect.any(AbortSignal));
   });
 
   it('a test about no scanned weakness makes a new finding, prefilled, and links it once made', async () => {
@@ -456,7 +456,7 @@ describe('HostTestsSection — from a result to a finding', () => {
     api.listProposals.mockResolvedValue({ items: [{ id: 31, evidence_ids: [90] }], total: 1, has_more: false });
     renderSection();
     expect(await screen.findByRole('link', { name: /Review proposal #31/ })).toHaveAttribute('href', '/proposals');
-    expect(api.listProposals).toHaveBeenCalledWith({ host_id: 5, status: 'pending', kind: 'finding_create', limit: 100 });
+    expect(api.listProposals).toHaveBeenCalledWith({ host_id: 5, status: 'pending', kind: 'finding_create', limit: 100 }, expect.any(AbortSignal));
   });
 
   it('a reader is shown the result and offered no promotion', async () => {

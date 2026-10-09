@@ -213,7 +213,7 @@ export interface OversightQuery {
   severity_basis?: SeverityBasis;
 }
 
-export const getOversightDashboard = async (q: OversightQuery): Promise<OversightResponse> => {
+export const getOversightDashboard = async (q: OversightQuery, signal?: AbortSignal): Promise<OversightResponse> => {
   const params = new URLSearchParams();
   if (q.start) params.set('start', q.start);
   if (q.end) params.set('end', q.end);
@@ -222,6 +222,6 @@ export const getOversightDashboard = async (q: OversightQuery): Promise<Oversigh
   if (q.tester_id != null) params.set('tester_id', String(q.tester_id));
   if (q.window_overlap) params.set('window_overlap', 'true');
   if (q.severity_basis === 'period') params.set('severity_basis', 'period');
-  const response = await api.get('/oversight/dashboard', { params });
+  const response = await api.get('/oversight/dashboard', { params, signal });
   return response.data;
 };

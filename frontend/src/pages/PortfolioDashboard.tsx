@@ -238,7 +238,7 @@ const PortfolioDashboard: React.FC = () => {
 
   const query = useQuery({
     queryKey: [GLOBAL, 'getPortfolioDashboard'],
-    queryFn: () => getPortfolioDashboard(),
+    queryFn: ({ signal }) => getPortfolioDashboard(signal),
   });
   const data = query.data ?? null;
   const fetchedAt = query.dataUpdatedAt ? new Date(query.dataUpdatedAt).toISOString() : null;

@@ -472,7 +472,7 @@ export const useHostTestsController = ({
   // both get it from the controller, so there is one query for it.
   const testsQuery = useQuery({
     queryKey: hostTestsKey(hostId),
-    queryFn: () => listHostTests({ host_id: hostId, limit: HOST_TESTS_LIMIT }),
+    queryFn: ({ signal }) => listHostTests({ host_id: hostId, limit: HOST_TESTS_LIMIT }, signal),
   });
   const tests = testsQuery.data?.items ?? null;
   const total = testsQuery.data?.total ?? 0;
@@ -492,7 +492,7 @@ export const useHostTestsController = ({
   );
   const proposalsQuery = useQuery({
     queryKey: proposalsKey,
-    queryFn: () => listProposals({ host_id: hostId, status: 'pending', kind: 'finding_create', limit: 100 }),
+    queryFn: ({ signal }) => listProposals({ host_id: hostId, status: 'pending', kind: 'finding_create', limit: 100 }, signal),
   });
   const pendingProposals = proposalsQuery.isError ? undefined : proposalsQuery.data?.items;
   const proposalByEvidence = useMemo(() => {

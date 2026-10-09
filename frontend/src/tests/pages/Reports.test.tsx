@@ -199,6 +199,30 @@ describe('Report detail — draft', () => {
     await waitFor(() => expect(mocked.downloadReportJob).toHaveBeenCalledWith(70));
   });
 
+  // 5.352.0 (owner) — a status poll that fails was silent: the button went on
+  // saying "Rendering…" with nothing to tell a stuck worker from a server
+  // that could not be asked.  The last reading stays and the reader is told.
+  it('says the status may be stale when a preview job cannot be re-read, and carries on', async () => {
+    mocked.getClientReport.mockResolvedValue(report());
+    mocked.previewClientReport.mockResolvedValue({ id: 71, format: 'report-docx', status: 'queued' });
+    mocked.getReportJob
+      .mockRejectedValueOnce(Object.assign(new Error('boom'), {
+        isAxiosError: true, response: { status: 503, data: { detail: 'The server is busy.' } },
+      }))
+      .mockResolvedValue({ id: 71, format: 'report-docx', status: 'completed' });
+    renderDetail();
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview Word' }));
+
+    const stale = await screen.findByText(/Status may be stale/, undefined, { timeout: 4000 });
+    expect(stale).toHaveTextContent('Status may be stale — The server is busy.');
+    // Still following the job: the button has not given up.
+    expect(screen.getByRole('button', { name: /Rendering Word/ })).toBeDisabled();
+
+    // The next poll answers (asked half as often while failing): the file is offered, the notice goes.
+    expect(await screen.findByRole('button', { name: 'Download the Word preview' }, { timeout: 8000 })).toBeInTheDocument();
+    expect(screen.queryByText(/Status may be stale/)).toBeNull();
+  }, 15000);
+
   // 5.293.0 — no PDF preview: the Word report exports to PDF with its design.
   it('offers no PDF preview and says where a PDF comes from', async () => {
     mocked.getClientReport.mockResolvedValue(report());

@@ -26,7 +26,7 @@ export const FindingHistoryButton: React.FC<{ findingId: number }> = ({ findingI
   // the next open reads it again.
   const query = useQuery({
     queryKey: ['getFindingHistory', findingId],
-    queryFn: () => getFindingHistory(findingId),
+    queryFn: ({ signal }) => getFindingHistory(findingId, signal),
     enabled: open,
     staleTime: Infinity,
   });

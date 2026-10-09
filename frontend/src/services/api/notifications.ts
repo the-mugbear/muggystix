@@ -34,13 +34,14 @@ export interface NotificationListResponse {
 export const getNotifications = async (
   unreadOnly = false,
   limit = 50,
+  signal?: AbortSignal,
 ): Promise<NotificationListResponse> => {
-  const response = await api.get(`/notifications/?unread_only=${unreadOnly}&limit=${limit}`);
+  const response = await api.get(`/notifications/?unread_only=${unreadOnly}&limit=${limit}`, { signal });
   return response.data;
 };
 
-export const getUnreadNotificationCount = async (): Promise<number> => {
-  const response = await api.get('/notifications/unread-count');
+export const getUnreadNotificationCount = async (signal?: AbortSignal): Promise<number> => {
+  const response = await api.get('/notifications/unread-count', { signal });
   return response.data.unread_count;
 };
 

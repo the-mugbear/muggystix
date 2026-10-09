@@ -107,7 +107,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
   // A number nobody has is a 404, which is simply no match.
   const findingByNumber = useQuery({
     queryKey: ['getFinding', findingNumber],
-    queryFn: () => getFinding(findingNumber as number),
+    queryFn: ({ signal }) => getFinding(findingNumber as number, signal),
     enabled: byNumber,
     placeholderData: keepPreviousData,
   });

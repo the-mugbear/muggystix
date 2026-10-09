@@ -36,7 +36,7 @@ export interface ParseErrorSummary {
 
 
 // consumer appears.
-export const getParseError = async (errorId: number): Promise<ParseError> => {
-  const response = await api.get(`${p()}/parse-errors/${errorId}`);
+export const getParseError = async (errorId: number, signal?: AbortSignal): Promise<ParseError> => {
+  const response = await api.get(`${p()}/parse-errors/${errorId}`, { signal });
   return response.data;
 };

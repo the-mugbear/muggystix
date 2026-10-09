@@ -294,7 +294,9 @@ describe('Agent Sessions', () => {
     await user.click(trigger);
     await user.click(await screen.findByRole('option', { name: 'claude-opus-4-7' }));
     await waitFor(() =>
-      expect(mockedApi.listAgentSessions).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-opus-4-7' })),
+      expect(mockedApi.listAgentSessions).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'claude-opus-4-7' }), { signal: expect.any(AbortSignal) },
+      ),
     );
   });
 
@@ -459,6 +461,7 @@ describe('Agent Sessions — filters in the URL', () => {
     await screen.findByTestId('runs-table');
     expect(mockedApi.listAgentSessions).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'assist', model: 'claude-opus-4-7', tool: 'claude-code' }),
+      { signal: expect.any(AbortSignal) },
     );
     // The chosen model's name is an option once the roll-up has named it
     // (5.351.0: the test read it in the same tick as the table).

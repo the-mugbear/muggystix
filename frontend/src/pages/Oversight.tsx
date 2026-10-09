@@ -22,7 +22,7 @@
  * page "65 targets tested"; the counts are unchanged, the words now agree.
  * The API's field names (`targets_tested`, `hosts_tested`) are unchanged.
  */
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Copy } from 'lucide-react';
@@ -32,7 +32,6 @@ import {
   OversightProjectRow,
   OversightRemediation,
   OversightQuery,
-  OversightResponse,
   OversightSeverity,
   OversightTesterRow,
   SeverityBasis,
@@ -64,7 +63,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { formatStatusLabel } from '../utils/statusMeta';
 import { describeProjects, parseProjectIds, serializeProjectIds } from '../utils/oversightProjects';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { GLOBAL, queryErrorText, useLastSettled } from '../lib/query';
 import { formatDate } from '../utils/relativeTime';
 import {
   DATE_PRESETS, DEFAULT_PRESET, DatePreset, customRangeError, presetRange,
@@ -423,13 +422,11 @@ const Oversight: React.FC = () => {
   // `?status=`…): a link to a filtered Oversight asks for exactly that.
   const dashboard = useQuery({
     queryKey: [GLOBAL, 'getOversightDashboard', query],
-    queryFn: () => getOversightDashboard(query),
+    queryFn: ({ signal }) => getOversightDashboard(query, signal),
   });
   // The figures stay on screen while other filters load, and when that read
   // fails ("Showing the last figures that loaded").
-  const lastLoaded = useRef<OversightResponse | null>(null);
-  if (dashboard.data) lastLoaded.current = dashboard.data;
-  const data = dashboard.data ?? lastLoaded.current;
+  const data = useLastSettled(dashboard.data, { global: true }) ?? null;
   const loading = dashboard.isFetching;
   const error = loading ? null : queryErrorText(dashboard.error, 'Failed to load Oversight.');
   const refresh = () => { void dashboard.refetch(); };

@@ -134,7 +134,7 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
   // read (said on its own row; the imported files still show).
   const notImported = useQuery({
     queryKey: ['getBatchUnimportedJobs', b.id],
-    queryFn: () => getBatchUnimportedJobs(b.id),
+    queryFn: ({ signal }) => getBatchUnimportedJobs(b.id, signal),
     enabled: expanded,
   });
   const unimported: IngestionJob[] | null = notImported.isError ? null : notImported.data ?? [];

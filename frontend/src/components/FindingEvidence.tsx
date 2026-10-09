@@ -17,7 +17,7 @@ import { EvidenceItem } from './host-inspector/HostEvidenceSection';
 const FindingEvidence: React.FC<{ findingId: number }> = ({ findingId }) => {
   const query = useQuery({
     queryKey: ['listEvidenceRecords', { finding_id: findingId, limit: 50 }],
-    queryFn: () => listEvidenceRecords({ finding_id: findingId, limit: 50 }),
+    queryFn: ({ signal }) => listEvidenceRecords({ finding_id: findingId, limit: 50 }, signal),
   });
   const items = query.data?.items ?? null;
   const total = query.data?.total ?? 0;

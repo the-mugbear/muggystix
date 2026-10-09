@@ -46,7 +46,7 @@ import {
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { startAssistSession, type AgentSessionRow } from '../services/api';
-import { invalidateReads, queryErrorText } from '../lib/query';
+import { SECRET_MUTATION, invalidateReads, queryErrorText } from '../lib/query';
 import AssistSessionsPanel from './AssistSessionsPanel';
 import AgentSessionCredentials, { KeyHandoffFooter } from './AgentSessionCredentials';
 import { CodeBlock } from './ui/code-block';
@@ -93,7 +93,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   // else's — never a query, and dropped with the dialog (`reset`, `gcTime: 0`).
   const start = useMutation({
     mutationFn: (stated: string | undefined) => startAssistSession({ purpose: stated }),
-    gcTime: 0,
+    ...SECRET_MUTATION,
     onSuccess: () => {
       // The new key is live the moment this returns — reflect it wherever the
       // operator's sessions are shown: every read of sessions (this dialog's

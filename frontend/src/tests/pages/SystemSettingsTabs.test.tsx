@@ -11,8 +11,15 @@ import SystemSettings from '../../pages/SystemSettings';
 
 // The real router: setupTests replaces useLocation with a fixed one.
 vi.mock('react-router-dom', async () => vi.importActual<typeof import('react-router-dom')>('react-router-dom'));
-const { get } = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock('../../services/api', () => ({ default: { get, post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
+const { listUsers } = vi.hoisted(() => ({ listUsers: vi.fn() }));
+vi.mock('../../services/api', () => ({
+  listUsers,
+  registerUser: vi.fn(),
+  updateUserAccount: vi.fn(),
+  deleteUser: vi.fn(),
+  resetUserPassword: vi.fn(),
+  resetUserTwoFactor: vi.fn(),
+}));
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 1, username: 'ada' }, hasPermission: () => true }),
 }));
@@ -34,8 +41,8 @@ const show = (path = '/system-settings') => render(
 );
 
 beforeEach(() => {
-  get.mockReset();
-  get.mockResolvedValue({ data: [] });
+  listUsers.mockReset();
+  listUsers.mockResolvedValue([]);
 });
 
 describe('System settings tabs', () => {

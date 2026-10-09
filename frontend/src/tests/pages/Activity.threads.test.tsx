@@ -131,6 +131,6 @@ describe('Activity — threads as rows', () => {
     render(<MemoryRouter><Activity /></MemoryRouter>);
     const more = await screen.findByRole('button', { name: 'Load more (149 more)' });
     fireEvent.click(more);
-    await waitFor(() => expect(getNoteActivity).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 1 })));
+    await waitFor(() => expect(getNoteActivity).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 1 }), expect.any(AbortSignal)));
   });
 });

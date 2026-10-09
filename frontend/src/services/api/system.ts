@@ -47,7 +47,7 @@ export interface DiskSnapshot {
   low: boolean;
 }
 
-export const getQueueMetrics = async (): Promise<QueueMetrics> => {
-  const res = await api.get<QueueMetrics>('/system/queue-metrics');
+export const getQueueMetrics = async (signal?: AbortSignal): Promise<QueueMetrics> => {
+  const res = await api.get<QueueMetrics>('/system/queue-metrics', { signal });
   return res.data;
 };

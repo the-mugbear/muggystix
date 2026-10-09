@@ -68,6 +68,7 @@ import type {
   HostVulnerability,
   ReviewConclusion,
 } from '../services/api';
+import { holdProject } from '../lib/query';
 import { buildHostsUrl } from '../utils/drilldownLinks';
 import { buildSameVulnQuery, buildExploitOnPortsQuery } from '../utils/vulnQuery';
 import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
@@ -308,7 +309,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   // and a test's result do from where they are written).  A re-read that
   // fails keeps what is on screen.
   const hostKey = useMemo(() => ['getHost', hostId] as const, [hostId]);
-  const hostQuery = useQuery({ queryKey: hostKey, queryFn: () => getHost(hostId) });
+  const hostQuery = useQuery({ queryKey: hostKey, queryFn: ({ signal }) => getHost(hostId, { signal }) });
   const host = hostQuery.data ?? null;
   const putHost = useCallback((update: (previous: Host) => Host) => {
     queryClient.setQueryData<Host>(hostKey, (previous) => (previous ? update(previous) : previous));
@@ -318,7 +319,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
 
   const conflictsQuery = useQuery({
     queryKey: ['getHostConflicts', hostId],
-    queryFn: () => getHostConflicts(hostId),
+    queryFn: ({ signal }) => getHostConflicts(hostId, signal),
   });
   const conflicts = conflictsQuery.data?.confidence || NO_CONFLICTS;
   const conflictHistory = conflictsQuery.data?.conflict_history || NO_CONFLICT_HISTORY;
@@ -335,7 +336,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
 
   const followersQuery = useQuery({
     queryKey: ['getHostFollowers', hostId],
-    queryFn: () => getHostFollowers(hostId),
+    queryFn: ({ signal }) => getHostFollowers(hostId, signal),
   });
   const followersError = followersQuery.isError;
   const otherFollowers = (!followersError && followersQuery.data?.followers) || NO_FOLLOWERS;
@@ -497,7 +498,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   const triageVulnId = triageVuln?.id;
   const triagePreviewQuery = useQuery({
     queryKey: ['previewPromoteVulnerability', triageVulnId],
-    queryFn: () => previewPromoteVulnerability(triageVulnId as number),
+    queryFn: ({ signal }) => previewPromoteVulnerability(triageVulnId as number, signal),
     enabled: triageVulnId != null,
   });
   const triagePreview = (triageVulnId != null && triagePreviewQuery.data) || null;
@@ -772,11 +773,15 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   // not fail the note: it comes back bound to the note that now exists.
   const postNote = useMutation({
     mutationFn: async ({ body, images }: { body: string; images: PendingImage[] }) => {
+      // The note is this project's: a screenshot not yet sent when the reader
+      // switches project is not sent to the other one (it counts as failed).
+      const stillHere = holdProject();
       const note = await createAnnotation(hostId, { body });
       const uploaded: NoteAttachment[] = [];
       const failed: PendingImage[] = [];
       for (const img of images) {
         try {
+          stillHere();
           uploaded.push(await uploadNoteAttachment(hostId, note.id, img.file));
           URL.revokeObjectURL(img.url);
         } catch (e) {

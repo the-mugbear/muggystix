@@ -46,6 +46,7 @@ const PAGE = 50;
 /** Hosts listed under an issue; one more is requested to know the list is cut. */
 export const HOST_CAP = 100;
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
+const NO_ISSUES: ObservationIssue[] = [];
 
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
 
@@ -106,15 +107,15 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   // belongs to the list it was asked for, never to the one on screen.
   const list = useListQuery<ObservationIssue>(
     'getObservationIssues',
-    ({ offset, limit }) => getObservationIssues({ ...filters, ...(offset > 0 ? { skip: offset } : {}), limit }),
+    ({ offset, limit, signal }) => getObservationIssues({ ...filters, ...(offset > 0 ? { skip: offset } : {}), limit }, signal),
     [filters],
-    { pageSize: PAGE, errorMessage: 'Could not load the scanner observations.' },
+    {
+      pageSize: PAGE, errorMessage: 'Could not load the scanner observations.',
+      // An issue that moved between two pages while they were read is listed once.
+      dedupeBy: (issue) => issue.issue_key,
+    },
   );
-  // An issue that moved between two pages while they were read is listed once.
-  const issues = useMemo(() => {
-    const seen = new Set<string>();
-    return (list.rows ?? []).filter((i) => (seen.has(i.issue_key) ? false : (seen.add(i.issue_key), true)));
-  }, [list.rows]);
+  const issues = list.rows ?? NO_ISSUES;
   const { total, loading, loadingMore, error } = list;
 
   const loadMore = async () => {
@@ -130,7 +131,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const hostQueries = useQueries({
     queries: expandedKeys.map((key) => ({
       queryKey: ['getObservationIssueHosts', key, HOST_CAP + 1],
-      queryFn: () => getObservationIssueHosts(key, HOST_CAP + 1),
+      queryFn: ({ signal }) => getObservationIssueHosts(key, HOST_CAP + 1, signal),
     })),
   });
   const hostsOf = (key: string): ObservationIssueHost[] | 'loading' | 'error' | undefined => {

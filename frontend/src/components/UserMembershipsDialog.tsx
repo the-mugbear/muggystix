@@ -24,12 +24,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, Trash2 } from 'lucide-react';
-import apiClient, {
-  addProjectMember, getProjectMembers, getProjects, removeProjectMember, updateProjectMemberRole,
+import {
+  addProjectMember, getProjectMembers, getProjects, getUserMemberships, removeProjectMember,
+  updateProjectMemberRole, type UserProjectMembership,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { GLOBAL, invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -70,16 +71,7 @@ import {
   removalDecision, roleChangeDecision, type MemberChange,
 } from '../utils/projectMembers';
 
-interface MembershipRow {
-  project_id: number;
-  project_name: string;
-  project_slug: string;
-  project_status: string;
-  project_is_default: boolean;
-  project_is_archived: boolean;
-  role: string;
-  joined_at: string | null;
-}
+type MembershipRow = UserProjectMembership;
 
 interface ProjectSummary {
   id: number;
@@ -88,9 +80,6 @@ interface ProjectSummary {
   status?: string;
   is_archived?: boolean;
 }
-
-/** Key name of `GET /users/{id}/memberships` (no barrel function). */
-const USER_MEMBERSHIPS = '/users/{id}/memberships';
 
 const roleVariant = (
   role: string,
@@ -127,13 +116,13 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
   // Both lists belong to the open dialog: asked for when it opens on a user,
   // gone when it closes.
   const membershipsQuery = useQuery({
-    queryKey: [GLOBAL, USER_MEMBERSHIPS, userId],
-    queryFn: async () => (await apiClient.get<MembershipRow[]>(`/users/${userId}/memberships`)).data,
+    queryKey: [GLOBAL, 'getUserMemberships', userId],
+    queryFn: ({ signal }) => getUserMemberships(userId as number, signal),
     enabled: userId != null,
   });
   const projectsQuery = useQuery({
     queryKey: [GLOBAL, 'getProjects'],
-    queryFn: () => getProjects(),
+    queryFn: ({ signal }) => getProjects(signal),
     enabled: userId != null,
   });
   const failure = membershipsQuery.error ?? projectsQuery.error;
@@ -168,12 +157,9 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
 
   // A membership is shown here, on that project's roster and in its pickers.
   // The projects are read again with it, as they always were.
-  const membershipsChanged = () => Promise.all([
-    queryClient.invalidateQueries({ queryKey: [GLOBAL, USER_MEMBERSHIPS] }),
-    queryClient.invalidateQueries({ queryKey: [GLOBAL, 'getProjects'] }),
-    queryClient.invalidateQueries({ queryKey: [GLOBAL, 'getProjectMembers'] }),
-    queryClient.invalidateQueries({ queryKey: ['listProjectMembers'] }),
-  ]);
+  const membershipsChanged = () => invalidateReads(
+    queryClient, 'getUserMemberships', 'getProjects', 'getProjectMembers', 'listProjectMembers',
+  );
 
   const changingRole = useMutation({
     mutationFn: ({ row, role }: { row: MembershipRow; role: string }) =>

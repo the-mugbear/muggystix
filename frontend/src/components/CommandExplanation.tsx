@@ -74,7 +74,7 @@ const overallRiskVariant = (
 const CommandExplanationComponent: React.FC<CommandExplanationProps> = ({ scanId }) => {
   const query = useQuery({
     queryKey: ['getScanCommandExplanation', scanId],
-    queryFn: () => getScanCommandExplanation(scanId),
+    queryFn: ({ signal }) => getScanCommandExplanation(scanId, signal),
   });
   const explanation = query.data ?? null;
   const error = query.isError ? 'Failed to load command explanation' : null;

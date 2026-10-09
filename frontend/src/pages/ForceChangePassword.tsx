@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { ShieldAlert, Loader2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import api from '../services/api';
+import { changeOwnPassword } from '../services/api';
+import { SECRET_MUTATION } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { Card, CardContent } from '../components/ui/card';
 import { Label } from '../components/ui/label';
@@ -26,9 +27,13 @@ const ForceChangePassword: React.FC = () => {
   const passwordsMatch = newPassword === confirmPassword && newPassword.length > 0;
   const hasError = error.length > 0;
 
+  // Carries both passwords: kept nowhere once the request has settled
+  // (`SECRET_MUTATION`, and the `reset` where it is called).  Why it failed
+  // is this page's own state (`error`), so the reset hides nothing.
   const change = useMutation({
+    ...SECRET_MUTATION,
     mutationFn: (body: { current_password: string; new_password: string }) =>
-      api.post('/auth/change-password', body),
+      changeOwnPassword(body),
     onSuccess: () => {
       updateUser({ must_change_password: false });
       // Backend revokes all sessions on password change; force re-login.
@@ -51,7 +56,10 @@ const ForceChangePassword: React.FC = () => {
       return;
     }
 
-    change.mutate({ current_password: currentPassword, new_password: newPassword });
+    change.mutate(
+      { current_password: currentPassword, new_password: newPassword },
+      { onSettled: () => change.reset() },
+    );
   };
 
   return (

@@ -181,11 +181,11 @@ const Activity: React.FC = () => {
   // first page and never shows the previous filter's notes.
   const noteList = useListQuery<NoteActivityItem, NoteActivityResponse & ListPage<NoteActivityItem>>(
     'getNoteActivity',
-    async ({ offset, limit }) => {
+    async ({ offset, limit, signal }) => {
       const params: { limit: number; skip: number; author_id?: number; search?: string } = { limit, skip: offset };
       if (authorFilter) params.author_id = Number(authorFilter);
       if (debouncedSearch) params.search = debouncedSearch;
-      const data = await getNoteActivity(params);
+      const data = await getNoteActivity(params, signal);
       return { ...data, items: data.notes, total: data.total_notes };
     },
     [authorFilter, debouncedSearch],
@@ -197,22 +197,13 @@ const Activity: React.FC = () => {
   const loadingMore = noteList.loadingMore;
   // The authors to filter by are the last ones the server named — under any
   // filter — so the control does not come and go while a search is typed.
-  const authorsRef = useRef<NoteActivityAuthor[]>(NO_AUTHORS);
-  if (noteList.response?.authors) authorsRef.current = noteList.response.authors;
-  const authors = authorsRef.current;
+  const authors = noteList.lastResponse?.authors ?? NO_AUTHORS;
 
   // "Load more" is an action: its failure is said like the list's, for the
-  // filter it was asked under.
-  const filterKey = `${authorFilter}|${debouncedSearch}`;
+  // filter it was asked under (`loadMoreError`; a reload clears it).
   const { loadMore, reload: reloadNotes } = noteList;
-  const more = useMutation({ mutationFn: (_filter: string) => loadMore() });
-  const moreError = more.variables === filterKey ? queryErrorText(more.error, 'Failed to load activity.') : null;
-  const fetchError = noteList.error ?? moreError;
-  const { reset: resetMore } = more;
-  const retryNotes = () => {
-    resetMore();
-    void reloadNotes();
-  };
+  const fetchError = noteList.error ?? noteList.loadMoreError;
+  const retryNotes = () => { void reloadNotes(); };
 
   // Finding discussions: the same search and author.
   const discussionFilters = useMemo(() => ({
@@ -233,7 +224,7 @@ const Activity: React.FC = () => {
   // opened (§21): only when one is opened, or by "Mark all read".
   const notificationsQuery = useQuery({
     queryKey: UNREAD_KEY,
-    queryFn: () => getNotifications(true, UNREAD_LIMIT),
+    queryFn: ({ signal }) => getNotifications(true, UNREAD_LIMIT, signal),
   });
   const unreadNotifications = notificationsQuery.data?.notifications ?? NO_NOTIFICATIONS;
   const notificationsFailed = notificationsQuery.isError;
@@ -592,7 +583,8 @@ const Activity: React.FC = () => {
             <div className="flex justify-center pt-sm">
               <Button
                 variant="outline"
-                onClick={() => more.mutate(filterKey)}
+                // The failure is said above the list (`loadMoreError`).
+                onClick={() => { void loadMore().catch(() => undefined); }}
                 disabled={loadingMore}
               >
                 {loadingMore

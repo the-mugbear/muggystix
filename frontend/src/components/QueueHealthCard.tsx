@@ -230,7 +230,7 @@ const VerdictRow: React.FC<{ verdict: Verdict }> = ({ verdict }) => {
 export const QueueHealthCard: React.FC = () => {
   const query = useQuery({
     queryKey: [GLOBAL, 'getQueueMetrics'],
-    queryFn: () => getQueueMetrics(),
+    queryFn: ({ signal }) => getQueueMetrics(signal),
   });
   const metrics = query.data ?? null;
   // Only the first read is "loading": a Refresh keeps the verdicts on screen

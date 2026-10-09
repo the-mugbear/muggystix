@@ -175,7 +175,7 @@ export const FileButtons: React.FC<{ report: ClientReport }> = ({ report }) => {
 const Reports: React.FC = () => {
   const toast = useToast();
   const navigate = useNavigate();
-  const query = useQuery({ queryKey: ['listClientReports'], queryFn: () => listClientReports() });
+  const query = useQuery({ queryKey: ['listClientReports'], queryFn: ({ signal }) => listClientReports(signal) });
   const data: ClientReportList | null = query.data ?? null;
   const error = queryErrorText(query.error, 'Could not load the reports.');
 
@@ -355,12 +355,12 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   const [draft, setDraft] = useState<ReportProfile | null>(null);
   const roster = useProjectRoster({ enabled: canEdit });
 
-  const profileQuery = useQuery({ queryKey: ['getReportProfile'], queryFn: () => getReportProfile() });
-  const templatesQuery = useQuery({ queryKey: ['listReportTemplates'], queryFn: () => listReportTemplates() });
+  const profileQuery = useQuery({ queryKey: ['getReportProfile'], queryFn: ({ signal }) => getReportProfile(signal) });
+  const templatesQuery = useQuery({ queryKey: ['listReportTemplates'], queryFn: ({ signal }) => listReportTemplates(signal) });
   // Only an administrator can put a folder on the server, so only they are
   // told which ones could not be offered.
   const problemsQuery = useQuery({
-    queryKey: ['listReportTemplateProblems'], queryFn: () => listReportTemplateProblems(), enabled: isAdmin,
+    queryKey: ['listReportTemplateProblems'], queryFn: ({ signal }) => listReportTemplateProblems(signal), enabled: isAdmin,
   });
   // The defaults name a template: they are shown once both are known.
   const templates: ReportTemplate[] = templatesQuery.data ?? NO_TEMPLATES;

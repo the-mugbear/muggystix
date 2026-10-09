@@ -14,8 +14,8 @@ export interface Site {
   subnet_count: number;
 }
 
-export const listSites = async (): Promise<Site[]> => {
-  const response = await api.get<Site[]>(`${p()}/sites`);
+export const listSites = async (signal?: AbortSignal): Promise<Site[]> => {
+  const response = await api.get<Site[]>(`${p()}/sites`, { signal });
   return response.data;
 };
 

@@ -49,8 +49,8 @@ export interface SbomResponse {
   components: SbomComponent[];
 }
 
-export const getSbom = async (): Promise<SbomResponse> => {
-  const response = await api.get<SbomResponse>('/references/sbom');
+export const getSbom = async (signal?: AbortSignal): Promise<SbomResponse> => {
+  const response = await api.get<SbomResponse>('/references/sbom', { signal });
   return response.data;
 };
 
@@ -90,9 +90,11 @@ export interface ToolRegistryResponse {
 
 export const getToolRegistry = async (
   status?: string,
+  signal?: AbortSignal,
 ): Promise<ToolRegistryResponse> => {
   const response = await api.get<ToolRegistryResponse>('/references/tools', {
     params: status ? { status } : undefined,
+    signal,
   });
   return response.data;
 };
@@ -142,8 +144,8 @@ export interface ParserCoverageResponse {
   tools: ToolCoverage[];
 }
 
-export const getParserCoverage = async (): Promise<ParserCoverageResponse> => {
-  const response = await api.get<ParserCoverageResponse>('/references/parser-coverage');
+export const getParserCoverage = async (signal?: AbortSignal): Promise<ParserCoverageResponse> => {
+  const response = await api.get<ParserCoverageResponse>('/references/parser-coverage', { signal });
   return response.data;
 };
 
@@ -229,7 +231,7 @@ export interface McpCatalog {
   };
 }
 
-export const getMcpTools = async (): Promise<McpCatalog> => {
-  const response = await api.get<McpCatalog>('/references/mcp-tools');
+export const getMcpTools = async (signal?: AbortSignal): Promise<McpCatalog> => {
+  const response = await api.get<McpCatalog>('/references/mcp-tools', { signal });
   return response.data;
 };

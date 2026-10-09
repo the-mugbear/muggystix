@@ -197,7 +197,7 @@ const ToolCoverage: React.FC = () => {
 
   const coverage = useQuery({
     queryKey: [GLOBAL, 'getParserCoverage'],
-    queryFn: () => getParserCoverage(),
+    queryFn: ({ signal }) => getParserCoverage(signal),
   });
   const data = coverage.data ?? null;
   const error = queryErrorText(coverage.error, 'Could not load what BlueStick reads.');

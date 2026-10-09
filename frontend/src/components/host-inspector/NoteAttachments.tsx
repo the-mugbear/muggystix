@@ -146,8 +146,8 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   const own = useQueries({
     queries: attachments.map((att) => ({
       queryKey: ['getNoteAttachmentObjectUrl', att.id, instance],
-      queryFn: async () => {
-        const url = await getNoteAttachmentObjectUrl(att.id);
+      queryFn: async ({ signal }) => {
+        const url = await getNoteAttachmentObjectUrl(att.id, signal);
         if (gone.current) URL.revokeObjectURL(url);
         else createdUrls.current.push(url);
         return url;

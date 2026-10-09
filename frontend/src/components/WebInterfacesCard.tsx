@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ExternalLink, Globe, Image as ImageIcon, Loader2, Lock, Unlock } from 'lucide-react';
@@ -51,7 +51,7 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count, ro
   const fetchOwn = count > 0 && !given;
   const query = useQuery({
     queryKey: ['getHostWebInterfaces', hostId],
-    queryFn: () => getHostWebInterfaces(hostId),
+    queryFn: ({ signal }) => getHostWebInterfaces(hostId, signal),
     enabled: fetchOwn,
   });
   const loading = fetchOwn && query.isPending;
@@ -61,8 +61,27 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count, ro
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxCaption, setLightboxCaption] = useState<string>('');
   // Asked for on click, one screenshot at a time; `null` = the server has none.
+  // The answer is an object URL, which the browser keeps until it is revoked.
+  // The effect below revokes the one on show; one that arrives for a click the
+  // reader has since replaced, or after the card has gone, is never on show —
+  // so it is revoked here, where it is made (code review 2026-10-09).
+  const onScreen = useRef(true);
+  const asked = useRef(0);
+  useEffect(() => {
+    onScreen.current = true;
+    return () => { onScreen.current = false; };
+  }, []);
   const screenshot = useMutation({
-    mutationFn: (row: WebInterface) => fetchWebInterfaceScreenshot(row.id),
+    mutationFn: async (row: WebInterface) => {
+      asked.current += 1;
+      const mine = asked.current;
+      const url = await fetchWebInterfaceScreenshot(row.id);
+      if (url && (!onScreen.current || mine !== asked.current)) {
+        URL.revokeObjectURL(url);
+        return null;
+      }
+      return url;
+    },
   });
   const lightboxSrc = screenshot.data ?? null;
   const lightboxLoading = screenshot.isPending;
@@ -292,7 +311,7 @@ const fmtBytes = (n: number): string => {
 const SourceRecord: React.FC<{ interfaceId: number }> = ({ interfaceId }) => {
   const query = useQuery({
     queryKey: ['getWebInterfaceRecord', interfaceId],
-    queryFn: () => getWebInterfaceRecord(interfaceId),
+    queryFn: ({ signal }) => getWebInterfaceRecord(interfaceId, signal),
   });
   const record = query.data ?? null;
   const error = queryErrorText(query.error, 'The source record could not be loaded');

@@ -733,7 +733,7 @@ describe('FindingDetail — report text (v5.260.0)', () => {
       report_text: reportText({ description: 'Relayed.\n\n![](evidence:57)\n\n![x](evidence:999)' }),
     }));
     renderAt('/findings/7');
-    await waitFor(() => expect(mocked.getFindingImages).toHaveBeenCalledWith(7));
+    await waitFor(() => expect(mocked.getFindingImages).toHaveBeenCalledWith(7, expect.any(AbortSignal)));
     // The section shows the picture (fetched through the attachment route for
     // an id on the finding's list) and says so for a reference that is not one.
     const placed = await screen.findByTestId('evidence-image-57');

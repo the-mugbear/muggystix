@@ -50,9 +50,10 @@ export interface ProjectCoverageResponse {
 }
 
 
-export const getProjectCoverage = async (): Promise<ProjectCoverageResponse> => {
+export const getProjectCoverage = async (signal?: AbortSignal): Promise<ProjectCoverageResponse> => {
   const response = await api.get<ProjectCoverageResponse>(
     `${p()}/coverage/`,
+    { signal },
   );
   return response.data;
 };

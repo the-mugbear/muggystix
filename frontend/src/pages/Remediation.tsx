@@ -59,7 +59,7 @@ export const RemediationLead: React.FC<{
 
 const Remediation: React.FC = () => {
   const { isProjectAdmin: canWrite } = useProjectRole();
-  const { policy, enabled, loading } = useRemediationPolicy();
+  const { policy, enabled, loading, error: policyError, retry: retryPolicy } = useRemediationPolicy();
   const [page, setPage] = useState<RemediationPage | null>(null);
   const [filtered, setFiltered] = useState(false);
   const [fromReport, setFromReport] = useState(false);
@@ -73,9 +73,16 @@ const Remediation: React.FC = () => {
     return (
       <div className="flex flex-col gap-lg p-md md:p-lg">
         <h1 className="text-page-title">Remediation</h1>
-        <p className="max-w-4xl text-metadata text-muted-foreground">
-          {loading ? 'Loading…' : 'Remediation tracking is not turned on for this installation. A global administrator turns it on in System settings.'}
-        </p>
+        {policyError ? (
+          <p role="alert" className="max-w-4xl break-words text-metadata text-destructive">
+            {policyError}{' '}
+            <button type="button" className="text-info hover:underline" onClick={retryPolicy}>Retry</button>
+          </p>
+        ) : (
+          <p className="max-w-4xl text-metadata text-muted-foreground">
+            {loading ? 'Loading…' : 'Remediation tracking is not turned on for this installation. A global administrator turns it on in System settings.'}
+          </p>
+        )}
       </div>
     );
   }

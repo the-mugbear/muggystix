@@ -460,7 +460,7 @@ const ProjectActivity: React.FC = () => {
   // minute (not in a hidden tab).
   const liveQuery = useQuery({
     queryKey: ['listAgentSessions', LIVE_SESSION_FILTERS],
-    queryFn: () => listAgentSessions(LIVE_SESSION_FILTERS),
+    queryFn: ({ signal }) => listAgentSessions(LIVE_SESSION_FILTERS, { signal }),
     ...pollEvery(60_000),
   });
   const live: AgentSessionRow[] | null = liveQuery.data?.sessions ?? null;
@@ -477,7 +477,7 @@ const ProjectActivity: React.FC = () => {
   }, [kindFilter, modelFilter, toolFilter, limit]);
   const historyQuery = useQuery({
     queryKey: ['listAgentSessions', historyFilters],
-    queryFn: () => listAgentSessions(historyFilters),
+    queryFn: ({ signal }) => listAgentSessions(historyFilters, { signal }),
     placeholderData: keepPreviousData,
   });
   const rows = historyQuery.data?.sessions ?? NO_SESSIONS;
@@ -490,7 +490,7 @@ const ProjectActivity: React.FC = () => {
 
   const summaryQuery = useQuery({
     queryKey: ['getAgentSessionSummary'],
-    queryFn: () => getAgentSessionSummary(),
+    queryFn: ({ signal }) => getAgentSessionSummary(signal),
   });
   const summary: ModelToolSummaryRow[] | null = summaryQuery.data?.summary ?? null;
 
@@ -499,7 +499,7 @@ const ProjectActivity: React.FC = () => {
   // figures of an earlier read under it).
   const apiSummaryQuery = useQuery({
     queryKey: ['getAgentActivitySummary'],
-    queryFn: () => getAgentActivitySummary(),
+    queryFn: ({ signal }) => getAgentActivitySummary(undefined, signal),
   });
   const apiSummaryError = apiSummaryQuery.isError;
   const apiSummary: AgentActivitySummary | null = apiSummaryError ? null : apiSummaryQuery.data ?? null;

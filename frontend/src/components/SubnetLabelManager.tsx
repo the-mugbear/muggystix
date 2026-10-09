@@ -134,7 +134,7 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
   // callback.  Read again each time the dialog opens.
   const catalogue = useQuery({
     queryKey: ['listSubnetLabels'],
-    queryFn: () => listSubnetLabels(),
+    queryFn: ({ signal }) => listSubnetLabels(signal),
     enabled: open,
   });
   const labels = catalogue.data ?? [];

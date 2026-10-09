@@ -16,9 +16,7 @@
  * — the next step must not be hidden behind a collapsed row.
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import {
-  keepPreviousData, useInfiniteQuery, useMutation, useQueryClient, type InfiniteData,
-} from '@tanstack/react-query';
+import { useMutation } from '@tanstack/react-query';
 import { Link, useLocation } from 'react-router-dom';
 import { Bot, ChevronDown, ChevronRight, ClipboardList, Loader2, MoreHorizontal, Plus, RefreshCw } from 'lucide-react';
 
@@ -31,6 +29,7 @@ import {
   type EvidenceRecord,
   type HostTest,
 } from '../../services/api';
+import { useListQuery } from '../../hooks/useListQuery';
 import { queryErrorText } from '../../lib/query';
 import { agentInstruction } from '../../utils/agentRuns';
 import { formatApiError } from '../../utils/apiErrors';
@@ -186,30 +185,23 @@ const PromoteEvidence: React.FC<{
 const TestEvidence: React.FC<{ test: HostTest; ctl: HostTestsController }> = ({ test, ctl }) => {
   const testId = test.id;
   const count = test.evidence_count;
-  const queryClient = useQueryClient();
   // The test's count of results is in the key: a result added to the test is
   // a new list, read from its first page, with the one on screen kept until
-  // it lands.  (Not `useListQuery`, which shows nothing between two keys.)
-  const queryKey = useMemo(
-    () => ['listEvidenceRecords', { host_test_id: testId, limit: EVIDENCE_PAGE }, { results: count }] as const,
-    [testId, count],
-  );
-  const query = useInfiniteQuery({
-    queryKey,
-    queryFn: ({ pageParam }) => listEvidenceRecords({ host_test_id: testId, limit: EVIDENCE_PAGE, offset: pageParam }),
-    initialPageParam: 0,
-    getNextPageParam: (last, pages) => {
-      const loaded = pages.reduce((n, page) => n + page.items.length, 0);
-      return last.items.length > 0 && loaded < last.total ? loaded : undefined;
+  // it lands (`keepPrevious`).
+  const list = useListQuery<EvidenceRecord, EvidenceList>(
+    'listEvidenceRecords',
+    ({ offset, limit, signal }) => listEvidenceRecords({ host_test_id: testId, limit, offset }, signal),
+    [{ host_test_id: testId, limit: EVIDENCE_PAGE }, { results: count }],
+    {
+      pageSize: EVIDENCE_PAGE, enabled: count > 0, keepPrevious: true,
+      errorMessage: 'Could not load the evidence for this test.',
     },
-    enabled: count > 0,
-    placeholderData: keepPreviousData,
-  });
-  const pages = query.data?.pages;
-  const items = useMemo(() => (pages ? pages.flatMap((page) => page.items) : null), [pages]);
-  const total = pages?.length ? pages[pages.length - 1].total : count;
-  const loading = query.isFetching;
-  const error = queryErrorText(query.error, 'Could not load the evidence for this test.');
+  );
+  // A new list that could not be read is said in place of the old one.
+  const items = list.isPrevious && list.error ? null : list.rows;
+  const total = items ? list.total : count;
+  const loading = list.loading || list.loadingMore;
+  const error = list.error ?? list.loadMoreError;
 
   if (count === 0) {
     return (
@@ -221,7 +213,7 @@ const TestEvidence: React.FC<{ test: HostTest; ctl: HostTestsController }> = ({ 
   if (error && !items) {
     return (
       <p role="alert" className="text-caption text-destructive">
-        {error} <Button variant="ghost" size="sm" onClick={() => void query.refetch()}>Retry</Button>
+        {error} <Button variant="ghost" size="sm" onClick={() => void list.reload()}>Retry</Button>
       </p>
     );
   }
@@ -252,13 +244,7 @@ const TestEvidence: React.FC<{ test: HostTest; ctl: HostTestsController }> = ({ 
                   onCreated={(made) => {
                     // The record now names its finding; the rest of the host
                     // page is the controller's to bring up to date.
-                    queryClient.setQueryData<InfiniteData<EvidenceList, number>>(queryKey, (prev) => (prev ? {
-                      ...prev,
-                      pages: prev.pages.map((page) => ({
-                        ...page,
-                        items: page.items.map((r) => (r.id === rec.id ? { ...r, finding_id: made.finding_id } : r)),
-                      })),
-                    } : prev));
+                    list.mapRows((r) => (r.id === rec.id ? { ...r, finding_id: made.finding_id } : r));
                     ctl.onFindingCreated(made.finding_id, made);
                   }}
                 />
@@ -269,7 +255,8 @@ const TestEvidence: React.FC<{ test: HostTest; ctl: HostTestsController }> = ({ 
       </ul>
       {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
       {items.length < total && (
-        <Button variant="ghost" size="sm" disabled={loading} onClick={() => void query.fetchNextPage()}>
+        // A failure is said above the button (`loadMoreError`).
+        <Button variant="ghost" size="sm" disabled={loading} onClick={() => { void list.loadMore().catch(() => undefined); }}>
           Show more evidence ({(total - items.length).toLocaleString()} left)
         </Button>
       )}

@@ -64,14 +64,14 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
   // one the app is in — so it is in the key, and the key is GLOBAL.
   const roster = useQuery({
     queryKey: [GLOBAL, 'getProjectMembers', projectId],
-    queryFn: () => getProjectMembers(projectId as number),
+    queryFn: ({ signal }) => getProjectMembers(projectId as number, signal),
     enabled: open && projectId != null,
   });
   // The picker is optional: asked for once the roster is there, and a failure
   // leaves it empty.
   const users = useQuery({
     queryKey: [GLOBAL, 'getUserDirectory'],
-    queryFn: () => getUserDirectory(),
+    queryFn: ({ signal }) => getUserDirectory(signal),
     enabled: open && projectId != null && canManage && roster.isSuccess,
   });
   const members = roster.data ?? null;

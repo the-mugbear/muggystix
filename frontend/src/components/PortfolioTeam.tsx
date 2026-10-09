@@ -86,7 +86,7 @@ const MemberRow: React.FC<{ m: TeamMember }> = ({ m }) => {
 export const PortfolioTeam: React.FC = () => {
   const query = useQuery({
     queryKey: [GLOBAL, 'getPortfolioTeam'],
-    queryFn: () => getPortfolioTeam(),
+    queryFn: ({ signal }) => getPortfolioTeam(signal),
   });
   const members = query.data?.members;
   const loading = query.isFetching;

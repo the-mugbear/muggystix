@@ -183,24 +183,25 @@ export const listNames = async (
 export const exportNames = async (
   format: 'txt' | 'csv',
   opts: { search?: string; state?: NameStateFilter; sort?: 'fqdn' | 'last_seen' | 'first_seen'; order?: 'asc' | 'desc' } = {},
+  signal?: AbortSignal,
 ): Promise<void> => {
   const params = new URLSearchParams({ format });
   if (opts.search) params.set('search', opts.search);
   if (opts.state) params.set('state', opts.state);
   if (opts.sort) params.set('sort', opts.sort);
   if (opts.order) params.set('order', opts.order);
-  const response = await api.get(`${p()}/names/export?${params.toString()}`, { responseType: 'blob' });
+  const response = await api.get(`${p()}/names/export?${params.toString()}`, { responseType: 'blob', signal });
   const mime = format === 'csv' ? 'text/csv' : 'text/plain';
   saveBlob(new Blob([response.data], { type: mime }), `names.${format}`);
 };
 
-export const getNamesSummary = async (): Promise<NamesSummary> => {
-  const r = await api.get<NamesSummary>(`${p()}/names/summary`);
+export const getNamesSummary = async (signal?: AbortSignal): Promise<NamesSummary> => {
+  const r = await api.get<NamesSummary>(`${p()}/names/summary`, { signal });
   return r.data;
 };
 
-export const getName = async (nameId: number): Promise<NameDetail> => {
-  const r = await api.get<NameDetail>(`${p()}/names/${nameId}`);
+export const getName = async (nameId: number, signal?: AbortSignal): Promise<NameDetail> => {
+  const r = await api.get<NameDetail>(`${p()}/names/${nameId}`, { signal });
   return r.data;
 };
 
@@ -213,8 +214,8 @@ export const deleteName = async (nameId: number): Promise<void> => {
   await api.delete(`${p()}/names/${nameId}`);
 };
 
-export const getHostNames = async (hostId: number): Promise<HostNamesResponse> => {
-  const r = await api.get<HostNamesResponse>(`${p()}/names/by-host/${hostId}`);
+export const getHostNames = async (hostId: number, signal?: AbortSignal): Promise<HostNamesResponse> => {
+  const r = await api.get<HostNamesResponse>(`${p()}/names/by-host/${hostId}`, { signal });
   return r.data;
 };
 
@@ -223,12 +224,13 @@ export const getHostNames = async (hostId: number): Promise<HostNamesResponse> =
 export const listScopeDomains = async (
   scopeId: number,
   opts: { skip?: number; limit?: number } = {},
+  signal?: AbortSignal,
 ): Promise<ScopeDomainPage> => {
   const params = new URLSearchParams();
   if (opts.skip !== undefined) params.set('skip', String(opts.skip));
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   const qs = params.toString();
-  const r = await api.get<ScopeDomainPage>(`${p()}/scopes/${scopeId}/domains${qs ? `?${qs}` : ''}`);
+  const r = await api.get<ScopeDomainPage>(`${p()}/scopes/${scopeId}/domains${qs ? `?${qs}` : ''}`, { signal });
   return r.data;
 };
 

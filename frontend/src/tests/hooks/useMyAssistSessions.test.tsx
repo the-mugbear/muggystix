@@ -59,7 +59,9 @@ describe('useMyAssistSessions', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     await waitFor(() => expect(result.current.sessions.map((s) => s.id)).toEqual([72]));
     // Narrowed on the server, not by filtering the whole project's rows here.
-    expect(api.listAgentSessions).toHaveBeenCalledWith({ kind: 'project', status: 'active', user_id: 7 });
+    expect(api.listAgentSessions).toHaveBeenCalledWith(
+      { kind: 'project', status: 'active', user_id: 7 }, { signal: expect.any(AbortSignal) },
+    );
     expect(result.current.failed).toBe(false);
   });
 

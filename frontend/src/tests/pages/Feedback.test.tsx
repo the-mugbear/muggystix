@@ -145,7 +145,7 @@ describe('Agent Feedback', () => {
     await waitFor(() => expect(listAgentFeedback).toHaveBeenCalled());
     expect(listAgentFeedback).toHaveBeenLastCalledWith(expect.objectContaining({
       status: 'new', has_api_critiques: true, project_id: 3,
-    }));
+    }), expect.any(AbortSignal));
     expect(await screen.findByText('No feedback matches these filters.')).toBeInTheDocument();
   });
 
@@ -156,7 +156,7 @@ describe('Agent Feedback', () => {
     const calls = listAgentFeedback.mock.calls.length;
     await userEvent.type(screen.getByRole('searchbox', { name: 'Search feedback notes' }), 'tls');
     await waitFor(() => expect(listAgentFeedback).toHaveBeenLastCalledWith(
-      expect.objectContaining({ search: 'tls' }),
+      expect.objectContaining({ search: 'tls' }), expect.any(AbortSignal),
     ));
     // One more list request for the settled term — not one per letter.
     expect(listAgentFeedback.mock.calls.length).toBe(calls + 1);
@@ -169,7 +169,7 @@ describe('Agent Feedback', () => {
     renderPage();
     await userEvent.click(await screen.findByRole('button', { name: 'Show 1 more' }));
     expect(await screen.findByTestId('feedback-row-8')).toBeInTheDocument();
-    expect(listAgentFeedback).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 1 }));
+    expect(listAgentFeedback).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 1 }), expect.any(AbortSignal));
   });
 });
 

@@ -136,8 +136,18 @@ The contract is UI_STYLE_GUIDE §48; this is how a test meets it.
   promise resolves, and a mutation sends its request a tick after the click: use `findBy…` /
   `waitFor`, not a synchronous assertion right after the event. With fake timers advance with
   `await vi.advanceTimersByTimeAsync(n)`.
-- **A call now also receives an `AbortSignal`** where the API function takes one: assert
-  `expect.any(AbortSignal)` / `expect.anything()` for that argument.
+- **A read also receives an `AbortSignal`** (last, or as `{ signal }` where the function takes
+  an options object): assert `expect.any(AbortSignal)` in that position — never
+  `expect.anything()`. `toHaveBeenCalledWith(expect.objectContaining(…))` alone no longer
+  matches: it checks every argument. A call made from a `mutationFn` receives none.
+- **A secret is tested with `tests/helpers/heldByMutations.ts`** (`withClient`,
+  `heldByMutations`).
+- **A job poll under fake timers answers 1 ms late.** With `hooks/useJobPoll`, the reading
+  reaches the hook 1 ms after the mocked request resolves: `advanceTimersByTimeAsync(0)` is not
+  enough — advance by the interval, then by 1.
+- **A secret is tested as gone.** A flow that sends a password or a code shares one client
+  (`createQueryClient()` as the `wrapper`) and asserts that, once the flow has ended, no entry
+  of `client.getMutationCache().getAll()` holds it in `state.variables` or `state.data`.
 - **Test invalidation with a mounted reader.** "The list is read again after the save" is tested
   by having the read ON SCREEN and counting its calls — `tests/helpers/readsOnScreen.tsx` mounts
   real queries by API-function name for a component that only writes. A prop callback that

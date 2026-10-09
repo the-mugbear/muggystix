@@ -5,7 +5,8 @@ import { downloadTextFile } from '../utils/download';
 import { useNavigate } from 'react-router-dom';
 import { ShieldAlert, Loader2, Copy, Download } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import apiClient from '../services/api';
+import { enableTwoFactor, startTwoFactorSetup, type TwoFactorSetup } from '../services/api';
+import { SECRET_MUTATION } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useToast } from '../contexts/ToastContext';
 import { Card, CardContent } from '../components/ui/card';
@@ -13,13 +14,6 @@ import { Label } from '../components/ui/label';
 import { Input } from '../components/ui/input';
 import { Button } from '../components/ui/button';
 import { Alert, AlertDescription } from '../components/ui/alert';
-
-interface SetupData {
-  secret: string;
-  otpauth_uri: string;
-  qr_svg: string;
-  imported: boolean;
-}
 
 type Step = 'choose' | 'confirm' | 'recovery';
 
@@ -37,13 +31,19 @@ const ForceTwoFactorSetup: React.FC = () => {
   const [error, setError] = useState('');
   const [showImport, setShowImport] = useState(false);
   const [importSecret, setImportSecret] = useState('');
-  const [setupData, setSetupData] = useState<SetupData | null>(null);
+  const [setupData, setSetupData] = useState<TwoFactorSetup | null>(null);
   const [code, setCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
 
+  // Both mutations carry or return a secret — the TOTP secret, a one-time
+  // code, the recovery codes — so neither is kept by the library once it has
+  // settled (`SECRET_MUTATION`, and the `reset` where each is called).  What
+  // the reader is SHOWN once (the secret and QR, the recovery codes) is this
+  // page's own state, copied in `onSuccess` and cleared when they leave that
+  // step; why a step failed is `error`.
   const starting = useMutation({
-    mutationFn: async (body: { existing_secret?: string }) =>
-      (await apiClient.post<SetupData>('/auth/2fa/setup', body)).data,
+    ...SECRET_MUTATION,
+    mutationFn: (body: { existing_secret?: string }) => startTwoFactorSetup(body),
     onMutate: () => setError(''),
     onSuccess: (data) => {
       setSetupData(data);
@@ -53,20 +53,27 @@ const ForceTwoFactorSetup: React.FC = () => {
     onError: (err) => setError(formatApiError(err, 'Could not start 2FA setup.')),
   });
   const startSetup = () => {
-    starting.mutate(showImport && importSecret.trim() ? { existing_secret: importSecret.trim() } : {});
+    starting.mutate(
+      showImport && importSecret.trim() ? { existing_secret: importSecret.trim() } : {},
+      { onSettled: () => starting.reset() },
+    );
   };
 
   const enabling = useMutation({
-    mutationFn: async (enteredCode: string) =>
-      (await apiClient.post<{ recovery_codes: string[] }>('/auth/2fa/enable', { code: enteredCode })).data,
+    ...SECRET_MUTATION,
+    mutationFn: (enteredCode: string) => enableTwoFactor(enteredCode),
     onMutate: () => setError(''),
-    onSuccess: (data) => {
-      setRecoveryCodes(data.recovery_codes);
+    onSuccess: (codes) => {
+      setRecoveryCodes(codes);
       setStep('recovery');
+      // Enrollment is over: the secret, its QR and the code that confirmed it go.
+      setSetupData(null);
+      setCode('');
+      setImportSecret('');
     },
     onError: (err) => setError(formatApiError(err, 'That code was not accepted.')),
   });
-  const confirmEnable = () => enabling.mutate(code.trim());
+  const confirmEnable = () => enabling.mutate(code.trim(), { onSettled: () => enabling.reset() });
   const busy = starting.isPending || enabling.isPending;
 
   const finish = () => navigate('/', { replace: true });
@@ -170,7 +177,7 @@ const ForceTwoFactorSetup: React.FC = () => {
                 <Button size="lg" onClick={confirmEnable} disabled={busy || !code.trim()}>
                   {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Verify &amp; enable
                 </Button>
-                <Button variant="ghost" onClick={() => { setStep('choose'); setSetupData(null); }} disabled={busy}>
+                <Button variant="ghost" onClick={() => { setStep('choose'); setSetupData(null); setCode(''); }} disabled={busy}>
                   Start over
                 </Button>
               </div>

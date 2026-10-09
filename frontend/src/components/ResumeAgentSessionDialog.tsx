@@ -38,7 +38,7 @@ import {
   DialogTitle,
 } from './ui/dialog';
 import { resumeAgentSession, type AgentSessionRow } from '../services/api';
-import { invalidateReads, queryErrorText } from '../lib/query';
+import { SECRET_MUTATION, invalidateReads, queryErrorText } from '../lib/query';
 import { AGENT_SESSION_READS } from '../utils/agentRuns';
 import { formatTimestamp } from '../utils/relativeTime';
 import AgentSessionCredentials, { KeyHandoffFooter } from './AgentSessionCredentials';
@@ -72,7 +72,7 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
   // (`reset`, `gcTime: 0`).
   const rotate = useMutation({
     mutationFn: (sessionId: number) => resumeAgentSession(sessionId),
-    gcTime: 0,
+    ...SECRET_MUTATION,
     onSuccess: () => {
       // Every read of sessions is out of date (the session's page and its
       // key expiry, the list, the rail, the Operations line).  A re-read

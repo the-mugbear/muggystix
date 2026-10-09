@@ -32,11 +32,10 @@ import type {
   FollowStatus,
   HostFollowInfo,
   HostFilterView,
-  HostFilterData,
   HostListResponse,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
-import { queryErrorText } from '../lib/query';
+import { queryErrorText, useLastSettled } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { LIST_CURSOR_CLASS } from '../hooks/useListCursor';
@@ -432,9 +431,7 @@ export default function Hosts() {
   // We keep the last-known-good `filterData` — across a failed refresh and
   // across a change of conditions — so the dropdowns degrade gracefully
   // rather than emptying out, and a chip keeps its name.
-  const lastFacetsRef = useRef<HostFilterData | null>(null);
-  if (facetsQuery.data) lastFacetsRef.current = facetsQuery.data;
-  const filterData = facetsQuery.data ?? lastFacetsRef.current;
+  const filterData = useLastSettled(facetsQuery.data) ?? null;
   // Surfaced inline near the filter panel when the cascading filter
   // metadata call fails — previously the failure was console-only, so
   // users interacted with partially-stale dropdowns with no signal.  The
@@ -499,7 +496,7 @@ export default function Hosts() {
   // Saved Hosts page filter views (per-user, per-project).
   const savedViewsQuery = useQuery({
     queryKey: ['listHostFilterViews'],
-    queryFn: () => listHostFilterViews(),
+    queryFn: ({ signal }) => listHostFilterViews(signal),
   });
   const savedViews = savedViewsQuery.data ?? NO_VIEWS;
   const savedViewsError = savedViewsQuery.isError;
@@ -596,11 +593,12 @@ export default function Hosts() {
   // and after a read that failed — the rows that were shown STAY (a filter
   // change must not collapse the table and snap the scroll to the top), with
   // the conditions they were counted under (see the page clamp).
-  const shownRef = useRef<{ response: HostListResponse; signature: string } | null>(null);
-  if (hostsQuery.data && shownRef.current?.response !== hostsQuery.data) {
-    shownRef.current = { response: hostsQuery.data, signature: filterSignature };
-  }
-  const shown = shownRef.current;
+  // (An answer is this address's, so the conditions of the moment are its own.)
+  const answered = useMemo(
+    () => hostsQuery.data && { response: hostsQuery.data, signature: filterSignature },
+    [hostsQuery.data, filterSignature],
+  );
+  const shown = useLastSettled(answered) ?? null;
   const hosts = shown?.response.items ?? NO_HOSTS;
   const totalHosts = shown?.response.total ?? 0;
   const totalFor = shown?.signature ?? null;
@@ -849,7 +847,7 @@ export default function Hosts() {
   // clearing emptied it).  A failed read is non-fatal: there is then none.
   const defaultViewQuery = useQuery({
     queryKey: ['getProjectDefaultView'],
-    queryFn: () => getProjectDefaultView(),
+    queryFn: ({ signal }) => getProjectDefaultView(signal),
     enabled: isInitialized,
   });
   const projectDefaultView = defaultViewQuery.data?.filter_json ? defaultViewQuery.data : null;

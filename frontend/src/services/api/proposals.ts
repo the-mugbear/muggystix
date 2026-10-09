@@ -82,8 +82,8 @@ export interface ProposalQuery {
   offset?: number;
 }
 
-export const listProposals = async (query: ProposalQuery = {}): Promise<ProposalList> =>
-  (await api.get<ProposalList>(`${p()}/proposals`, { params: query })).data;
+export const listProposals = async (query: ProposalQuery = {}, signal?: AbortSignal): Promise<ProposalList> =>
+  (await api.get<ProposalList>(`${p()}/proposals`, { params: query, signal })).data;
 
 export interface ProposalSummary {
   /** The whole project's pending proposals. */
@@ -96,8 +96,8 @@ export interface ProposalSummary {
   viewer_is_project_admin: boolean;
 }
 
-export const getProposalSummary = async (): Promise<ProposalSummary> =>
-  (await api.get<ProposalSummary>(`${p()}/proposals/summary`)).data;
+export const getProposalSummary = async (signal?: AbortSignal): Promise<ProposalSummary> =>
+  (await api.get<ProposalSummary>(`${p()}/proposals/summary`, { signal })).data;
 
 /** Apply it as you.  `editedValue` (report text only) accepts with your edit. */
 export const acceptProposal = async (
@@ -161,12 +161,13 @@ export interface EvidenceList {
 
 export const listEvidenceRecords = async (
   query: { host_id?: number; host_test_id?: number; finding_id?: number; agent_session_id?: number; unlinked?: boolean; limit?: number; offset?: number } = {},
+  signal?: AbortSignal,
 ): Promise<EvidenceList> =>
-  (await api.get<EvidenceList>(`${p()}/evidence`, { params: query })).data;
+  (await api.get<EvidenceList>(`${p()}/evidence`, { params: query, signal })).data;
 
 /** The whole raw output (the list carries a 2,000-character preview). */
-export const getEvidenceRawOutput = async (id: number): Promise<string> =>
-  (await api.get<string>(`${p()}/evidence/${id}/raw`, { responseType: 'text' })).data;
+export const getEvidenceRawOutput = async (id: number, signal?: AbortSignal): Promise<string> =>
+  (await api.get<string>(`${p()}/evidence/${id}/raw`, { responseType: 'text', signal })).data;
 
 /** What promoting a result made.  `status` is the finding's as it now stands:
  *  a result that JOINED a finding the team already concluded leaves that

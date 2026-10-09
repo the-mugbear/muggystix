@@ -161,7 +161,7 @@ const ToolReference: React.FC = () => {
   // A vetted row is put back into this read by the dialog that saved it.
   const registry = useQuery({
     queryKey: [GLOBAL, 'getToolRegistry'],
-    queryFn: () => getToolRegistry(),
+    queryFn: ({ signal }) => getToolRegistry(undefined, signal),
   });
   const tools = useMemo(() => registry.data?.tools ?? [], [registry.data]);
   const loading = registry.isPending;

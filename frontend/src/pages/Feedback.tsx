@@ -154,7 +154,7 @@ const Feedback: React.FC = () => {
   // The queue is every project's: both reads are GLOBAL.
   const list = useListQuery<AgentFeedbackEntry>(
     'listAgentFeedback',
-    ({ offset, limit }) => listAgentFeedback({ ...query, limit, ...(offset > 0 ? { skip: offset } : {}) }),
+    ({ offset, limit, signal }) => listAgentFeedback({ ...query, limit, ...(offset > 0 ? { skip: offset } : {}) }, signal),
     [query],
     { pageSize: PAGE, errorMessage: 'Could not load agent feedback.', global: true },
   );
@@ -162,7 +162,7 @@ const Feedback: React.FC = () => {
   // so they keep their value while a new filter loads.
   const statsQuery = useQuery({
     queryKey: [GLOBAL, 'getAgentFeedbackStats'],
-    queryFn: () => getAgentFeedbackStats(),
+    queryFn: ({ signal }) => getAgentFeedbackStats(signal),
   });
   const stats = statsQuery.data ?? null;
   const rows = list.rows ?? [];

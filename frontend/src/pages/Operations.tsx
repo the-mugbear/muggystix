@@ -262,7 +262,7 @@ const Operations: React.FC = () => {
   // scanner-observation counts are shown on Posture since 5.330.0.)
   const coverageQuery = useQuery({
     queryKey: ['getProjectCoverage'],
-    queryFn: () => getProjectCoverage(),
+    queryFn: ({ signal }) => getProjectCoverage(signal),
   });
   const coverage = coverageQuery.data ?? null;
   const error = queryErrorText(coverageQuery.error, 'Failed to load Operations data.');
@@ -271,7 +271,7 @@ const Operations: React.FC = () => {
   // are its panel's own request, made when the tab is opened.
   const workbenchQuery = useQuery({
     queryKey: ['getWorkbench', LIGHT_WORKBENCH],
-    queryFn: () => getWorkbench(LIGHT_WORKBENCH),
+    queryFn: ({ signal }) => getWorkbench(LIGHT_WORKBENCH, signal),
   });
   // Counts that could not be read again are not known: never the previous
   // ones under a failure.
@@ -284,7 +284,7 @@ const Operations: React.FC = () => {
   // loading, or it could not be computed (a 503) — and never shown as 0.
   const pickupQuery = useQuery({
     queryKey: ['getInvestigationQueue', null, QUEUE_TOTAL_ONLY],
-    queryFn: () => getInvestigationQueue(null, QUEUE_TOTAL_ONLY),
+    queryFn: ({ signal }) => getInvestigationQueue(null, { ...QUEUE_TOTAL_ONLY, signal }),
   });
   const pickupTotal: number | null = pickupQuery.isError ? null : pickupQuery.data?.queue_total ?? null;
   const pickupLoading = pickupQuery.isFetching;

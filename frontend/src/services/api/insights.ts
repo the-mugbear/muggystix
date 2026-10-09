@@ -85,9 +85,11 @@ export interface SubnetInsightsResponse {
 export const getSubnetInsights = async (
   limit = 50,
   offset = 0,
+  signal?: AbortSignal,
 ): Promise<SubnetInsightsResponse> => {
   const response = await api.get<SubnetInsightsResponse>(`${p()}/insights/subnets`, {
     params: { limit, offset },
+    signal,
   });
   return response.data;
 };
@@ -170,8 +172,8 @@ export interface SystemicInsightsResponse {
   diagnostic_profiles?: DiagnosticProfile[];
 }
 
-export const getSystemicInsights = async (): Promise<SystemicInsightsResponse> => {
-  const response = await api.get<SystemicInsightsResponse>(`${p()}/insights/systemic`);
+export const getSystemicInsights = async (signal?: AbortSignal): Promise<SystemicInsightsResponse> => {
+  const response = await api.get<SystemicInsightsResponse>(`${p()}/insights/systemic`, { signal });
   return response.data;
 };
 
@@ -270,9 +272,9 @@ export const gridCellHostsHref = (
  */
 /** Download the executive systemic briefing (standalone HTML, synchronous).
  *  `site` scopes the hotspot / outlier / profile sections to one site. */
-export const downloadSystemicReport = async (site?: string | null): Promise<void> => {
+export const downloadSystemicReport = async (site?: string | null, signal?: AbortSignal): Promise<void> => {
   const qs = site ? `?site=${encodeURIComponent(site)}` : '';
-  const response = await api.get(`${p()}/reports/systemic.html${qs}`, { responseType: 'blob' });
+  const response = await api.get(`${p()}/reports/systemic.html${qs}`, { responseType: 'blob', signal });
   saveBlob(new Blob([response.data], { type: 'text/html' }), filenameFromContentDisposition(
     response.headers['content-disposition'] as string | undefined,
     `systemic_insights_${new Date().toISOString().split('T')[0]}.html`,

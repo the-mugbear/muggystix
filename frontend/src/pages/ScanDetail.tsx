@@ -85,11 +85,11 @@ const ScanDetail: React.FC = () => {
   // now, the names it resolved and what it recorded per host.
   const id = scanId ? parseInt(scanId) : NaN;
   const known = !Number.isNaN(id);
-  const scanQuery = useQuery({ queryKey: ['getScan', id], queryFn: () => getScan(id), enabled: known });
-  const hostsQuery = useQuery({ queryKey: ['getHostsByScan', id], queryFn: () => getHostsByScan(id), enabled: known });
-  const dnsQuery = useQuery({ queryKey: ['getScanDnsRecords', id], queryFn: () => getScanDnsRecords(id), enabled: known });
+  const scanQuery = useQuery({ queryKey: ['getScan', id], queryFn: ({ signal }) => getScan(id, signal), enabled: known });
+  const hostsQuery = useQuery({ queryKey: ['getHostsByScan', id], queryFn: ({ signal }) => getHostsByScan(id, undefined, signal), enabled: known });
+  const dnsQuery = useQuery({ queryKey: ['getScanDnsRecords', id], queryFn: ({ signal }) => getScanDnsRecords(id, signal), enabled: known });
   const snapshotsQuery = useQuery({
-    queryKey: ['getScanHostSnapshots', id], queryFn: () => getScanHostSnapshots(id), enabled: known,
+    queryKey: ['getScanHostSnapshots', id], queryFn: ({ signal }) => getScanHostSnapshots(id, signal), enabled: known,
   });
   // v5.222.0 — the inventory's per-scan summary (hosts added, conflicts,
   // import quality) for the Import result card; not fatal if it fails.

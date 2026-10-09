@@ -209,8 +209,8 @@ export const listFindings = async (
   return response.data;
 };
 
-export const getFinding = async (findingId: number): Promise<Finding> => {
-  const response = await api.get<Finding>(`${p()}/findings/${findingId}`);
+export const getFinding = async (findingId: number, signal?: AbortSignal): Promise<Finding> => {
+  const response = await api.get<Finding>(`${p()}/findings/${findingId}`, { signal });
   return response.data;
 };
 
@@ -313,8 +313,9 @@ export interface FindingStatusHistoryEntry {
 
 export const getFindingHistory = async (
   findingId: number,
+  signal?: AbortSignal,
 ): Promise<FindingStatusHistoryEntry[]> => {
-  const response = await api.get<FindingStatusHistoryEntry[]>(`${p()}/findings/${findingId}/history`);
+  const response = await api.get<FindingStatusHistoryEntry[]>(`${p()}/findings/${findingId}/history`, { signal });
   return response.data;
 };
 
@@ -322,8 +323,8 @@ export const getFindingHistory = async (
 // A finding hosts its own annotation thread (the notes→findings→reports flow):
 // discussion + repro/rationale + screenshots, refined here before reports.
 
-export const getFindingNotes = async (findingId: number): Promise<Annotation[]> => {
-  const response = await api.get<Annotation[]>(`${p()}/findings/${findingId}/notes`);
+export const getFindingNotes = async (findingId: number, signal?: AbortSignal): Promise<Annotation[]> => {
+  const response = await api.get<Annotation[]>(`${p()}/findings/${findingId}/notes`, { signal });
   return response.data;
 };
 
@@ -398,8 +399,8 @@ export interface FindingImageList {
 }
 
 /** The finding's images with where each is placed in its report text. */
-export const getFindingImages = async (findingId: number): Promise<FindingImageList> => {
-  const response = await api.get<FindingImageList>(`${p()}/findings/${findingId}/images`);
+export const getFindingImages = async (findingId: number, signal?: AbortSignal): Promise<FindingImageList> => {
+  const response = await api.get<FindingImageList>(`${p()}/findings/${findingId}/images`, { signal });
   return response.data;
 };
 
@@ -427,9 +428,11 @@ export interface PromoteVulnerabilityPreview {
 // plugin-keyed preview under-reported whenever two scanners saw one problem.
 export const previewPromoteVulnerability = async (
   vulnId: number,
+  signal?: AbortSignal,
 ): Promise<PromoteVulnerabilityPreview> => {
   const response = await api.get<PromoteVulnerabilityPreview>(
     `${p()}/vulnerabilities/${vulnId}/promote-preview`,
+    { signal },
   );
   return response.data;
 };
@@ -476,6 +479,7 @@ export interface ObservationIssueFilters {
 
 export const getObservationIssues = async (
   filters: ObservationIssueFilters = {},
+  signal?: AbortSignal,
 ): Promise<{ items: ObservationIssue[]; total: number }> => {
   const response = await api.get(`${p()}/scanner-observations`, {
     params: {
@@ -487,13 +491,16 @@ export const getObservationIssues = async (
       skip: filters.skip || undefined,
       limit: filters.limit ?? 50,
     },
+    signal,
   });
   return response.data;
 };
 
 /** The first `limit` hosts by address (omitted = all). */
-export const getObservationIssueHosts = async (issueKey: string, limit?: number): Promise<ObservationIssueHost[]> => {
-  const response = await api.get(`${p()}/scanner-observations/hosts`, { params: { issue_key: issueKey, limit } });
+export const getObservationIssueHosts = async (
+  issueKey: string, limit?: number, signal?: AbortSignal,
+): Promise<ObservationIssueHost[]> => {
+  const response = await api.get(`${p()}/scanner-observations/hosts`, { params: { issue_key: issueKey, limit }, signal });
   return response.data;
 };
 

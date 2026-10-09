@@ -296,8 +296,8 @@ export interface ScanInventoryMarker {
   latest_id: number | null;
 }
 
-export const getScanInventoryMarker = async (): Promise<ScanInventoryMarker> => {
-  const response = await api.get(`${p()}/scans/inventory-marker`);
+export const getScanInventoryMarker = async (signal?: AbortSignal): Promise<ScanInventoryMarker> => {
+  const response = await api.get(`${p()}/scans/inventory-marker`, { signal });
   return response.data;
 };
 
@@ -359,8 +359,8 @@ export const getScansSummary = async (
   return response.data;
 };
 
-export const getScan = async (scanId: number) => {
-  const response = await api.get(`${p()}/scans/${scanId}`);
+export const getScan = async (scanId: number, signal?: AbortSignal) => {
+  const response = await api.get(`${p()}/scans/${scanId}`, { signal });
   return response.data;
 };
 
@@ -417,8 +417,9 @@ export interface ScanDeletionImpact {
 
 export const getScanDeletionImpact = async (
   scanId: number,
+  signal?: AbortSignal,
 ): Promise<ScanDeletionImpact> => {
-  const response = await api.get(`${p()}/scans/${scanId}/deletion-impact`);
+  const response = await api.get(`${p()}/scans/${scanId}/deletion-impact`, { signal });
   return response.data;
 };
 
@@ -484,7 +485,7 @@ export interface ScanDiffResponse {
   not_observed_ports: ScanDiffPortChange[];
 }
 
-export const compareScans = async (a: number, b: number): Promise<ScanDiffResponse> => {
-  const response = await api.get(`${p()}/scans/compare`, { params: { a, b } });
+export const compareScans = async (a: number, b: number, signal?: AbortSignal): Promise<ScanDiffResponse> => {
+  const response = await api.get(`${p()}/scans/compare`, { params: { a, b }, signal });
   return response.data;
 };

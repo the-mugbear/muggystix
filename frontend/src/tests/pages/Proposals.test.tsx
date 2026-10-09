@@ -82,7 +82,7 @@ describe('Proposals page — whose findings (5.318.0)', () => {
     listProposals.mockResolvedValue({ total: 3, items: page(1, 3), has_more: false });
     render(<MemoryRouter><Proposals /></MemoryRouter>);
     await waitFor(() => expect(listProposals).toHaveBeenCalled());
-    expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ mine: true }));
+    expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ mine: true }), expect.any(AbortSignal));
     expect(await screen.findByText(/to\s+your findings/)).toBeInTheDocument();
   });
 
@@ -91,13 +91,13 @@ describe('Proposals page — whose findings (5.318.0)', () => {
     listProposals.mockResolvedValue({ total: 120, items: page(1, 50), has_more: true });
     const { unmount } = render(<MemoryRouter><Proposals /></MemoryRouter>);
     await waitFor(() => expect(listProposals).toHaveBeenCalled());
-    expect(listProposals).toHaveBeenLastCalledWith(expect.objectContaining({ mine: undefined }));
+    expect(listProposals).toHaveBeenLastCalledWith(expect.objectContaining({ mine: undefined }), expect.any(AbortSignal));
     unmount();
 
     listProposals.mockClear();
     render(<MemoryRouter initialEntries={['/proposals?agent_session_id=7&scope=mine']}><Proposals /></MemoryRouter>);
     await waitFor(() => expect(listProposals).toHaveBeenCalled());
-    expect(listProposals).toHaveBeenLastCalledWith(expect.objectContaining({ mine: true, agent_session_id: 7 }));
+    expect(listProposals).toHaveBeenLastCalledWith(expect.objectContaining({ mine: true, agent_session_id: 7 }), expect.any(AbortSignal));
   });
 });
 
@@ -111,7 +111,7 @@ describe('Proposals page', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Show more/ }));
     await waitFor(() => expect(screen.getAllByRole('button', { name: /Reject…/ })).toHaveLength(100));
-    expect(listProposals).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50, limit: 50 }));
+    expect(listProposals).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50, limit: 50 }), expect.any(AbortSignal));
 
     rejectProposal.mockResolvedValue({ ...row(1), status: 'rejected' });
     listProposals.mockClear();
@@ -121,8 +121,8 @@ describe('Proposals page', () => {
     await waitFor(() => expect(rejectProposal).toHaveBeenCalled());
     // Both loaded pages are read again, a page at a time (it was one request
     // of `limit: 100` — the old hook's `maxReload`), and all 100 rows stay.
-    await waitFor(() => expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ offset: 50, limit: 50 })));
-    expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ offset: 0, limit: 50 }));
+    await waitFor(() => expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ offset: 50, limit: 50 }), expect.any(AbortSignal)));
+    expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ offset: 0, limit: 50 }), expect.any(AbortSignal));
     await waitFor(() => expect(document.querySelectorAll('[data-proposal]')).toHaveLength(100));
     // 5.351.0 — ONE re-read: the decision says which reads are out of date
     // itself.  (The row's callback re-read the list and the count, and the
@@ -159,7 +159,7 @@ describe('Proposals page — the latest filter wins', () => {
       );
     };
     render(<MemoryRouter initialEntries={['/proposals?scope=all']}><Shell /></MemoryRouter>);
-    await waitFor(() => expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ status: 'pending' })));
+    await waitFor(() => expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ status: 'pending' }), expect.any(AbortSignal)));
 
     fireEvent.click(screen.getByRole('button', { name: 'to accepted' }));
     await waitFor(() => expect(document.querySelectorAll('[data-proposal]')).toHaveLength(2));
@@ -216,7 +216,7 @@ describe('Proposals page — a filter value it does not know', () => {
   it('leaves a valid address alone', async () => {
     open('?status=rejected&kind=finding_text&scope=all');
     await waitFor(() => expect(listProposals).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'rejected', kind: 'finding_text' }),
+      expect.objectContaining({ status: 'rejected', kind: 'finding_text' }), expect.any(AbortSignal),
     ));
     expect(screen.getByTestId('address')).toHaveTextContent('status=rejected&kind=finding_text&scope=all');
   });
@@ -478,7 +478,7 @@ describe('Proposals page — a session id that is not a number', () => {
     render(
       <MemoryRouter initialEntries={['/proposals?agent_session_id=5&scope=all']}><Proposals /><Address /></MemoryRouter>,
     );
-    await waitFor(() => expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ agent_session_id: 5 })));
+    await waitFor(() => expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ agent_session_id: 5 }), expect.any(AbortSignal)));
     expect(screen.getByText(/From agent session #5/)).toBeInTheDocument();
     expect(screen.getByTestId('address')).toHaveTextContent('agent_session_id=5&scope=all');
   });

@@ -38,8 +38,8 @@ export interface HostTest {
   created_at: string;
 }
 export interface HostTestPage { items: HostTest[]; total: number; has_more: boolean }
-export const listHostTests = async (query: { host_id?: number; status?: HostTestStatus; active_only?: boolean; label?: string; mine?: boolean; agent_session_id?: number; limit?: number; offset?: number } = {}): Promise<HostTestPage> =>
-  (await api.get<HostTestPage>(`${p()}/host-tests`, { params: query })).data;
+export const listHostTests = async (query: { host_id?: number; status?: HostTestStatus; active_only?: boolean; label?: string; mine?: boolean; agent_session_id?: number; limit?: number; offset?: number } = {}, signal?: AbortSignal): Promise<HostTestPage> =>
+  (await api.get<HostTestPage>(`${p()}/host-tests`, { params: query, signal })).data;
 export const updateHostTest = async (id: number, change: { expected_revision: number; status?: HostTestStatus; assigned_to_id?: number | null; tester_summary?: string; dismissed_reason?: string }): Promise<HostTest> =>
   (await api.patch<HostTest>(`${p()}/host-tests/${id}`, change)).data;
 

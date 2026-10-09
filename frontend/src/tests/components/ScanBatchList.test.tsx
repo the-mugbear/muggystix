@@ -226,7 +226,7 @@ describe('ScanBatchRow', () => {
       .toHaveAttribute('href', '/parse-errors?status=superseded');
     fireEvent.click(screen.getByRole('button', { name: /show the files of/i }));
     await screen.findByText('smbmap-samba.txt');
-    expect(getBatchUnimportedJobs).toHaveBeenCalledWith(7);
+    expect(getBatchUnimportedJobs).toHaveBeenCalledWith(7, expect.any(AbortSignal));
 
     const rows = Array.from(container.querySelectorAll('tr[data-batch-job]'));
     expect(rows).toHaveLength(3);

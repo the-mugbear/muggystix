@@ -136,7 +136,7 @@ const AssetThumbnail: React.FC<{ templateName: string; asset: ReportTemplateAsse
   // `version` is in the key for the file it names, not for the request.
   const { data: blob } = useQuery({
     queryKey: ['fetchReportTemplateAssetPreview', templateName, asset.id, version],
-    queryFn: () => fetchReportTemplateAssetPreview(templateName, asset.id),
+    queryFn: ({ signal }) => fetchReportTemplateAssetPreview(templateName, asset.id, signal),
     enabled: asset.present && PREVIEWABLE.has(asset.kind ?? ''),
   });
   // The object URL lives as long as its image is the one shown.

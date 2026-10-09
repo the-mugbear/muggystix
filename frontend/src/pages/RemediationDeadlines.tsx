@@ -40,7 +40,7 @@ const COLUMNS: Array<{ state: RemediationState; label: string; tone?: string }> 
 ];
 
 const RemediationDeadlines: React.FC = () => {
-  const { policy, enabled, loading } = useRemediationPolicy();
+  const { policy, enabled, loading, error: policyError, retry: retryPolicy } = useRemediationPolicy();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const { projects: mine, selectProject } = useProject();
@@ -72,9 +72,16 @@ const RemediationDeadlines: React.FC = () => {
     return (
       <div className="flex flex-col gap-lg p-md md:p-lg">
         <h1 className="text-page-title">Remediation deadlines</h1>
-        <p className="max-w-4xl text-metadata text-muted-foreground">
-          {loading ? 'Loading…' : 'Remediation tracking is not turned on for this installation. A global administrator turns it on in System settings.'}
-        </p>
+        {policyError ? (
+          <p role="alert" className="max-w-4xl break-words text-metadata text-destructive">
+            {policyError}{' '}
+            <button type="button" className="text-info hover:underline" onClick={retryPolicy}>Retry</button>
+          </p>
+        ) : (
+          <p className="max-w-4xl text-metadata text-muted-foreground">
+            {loading ? 'Loading…' : 'Remediation tracking is not turned on for this installation. A global administrator turns it on in System settings.'}
+          </p>
+        )}
       </div>
     );
   }

@@ -1,7 +1,5 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import {
-  useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData,
-} from '@tanstack/react-query';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
@@ -40,6 +38,7 @@ import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
 import { agentInstruction } from '../utils/agentRuns';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useListQuery, type ListPage } from '../hooks/useListQuery';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
@@ -149,6 +148,9 @@ const EmptyCellEdit: React.FC<{ label: string; onClick: () => void }> = ({ label
 
 const SUBNET_PAGE_SIZE = 200;
 const NO_LABELS: SubnetLabelWithCounts[] = [];
+type ScopeSubnet = Scope['subnets'][number];
+/** One answer of the scope endpoint, as a page of the subnet list. */
+type ScopePage = Scope & ListPage<ScopeSubnet>;
 
 const Scopes: React.FC = () => {
   const toast = useToast();
@@ -208,7 +210,7 @@ const Scopes: React.FC = () => {
 
   const labelsQuery = useQuery({
     queryKey: ['listSubnetLabels'],
-    queryFn: () => listSubnetLabels(),
+    queryFn: ({ signal }) => listSubnetLabels(signal),
   });
   const labelCatalogue = labelsQuery.data ?? NO_LABELS;
   // A failed catalogue is said (R34): it used to look like "this project has
@@ -220,50 +222,47 @@ const Scopes: React.FC = () => {
   // at a time, appended by "Load more"; a reload after a change re-reads
   // every page that is shown, so the view is stable.  The search is in the
   // key: a slow reload of one search cannot answer for another (R33).
-  const scopeQuery = useInfiniteQuery({
-    queryKey: ['getDefaultScope', { subnetsSearch: debouncedSubnetSearch.trim() }],
-    queryFn: ({ pageParam }) => getDefaultScope({
-      subnetsSkip: pageParam,
-      subnetsLimit: SUBNET_PAGE_SIZE,
-      subnetsSearch: debouncedSubnetSearch,
-    }),
-    initialPageParam: 0,
-    getNextPageParam: (last: Scope, pages: Scope[]) => {
-      const loaded = pages.reduce((n, page) => n + page.subnets.length, 0);
-      return last.subnets_total !== undefined && loaded < last.subnets_total ? loaded : undefined;
-    },
-  });
-  const scopePages = scopeQuery.data?.pages;
-  const loadedScope = useMemo<Scope | null>(() => {
-    if (!scopePages?.length) return null;
-    const last = scopePages[scopePages.length - 1];
-    return {
-      ...scopePages[0],
-      subnets: scopePages.flatMap((page) => page.subnets),
-      subnets_total: last.subnets_total ?? scopePages[0].subnets_total,
-    };
-  }, [scopePages]);
+  // The endpoint answers with the scope AND one page of its subnets: the
+  // subnets are the list's rows, the scope rides on the page (`response`).
   // The list under the search box stays while the next search loads, and
-  // when it fails: the rows of the last search that answered.
-  const lastScope = useRef<Scope | null>(null);
-  if (loadedScope) lastScope.current = loadedScope;
-  const scope = loadedScope ?? lastScope.current;
+  // when it fails: the rows of the last search that answered (`keepPrevious`).
+  const subnetList = useListQuery<ScopeSubnet, ScopePage>(
+    'getDefaultScope',
+    async ({ offset, limit, signal }) => {
+      const page = await getDefaultScope({
+        subnetsSkip: offset,
+        subnetsLimit: limit,
+        subnetsSearch: debouncedSubnetSearch,
+      }, signal);
+      // A server that does not count has sent everything it has.
+      return { ...page, items: page.subnets, total: page.subnets_total ?? offset + page.subnets.length };
+    },
+    [{ subnetsSearch: debouncedSubnetSearch.trim() }],
+    { pageSize: SUBNET_PAGE_SIZE, keepPrevious: true },
+  );
+  const { response: scopePage, rows: subnetRows, total: subnetsTotal } = subnetList;
+  const scope = useMemo<Scope | null>(
+    () => (scopePage && subnetRows ? { ...scopePage, subnets: subnetRows, subnets_total: subnetsTotal } : null),
+    [scopePage, subnetRows, subnetsTotal],
+  );
+  // The search on screen has no answer of its own (yet, or at all).
+  const scopeIsPrevious = subnetList.isPrevious;
 
   // The coverage is a read of its own: it does not depend on the subnet
   // search, so a search never takes the lead and the measures with it.
   const coverageQuery = useQuery({
     queryKey: ['getScopeCoverage'],
-    queryFn: () => getScopeCoverage(),
+    queryFn: ({ signal }) => getScopeCoverage(undefined, signal),
   });
   const coverage = coverageQuery.data ?? null;
 
   // The spinner belongs to the first load only.
-  const loading = !coverageQuery.isFetched || (scope == null && !scopeQuery.isFetched);
-  const firstLoadError = (scope == null ? scopeQuery.error : null) ?? (coverage == null ? coverageQuery.error : null);
+  const loading = !coverageQuery.isFetched || (scope == null && subnetList.failure == null);
+  const firstLoadError = (scope == null ? subnetList.failure : null) ?? (coverage == null ? coverageQuery.error : null);
   const error = queryErrorText(firstLoadError, 'Failed to load scope data');
 
   // A search that could not be read: said, and the rows that were shown stay.
-  const searchError = scopeQuery.isError && loadedScope == null && scope != null ? scopeQuery.error : null;
+  const searchError = scopeIsPrevious ? subnetList.failure : null;
   useEffect(() => {
     if (searchError) toast.error(formatApiError(searchError, 'Failed to search subnets.'));
   }, [searchError, toast]);
@@ -271,7 +270,7 @@ const Scopes: React.FC = () => {
   // Nothing re-reads the scope but a change (no poll, no Refresh), so a
   // failed re-read is a change that the page does not show.  Said, not only
   // logged: the page otherwise keeps the state from before the change.
-  const reloadFailed = scopeQuery.isRefetchError || coverageQuery.isRefetchError;
+  const reloadFailed = (scope != null && !scopeIsPrevious && subnetList.failure != null) || coverageQuery.isRefetchError;
   useEffect(() => {
     if (reloadFailed) toast.error('The change was saved, but the scope could not be reloaded — refresh the page.');
   }, [reloadFailed, toast]);
@@ -282,11 +281,14 @@ const Scopes: React.FC = () => {
     queryClient.invalidateQueries({ queryKey: ['getScopeCoverage'] }),
   ]);
 
-  const loadingMore = scopeQuery.isFetchingNextPage;
+  const loadingMore = subnetList.loadingMore;
   const loadMoreSubnets = async () => {
     if (!scope || loadingMore) return;
-    const result = await scopeQuery.fetchNextPage();
-    if (result.isFetchNextPageError) toast.error(formatApiError(result.error, 'Failed to load more subnets.'));
+    try {
+      await subnetList.loadMore();
+    } catch (err) {
+      toast.error(formatApiError(err, 'Failed to load more subnets.'));
+    }
   };
 
   const addSubnet = useMutation({
@@ -400,16 +402,10 @@ const Scopes: React.FC = () => {
   };
 
   // A single subnet's label change, without re-reading the scope: the PUT
-  // answered with the subnet's labels, so they are put on its row wherever
-  // the scope is held.  (The editor re-reads the catalogue's counts.)
+  // answered with the subnet's labels, so they are put on its row where it
+  // is.  (The editor re-reads the catalogue's counts.)
   const applyLabelEdit = (subnetId: number, nextLabels: SubnetLabelInfo[]) => {
-    queryClient.setQueriesData<InfiniteData<Scope, number>>({ queryKey: ['getDefaultScope'] }, (held) => held && {
-      ...held,
-      pages: held.pages.map((page) => ({
-        ...page,
-        subnets: page.subnets.map((s) => (s.id === subnetId ? { ...s, labels: nextLabels } : s)),
-      })),
-    });
+    subnetList.mapRows((s) => (s.id === subnetId ? { ...s, labels: nextLabels } : s));
   };
 
   // A subnet's label chips and their editor — in the Labels column, or inside

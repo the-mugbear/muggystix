@@ -13,8 +13,8 @@ import { QueryObserver, useMutation, useQuery, useQueryClient } from '@tanstack/
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  GLOBAL, ScopedQueryClient, createQueryClient, getQueryScope, invalidateReads, pollEvery, scopedClient,
-  setQueryScope,
+  GLOBAL, ProjectChanged, ScopedQueryClient, createQueryClient, getQueryScope, holdProject, invalidateReads,
+  pollEvery, scopedClient, setQueryScope, useLastSettled,
 } from '../../lib/query';
 
 const setVisibility = (state: 'visible' | 'hidden') => {
@@ -250,6 +250,38 @@ describe('a late write keeps the identity it started with (scopedClient)', () =>
     expect(client.getQueryData(['listJobs'])).toEqual(['job of 1']);
   });
 
+  // Code review 2026-10-09 (second): a filter matches by KEY, and a
+  // remembered entry of another project has the same key.  The view checked
+  // the scope of the call, not the entry — so a bulk read returned both
+  // projects' entries and a bulk write ran on the other project's too.
+  it('a bulk read or write reaches only this project\'s entries, with another project\'s remembered beside them', async () => {
+    const client = createQueryClient();
+    setQueryScope({ userId: 1, projectId: 1 });
+    await client.fetchQuery({ queryKey: ['listJobs'], queryFn: async () => ['job of 1'], ...kept });
+    setQueryScope({ userId: 1, projectId: 2 });
+    await client.fetchQuery({ queryKey: ['listJobs'], queryFn: async () => ['job of 2'], ...kept });
+    const inProjectTwo = scopedClient(client);
+
+    expect(inProjectTwo.getQueriesData({ queryKey: ['listJobs'] })).toEqual([[['listJobs'], ['job of 2']]]);
+    const seen = vi.fn((prev: string[] | undefined) => [...(prev ?? []), 'added']);
+    inProjectTwo.setQueriesData<string[]>({ queryKey: ['listJobs'] }, seen);
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(client.getQueryData(['listJobs'])).toEqual(['job of 2', 'added']);
+    setQueryScope({ userId: 1, projectId: 1 });
+    expect(client.getQueryData(['listJobs'])).toEqual(['job of 1']);
+  });
+
+  it('holdProject: an operation of several requests stops when the project changes under it', () => {
+    setQueryScope({ userId: 1, projectId: 1 });
+    const stillHere = holdProject();
+    expect(() => stillHere()).not.toThrow();
+    setQueryScope({ userId: 1, projectId: 2 });
+    expect(() => stillHere()).toThrow(ProjectChanged);
+    // Back in the project it started in, it may go on.
+    setQueryScope({ userId: 1, projectId: 1 });
+    expect(() => stillHere()).not.toThrow();
+  });
+
   it('still writes what is not one project\'s after a project switch — but not after another user signs in', async () => {
     const client = createQueryClient();
     setQueryScope({ userId: 1, projectId: 1 });
@@ -316,6 +348,127 @@ describe('a late write keeps the identity it started with (scopedClient)', () =>
     // …and wrote nothing into the project now on screen.
     expect(screen.queryByText('queued in project 1')).toBeNull();
     expect(screen.getAllByRole('listitem').map((li) => li.textContent)).toEqual(['job of 2']);
+  });
+});
+
+// What seven pages each kept in a ref of their own (Hosts' rows and facets,
+// Oversight's figures, the scope under a search…): the last answer stays on
+// screen while another key loads or fails.
+describe('useLastSettled — the last answer this component was given', () => {
+  const before = getQueryScope();
+  afterEach(() => setQueryScope(before));
+
+  /** A read per filter, answered by hand. */
+  const reader = () => {
+    const answers: Record<string, { resolve: (value: string) => void; reject: (error: unknown) => void }> = {};
+    const read = (filter: string) => new Promise<string>((resolve, reject) => { answers[filter] = { resolve, reject }; });
+    return { answers, read };
+  };
+
+  it('stays while another key loads, and when that read fails; the next answer replaces it', async () => {
+    const { answers, read } = reader();
+    const { result, rerender } = renderHook(
+      ({ filter }: { filter: string }) => {
+        const query = useQuery({ queryKey: ['listThings', filter], queryFn: () => read(filter) });
+        // Read here: a query tells its component only of what it reads.
+        return { query: { data: query.data, isError: query.isError }, shown: useLastSettled(query.data) };
+      },
+      { initialProps: { filter: 'a' } },
+    );
+    // Nothing was ever given: nothing is made up.
+    expect(result.current.shown).toBeUndefined();
+    await waitFor(() => expect(answers.a).toBeDefined());
+    await act(async () => { answers.a.resolve('rows for a'); });
+    await waitFor(() => expect(result.current.shown).toBe('rows for a'));
+
+    rerender({ filter: 'b' });
+    // The query itself has nothing for "b" — the page still has what it showed.
+    expect(result.current.query.data).toBeUndefined();
+    expect(result.current.shown).toBe('rows for a');
+    await waitFor(() => expect(answers.b).toBeDefined());
+    await act(async () => { answers.b.reject(new Error('down')); });
+    await waitFor(() => expect(result.current.query.isError).toBe(true));
+    expect(result.current.shown).toBe('rows for a');
+    // …and the page can tell it is not the answer to what is asked now.
+    expect(result.current.shown).not.toBe(result.current.query.data);
+
+    rerender({ filter: 'c' });
+    await waitFor(() => expect(answers.c).toBeDefined());
+    await act(async () => { answers.c.resolve('rows for c'); });
+    await waitFor(() => expect(result.current.shown).toBe('rows for c'));
+  });
+
+  it('treats null like undefined — "nothing yet" — and keeps a falsy answer', () => {
+    const { result, rerender } = renderHook(
+      ({ data }: { data: number | null | undefined }) => useLastSettled(data),
+      { initialProps: { data: 0 as number | null | undefined } },
+    );
+    expect(result.current).toBe(0);
+    rerender({ data: null });
+    expect(result.current).toBe(0);
+    rerender({ data: undefined });
+    expect(result.current).toBe(0);
+  });
+
+  it('is the component\'s own: a remount starts with nothing', () => {
+    const first = renderHook(
+      ({ data }: { data?: string }) => useLastSettled(data),
+      { initialProps: { data: 'rows' as string | undefined } },
+    );
+    first.rerender({ data: undefined });
+    expect(first.result.current).toBe('rows');
+    first.unmount();
+    const second = renderHook(({ data }: { data?: string }) => useLastSettled(data), { initialProps: {} });
+    expect(second.result.current).toBeUndefined();
+  });
+
+  it('forgets with the project: a component that survives a switch shows nothing of the other project', () => {
+    setQueryScope({ userId: 1, projectId: 1 });
+    const { result, rerender } = renderHook(
+      ({ data }: { data?: string }) => useLastSettled(data),
+      { initialProps: { data: 'rows of project 1' as string | undefined } },
+    );
+    expect(result.current).toBe('rows of project 1');
+
+    // The reader switches project; the new project's read has not answered.
+    setQueryScope({ userId: 1, projectId: 2 });
+    rerender({ data: undefined });
+    expect(result.current).toBeUndefined();
+    rerender({ data: 'rows of project 2' });
+    expect(result.current).toBe('rows of project 2');
+
+    // Back on the first project nothing of the second is shown, and nothing
+    // old is brought back either: the query is asked.
+    setQueryScope({ userId: 1, projectId: 1 });
+    rerender({ data: undefined });
+    expect(result.current).toBeUndefined();
+  });
+
+  it('global: kept across projects (the data is not one project\'s), forgotten with the user', () => {
+    setQueryScope({ userId: 1, projectId: 1 });
+    const { result, rerender } = renderHook(
+      ({ data }: { data?: string }) => useLastSettled(data, { global: true }),
+      { initialProps: { data: 'figures of user 1' as string | undefined } },
+    );
+    setQueryScope({ userId: 1, projectId: 2 });
+    rerender({ data: undefined });
+    expect(result.current).toBe('figures of user 1');
+
+    setQueryScope({ userId: 2, projectId: 2 });
+    rerender({ data: undefined });
+    expect(result.current).toBeUndefined();
+  });
+
+  it('resetKey: forgotten when the record changes under a component that stays mounted', () => {
+    const { result, rerender } = renderHook(
+      ({ data, host }: { data?: string; host: number }) => useLastSettled(data, { resetKey: host }),
+      { initialProps: { data: 'entries of host 1' as string | undefined, host: 1 } },
+    );
+    // Same record, another page of it: kept.
+    rerender({ data: undefined, host: 1 });
+    expect(result.current).toBe('entries of host 1');
+    rerender({ data: undefined, host: 2 });
+    expect(result.current).toBeUndefined();
   });
 });
 

@@ -85,7 +85,7 @@ describe('CommandPalette finding search', () => {
     renderPalette();
     fireEvent.change(screen.getByRole('combobox'), { target: { value: '#37' } });
     expect(await screen.findByText('Finding number 37', {}, { timeout: 2000 })).toBeTruthy();
-    expect(api.getFinding).toHaveBeenCalledWith(37);
+    expect(api.getFinding).toHaveBeenCalledWith(37, expect.any(AbortSignal));
 
     fireEvent.change(screen.getByRole('combobox'), { target: { value: '7' } });
     expect(await screen.findByText('Finding number 7', {}, { timeout: 2000 })).toBeTruthy();

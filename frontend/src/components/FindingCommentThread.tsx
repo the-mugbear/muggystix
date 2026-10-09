@@ -24,7 +24,7 @@ import { Button } from './ui/button';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useToast } from '../contexts/ToastContext';
-import { invalidateReads, queryErrorText } from '../lib/query';
+import { holdProject, invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { announceMentionOutcome } from '../utils/mentions';
 import { safeFallback } from '../utils/uiStyles';
@@ -69,7 +69,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
 
   const queryClient = useQueryClient();
   const notesKey = ['getFindingNotes', findingId];
-  const query = useQuery({ queryKey: notesKey, queryFn: () => getFindingNotes(findingId) });
+  const query = useQuery({ queryKey: notesKey, queryFn: ({ signal }) => getFindingNotes(findingId, signal) });
   // `notes === null` = never loaded successfully; distinct from "loaded, and
   // there are none" so a failed fetch is never presented as an empty record
   // (UX review H1).  A failed re-read keeps whatever was on screen and says
@@ -124,8 +124,12 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
   const upload = useMutation({
     mutationFn: (v: { noteId: number; file: File }) => uploadFindingNoteAttachment(findingId, v.noteId, v.file),
   });
-  const attachOne = async (entry: PendingFile, noteId: number): Promise<PendingFile | null> => {
+  const attachOne = async (
+    entry: PendingFile, noteId: number, stillHere: () => void = () => {},
+  ): Promise<PendingFile | null> => {
     try {
+      // After a comment was posted: not sent once the reader has switched project.
+      stillHere();
       await upload.mutateAsync({ noteId, file: entry.file });
       return null;
     } catch (err) {
@@ -158,10 +162,11 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
   // file is attached to it in turn.
   const post = useMutation({
     mutationFn: async (v: { text: string; parentId: number | null; fresh: PendingFile[]; leftovers: PendingFile[] }) => {
+      const stillHere = holdProject();
       const note = await createFindingNote(findingId, v.text, v.parentId);
       const failed: PendingFile[] = [];
       for (const entry of v.fresh) {
-        const f = await attachOne(entry, note.id);
+        const f = await attachOne(entry, note.id, stillHere);
         if (f) failed.push(f);
       }
       return { note, failed };

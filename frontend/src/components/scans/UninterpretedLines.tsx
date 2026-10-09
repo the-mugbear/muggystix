@@ -38,7 +38,7 @@ const UninterpretedLines: React.FC<Props> = ({ jobId, total, distinct, formatKey
   // Opening again after a failure asks again.
   const lines = useQuery({
     queryKey: ['getUninterpretedLines', jobId],
-    queryFn: () => getUninterpretedLines(jobId),
+    queryFn: ({ signal }) => getUninterpretedLines(jobId, signal),
     enabled: open,
     staleTime: Infinity,
   });

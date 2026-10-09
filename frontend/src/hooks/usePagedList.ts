@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { GLOBAL, queryErrorText } from '../lib/query';
+import { GLOBAL, queryErrorText, useLastSettled } from '../lib/query';
 import type { ListPage, ListPageRequest } from './useListQuery';
 import type { UrlPage } from './useUrlPage';
 
@@ -44,7 +44,8 @@ export interface PagedList<T, P extends ListPage<T>> {
   /** This page's response, whole. */
   response: P | null;
   /** The last response of ANY page or filter — for what must not blink while
-   *  the next page loads (filter chips and their counts). */
+   *  the next page loads (filter chips and their counts).  This component's
+   *  and one project's (lib/query `useLastSettled`). */
   lastResponse: P | null;
   /** When the page on screen was last read successfully. */
   loadedAt: Date | null;
@@ -122,8 +123,7 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
     }
   }, [rows, total, page, pageSize, setPage]);
 
-  const lastResponse = useRef<P | null>(null);
-  if (response) lastResponse.current = response;
+  const lastResponse = useLastSettled(response, { global: isGlobal }) ?? null;
 
   return {
     rows, total,
@@ -132,7 +132,7 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
     page, pageSize, setPage,
     reload,
     response,
-    lastResponse: lastResponse.current,
+    lastResponse,
     loadedAt: query.dataUpdatedAt ? new Date(query.dataUpdatedAt) : null,
   };
 }

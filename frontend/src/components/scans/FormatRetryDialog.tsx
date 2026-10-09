@@ -59,7 +59,7 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
   // The retained file's detection, read each time the dialog opens.
   const inspection = useQuery({
     queryKey: ['getJobDetection', jobId],
-    queryFn: () => getJobDetection(jobId),
+    queryFn: ({ signal }) => getJobDetection(jobId, signal),
     enabled: open,
   });
   const loading = open && inspection.isFetching;
@@ -73,7 +73,7 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
   // list a detection would have carried.
   const fallback = useQuery({
     queryKey: ['getUploadFormats'],
-    queryFn: () => getUploadFormats(),
+    queryFn: ({ signal }) => getUploadFormats(signal),
     enabled: open && !!inspectError && !fileGone,
   });
   const fallbackFormats: FormatOption[] = inspectError && !fileGone ? fallback.data ?? [] : [];

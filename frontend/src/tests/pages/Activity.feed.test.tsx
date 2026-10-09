@@ -184,7 +184,7 @@ describe('Collaboration — one feed', () => {
     await screen.findByText('a note');
     fireEvent.change(screen.getByLabelText('Search discussions'), { target: { value: 'relay' } });
     await waitFor(() => {
-      expect(getNoteActivity).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'relay' }));
+      expect(getNoteActivity).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'relay' }), expect.any(AbortSignal));
       expect(getFindingDiscussions).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'relay' }), expect.anything());
     });
   });

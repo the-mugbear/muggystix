@@ -84,7 +84,7 @@ const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ open, onClose
   // The providers are the installation's, read each time the dialog opens.
   const providersQuery = useQuery({
     queryKey: [GLOBAL, 'listLLMProviders'],
-    queryFn: () => listLLMProviders(),
+    queryFn: ({ signal }) => listLLMProviders(signal),
     enabled: open,
   });
   const providers: LLMProviderEntry[] = providersQuery.data ?? [];

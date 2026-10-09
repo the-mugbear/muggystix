@@ -114,7 +114,7 @@ describe('HostInspector — stepping to a host that cannot be loaded', () => {
     await waitFor(() => expect(screen.getAllByText(/3 conflicts/i).length).toBeGreaterThan(0));
     rerender(inspector(2));
     await waitFor(() => expect(screen.getByText('10.0.0.2')).toBeInTheDocument());
-    await waitFor(() => expect(api.getHostConflicts).toHaveBeenCalledWith(2));
+    await waitFor(() => expect(api.getHostConflicts).toHaveBeenCalledWith(2, expect.any(AbortSignal)));
     expect(screen.queryByText(/3 conflicts/i)).not.toBeInTheDocument();
   });
 });

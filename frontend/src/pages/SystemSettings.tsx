@@ -20,10 +20,13 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import apiClient from '../services/api';
+import {
+  deleteUser, listUsers, registerUser, resetUserPassword, resetUserTwoFactor, updateUserAccount,
+  type UserAccount,
+} from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
-import { GLOBAL } from '../lib/query';
+import { GLOBAL, SECRET_MUTATION } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import QueueHealthCard from '../components/QueueHealthCard';
 import RemediationSettingsSection from '../components/remediation/RemediationSettingsSection';
@@ -70,17 +73,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import UserMembershipsDialog from '../components/UserMembershipsDialog';
 import { PasswordRulesChecklist, isPasswordValid } from '../components/PasswordRulesChecklist';
 
-interface User {
-  id: number;
-  username: string;
-  full_name: string | null;
-  role: string;
-  is_active: boolean;
-  last_login: string | null;
-  created_at: string;
-  created_by_id: number | null;
-  totp_enabled: boolean;
-}
+/** A row of the users table (the name `User` is also the icon's, as a value). */
+type User = UserAccount;
 
 interface NewUserForm {
   username: string;
@@ -124,8 +118,8 @@ const DateTimeCell: React.FC<{ value: string | null }> = ({ value }) => {
   );
 };
 
-/** Every account on the installation (`GET /users/`) — not a project's. */
-const USERS_KEY = [GLOBAL, '/users/'];
+/** Every account on the installation — not a project's. */
+const USERS_KEY = [GLOBAL, 'listUsers'];
 
 const TABS = ['users', 'remediation', 'report-writing'] as const;
 const DEFAULT_TAB = 'users';
@@ -171,7 +165,7 @@ const SystemSettings: React.FC = () => {
   // empty table, as it always was.
   const usersQuery = useQuery({
     queryKey: USERS_KEY,
-    queryFn: async () => (await apiClient.get<User[]>('/users/')).data,
+    queryFn: ({ signal }) => listUsers(signal),
     enabled: isAdmin,
   });
   const users: User[] = usersQuery.data ?? [];
@@ -187,19 +181,37 @@ const SystemSettings: React.FC = () => {
   };
   const replaceUser = (updated: User) => setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
 
+  // Leaving the dialog ends the attempt: the password typed into it goes too
+  // (the name and the role stay, as they did).
+  const closeNewUserDialog = () => {
+    setNewUserForm((form) => ({ ...form, password: '', confirm_password: '' }));
+    setNewUserDialogOpen(false);
+  };
+  const closeResetPasswordDialog = () => {
+    setNewPassword('');
+    setConfirmNewPassword('');
+    setResetPasswordDialogOpen(false);
+  };
+
+  // Creating an account and resetting a password both carry a password: the
+  // library keeps neither once the request has settled (`SECRET_MUTATION`,
+  // and the `reset` where each is called).  A failure is a toast, so the
+  // reset hides nothing.
   const creation = useMutation({
+    ...SECRET_MUTATION,
     // confirm_password is a client-only guard against typos — don't send it.
-    mutationFn: async ({ confirm_password: _confirm, ...payload }: NewUserForm) =>
-      (await apiClient.post<User>('/auth/register', payload)).data,
+    mutationFn: ({ confirm_password: _confirm, ...payload }: NewUserForm) => registerUser(payload),
     onSuccess: (created) => {
-      setUsers((prev) => [...prev, created]);
+      // The answer is the account without its 2FA state (`RegisteredUser`):
+      // the row is shown as not enrolled, which a new account is.
+      setUsers((prev) => [...prev, { ...created, created_by_id: currentUser?.id ?? null, totp_enabled: false }]);
       setNewUserDialogOpen(false);
       setNewUserForm({ username: '', password: '', confirm_password: '', full_name: '', role: 'member' });
       toast.success('User created.');
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to create user.')),
   });
-  const handleCreateUser = () => creation.mutate(newUserForm);
+  const handleCreateUser = () => creation.mutate(newUserForm, { onSettled: () => creation.reset() });
 
   // Client-only typo guard for the create-user dialog (the password is set
   // once at creation, so a mistype would otherwise lock the new account out).
@@ -212,9 +224,9 @@ const SystemSettings: React.FC = () => {
 
   /** `PUT /users/{id}` — the edit dialog, the role select and the status
    *  select all send the whole account. */
-  const putUser = async (body: { userId: number } & EditUserForm): Promise<User> => {
+  const putUser = (body: { userId: number } & EditUserForm): Promise<User> => {
     const { userId, ...form } = body;
-    return (await apiClient.put<User>(`/users/${userId}`, form)).data;
+    return updateUserAccount(userId, form);
   };
 
   const update = useMutation({
@@ -254,7 +266,7 @@ const SystemSettings: React.FC = () => {
   const statusSavingUserId = statusChange.isPending ? statusChange.variables.user.id : null;
 
   const twoFactorReset = useMutation({
-    mutationFn: (user: User) => apiClient.post(`/users/${user.id}/reset-2fa`),
+    mutationFn: (user: User) => resetUserTwoFactor(user.id),
     onSuccess: (_response, user) => {
       setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, totp_enabled: false } : u)));
       toast.success(`2FA reset for ${user.username}.`);
@@ -264,23 +276,25 @@ const SystemSettings: React.FC = () => {
   const reset2faUserId = twoFactorReset.isPending ? twoFactorReset.variables.id : null;
 
   const passwordReset = useMutation({
+    ...SECRET_MUTATION,
     mutationFn: (body: { userId: number; new_password: string }) =>
-      apiClient.post(`/users/${body.userId}/reset-password`, { new_password: body.new_password }),
+      resetUserPassword(body.userId, body.new_password),
     onSuccess: () => {
-      setResetPasswordDialogOpen(false);
-      setNewPassword('');
-      setConfirmNewPassword('');
+      closeResetPasswordDialog();
       toast.success('Password reset.');
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to reset password.')),
   });
   const handleResetPassword = () => {
     if (!selectedUser) return;
-    passwordReset.mutate({ userId: selectedUser.id, new_password: newPassword });
+    passwordReset.mutate(
+      { userId: selectedUser.id, new_password: newPassword },
+      { onSettled: () => passwordReset.reset() },
+    );
   };
 
   const deletion = useMutation({
-    mutationFn: (user: User) => apiClient.delete(`/users/${user.id}`),
+    mutationFn: (user: User) => deleteUser(user.id),
     onSuccess: (_response, user) => {
       setUsers((prev) => prev.filter((u) => u.id !== user.id));
       toast.success('User deleted.');
@@ -670,7 +684,7 @@ const SystemSettings: React.FC = () => {
       {/* Create User Dialog */}
       <Dialog
         open={newUserDialogOpen}
-        onOpenChange={(next) => !next && !saving && setNewUserDialogOpen(false)}
+        onOpenChange={(next) => !next && !saving && closeNewUserDialog()}
       >
         <DialogContent>
           <DialogHeader>
@@ -753,7 +767,7 @@ const SystemSettings: React.FC = () => {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setNewUserDialogOpen(false)} disabled={saving}>
+            <Button variant="outline" onClick={closeNewUserDialog} disabled={saving}>
               Cancel
             </Button>
             <Button
@@ -813,7 +827,7 @@ const SystemSettings: React.FC = () => {
       {/* Reset Password Dialog */}
       <Dialog
         open={resetPasswordDialogOpen}
-        onOpenChange={(next) => !next && !saving && setResetPasswordDialogOpen(false)}
+        onOpenChange={(next) => !next && !saving && closeResetPasswordDialog()}
       >
         <DialogContent>
           <DialogHeader>
@@ -853,7 +867,7 @@ const SystemSettings: React.FC = () => {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setResetPasswordDialogOpen(false)} disabled={saving}>
+            <Button variant="outline" onClick={closeResetPasswordDialog} disabled={saving}>
               Cancel
             </Button>
             <Button

@@ -158,7 +158,7 @@ const ProjectSettings: React.FC = () => {
   const membersKey = [GLOBAL, 'getProjectMembers', projectId];
   const membersQuery = useQuery({
     queryKey: membersKey,
-    queryFn: async () => (await getProjectMembers(projectId as number)) as unknown as Member[],
+    queryFn: async ({ signal }) => (await getProjectMembers(projectId as number, signal)) as unknown as Member[],
     enabled: !!projectId,
   });
   const members: Member[] | null = membersQuery.data ?? null;
@@ -177,7 +177,7 @@ const ProjectSettings: React.FC = () => {
   // The people who could be added: asked for each time the dialog opens.
   const directoryQuery = useQuery({
     queryKey: [GLOBAL, 'getUserDirectory'],
-    queryFn: () => getUserDirectory(),
+    queryFn: ({ signal }) => getUserDirectory(signal),
     enabled: addOpen,
   });
   // Said as a failure: an empty list read "Everyone is already a member".

@@ -492,8 +492,8 @@ export interface HostFilterView {
   updated_at: string | null;
 }
 
-export const listHostFilterViews = async (): Promise<HostFilterView[]> => {
-  const response = await api.get(`${p()}/hosts/views`);
+export const listHostFilterViews = async (signal?: AbortSignal): Promise<HostFilterView[]> => {
+  const response = await api.get(`${p()}/hosts/views`, { signal });
   return response.data;
 };
 
@@ -515,8 +515,8 @@ export const deleteHostFilterView = async (viewId: number): Promise<void> => {
 // --- Project default view (admin-promoted) ---
 
 /** The project's default Hosts filter view, or null if none is set. */
-export const getProjectDefaultView = async (): Promise<HostFilterView | null> => {
-  const response = await api.get(`${p()}/hosts/default-view`);
+export const getProjectDefaultView = async (signal?: AbortSignal): Promise<HostFilterView | null> => {
+  const response = await api.get(`${p()}/hosts/default-view`, { signal });
   return response.data ?? null;
 };
 
@@ -545,8 +545,8 @@ export interface HostFollowersResponse {
   followers: HostFollowerEntry[];
 }
 
-export const getHostFollowers = async (hostId: number): Promise<HostFollowersResponse> => {
-  const response = await api.get(`${p()}/hosts/${hostId}/followers`);
+export const getHostFollowers = async (hostId: number, signal?: AbortSignal): Promise<HostFollowersResponse> => {
+  const response = await api.get(`${p()}/hosts/${hostId}/followers`, { signal });
   return response.data;
 };
 
@@ -591,8 +591,8 @@ export const updateAnnotation = async (
   return response.data;
 };
 
-export const getHostNotes = async (hostId: number): Promise<Annotation[]> => {
-  const response = await api.get(`${p()}/hosts/${hostId}/notes`);
+export const getHostNotes = async (hostId: number, signal?: AbortSignal): Promise<Annotation[]> => {
+  const response = await api.get(`${p()}/hosts/${hostId}/notes`, { signal });
   return response.data;
 };
 export const deleteAnnotation = async (hostId: number, noteId: number): Promise<void> => {
@@ -647,9 +647,10 @@ export const setNoteAttachmentCaption = async (
 };
 
 /** Fetch an attachment's bytes (authenticated) as an object URL for <img src>. */
-export const getNoteAttachmentObjectUrl = async (attachmentId: number): Promise<string> => {
+export const getNoteAttachmentObjectUrl = async (attachmentId: number, signal?: AbortSignal): Promise<string> => {
   const response = await api.get(`${p()}/hosts/notes/attachments/${attachmentId}`, {
     responseType: 'blob',
+    signal,
   });
   return URL.createObjectURL(response.data as Blob);
 };
@@ -690,7 +691,7 @@ export const getNoteActivity = async (params?: {
   search?: string;
   skip?: number;
   limit?: number;
-}): Promise<NoteActivityResponse> => {
+}, signal?: AbortSignal): Promise<NoteActivityResponse> => {
   const queryParams = new URLSearchParams();
   if (params) {
     Object.entries(params).forEach(([key, value]) => {
@@ -698,7 +699,7 @@ export const getNoteActivity = async (params?: {
     });
   }
   const qs = queryParams.toString();
-  const response = await api.get(`${p()}/hosts/notes/activity${qs ? `?${qs}` : ''}`);
+  const response = await api.get(`${p()}/hosts/notes/activity${qs ? `?${qs}` : ''}`, { signal });
   return response.data;
 };
 
@@ -779,10 +780,11 @@ export const serializeHostParams = (
 
 export const getHost = async (
   hostId: number,
-  options: { includeInfo?: boolean } = {},
+  options: { includeInfo?: boolean; signal?: AbortSignal } = {},
 ): Promise<Host> => {
   const response = await api.get(`${p()}/hosts/${hostId}`, {
     params: options.includeInfo ? { include_info: true } : undefined,
+    signal: options.signal,
   });
   return response.data;
 };
@@ -867,8 +869,8 @@ export const suggestHostQueryValues = async (
   return response.data;
 };
 
-export const listHostQueryHistory = async (limit = 20): Promise<HostQueryHistoryEntry[]> => {
-  const response = await api.get(`${p()}/hosts/query/history`, { params: { limit } });
+export const listHostQueryHistory = async (limit = 20, signal?: AbortSignal): Promise<HostQueryHistoryEntry[]> => {
+  const response = await api.get(`${p()}/hosts/query/history`, { params: { limit }, signal });
   return response.data;
 };
 
@@ -902,8 +904,8 @@ export interface HostTagWithCount {
   host_count: number;
 }
 
-export const listHostTags = async (): Promise<HostTagWithCount[]> => {
-  const response = await api.get(`${p()}/hosts/tags`);
+export const listHostTags = async (signal?: AbortSignal): Promise<HostTagWithCount[]> => {
+  const response = await api.get(`${p()}/hosts/tags`, { signal });
   return response.data;
 };
 export const updateHostTag = async (
@@ -969,13 +971,14 @@ export interface MatchingHostIds {
 
 export const getMatchingHostIds = async (
   params: Record<string, string | boolean | number | string[] | undefined>,
+  signal?: AbortSignal,
 ): Promise<MatchingHostIds> => {
   // Serialize ourselves (repeated params for arrays) rather than handing axios
   // the object — its default array encoding is `key[]=v`, which FastAPI won't
   // read as List[str], so the org/asn/country filters would be dropped and
   // "select all matching" would act on the wrong host set.
   const qs = serializeHostParams(params);
-  const response = await api.get(`${p()}/hosts/ids${qs ? `?${qs}` : ''}`);
+  const response = await api.get(`${p()}/hosts/ids${qs ? `?${qs}` : ''}`, { signal });
   return response.data;
 };
 
@@ -1026,8 +1029,8 @@ export interface WebInterface {
   port_id?: number | null;
 }
 
-export const getHostWebInterfaces = async (hostId: number): Promise<WebInterface[]> => {
-  const response = await api.get(`${p()}/hosts/${hostId}/web-interfaces`);
+export const getHostWebInterfaces = async (hostId: number, signal?: AbortSignal): Promise<WebInterface[]> => {
+  const response = await api.get(`${p()}/hosts/${hostId}/web-interfaces`, { signal });
   return response.data;
 };
 
@@ -1043,8 +1046,8 @@ export interface WebInterfaceRecord {
   truncated: boolean;
 }
 
-export const getWebInterfaceRecord = async (interfaceId: number): Promise<WebInterfaceRecord> => {
-  const response = await api.get(`${p()}/hosts/web-interfaces/${interfaceId}/record`);
+export const getWebInterfaceRecord = async (interfaceId: number, signal?: AbortSignal): Promise<WebInterfaceRecord> => {
+  const response = await api.get(`${p()}/hosts/web-interfaces/${interfaceId}/record`, { signal });
   return response.data;
 };
 
@@ -1083,13 +1086,13 @@ export interface WebPath {
   scans: number;
 }
 
-export const getHostWebPaths = async (hostId: number): Promise<WebPath[]> => {
-  const response = await api.get(`${p()}/hosts/${hostId}/web-paths`);
+export const getHostWebPaths = async (hostId: number, signal?: AbortSignal): Promise<WebPath[]> => {
+  const response = await api.get(`${p()}/hosts/${hostId}/web-paths`, { signal });
   return response.data;
 };
 
-export const getHostNetexecResults = async (hostId: number): Promise<NetexecResult[]> => {
-  const response = await api.get(`${p()}/hosts/${hostId}/netexec`);
+export const getHostNetexecResults = async (hostId: number, signal?: AbortSignal): Promise<NetexecResult[]> => {
+  const response = await api.get(`${p()}/hosts/${hostId}/netexec`, { signal });
   return response.data;
 };
 
@@ -1110,11 +1113,12 @@ export const getHostNetexecResults = async (hostId: number): Promise<NetexecResu
  */
 export const fetchWebInterfaceScreenshot = async (
   interfaceId: number,
+  signal?: AbortSignal,
 ): Promise<string | null> => {
   try {
     const response = await api.get(
       `${p()}/hosts/web-interfaces/${interfaceId}/screenshot`,
-      { responseType: 'blob' },
+      { responseType: 'blob', signal },
     );
     return URL.createObjectURL(response.data as Blob);
   } catch (err: unknown) {
@@ -1148,9 +1152,10 @@ export interface HostDnsRecordsResponse {
 
 export const getHostDnsRecords = async (
   hostId: number,
+  signal?: AbortSignal,
 ): Promise<HostDnsRecordsResponse> => {
   try {
-    const response = await api.get(`${p()}/hosts/${hostId}/dns-records`);
+    const response = await api.get(`${p()}/hosts/${hostId}/dns-records`, { signal });
     return response.data;
   } catch (error: any) {
     // Older deployments don't expose this endpoint — fail closed to
@@ -1163,9 +1168,9 @@ export const getHostDnsRecords = async (
   }
 };
 
-export const getHostConflicts = async (hostId: number): Promise<HostConflictsResponse> => {
+export const getHostConflicts = async (hostId: number, signal?: AbortSignal): Promise<HostConflictsResponse> => {
   try {
-    const response = await api.get(`${p()}/hosts/${hostId}/conflicts`);
+    const response = await api.get(`${p()}/hosts/${hostId}/conflicts`, { signal });
     return response.data;
   } catch (error: any) {
     // Only swallow 404 (endpoint not available in older deployments);
@@ -1196,6 +1201,7 @@ export type ScanHost = Pick<Host, 'id' | 'ip_address' | 'hostname' | 'hostname_s
 export const getHostsByScan = async (
   scanId: number,
   query: string | ScanHostsQuery = {},
+  signal?: AbortSignal,
 ): Promise<ScanHost[]> => {
   // v2.86.9 — second arg accepts either a legacy bare state string
   // (back-compat) or a query object with search / port / skip /
@@ -1208,7 +1214,7 @@ export const getHostsByScan = async (
   if (q.skip !== undefined) params.set('skip', String(q.skip));
   if (q.limit !== undefined) params.set('limit', String(q.limit));
   const qs = params.toString();
-  const response = await api.get(`${p()}/hosts/scan/${scanId}${qs ? `?${qs}` : ''}`);
+  const response = await api.get(`${p()}/hosts/scan/${scanId}${qs ? `?${qs}` : ''}`, { signal });
   return response.data;
 };
 

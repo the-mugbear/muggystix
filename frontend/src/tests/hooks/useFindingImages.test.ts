@@ -40,7 +40,7 @@ describe('useFindingImages', () => {
     });
     const { result } = renderHook(() => useFindingImages(7, d));
     await waitFor(() => expect(result.current.images).toHaveLength(3));
-    expect(d.getFindingImages).toHaveBeenCalledWith(7);
+    expect(d.getFindingImages).toHaveBeenCalledWith(7, expect.any(AbortSignal));
     expect(result.current.placeable.map((i) => i.id)).toEqual([1]);
     expect(result.current.captionMax).toBe(2000);
     // The preview's question: is this id an image the section may show?
