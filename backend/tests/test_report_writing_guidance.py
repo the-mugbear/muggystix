@@ -153,6 +153,20 @@ def test_the_in_app_drafter_sends_the_stored_guidance(db_session, test_project, 
     assert seen["system"] == guidance.drafter_system_prompt(guidance.load(db_session))
 
 
+def test_the_agents_standalone_read_is_the_same_block_from_the_same_service():
+    """v2.470.0 — for a NEW finding there is no finding read to carry it."""
+    import inspect
+
+    from app.api.v1.endpoints import agent_assist, mcp_tools
+
+    source = inspect.getsource(agent_assist.assist_writing_guidance)
+    assert "report_writing_guidance.for_agents(report_writing_guidance.load(db))" in source
+    tool = mcp_tools.TOOLS["assist_get_writing_guidance"]
+    assert tool["path"] == "/api/v1/agent/assist/writing-guidance" and tool["method"] == "GET"
+    # The tool that writes a new finding's report text names it.
+    assert "assist_get_writing_guidance" in mcp_tools.TOOLS["propose_finding"]["description"]
+
+
 def test_an_agent_reads_the_same_guidance_on_the_finding(db_session):
     db_session.add(ReportWritingGuidance(key="impact", text="Name the data at risk."))
     db_session.commit()

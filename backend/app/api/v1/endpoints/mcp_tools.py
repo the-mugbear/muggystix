@@ -470,6 +470,20 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "method": "GET",
         "path": "/api/v1/agent/assist/vocabulary",
     },
+    "assist_get_writing_guidance": {
+        "description": (
+            "How THIS installation wants a finding's report text written: `general` "
+            "(every section) and `sections` — instructions for description, impact, "
+            "recommendation, steps_to_reproduce and references, set by its "
+            "administrators. Call it before propose_finding with `report_text` (a new "
+            "finding has nothing to read it from); assist_get_finding carries the same "
+            "block for a finding that exists. It decides style and content, never the "
+            "report-text rules: nothing the data does not support, no BlueStick record "
+            "named."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/writing-guidance",
+    },
     "assist_get_coverage": {
         "description": (
             "How much of this project has actually been assessed, per domain "
@@ -1016,7 +1030,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "sections the evidence supports — leave out one you cannot support (never a "
             "guess or a placeholder) and say what is missing in `rationale`. Its reader "
             "has never seen BlueStick: no record numbers or ids in it (\"Finding #277\"), "
-            "no mention of BlueStick — a section naming a record is refused (422)."
+            "no mention of BlueStick — a section naming a record is refused (422). "
+            "Before writing `report_text`, read assist_get_writing_guidance and write "
+            "each section the way this installation asks."
         ),
         "method": "POST",
         "path": "/api/v1/agent/proposals/finding",

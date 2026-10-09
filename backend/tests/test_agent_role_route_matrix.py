@@ -36,6 +36,10 @@ _SEQ = [95000]
 MATRIX = [
     ("ordinary read", "GET", "/api/v1/agent/assist/vocabulary",
      {"analyst": True, "auditor": True, "viewer": True}),
+    # v2.470.0 — the page's read (GET /report-writing-guidance) is every
+    # signed-in user's, so the agent's is every member's.
+    ("writing guidance", "GET", "/api/v1/agent/assist/writing-guidance",
+     {"analyst": True, "auditor": True, "viewer": True}),
     ("bulk export", "GET", "/api/v1/agent/assist/report-context.ndjson",
      {"analyst": True, "auditor": True, "viewer": False}),
     ("project write", "POST", "/api/v1/agent/hosts/{host_id}/notes",

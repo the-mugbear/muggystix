@@ -1858,6 +1858,22 @@ def assist_vocabulary(
 
 
 @router.get(
+    "/assist/writing-guidance",
+    summary="How this installation wants a finding's report text written",
+)
+def assist_writing_guidance(
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """The installation's report writing guidance (v2.470.0) — the block a
+    finding read carries as ``writing_guidance``, for when there is no finding
+    to read yet: a NEW finding proposed with report text.  The record a global
+    admin edits in System settings (``GET /report-writing-guidance``, every
+    signed-in user's), from the same service."""
+    return report_writing_guidance.for_agents(report_writing_guidance.load(db))
+
+
+@router.get(
     "/assist/coverage",
     summary="How much of this project has actually been assessed",
 )

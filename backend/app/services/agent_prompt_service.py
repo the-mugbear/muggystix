@@ -33,16 +33,17 @@ logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.19.0"
+PROMPT_VERSION = "4.20.0"
 
 # What PROMPT_VERSION changed (the current version only).
 PROMPT_CHANGES = (
-    "Report writing guidance. `GET /agent/assist/findings/{id}` "
-    "(`assist_get_finding`) now carries `writing_guidance`: how this "
-    "installation's administrators want report text written — `general` for "
-    "every section, and `sections` with instructions per field (description, "
-    "impact, recommendation, steps_to_reproduce, references). Read it before "
-    "you propose report text and write each section to it. It never overrides "
+    "Report writing guidance has its own read: `GET /agent/assist/writing-guidance` "
+    "(`assist_get_writing_guidance`) — how this installation's administrators "
+    "want report text written: `general` for every section, and `sections` "
+    "with instructions per field (description, impact, recommendation, "
+    "steps_to_reproduce, references). Call it before `propose_finding` with "
+    "`report_text`; a finding that exists carries the same block as "
+    "`writing_guidance` on `assist_get_finding` (since 4.19.0). It never overrides "
     "the report-text rules: a complete rewrite, nothing the data does not "
     "support, no BlueStick record named."
 )
@@ -419,7 +420,8 @@ def build_session_instructions(
         f"or of how the text was produced — name a finding by its title and a "
         f"system by its address (a section that names a record is refused, 422). "
         f"How this installation wants each section written is `writing_guidance` "
-        f"on `GET /agent/assist/findings/{{id}}`: read it before you draft.\n"
+        f"on `GET /agent/assist/findings/{{id}}`, and for a finding that does not "
+        f"exist yet `GET /agent/assist/writing-guidance`: read it before you draft.\n"
         f"- **Scan and upload.** Run scanners locally from the working directory "
         f"and `POST /agent/uploads` (multipart; poll `GET /agent/uploads/{{id}}`) — "
         f"nothing needs to be open first. `GET /agent/scopes` lists the declared scopes; "

@@ -77,6 +77,7 @@ What that takes, beyond "which hosts match X":
 | "What did NetExec find on this host, and was it read right?" | `assist_list_host_access` — each result's interpreted fields beside the tool's line (v2.418.0) |
 | "Which lines did BlueStick not read?" | `assist_list_uninterpreted_lines` — per import, as redacted shapes (v2.418.0); see `documentation/PARSE_AUDIT_BRIEF.md` |
 | "Which tags/sites/people exist here?" | `assist_get_vocabulary` |
+| "How does this installation want report text written?" | `assist_get_writing_guidance` (v2.470.0) — before `propose_finding` with `report_text`; `assist_get_finding` carries the same block for a finding that exists |
 | "How much of this did we actually assess?" | `assist_get_coverage` |
 | "Has anyone tested this host, and what happened?" | `host_tests_list {host_id}` (the tests and their status), `list_evidence {host_id}` (what was run and what came back) |
 | "Which segment is worst?" | `assist_list_segments` — ranked worst-first |

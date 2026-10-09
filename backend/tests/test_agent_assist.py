@@ -1072,6 +1072,10 @@ def test_finding_detail_reaches_the_evidence_a_writeup_cites(
     assert body["writing_guidance"] == report_writing_guidance.for_agents(
         report_writing_guidance.load(db_session))
     assert list(body["writing_guidance"]["sections"]) == list(report_writing_guidance.SECTIONS)
+    # v2.470.0 — and the standalone read, for a finding that does not exist yet.
+    alone = client.get("/api/v1/agent/assist/writing-guidance", headers=headers)
+    assert alone.status_code == 200, alone.text
+    assert alone.json() == body["writing_guidance"]
     assert body["host_count"] == 1
     assert body["hosts"][0]["ip_address"] == "10.9.0.5"
 
