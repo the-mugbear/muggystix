@@ -171,11 +171,10 @@ export interface Host {
   follow?: HostFollowInfo | null;
   notes?: Annotation[];
   note_count?: number;
-  /** Legacy wire names (test plans were removed in v2.442.0): the host's tests
-   *  proposed or in progress, and its evidence records with a tested outcome.
-   *  Read them through `utils/hostTests.hostTestCounts`, never directly. */
-  test_plan_entry_count?: number;
-  test_execution_count?: number;
+  /** The host's tests proposed or in progress ("planned"), and its evidence
+   *  records with a tested outcome ("tested").  List rows carry them. */
+  planned_test_count?: number;
+  tested_record_count?: number;
   // v2.12.0: count of web interfaces (httpx / eyewitness / nikto rows)
   // observed on this host. Gates the HostDetail "Web Interfaces" card
   // and will drive a Hosts-list "Web" badge in phase 2.

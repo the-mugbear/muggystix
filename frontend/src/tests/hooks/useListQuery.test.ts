@@ -462,7 +462,10 @@ describe('useListQuery — keepPrevious', () => {
     expect(result.current.error).toBeNull();
 
     await doing(async () => { slow.resolve({ items: rows('b', 1, 2), total: 2, summary: 'of b' }); });
-    expect(result.current.rows?.map((r) => r.filter)).toEqual(['b', 'b']);
+    // Awaited: the answer reaches the hook a task or two after the promise
+    // settles, and under a loaded run one task was not always enough (this
+    // assertion failed in two full gate runs and never alone).
+    await waitFor(() => expect(result.current.rows?.map((r) => r.filter)).toEqual(['b', 'b']));
     expect(result.current.total).toBe(2);
     expect(result.current.response?.summary).toBe('of b');
     expect(result.current.isPrevious).toBe(false);

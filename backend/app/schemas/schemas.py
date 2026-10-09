@@ -523,13 +523,15 @@ class Host(HostBase):
     follow: Optional[HostFollowInfo] = None
     notes: List[Annotation] = []
     note_count: int = 0
-    # The host's tests still to do (proposed / in progress) — "planned".  The
-    # name is from when these were test-plan entries (until v2.442.0).
-    test_plan_entry_count: int = 0
+    # The host's tests still to do (proposed / in progress) — "planned".
+    # (Until v2.473.0 this was `test_plan_entry_count`, a name from when these
+    # were test-plan entries, removed in v2.442.0.)
+    planned_test_count: int = 0
     # Evidence records on the host whose outcome is finding / no_finding /
     # inconclusive — "tested".  Surfaced on the Hosts list as the "tested"
     # left-border accent (distinct from planned, which is not yet run).
-    test_execution_count: int = 0
+    # (Until v2.473.0: `test_execution_count`.)
+    tested_record_count: int = 0
     # v4.9.1 — OTHER users (not the caller) who have this host In Review.
     # Teammates-only by design: the caller's own status is on the Follow
     # control, so including the caller duplicated the badge.  Empty for the

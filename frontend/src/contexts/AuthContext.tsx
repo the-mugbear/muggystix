@@ -51,7 +51,10 @@ interface AuthContextType {
    */
   authStatus: AuthStatus;
   hasRole: (role: string) => boolean;
-  hasPermission: (requiredRole: string) => boolean;
+  /** Is the signed-in ACCOUNT a global administrator?  The only question the
+   *  account role answers; what someone may do in a project is the project
+   *  role (`hooks/useProjectRole`). */
+  hasPermission: (requiredRole: 'admin') => boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -63,20 +66,12 @@ interface AuthProviderProps {
 // v4.8.0 — the global account role is binary: `admin` or `member`
 // (the analyst/auditor/viewer vocabulary moved to per-project
 // membership roles, which the backend enforces via
-// `require_project_role`).  `hasPermission` here gates UI affordances
-// only — the backend is the real authority — so a `member` is treated
-// as analyst-equivalent for affordance visibility (level 3): they SEE
-// project-action controls, and the backend's project-role check is
-// what actually permits or 403s the action.  `auditor`/`viewer` are
-// retained in the table so a stale token carrying an old global role
-// still resolves sanely.
-const ROLE_HIERARCHY = {
-  admin: 100,
-  member: 3,
-  analyst: 3,
-  auditor: 2,
-  viewer: 1,
-};
+// `require_project_role`).  `hasPermission` here gates the ACCOUNT-level
+// surfaces only (users, system settings, audit log, Oversight) and answers
+// one question: is this account a global administrator?  It used to take any
+// role name and rank them, with every member passing 'analyst', 'auditor' and
+// 'viewer' — so it read as a project check and was true for everyone
+// (5.355.0: those branches are gone; the type takes 'admin' only).
 
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -416,14 +411,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     return user?.role === role;
   }, [user?.role]);
 
-  const hasPermission = useCallback((requiredRole: string): boolean => {
-    if (!user) return false;
-
-    const userLevel = ROLE_HIERARCHY[user.role as keyof typeof ROLE_HIERARCHY] || 0;
-    const requiredLevel = ROLE_HIERARCHY[requiredRole as keyof typeof ROLE_HIERARCHY] || 0;
-
-    return userLevel >= requiredLevel;
-  }, [user]);
+  const hasPermission = useCallback(
+    (requiredRole: 'admin'): boolean => requiredRole === 'admin' && user?.role === 'admin',
+    [user],
+  );
 
   // Track authentication state changes
   const isAuthenticated = !!user && !!token;

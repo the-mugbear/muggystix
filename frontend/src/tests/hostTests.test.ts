@@ -11,17 +11,19 @@ import {
 const t = (over: Partial<HostTest>): HostTest =>
   ({ status: 'proposed', evidence_count: 0, last_outcome: null, unpromoted_findings: 0, finding_ids: [], ...over }) as HostTest;
 
-// The host row's two counts still travel under their test-plan names.  One
-// helper reads them, so the backend rename is a change in two files.
+// The host row's two counts travelled under their test-plan names until
+// 2.473.0 / 5.355.0, with this helper as the one reader so that the rename
+// would be a change in two files.  It was; the guard now says the retired
+// names are read nowhere.
 describe('hostTestCounts', () => {
   it('names the counts by what they mean, zero when absent', () => {
-    expect(hostTestCounts({ test_plan_entry_count: 2, test_execution_count: 3 })).toEqual({ toDo: 2, recorded: 3 });
+    expect(hostTestCounts({ planned_test_count: 2, tested_record_count: 3 })).toEqual({ toDo: 2, recorded: 3 });
     expect(hostTestCounts({})).toEqual({ toDo: 0, recorded: 0 });
   });
 
-  it('is the only code that reads the legacy wire names', () => {
+  it('nothing reads the retired wire names any more', () => {
     const src = join(__dirname, '..');
-    const allowed = new Set(['services/api/hosts.ts', 'utils/hostTests.ts']);
+    const allowed = new Set<string>();
     const offenders: string[] = [];
     const walk = (dir: string) => {
       for (const name of readdirSync(dir)) {

@@ -13,8 +13,10 @@ const state = vi.hoisted(() => ({
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({
     user: { id: 1, username: 'u', role: state.account },
-    // The real table: a member is "analyst-equivalent" for the account role.
-    hasPermission: (r: string) => (state.account === 'admin' ? true : r !== 'admin'),
+    isAuthenticated: true,
+    // As the real one since 5.355.0: it answers "is this account a global
+    // administrator" and nothing else.
+    hasPermission: (r: string) => r === 'admin' && state.account === 'admin',
   }),
 }));
 vi.mock('../../contexts/ProjectContext', () => ({

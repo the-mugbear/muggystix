@@ -63,6 +63,23 @@ describe('AuthProvider — verifying the stored session', () => {
     expect(setCurrentProjectId).toHaveBeenCalledWith(null);
   });
 
+  // 5.355.0 — the account role answers ONE question.  It used to rank role
+  // names, and every member passed 'analyst' / 'auditor' / 'viewer'.
+  it.each([
+    ['admin', 'global admin'],
+    ['member', 'not a global admin'],
+    ['analyst', 'not a global admin'],   // a stale token's old global role is not an administrator
+  ])('hasPermission: an account whose role is %s is %s', async (role, shown) => {
+    localStorage.setItem('auth_user', JSON.stringify({ ...ADMIN, role }));
+    apiGet.mockRejectedValue({ response: { status: 503 } });   // the stored session is kept
+    const Role: React.FC = () => {
+      const { user, hasPermission } = useAuth();
+      return <p>{user ? (hasPermission('admin') ? 'global admin' : 'not a global admin') : 'nobody'}</p>;
+    };
+    render(<MemoryRouter><AuthProvider><Role /></AuthProvider></MemoryRouter>);
+    expect(await screen.findByText(shown)).toBeInTheDocument();
+  });
+
   // 5.353.0 — a key names the project, not the user: what one user read
   // (remembered answers included) is dropped when the signed-in user changes.
   it('drops what the user read from the query cache when the session ends — and keeps it while the session is kept', async () => {

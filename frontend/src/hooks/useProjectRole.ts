@@ -36,14 +36,16 @@ export function useProjectRole(): ProjectRoleAccess {
  * is any signed-in account.
  */
 export function useRoleGate(): (requiredRole: string | undefined) => boolean {
-  const { hasPermission } = useAuth();
+  const { hasPermission, isAuthenticated: signedIn } = useAuth();
   const access = useProjectRole();
   return useMemo(() => (requiredRole: string | undefined) => {
     if (!requiredRole) return true;
     if (requiredRole === 'analyst') return access.canWrite;
     if (requiredRole === 'auditor') return access.canExport;
-    return hasPermission(requiredRole);
-  }, [access, hasPermission]);
+    if (requiredRole === 'admin') return hasPermission('admin');
+    // `viewer` (and any name this gate does not know): any signed-in account.
+    return signedIn;
+  }, [access, hasPermission, signedIn]);
 }
 
 export type { ProjectRoleAccess, ProjectRoleName };

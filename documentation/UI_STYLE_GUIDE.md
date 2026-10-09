@@ -694,8 +694,8 @@ so Back, a reload and a shared link all show the same list.
 "May this person do that here" is answered by `hooks/useProjectRole.ts`:
 `canWrite` (project analyst and above), `canExport` (auditor and above),
 `isProjectAdmin`, `isGlobalAdmin`.  The account role is binary (admin /
-member), so `hasPermission('analyst')` is true for every member and must not
-gate anything; keep `hasPermission('admin')` for instance-wide surfaces
+member), so `hasPermission` takes `'admin'` only — asking it about a project
+role does not compile; keep `hasPermission('admin')` for instance-wide surfaces
 (users, system settings, audit log, Oversight).  A control the SERVER gives
 to a project admin follows `isProjectAdmin` — never the account role: the
 Hosts page's "set / clear the project default view" was hidden from project

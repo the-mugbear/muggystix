@@ -433,7 +433,7 @@ export default function Layout({ children }: LayoutProps) {
           the ProjectSelector because it's the level ABOVE a single
           project; the divider separates it from the project-scoped
           context (selector + hubs) below. */}
-      {hasPermission('viewer') && (
+      {isAuthenticated && (
         <div className="px-xs pt-xs">
           {[
             // "Portfolio" everywhere (v5.294.0) — the page, the palette and

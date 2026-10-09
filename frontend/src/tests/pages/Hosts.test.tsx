@@ -1087,14 +1087,14 @@ describe('Hosts — streamlined table', () => {
     makeHost(41, {
       ip_address: '10.9.0.41',
       follow: { status: 'in_review' },
-      test_plan_entry_count: 2,
+      planned_test_count: 2,
       conflict_count: 1,
       vulnerability_summary: { total_vulnerabilities: 3, critical: 2, high: 1, medium: 0, low: 0, info: 0 },
     }),
     makeHost(42, {
       ip_address: '10.9.0.42',
       follow: { status: 'reviewed' },
-      test_execution_count: 3,
+      tested_record_count: 3,
       vulnerability_summary: { total_vulnerabilities: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 },
     }),
     makeHost(43, {
@@ -1140,7 +1140,7 @@ describe('Hosts — streamlined table', () => {
   // the pending work.
   it('says a tested host still has tests to do', async () => {
     mockedApi.getHosts.mockResolvedValue({
-      items: [makeHost(44, { ip_address: '10.9.0.44', test_execution_count: 1, test_plan_entry_count: 2 })],
+      items: [makeHost(44, { ip_address: '10.9.0.44', tested_record_count: 1, planned_test_count: 2 })],
       total: 1, skip: 0, limit: 25, sort_by: 'critical_vulns', sort_order: 'desc',
     });
     renderHosts();

@@ -694,8 +694,8 @@ def get_hosts_v2(
         # RV-8 — list-weight payload: script-free ports, no host_scripts.
         serialized["ports"] = [_serialize_port_light(p) for p in host.ports]
 
-        serialized["test_plan_entry_count"] = tp_count_map.get(host.id, 0)
-        serialized["test_execution_count"] = te_count_map.get(host.id, 0)
+        serialized["planned_test_count"] = tp_count_map.get(host.id, 0)
+        serialized["tested_record_count"] = te_count_map.get(host.id, 0)
         serialized["web_interface_count"] = wi_count_map.get(host.id, 0)
         serialized["netexec_result_count"] = netexec_count_map.get(host.id, 0)
         serialized["conflict_count"] = conflict_count_map.get(host.id, 0)

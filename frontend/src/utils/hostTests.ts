@@ -13,17 +13,16 @@ import type { Host, HostTest, HostTestStatus } from '../services/api';
 /**
  * A host row's test counts, by what they mean.
  *
- * The API still names them after test plans (removed v2.442.0):
- * `test_plan_entry_count` is the host's tests proposed or in progress, and
- * `test_execution_count` is its evidence records with a tested outcome.  This
- * is the ONLY place that reads the wire names — when the backend renames
- * them, change the `Host` type and these two lines.
+ * `planned_test_count` is the host's tests proposed or in progress, and
+ * `tested_record_count` its evidence records with a tested outcome (the wire
+ * named them after test plans until 2.473.0).  A row that does not carry
+ * them counts as none.
  */
 export const hostTestCounts = (
-  row: Pick<Host, 'test_plan_entry_count' | 'test_execution_count'>,
+  row: Pick<Host, 'planned_test_count' | 'tested_record_count'>,
 ): { toDo: number; recorded: number } => ({
-  toDo: row.test_plan_entry_count ?? 0,
-  recorded: row.test_execution_count ?? 0,
+  toDo: row.planned_test_count ?? 0,
+  recorded: row.tested_record_count ?? 0,
 });
 
 export const HOST_TEST_STATUS_LABEL: Record<HostTestStatus, string> = {
