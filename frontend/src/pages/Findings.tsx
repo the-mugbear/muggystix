@@ -103,7 +103,15 @@ type SummaryPrompt =
   | { kind: 'bulk'; status: FindingStatus; ids: number[]; offscreen: number };
 
 type StatusFilterValue = FindingStatusQuery | 'all';
-type OwnerFilterValue = 'any' | 'me' | 'unowned';
+/** `?owner=`: `me`, `unowned`, or one person's user id (5.356.0 — the filter
+ *  offered only the reader and "nobody", so findings promoted by a teammate,
+ *  who owns what they promote, could not be listed).  Anything else is "any". */
+type OwnerFilterValue = 'any' | 'me' | 'unowned' | `${number}`;
+const ownerFilterOf = (raw: string | null, myId: number | null | undefined): OwnerFilterValue => {
+  if (raw === 'me' || raw === 'unowned') return raw;
+  if (raw && /^[1-9]\d*$/.test(raw)) return Number(raw) === myId ? 'me' : (raw as `${number}`);
+  return 'any';
+};
 
 /**
  * v5.272.0 — two views of one page: the findings (the judged record) and the
@@ -179,7 +187,7 @@ const FindingsList: React.FC = () => {
   const statusFilter = (searchParams.get('status') as StatusFilterValue | null) ?? 'active';
   const severityFilter = (searchParams.get('severity') as FindingSeverity | null) ?? 'all';
   const sourceFilter = (searchParams.get('source') as FindingSource | null) ?? 'all';
-  const ownerFilter = (searchParams.get('owner') as OwnerFilterValue | null) ?? 'any';
+  const ownerFilter = ownerFilterOf(searchParams.get('owner'), user?.id);
   // The search is the address's too (`search.value`, what the list is asked
   // for); the box shows `search.draft`, which is committed a moment after the
   // typing stops — replacing the entry, from the first page — and follows the
@@ -284,7 +292,8 @@ const FindingsList: React.FC = () => {
     if (severityFilter !== 'all') f.severity = severityFilter;
     if (sourceFilter !== 'all') f.source = sourceFilter;
     if (ownerFilter === 'unowned') f.unowned = true;
-    else if (ownerFilter === 'me' && user?.id != null) f.owner_id = user.id;
+    else if (ownerFilter === 'me') { if (user?.id != null) f.owner_id = user.id; }
+    else if (ownerFilter !== 'any') f.owner_id = Number(ownerFilter);
     if (searchValue) f.search = searchValue;
     if (sortBy) { f.sort = sortBy; f.dir = sortDir; }
     return f;
@@ -326,6 +335,22 @@ const FindingsList: React.FC = () => {
     placeholderData: keepPreviousData,
   });
   const findings = useMemo<Finding[]>(() => listQuery.data?.items ?? [], [listQuery.data]);
+  // The people the Owner filter offers besides the reader: the project's
+  // members, by name.  An owner the address names who is not on the roster
+  // (it failed to load, or they left the project) is offered too, by the name
+  // the listed rows carry, so the select is never blank over a filtered list.
+  const ownerOptions = useMemo(() => {
+    const options = members
+      .filter((m) => m.user_id !== user?.id)
+      .map((m) => ({ value: String(m.user_id), label: m.full_name || m.username || `User ${m.user_id}` }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    if (ownerFilter !== 'any' && ownerFilter !== 'me' && ownerFilter !== 'unowned'
+      && !options.some((o) => o.value === ownerFilter)) {
+      const named = findings.find((f) => String(f.owner_id) === ownerFilter)?.owner_name;
+      options.push({ value: ownerFilter, label: named || `User ${ownerFilter}` });
+    }
+    return options;
+  }, [members, user?.id, ownerFilter, findings]);
   const total = listQuery.data?.total ?? 0;
   const sevCounts: Partial<Record<FindingSeverity, number>> = listQuery.data?.severity_counts ?? {};
   const previousRows = listQuery.isPlaceholderData;
@@ -560,6 +585,11 @@ const FindingsList: React.FC = () => {
             <SelectItem value="any">Any owner</SelectItem>
             <SelectItem value="me">Assigned to me</SelectItem>
             <SelectItem value="unowned">Unowned</SelectItem>
+            {ownerOptions.map((o) => (
+              <SelectItem key={o.value} value={o.value}>
+                <span className="block max-w-[16rem] truncate">{o.label}</span>
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </ListFilterBar>
