@@ -8,7 +8,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../services/api', () => ({
-  getProjectMembers: vi.fn(),
+  listProjectMembers: vi.fn(),
   getUserDirectory: vi.fn(),
   addProjectMember: vi.fn(),
   updateProjectMemberRole: vi.fn(),
@@ -44,7 +44,7 @@ const chooseRole = async (who: string, role: string) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocked.getProjectMembers.mockResolvedValue([ANA, CY]);
+  mocked.listProjectMembers.mockResolvedValue([ANA, CY]);
   mocked.getUserDirectory.mockResolvedValue([]);
   mocked.updateProjectMemberRole.mockResolvedValue({});
   mocked.removeProjectMember.mockResolvedValue({});
@@ -72,7 +72,7 @@ describe('ProjectMembersSheet — the member rules of Project settings', () => {
   });
 
   it('asks before the reader changes their own role', async () => {
-    mocked.getProjectMembers.mockResolvedValue([ANA, BEN]);   // the reader is ben (user 2)
+    mocked.listProjectMembers.mockResolvedValue([ANA, BEN]);   // the reader is ben (user 2)
     confirmMock.mockResolvedValue(false);
     renderSheet();
     await chooseRole('ben', 'Analyst');

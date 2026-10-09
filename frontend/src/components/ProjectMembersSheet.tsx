@@ -11,7 +11,7 @@ import { toast } from 'sonner';
 
 import {
   ProjectMember,
-  getProjectMembers,
+  listProjectMembers,
   getUserDirectory,
   addProjectMember,
   updateProjectMemberRole,
@@ -63,8 +63,8 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
   // The project is this sheet's argument (any project on Portfolio), not the
   // one the app is in: the key names the project it was given.
   const roster = useQuery({
-    queryKey: ['getProjectMembers', projectId],
-    queryFn: ({ signal }) => getProjectMembers(projectId as number, signal),
+    queryKey: ['listProjectMembers', projectId],
+    queryFn: ({ signal }) => listProjectMembers(projectId as number, signal),
     enabled: open && projectId != null,
   });
   // The picker is optional: asked for once the roster is there, and a failure
@@ -85,7 +85,6 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
   // Who is on a project is shown here, in the pickers of that project
   // (`listProjectMembers`, the roster hook's key) and as Portfolio's count.
   const rosterChanged = () => Promise.all([
-    queryClient.invalidateQueries({ queryKey: ['getProjectMembers'] }),
     queryClient.invalidateQueries({ queryKey: ['listProjectMembers'] }),
     queryClient.invalidateQueries({ queryKey: ['getPortfolioDashboard'] }),
   ]);

@@ -177,9 +177,10 @@ export const listProjectMembers = async (projectId: number, signal?: AbortSignal
 };
 
 // --- Cross-project member management (SoC manager / Portfolio) ---
-// The Portfolio views and manages any project's roster, so these always took
-// the project.  (`getProjectMembers` now asks the same address as
-// `listProjectMembers`; they differ only in that the latter refuses a 0 id.)
+// The Portfolio views and manages any project's roster with the same
+// functions: `listProjectMembers(projectId)` above is the ONE roster read
+// (5.353.1 — `getProjectMembers` asked the same address under a second name
+// and a second key), and the writes below name their project.
 
 export interface UserDirectoryEntry {
   id: number;
@@ -187,11 +188,6 @@ export interface UserDirectoryEntry {
   full_name?: string | null;
   email?: string | null;
 }
-
-export const getProjectMembers = async (projectId: number, signal?: AbortSignal): Promise<ProjectMember[]> => {
-  const response = await api.get(`/projects/${projectId}/members`, { signal });
-  return response.data;
-};
 
 export const getUserDirectory = async (signal?: AbortSignal): Promise<UserDirectoryEntry[]> => {
   const response = await api.get('/users/directory', { signal });

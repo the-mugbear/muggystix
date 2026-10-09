@@ -25,7 +25,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, Trash2 } from 'lucide-react';
 import {
-  addProjectMember, getProjectMembers, getProjects, getUserMemberships, removeProjectMember,
+  addProjectMember, getProjects, getUserMemberships, listProjectMembers, removeProjectMember,
   updateProjectMemberRole, type UserProjectMembership,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
@@ -158,7 +158,7 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
   // A membership is shown here, on that project's roster and in its pickers.
   // The projects are read again with it, as they always were.
   const membershipsChanged = () => invalidateReads(
-    queryClient, 'getUserMemberships', 'getProjects', 'getProjectMembers', 'listProjectMembers',
+    queryClient, 'getUserMemberships', 'getProjects', 'listProjectMembers',
   );
 
   const changingRole = useMutation({
@@ -183,8 +183,8 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
     if (row.role === 'admin') {
       try {
         const roster = await queryClient.fetchQuery({
-          queryKey: ['getProjectMembers', row.project_id],
-          queryFn: () => getProjectMembers(row.project_id),
+          queryKey: ['listProjectMembers', row.project_id],
+          queryFn: () => listProjectMembers(row.project_id),
         });
         adminCount = countProjectAdmins(roster);
       } catch (err) {

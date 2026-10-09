@@ -23,7 +23,7 @@ import { Loader2, Trash2, UserPlus } from 'lucide-react';
 import { useProject } from '../contexts/ProjectContext';
 import { useAuth } from '../contexts/AuthContext';
 import {
-  addProjectMember, deleteProject as deleteProjectRequest, getProjectMembers, getUserDirectory,
+  addProjectMember, deleteProject as deleteProjectRequest, getUserDirectory, listProjectMembers,
   removeProjectMember, updateProject, updateProjectMemberRole,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
@@ -151,14 +151,14 @@ const ProjectSettings: React.FC = () => {
   };
 
   // --- Members -----------------------------------------------------------
-  // `getProjectMembers` names its project (it also serves Portfolio's sheet
-  // and the admin's memberships dialog), so the id is in the key — one roster
-  // per project wherever it is shown.
+  // One roster per project wherever it is shown: this page, Portfolio's sheet,
+  // the admin's memberships dialog and the pickers (`hooks/useProjectMembers`)
+  // read the same key, so a change made here is what the pickers show.
   const projectId = currentProject?.id;
-  const membersKey = ['getProjectMembers', projectId];
+  const membersKey = ['listProjectMembers', projectId];
   const membersQuery = useQuery({
     queryKey: membersKey,
-    queryFn: async ({ signal }) => (await getProjectMembers(projectId as number, signal)) as unknown as Member[],
+    queryFn: async ({ signal }) => (await listProjectMembers(projectId as number, signal)) as unknown as Member[],
     enabled: !!projectId,
   });
   const members: Member[] | null = membersQuery.data ?? null;
@@ -168,8 +168,8 @@ const ProjectSettings: React.FC = () => {
   const setMembers = (update: (prev: Member[]) => Member[]) => {
     queryClient.setQueryData<Member[]>(membersKey, (prev) => update(prev ?? []));
   };
-  // The pickers of this project (owner, assignee, @mention) read the same people.
-  const pickersChanged = () => queryClient.invalidateQueries({ queryKey: ['listProjectMembers'] });
+  // (The pickers of this project — owner, assignee, @mention — read this same
+  // entry, so a patch here is what they show: nothing more to tell them.)
 
   const [addOpen, setAddOpen] = useState(false);
   const [newUser, setNewUser] = useState<string | null>(null);
@@ -202,10 +202,7 @@ const ProjectSettings: React.FC = () => {
       addProjectMember(body.projectId, body.userId, body.role),
     onSuccess: async () => {
       setAddOpen(false);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['getProjectMembers'] }),
-        pickersChanged(),
-      ]);
+      await queryClient.invalidateQueries({ queryKey: ['listProjectMembers'] });
       await projectsChanged();
       toast.success('Member added.');
     },
@@ -222,7 +219,6 @@ const ProjectSettings: React.FC = () => {
       updateProjectMemberRole(body.projectId, body.member.user_id, body.role),
     onSuccess: async (_updated, { member, role, self }) => {
       setMembers((prev) => prev.map((x) => (x.user_id === member.user_id ? { ...x, role } : x)));
-      void pickersChanged();
       if (self) await projectsChanged();
       toast.success(`${memberName(member)} is now ${roleLabel(role)}.`);
     },
@@ -233,7 +229,6 @@ const ProjectSettings: React.FC = () => {
       removeProjectMember(body.projectId, body.member.user_id),
     onSuccess: async (_void, { member }) => {
       setMembers((prev) => prev.filter((x) => x.user_id !== member.user_id));
-      void pickersChanged();
       await projectsChanged();
       toast.success('Member removed.');
     },

@@ -12,7 +12,7 @@ const updateProjectMock = vi.hoisted(() => vi.fn());
 // assertions below still say which endpoint was called.
 vi.mock('../../services/api', () => ({
   updateProject: updateProjectMock,
-  getProjectMembers: (pid: number) => apiMock.get(`/projects/${pid}/members`).then((r: { data: unknown }) => r.data),
+  listProjectMembers: (pid: number) => apiMock.get(`/projects/${pid}/members`).then((r: { data: unknown }) => r.data),
   getUserDirectory: () => apiMock.get('/users/directory').then((r: { data: unknown }) => r.data),
   addProjectMember: (pid: number, uid: number, role: string) =>
     apiMock.post(`/projects/${pid}/members`, { user_id: uid, role }).then((r: { data: unknown }) => r.data),

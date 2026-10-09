@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../services/api', () => ({
   getUserMemberships: vi.fn(),
   getProjects: vi.fn(),
-  getProjectMembers: vi.fn(),
+  listProjectMembers: vi.fn(),
   addProjectMember: vi.fn(),
   updateProjectMemberRole: vi.fn(),
   removeProjectMember: vi.fn(),
@@ -53,7 +53,7 @@ beforeEach(() => {
   mocked.getUserMemberships.mockResolvedValue([membership(), membership({ project_id: 8, project_name: 'Borealis', role: 'analyst' })]);
   mocked.getProjects.mockResolvedValue([{ id: 7, name: 'Acme' }, { id: 8, name: 'Borealis' }]);
   // Acme's roster: ben (5) is its only project admin.
-  mocked.getProjectMembers.mockResolvedValue([rosterRow(5, 'admin'), rosterRow(6, 'viewer')]);
+  mocked.listProjectMembers.mockResolvedValue([rosterRow(5, 'admin'), rosterRow(6, 'viewer')]);
   mocked.updateProjectMemberRole.mockResolvedValue({});
   mocked.removeProjectMember.mockResolvedValue({});
 });
@@ -76,7 +76,7 @@ describe('UserMembershipsDialog — the member rules of Project settings', () =>
       severity: 'danger',
       confirmLabel: 'Make them Viewer',
     }));
-    expect(mocked.getProjectMembers).toHaveBeenCalledWith(7);
+    expect(mocked.listProjectMembers).toHaveBeenCalledWith(7);
     expect(mocked.updateProjectMemberRole).not.toHaveBeenCalled();
   });
 
@@ -88,7 +88,7 @@ describe('UserMembershipsDialog — the member rules of Project settings', () =>
   });
 
   it('demotes an admin who is not the only one without asking', async () => {
-    mocked.getProjectMembers.mockResolvedValue([rosterRow(5, 'admin'), rosterRow(6, 'admin')]);
+    mocked.listProjectMembers.mockResolvedValue([rosterRow(5, 'admin'), rosterRow(6, 'admin')]);
     renderDialog();
     await chooseRole('Acme', 'Viewer');
     await waitFor(() => expect(mocked.updateProjectMemberRole).toHaveBeenCalledWith(7, 5, 'viewer'));
@@ -99,7 +99,7 @@ describe('UserMembershipsDialog — the member rules of Project settings', () =>
     renderDialog();
     await chooseRole('Borealis', 'Viewer');
     await waitFor(() => expect(mocked.updateProjectMemberRole).toHaveBeenCalledWith(8, 5, 'viewer'));
-    expect(mocked.getProjectMembers).not.toHaveBeenCalled();
+    expect(mocked.listProjectMembers).not.toHaveBeenCalled();
     expect(confirmMock).not.toHaveBeenCalled();
   });
 
@@ -141,7 +141,7 @@ describe('UserMembershipsDialog — the member rules of Project settings', () =>
   });
 
   it('sends nothing when the project\'s admins cannot be read', async () => {
-    mocked.getProjectMembers.mockRejectedValue(new Error('boom'));
+    mocked.listProjectMembers.mockRejectedValue(new Error('boom'));
     renderDialog();
     await chooseRole('Acme', 'Viewer');
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/boom|Could not check the admins of Acme/)));
