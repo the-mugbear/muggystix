@@ -117,12 +117,11 @@ def os_predicate(values: Sequence[str]) -> ColumnElement:
 
 
 def subnet_predicate(values: Sequence[str]) -> Optional[ColumnElement]:
-    """Host falls within any of the given CIDRs / IP fragments.
+    """Host falls within any of the given CIDRs (or equals a given address).
 
-    Delegates to :func:`parse_subnets` (``inet <<=`` containment per CIDR,
-    prefix-match fallback for non-CIDR fragments).  Returns ``None`` when
-    nothing usable was supplied so callers can skip the filter, matching
-    the legacy guard.
+    Delegates to :func:`parse_subnets` (``inet <<=`` containment per CIDR).
+    Returns ``None`` when nothing was named, and lets ``InvalidSubnet``
+    through for a value that is not a network or an address.
     """
     conditions = parse_subnets(",".join(values))
     if not conditions:

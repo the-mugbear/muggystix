@@ -53,7 +53,7 @@ from app.db.models_auth import User
 from app.schemas.schemas import REVIEW_CONCLUSIONS
 from app.services import host_query_predicates as P
 from app.services.misconfig_checks import CHECKS, KINDS
-from app.services.host_query_common import escape_like  # noqa: F401  (parity w/ predicates)
+from app.services.host_query_common import InvalidSubnet, escape_like  # noqa: F401  (parity w/ predicates)
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +433,13 @@ _FOLLOW_VALUES = {s.value for s in FollowStatus} | {"none", "in_review_any", "mi
 
 
 def _b_subnet(ctx: BuildCtx, values: List[str]) -> ColumnElement:
-    pred = P.subnet_predicate(values)
+    try:
+        pred = P.subnet_predicate(values)
+    except InvalidSubnet as exc:
+        raise DSLError(
+            f"subnet: takes a CIDR block or an address; not understood: {', '.join(exc.values)}. "
+            "For part of an address use ip: (ip:10.0.5)."
+        )
     return pred if pred is not None else false()
 
 

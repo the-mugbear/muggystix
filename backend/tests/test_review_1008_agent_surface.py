@@ -11,6 +11,7 @@ from app.db import models
 from app.db.models_auth import User, UserRole
 from app.db.models_project import ProjectMembership, ProjectRole
 from app.services import agent_session_service as sessions
+from app.services import host_query
 
 HOST_READS = [
     "/api/v1/agent/hosts",
@@ -83,7 +84,50 @@ def test_the_host_states_are_the_dsls():
     from app.services.host_query_dsl import _FIELD_SPECS
 
     (state,) = [spec for spec in _FIELD_SPECS if spec.name == "state"]
-    assert sorted(agent_common.HOST_STATES) == sorted(state.enum_values)
+    assert sorted(host_query.HOST_STATES) == sorted(state.enum_values)
+
+
+# v2.471.0 (owner, 2026-10-09) — the Hosts page refuses the same values: the
+# check is in the shared builder, so there is one door rule, not two.
+PAGE_READS = ["hosts/", "hosts/ids", "hosts/filters/data"]
+
+
+@pytest.mark.parametrize("path", PAGE_READS)
+@pytest.mark.parametrize("params,named", [
+    ({"state": "alive"}, "alive"),
+    ({"subnets": "10.72.0"}, "10.72.0"),
+    ({"subnets": "10.72.0.0/24,dmz"}, "dmz"),
+    ({"subnets": " , "}, "names nothing"),
+])
+def test_the_hosts_page_refuses_the_same_values(client, agent_headers, test_project, path, params, named):
+    resp = client.get(f"/api/v1/projects/{test_project.id}/{path}", params=params)
+    assert resp.status_code == 422, f"{path} {params}: {resp.status_code} {resp.text[:200]}"
+    assert named in resp.text
+
+
+def test_the_hosts_page_still_filters_by_a_block_and_an_address(client, agent_headers, test_project):
+    def ips(**params):
+        resp = client.get(f"/api/v1/projects/{test_project.id}/hosts/ids", params=params)
+        assert resp.status_code == 200, resp.text
+        return len(resp.json()["ids"] if isinstance(resp.json(), dict) else resp.json())
+
+    assert ips(subnets="10.72.0.0/24") == 3
+    assert ips(subnets="10.72.0.0/24, 10.73.0.1") == 4
+    assert ips(state="up", subnets="10.72.0.0/24") == 2
+
+
+def test_a_partial_subnet_in_the_query_language_is_an_error_not_a_prefix_match(client, agent_headers, test_project):
+    """``subnet:10.72.0`` used to match every address starting 10.72.0."""
+    from app.services.host_query_common import InvalidSubnet, parse_subnets
+
+    with pytest.raises(InvalidSubnet) as caught:
+        parse_subnets("10.72.0.0/24, 10.72.0")
+    assert caught.value.values == ["10.72.0"]
+    resp = client.get(f"/api/v1/projects/{test_project.id}/hosts/ids", params={"q": "subnet:10.72.0"})
+    assert resp.status_code == 400, resp.text
+    assert "10.72.0" in resp.text and "ip:" in resp.text
+    ok = client.get(f"/api/v1/projects/{test_project.id}/hosts/ids", params={"q": 'subnet:"10.72.0.0/24"'})
+    assert ok.status_code == 200, ok.text
 
 
 def test_the_mcp_tools_describe_the_host_filters_as_the_routes_do():

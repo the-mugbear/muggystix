@@ -56,7 +56,7 @@ from app.api.v1.endpoints.agent_schemas import (
 from app.api.v1.endpoints.agent_common import (
     PORTS_PARAM_HELP, SEARCH_PARAM_HELP, SERVICES_PARAM_HELP, SEVERITY_FLAGS_HELP,
     STATE_PARAM_HELP, SUBNETS_PARAM_HELP,
-    batch_host_enrichment, check_host_filters, load_agent_session,
+    batch_host_enrichment, load_agent_session,
 )
 from app.services.host_query import build_filtered_host_query
 
@@ -445,7 +445,6 @@ def list_hosts(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    check_host_filters(state=state, ports=ports, services=services, subnets=subnets)
     # The Hosts page's own assembly; nothing here is judged for a person.
     q = build_filtered_host_query(
         db, None, project_id=request.state.agent_project_id,

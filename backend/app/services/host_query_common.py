@@ -107,10 +107,21 @@ def escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+class InvalidSubnet(ValueError):
+    """A subnet filter value that is neither a CIDR block nor an address.
+    ``values`` are the ones not understood.  The discrete filter turns it into
+    a 422 and the DSL into its own error; nothing matches on a fragment."""
+
+    def __init__(self, values):
+        self.values = list(values)
+        super().__init__(f"not a CIDR block or an address: {self.values}")
+
+
 def parse_subnets(subnet_str: str):
     """Convert a comma-separated CIDR list into a list of SQLAlchemy
     filter expressions, one per CIDR.  Returns ``None`` when the input
-    didn't yield any usable conditions so callers can skip the filter.
+    names nothing, and raises :class:`InvalidSubnet` for a value that is not
+    a network or an address.
 
     Every CIDR compiles to ``hosts_v2.ip_address::inet <<= :cidr::inet``
     — exact containment regardless of prefix length, single predicate
@@ -128,6 +139,7 @@ def parse_subnets(subnet_str: str):
     had to special-case them).
     """
     subnet_conditions = []
+    bad: list = []
     subnets_list = [s.strip() for s in subnet_str.split(',') if s.strip()]
 
     for subnet_cidr in subnets_list:
@@ -143,8 +155,11 @@ def parse_subnets(subnet_str: str):
                 )
             )
         except (ipaddress.AddressValueError, ValueError):
-            # Not a valid CIDR — fall back to prefix-match as if the
-            # user typed an IP fragment.
-            subnet_conditions.append(models.Host.ip_address.like(f'{subnet_cidr}%'))
+            bad.append(subnet_cidr)
 
+    if bad:
+        # v2.471.0 (owner, 2026-10-09: "a partial subnet … is an invalid value
+        # and has no value") — it used to become an address-prefix match, so a
+        # mistyped block read as an ordinary, usually empty, result.
+        raise InvalidSubnet(bad)
     return subnet_conditions if subnet_conditions else None

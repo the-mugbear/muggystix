@@ -96,16 +96,20 @@ def test_subnet_filter_excludes_hosts_outside_cidr(client, db_session, test_proj
     assert "192.168.99.99" not in ips, "host outside the /24 leaked into result"
 
 
-def test_subnet_filter_invalid_cidr_falls_back_to_prefix_match(
+def test_subnet_filter_refuses_a_partial_address(
     client, db_session, test_project,
 ):
-    """Non-CIDR input (a partial IP) gets a LIKE prefix match — same
-    behaviour as before the refactor.  Used by typeahead callers that
-    pass a partial address as they type."""
+    """v2.471.0 (owner, 2026-10-09): a partial subnet is an invalid value.
+    It used to become a LIKE prefix match "for typeahead callers"; no page
+    sends one (every caller passes a block from the scope or a segment), and
+    a mistyped block read as an ordinary result.  Part of an address is the
+    query language's ``ip:``."""
     _seed_hosts(db_session, test_project.id)
     r = client.get(
         f"/api/v1/projects/{test_project.id}/hosts/",
-        params={"subnets": "192.168."},  # invalid CIDR → prefix LIKE
+        params={"subnets": "192.168."},
     )
-    ips = {h["ip_address"] for h in r.json()["items"]}
-    assert ips == {"192.168.99.99"}, ips
+    assert r.status_code == 422, r.text
+    assert "192.168." in r.text and "ip:" in r.text
+    by_ip = client.get(f"/api/v1/projects/{test_project.id}/hosts/", params={"q": "ip:192.168."})
+    assert {h["ip_address"] for h in by_ip.json()["items"]} == {"192.168.99.99"}

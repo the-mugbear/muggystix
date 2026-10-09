@@ -40,6 +40,7 @@ from app.services import host_query_predicates as P
 # unchanged after they were lifted into the leaf module.
 from app.services.host_query_common import (  # noqa: F401  (re-exported on purpose)
     SERVICE_PORT_MAPPINGS,
+    InvalidSubnet,
     escape_like,
     parse_subnets,
 )
@@ -55,6 +56,50 @@ from app.services.host_query_common import (  # noqa: F401  (re-exported on purp
 
 MAX_PORT = 65535
 _MAX_ROW_ID = 2**31 - 1
+
+#: The values ``Host.state`` takes — the DSL's ``state:`` enum.
+HOST_STATES = ("up", "down", "unknown")
+
+
+def unknown_value_error(name: str, value: str, allowed) -> HTTPException:
+    """The 422 for a filter value that is not one of a closed set: an unknown
+    value must never read as an ordinary empty result."""
+    return HTTPException(
+        status_code=422,
+        detail=f"Unknown {name} {value!r}. Accepted: {', '.join(sorted(allowed))}.",
+    )
+
+
+def check_discrete_filters(
+    *, state: Optional[str] = None, ports: Optional[str] = None,
+    services: Optional[str] = None, subnets: Optional[str] = None,
+) -> None:
+    """Refuse a discrete host filter that cannot be understood, on every door
+    (``build_filtered_host_query`` calls it first).
+
+    ``state`` is matched exactly and a ``subnets`` value must be a network or
+    an address, so a mistyped one would read as an ordinary (usually empty)
+    result; a list that names nothing, dropped, would answer with every host
+    in the project.  Each is a 422 naming the value."""
+    for name, value in (("ports", ports), ("services", services), ("subnets", subnets)):
+        if value and value.strip() and not [v for v in value.split(",") if v.strip()]:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{name} was given but names nothing: {value!r}. Omit it, or pass a comma-separated list.",
+            )
+    if state is not None and state.strip() and state not in HOST_STATES:
+        raise unknown_value_error("state", state, HOST_STATES)
+    if subnets:
+        try:
+            parse_subnets(subnets)
+        except InvalidSubnet as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"subnets must be comma-separated CIDR blocks or addresses; not understood: {exc.values}. "
+                    "For an address fragment use q= (q=ip:10.0.5)."
+                ),
+            )
 
 
 def parse_port_list(ports: str) -> List[int]:
@@ -313,6 +358,7 @@ def build_filtered_host_query(
     ``assigned_to``, ``weaknesses`` and ``q`` are judged for; a caller that
     passes none of those may pass ``None``.
     """
+    check_discrete_filters(state=state, ports=ports, services=services, subnets=subnets)
     query = db.query(models.Host)
 
     if project_id is not None:

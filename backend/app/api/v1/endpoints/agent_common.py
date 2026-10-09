@@ -6,7 +6,6 @@ Must not import from the endpoint modules (agent_browse / agent_recon /
 agent_assist…) to avoid circular imports.
 """
 
-import ipaddress
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, Request
@@ -17,7 +16,7 @@ from app.db import models, models_auth
 from app.db.models_agent import AgentSession
 # ``parse_port_list`` lives with the filter assembly both doors use; the name
 # stays importable from here.
-from app.services.host_query import parse_port_list  # noqa: F401
+from app.services.host_query import parse_port_list, unknown_value_error  # noqa: F401
 from app.services.vulnerability_service import VulnerabilityService
 
 
@@ -108,60 +107,11 @@ def require_project_host(db: Session, project_id: int, host_id: Optional[int]) -
         raise HTTPException(status_code=404, detail="Host not found in this project")
 
 
-def unknown_value_error(name: str, value: str, allowed) -> HTTPException:
-    """The 422 for a filter value that is not one of a closed set: an unknown
-    value must never read as an ordinary empty result."""
-    return HTTPException(
-        status_code=422,
-        detail=f"Unknown {name} {value!r}. Accepted: {', '.join(sorted(allowed))}.",
-    )
-
-
-#: The values ``Host.state`` takes — the DSL's ``state:`` enum.
-HOST_STATES = ("up", "down", "unknown")
 STATE_PARAM_HELP = "Host state: up, down or unknown. Any other value is a 422."
 SUBNETS_PARAM_HELP = (
     "Comma-separated CIDR blocks (or single addresses); a host matches inside "
     "ANY of them. A value that is not a network or an address is a 422."
 )
-
-
-def check_host_filters(
-    *, state: Optional[str] = None, ports: Optional[str] = None,
-    services: Optional[str] = None, subnets: Optional[str] = None,
-) -> None:
-    """Refuse a discrete host filter the shared builder would not understand.
-
-    The builder matches ``state`` exactly and turns a ``subnets`` value that
-    is not a network into an address-prefix match, so a mistyped value reads
-    as an ordinary (usually empty) result.  An agent counts with these, so
-    each is a 422 naming the value, as is a list that names nothing — dropped,
-    it would answer with every host in the project."""
-    for name, value in (("ports", ports), ("services", services), ("subnets", subnets)):
-        if value and value.strip() and not [v for v in value.split(",") if v.strip()]:
-            raise HTTPException(
-                status_code=422,
-                detail=f"{name} was given but names nothing: {value!r}. Omit it, or pass a comma-separated list.",
-            )
-    if state is not None and state.strip() and state not in HOST_STATES:
-        raise unknown_value_error("state", state, HOST_STATES)
-    bad = []
-    for item in (subnets or "").split(","):
-        item = item.strip()
-        if not item:
-            continue
-        try:
-            ipaddress.ip_network(item, strict=False)
-        except ValueError:
-            bad.append(item)
-    if bad:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"subnets must be comma-separated CIDR blocks or addresses; not understood: {bad}. "
-                "For an address fragment use q= (q=ip:10.0.5)."
-            ),
-        )
 
 
 def batch_host_enrichment(

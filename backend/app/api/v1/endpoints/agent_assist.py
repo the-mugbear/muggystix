@@ -62,7 +62,6 @@ from app.api.v1.endpoints.agent_common import (
     STATE_PARAM_HELP,
     SUBNETS_PARAM_HELP,
     batch_host_enrichment,
-    check_host_filters,
     load_agent_session,
     load_operator,
     require_project_host,
@@ -337,7 +336,6 @@ def _build_assist_host_query(
     from app.services.host_query import build_filtered_host_query
     from app.services.host_query_dsl import DSLError
 
-    check_host_filters(state=state, ports=ports, services=services, subnets=subnets)
     # The DSL is bound to the session operator so follow:/assigned: are
     # answerable; the discrete filters are judged for nobody.
     operator = load_operator(db, request) if q else None
