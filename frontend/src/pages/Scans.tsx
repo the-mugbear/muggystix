@@ -22,8 +22,12 @@ import {
   PauseCircle,
 } from 'lucide-react';
 import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
-import { invalidateReads, pollEvery, queryErrorText, rememberFor } from '../lib/query';
+import { invalidateReads, pollEvery, queryErrorText, rememberFor, useLastSettled } from '../lib/query';
 import { INGESTION_JOB_READS } from '../utils/ingestionReads';
+import {
+  anyStillRunning, bannerRows, completedScanIds, jobIdsToAsk, mergeFollowed, settledJobs,
+  type BannerEntry, type BannerStatus, type FollowedJobs,
+} from '../utils/uploadBanner';
 import {
   getScans,
   getScansSummary,
@@ -209,32 +213,12 @@ export default function Scans() {
   // dropzone, uploader, duplicate handling and a stuck-upload watchdog for
   // them; the dropzone was never attached to an element, so none of it could
   // run. Removed with their three states ('uploading', 'error', 'duplicate').
-  const [uploadProgress, setUploadProgress] = useState<
-    Record<
-      string,
-      {
-        filename: string;
-        status: 'received' | 'processing' | 'imported' | 'partial' | 'failed';
-        error?: string;
-        startedAt: number;
-        jobId?: number;
-        /** The worker's latest progress message while processing. */
-        jobMessage?: string | null;
-        /** The scan row's summary once the job completed — the import result. */
-        result?: Scan | null;
-        parseErrorId?: number | null;
-        batchId?: number;
-      }
-    >
-  >({});
-  // The latest entries, readable outside a state updater (where the banner
-  // decides which finished files still need their import result), and the
-  // entries whose result has already been asked for.
-  const uploadProgressRef = useRef(uploadProgress);
-  uploadProgressRef.current = uploadProgress;
-  const resultRequestedRef = useRef<Set<string>>(new Set());
-
-  const [activeJobIds, setActiveJobIds] = useState<number[]>([]);
+  //
+  // STATE is only what this tab knows and the server does not: which files it
+  // started, and which rows the reader dismissed.  A job's status and message
+  // and a finished file's result are read by the two queries below and laid
+  // over these entries while rendering (`utils/uploadBanner`).
+  const [uploadEntries, setUploadEntries] = useState<BannerEntry[]>([]);
   // v5.271.0 — staged files handed back to the upload review ("Review N
   // waiting", a queue row's Review, a batch's Review).  It replaced the
   // one-file FormatRetryDialog, which made a 26-file drop 26 dialogs.
@@ -579,118 +563,63 @@ export default function Scans() {
     setExpandedScanIds((prev) => (prev.includes(scanId) ? prev.filter((id) => id !== scanId) : [...prev, scanId]));
   }, []);
 
-  // The import results of files that just finished: a lookup by id, asked
-  // once per batch of finished files.
-  const { mutateAsync: lookUpResults } = useMutation({
-    mutationFn: (ids: number[]) => getScans(projectId, 0, ids.length, { ids }),
-  });
-
-  // v5.222.0 — the banner entry that submitted a job follows it: queued /
-  // processing show the worker's message; completed fetches the scan row's
-  // summary (the same numbers the inventory shows) and becomes 'imported' or
-  // 'partial'; failed shows the error and links its parse error.  Entries
-  // are keyed by upload key, so match on jobId.
-  const applyJobsToUploadEntries = useCallback((jobs: IngestionJob[]) => {
-    if (jobs.length === 0) return;
-
-    // v5.239.1 — the import results of the files that just finished, in ONE
-    // request.  This was a getScans() per finished file: a 30-file drop
-    // finishing together sent ~25 identical-shaped requests in 300 ms.
-    // `requested` makes each file's result fetched once however many times a
-    // job is reported complete.
-    const wanted: Array<{ key: string; scanId: number }> = [];
-    for (const [key, entry] of Object.entries(uploadProgressRef.current)) {
-      if (entry.jobId == null || entry.result || resultRequestedRef.current.has(key)) continue;
-      const job = jobs.find((j) => j.id === entry.jobId);
-      if (job?.status === 'completed' && job.scan_id != null) {
-        wanted.push({ key, scanId: job.scan_id });
-        resultRequestedRef.current.add(key);
-      }
-    }
-    if (wanted.length > 0) {
-      const ids = Array.from(new Set(wanted.map((w) => w.scanId)));
-      lookUpResults(ids)
-        .then((rows) => {
-          const byId = new Map(rows.map((row) => [row.id, row]));
-          setUploadProgress((p) => {
-            let next = p;
-            for (const { key, scanId } of wanted) {
-              const row = byId.get(scanId);
-              if (row && next[key]) next = { ...next, [key]: { ...next[key], result: row } };
-            }
-            return next;
-          });
-        })
-        .catch(() => {
-          // The lookup failed and is NOT made again: a finished job leaves
-          // `activeJobIds` in the pass that reported it, so no later answer
-          // names it and this function is not called for it a second time.
-          // The entry keeps the job's own message ("Import complete.") in
-          // place of the counts.  The mark is cleared all the same, so it
-          // does not claim a result that was never read.
-          wanted.forEach((w) => resultRequestedRef.current.delete(w.key));
-        });
-    }
-
-    setUploadProgress((prev) => {
-      let changed = false;
-      const nextEntries = { ...prev };
-      for (const [key, entry] of Object.entries(prev)) {
-        if (entry.jobId == null) continue;
-        const job = jobs.find((j) => j.id === entry.jobId);
-        if (!job) continue;
-        if ((job.status === 'queued' || job.status === 'processing') && entry.status !== 'processing') {
-          nextEntries[key] = { ...entry, status: 'processing', jobMessage: job.message ?? null };
-          changed = true;
-        } else if (job.status === 'processing' && entry.jobMessage !== (job.message ?? null)) {
-          nextEntries[key] = { ...entry, jobMessage: job.message ?? null };
-          changed = true;
-        } else if (job.status === 'failed' && entry.status !== 'failed') {
-          nextEntries[key] = {
-            ...entry,
-            status: 'failed',
-            error: job.failure_reason || job.error_message || job.last_error || job.message || 'Import failed',
-            parseErrorId: job.parse_error_id ?? null,
-          };
-          changed = true;
-        } else if (job.status === 'completed' && entry.status !== 'imported' && entry.status !== 'partial') {
-          const gaps = (job.skipped_count ?? 0) > 0 || !!job.partial;
-          nextEntries[key] = { ...entry, status: gaps ? 'partial' : 'imported', jobMessage: job.message ?? null };
-          changed = true;
-        }
-      }
-      return changed ? nextEntries : prev;
-    });
-  }, [lookUpResults]);
-
   // v5.248.0 — following the started files is ONE request per tick
   // (`GET /upload/jobs?ids=`): at once for a file just handed over, then every
-  // 4 s while the tab is visible.  It was one GET per job on a fixed interval:
-  // 30 files meant 30 requests a tick, and a hidden tab kept going.
+  // 4 s while the tab is visible and one of them is still running.  It was one
+  // GET per job on a fixed interval: 30 files meant 30 requests a tick, and a
+  // hidden tab kept going.
+  //
+  // The key names every job this tab started, dismissed rows included, so it
+  // changes only when a file is started.  A REQUEST names fewer: a job this
+  // reading already knows to be finished (or no longer returned) is not asked
+  // about again — its last reading is carried into the next
+  // (`jobIdsToAsk` / `mergeFollowed`).  This query's own lifecycle: once no
+  // job is running it is DISABLED, not merely left unpolled, so nothing — an
+  // invalidation included — asks again (`Scans.uploadBanner.test.tsx`).
+  const bannerJobIds = useMemo(() => Array.from(new Set(uploadEntries.map((e) => e.jobId))), [uploadEntries]);
   const followedQuery = useQuery({
-    queryKey: ['getIngestionJobsByIds', projectId, activeJobIds],
-    queryFn: ({ signal }) => getIngestionJobsByIds(projectId, activeJobIds, signal),
-    enabled: activeJobIds.length > 0,
-    ...pollEvery(4000),
+    queryKey: ['getIngestionJobsByIds', projectId, bannerJobIds],
+    queryFn: async ({ signal, client, queryKey }): Promise<FollowedJobs> => {
+      const known = client.getQueryData<FollowedJobs>(queryKey);
+      const ask = jobIdsToAsk(bannerJobIds, known);
+      return mergeFollowed(known, ask, await getIngestionJobsByIds(projectId, ask, signal));
+    },
+    enabled: (query) => bannerJobIds.length > 0 && anyStillRunning(query.state.data),
+    ...pollEvery((query) => (anyStillRunning(query.state.data) ? 4000 : null)),
   });
-  // The answer is for exactly `activeJobIds` (they are its key).
-  const followedJobs = followedQuery.data;
+  // While the read for one more file is on its way — or fails — the files
+  // already on the banner keep what was last said about them.
+  const followed = useLastSettled(followedQuery.data, { resetKey: projectId });
+
+  // v5.222.0 / v5.239.1 — the import results of the finished files (the scan
+  // rows' summaries: the same numbers the inventory shows), in ONE request
+  // for the files that finished together.  Its own lifecycle too: a set of
+  // finished files is asked about ONCE — answered or failed, it is disabled,
+  // so neither the banner's poll nor the inventory's refresh (which is by the
+  // name `getScans`) asks again.  A lookup that failed leaves the job's own
+  // message in place of the counts.
+  const resultScanIds = useMemo(() => completedScanIds(followed), [followed]);
+  const resultsQuery = useQuery({
+    queryKey: ['getScans', projectId, 0, resultScanIds.length, { ids: resultScanIds }],
+    queryFn: ({ signal }) => getScans(projectId, 0, resultScanIds.length, { ids: resultScanIds, signal }),
+    enabled: (query) => resultScanIds.length > 0 && query.state.status === 'pending',
+  });
+  const results = useLastSettled(resultsQuery.data, { resetKey: projectId });
+  const uploadRows = useMemo(() => bannerRows(uploadEntries, followed, results), [uploadEntries, followed, results]);
+
+  // An import that finished put the queue — and, when it completed, the lists
+  // and counts of imported files — out of date.  Keyed by the SET of jobs
+  // nothing more is expected of: it changes when a job joins it, so each
+  // finish refreshes once however many later polls report the same job.
+  const { settled: settledJobIds, completed: completedJobIds } = useMemo(() => settledJobs(followed), [followed]);
+  const settledKey = settledJobIds.join(',');
+  const completedKey = completedJobIds.join(',');
   useEffect(() => {
-    if (!followedJobs) return;
-    const returned = new Set(followedJobs.map((j) => j.id));
-    const done = followedJobs.filter((j) => j.status === 'completed' || j.status === 'failed');
-    // A job the server no longer returns (deleted, or not this user's) was a
-    // 404 the old per-job poll retried for the life of the page.
-    const goneIds = activeJobIds.filter((id) => !returned.has(id));
-    // v5.222.0 — carry the job's state onto the file's banner entry.
-    applyJobsToUploadEntries(followedJobs);
-    if (done.length > 0 || goneIds.length > 0) {
-      const stop = new Set([...done.map((j) => j.id), ...goneIds]);
-      setActiveJobIds((prev) => prev.filter((id) => !stop.has(id)));
-      refreshQueue();
-      if (done.some((j) => j.status === 'completed')) refreshInventory();
-    }
-  }, [followedJobs, activeJobIds, applyJobsToUploadEntries, refreshQueue, refreshInventory]);
+    if (settledKey) refreshQueue();
+  }, [settledKey, refreshQueue]);
+  useEffect(() => {
+    if (completedKey) refreshInventory();
+  }, [completedKey, refreshInventory]);
 
   // v5.207.0 — refresh when ANY scan lands. The job polling above only
   // follows uploads this tab submitted, so scans from an agent or another
@@ -988,9 +917,9 @@ export default function Scans() {
       {/* Files the operator has started, followed to their import result —
           aria-live so screen readers announce progress when the dialog has
           closed (audit C10). */}
-      {Object.keys(uploadProgress).length > 0 && (
+      {uploadRows.length > 0 && (
         <div className="mb-sm flex flex-col gap-xs" aria-live="polite" aria-atomic="false">
-          {Object.entries(uploadProgress).map(([key, p]) => {
+          {uploadRows.map((p) => {
             const variant =
               p.status === 'failed'
                 ? 'destructive'
@@ -999,7 +928,7 @@ export default function Scans() {
                 : p.status === 'imported'
                 ? 'success'
                 : 'info';
-            const label: Record<typeof p.status, string> = {
+            const label: Record<BannerStatus, string> = {
               received: 'Upload received, waiting for the worker',
               processing: 'Processing',
               imported: 'Imported',
@@ -1009,7 +938,7 @@ export default function Scans() {
             const terminal =
               p.status === 'imported' || p.status === 'partial' || p.status === 'failed';
             return (
-              <Alert key={key} variant={variant}>
+              <Alert key={p.key} variant={variant}>
                 <AlertDescription className="flex flex-col gap-xxs">
                   <div className="flex items-baseline justify-between gap-sm">
                     <span className="truncate font-semibold">
@@ -1022,10 +951,8 @@ export default function Scans() {
                         className="size-6 shrink-0"
                         aria-label={`Dismiss ${p.filename} progress`}
                         onClick={() =>
-                          setUploadProgress((prev) => {
-                            const { [key]: _removed, ...rest } = prev;
-                            return rest;
-                          })
+                          setUploadEntries((prev) =>
+                            prev.map((entry) => (entry.key === p.key ? { ...entry, dismissed: true } : entry)))
                         }
                       >
                         <ChevronUp className="size-3" aria-hidden />
@@ -1042,9 +969,7 @@ export default function Scans() {
                           navigate(
                             p.parseErrorId != null
                               ? `/parse-errors?error_id=${p.parseErrorId}`
-                              : p.jobId != null
-                                ? `/parse-errors?job_id=${p.jobId}`
-                                : '/parse-errors',
+                              : `/parse-errors?job_id=${p.jobId}`,
                           )
                         }
                       >
@@ -2001,17 +1926,12 @@ export default function Scans() {
         skipInformational={skipInformational}
         onViewScan={handleViewScan}
         onStarted={(started) => {
-          setUploadProgress((prev) => ({
-            ...prev,
-            [started.key]: {
-              filename: started.filename,
-              status: 'received',
-              startedAt: started.startedAt,
-              jobId: started.jobId,
-              batchId: started.batchId,
-            },
-          }));
-          setActiveJobIds((prev) => (prev.includes(started.jobId) ? prev : [...prev, started.jobId]));
+          // The row is 'received' until the server answers about its job; a
+          // key started again takes its row back (dismissed or not).
+          const entry: BannerEntry = { key: started.key, filename: started.filename, jobId: started.jobId };
+          setUploadEntries((prev) => (prev.some((e) => e.key === entry.key)
+            ? prev.map((e) => (e.key === entry.key ? entry : e))
+            : [...prev, entry]));
         }}
       />
 
