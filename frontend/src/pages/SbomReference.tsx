@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   Search,
   Download,
@@ -9,8 +10,8 @@ import {
   ArrowDown,
   ChevronsUpDown,
 } from 'lucide-react';
-import { getSbom, SbomResponse, SbomComponent } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { getSbom, SbomComponent } from '../services/api';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { downloadTextFile } from '../utils/download';
 import { formatTimestamp } from '../utils/relativeTime';
 import { CardListSkeleton } from '../components/PageSkeleton';
@@ -47,9 +48,13 @@ type SortDir = 'asc' | 'desc';
 const NO_LICENSE = '__none__';
 
 const SbomReference: React.FC = () => {
-  const [data, setData] = useState<SbomResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const sbom = useQuery({
+    queryKey: [GLOBAL, 'getSbom'],
+    queryFn: () => getSbom(),
+  });
+  const data = sbom.data ?? null;
+  const loading = sbom.isPending;
+  const error = queryErrorText(sbom.error, 'Could not load the SBOM.');
 
   const [search, setSearch] = useState('');
   const [layer, setLayer] = useState<LayerFilter>('all');
@@ -62,26 +67,6 @@ const SbomReference: React.FC = () => {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(50);
   const [showProvenance, setShowProvenance] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    getSbom()
-      .then((r) => {
-        if (!cancelled) {
-          setData(r);
-          setLoading(false);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(formatApiError(err, 'Could not load the SBOM.'));
-          setLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // Distinct licenses present in the build, for the license filter dropdown.
   // Null/empty licenses collapse into a single "unspecified" bucket so a

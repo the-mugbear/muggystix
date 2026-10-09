@@ -4,53 +4,45 @@
  * execution runs a session used to open. Each row opens the host, where the
  * test, its status and its evidence live.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
 import { listHostTests, type HostTest } from '../../services/api';
-import { formatApiError } from '../../utils/apiErrors';
+import { useListQuery } from '../../hooks/useListQuery';
+import { queryErrorText } from '../../lib/query';
 import { hostTestStatusLabel, hostTestStatusVariant } from '../../utils/hostTests';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 
 const PAGE = 25;
+const FAILED = 'Could not load the tests this session proposed.';
 
 export const SessionTests: React.FC<{ sessionId: number; ended: boolean }> = ({ sessionId, ended }) => {
-  const [rows, setRows] = useState<HostTest[]>([]);
-  const [total, setTotal] = useState<number | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const list = useListQuery<HostTest>(
+    'listHostTests',
+    ({ offset, limit }) => listHostTests({ agent_session_id: sessionId, limit, offset }),
+    [{ agent_session_id: sessionId }],
+    { pageSize: PAGE, errorMessage: FAILED },
+  );
+  // A failed "Show more" keeps the rows that are shown and says so under them.
+  const more = useMutation({ mutationFn: () => list.loadMore() });
+  const { total } = list;
+  const error = list.error ?? queryErrorText(more.error, FAILED);
 
-  const load = useCallback(async (offset: number) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const page = await listHostTests({ agent_session_id: sessionId, limit: PAGE, offset });
-      setRows((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
-      setTotal(page.total);
-    } catch (err) {
-      setError(formatApiError(err, 'Could not load the tests this session proposed.'));
-    } finally {
-      setLoading(false);
+  if (!list.rows) {
+    if (list.error) {
+      return (
+        <p role="alert" className="text-metadata text-destructive">
+          {list.error}{' '}
+          <Button variant="ghost" size="sm" onClick={() => void list.reload()}>Retry</Button>
+        </p>
+      );
     }
-  }, [sessionId]);
-
-  useEffect(() => {
-    void load(0);
-  }, [load]);
-
-  if (error && rows.length === 0) {
-    return (
-      <p role="alert" className="text-metadata text-destructive">
-        {error}{' '}
-        <Button variant="ghost" size="sm" onClick={() => void load(0)}>Retry</Button>
-      </p>
-    );
-  }
-  if (total === null) {
     return <p role="status" className="text-metadata text-muted-foreground">Loading tests…</p>;
   }
+  const rows = list.rows;
   if (total === 0) {
     return (
       <p className="text-metadata text-muted-foreground">
@@ -98,7 +90,7 @@ export const SessionTests: React.FC<{ sessionId: number; ended: boolean }> = ({ 
       {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
       {rows.length < total && (
         <div>
-          <Button variant="ghost" size="sm" disabled={loading} onClick={() => void load(rows.length)}>
+          <Button variant="ghost" size="sm" disabled={list.loading || list.loadingMore} onClick={() => more.mutate()}>
             Show more ({(total - rows.length).toLocaleString()} left)
           </Button>
         </div>

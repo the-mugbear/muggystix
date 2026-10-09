@@ -1,5 +1,6 @@
 import React, { ReactNode } from 'react';
 import { useNavigate, useLocation, useNavigationType, NavLink, Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import {
   FolderOpen,
   CalendarClock,
@@ -41,7 +42,7 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
-import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
+import { GLOBAL, pollEvery } from '../lib/query';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import logger from '../utils/logger';
 import { HUBS, documentTitleFor, isCrossProjectPath, resolveActiveHub } from '../config/navigation';
@@ -89,7 +90,6 @@ export default function Layout({ children }: LayoutProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = React.useState(false);
-  const [unreadCount, setUnreadCount] = React.useState(0);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
 
@@ -200,26 +200,25 @@ export default function Layout({ children }: LayoutProps) {
   const { enabled: remediationEnabled } = useRemediationPolicy();
   const { currentProject } = useProject();
 
-  // Notifications-poll error/backoff state. On consecutive failures
-  // we extend the cadence (60s → 2m → 5m capped) so we don't hammer
-  // the API on an outage. A successful tick resets the streak.
+  // The bell's count: the reader's unread mentions across their projects,
+  // re-read every minute while the tab is visible and half as often while
+  // the server is failing (`pollEvery`).  A failed read keeps the last count.
   const failureStreakRef = React.useRef(0);
   // v4.58.0 (UX·7) — surface staleness when the poll has failed enough
   // times that the displayed count is probably out of date.  Threshold
-  // is conservative (3 consecutive failures ≈ 3 minutes of outage at
-  // the 60s cadence) so a transient blip doesn't visually alarm
-  // operators; resets to false on the next successful tick.
+  // is conservative (3 consecutive failures) so a transient blip doesn't
+  // visually alarm operators; back to false on the next successful read.
   const [notificationsStale, setNotificationsStale] = React.useState(false);
-
-  const fetchUnreadCount = React.useCallback(() => {
-    if (!isAuthenticated || !currentProject) return;
-    getUnreadNotificationCount()
-      .then((count) => {
-        setUnreadCount(count);
+  const notificationsOn = isAuthenticated && !!currentProject;
+  const unread = useQuery({
+    queryKey: [GLOBAL, 'getUnreadNotificationCount'],
+    queryFn: async () => {
+      try {
+        const count = await getUnreadNotificationCount();
         failureStreakRef.current = 0;
         setNotificationsStale(false);
-      })
-      .catch((err) => {
+        return count;
+      } catch (err) {
         failureStreakRef.current += 1;
         // Silent visually (the badge stays at last-known) but logged
         // for triage — pre-fix this catch was completely swallowed.
@@ -227,38 +226,16 @@ export default function Layout({ children }: LayoutProps) {
           message: (err as Error | undefined)?.message,
           streak: failureStreakRef.current,
         });
-        // v4.58.0 (UX·7) — after 3 consecutive failures, mark the
-        // badge stale so operators know the count may be outdated.
-        if (failureStreakRef.current >= 3) {
-          setNotificationsStale(true);
-        }
-      });
-  }, [isAuthenticated, currentProject]);
-
-  React.useEffect(() => {
-    if (!isAuthenticated || !currentProject) {
-      setUnreadCount(0);
-      return;
-    }
-    fetchUnreadCount();
-    // Pages that mark notifications read can dispatch this custom
-    // event to make the bell drop immediately instead of waiting up
-    // to 60s for the next scheduled tick.
-    const onMarked = () => fetchUnreadCount();
-    window.addEventListener('nm:notifications-marked-read', onMarked);
-    return () => {
-      window.removeEventListener('nm:notifications-marked-read', onMarked);
-    };
-  }, [isAuthenticated, currentProject, fetchUnreadCount]);
-
-  // Visibility-gated polling (audit CRIT-18). Cadence stretches when
-  // recent ticks have failed so we don't add to API load during an
-  // outage; collapses back to 60s on a successful tick.
-  const pollCadence =
-    failureStreakRef.current >= 5 ? 300_000
-      : failureStreakRef.current >= 2 ? 120_000
-      : 60_000;
-  useVisibilityPoll(fetchUnreadCount, pollCadence, isAuthenticated && !!currentProject);
+        if (failureStreakRef.current >= 3) setNotificationsStale(true);
+        throw err;
+      }
+    },
+    enabled: notificationsOn,
+    ...pollEvery(60_000),
+  });
+  // (A page that marks notifications read invalidates this read, so the bell
+  // drops at once instead of on the next minute's.)
+  const unreadCount = notificationsOn ? unread.data ?? 0 : 0;
 
   // Global Cmd/Ctrl+K to open the command palette.  Matches the
   // common command-bar convention (Linear, GitHub, etc.) and gives

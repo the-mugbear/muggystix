@@ -17,8 +17,8 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowDownRight } from 'lucide-react';
 
-import type { Proposal } from '../../services/api';
 import type { FindingProposals } from '../../hooks/useFindingProposals';
+import type { OnProposalDecided } from '../../hooks/useProposalDecision';
 import PostureSection, { SectionCount } from '../posture/PostureSection';
 import ProposalItem, { describeProposal, FIELD_LABELS } from './ProposalItem';
 import { Button } from '../ui/button';
@@ -30,7 +30,7 @@ interface Props {
   /** The finding's endpoint row ids — an endpoint proposal is reviewed on its row. */
   endpointIds: Set<number>;
   canDecide: boolean;
-  onDecided: (updated: Proposal) => void;
+  onDecided?: OnProposalDecided;
 }
 
 const goTo = (id: string) => {

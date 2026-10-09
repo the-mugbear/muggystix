@@ -6,12 +6,13 @@
  * the audit trail behind a proposal that cites it.  Renders nothing when the
  * host has none.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { FileTerminal, Loader2 } from 'lucide-react';
 
 import { EvidenceRecord, getEvidenceRawOutput, listEvidenceRecords } from '../../services/api';
-import { formatApiError } from '../../utils/apiErrors';
+import { queryErrorText } from '../../lib/query';
 import { formatRelativeTime } from '../../utils/relativeTime';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -26,21 +27,12 @@ const OUTCOME: Record<string, { label: string; variant: 'warning-outline' | 'suc
 };
 
 const Output: React.FC<{ rec: EvidenceRecord }> = ({ rec }) => {
-  const [full, setFull] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Asked for by the button, once; the preview is what the record carries.
+  const whole = useMutation({ mutationFn: () => getEvidenceRawOutput(rec.id) });
+  const full = whole.data ?? null;
+  const busy = whole.isPending;
+  const error = queryErrorText(whole.error, 'Could not load the output.');
   if (!rec.raw_output_preview) return null;
-  const loadAll = async () => {
-    setBusy(true);
-    try {
-      setFull(await getEvidenceRawOutput(rec.id));
-      setError(null);
-    } catch (err) {
-      setError(formatApiError(err, 'Could not load the output.'));
-    } finally {
-      setBusy(false);
-    }
-  };
   return (
     <details className="text-caption">
       <summary className="cursor-pointer select-none text-muted-foreground">
@@ -50,7 +42,7 @@ const Output: React.FC<{ rec: EvidenceRecord }> = ({ rec }) => {
         {full ?? rec.raw_output_preview}
       </pre>
       {full === null && rec.raw_output_truncated_in_preview && (
-        <Button variant="ghost" size="sm" className="mt-xxs" onClick={() => void loadAll()} disabled={busy}>
+        <Button variant="ghost" size="sm" className="mt-xxs" onClick={() => whole.mutate()} disabled={busy}>
           {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Show the whole output
         </Button>
       )}
@@ -93,24 +85,19 @@ export const EvidenceItem: React.FC<{ rec: EvidenceRecord; hideFindingLink?: boo
   );
 };
 
-const HostEvidenceSection: React.FC<{ hostId: number; refreshKey?: number }> = ({ hostId, refreshKey = 0 }) => {
-  const [items, setItems] = useState<EvidenceRecord[] | null>(null);
-  const [total, setTotal] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+/** The key of a host's evidence that answers no test — what this section
+ *  reads.  A write that may change it (a result, a promotion) invalidates it. */
+export const hostEvidenceKey = (hostId: number) =>
+  ['listEvidenceRecords', { host_id: hostId, unlinked: true, limit: 100 }] as const;
 
-  const load = useCallback(async () => {
-    try {
-      const res = await listEvidenceRecords({ host_id: hostId, unlinked: true, limit: 100 });
-      setItems(res.items);
-      setTotal(res.total);
-      setError(null);
-    } catch (err) {
-      setError(formatApiError(err, 'Evidence records unavailable.'));
-    }
-  }, [hostId]);
-
-  // `refreshKey` changes when a result or a finding was recorded on this host.
-  useEffect(() => { void load(); }, [load, refreshKey]);
+const HostEvidenceSection: React.FC<{ hostId: number }> = ({ hostId }) => {
+  const query = useQuery({
+    queryKey: hostEvidenceKey(hostId),
+    queryFn: () => listEvidenceRecords({ host_id: hostId, unlinked: true, limit: 100 }),
+  });
+  const items = query.data?.items ?? null;
+  const total = query.data?.total ?? 0;
+  const error = queryErrorText(query.error, 'Evidence records unavailable.');
 
   if (!error && (!items || items.length === 0)) return null;
   return (

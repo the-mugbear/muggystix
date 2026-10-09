@@ -446,6 +446,10 @@ describe('FindingEndpoints — a proposed endpoint change sits on its row', () =
     fireEvent.change(within(row).getByRole('textbox', { name: /Why reject it/ }), { target: { value: 'Not retested yet.' } });
     fireEvent.click(within(row).getByRole('button', { name: /^Reject$/ }));
     await waitFor(() => expect(rejectProposal).toHaveBeenCalledWith(9, 'Not retested yet.'));
-    expect(onProposalDecided).toHaveBeenCalledWith(expect.objectContaining({ status: 'rejected' }));
+    // …with the promise of the re-read the decision asked for (5.351.0: the
+    // page no longer re-reads from this callback).
+    expect(onProposalDecided).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'rejected' }), expect.any(Promise),
+    );
   });
 });

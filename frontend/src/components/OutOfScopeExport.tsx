@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { copyToClipboard as copyText } from '../utils/clipboard';
 import { downloadTextFile } from '../utils/download';
-import { formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
 import { Copy, Download, Loader2, ShieldOff } from 'lucide-react';
 import { getOutOfScopeHostList } from '../services/api';
 import { Alert, AlertDescription } from './ui/alert';
@@ -38,33 +39,27 @@ type ExportFormat = (typeof EXPORT_FORMATS)[number]['value'];
 
 export default function OutOfScopeExport({ open, onClose }: OutOfScopeExportProps) {
   const [selectedFormat, setSelectedFormat] = useState<ExportFormat>('txt');
-  const [output, setOutput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Asked for by the button, so a mutation: its answer is the list shown, and
+  // asking again starts from nothing.
+  const generate = useMutation({
+    mutationFn: () => getOutOfScopeHostList(selectedFormat),
+    onError: (err) => console.error('Error fetching out-of-scope hosts:', err),
+  });
+  const output = generate.data ?? '';
+  const loading = generate.isPending;
+  const error = queryErrorText(generate.error, 'Failed to fetch out-of-scope hosts');
 
+  // Each opening starts empty.
+  const { reset } = generate;
   React.useEffect(() => {
     if (open) {
-      setOutput('');
-      setError(null);
+      reset();
       setCopied(false);
     }
-  }, [open]);
+  }, [open, reset]);
 
-  const generateOutput = async () => {
-    setLoading(true);
-    setError(null);
-    setOutput('');
-    try {
-      const result = await getOutOfScopeHostList(selectedFormat);
-      setOutput(result);
-    } catch (err) {
-      console.error('Error fetching out-of-scope hosts:', err);
-      setError(formatApiError(err, 'Failed to fetch out-of-scope hosts'));
-    } finally {
-      setLoading(false);
-    }
-  };
+  const generateOutput = () => generate.mutate();
 
   const copyToClipboard = async () => {
     // copyText (utils/clipboard) adds an execCommand fallback for non-secure
@@ -124,7 +119,7 @@ export default function OutOfScopeExport({ open, onClose }: OutOfScopeExportProp
           </Select>
         </div>
 
-        <Button onClick={generateOutput} disabled={loading} className="w-full">
+        <Button onClick={() => generateOutput()} disabled={loading} className="w-full">
           {loading ? (
             <>
               <Loader2 className="size-4 animate-spin" aria-hidden />

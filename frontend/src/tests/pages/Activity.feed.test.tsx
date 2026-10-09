@@ -4,7 +4,7 @@
  * relative age and "N comments", the notes under day headings with a time of
  * day and "N entries", and the page's counts ignored the finding comments.
  */
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -108,6 +108,39 @@ describe('Collaboration — one feed', () => {
     await screen.findByText('a note');
     await waitFor(() => expect(screen.getByLabelText('Discussions in view')).toHaveTextContent(
       '1 host-note thread on 1 host · 1 finding discussion in view',
+    ));
+  });
+
+  // 5.351.0 — a figure whose rows have not been read is not known: the header
+  // said "0 host-note threads on 0 hosts · 0 finding discussions" while a
+  // first load or a new filter was on its way, and after a read that failed.
+  it('the header’s counts are “…” until their rows have been read, never 0', async () => {
+    let answerNotes!: (v: unknown) => void;
+    let answerDiscussions!: (v: unknown) => void;
+    getNoteActivity.mockReturnValue(new Promise((resolve) => { answerNotes = resolve; }));
+    getFindingDiscussions.mockReturnValue(new Promise((resolve) => { answerDiscussions = resolve; }));
+    render(<MemoryRouter><Activity /></MemoryRouter>);
+    const header = screen.getByLabelText('Discussions in view');
+    expect(header).toHaveTextContent('… host-note threads on … hosts · … finding discussions in view');
+
+    // Each figure is known as soon as ITS rows are.
+    await act(async () => { answerNotes(payload([note({})])); });
+    await waitFor(() => expect(header).toHaveTextContent(
+      '1 host-note thread on 1 host · … finding discussions in view',
+    ));
+    await act(async () => { answerDiscussions({ total: 0, items: [] }); });
+    // A list that was read and holds nothing IS zero.
+    await waitFor(() => expect(header).toHaveTextContent(
+      '1 host-note thread on 1 host · 0 finding discussions in view',
+    ));
+  });
+
+  it('a count that could not be read is “—”, not 0 and not still loading', async () => {
+    getNoteActivity.mockRejectedValue(new Error('down'));
+    getFindingDiscussions.mockRejectedValue(new Error('down'));
+    render(<MemoryRouter><Activity /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByLabelText('Discussions in view')).toHaveTextContent(
+      '— host-note threads on — hosts · — finding discussions in view',
     ));
   });
 

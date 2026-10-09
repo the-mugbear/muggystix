@@ -7,7 +7,8 @@
  * status beside `key_expires_at` — such a session is resumable, not over — so
  * this is where "an agent can use it right now" is pinned.
  */
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { useQueryClient } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({ listAgentSessions: vi.fn() }));
@@ -16,6 +17,7 @@ const auth = vi.hoisted(() => ({ user: { id: 7 } as { id: number } | null }));
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: auth.user }) }));
 
 import { useMyAssistSessions } from '../../hooks/useMyAssistSessions';
+import { invalidateReads } from '../../lib/query';
 import { hasLiveKey } from '../../utils/agentRuns';
 
 const HOUR = 3_600_000;
@@ -76,12 +78,16 @@ describe('useMyAssistSessions', () => {
     expect(api.listAgentSessions).not.toHaveBeenCalled();
   });
 
-  it('re-reads on refresh', async () => {
+  // The hook had a `refresh()` its callers ran after starting or ending a
+  // session.  Those writes now say `listAgentSessions` is out of date
+  // (`invalidateReads`), and that alone brings the new session here.
+  it('re-reads when a write says the sessions are out of date', async () => {
     api.listAgentSessions.mockResolvedValue(listed());
-    const { result } = renderHook(() => useMyAssistSessions());
+    const { result } = renderHook(() => ({ mine: useMyAssistSessions(), client: useQueryClient() }));
     await waitFor(() => expect(api.listAgentSessions).toHaveBeenCalledTimes(1));
     api.listAgentSessions.mockResolvedValue(listed(session()));
-    await result.current.refresh();
-    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+    await act(() => invalidateReads(result.current.client, 'listAgentSessions'));
+    await waitFor(() => expect(result.current.mine.sessions).toHaveLength(1));
+    expect(api.listAgentSessions).toHaveBeenCalledTimes(2);
   });
 });

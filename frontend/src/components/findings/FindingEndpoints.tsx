@@ -23,12 +23,13 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useMutation } from '@tanstack/react-query';
 import { ChevronRight, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
 
 import {
   Finding, FindingHostInfo, FindingHostStatus, Proposal, setFindingEndpointStatus, setFindingEndpointsStatus,
 } from '../../services/api';
-import { useProposalDecision } from '../../hooks/useProposalDecision';
+import { type OnProposalDecided, useProposalDecision } from '../../hooks/useProposalDecision';
 import { ProposalDecisionControls, ProposalReasons, ProposalSource } from '../proposals/ProposalItem';
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
@@ -63,7 +64,7 @@ import {
 
 /** One pending endpoint-status proposal, on the row it would change. */
 const EndpointProposal: React.FC<{
-  pr: Proposal; from: FindingHostStatus; canDecide: boolean; onDecided: (updated: Proposal) => void;
+  pr: Proposal; from: FindingHostStatus; canDecide: boolean; onDecided?: OnProposalDecided;
 }> = ({ pr, from, canDecide, onDecided }) => {
   const decision = useProposalDecision(pr, onDecided);
   const to = String(pr.payload?.host_status ?? '') as FindingHostStatus;
@@ -105,7 +106,7 @@ interface Props {
   proposals?: Map<number, Proposal[]>;
   /** Analyst+: may decide them (the server still decides each accept). */
   canDecide?: boolean;
-  onProposalDecided?: (updated: Proposal) => void;
+  onProposalDecided?: OnProposalDecided;
 }
 
 const FindingEndpoints: React.FC<Props> = ({
@@ -141,6 +142,17 @@ const FindingEndpoints: React.FC<Props> = ({
     queue.current = run.catch(() => undefined);
     return run;
   };
+  // The two writes the queue sends.  Their pending state is not what locks a
+  // row: a row is busy from its click (`saving`), the bulk bar from its own
+  // (`bulkBusy`), each while its change waits its turn as well.
+  const setEndpoint = useMutation({
+    mutationFn: (v: { rowId: number; hostStatus: FindingHostStatus }) =>
+      setFindingEndpointStatus(finding.id, v.rowId, v.hostStatus),
+  });
+  const setEndpoints = useMutation({
+    mutationFn: (body: { finding_host_ids: number[]; host_status: FindingHostStatus; summary?: string }) =>
+      setFindingEndpointsStatus(finding.id, body),
+  });
   const [bulkState, setBulkState] = useState<FindingHostStatus | ''>('');
   const [bulkSummary, setBulkSummary] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -279,7 +291,7 @@ const FindingEndpoints: React.FC<Props> = ({
       try {
         // The route answers with the finding: the row is updated from it, not
         // from a second read of thousands of endpoints.
-        onChanged(await setFindingEndpointStatus(finding.id, row.id, hostStatus));
+        onChanged(await setEndpoint.mutateAsync({ rowId: row.id, hostStatus }));
         // A row given its own state is no longer part of "these, together".
         setSelected((prev) => {
           if (!prev.has(row.id)) return prev;
@@ -315,7 +327,7 @@ const FindingEndpoints: React.FC<Props> = ({
     try {
       await enqueue(async () => {
         results = await runLimited(chunks, 1, (ids) =>
-          setFindingEndpointsStatus(finding.id, { finding_host_ids: ids, host_status: hostStatus, summary }));
+          setEndpoints.mutateAsync({ finding_host_ids: ids, host_status: hostStatus, summary }));
       });
     } finally {
       setBulkBusy(false);
@@ -416,7 +428,7 @@ const FindingEndpoints: React.FC<Props> = ({
             {!names && <span className="text-muted-foreground">—</span>}
           </div>
           {(proposals.get(h.id) ?? []).map((pr) => (
-            <EndpointProposal key={pr.id} pr={pr} from={h.host_status} canDecide={canDecide} onDecided={(u) => onProposalDecided?.(u)} />
+            <EndpointProposal key={pr.id} pr={pr} from={h.host_status} canDecide={canDecide} onDecided={onProposalDecided} />
           ))}
         </TableCell>
         <TableCell className={CELL}>

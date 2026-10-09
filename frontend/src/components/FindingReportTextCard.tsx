@@ -24,6 +24,7 @@
  * empty editor by itself, and "Draft empty sections" leaves it alone.
  */
 import React, { useEffect, useRef, useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Pencil, Sparkles } from 'lucide-react';
 
 import {
@@ -37,8 +38,9 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useDiscardGuard } from '../hooks/useDiscardGuard';
+import type { OnProposalDecided } from '../hooks/useProposalDecision';
+import { invalidateReads } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
-import { announceProposalsChanged } from '../utils/proposalEvents';
 import type { MarkdownImages } from '../utils/reportImages';
 import { Button } from './ui/button';
 import { InfoTip } from './ui/info-tip';
@@ -92,8 +94,6 @@ interface Props {
   /** Analyst+: may ask for an AI draft (a proposal changes nothing). */
   canPropose?: boolean;
   onSaved: (finding: Finding) => void;
-  /** A draft created proposals: re-read the page's proposals. */
-  onDrafted?: () => void;
   /** Open in the editor (the Reports page's "missing report text" links). */
   startEditing?: boolean;
   /** 5.317.0 — "Work on this with your agent" (the page supplies it, so the
@@ -107,7 +107,7 @@ interface Props {
   /** Analyst+: may accept or reject a draft (the server still decides). */
   canDecide?: boolean;
   /** A draft was accepted or rejected. */
-  onProposalDecided?: (updated: Proposal) => void;
+  onProposalDecided?: OnProposalDecided;
   /** The editor holds text that is not saved (or no longer does) — for the
    *  page's own Back button. */
   onDirtyChange?: (dirty: boolean) => void;
@@ -116,7 +116,7 @@ interface Props {
 const NO_DRAFTS = new Map<string, Proposal[]>();
 
 const FindingReportTextCard: React.FC<Props> = ({
-  finding, canEdit, canPropose = canEdit, onSaved, onDrafted, startEditing = false, agentAction, images,
+  finding, canEdit, canPropose = canEdit, onSaved, startEditing = false, agentAction, images,
   drafts = NO_DRAFTS, canDecide = false, onProposalDecided, onDirtyChange,
 }) => {
   const toast = useToast();
@@ -155,13 +155,11 @@ const FindingReportTextCard: React.FC<Props> = ({
     document.getElementById(`rt-${focusField}`)?.focus?.();
     setFocusField(null);
   }, [draft, focusField]);
-  const [saving, setSaving] = useState(false);
+  // One line under the form: a score that is not a score, a refused save, a
+  // draft that could not be made.
   const [error, setError] = useState<string | null>(null);
-  const [drafting, setDrafting] = useState(false);
-  // 5.334.4 — sections the last AI draft declined, with what it needs: an
-  // answer, shown until the next draft; never report text.
-  const [declined, setDeclined] = useState<Record<string, string>>({});
   const cardRef = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     if (startEditing) cardRef.current?.scrollIntoView?.({ block: 'start' });
@@ -174,18 +172,15 @@ const FindingReportTextCard: React.FC<Props> = ({
 
   // Draft the required sections still empty as proposals — the same review
   // path an agent's drafts take; nothing is written until one is accepted.
-  const draftEmpty = async () => {
-    const empty = undrafted;
-    if (empty.length === 0) return;
-    setDrafting(true);
-    setError(null);
-    try {
-      const { proposals, declined: notDrafted = {} } = await draftFindingText(finding.id, empty);
-      setDeclined(notDrafted);
+  const drafter = useMutation({
+    mutationFn: (empty: FindingReportTextField[]) => draftFindingText(finding.id, empty),
+    onMutate: () => setError(null),
+    onSuccess: ({ proposals, declined: notDrafted = {} }) => {
       const skipped = Object.keys(notDrafted).length;
       if (proposals.length > 0) {
-        onDrafted?.();
-        announceProposalsChanged();
+        // New proposals: the lists of them (the page's own among them) and
+        // the top bar's count are out of date.
+        void invalidateReads(queryClient, 'listProposals', 'getProposalSummary');
         toast.success(
           `Drafted ${proposals.length} section${proposals.length === 1 ? '' : 's'} as proposals — review each in its section below.`
           + (skipped ? ` ${skipped} not drafted: not enough information.` : ''),
@@ -194,14 +189,30 @@ const FindingReportTextCard: React.FC<Props> = ({
         toast.info('Nothing drafted: the finding does not hold enough information yet. See what is missing below.');
       }
       cardRef.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
-    } catch (err) {
-      setError(formatApiError(err, 'Could not draft the report text.'));
-    } finally {
-      setDrafting(false);
-    }
+    },
+    onError: (err) => setError(formatApiError(err, 'Could not draft the report text.')),
+  });
+  const drafting = drafter.isPending;
+  // 5.334.4 — sections the last AI draft declined, with what it needs: an
+  // answer, shown until the next draft; never report text.
+  const declined: Record<string, string> = drafter.data?.declined ?? {};
+  const draftEmpty = () => {
+    if (undrafted.length > 0) drafter.mutate(undrafted);
   };
 
-  const save = async () => {
+  const saver = useMutation({
+    mutationFn: (payload: FindingReportTextUpdate) => updateFinding(finding.id, payload),
+    onMutate: () => setError(null),
+    onSuccess: (updated) => {
+      onSaved(updated);
+      setDraft(null);
+      toast.success('Report text saved.');
+    },
+    onError: (err) => setError(formatApiError(err, 'Could not save the report text.')),
+  });
+  const saving = saver.isPending;
+
+  const save = () => {
     if (!draft) return;
     const before = toDraft(text);
     const payload: FindingReportTextUpdate = {};
@@ -219,18 +230,7 @@ const FindingReportTextCard: React.FC<Props> = ({
       payload.cvss_score = score;
     }
     if (Object.keys(payload).length === 0) { setDraft(null); return; }
-    setSaving(true);
-    setError(null);
-    try {
-      const updated = await updateFinding(finding.id, payload);
-      onSaved(updated);
-      setDraft(null);
-      toast.success('Report text saved.');
-    } catch (err) {
-      setError(formatApiError(err, 'Could not save the report text.'));
-    } finally {
-      setSaving(false);
-    }
+    saver.mutate(payload);
   };
 
   const cvssLine = text?.cvss_vector || text?.cvss_score != null
@@ -267,7 +267,7 @@ const FindingReportTextCard: React.FC<Props> = ({
           <>
             {canPropose && agentAction}
             {canPropose && undrafted.length > 0 && (
-              <Button variant="ghost" size="sm" onClick={() => void draftEmpty()} disabled={drafting || saving}
+              <Button variant="ghost" size="sm" onClick={draftEmpty} disabled={drafting || saving}
                 title="Draft the empty sections with your LLM provider, as proposals to review; nothing changes until one is accepted">
                 {drafting ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Sparkles className="size-4" aria-hidden />}
                 Draft empty sections
@@ -282,7 +282,7 @@ const FindingReportTextCard: React.FC<Props> = ({
         ) : undefined}
       >
         {draft ? (
-          <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+          <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); save(); }}>
             {REPORT_TEXT_FIELDS.map((f) => (
               <div key={f.key} className="space-y-xxs">
                 <Label htmlFor={`rt-${f.key}`}>{f.label}</Label>
@@ -358,7 +358,7 @@ const FindingReportTextCard: React.FC<Props> = ({
                   {draftsFor(f.key).length > 0 ? (
                     <FieldDraftsReview
                       field={f.key} label={f.label} current={text?.[f.key]} drafts={draftsFor(f.key)}
-                      canDecide={canDecide} onDecided={(u) => onProposalDecided?.(u)} evidence={images?.resolver}
+                      canDecide={canDecide} onDecided={onProposalDecided} evidence={images?.resolver}
                     />
                   ) : text?.[f.key]?.trim()
                     ? <SafeMarkdown text={text[f.key] as string} evidence={images?.resolver} />
@@ -383,7 +383,7 @@ const FindingReportTextCard: React.FC<Props> = ({
                 <dd className="mt-xs min-w-0 font-sans">
                   <FieldDraftsReview
                     field="cvss_vector" label="CVSS vector" current={text?.cvss_vector} drafts={draftsFor('cvss_vector')}
-                    canDecide={canDecide} onDecided={(u) => onProposalDecided?.(u)}
+                    canDecide={canDecide} onDecided={onProposalDecided}
                   />
                 </dd>
               )}

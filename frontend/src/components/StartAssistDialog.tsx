@@ -29,6 +29,7 @@
  * scrolled to one sentence, one field, and one copy for the chosen client.
  */
 import React, { useCallback, useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Check, Copy, Loader2, MessageCircleQuestion } from 'lucide-react';
 import { Alert, AlertDescription } from './ui/alert';
@@ -44,8 +45,8 @@ import {
 } from './ui/dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { startAssistSession, type AgentSessionRow, type StartAssistResponse } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { startAssistSession, type AgentSessionRow } from '../services/api';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import AssistSessionsPanel from './AssistSessionsPanel';
 import AgentSessionCredentials, { KeyHandoffFooter } from './AgentSessionCredentials';
 import { CodeBlock } from './ui/code-block';
@@ -60,7 +61,9 @@ export interface StartAssistDialogProps {
   /** The operator's own active sessions, shown above the start form so they
    *  can see (and revoke) a key they already hold. Omit to hide the panel. */
   mySessions?: AgentSessionRow[];
-  /** Re-fetch `mySessions` after this dialog starts or ends one. */
+  /** This dialog started or ended a session.  Only for a caller whose
+   *  `mySessions` are not a query (`useAgentTask` asks at the click and keeps
+   *  the answer): every query of sessions is asked again by the write itself. */
   onSessionsChanged?: () => void | Promise<void>;
   /** A one-line task to give the agent (e.g. "Propose tests in BlueStick
    *  for these hosts only…"), shown to copy before and after the session
@@ -85,9 +88,28 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
 }) => {
   const liveSession = instruction ? mySessions.find((s) => hasLiveKey(s, Date.now())) : undefined;
   const [purpose, setPurpose] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<StartAssistResponse | null>(null);
+  const queryClient = useQueryClient();
+  // The key is shown once: it is this dialog's mutation result and nothing
+  // else's — never a query, and dropped with the dialog (`reset`, `gcTime: 0`).
+  const start = useMutation({
+    mutationFn: (stated: string | undefined) => startAssistSession({ purpose: stated }),
+    gcTime: 0,
+    onSuccess: () => {
+      // The new key is live the moment this returns — reflect it wherever the
+      // operator's sessions are shown: every read of sessions (this dialog's
+      // own list, the rail, the Operations line), and a caller that keeps
+      // its list by hand.  A re-read that fails must not fail the start: the
+      // key in its answer is shown once.
+      void invalidateReads(queryClient, 'listAgentSessions');
+      try {
+        void Promise.resolve(onSessionsChanged?.()).catch(() => undefined);
+      } catch { /* the caller's re-read, not the start */ }
+    },
+  });
+  const loading = start.isPending;
+  const error = queryErrorText(start.error, 'Could not start assist session.');
+  const result = start.data ?? null;
+  const { reset: resetStart } = start;
   const [keyCopied, setKeyCopied] = useState(false);
   // With a session already live the task is the point: copying it is the
   // primary action, and starting another session is asked for explicitly.
@@ -97,31 +119,13 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
 
   const reset = useCallback(() => {
     setPurpose('');
-    setLoading(false);
-    setError(null);
-    setResult(null);
+    resetStart();
     setKeyCopied(false);
     setStartAnother(false);
     setTaskCopied(false);
-  }, []);
+  }, [resetStart]);
 
-  const handleStart = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const resp = await startAssistSession({
-        purpose: purpose.trim() || undefined,
-      });
-      setResult(resp);
-      // The new key is live the moment this returns — reflect it wherever the
-      // operator's session count is shown.
-      await onSessionsChanged?.();
-    } catch (err) {
-      setError(formatApiError(err, 'Could not start assist session.'));
-    } finally {
-      setLoading(false);
-    }
-  };
+  const handleStart = () => start.mutate(purpose.trim() || undefined);
 
   const handleClose = () => {
     const sid = result?.agent_session_id;
@@ -202,7 +206,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
               )}
               <AssistSessionsPanel
                 sessions={mySessions}
-                onChanged={() => onSessionsChanged?.() ?? Promise.resolve()}
+                onEnded={onSessionsChanged}
                 onNavigate={() => { reset(); onOpenChange(false); }}
               />
               {mySessions.length === 0 && (

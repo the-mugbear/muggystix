@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { copyToClipboard as copyText } from '../utils/clipboard';
 import { downloadTextFile } from '../utils/download';
-import { formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
 import { Copy, Download, FolderTree, Loader2 } from 'lucide-react';
 import { getScopeHostList } from '../services/api';
 import { Alert, AlertDescription } from './ui/alert';
@@ -40,33 +41,26 @@ type ExportFormat = (typeof EXPORT_FORMATS)[number]['value'];
 
 export default function ScopeExport({ open, onClose, scopeId, scopeName }: ScopeExportProps) {
   const [selectedFormat, setSelectedFormat] = useState<ExportFormat>('txt');
-  const [output, setOutput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Asked for by the button, not by opening the dialog: an action, so its
+  // answer, busy state and failure are the mutation's.
+  const generate = useMutation({
+    mutationFn: (format: ExportFormat) => getScopeHostList(scopeId, format),
+    onError: (err) => console.error('Error fetching scope hosts:', err),
+  });
+  const output = generate.data ?? '';
+  const loading = generate.isPending;
+  const error = queryErrorText(generate.error, 'Failed to fetch scope hosts');
+  const generateOutput = () => generate.mutate(selectedFormat);
+
+  const { reset } = generate;
   React.useEffect(() => {
     if (open) {
-      setOutput('');
-      setError(null);
+      reset();
       setCopied(false);
     }
-  }, [open]);
-
-  const generateOutput = async () => {
-    setLoading(true);
-    setError(null);
-    setOutput('');
-    try {
-      const result = await getScopeHostList(scopeId, selectedFormat);
-      setOutput(result);
-    } catch (err) {
-      console.error('Error fetching scope hosts:', err);
-      setError(formatApiError(err, 'Failed to fetch scope hosts'));
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [open, reset]);
 
   const copyToClipboard = async () => {
     // copyText (utils/clipboard) adds an execCommand fallback for non-secure

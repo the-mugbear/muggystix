@@ -9,6 +9,7 @@
  */
 import React, { useEffect } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useMutation } from '@tanstack/react-query';
 import { ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
 import { getHosts } from '../services/api';
 import { Button } from '../components/ui/button';
@@ -24,7 +25,6 @@ export default function HostDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const numericHostId = hostId ? parseInt(hostId, 10) : null;
-  const [navigationLoading, setNavigationLoading] = React.useState(false);
   const toast = useToast();
 
   const rawNavState = location.state as {
@@ -99,6 +99,35 @@ export default function HostDetail() {
     'What you started on this host — a note, pasted screenshots, a reply or a test summary — has not been saved. Leave anyway?',
   );
 
+  // Prev / Next from a Hosts list: the neighbour is looked up by its position
+  // in the list the reader came from — asked for by a click, so a mutation.
+  const adjacentHost = useMutation({
+    mutationFn: (absoluteTargetIndex: number) => getHosts({
+      ...navState?.queryContext,
+      skip: absoluteTargetIndex,
+      limit: 1,
+      include_total: false,
+    }),
+    onSuccess: (response, absoluteTargetIndex) => {
+      const nextHost = response.items[0];
+      if (!nextHost) return;
+      navigate(`/hosts/${nextHost.id}`, {
+        state: {
+          ...navState,
+          hostIds: [nextHost.id],
+          currentIndex: 0,
+          absoluteIndex: absoluteTargetIndex,
+        },
+        replace: true,
+      });
+    },
+    onError: (err) => {
+      console.error('Failed to navigate to adjacent host:', err);
+      toast.error(formatApiError(err, 'Could not navigate to adjacent host.'));
+    },
+  });
+  const navigationLoading = adjacentHost.isPending;
+
   const handleBackToHosts = async () => {
     if (!(await confirmDiscardDraft())) return;
     if (navState?.fromOperations) navigate(operationsBackPath(navState));
@@ -123,31 +152,7 @@ export default function HostDetail() {
       return;
     }
     if (!(await confirmDiscardDraft())) return;
-    setNavigationLoading(true);
-    try {
-      const response = await getHosts({
-        ...navState.queryContext,
-        skip: absoluteTargetIndex,
-        limit: 1,
-        include_total: false,
-      });
-      const nextHost = response.items[0];
-      if (!nextHost) return;
-      navigate(`/hosts/${nextHost.id}`, {
-        state: {
-          ...navState,
-          hostIds: [nextHost.id],
-          currentIndex: 0,
-          absoluteIndex: absoluteTargetIndex,
-        },
-        replace: true,
-      });
-    } catch (err) {
-      console.error('Failed to navigate to adjacent host:', err);
-      toast.error(formatApiError(err, 'Could not navigate to adjacent host.'));
-    } finally {
-      setNavigationLoading(false);
-    }
+    adjacentHost.mutate(absoluteTargetIndex);
   };
 
   // Keyboard shortcuts: arrow keys / j-k for prev-next, Esc for back.

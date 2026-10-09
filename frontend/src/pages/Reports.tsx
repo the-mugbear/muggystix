@@ -7,7 +7,8 @@
  * issued report (new findings, findings on further systems, withdrawals).
  * Posture layout: a lead sentence, then sections over thin rules.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isClientTemplate } from '../utils/reportTemplates';
 import { Link, useNavigate } from 'react-router-dom';
 import { Download, FilePlus2, Loader2, Pencil, RefreshCw } from 'lucide-react';
@@ -16,6 +17,7 @@ import {
   ClientReport,
   ClientReportKind,
   ClientReportList,
+  ReportFile,
   ReportProfile,
   ReportTemplate,
   ReportTemplateProblem,
@@ -34,6 +36,7 @@ import { Input } from '../components/ui/input';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useProjectRoster } from '../hooks/useProjectMembers';
+import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import PostureLead from '../components/posture/PostureLead';
@@ -72,30 +75,33 @@ export const draftMeta = (r: Pick<ClientReport, 'id' | 'created_at' | 'template'
 const DraftTitle: React.FC<{
   report: ClientReport;
   duplicate: boolean;
-  onRenamed: (r: ClientReport) => void;
-}> = ({ report, duplicate, onRenamed }) => {
+}> = ({ report, duplicate }) => {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const [value, setValue] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const renaming = useMutation({
+    mutationFn: (title: string) => updateClientReport(report.id, { title }),
+    onSuccess: (updated) => {
+      // The new title goes where the list is read; the row keeps its place.
+      queryClient.setQueryData<ClientReportList>(['listClientReports'], (d) => (d
+        ? { ...d, items: d.items.map((x) => (x.id === updated.id ? { ...x, title: updated.title } : x)) }
+        : d));
+      setValue(null);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not rename the draft.')),
+  });
+  const saving = renaming.isPending;
 
-  const save = async () => {
+  const save = () => {
     const title = (value ?? '').trim();
     if (!title) { toast.error('A report needs a title.'); return; }
     if (title === report.title) { setValue(null); return; }
-    setSaving(true);
-    try {
-      onRenamed(await updateClientReport(report.id, { title }));
-      setValue(null);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not rename the draft.'));
-    } finally {
-      setSaving(false);
-    }
+    renaming.mutate(title);
   };
 
   if (value !== null) {
     return (
-      <form className="flex min-w-0 items-center gap-xs" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+      <form className="flex min-w-0 items-center gap-xs" onSubmit={(e) => { e.preventDefault(); save(); }}>
         <Input
           autoFocus value={value} maxLength={255} disabled={saving}
           onChange={(e) => setValue(e.target.value)}
@@ -138,6 +144,10 @@ export const reportKindLabel = (r: Pick<ClientReport, 'kind' | 'baseline' | 'rev
 
 export const FileButtons: React.FC<{ report: ClientReport }> = ({ report }) => {
   const toast = useToast();
+  const download = useMutation({
+    mutationFn: (file: ReportFile) => downloadClientReportFile(report.id, file),
+    onError: (err) => toast.error(formatApiError(err, 'Could not download the file.')),
+  });
   if (report.render_status === 'pending') {
     return (
       <span className="inline-flex items-center gap-xxs text-caption text-muted-foreground">
@@ -154,8 +164,7 @@ export const FileButtons: React.FC<{ report: ClientReport }> = ({ report }) => {
       {report.files.map((f) => (
         <Button key={f.format} variant="outline" size="sm" className="h-7 px-xs text-caption"
           aria-label={`Download ${f.filename}`}
-          onClick={() => void downloadClientReportFile(report.id, f).catch((err) =>
-            toast.error(formatApiError(err, 'Could not download the file.')))}>
+          onClick={() => download.mutate(f)}>
           <Download className="size-3.5" aria-hidden /> {f.format.toUpperCase()}
         </Button>
       ))}
@@ -166,31 +175,18 @@ export const FileButtons: React.FC<{ report: ClientReport }> = ({ report }) => {
 const Reports: React.FC = () => {
   const toast = useToast();
   const navigate = useNavigate();
-  const [data, setData] = useState<ClientReportList | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState<ClientReportKind | null>(null);
+  const query = useQuery({ queryKey: ['listClientReports'], queryFn: () => listClientReports() });
+  const data: ClientReportList | null = query.data ?? null;
+  const error = queryErrorText(query.error, 'Could not load the reports.');
 
-  const load = useCallback(async () => {
-    try {
-      setData(await listClientReports());
-      setError(null);
-    } catch (err) {
-      setError(formatApiError(err, 'Could not load the reports.'));
-    }
-  }, []);
-  useEffect(() => { void load(); }, [load]);
-
-  const create = async (kind: ClientReportKind) => {
-    setCreating(kind);
-    try {
-      const report = await createClientReport({ kind });
-      navigate(`/reports/${report.id}`);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not start the report.'));
-    } finally {
-      setCreating(null);
-    }
-  };
+  // The new draft's own page is where it goes; this list is read again when
+  // the reader comes back to it.
+  const starting = useMutation({
+    mutationFn: (kind: ClientReportKind) => createClientReport({ kind }),
+    onSuccess: (report) => navigate(`/reports/${report.id}`),
+    onError: (err) => toast.error(formatApiError(err, 'Could not start the report.')),
+  });
+  const creating: ClientReportKind | null = starting.isPending ? starting.variables : null;
 
   const drafts = data?.items.filter((r) => r.status === 'draft') ?? [];
   const issued = data?.items.filter((r) => r.status !== 'draft') ?? [];
@@ -217,11 +213,11 @@ const Reports: React.FC = () => {
         {data?.can_create && (
           <div className="flex shrink-0 flex-col items-end gap-xxs">
             <div className="flex flex-wrap gap-xs">
-              <Button onClick={() => void create('full')} disabled={creating !== null}>
+              <Button onClick={() => starting.mutate('full')} disabled={creating !== null}>
                 {creating === 'full' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <FilePlus2 className="size-4" aria-hidden />}
                 New report
               </Button>
-              <Button variant="outline" onClick={() => void create('addendum')}
+              <Button variant="outline" onClick={() => starting.mutate('addendum')}
                 disabled={creating !== null || !latest}
                 aria-describedby={latest ? undefined : 'addendum-why'}
                 title={latest ? `Report what changed since #${latest.number}` : undefined}>
@@ -243,7 +239,7 @@ const Reports: React.FC = () => {
       {error && (
         <div className="flex flex-wrap items-center gap-sm">
           <p className="text-caption text-destructive">{error}</p>
-          <Button variant="outline" size="sm" onClick={() => void load()}>
+          <Button variant="outline" size="sm" onClick={() => void query.refetch()}>
             <RefreshCw className="size-4" aria-hidden /> Retry
           </Button>
         </div>
@@ -275,10 +271,7 @@ const Reports: React.FC = () => {
                         </Link>
                       </TableCell>
                       <TableCell className="min-w-0">
-                        <DraftTitle report={r} duplicate={(titleCounts.get(r.title) ?? 0) > 1}
-                          onRenamed={(updated) => setData((d) => (d
-                            ? { ...d, items: d.items.map((x) => (x.id === updated.id ? { ...x, title: updated.title } : x)) }
-                            : d))} />
+                        <DraftTitle report={r} duplicate={(titleCounts.get(r.title) ?? 0) > 1} />
                         {/* Drafts often share the default title; this line
                             tells them apart from what the list already
                             carries (v5.288.0) — no per-draft request. */}
@@ -349,45 +342,43 @@ const Reports: React.FC = () => {
 };
 
 const FORMAT_LABEL: Record<string, string> = { html: 'HTML', docx: 'Word', qmd: 'QMD source' };
+const NO_TEMPLATES: ReportTemplate[] = [];
+const NO_PROBLEMS: ReportTemplateProblem[] = [];
 
 const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   const toast = useToast();
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
   const currentUser = user ? { id: user.id, name: user.full_name || user.username } : null;
-  const [profile, setProfile] = useState<ReportProfile | null>(null);
+  const queryClient = useQueryClient();
+  // The form while it is open: started from the stored defaults by Edit.
   const [draft, setDraft] = useState<ReportProfile | null>(null);
-  const [templates, setTemplates] = useState<ReportTemplate[]>([]);
-  const [problems, setProblems] = useState<ReportTemplateProblem[]>([]);
   const roster = useProjectRoster({ enabled: canEdit });
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([getReportProfile(), listReportTemplates()])
-      .then(([p, t]) => { if (!cancelled) { setProfile(p); setTemplates(t); } })
-      .catch((err) => { if (!cancelled) setError(formatApiError(err, 'Could not load the report defaults.')); });
-    // Only an administrator can put a folder on the server, so only they are
-    // told which ones could not be offered.
-    if (isAdmin) listReportTemplateProblems().then((p) => { if (!cancelled) setProblems(p); }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [canEdit, isAdmin]);
+  const profileQuery = useQuery({ queryKey: ['getReportProfile'], queryFn: () => getReportProfile() });
+  const templatesQuery = useQuery({ queryKey: ['listReportTemplates'], queryFn: () => listReportTemplates() });
+  // Only an administrator can put a folder on the server, so only they are
+  // told which ones could not be offered.
+  const problemsQuery = useQuery({
+    queryKey: ['listReportTemplateProblems'], queryFn: () => listReportTemplateProblems(), enabled: isAdmin,
+  });
+  // The defaults name a template: they are shown once both are known.
+  const templates: ReportTemplate[] = templatesQuery.data ?? NO_TEMPLATES;
+  const profile: ReportProfile | null = (templatesQuery.data && profileQuery.data) ?? null;
+  const problems: ReportTemplateProblem[] = problemsQuery.data ?? NO_PROBLEMS;
+  const error = queryErrorText(profileQuery.error ?? templatesQuery.error, 'Could not load the report defaults.');
 
-  const save = async () => {
-    if (!draft) return;
-    setSaving(true);
-    try {
-      const saved = await saveReportProfile({ ...cleanSettings(draft), template: draft.template });
-      setProfile(saved);
+  const savingDefaults = useMutation({
+    mutationFn: (next: ReportProfile) => saveReportProfile({ ...cleanSettings(next), template: next.template }),
+    onSuccess: (saved) => {
+      queryClient.setQueryData(['getReportProfile'], saved);
       setDraft(null);
       toast.success('Report defaults saved. Existing drafts keep their own details.');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not save the report defaults.'));
-    } finally {
-      setSaving(false);
-    }
-  };
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not save the report defaults.')),
+  });
+  const saving = savingDefaults.isPending;
+  const save = () => { if (draft) savingDefaults.mutate(draft); };
 
   const templateTitle = (name: string | null) => templates.find((t) => t.name === name)?.title ?? name ?? '—';
 
@@ -421,7 +412,7 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
         </dl>
       )}
       {draft && (
-        <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+        <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); save(); }}>
           <EngagementSettingsFields idPrefix="profile" value={draft} members={roster.members}
             membersStatus={roster.status} onRetryMembers={roster.retry} currentUser={currentUser}
             disabled={saving} onChange={(next) => setDraft({ ...draft, ...next })} />
@@ -449,7 +440,6 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
         problems={problems}
         defaultName={profile.template}
         isAdmin={isAdmin}
-        onTemplateChange={(changed) => setTemplates((all) => all.map((x) => (x.name === changed.name ? changed : x)))}
       />
     )}
     </>
@@ -464,9 +454,8 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
  */
 const TemplatesSection: React.FC<{
   templates: ReportTemplate[]; problems: ReportTemplateProblem[]; defaultName: string | null; isAdmin: boolean;
-  onTemplateChange: (template: ReportTemplate) => void;
 }> = ({
-  templates, problems, defaultName, isAdmin, onTemplateChange,
+  templates, problems, defaultName, isAdmin,
 }) => {
   const ordered = [...templates].sort((a, b) => Number(b.name === defaultName) - Number(a.name === defaultName));
   return (
@@ -498,7 +487,6 @@ const TemplatesSection: React.FC<{
                     template={t}
                     templateName={t.name}
                     showServerPaths={isAdmin}
-                    onTemplateChange={onTemplateChange}
                   />
                 </div>
               </details>

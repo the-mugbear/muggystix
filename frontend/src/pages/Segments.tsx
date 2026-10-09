@@ -15,7 +15,8 @@
  * action cells truncate or clamp; every state (loading / error / not-adopted /
  * empty) renders a safe fallback.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
+import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Copy, Download, FileText, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 
@@ -33,6 +34,7 @@ import { buildFindingsUrl, buildHostsUrl } from '../utils/drilldownLinks';
 import SeverityBar from '../components/ui/SeverityBar';
 import { tierHsl, TIER_LABEL } from '../components/posture/postureTheme';
 import { formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
 import { copyToClipboard, downloadTextFile } from '../utils/clipboard';
 import { useToast } from '../contexts/ToastContext';
 import { safeFallback } from '../utils/uiStyles';
@@ -124,35 +126,37 @@ const Segments: React.FC = () => {
   const { currentProject } = useProject();
   const toast = useToast();
   const [lens, setLens] = useState<Lens | null>(null);
-  const [subnetData, setSubnetData] = useState<SubnetInsightsResponse | null>(null);
-  const [subnetError, setSubnetError] = useState<string | null>(null);
-  const [sites, setSites] = useState<PostureSite[] | null>(null);
-  const [sitesError, setSitesError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [offset, setOffset] = useState(0);
-  const [nonce, setNonce] = useState(0);
-  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
-  const reload = useCallback(() => setNonce((n) => n + 1), []);
 
-  // A project switch starts over: first page, and the lens is chosen again.
-  useEffect(() => { setOffset(0); setLens(null); setSubnetData(null); setSites(null); }, [currentProject?.id]);
+  // (A project switch starts over — first page, the lens chosen again, the
+  // new project's reads — because `Layout` remounts the page per project.)
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    Promise.allSettled([getSubnetInsights(PAGE_SIZE, offset), getPosture()]).then(([sub, pos]) => {
-      if (cancelled) return;
-      if (sub.status === 'fulfilled') { setSubnetData(sub.value); setSubnetError(null); }
-      else setSubnetError(formatApiError(sub.reason, 'Could not load the subnets.'));
-      if (pos.status === 'fulfilled') {
-        setSites(pos.value.sites.adopted ? pos.value.sites.items : []);
-        setSitesError(null);
-      } else setSitesError(formatApiError(pos.reason, 'Could not load the sites.'));
-      if (sub.status === 'fulfilled' || pos.status === 'fulfilled') setLoadedAt(new Date());
-      setLoading(false);
-    });
-    return () => { cancelled = true; };
-  }, [offset, nonce, currentProject?.id]);
+  // Two reads, each failing on its own: the subnets a page at a time (the
+  // page on screen stays while the next one loads), and the posture, for its
+  // sites.
+  const subnetsQuery = useQuery({
+    queryKey: ['getSubnetInsights', PAGE_SIZE, offset],
+    queryFn: () => getSubnetInsights(PAGE_SIZE, offset),
+    placeholderData: keepPreviousData,
+  });
+  const postureQuery = useQuery({ queryKey: ['getPosture'], queryFn: ({ signal }) => getPosture({ signal }) });
+  const subnetData = subnetsQuery.data ?? null;
+  const subnetError = queryErrorText(subnetsQuery.error, 'Could not load the subnets.');
+  const posture = postureQuery.data;
+  const sites: PostureSite[] | null = useMemo(
+    () => (posture ? (posture.sites.adopted ? posture.sites.items : []) : null),
+    [posture],
+  );
+  const sitesError = queryErrorText(postureQuery.error, 'Could not load the sites.');
+  const loading = subnetsQuery.isFetching || postureQuery.isFetching;
+  const latestLoad = Math.max(subnetsQuery.dataUpdatedAt, postureQuery.dataUpdatedAt);
+  const loadedAt = useMemo(() => (latestLoad ? new Date(latestLoad) : null), [latestLoad]);
+  const { refetch: refetchSubnets } = subnetsQuery;
+  const { refetch: refetchPosture } = postureQuery;
+  const reload = useCallback(() => {
+    void refetchSubnets();
+    void refetchPosture();
+  }, [refetchSubnets, refetchPosture]);
 
   // Open on Site when the project defines sites, else on Subnet — until the
   // operator picks a lens.
@@ -172,7 +176,9 @@ const Segments: React.FC = () => {
   }, [subnetData]);
 
   const totals = subnetData?.totals;
-  const firstLoad = loading && !subnetData && !subnetError;
+  // Nothing is drawn before BOTH have answered once: which lens opens depends
+  // on the sites.
+  const firstLoad = subnetsQuery.isPending || postureQuery.isPending;
 
   return (
     <div className="space-y-md p-md md:p-lg">
@@ -306,19 +312,14 @@ const SiteTable: React.FC<{ sites: PostureSite[] | null; error: string | null; o
   // The briefing is a report (`/reports/systemic.html`, AUDITOR on the
   // server): not offered to a project viewer.
   const { canExport } = useProjectRole();
-  const [briefingSite, setBriefingSite] = useState<string | null>(null);
   // Per-site briefing: the executive systemic report scoped to one site — what
   // a site owner takes to their meeting.
-  const createSiteBriefing = async (site: string) => {
-    setBriefingSite(site);
-    try {
-      await downloadSystemicReport(site);
-    } catch (e) {
-      toast.error(formatApiError(e, `Could not create the briefing for ${site}.`));
-    } finally {
-      setBriefingSite(null);
-    }
-  };
+  const briefing = useMutation({
+    mutationFn: (site: string) => downloadSystemicReport(site),
+    onError: (e, site) => toast.error(formatApiError(e, `Could not create the briefing for ${site}.`)),
+  });
+  const createSiteBriefing = (site: string) => briefing.mutate(site);
+  const briefingSite = briefing.isPending ? briefing.variables : null;
 
   if (error) {
     return (
@@ -364,7 +365,7 @@ const SiteTable: React.FC<{ sites: PostureSite[] | null; error: string | null; o
                 <span className="block truncate text-caption text-muted-foreground" title={s.owner_name ?? undefined}>
                   {s.owner_name ? `Owner ${s.owner_name}` : ''}
                   {canExport && s.site && !s.unassigned && (
-                    <button type="button" onClick={() => void createSiteBriefing(s.site as string)}
+                    <button type="button" onClick={() => createSiteBriefing(s.site as string)}
                       disabled={briefingSite !== null} aria-label={`Create briefing for ${s.site}`}
                       className={`${s.owner_name ? 'ml-xs ' : ''}inline-flex items-center gap-xxs rounded text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60`}>
                       {briefingSite === s.site ? <Loader2 className="size-3 animate-spin" aria-hidden /> : <FileText className="size-3" aria-hidden />}

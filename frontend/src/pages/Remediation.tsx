@@ -62,8 +62,6 @@ const Remediation: React.FC = () => {
   const { policy, enabled, loading } = useRemediationPolicy();
   const [page, setPage] = useState<RemediationPage | null>(null);
   const [filtered, setFiltered] = useState(false);
-  const [changes, setChanges] = useState(0);
-  const [reloads, setReloads] = useState(0);
   const [fromReport, setFromReport] = useState(false);
   // Offered to a project admin while something has no assigned date — and
   // only by a server that knows the route (it is the one that sends
@@ -109,23 +107,16 @@ const Remediation: React.FC = () => {
           scope="project"
           canWrite={canWrite}
           policy={policy}
-          reloadKey={reloads}
           onLoaded={(next, isFiltered) => { setPage(next); setFiltered(isFiltered); }}
-          onChanged={() => setChanges((n) => n + 1)}
         />
       </PostureSection>
 
       <PostureSection title="Over time">
-        <RemediationTrend scope="project" reloadKey={changes} />
+        <RemediationTrend scope="project" />
       </PostureSection>
 
       {fromReport && (
-        <RemediationAssignFromReportDialog
-          today={page?.as_of}
-          onClose={() => setFromReport(false)}
-          // The list is re-read in place: the reader keeps their page.
-          onDone={() => { setReloads((n) => n + 1); setChanges((n) => n + 1); }}
-        />
+        <RemediationAssignFromReportDialog today={page?.as_of} onClose={() => setFromReport(false)} />
       )}
     </div>
   );

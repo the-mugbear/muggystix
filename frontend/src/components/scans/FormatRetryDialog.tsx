@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
 import {
@@ -6,12 +7,13 @@ import {
   getUploadFormats,
   reprocessIngestionJob,
   startIngestionJob,
-  type DetectionResponse,
   type FormatOption,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { BASIS_LABEL, otherFormats, suggestionOf } from '../../hooks/useUploadReview';
-import { formatApiError } from '../../utils/apiErrors';
+import { invalidateReads, queryErrorText } from '../../lib/query';
+import { asAxiosError } from '../../utils/apiErrors';
+import { INGESTION_JOB_READS } from '../../utils/ingestionReads';
 import { Alert, AlertDescription } from '../ui/alert';
 import { Button } from '../ui/button';
 import {
@@ -44,87 +46,94 @@ export interface FormatRetryDialogProps {
   mode: 'retry' | 'start' | 'reprocess';
   /** For re-process: the scan the prior run produced, if any. */
   priorScanId?: number | null;
-  onDone: () => void;
 }
 
 const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
-  open, onOpenChange, jobId, filename, mode, priorScanId, onDone,
+  open, onOpenChange, jobId, filename, mode, priorScanId,
 }) => {
   const toast = useToast();
-  const [detection, setDetection] = useState<DetectionResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [chosen, setChosen] = useState<string>('');
   const [sourceTool, setSourceTool] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  // The format list when inspection failed (a detection carries its own).
-  const [fallbackFormats, setFallbackFormats] = useState<FormatOption[]>([]);
-  const [inspectNonce, setInspectNonce] = useState(0);
-  const [fileGone, setFileGone] = useState(false);
 
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    setDetection(null);
-    setError(null);
-    setFileGone(false);
-    setFallbackFormats([]);
-    // Nothing is preselected.  A confident detection needs no override ("let
-    // detection decide"); an uncertain one is a suggestion the operator
-    // confirms or replaces — it used to be applied as if they had chosen it.
-    setChosen('');
-    setLoading(true);
-    getJobDetection(jobId)
-      .then((d) => {
-        if (!cancelled) setDetection(d);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(formatApiError(err, 'Could not inspect the retained file.'));
-        // 409 = the retained file is gone: no format choice can help, and
-        // offering one would only fail a second time.
-        const gone = (err as { response?: { status?: number } })?.response?.status === 409;
-        setFileGone(gone);
-        if (gone) return;
-        // Otherwise manual selection must survive a failed inspection.
-        getUploadFormats()
-          .then((list) => { if (!cancelled) setFallbackFormats(list); })
-          .catch(() => undefined);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, jobId, inspectNonce]);
-  useEffect(() => {
-    if (open) setSourceTool('');
-  }, [open, jobId]);
+  // The retained file's detection, read each time the dialog opens.
+  const inspection = useQuery({
+    queryKey: ['getJobDetection', jobId],
+    queryFn: () => getJobDetection(jobId),
+    enabled: open,
+  });
+  const loading = open && inspection.isFetching;
+  // An answer from an earlier opening is not shown while the file is read again.
+  const detection = !loading && !inspection.isError ? inspection.data ?? null : null;
+  const inspectError = loading ? null : queryErrorText(inspection.error, 'Could not inspect the retained file.');
+  // 409 = the retained file is gone: no format choice can help, and offering
+  // one would only fail a second time.
+  const fileGone = !!inspectError && asAxiosError(inspection.error).response?.status === 409;
+  // Otherwise manual selection must survive a failed inspection: the format
+  // list a detection would have carried.
+  const fallback = useQuery({
+    queryKey: ['getUploadFormats'],
+    queryFn: () => getUploadFormats(),
+    enabled: open && !!inspectError && !fileGone,
+  });
+  const fallbackFormats: FormatOption[] = inspectError && !fileGone ? fallback.data ?? [] : [];
 
-  const submit = async () => {
-    setSubmitting(true);
-    setError(null);
-    try {
-      const options = { formatOverride: chosen || null, sourceTool: sourceTool.trim() || null };
+  const start = useMutation({
+    mutationFn: async (options: { formatOverride: string | null; sourceTool: string | null; label: string | null }) => {
+      const { label, ...sent } = options;
       if (mode === 'retry' || mode === 'start') {
-        await startIngestionJob(jobId, options);
+        await startIngestionJob(jobId, sent);
+        return { label, newJobId: null as number | null };
+      }
+      const job = await reprocessIngestionJob(jobId, sent);
+      return { label, newJobId: job.id as number | null };
+    },
+    onSuccess: ({ label, newJobId }) => {
+      if (mode === 'retry' || mode === 'start') {
         toast.success(
-          `${filename} ${mode === 'start' ? 'queued' : 'queued again'}${chosen ? ` as ${labelFor(formats, chosen)}` : ''}`,
+          `${filename} ${mode === 'start' ? 'queued' : 'queued again'}${label ? ` as ${label}` : ''}`,
           { autoHideMs: 3000 },
         );
       } else {
-        const job = await reprocessIngestionJob(jobId, options);
-        toast.success(`Re-processing ${filename} as job #${job.id}${chosen ? ` (${labelFor(formats, chosen)})` : ''}`, { autoHideMs: 4000 });
+        toast.success(`Re-processing ${filename} as job #${newJobId}${label ? ` (${label})` : ''}`, { autoHideMs: 4000 });
       }
+      // A job started again or re-processed: the lists and counts of jobs are out of date.
+      void invalidateReads(queryClient, ...INGESTION_JOB_READS);
       onOpenChange(false);
-      onDone();
-    } catch (err) {
-      setError(formatApiError(err, mode === 'reprocess' ? 'Could not start the re-process.' : 'Could not start the import.'));
-    } finally {
-      setSubmitting(false);
-    }
+    },
+  });
+  const submitting = start.isPending;
+  const { reset: resetStart } = start;
+
+  // Each opening starts clean.  Nothing is preselected: a confident detection
+  // needs no override ("let detection decide"); an uncertain one is a
+  // suggestion the operator confirms or replaces — it used to be applied as if
+  // they had chosen it.
+  useEffect(() => {
+    if (!open) return;
+    setChosen('');
+    setSourceTool('');
+    resetStart();
+  }, [open, jobId, resetStart]);
+
+  const retryInspection = () => {
+    setChosen('');
+    resetStart();
+    void inspection.refetch();
   };
+
+  // What the dialog says went wrong: the start that was refused, else the
+  // inspection that failed.
+  const error = submitting
+    ? null
+    : queryErrorText(start.error, mode === 'reprocess' ? 'Could not start the re-process.' : 'Could not start the import.')
+      ?? (start.isSuccess ? null : inspectError);
+
+  const submit = () => start.mutate({
+    formatOverride: chosen || null,
+    sourceTool: sourceTool.trim() || null,
+    label: chosen ? labelFor(formats, chosen) : null,
+  });
 
   const primary = detection?.candidates[0];
   const recognised = !!detection && !detection.needs_choice;
@@ -166,7 +175,7 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
               <AlertDescription className="flex flex-wrap items-center gap-xs">
                 <span className="min-w-0 flex-1 break-words">{error}</span>
                 {!detection && !loading && !fileGone && (
-                  <Button size="sm" variant="outline" onClick={() => setInspectNonce((n) => n + 1)}>
+                  <Button size="sm" variant="outline" onClick={retryInspection}>
                     Retry inspection
                   </Button>
                 )}
@@ -252,7 +261,7 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
         </DialogBody>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>Cancel</Button>
-          <Button onClick={() => void submit()} disabled={submitting || !canSubmit}>
+          <Button onClick={submit} disabled={submitting || !canSubmit}>
             {submitting && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
             {mode === 'retry' ? 'Retry import' : mode === 'start' ? 'Import' : 'Re-process'}
           </Button>

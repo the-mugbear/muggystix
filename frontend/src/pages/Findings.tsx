@@ -9,11 +9,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { findingDetailHref } from '../utils/findingsReturn';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 
 import {
   Finding,
   FindingFilters,
+  FindingListResponse,
   FindingSortField,
   FindingSeverity,
   FindingSource,
@@ -31,7 +33,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
-import { useLatestRequest } from '../hooks/useLatestRequest';
+import { queryErrorText } from '../lib/query';
 import { useListCursor } from '../hooks/useListCursor';
 import { SeverityBadge } from '../components/ui/SeverityBadge';
 import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../components/ListFilterBar';
@@ -75,6 +77,9 @@ import { selectAllState } from '../utils/selection';
 // Compact age ("31d") from an ISO timestamp — the full date goes in the
 // cell's title. Falls back safely on a missing/invalid value rather than
 // rendering "Invalid Date"; a future timestamp (clock skew) reads "now".
+/** The list read's failure when the server gave no reason of its own. */
+const LOAD_FAILED = 'Failed to load findings.';
+
 const compactAge =(iso: string | null | undefined, now: number = Date.now()): string => {
   if (!iso) return '—';
   const t = new Date(iso).getTime();
@@ -161,11 +166,7 @@ const FindingsList: React.FC = () => {
   // Viewers may read findings but not dispose/select; analyst+ may triage.
   const { canWrite: canManage } = useProjectRole();
   const [confirmDialog, confirm] = useConfirm();
-  const [findings, setFindings] = useState<Finding[]>([]);
-  const [total, setTotal] = useState(0);
-  const [sevCounts, setSevCounts] = useState<Partial<Record<FindingSeverity, number>>>({});
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   // Filters are URL-backed so a dashboard drill-down (e.g. "active critical,
   // unowned") is shareable/bookmarkable and the page restores it. Default
@@ -240,7 +241,6 @@ const FindingsList: React.FC = () => {
   // Bulk triage — selected finding ids. Survives sort + pagination (see the
   // membership guard below), so this set can span pages.
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [bulkApplying, setBulkApplying] = useState(false);
   const [summaryPrompt, setSummaryPrompt] = useState<SummaryPrompt | null>(null);
   const [summaryText, setSummaryText] = useState('');
   // Project roster for bulk owner assignment. Failure is non-fatal — the
@@ -312,50 +312,49 @@ const FindingsList: React.FC = () => {
     </TableHead>
   );
 
-  // Latest-request ownership (useLatestRequest): a slow response for filter
-  // set A can never land under B's active filters, nor can A's failure
-  // replace B's error state — anything but the newest request is `stale`
-  // and writes nothing.
-  const runFindingsRequest = useLatestRequest();
+  // The filters are the query's key: a slow response for filter set A can
+  // never land under B's active filters, nor can A's failure replace B's
+  // error state.  The previous filter's rows are kept (not shown) while the
+  // next ones load, so the selection's "not on this page" count and the
+  // pagination do not blink.
+  const listKey = useMemo(() => ['listFindings', filters], [filters]);
+  const listQuery = useQuery({
+    queryKey: listKey,
+    queryFn: ({ signal }) => listFindings(filters, signal),
+    placeholderData: keepPreviousData,
+  });
+  const findings = useMemo<Finding[]>(() => listQuery.data?.items ?? [], [listQuery.data]);
+  const total = listQuery.data?.total ?? 0;
+  const sevCounts: Partial<Record<FindingSeverity, number>> = listQuery.data?.severity_counts ?? {};
+  const loading = listQuery.isFetching;
+  const error = queryErrorText(listQuery.error, LOAD_FAILED);
+  // A failed load is said in the table and as a toast.
+  useEffect(() => { if (error) toast.error(error); }, [error, toast]);
 
-  const fetchFindings = useCallback(async () => {
-    setLoading(true);
-    const r = await runFindingsRequest((signal) => listFindings(filters, signal));
-    if (r.stale) return;
-    if (r.ok) {
-      setFindings(r.value.items);
-      setTotal(r.value.total);
-      setSevCounts(r.value.severity_counts ?? {});
-      setError(null);
-    } else {
-      setError(formatApiError(r.error, 'Failed to load findings.'));
-      toast.error(formatApiError(r.error, 'Failed to load findings.'));
-    }
-    setLoading(false);
-  }, [filters, toast, runFindingsRequest]);
+  // A change's answer is put into the list on screen: no second read.
+  const patchFindings = (update: (rows: Finding[]) => Finding[]) =>
+    queryClient.setQueryData<FindingListResponse>(listKey, (prev) => (prev ? { ...prev, items: update(prev.items) } : prev));
 
-  useEffect(() => {
-    fetchFindings();
-  }, [fetchFindings]);
-
-  const applyStatus = async (
-    findingId: number, status: FindingStatus, title: string, summary?: string,
-  ) => {
-    try {
-      const updated = await setFindingStatus(findingId, status, summary);
-      setFindings((prev) =>
+  const statusChange = useMutation({
+    mutationFn: (v: { findingId: number; status: FindingStatus; title: string; summary?: string }) =>
+      setFindingStatus(v.findingId, v.status, v.summary),
+    onSuccess: (updated, { findingId, status, title }) => {
+      patchFindings((prev) =>
         prev
           // Drop a row that no longer matches the active status filter so the
           // filtered view stays truthful.
           .filter((f) => f.id !== findingId || matchesStatusFilter(updated.status, statusFilter))
           .map((f) => (f.id === findingId ? updated : f)),
       );
+      // The status trail gained a line.
+      void queryClient.invalidateQueries({ queryKey: ['getFindingHistory', findingId] });
       const short = title.length > 40 ? `${title.slice(0, 40)}…` : title;
       toast.success(`${short} → ${STATUS_LABEL[status]}`, { autoHideMs: 2500 });
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update finding status.'));
-    }
-  };
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update finding status.')),
+  });
+  const applyStatus = (findingId: number, status: FindingStatus, title: string, summary?: string) =>
+    statusChange.mutate({ findingId, status, title, summary });
 
   const toggleSelected = (id: number) =>
     setSelected((prev) => {
@@ -369,17 +368,18 @@ const FindingsList: React.FC = () => {
   // v5.135.0 — one request, server-side. Previously this fired N independent
   // PATCHes via Promise.allSettled: unbounded, half-appliable, and with the
   // terminal-justification rule enforced per call rather than per batch.
-  const runBulk = async (ids: number[], status: FindingStatus, summary?: string) => {
-    setBulkApplying(true);
-    try {
-      const result = await bulkSetFindingStatus(ids, status, summary);
+  const bulkStatus = useMutation({
+    mutationFn: (v: { ids: number[]; status: FindingStatus; summary?: string }) =>
+      bulkSetFindingStatus(v.ids, v.status, v.summary),
+    onSuccess: (result, { ids, status }) => {
       const changed = new Set(ids.filter((id) => !result.skipped_ids.includes(id)));
-      setFindings((prev) =>
+      patchFindings((prev) =>
         prev
           .map((f) => (changed.has(f.id) ? { ...f, status } : f))
           // Drop rows that no longer match the active status filter.
           .filter((f) => !changed.has(f.id) || matchesStatusFilter(status, statusFilter)),
       );
+      void queryClient.invalidateQueries({ queryKey: ['getFindingHistory'] });
       setSelected(new Set());
       if (result.skipped_ids.length === 0) {
         toast.success(
@@ -389,29 +389,21 @@ const FindingsList: React.FC = () => {
       } else {
         toast.warning(`${result.affected}/${result.requested} updated; ${result.skipped_ids.length} skipped`);
       }
-    } catch (err) {
-      toast.error(formatApiError(err, 'Bulk update failed — no findings were changed.'));
-    } finally {
-      setBulkApplying(false);
-    }
-  };
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Bulk update failed — no findings were changed.')),
+  });
+  const runBulk = (ids: number[], status: FindingStatus, summary?: string) =>
+    bulkStatus.mutate({ ids, status, summary });
 
-  const runBulkAssign = async (assigneeId: number | null) => {
-    const ids = [...selected];
-    if (ids.length === 0) return;
-    setBulkApplying(true);
-    try {
-      const result = await bulkAssignFindings(ids, assigneeId);
+  const bulkAssign = useMutation({
+    mutationFn: (v: { ids: number[]; assigneeId: number | null }) => bulkAssignFindings(v.ids, v.assigneeId),
+    onSuccess: (result, { ids, assigneeId }) => {
       const name = assigneeId === null
         ? null
         : members.find((m) => m.user_id === assigneeId)?.username ?? 'user';
-      setFindings((prev) =>
-        prev.map((f) =>
-          selected.has(f.id)
-            ? { ...f, owner_id: assigneeId, owner_name: name }
-            : f,
-        ),
-      );
+      const assigned = new Set(ids);
+      patchFindings((prev) =>
+        prev.map((f) => (assigned.has(f.id) ? { ...f, owner_id: assigneeId, owner_name: name } : f)));
       setSelected(new Set());
       toast.success(
         assigneeId === null
@@ -419,12 +411,14 @@ const FindingsList: React.FC = () => {
           : `${result.affected} finding${result.affected === 1 ? '' : 's'} → ${name}`,
         { autoHideMs: 2500 },
       );
-    } catch (err) {
-      toast.error(formatApiError(err, 'Bulk assignment failed — no findings were changed.'));
-    } finally {
-      setBulkApplying(false);
-    }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Bulk assignment failed — no findings were changed.')),
+  });
+  const runBulkAssign = (assigneeId: number | null) => {
+    const ids = [...selected];
+    if (ids.length > 0) bulkAssign.mutate({ ids, assigneeId });
   };
+  const bulkApplying = bulkStatus.isPending || bulkAssign.isPending;
 
   // How many selected findings aren't on the page in front of the operator.
   // Selection intentionally spans pages, so the confirm has to say so — a bare
@@ -459,7 +453,7 @@ const FindingsList: React.FC = () => {
       severity: 'warning',
       confirmLabel: 'Apply',
     });
-    if (ok) await runBulk(ids, status);
+    if (ok) runBulk(ids, status);
   };
 
   const handleStatusChange = (findingId: number, status: FindingStatus, title: string) => {
@@ -472,7 +466,7 @@ const FindingsList: React.FC = () => {
       // can leave the body pointer-events:none so the dialog never appears.
       setTimeout(() => setSummaryPrompt({ kind: 'single', findingId, status, title }), 0);
     } else {
-      void applyStatus(findingId, status, title);
+      applyStatus(findingId, status, title);
     }
   };
 
@@ -494,7 +488,11 @@ const FindingsList: React.FC = () => {
         className="mb-md"
         summary={
           <span role="status" aria-live="polite">
-            {loading ? 'Loading findings…' : `${total.toLocaleString()} finding${total === 1 ? '' : 's'}`}
+            {/* A count that could not be read is not "0 findings" (owner,
+                2026-10-09: "easily misinterpreted"). */}
+            {loading ? 'Loading findings…'
+              : error ? 'Findings could not be loaded'
+                : `${total.toLocaleString()} finding${total === 1 ? '' : 's'}`}
           </span>
         }
       >
@@ -591,7 +589,7 @@ const FindingsList: React.FC = () => {
               finding's detail page — one round trip per finding for a large
               unowned queue. */}
           <Select
-            onValueChange={(v) => void runBulkAssign(v === '__unassign' ? null : Number(v))}
+            onValueChange={(v) => runBulkAssign(v === '__unassign' ? null : Number(v))}
             disabled={bulkApplying}
           >
             <SelectTrigger className="h-8 w-48 text-caption" aria-label="Assign selected findings to a user">
@@ -666,9 +664,13 @@ const FindingsList: React.FC = () => {
               )}
               {!loading && error && (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-lg text-center text-destructive">
+                  <TableCell colSpan={7} role="alert" className="py-lg text-center text-destructive">
                     <AlertTriangle className="mx-auto mb-xs size-5" aria-hidden />
-                    {error}
+                    <p>The findings could not be loaded. This is not an empty list.</p>
+                    {error !== LOAD_FAILED && <p className="break-words text-caption">{error}</p>}
+                    <Button variant="outline" size="sm" className="mt-sm" onClick={() => void listQuery.refetch()}>
+                      Retry
+                    </Button>
                   </TableCell>
                 </TableRow>
               )}
@@ -861,8 +863,8 @@ const FindingsList: React.FC = () => {
                 const summary = summaryText.trim() || undefined;
                 setSummaryPrompt(null);
                 if (!p) return;
-                if (p.kind === 'single') void applyStatus(p.findingId, p.status, p.title, summary);
-                else void runBulk(p.ids, p.status, summary);
+                if (p.kind === 'single') applyStatus(p.findingId, p.status, p.title, summary);
+                else runBulk(p.ids, p.status, summary);
               }}
             >
               {summaryText.trim() ? 'Save' : 'Save without a reason'}

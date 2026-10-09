@@ -29,7 +29,6 @@ vi.mock('../../contexts/ToastContext', () => ({
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 1, username: 'admin' }, hasPermission: () => true }),
 }));
-vi.mock('../../hooks/useVisibilityPoll', () => ({ useVisibilityPoll: () => undefined }));
 
 import ReportDetail, { evidenceRecordsNotPrintedNotice, evidenceRecordsNotice } from '../../pages/ReportDetail';
 

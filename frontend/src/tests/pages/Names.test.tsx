@@ -217,10 +217,11 @@ describe('Names page — screenshot review (v5.288.0)', () => {
     renderAt('/names?page=2');
     await screen.findByText('portal.example-corp.com');
     expect(mocked.listNames).toHaveBeenCalledTimes(1);
-    expect(mocked.listNames).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 100 }));
+    // (The second argument is the query's abort signal.)
+    expect(mocked.listNames).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 100 }), expect.anything());
     expect(screen.getByText('101–200 of 250')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-    await waitFor(() => expect(mocked.listNames).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 200 })));
+    await waitFor(() => expect(mocked.listNames).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 200 }), expect.anything()));
   });
 
   // The filter changed first and the page was put back to the first one

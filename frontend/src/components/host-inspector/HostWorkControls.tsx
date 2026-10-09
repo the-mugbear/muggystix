@@ -7,7 +7,8 @@
  * host, so the rules (analyst+ to assign; anyone may drop their OWN
  * assignment) are the server's.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, UserPlus, X } from 'lucide-react';
 
 import {
@@ -23,6 +24,7 @@ import { useProjectRoster } from '../../hooks/useProjectMembers';
 import { MEMBERS_LOAD_ERROR } from '../MembersLoadError';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
+import { invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -38,32 +40,38 @@ import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 interface CommonProps {
   hostId: number;
   canEdit: boolean;
-  /** Reload the host after a change. */
-  onChanged: () => void;
 }
 
-function useRun(onChanged: () => void) {
+/** One write to this host.  The host is read again behind it (the inspector's
+ *  `getHost`), so the control shows what the server stored — and so is the
+ *  Hosts list when the inspector is its side sheet: the row behind it and the
+ *  filters' counts (an assignee, a tag) are this host's too. */
+function useHostWrite<V>(
+  hostId: number, { mutationFn, failure }: { mutationFn: (value: V) => Promise<unknown>; failure: string },
+) {
   const toast = useToast();
-  const [busy, setBusy] = useState(false);
-  const run = async (action: () => Promise<unknown>, failure: string) => {
-    setBusy(true);
-    try {
-      await action();
-      onChanged();
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, failure));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return { busy, run };
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['getHost', hostId] });
+      void invalidateReads(queryClient, 'getHosts', 'getHostFilterData');
+    },
+    onError: (err) => toast.error(formatApiError(err, failure)),
+  });
 }
 
 export const AssigneeControl: React.FC<CommonProps & { assignees: HostAssignee[] }> = ({
-  hostId, canEdit, onChanged, assignees,
+  hostId, canEdit, assignees,
 }) => {
   const { user } = useAuth();
-  const { busy, run } = useRun(onChanged);
+  const assign = useHostWrite(hostId, {
+    mutationFn: (userId: number) => bulkAssignHosts([hostId], userId), failure: 'Could not assign the host.',
+  });
+  const unassign = useHostWrite<void>(hostId, {
+    mutationFn: () => bulkUnassignHosts([hostId]), failure: 'Could not remove your assignment.',
+  });
+  const busy = assign.isPending || unassign.isPending;
   // Asked for when the menu is first opened; shared with every other picker.
   const [wanted, setWanted] = useState(false);
   const roster = useProjectRoster({ enabled: wanted });
@@ -89,7 +97,7 @@ export const AssigneeControl: React.FC<CommonProps & { assignees: HostAssignee[]
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="max-h-72 overflow-y-auto">
             {user && !mine && (
-              <DropdownMenuItem onSelect={() => run(() => bulkAssignHosts([hostId], user.id), 'Could not assign the host.')}>
+              <DropdownMenuItem onSelect={() => assign.mutate(user.id)}>
                 Assign to me
               </DropdownMenuItem>
             )}
@@ -105,8 +113,7 @@ export const AssigneeControl: React.FC<CommonProps & { assignees: HostAssignee[]
               .map((m) => {
                 const name = m.full_name || m.username || `User #${m.user_id}`;
                 return (
-                  <DropdownMenuItem key={m.user_id}
-                    onSelect={() => run(() => bulkAssignHosts([hostId], m.user_id), 'Could not assign the host.')}>
+                  <DropdownMenuItem key={m.user_id} onSelect={() => assign.mutate(m.user_id)}>
                     {name}
                   </DropdownMenuItem>
                 );
@@ -114,7 +121,7 @@ export const AssigneeControl: React.FC<CommonProps & { assignees: HostAssignee[]
             {mine && (
               <>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => run(() => bulkUnassignHosts([hostId]), 'Could not remove your assignment.')}>
+                <DropdownMenuItem onSelect={() => unassign.mutate()}>
                   Remove my assignment
                 </DropdownMenuItem>
               </>
@@ -127,22 +134,38 @@ export const AssigneeControl: React.FC<CommonProps & { assignees: HostAssignee[]
 };
 
 export const TagControl: React.FC<CommonProps & { tags: HostTagInfo[] }> = ({
-  hostId, canEdit, onChanged, tags,
+  hostId, canEdit, tags,
 }) => {
-  const { busy, run } = useRun(onChanged);
+  const queryClient = useQueryClient();
+  const addTag = useHostWrite(hostId, {
+    mutationFn: (body: { tag_ids?: number[]; names?: string[] }) => bulkTagHosts([hostId], { ...body, action: 'add' }),
+    failure: 'Could not tag the host.',
+  });
+  const removeTag = useHostWrite(hostId, {
+    mutationFn: (tagId: number) => bulkTagHosts([hostId], { tag_ids: [tagId], action: 'remove' }),
+    failure: 'Could not remove the tag.',
+  });
+  const busy = addTag.isPending || removeTag.isPending;
   const [open, setOpen] = useState(false);
-  const [projectTags, setProjectTags] = useState<HostTagWithCount[] | null>(null);
   const [newName, setNewName] = useState('');
 
-  useEffect(() => {
-    if (open && projectTags === null) listHostTags().then(setProjectTags).catch(() => setProjectTags([]));
-  }, [open, projectTags]);
+  // The project's tags, read when the picker is first opened and again only
+  // after a tag was added here (its count, or the tag itself, is new).
+  const tagsQuery = useQuery({
+    queryKey: ['listHostTags'],
+    queryFn: () => listHostTags(),
+    enabled: open,
+    staleTime: Infinity,
+  });
+  // A failed read offers no tag to pick; a new one can still be named.
+  const projectTags: HostTagWithCount[] | null = tagsQuery.isError ? [] : tagsQuery.data ?? null;
 
   const add = (body: { tag_ids?: number[]; names?: string[] }) => {
     setOpen(false);
     setNewName('');
-    setProjectTags(null);
-    run(() => bulkTagHosts([hostId], { ...body, action: 'add' }), 'Could not tag the host.');
+    addTag.mutate(body, {
+      onSuccess: () => { void invalidateReads(queryClient, 'listHostTags'); },
+    });
   };
   const available = (projectTags ?? []).filter((t) => !tags.some((h) => h.id === t.id));
 
@@ -156,7 +179,7 @@ export const TagControl: React.FC<CommonProps & { tags: HostTagInfo[] }> = ({
           {canEdit && (
             <button type="button" disabled={busy} aria-label={`Remove tag ${tag.name}`}
               className="rounded-sm opacity-70 hover:opacity-100"
-              onClick={() => run(() => bulkTagHosts([hostId], { tag_ids: [tag.id], action: 'remove' }), 'Could not remove the tag.')}>
+              onClick={() => removeTag.mutate(tag.id)}>
               <X className="size-3" aria-hidden />
             </button>
           )}

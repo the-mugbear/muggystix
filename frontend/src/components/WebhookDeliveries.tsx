@@ -10,7 +10,8 @@
  * decision after fixing the receiver, not a continuation of the exhausted
  * backoff.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertCircle, CheckCircle2, Clock, Loader2, RefreshCw, RotateCw } from 'lucide-react';
 import {
   WebhookDeliveryRow,
@@ -19,6 +20,7 @@ import {
 } from '../services/api';
 import { useProject } from '../contexts/ProjectContext';
 import { useToast } from '../contexts/ToastContext';
+import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
 import { Badge } from './ui/badge';
@@ -69,50 +71,36 @@ function when(value?: string | null): string {
 const WebhookDeliveries: React.FC = () => {
   const { currentProject } = useProject();
   const toast = useToast();
-  const [rows, setRows] = useState<WebhookDeliveryRow[]>([]);
+  const queryClient = useQueryClient();
   const [status, setStatus] = useState('all');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<number | null>(null);
 
   const projectId = currentProject?.id;
 
-  const reload = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await listWebhookDeliveries(
-        status === 'all' ? { limit: 100 } : { status, limit: 100 },
-      );
-      setRows(data);
-    } catch (err) {
-      // An error must not read as "no deliveries" — that is the exact
-      // misreading this panel exists to prevent.
-      setError(formatApiError(err, 'Failed to load delivery history.'));
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the API client reads the current project itself; projectId is here so a project switch re-reads
-  }, [status, projectId]);
+  const params = status === 'all' ? { limit: 100 } : { status, limit: 100 };
+  const query = useQuery({
+    queryKey: ['listWebhookDeliveries', params],
+    queryFn: () => listWebhookDeliveries(params),
+    enabled: !!projectId,
+    // The rows of the previous filter stay until the next ones answer.
+    placeholderData: keepPreviousData,
+  });
+  const loading = query.isFetching;
+  // An error must not read as "no deliveries" — that is the exact
+  // misreading this panel exists to prevent: it is said, with no rows.
+  const error = queryErrorText(query.error, 'Failed to load delivery history.');
+  const rows: WebhookDeliveryRow[] = query.isError ? [] : query.data ?? [];
+  const reload = () => query.refetch();
 
-  useEffect(() => {
-    if (!projectId) return;
-    void reload();
-  }, [reload, projectId]);
-
-  const handleRetry = async (row: WebhookDeliveryRow) => {
-    setBusyId(row.id);
-    try {
-      await retryWebhookDelivery(row.id);
+  const retrying = useMutation({
+    mutationFn: (row: WebhookDeliveryRow) => retryWebhookDelivery(row.id),
+    onSuccess: (_requeued, row) => {
       toast.success(`Delivery #${row.id} requeued.`);
-      await reload();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to requeue delivery.'));
-    } finally {
-      setBusyId(null);
-    }
-  };
+      return queryClient.invalidateQueries({ queryKey: ['listWebhookDeliveries'] });
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to requeue delivery.')),
+  });
+  const handleRetry = (row: WebhookDeliveryRow) => retrying.mutate(row);
+  const busyId = retrying.isPending ? retrying.variables.id : null;
 
   if (!projectId) return null;
 

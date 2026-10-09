@@ -11,6 +11,8 @@
 import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
+import apiInQueryOnly from './eslint-rules/api-in-query-only.mjs';
+
 // A file save goes through utils/download (`saveBlob`).
 const DOWNLOAD_NAME = {
   selector: "AssignmentExpression[left.type='MemberExpression'][left.property.name='download']",
@@ -58,6 +60,24 @@ export default [
           message: "Import from the 'services/api' barrel, not one of its submodules.",
           allowTypeImports: true,
         }],
+      }],
+    },
+  },
+  {
+    // Server state is TanStack Query (src/lib/query.ts; UI_STYLE_GUIDE §48):
+    // an API function is called only inside a queryFn or a mutationFn.
+    // `allow` names the barrel's exports that make no request.
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/services/api/**', 'src/tests/**'],
+    plugins: { bluestick: { rules: { 'api-in-query-only': apiInQueryOnly } } },
+    rules: {
+      'bluestick/api-in-query-only': ['error', {
+        allow: [
+          // the current project (the client's own state)
+          'getCurrentProjectId', 'setCurrentProjectId',
+          // links to a Hosts list, built from data already in hand
+          'conditionHostsHref', 'subnetHostsHref', 'gridCellHostsHref', 'familyCellHostsHref',
+        ],
       }],
     },
   },

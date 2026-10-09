@@ -6,15 +6,15 @@
  * session that lasts hours.  A browser slows or pauses timers in a hidden tab
  * and across sleep, so the state is worked out again from the clock whenever
  * the tab becomes visible; and again when another tab replaces the stored
- * token (every tab shares it), which is also how a new sign-in clears the
- * notice here.
+ * token (every tab shares it), which is also how a new sign-in — or a renewal
+ * there (`useSessionRenewal`) — clears the notice here.
  *
- * `token` is this tab's own (it changes on sign-in and sign-out); the expiry
+ * `token` is this tab's own (it changes on sign-in, renewal and sign-out); the expiry
  * is read from the STORED token, the one requests are actually sent with.
  */
 import { useEffect, useRef } from 'react';
 
-import { SessionStage, sessionStage, tokenExpiresAt } from '../utils/sessionExpiry';
+import { SessionStage, sessionStage, storedSessionToken, tokenExpiresAt } from '../utils/sessionExpiry';
 
 export type NoticeStage = Exclude<SessionStage, 'ok'>;
 
@@ -29,14 +29,6 @@ export interface SessionExpiryDeps {
 
 /** `setTimeout` takes a signed 32-bit delay; a longer one fires at once. */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
-
-const storedToken = (): string | null => {
-  try {
-    return window.localStorage.getItem('auth_token');
-  } catch {
-    return null;
-  }
-};
 
 export function useSessionExpiryNotice(token: string | null, deps: SessionExpiryDeps): void {
   // The callers' functions are new every render; the schedule must not be.
@@ -57,7 +49,7 @@ export function useSessionExpiryNotice(token: string | null, deps: SessionExpiry
     const check = () => {
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
-      const { readToken = storedToken, now = Date.now } = latest.current;
+      const { readToken = storedSessionToken, now = Date.now } = latest.current;
       const expiresAt = tokenExpiresAt(readToken());
       if (expiresAt === null) {
         clear();

@@ -185,6 +185,9 @@ describe('ToolActivity', () => {
 
   // Review 2026-10-01 follow-up — the focused query had no guard: asking
   // twice let the first, slower answer replace the second.
+  // 5.351.0 — the later query is a DIFFERENT question (another tool).  The
+  // same question asked again while it is still in flight is one request now
+  // (the read is shared), so there is no second answer for it to be replaced by.
   it('a slow first answer never replaces a later query', async () => {
     let releaseFirst!: (r: ActivityResponse) => void;
     getScansAt
@@ -194,6 +197,7 @@ describe('ToolActivity', () => {
     await screen.findByTestId('activity-histogram');
     fireEvent.click(screen.getByRole('button', { name: /Correlate/ }));
     await waitFor(() => expect(getScansAt).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByLabelText('Tool'), { target: { value: 'nmap' } });
     fireEvent.submit(screen.getByLabelText('Tool').closest('form')!);
     await waitFor(() => expect(getScansAt).toHaveBeenCalledTimes(2));
     expect(await screen.findByText(/0 activities matched/)).toBeInTheDocument();

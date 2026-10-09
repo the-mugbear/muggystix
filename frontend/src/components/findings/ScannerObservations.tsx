@@ -10,8 +10,9 @@
  * recorded only where the operator means it (the host-scoped promotion rule).
  * An issue that already has a finding joins it, its status untouched.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
 
 import {
@@ -21,8 +22,8 @@ import {
 } from '../../services/api';
 import type { ObservationIssue, ObservationIssueHost, WeaknessKind } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
-import { useLatestRequest } from '../../hooks/useLatestRequest';
 import { useListCursor } from '../../hooks/useListCursor';
+import { useListQuery } from '../../hooks/useListQuery';
 import { formatApiError } from '../../utils/apiErrors';
 import { ENDPOINT_STATUS_LABEL, STATUS_LABEL } from '../../utils/findingStatus';
 import { selectAllState } from '../../utils/selection';
@@ -55,7 +56,6 @@ interface Props {
 
 const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const toast = useToast();
-  const run = useLatestRequest();
   // The filters live in the URL (review 2026-09-23 B-UI-3), as the Findings
   // list's do: "critical issues on 5+ hosts" can be bookmarked and shared.
   // Own keys, so switching views never mixes the two lists' filters.
@@ -81,20 +81,13 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const setIncludeJudged = (v: boolean) => setParam('obs_judged', v ? '1' : '0', '0');
   const setKind = (v: string) => setParam('obs_kind', v, 'all');
   const [searchInput, setSearchInput] = useState(search);
-  const [issues, setIssues] = useState<ObservationIssue[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // Selection spans loads: issue_key → the issue, and the hosts ticked under
   // it (absent = every host carrying it).
   const [selected, setSelected] = useState<Map<string, ObservationIssue>>(new Map());
   const [hostChoice, setHostChoice] = useState<Map<string, Set<number>>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [hostsByKey, setHostsByKey] = useState<Record<string, ObservationIssueHost[] | 'loading' | 'error'>>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [promoting, setPromoting] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => setParam('obs_search', searchInput.trim(), ''), 300);
@@ -108,64 +101,52 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
     }),
     [search, severity, minHosts, includeJudged, kind],
   );
-  // The filters a "Load more" response belongs to: a page that lands after the
-  // filters changed is dropped, not appended to the new list.
-  const filtersRef = useRef(filters);
-  filtersRef.current = filters;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const r = await run(() => getObservationIssues({ ...filters, limit: PAGE }));
-    if (r.stale) return;
-    if (r.ok) {
-      setIssues(r.value.items);
-      setTotal(r.value.total);
-      setError(null);
-    } else {
-      setError(formatApiError(r.error, 'Could not load the scanner observations.'));
-    }
-    setLoading(false);
-  }, [run, filters]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  // The filters are the list's key: a page that lands after they changed
+  // belongs to the list it was asked for, never to the one on screen.
+  const list = useListQuery<ObservationIssue>(
+    'getObservationIssues',
+    ({ offset, limit }) => getObservationIssues({ ...filters, ...(offset > 0 ? { skip: offset } : {}), limit }),
+    [filters],
+    { pageSize: PAGE, errorMessage: 'Could not load the scanner observations.' },
+  );
+  // An issue that moved between two pages while they were read is listed once.
+  const issues = useMemo(() => {
+    const seen = new Set<string>();
+    return (list.rows ?? []).filter((i) => (seen.has(i.issue_key) ? false : (seen.add(i.issue_key), true)));
+  }, [list.rows]);
+  const { total, loading, loadingMore, error } = list;
 
   const loadMore = async () => {
-    const asked = filters;
-    setLoadingMore(true);
     try {
-      const page = await getObservationIssues({ ...asked, skip: issues.length, limit: PAGE });
-      if (filtersRef.current !== asked) return;
-      setIssues((prev) => {
-        const seen = new Set(prev.map((p) => p.issue_key));
-        return [...prev, ...page.items.filter((i) => !seen.has(i.issue_key))];
-      });
-      setTotal(page.total);
+      await list.loadMore();
     } catch (err) {
       toast.error(formatApiError(err, 'Could not load more issues'));
-    } finally {
-      setLoadingMore(false);
     }
   };
 
-  const toggleExpanded = async (issue: ObservationIssue) => {
+  // The hosts under each open issue, read when its row is opened.
+  const expandedKeys = useMemo(() => [...expanded], [expanded]);
+  const hostQueries = useQueries({
+    queries: expandedKeys.map((key) => ({
+      queryKey: ['getObservationIssueHosts', key, HOST_CAP + 1],
+      queryFn: () => getObservationIssueHosts(key, HOST_CAP + 1),
+    })),
+  });
+  const hostsOf = (key: string): ObservationIssueHost[] | 'loading' | 'error' | undefined => {
+    const query = hostQueries[expandedKeys.indexOf(key)];
+    if (!query) return undefined;
+    return query.data ?? (query.isError ? 'error' : 'loading');
+  };
+
+  const toggleExpanded = (issue: ObservationIssue) => {
     const key = issue.issue_key;
-    const open = expanded.has(key);
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (open) next.delete(key);
+      if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
-    if (open || Array.isArray(hostsByKey[key])) return;
-    setHostsByKey((prev) => ({ ...prev, [key]: 'loading' }));
-    try {
-      const hosts = await getObservationIssueHosts(key, HOST_CAP + 1);
-      setHostsByKey((prev) => ({ ...prev, [key]: hosts }));
-    } catch {
-      setHostsByKey((prev) => ({ ...prev, [key]: 'error' }));
-    }
   };
 
   // Selecting or deselecting an issue drops any host narrowing: re-selecting
@@ -214,15 +195,10 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const chosen = Array.from(selected.values());
   const chosenHosts = chosen.reduce((n, i) => n + hostCountFor(i), 0);
 
-  const promote = async () => {
-    setPromoting(true);
-    try {
-      const res = await promoteObservationIssues(
-        chosen.map((i) => {
-          const hosts = hostChoice.get(i.issue_key);
-          return hosts ? { issue_key: i.issue_key, host_ids: Array.from(hosts) } : { issue_key: i.issue_key };
-        }),
-      );
+  const queryClient = useQueryClient();
+  const promotion = useMutation({
+    mutationFn: (items: { issue_key: string; host_ids?: number[] }[]) => promoteObservationIssues(items),
+    onSuccess: (res) => {
       const created = res.results.filter((r) => r.created).length;
       const joined = res.results.length - created;
       toast.success(
@@ -232,22 +208,29 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
       setConfirmOpen(false);
       setSelected(new Map());
       setHostChoice(new Map());
-      setHostsByKey({});
       setExpanded(new Set());
-      await load();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not promote the selected issues'));
-    } finally {
-      setPromoting(false);
-    }
-  };
+      // Findings were made or joined: the lists of them are out of date, and
+      // so is this one (a judged issue may leave it) — busy until it is back.
+      // (The hosts under each issue go with their closed rows.)
+      void queryClient.invalidateQueries({ queryKey: ['listFindings'] });
+      return queryClient.invalidateQueries({ queryKey: ['getObservationIssues'] });
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not promote the selected issues')),
+  });
+  const promoting = promotion.isPending;
+  const promote = () => promotion.mutate(
+    chosen.map((i) => {
+      const hosts = hostChoice.get(i.issue_key);
+      return hosts ? { issue_key: i.issue_key, host_ids: Array.from(hosts) } : { issue_key: i.issue_key };
+    }),
+  );
 
   const waiting = (i: ObservationIssue) => i.host_count - i.judged_host_count;
 
   // j/k (↓/↑) move a row cursor, Enter shows or hides the issue's hosts.
   const { cursorRowProps } = useListCursor(
     loading || error ? 0 : issues.length,
-    (i) => void toggleExpanded(issues[i]),
+    (i) => toggleExpanded(issues[i]),
     // A promotion re-reads the list (the judged issue may leave it).
     { resetKey: `${search}|${severity}|${minHosts}|${includeJudged}|${kind}`, getId: (i) => issues[i]?.issue_key },
   );
@@ -380,7 +363,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                 {issues.map((issue, index) => {
                   const key = issue.issue_key;
                   const isOpen = expanded.has(key);
-                  const hosts = hostsByKey[key];
+                  const hosts = isOpen ? hostsOf(key) : undefined;
                   const narrowed = hostChoice.get(key);
                   return (
                     <React.Fragment key={key}>
@@ -434,7 +417,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                           <Button
                             size="sm"
                             variant="ghost"
-                            onClick={() => void toggleExpanded(issue)}
+                            onClick={() => toggleExpanded(issue)}
                             aria-expanded={isOpen}
                             aria-label={`${isOpen ? 'Hide' : 'Show'} the hosts carrying ${issue.title}`}
                           >
@@ -555,7 +538,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
           </DialogBody>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={promoting}>Cancel</Button>
-            <Button onClick={() => void promote()} disabled={promoting}>
+            <Button onClick={promote} disabled={promoting}>
               {promoting && <Loader2 className="size-4 animate-spin" aria-hidden />}
               Promote {plural(chosen.length, 'issue')}
             </Button>

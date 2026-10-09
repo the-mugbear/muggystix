@@ -55,8 +55,6 @@ export interface NoteThreadProps {
   hostId: number;
   /** Analyst+ — gates attach/delete of evidence images (display always on). */
   canManageNotes: boolean;
-  /** Reload the notes thread after an attachment upload/delete. */
-  onAttachmentsChanged: () => void;
   /** v5.264.0 — the viewer: their notes sit on the right. */
   currentUserId?: number | null;
 }
@@ -83,7 +81,6 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
   onEditDetails,
   hostId,
   canManageNotes,
-  onAttachmentsChanged,
   currentUserId,
 }) => {
   const attachRef = useRef<NoteAttachmentsHandle>(null);
@@ -201,7 +198,6 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
           noteId={note.id}
           attachments={note.attachments ?? []}
           canManage={canManageNotes}
-          onChanged={onAttachmentsChanged}
         />
       </MessageBubble>
       {replyTo?.id === note.id && (

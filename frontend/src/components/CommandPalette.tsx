@@ -13,6 +13,7 @@
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Command as CommandPrimitive } from 'cmdk';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import {
@@ -48,6 +49,10 @@ import { cn } from '../utils/cn';
 // the Layout sidebar and App.tsx route gates.  Add/re-gate pages there.
 import { NAV_COMMANDS } from '../config/navigation';
 
+const NO_HOSTS: Host[] = [];
+const NO_SCANS: Scan[] = [];
+const NO_FINDINGS: Finding[] = [];
+
 export interface CommandPaletteProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -69,110 +74,64 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
   // poorly at scale, hid failures behind "no results").  Per-group
   // error state surfaces backend failures inline instead of swallowing.
   const debouncedSearch = useDebouncedValue(search, 300);
-  const [hostResults, setHostResults] = useState<Host[]>([]);
-  const [findingResults, setFindingResults] = useState<Finding[]>([]);
-  const [scanResults, setScanResults] = useState<Scan[]>([]);
-  const [resourcesLoading, setResourcesLoading] = useState(false);
-  const [hostsError, setHostsError] = useState<string | null>(null);
-  const [findingsError, setFindingsError] = useState<string | null>(null);
-  const [scansError, setScansError] = useState<string | null>(null);
 
   // Reset search on close so the next open starts clean.
   useEffect(() => {
-    if (!open) {
-      setSearch('');
-      setHostResults([]);
-      setFindingResults([]);
-      setScanResults([]);
-      setHostsError(null);
-      setFindingsError(null);
-      setScansError(null);
-    }
+    if (!open) setSearch('');
   }, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    const q = debouncedSearch.trim();
-    // "#37" (or "37") is a finding number — searchable from one digit.
-    const findingId = /^#?(\d+)$/.exec(q)?.[1];
-    if (q.length < 2 && !findingId) {
-      setHostResults([]);
-      setFindingResults([]);
-      setScanResults([]);
-      setHostsError(null);
-      setFindingsError(null);
-      setScansError(null);
-      setResourcesLoading(false);
-      return;
-    }
-    const controller = new AbortController();
-    let cancelled = false;
-    setResourcesLoading(true);
-    setHostsError(null);
-    setFindingsError(null);
-    setScansError(null);
+  const q = debouncedSearch.trim();
+  // "#37" (or "37") is a finding number — searchable from one digit…
+  const findingId = /^#?(\d+)$/.exec(q)?.[1];
+  const findingNumber = findingId ? Number(findingId) : null;
+  // …and a one-digit finding number searches findings only.
+  const wide = open && q.length >= 2;
+  const byNumber = open && findingNumber != null;
 
-    // Helper that converts a fetch failure to a per-group banner unless
-    // the request was aborted (debounce or unmount), in which case it
-    // stays silent.
-    const groupFail = (
-      setError: (msg: string | null) => void,
-      label: string,
-    ) => (err: unknown) => {
-      if (cancelled) return;
-      const e = err as { code?: string; name?: string };
-      if (e?.code === 'ERR_CANCELED' || e?.name === 'CanceledError') return;
-      setError(`${label} search unavailable — try refining your query or retry.`);
-    };
+  // One query per group, so one group's failure is said in that group.  The
+  // rows of the previous search stay while the next one is read.
+  const hosts = useQuery({
+    queryKey: ['getHosts', { search: q, limit: 5, include_total: false }],
+    queryFn: ({ signal }) => getHosts({ search: q, limit: 5, include_total: false }, signal),
+    enabled: wide,
+    placeholderData: keepPreviousData,
+  });
+  const scans = useQuery({
+    queryKey: ['getScans', 0, 5, { search: q }],
+    queryFn: ({ signal }) => getScans(0, 5, { search: q, signal }),
+    enabled: wide,
+    placeholderData: keepPreviousData,
+  });
+  // v5.294.0 (UX review) — findings of the current project, by title, and
+  // by number when the query is one ("#37" / "37"); the numbered one first.
+  // A number nobody has is a 404, which is simply no match.
+  const findingByNumber = useQuery({
+    queryKey: ['getFinding', findingNumber],
+    queryFn: () => getFinding(findingNumber as number),
+    enabled: byNumber,
+    placeholderData: keepPreviousData,
+  });
+  const findingsByTitle = useQuery({
+    queryKey: ['listFindings', { search: q, limit: 5 }],
+    queryFn: ({ signal }) => listFindings({ search: q, limit: 5 }, signal),
+    enabled: wide,
+    placeholderData: keepPreviousData,
+  });
 
-    // A one-digit finding number searches findings only.
-    const wide = q.length >= 2;
-    if (!wide) {
-      setHostResults([]);
-      setScanResults([]);
-    }
-
-    const hostsPromise = !wide ? Promise.resolve() : getHosts(
-      { search: q, limit: 5, include_total: false },
-      controller.signal,
-    )
-      .then((response) => {
-        if (!cancelled) setHostResults(response.items ?? []);
-      })
-      .catch(groupFail(setHostsError, 'Hosts'));
-
-    // v5.294.0 (UX review) — findings of the current project, by title, and
-    // by number when the query is one ("#37" / "37"); the numbered one first.
-    // A number nobody has is a 404, which is simply no match.
-    const byId = findingId
-      ? getFinding(Number(findingId)).catch(() => null)
-      : Promise.resolve(null);
-    const byTitle = wide
-      ? listFindings({ search: q, limit: 5 }, controller.signal).then((r) => r.items ?? [])
-      : Promise.resolve([] as Finding[]);
-    const findingsPromise = Promise.all([byId, byTitle])
-      .then(([numbered, titled]) => {
-        if (cancelled) return;
-        const rows = numbered ? [numbered, ...titled.filter((f) => f.id !== numbered.id)] : titled;
-        setFindingResults(rows.slice(0, 6));
-      })
-      .catch(groupFail(setFindingsError, 'Findings'));
-
-    const scansPromise = !wide ? Promise.resolve() : getScans(0, 5, { search: q, signal: controller.signal })
-      .then((scans) => {
-        if (!cancelled) setScanResults(scans);
-      })
-      .catch(groupFail(setScansError, 'Scans'));
-
-    Promise.allSettled([hostsPromise, findingsPromise, scansPromise]).then(() => {
-      if (!cancelled) setResourcesLoading(false);
-    });
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [debouncedSearch, open]);
+  const unavailable = (label: string) => `${label} search unavailable — try refining your query or retry.`;
+  const hostResults: Host[] = (wide && hosts.data?.items) || NO_HOSTS;
+  const hostsError = wide && hosts.isError ? unavailable('Hosts') : null;
+  const scanResults: Scan[] = (wide && scans.data) || NO_SCANS;
+  const scansError = wide && scans.isError ? unavailable('Scans') : null;
+  const findingsError = wide && findingsByTitle.isError ? unavailable('Findings') : null;
+  const numbered = byNumber ? findingByNumber.data ?? null : null;
+  const titled = wide ? findingsByTitle.data?.items : undefined;
+  const findingResults = useMemo<Finding[]>(() => {
+    const rows = titled ?? NO_FINDINGS;
+    return (numbered ? [numbered, ...rows.filter((f) => f.id !== numbered.id)] : rows).slice(0, 6);
+  }, [numbered, titled]);
+  const resourcesLoading = hosts.isFetching || scans.isFetching
+    || findingByNumber.isFetching || findingsByTitle.isFetching;
 
   const navItems = useMemo(
     () => NAV_COMMANDS.filter((entry) => allowed(entry.requiredRole) && (!entry.feature || remediationEnabled)),

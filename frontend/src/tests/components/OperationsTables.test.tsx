@@ -37,6 +37,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+import { readsOnScreen } from '../helpers/readsOnScreen';
 import FindingsNeedingMeTable, { type FindingsNeedingMeTableProps } from '../../components/operations/FindingsNeedingMeTable';
 import MyTestsTable, { type MyTestsTableProps } from '../../components/operations/MyTestsTable';
 import ReviewHostsTable from '../../components/operations/ReviewHostsTable';
@@ -316,7 +317,11 @@ describe('Hosts tab', () => {
 
 describe('Tests tab', () => {
   const onKind = vi.fn();
-  const onChanged = vi.fn();
+  // 5.351.0 — a claim no longer calls a parent's `onChanged` (which re-read
+  // the list and the counts): it says which reads are out of date, and what
+  // is on screen is read again.  These stand in for the tab's list and the
+  // page's counts; `reread` says which of them was asked for again.
+  const { reread, ReadsOnScreen } = readsOnScreen({ getMyTestsPage: 'list', getWorkbench: 'counts' });
   const props = (over: Partial<MyTestsTableProps> = {}): MyTestsTableProps => ({
     rows: [
       task({ test_id: 30, reasons: ['assigned', 'in_review'], assigned_to_id: 1, priority: 'low', label: null }),
@@ -326,10 +331,11 @@ describe('Tests tab', () => {
     state: ok,
     pager: pager(55),
     kindCounts: { assigned: 12, in_review: 28, triage: 15 },
-    kind: null, onKind, canWrite: true, onChanged,
+    kind: null, onKind, canWrite: true,
     ...over,
   });
-  const renderIt = (over: Partial<MyTestsTableProps> = {}) => inRouter(<MyTestsTable {...props(over)} />);
+  const renderIt = (over: Partial<MyTestsTableProps> = {}) =>
+    inRouter(<><ReadsOnScreen /><MyTestsTable {...props(over)} /></>);
   const rowOf = (testId: number) => document.querySelector(`a[href$="#host-test-${testId}"]`)!.closest('tr') as HTMLElement;
 
   it('ONE table with why each test is here; each test under one kind, its strongest', () => {
@@ -401,12 +407,16 @@ describe('Tests tab', () => {
     renderIt();
     fireEvent.click(within(rowOf(32)).getByRole('button', { name: 'Claim' }));
     await waitFor(() => expect(api.updateHostTest).toHaveBeenCalledWith(32, { assigned_to_id: 1, expected_revision: 4 }));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('counts'));
     // Undoable: the toast carries the way back, with the NEW revision.
     const undo = toast.success.mock.calls[0][1].action;
     expect(undo.label).toBe('Undo');
+    reread.mockClear();
     undo.onClick();
     await waitFor(() => expect(api.updateHostTest).toHaveBeenLastCalledWith(32, { assigned_to_id: null, expected_revision: 5 }));
+    // …and the undo is read back too.
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
   });
 
   it('offers Claim only on a test that is free to claim', () => {

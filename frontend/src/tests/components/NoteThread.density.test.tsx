@@ -38,7 +38,6 @@ const renderThread = (topLevel: Annotation[], replies: Record<number, Annotation
           onDeleteNote={vi.fn()}
           hostId={1}
           canManageNotes={canManage}
-          onAttachmentsChanged={vi.fn()}
         />
       </TooltipProvider>
     </MemoryRouter>,
@@ -155,7 +154,7 @@ describe('NoteThread — conversation layout', () => {
             replyTo={null} replyBody="" onReplyToChange={vi.fn()} onReplyBodyChange={vi.fn()}
             onSubmitReply={vi.fn()} noteSubmitting={false} noteActionId={null}
             onDeleteNote={vi.fn()} hostId={1} canManageNotes
-            onAttachmentsChanged={vi.fn()} currentUserId={7}
+            currentUserId={7}
           />
         </TooltipProvider>
       </MemoryRouter>,

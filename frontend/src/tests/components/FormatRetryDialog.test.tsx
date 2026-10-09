@@ -42,19 +42,22 @@ beforeEach(() => {
 
 describe('FormatRetryDialog', () => {
   it('retry: shows the detection, lets the operator change the format, and restarts the job in place', async () => {
-    const onDone = vi.fn();
-    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="results.txt" mode="retry" onDone={onDone} />);
+    const onOpenChange = vi.fn();
+    render(<FormatRetryDialog open onOpenChange={onOpenChange} jobId={9} filename="results.txt" mode="retry" />);
     await waitFor(() => expect(screen.getByText(/Recognised from the filename only/)).toBeInTheDocument());
     fireEvent.change(screen.getByLabelText('Parse as'), { target: { value: 'amass_output' } });
     fireEvent.change(screen.getByLabelText('Source tool (optional)'), { target: { value: 'subfinder' } });
     fireEvent.click(screen.getByRole('button', { name: 'Retry import' }));
     await waitFor(() => expect(api.startIngestionJob).toHaveBeenCalledWith(9, { formatOverride: 'amass_output', sourceTool: 'subfinder' }));
     expect(api.reprocessIngestionJob).not.toHaveBeenCalled();
-    expect(onDone).toHaveBeenCalled();
+    // Done: the dialog closes.  (It used to call an `onDone` prop whose only
+    // job was the parent's re-fetch; the dialog now says itself which reads
+    // are out of date.)
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
 
   it('re-process: says what it does before doing it, then creates a new job', async () => {
-    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="results.txt" mode="reprocess" priorScanId={5} onDone={() => {}} />);
+    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="results.txt" mode="reprocess" priorScanId={5} />);
     expect(screen.getByText(/new scan record/)).toBeInTheDocument();
     expect(screen.getByText(/prior scan \(#5\)/)).toBeInTheDocument();
     expect(screen.getByText(/duplicate guard is bypassed/)).toBeInTheDocument();
@@ -78,7 +81,7 @@ describe('FormatRetryDialog', () => {
       needs_choice: false,
       reason: null,
     });
-    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="results.txt" mode="retry" onDone={() => {}} />);
+    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="results.txt" mode="retry" />);
     await waitFor(() => expect(screen.getByText(/recognised by structure/)).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Confirm suggested format' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry import' }));
@@ -92,7 +95,7 @@ describe('FormatRetryDialog', () => {
       primary: 'nmap_xml',
       reason: 'No distinctive signature was recognised.',
     });
-    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="inventory.xml" mode="start" onDone={() => {}} />);
+    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="inventory.xml" mode="start" />);
     await waitFor(() => expect(screen.getByText(/No distinctive signature/)).toBeInTheDocument());
     expect(screen.queryByText(/Detected:/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Confirm suggested format' })).not.toBeInTheDocument();
@@ -103,7 +106,7 @@ describe('FormatRetryDialog', () => {
   it('a failed inspection can be retried, and a format still chosen by hand', async () => {
     api.getJobDetection.mockRejectedValueOnce(new Error('boom'));
     api.getUploadFormats.mockResolvedValue(detection.formats);
-    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="results.txt" mode="retry" onDone={() => {}} />);
+    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="results.txt" mode="retry" />);
     const select = await screen.findByLabelText('Parse as');
     expect(screen.getByRole('button', { name: 'Retry import' })).toBeDisabled();
     fireEvent.change(select, { target: { value: 'amass_output' } });
@@ -116,7 +119,7 @@ describe('FormatRetryDialog', () => {
 
   it('a file that is no longer retained is reported, not silently re-uploaded', async () => {
     api.getJobDetection.mockRejectedValueOnce({ response: { status: 409, data: { detail: 'The uploaded file is no longer on disk — re-upload it.' } } });
-    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="results.txt" mode="retry" onDone={() => {}} />);
+    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="results.txt" mode="retry" />);
     await waitFor(() => expect(screen.getByText(/no longer on disk/)).toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'Retry import' })).toBeDisabled();
     // The bytes are gone: no format choice or re-inspection can help.
@@ -127,7 +130,7 @@ describe('FormatRetryDialog', () => {
 
 describe('FormatRetryDialog format chooser', () => {
   it('lists each format once: the candidates annotated, then the other formats', async () => {
-    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="results.txt" mode="retry" onDone={() => {}} />);
+    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="results.txt" mode="retry" />);
     const select = await screen.findByLabelText('Parse as');
     await waitFor(() => expect(screen.getByRole('option', { name: 'Naabu host:port text (by filename only)' })).toBeInTheDocument());
     const values = Array.from(select.querySelectorAll('option')).map((o) => o.value).filter(Boolean);

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Download, Loader2, Trash2, Upload } from 'lucide-react';
 
@@ -11,6 +12,7 @@ import {
   listNames,
   NameAddress,
   NameDetail,
+  NameImportRequest,
   NameImportResponse,
   NameRow,
   NamesSummary,
@@ -18,11 +20,13 @@ import {
 } from '../services/api';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useToast } from '../contexts/ToastContext';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useListCursor } from '../hooks/useListCursor';
-import { pageFromParams } from '../hooks/useUrlPage';
+import { usePagedList } from '../hooks/usePagedList';
+import { useUrlPage } from '../hooks/useUrlPage';
 import { TableSkeleton } from '../components/PageSkeleton';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -78,6 +82,7 @@ import { formatTimestamp } from '../utils/relativeTime';
  */
 
 const PAGE_SIZE = 100;
+const NO_ROWS: NameRow[] = [];
 
 const STATE_OPTIONS: Array<{ value: NameStateFilter; label: string; hint: string }> = [
   { value: 'all', label: 'All', hint: 'Every name in the project' },
@@ -226,19 +231,19 @@ const AddressLine: React.FC<{ a: NameAddress }> = ({ a }) => (
 interface ImportDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onImported: () => void;
 }
 
-const ImportDialog: React.FC<ImportDialogProps> = ({ open, onOpenChange, onImported }) => {
+/** The reads a change to the names inventory makes out of date. */
+const NAME_READS = ['listNames', 'getNamesSummary'] as const;
+
+const ImportDialog: React.FC<ImportDialogProps> = ({ open, onOpenChange }) => {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const [text, setText] = useState('');
   const [declareScope, setDeclareScope] = useState(false);
   const [includeSub, setIncludeSub] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<NameImportResponse | null>(null);
-  // Entries the import refused for the scope list.
-  const scopeRefused = result?.scope_invalid ?? [];
-  const [error, setError] = useState<string | null>(null);
+  // A file that was not read; an import that failed is the mutation's.
+  const [fileError, setFileError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const names = useMemo(
@@ -246,18 +251,37 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onOpenChange, onImpor
     [text],
   );
 
+  const importing = useMutation({
+    mutationFn: (body: NameImportRequest) => importNames(body),
+    onMutate: () => setFileError(null),
+    onSuccess: (res) => {
+      const parts = [`${res.names_created} new`, `${res.names_existing} already known`];
+      if (res.invalid_count) parts.push(`${res.invalid_count} rejected`);
+      if (res.scope_domains_added) parts.push(`${res.scope_domains_added} added to scope`);
+      if (res.scope_domains_updated) parts.push(`${res.scope_domains_updated} widened to include subdomains`);
+      if (res.scope_invalid?.length) parts.push(`${res.scope_invalid.length} not added to scope`);
+      toast.success(`Imported: ${parts.join(', ')}`);
+      void invalidateReads(queryClient, ...NAME_READS);
+    },
+  });
+  const busy = importing.isPending;
+  const result: NameImportResponse | null = importing.data ?? null;
+  // Entries the import refused for the scope list.
+  const scopeRefused = result?.scope_invalid ?? [];
+  const error = fileError ?? queryErrorText(importing.error, 'Import failed.');
+
   const reset = () => {
     setText('');
     setDeclareScope(false);
     setIncludeSub(false);
-    setResult(null);
-    setError(null);
+    setFileError(null);
+    importing.reset();
   };
 
   const readFile = async (file: File | undefined) => {
     if (!file) return;
     if (file.size > 5 * 1024 * 1024) {
-      setError('File is larger than 5 MB. Split it or paste a subset.');
+      setFileError('File is larger than 5 MB. Split it or paste a subset.');
       return;
     }
     const content = await file.text();
@@ -265,25 +289,9 @@ const ImportDialog: React.FC<ImportDialogProps> = ({ open, onOpenChange, onImpor
     if (fileRef.current) fileRef.current.value = '';
   };
 
-  const submit = async () => {
+  const submit = () => {
     if (names.length === 0) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await importNames({ names, declare_scope: declareScope, include_subdomains: includeSub });
-      setResult(res);
-      const parts = [`${res.names_created} new`, `${res.names_existing} already known`];
-      if (res.invalid_count) parts.push(`${res.invalid_count} rejected`);
-      if (res.scope_domains_added) parts.push(`${res.scope_domains_added} added to scope`);
-      if (res.scope_domains_updated) parts.push(`${res.scope_domains_updated} widened to include subdomains`);
-      if (res.scope_invalid?.length) parts.push(`${res.scope_invalid.length} not added to scope`);
-      toast.success(`Imported: ${parts.join(', ')}`);
-      onImported();
-    } catch (err: unknown) {
-      setError(formatApiError(err, 'Import failed.'));
-    } finally {
-      setBusy(false);
-    }
+    importing.mutate({ names, declare_scope: declareScope, include_subdomains: includeSub });
   };
 
   return (
@@ -420,37 +428,35 @@ interface DetailSheetProps {
   onClose: () => void;
   onNavigate: (nameId: number) => void;
   canEdit: boolean;
-  onDeleted: () => void;
 }
 
-const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, canEdit, onDeleted }) => {
+const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, canEdit }) => {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const [confirmDialog, confirm] = useConfirm();
-  const [detail, setDetail] = useState<NameDetail | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
 
-  useEffect(() => {
-    if (nameId == null) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setDetail(null);
-    getName(nameId)
-      .then((d) => {
-        if (!cancelled) setDetail(d);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(formatApiError(err, 'Name could not be loaded.'));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [nameId]);
+  const query = useQuery({
+    queryKey: ['getName', nameId],
+    queryFn: () => getName(nameId as number),
+    enabled: nameId != null,
+    // Only for the sheet that is closing (no name): it keeps the name it
+    // showed while it slides out.  Another name starts from nothing.
+    placeholderData: keepPreviousData,
+  });
+  const detail: NameDetail | null = (nameId != null && query.isPlaceholderData ? null : query.data) ?? null;
+  const loading = query.isFetching;
+  const error = nameId != null ? queryErrorText(query.error, 'Name could not be loaded.') : null;
+
+  const remove = useMutation({
+    mutationFn: (name: NameDetail) => deleteName(name.id),
+    onSuccess: (_void, name) => {
+      toast.success(`Deleted ${name.fqdn}`);
+      void invalidateReads(queryClient, ...NAME_READS);
+      onClose();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Delete failed.')),
+  });
+  const deleting = remove.isPending;
 
   const handleDelete = async () => {
     if (!detail) return;
@@ -461,17 +467,7 @@ const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, 
       confirmLabel: 'Delete',
     });
     if (!ok) return;
-    setDeleting(true);
-    try {
-      await deleteName(detail.id);
-      toast.success(`Deleted ${detail.fqdn}`);
-      onDeleted();
-      onClose();
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Delete failed.'));
-    } finally {
-      setDeleting(false);
-    }
+    remove.mutate(detail);
   };
 
   return (
@@ -646,31 +642,30 @@ const Names: React.FC = () => {
   // policy as the Hosts tool-ready export); this only hides the affordance.
   const { canWrite: canEdit, canExport } = useProjectRole();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [exporting, setExporting] = useState<'txt' | 'csv' | null>(null);
 
-  const [rows, setRows] = useState<NameRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [summary, setSummary] = useState<NamesSummary | null>(null);
   const [state, setState] = useState<NameStateFilter>((searchParams.get('state') as NameStateFilter) || 'all');
   const [search, setSearch] = useState(searchParams.get('search') ?? '');
   const debouncedSearch = useDebouncedValue(search, 300);
-  // The page is in the address (`?page=`, left out for the first).  It is the
-  // page of the filter it was read under: under a new filter it is the first
-  // page at once, so the old page number is never asked of the new list.
-  const filterKey = `${state}|${debouncedSearch}`;
-  const [pageFilter, setPageFilter] = useState(filterKey);
-  const page = pageFilter === filterKey ? pageFromParams(searchParams) : 0;
-  const setPage = useCallback((next: number) => {
-    setSearchParams((prev) => {
-      const out = new URLSearchParams(prev);
-      if (next > 0) out.set('page', String(next + 1)); else out.delete('page');
-      return out;
-    }, { replace: true });
-  }, [setSearchParams]);
   const [importOpen, setImportOpen] = useState(false);
-  const reqIdRef = useRef(0);
+
+  // The page is in the address (`?page=`, left out for the first); under a
+  // new filter it is the first page at once (usePagedList).
+  const list = usePagedList<NameRow>(
+    'listNames',
+    ({ offset, limit, signal }) => listNames({ skip: offset, limit, search: debouncedSearch, state }, signal),
+    [state, debouncedSearch],
+    { pageSize: PAGE_SIZE, errorMessage: 'Failed to load names.', page: useUrlPage() },
+  );
+  const { page, setPage, loading, error } = list;
+  // The rows on screen stay while another page or filter loads, and when it
+  // fails: the last list that answered — and "updated" is when THOSE rows
+  // were read.
+  const shown = list.response ?? list.lastResponse;
+  const rows = shown?.items ?? NO_ROWS;
+  const total = shown?.total ?? 0;
+  const lastLoadedAt = useRef<Date | null>(null);
+  if (list.loadedAt) lastLoadedAt.current = list.loadedAt;
+  const loadedAt = list.loadedAt ?? lastLoadedAt.current;
 
   const selectedId = useMemo(() => {
     const raw = searchParams.get('name_id');
@@ -690,74 +685,38 @@ const Names: React.FC = () => {
 
   // A failed summary is said (R34): the chips used to lose their counts with
   // nothing to tell "no counts" from "could not be loaded".
-  const [summaryError, setSummaryError] = useState<string | null>(null);
-  const reloadSummary = useCallback(() => {
-    getNamesSummary()
-      .then((s) => { setSummary(s); setSummaryError(null); })
-      .catch((err: unknown) => {
-        setSummary(null);
-        setSummaryError(formatApiError(err, 'The counts could not be loaded.'));
-      });
-  }, []);
-
-  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
-  const reload = useCallback(() => {
-    const reqId = ++reqIdRef.current;
-    setLoading(true);
-    setError(null);
-    listNames({ skip: page * PAGE_SIZE, limit: PAGE_SIZE, search: debouncedSearch, state })
-      .then((resp) => {
-        if (reqIdRef.current !== reqId) return;
-        setRows(resp.items);
-        setTotal(resp.total);
-        setLoadedAt(new Date());
-      })
-      .catch((err) => {
-        if (reqIdRef.current !== reqId) return;
-        setError(formatApiError(err, 'Failed to load names.'));
-      })
-      .finally(() => {
-        if (reqIdRef.current !== reqId) return;
-        setLoading(false);
-      });
-  }, [page, debouncedSearch, state]);
-
-  useEffect(() => {
-    reload();
-  }, [reload]);
-  useEffect(() => {
-    reloadSummary();
-  }, [reloadSummary]);
+  const summaryQuery = useQuery({
+    queryKey: ['getNamesSummary'],
+    queryFn: () => getNamesSummary(),
+  });
+  const summaryError = queryErrorText(summaryQuery.error, 'The counts could not be loaded.');
+  // Counts that could not be re-read are not shown as if they had been.
+  const summary: NamesSummary | null = summaryError ? null : summaryQuery.data ?? null;
+  const reloadSummary = () => { void summaryQuery.refetch(); };
 
   // Persist filter + search in the URL so a shared link reproduces the view.
-  // A changed filter takes the page out of the address in the same write;
-  // once it is out, the address's page is this filter's again.
+  // (The page leaves the address with a changed filter: usePagedList.)
   useEffect(() => {
     const next = new URLSearchParams(searchParams);
     if (state === 'all') next.delete('state');
     else next.set('state', state);
     if (debouncedSearch.trim()) next.set('search', debouncedSearch.trim());
     else next.delete('search');
-    if (pageFilter !== filterKey) next.delete('page');
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
-    else if (pageFilter !== filterKey) setPageFilter(filterKey);
-  }, [state, debouncedSearch, searchParams, setSearchParams, pageFilter, filterKey]);
+  }, [state, debouncedSearch, searchParams, setSearchParams]);
 
   const refreshAll = () => {
-    reload();
+    void list.reload();
     reloadSummary();
   };
 
-  const handleExport = async (format: 'txt' | 'csv') => {
-    setExporting(format);
-    try {
-      await exportNames(format, { search: debouncedSearch.trim() || undefined, state });
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to export names.'));
-    } finally {
-      setExporting(null);
-    }
-  };
+  const exportList = useMutation({
+    mutationFn: (format: 'txt' | 'csv') =>
+      exportNames(format, { search: debouncedSearch.trim() || undefined, state }),
+    onError: (err) => toast.error(formatApiError(err, 'Failed to export names.')),
+  });
+  const exporting = exportList.isPending ? exportList.variables : null;
+  const handleExport = (format: 'txt' | 'csv') => exportList.mutate(format);
 
   const countFor = (value: NameStateFilter): number | null => {
     if (!summary) return null;
@@ -1041,13 +1000,12 @@ const Names: React.FC = () => {
           )}
       </PostureSection>
 
-      <ImportDialog open={importOpen} onOpenChange={setImportOpen} onImported={refreshAll} />
+      <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
       <DetailSheet
         nameId={selectedId}
         onClose={() => setSelectedId(null)}
         onNavigate={(id) => setSelectedId(id)}
         canEdit={canEdit}
-        onDeleted={refreshAll}
       />
     </div>
   );

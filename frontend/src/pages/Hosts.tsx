@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { RowSelectionState } from '@tanstack/react-table';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   getHosts,
   getHostFilterData,
@@ -32,11 +33,12 @@ import type {
   HostFollowInfo,
   HostFilterView,
   HostFilterData,
+  HostListResponse,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
-import { useLatestRequest } from '../hooks/useLatestRequest';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { LIST_CURSOR_CLASS } from '../hooks/useListCursor';
 import {
@@ -175,6 +177,12 @@ const canonicalFilters = (filters: HostFilterOptions): string =>
 
 const DEFAULT_SORT: HostSortOption = 'critical_desc';
 
+/** The conditions alone, as the facet endpoint takes them. */
+type FacetParams = Omit<HostQueryContext, 'sort_by' | 'sort_order'>;
+
+const NO_HOSTS: Host[] = [];
+const NO_VIEWS: HostFilterView[] = [];
+
 /** What the list shows, all of it in the address: the conditions, the sort
  *  and the page.  The page READS it from there and writes it back there —
  *  there is no second copy in component state. */
@@ -285,11 +293,6 @@ export default function Hosts() {
   // refresh (the restored filters ARE the default) — without it an analyst on a
   // restored session saw a filtered list with no hint a default was hiding hosts.
   const [appliedProjectDefault, setAppliedProjectDefault] = useState<string | null>(null);
-  // The project default view itself, kept for the whole visit.  It is usually
-  // an admin's view, so it is NOT in this user's saved list: holding it here is
-  // what lets "Back to default view" and the picker reach it again after the
-  // filters were cleared (they used to be the only path, and clearing emptied it).
-  const [projectDefaultView, setProjectDefaultView] = useState<HostFilterView | null>(null);
   // Set the banner AND persist it (or clear both). The init effect restores it.
   const setProjectDefaultBanner = useCallback((name: string | null) => {
     setAppliedProjectDefault(name);
@@ -301,12 +304,7 @@ export default function Hosts() {
       /* ignore */
     }
   }, []);
-  const [hosts, setHosts] = useState<Host[]>([]);
-  const [totalHosts, setTotalHosts] = useState(0);
-  // Every host in the project, whatever the filters — null until known.
-  const [projectTotal, setProjectTotal] = useState<number | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   // --- The list's state is the address -----------------------------------
   // Conditions, sort and page are READ from `location.search` on every render
   // and WRITTEN by replacing it (`commit`).  A link, the Back button and an
@@ -416,17 +414,58 @@ export default function Hosts() {
     if (Object.keys(pendingRef.current.filters).length === 0) setBaseView(null);
     setProjectDefaultBanner(null);
   }, [commit, setProjectDefaultBanner]);
-  const [filterData, setFilterData] = useState<HostFilterData | null>(null);
+  // --- Filter facets: the options and counts the filter editors offer ------
+  // The conditions as the facet endpoint takes them: the list's, without sort
+  // and paging; undefined when there are none (the full, unscoped facet set).
+  const liveFacetParams = useMemo((): FacetParams | undefined => {
+    const { sort_by: _sb, sort_order: _so, ...filterOnly } = hostQueryContext(filters, DEFAULT_SORT);
+    return Object.keys(filterOnly).length > 0 ? filterOnly : undefined;
+  }, [filters]);
+  // What the facets are counted under.  NOT derived from the address: they
+  // follow the list's conditions only when asked to (after the first list,
+  // while the filter popover is open, on return to the tab, on Retry — the
+  // effects below), so this is the conditions as of the last time they were
+  // asked for.  `null`: not asked yet.
+  const [facetScope, setFacetScope] = useState<{ params: FacetParams | undefined } | null>(null);
+  const facetsQuery = useQuery({
+    queryKey: ['getHostFilterData', facetScope?.params ?? null],
+    queryFn: ({ signal }) => getHostFilterData(facetScope?.params, signal),
+    enabled: facetScope !== null,
+  });
+  // We keep the last-known-good `filterData` — across a failed refresh and
+  // across a change of conditions — so the dropdowns degrade gracefully
+  // rather than emptying out, and a chip keeps its name.
+  const lastFacetsRef = useRef<HostFilterData | null>(null);
+  if (facetsQuery.data) lastFacetsRef.current = facetsQuery.data;
+  const filterData = facetsQuery.data ?? lastFacetsRef.current;
   // Surfaced inline near the filter panel when the cascading filter
   // metadata call fails — previously the failure was console-only, so
-  // users interacted with partially-stale dropdowns with no signal.
-  // We keep the last-known-good `filterData` so the dropdowns degrade
-  // gracefully rather than emptying out.
-  const [filterDataError, setFilterDataError] = useState<string | null>(null);
+  // users interacted with partially-stale dropdowns with no signal.  The
+  // reader may dismiss a failure; the next one is said again.
+  const [dismissedFacetError, setDismissedFacetError] = useState<unknown>(null);
+  const filterDataError = facetsQuery.error && facetsQuery.error !== dismissedFacetError
+    ? formatApiError(facetsQuery.error, 'Filter options failed to refresh — dropdowns may be stale.')
+    : null;
   // True while facet options are in flight. Facets load AFTER the host list
-  // (see the deferred fetch below), so without this flag an analyst can't tell
+  // (see the deferred read below), so without this flag an analyst can't tell
   // a still-loading combobox ("No ports seen yet.") from genuinely empty data.
-  const [filterDataLoading, setFilterDataLoading] = useState(true);
+  const filterDataLoading = facetScope === null || facetsQuery.isFetching;
+  /** Count the facets under the conditions of NOW: a read under new
+   *  conditions, or a re-read when they are the ones already counted.
+   *  EVERY refresh goes through this so facet options/counts always agree
+   *  with the filtered table (initial load, cascading refresh, Retry,
+   *  visibility). */
+  const refreshFacets = () => {
+    setFacetScope({ params: liveFacetParams });
+    // Reaches the query only when these conditions are the ones on screen;
+    // under new ones there is none yet, and the state above starts it.
+    void queryClient.refetchQueries({ queryKey: ['getHostFilterData', liveFacetParams ?? null], exact: true });
+  };
+  // The visibilitychange listener is registered once (deps []), so it reads
+  // this through a ref to avoid a stale closure scoping facets to the wrong
+  // (initial) filter set.
+  const refreshFacetsRef = useRef(refreshFacets);
+  refreshFacetsRef.current = refreshFacets;
   const [inventoryDialogOpen, setInventoryDialogOpen] = useState(false);
   // `?reports=1` (the "JSON is ready" notification's deep link; the parameter
   // keeps its name so links already sent still work) opens the download
@@ -438,7 +477,6 @@ export default function Hosts() {
     }
   }, [location.search, canExport]);
   const [toolReadyDialogOpen, setToolReadyDialogOpen] = useState(false);
-  const [updatingHostId, setUpdatingHostId] = useState<number | null>(null);
   // v4.51.0 — followFilter + onlyWithNotes now live inside `filters`
   // (see HostFilterOptions).  Reads use `filters.followFilter ?? 'all'`
   // and `filters.onlyWithNotes === true`; the review chips write through
@@ -455,7 +493,6 @@ export default function Hosts() {
       return updated;
     });
   }, [setFilters]);
-  const [vulnError, setVulnError] = useState(false);
   // Remembered per viewer; the page itself is in the URL (utils/hostsPaging).
   const [rowsPerPage, setRowsPerPage] = useState(readHostsPageSize);
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
@@ -463,11 +500,18 @@ export default function Hosts() {
   rowSelectionRef.current = rowSelection;
 
   // Saved Hosts page filter views (per-user, per-project).
-  const [savedViews, setSavedViews] = useState<HostFilterView[]>([]);
-  const [savedViewsError, setSavedViewsError] = useState<boolean>(false);
+  const savedViewsQuery = useQuery({
+    queryKey: ['listHostFilterViews'],
+    queryFn: () => listHostFilterViews(),
+  });
+  const savedViews = savedViewsQuery.data ?? NO_VIEWS;
+  const savedViewsError = savedViewsQuery.isError;
+  /** A write's answer put into the list on screen (no second read). */
+  const setSavedViews = useCallback((update: (views: HostFilterView[]) => HostFilterView[]) => {
+    queryClient.setQueryData<HostFilterView[]>(['listHostFilterViews'], (views) => (views ? update(views) : views));
+  }, [queryClient]);
   const [saveViewDialogOpen, setSaveViewDialogOpen] = useState(false);
   const [saveViewName, setSaveViewName] = useState('');
-  const [saveViewBusy, setSaveViewBusy] = useState(false);
   const [chipsExpanded, setChipsExpanded] = useState(false);
   const [confirmEl, confirm] = useConfirm();
   const commandBarRef = useRef<HostCommandBarHandle>(null);
@@ -497,36 +541,17 @@ export default function Hosts() {
     } catch { /* ignore */ }
   }, [setFilters, setPage]);
 
-  const buildHostQueryContext = useCallback(
-    (): HostQueryContext => hostQueryContext(filters, sortBy),
-    [filters, sortBy],
+  // The conditions and the sort as the API takes them.  One object per
+  // conditions + sort: the list's key is built from it, and the download
+  // dialogs and the bulk bar are handed the same reference (a fresh object
+  // every render would break their memo).
+  const queryContext = useMemo(() => hostQueryContext(filters, sortBy), [filters, sortBy]);
+  // …and with the page: what the list asks for, and so its query key.  All of
+  // it comes from the address, except the rows per page (the viewer's own).
+  const listParams = useMemo(
+    () => ({ ...queryContext, skip: page * rowsPerPage, limit: rowsPerPage, include_total: true }),
+    [queryContext, page, rowsPerPage],
   );
-
-  const buildFilterParams = useCallback(
-    () => ({
-      ...buildHostQueryContext(),
-      skip: page * rowsPerPage,
-      limit: rowsPerPage,
-      include_total: true,
-    }),
-    [buildHostQueryContext, page, rowsPerPage],
-  );
-
-  // The filter-scope params for facet (dropdown-option) requests — the same
-  // context as the host list minus pagination/sort. EVERY fetchFilterData call
-  // must use this so facet options/counts always agree with the filtered table
-  // (initial load, cascading refresh, Retry, visibility, post-bulk). Returns
-  // undefined when no filter is active (request the full, unscoped facet set).
-  const buildFacetParams = useCallback(() => {
-    const { skip: _s, limit: _l, include_total: _t, sort_by: _sb, sort_order: _so, ...filterOnly } =
-      buildFilterParams();
-    return Object.keys(filterOnly).length > 0 ? filterOnly : undefined;
-  }, [buildFilterParams]);
-  // The visibilitychange listener is registered once (deps []), so it reads the
-  // builder through a ref to avoid a stale closure scoping facets to the wrong
-  // (initial) filter set.
-  const buildFacetParamsRef = useRef(buildFacetParams);
-  buildFacetParamsRef.current = buildFacetParams;
 
   // Bulk-selection safety: the selected-set (and any "select all matching")
   // is only meaningful for the result set it was made against. When the
@@ -535,9 +560,9 @@ export default function Hosts() {
   // now-invisible row IDs. Sort + pagination don't change membership, so
   // they're excluded from the signature (selection survives them).
   const filterSignature = useMemo(() => {
-    const { sort_by: _sb, sort_order: _so, ...membership } = buildHostQueryContext();
+    const { sort_by: _sb, sort_order: _so, ...membership } = queryContext;
     return JSON.stringify(membership);
-  }, [buildHostQueryContext]);
+  }, [queryContext]);
   const prevFilterSignature = useRef<string | null>(null);
   useEffect(() => {
     if (!isInitialized) return;
@@ -560,73 +585,56 @@ export default function Hosts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- toast is stable; the selection is read through a ref
   }, [filterSignature, isInitialized]);
 
-  // Two independent request lanes (rows vs filter facets) — see
-  // useLatestRequest: each aborts its own predecessor, never the other's.
-  const runHostsRequest = useLatestRequest();
-  const runFilterDataRequest = useLatestRequest();
-  // True once the first host fetch has completed.  Gates the full-page
+  // --- The rows ----------------------------------------------------------
+  // One query per address (conditions, sort, page) and rows-per-page.
+  const hostsKey = useMemo(() => ['getHosts', listParams] as const, [listParams]);
+  const hostsQuery = useQuery({
+    queryKey: hostsKey,
+    queryFn: ({ signal }) => getHosts(listParams, signal),
+    // Nothing is read for the bare address a restored session's filters are
+    // about to replace.
+    enabled: isInitialized,
+  });
+  // What is on screen: this address's rows once they are in.  Until then —
+  // and after a read that failed — the rows that were shown STAY (a filter
+  // change must not collapse the table and snap the scroll to the top), with
+  // the conditions they were counted under (see the page clamp).
+  const shownRef = useRef<{ response: HostListResponse; signature: string } | null>(null);
+  if (hostsQuery.data && shownRef.current?.response !== hostsQuery.data) {
+    shownRef.current = { response: hostsQuery.data, signature: filterSignature };
+  }
+  const shown = shownRef.current;
+  const hosts = shown?.response.items ?? NO_HOSTS;
+  const totalHosts = shown?.response.total ?? 0;
+  const totalFor = shown?.signature ?? null;
+  // Every host in the project, whatever the filters — null until known.
+  const projectTotal = shown?.response.project_total ?? null;
+  const vulnError = shown?.response.vulnerability_error ?? false;
+  const loading = !isInitialized || hostsQuery.isFetching;
+  const listError = loading ? null : queryErrorText(hostsQuery.error, 'Failed to fetch hosts. Please try again.');
+  // True once a first read of the list has settled.  Gates the full-page
   // skeleton so it only shows on initial load — never on a refetch whose
   // current result happens to be empty (e.g. toggling a filter that matches
   // 0 hosts, or rapid toggling), which would otherwise replace the whole
   // page and snap the scroll to the top.
   const hasFetchedOnceRef = useRef(false);
-  // The conditions `totalHosts` was counted under (see the page clamp).
-  const [totalFor, setTotalFor] = useState<string | null>(null);
+  if (hostsQuery.data || hostsQuery.error) hasFetchedOnceRef.current = true;
 
-  const fetchHosts = async () => {
-    setLoading(true);
-    setError(null);
-    const params = buildFilterParams();
-    const askedFor = filterSignature;
-    const r = await runHostsRequest((signal) => getHosts(params, signal));
-    if (r.stale) return;
-    if (r.ok) {
-      setHosts(r.value.items);
-      setTotalHosts(r.value.total ?? 0);
-      setTotalFor(askedFor);
-      setProjectTotal(r.value.project_total ?? null);
-      setVulnError(r.value.vulnerability_error ?? false);
-    } else {
-      console.error('Error fetching hosts:', r.error);
-      setError(formatApiError(r.error, 'Failed to fetch hosts. Please try again.'));
-    }
-    setLoading(false);
-    hasFetchedOnceRef.current = true;
-  };
-
-  const fetchFilterData = async (
-    params?: Record<string, string | boolean | number | string[] | undefined>,
-  ) => {
-    setFilterDataLoading(true);
-    const r = await runFilterDataRequest((signal) => getHostFilterData(params, signal));
-    if (r.stale) return;
-    if (r.ok) {
-      setFilterData(r.value);
-      setFilterDataError(null);
-    } else {
-      console.error('Error fetching filter data:', r.error);
-      setFilterDataError(
-        formatApiError(r.error, 'Filter options failed to refresh — dropdowns may be stale.'),
-      );
-    }
-    setFilterDataLoading(false);
-  };
-
-  // v2.86.5 — defer the initial filter-facets fetch until AFTER the
+  // v2.86.5 — defer the initial filter-facets read until AFTER the
   // host list has resolved.  Pre-fix this fired on mount, racing the
   // /hosts/ request and contending for the same workers; the
   // facets-data query is the heavier of the two (it aggregates across
   // every host's ports / services / OS / scans / tags / subnet labels /
   // technologies).  Now: wait for `loading` (the host list) to flip to
-  // false, then fetch.  This makes the table paint perceptibly faster
+  // false, then ask.  This makes the table paint perceptibly faster
   // since the chrome + table appear before the filter combobox options
   // arrive.  The combobox controls show "Loading…" until filterData
   // resolves, which is the existing behaviour for cascading refreshes.
   useEffect(() => {
     if (loading) return;
     if (filterData !== null) return;
-    fetchFilterData(buildFacetParams());
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot post-load fetch
+    refreshFacets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once the list has loaded, until the facets have
   }, [loading]);
 
   // The "+ Add filter" popover: open/closed, and which field's editor it shows
@@ -641,11 +649,9 @@ export default function Hosts() {
 
   // Cascading refresh: when filters change (debounced 400ms), refetch
   // facet counts so the combobox trailing-count chips reflect the new
-  // result set.  Pre-audit (H18) this depended on the whole
-  // `buildFilterParams` callback, whose identity changed on sort, page,
-  // and rowsPerPage edits — none of which should invalidate the
-  // dropdown options.  Now depends only on the actual filter-shape
-  // inputs.  Also gated on `filterData` having already loaded once, so
+  // result set.  It depends only on the conditions (audit H18): a sort,
+  // page or rows-per-page change must not re-read the dropdown options.
+  // Also gated on `filterData` having already loaded once, so
   // the initial post-load fetch above isn't double-fired.
   //
   // #49 — those cascading counts only render inside the filter editors, so
@@ -656,9 +662,7 @@ export default function Hosts() {
   // with filters), so they're unaffected.
   useEffect(() => {
     if (filterData === null || !filterOpen) return;
-    const timer = setTimeout(() => {
-      fetchFilterData(buildFacetParams());
-    }, 400);
+    const timer = setTimeout(() => refreshFacets(), 400);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional narrowing per audit H18
   }, [filters, filterOpen]);
@@ -735,50 +739,37 @@ export default function Hosts() {
     setShowRestoredNotice(false);
   }, [location.search, filtersKey, setProjectDefaultBanner]);
 
-  useEffect(() => {
-    if (!isInitialized) return;
-    fetchHosts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchHosts is a new function every render; the list is re-read when the filters (buildFilterParams) change
-  }, [buildFilterParams, isInitialized]);
-
-  useEffect(() => {
-    listHostFilterViews()
-      .then((views) => {
-        setSavedViews(views);
-        setSavedViewsError(false);
-      })
-      .catch((err) => {
-        console.warn('Could not load saved Hosts views:', err);
-        setSavedViewsError(true);
-      });
-  }, []);
-
-  const handleSaveView = async () => {
-    const name = saveViewName.trim();
-    if (!name) return;
-    setSaveViewBusy(true);
-    try {
+  const saveView = useMutation({
+    mutationFn: (name: string) => {
       // v4.51.0 — keep the legacy filter_json shape on the wire so
       // older saved blobs and older frontends interoperate.  Internal
       // state now folds followFilter/onlyWithNotes into `filters`; we
       // split them back out at the persistence boundary.
       const { followFilter: ff, onlyWithNotes: own, ...filtersOnly } = filters;
-      const created = await createHostFilterView(name, {
+      return createHostFilterView(name, {
         filters: filtersOnly,
         followFilter: ff ?? 'all',
         onlyWithNotes: own === true,
       });
+    },
+    onSuccess: (created, name) => {
       setSavedViews((prev) => [created, ...prev.filter((v) => v.id !== created.id)]);
+      // The list had not loaded: read it, now that it has one more.
+      if (savedViewsQuery.isError) void savedViewsQuery.refetch();
       setActiveViewId(created.id);
       setSaveViewDialogOpen(false);
       setSaveViewName('');
       toast.success(`Saved view "${name}"`);
-    } catch (err: unknown) {
+    },
+    onError: (err) => {
       console.error('Failed to save view:', err);
       toast.error(formatApiError(err, 'Failed to save view.'));
-    } finally {
-      setSaveViewBusy(false);
-    }
+    },
+  });
+  const saveViewBusy = saveView.isPending;
+  const handleSaveView = () => {
+    const name = saveViewName.trim();
+    if (name) saveView.mutate(name);
   };
 
   const applyViewFilters = useCallback((view: HostFilterView, opts?: { quiet?: boolean }) => {
@@ -839,60 +830,76 @@ export default function Hosts() {
       severity: 'warning',
       confirmLabel: 'Delete',
     });
-    if (!ok) return;
-    try {
-      await deleteHostFilterView(view.id);
+    if (ok) deleteView.mutate(view);
+  };
+  const deleteView = useMutation({
+    mutationFn: (view: HostFilterView) => deleteHostFilterView(view.id),
+    onSuccess: (_done, view) => {
       setSavedViews((prev) => prev.filter((v) => v.id !== view.id));
-      if (activeViewId === view.id) setActiveViewId(null);
+      setActiveViewId((active) => (active === view.id ? null : active));
       toast.info(`Deleted view "${view.name}"`, { autoHideMs: 2000 });
-    } catch (err: unknown) {
+    },
+    onError: (err) => {
       console.error('Failed to delete view:', err);
       toast.error(formatApiError(err, 'Failed to delete view.'));
-    }
-  };
+    },
+  });
+
+  // The project default view itself, read once per visit and kept.  It is
+  // usually an admin's view, so it is NOT in this user's saved list: holding
+  // it is what lets "Back to default view" and the picker reach it again
+  // after the filters were cleared (they used to be the only path, and
+  // clearing emptied it).  A failed read is non-fatal: there is then none.
+  const defaultViewQuery = useQuery({
+    queryKey: ['getProjectDefaultView'],
+    queryFn: () => getProjectDefaultView(),
+    enabled: isInitialized,
+  });
+  const projectDefaultView = defaultViewQuery.data?.filter_json ? defaultViewQuery.data : null;
 
   // Promote a saved view as the project default (admin), or clear it.
-  const handleToggleProjectDefault = async (view: HostFilterView) => {
-    try {
+  const toggleProjectDefault = useMutation({
+    mutationFn: async (view: HostFilterView): Promise<HostFilterView | null> => {
       if (view.is_project_default) {
         await clearProjectDefaultView();
-        setSavedViews((prev) => prev.map((v) => ({ ...v, is_project_default: false })));
-        setProjectDefaultView(null);
-        toast.info('Cleared the project default view.', { autoHideMs: 2000 });
-      } else {
-        await promoteProjectDefaultView(view.id);
-        setSavedViews((prev) => prev.map((v) => ({ ...v, is_project_default: v.id === view.id })));
-        setProjectDefaultView({ ...view, is_project_default: true });
-        toast.success(`"${view.name}" is now the project default.`, { autoHideMs: 2500 });
+        return null;
       }
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to update the project default.'));
-    }
-  };
+      await promoteProjectDefaultView(view.id);
+      return { ...view, is_project_default: true };
+    },
+    onSuccess: (nowDefault, view) => {
+      setSavedViews((prev) => prev.map((v) => ({ ...v, is_project_default: v.id === nowDefault?.id })));
+      queryClient.setQueryData<HostFilterView | null>(['getProjectDefaultView'], nowDefault);
+      if (nowDefault) toast.success(`"${view.name}" is now the project default.`, { autoHideMs: 2500 });
+      else toast.info('Cleared the project default view.', { autoHideMs: 2000 });
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update the project default.')),
+  });
+  const handleToggleProjectDefault = (view: HostFilterView) => toggleProjectDefault.mutate(view);
 
-  // Load the project default once per mount and keep it; auto-apply it only on
-  // a bare /hosts visit (no URL/saved-session filter, not dismissed this session).
-  const defaultCheckedRef = useRef(false);
+  // Auto-apply the project default only on a bare /hosts visit (no
+  // URL/saved-session filter, not dismissed this session) — decided as the
+  // page opens, applied once, when the default arrives.
+  const autoApplyDefaultRef = useRef<boolean | null>(null);
   useEffect(() => {
-    if (!isInitialized || defaultCheckedRef.current) return;
-    defaultCheckedRef.current = true;
-    // Only when the user has no filter context of their own.
-    let autoApply = Object.keys(filters).length === 0;
-    try {
-      if (sessionStorage.getItem(projectScopedKey('projectDefaultDismissed')) === '1') autoApply = false;
-    } catch { /* ignore */ }
-    getProjectDefaultView()
-      .then((view) => {
-        if (!view || !view.filter_json) return;
-        setProjectDefaultView(view);
-        if (autoApply) {
-          applyViewFilters(view, { quiet: true });
-          setProjectDefaultBanner(view.name);
-        }
-      })
-      .catch(() => { /* non-fatal */ });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isInitialized]);
+    if (!isInitialized) return;
+    if (autoApplyDefaultRef.current === null) {
+      // Only when the user has no filter context of their own.
+      let autoApply = Object.keys(filters).length === 0;
+      try {
+        if (sessionStorage.getItem(projectScopedKey('projectDefaultDismissed')) === '1') autoApply = false;
+      } catch { /* ignore */ }
+      autoApplyDefaultRef.current = autoApply;
+    }
+    // Not answered yet.  Once it is, the decision is spent: a default an
+    // admin sets later in the visit is offered, never applied by itself.
+    if (defaultViewQuery.isPending || !autoApplyDefaultRef.current) return;
+    autoApplyDefaultRef.current = false;
+    if (!projectDefaultView) return;
+    applyViewFilters(projectDefaultView, { quiet: true });
+    setProjectDefaultBanner(projectDefaultView.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- as the page opens, and when the default is answered
+  }, [isInitialized, defaultViewQuery.isPending]);
 
   // Choosing the default again (after clearing or editing): apply it as the
   // auto-apply does, and lift this session's "show everything" so a refresh
@@ -939,11 +946,10 @@ export default function Hosts() {
 
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (!document.hidden) fetchFilterData(buildFacetParamsRef.current());
+      if (!document.hidden) refreshFacetsRef.current();
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- registered once; fetchFilterData uses only state setters and the stable request lane, and the params come from a ref
   }, []);
 
   const handleFiltersChange = (newFilters: HostFilterOptions) => {
@@ -967,7 +973,7 @@ export default function Hosts() {
   // just-typed query is in the link before its (debounced) commit to the
   // address.
   const handleCopyLink = useCallback((draftQuery?: string) => {
-    const ctx = buildHostQueryContext();
+    const ctx = { ...queryContext };
     if (draftQuery !== undefined) {
       const trimmed = draftQuery.trim();
       if (trimmed) ctx.q = trimmed;
@@ -979,7 +985,7 @@ export default function Hosts() {
         ? toast.info('Link copied to clipboard', { autoHideMs: 2000 })
         : toast.error('Could not copy link'),
     );
-  }, [buildHostQueryContext, toast]);
+  }, [queryContext, toast]);
 
   // Pin the current query as a saved view.  Commit the passed draft into
   // filters first so the saved blob reflects what's in the box now, not the
@@ -1115,7 +1121,6 @@ export default function Hosts() {
     const hostIds = hosts.map((h) => h.id);
     const currentIndex = hostIds.indexOf(hostId);
     const absoluteIndex = page * rowsPerPage + currentIndex;
-    const queryContext = buildHostQueryContext();
     let filterParam = '';
     try {
       const compact = {
@@ -1300,38 +1305,43 @@ export default function Hosts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hosts, inspectedHostId, loading, cursorIndex, page, totalHosts, rowsPerPage]);
 
+  // A host's review status as the server just returned it, put into the rows
+  // of the list on screen (no second read of the page).
   const applyFollowUpdate = useCallback((hostId: number, followInfo: HostFollowInfo | null) => {
-    setHosts((previous) =>
-      previous.map((host) => (host.id === hostId ? { ...host, follow: followInfo } : host)),
-    );
-  }, []);
+    queryClient.setQueryData<HostListResponse>(hostsKey, (list) => (list && {
+      ...list,
+      items: list.items.map((host) => (host.id === hostId ? { ...host, follow: followInfo } : host)),
+    }));
+  }, [queryClient, hostsKey]);
 
+  const follow = useMutation({
+    mutationFn: ({ hostId, status }: { hostId: number; status: FollowStatus | 'none' }): Promise<HostFollowInfo | null> =>
+      (status === 'none' ? unfollowHost(hostId).then(() => null) : followHost(hostId, status)),
+    onSuccess: (followInfo, { hostId, status }) => {
+      applyFollowUpdate(hostId, followInfo);
+      // The same host open in the inspector shows the status too.
+      void queryClient.invalidateQueries({ queryKey: ['getHost', hostId] });
+      if (status === 'none') toast.info('Review status cleared', { autoHideMs: 2000 });
+      else toast.success(`Marked as ${status === 'in_review' ? 'In Review' : 'Reviewed'}`, { autoHideMs: 2000 });
+    },
+    onError: (err) => {
+      console.error('Error updating review status:', err);
+      toast.error(formatApiError(err, 'Unable to update review status. Please try again.'));
+    },
+  });
+  const updatingHostId = follow.isPending ? follow.variables.hostId : null;
+  // Said above the list too, until the list is next read or a status is set.
+  const followError = follow.isError
+    && follow.submittedAt > Math.max(hostsQuery.dataUpdatedAt, hostsQuery.errorUpdatedAt)
+    ? formatApiError(follow.error, 'Unable to update review status. Please try again.')
+    : null;
+  const error = listError ?? (loading ? null : followError);
   // Stable for the column definitions (see openInspector); it reads nothing
   // that changes between renders.
-  const handleFollowChange = useCallback(async (hostId: number, status: FollowStatus | 'none') => {
-    setUpdatingHostId(hostId);
-    try {
-      if (status === 'none') {
-        await unfollowHost(hostId);
-        applyFollowUpdate(hostId, null);
-        toast.info('Review status cleared', { autoHideMs: 2000 });
-      } else {
-        const response = await followHost(hostId, status);
-        applyFollowUpdate(hostId, response);
-        const label = status === 'in_review' ? 'In Review' : 'Reviewed';
-        toast.success(`Marked as ${label}`, { autoHideMs: 2000 });
-      }
-      setError(null);
-    } catch (err) {
-      console.error('Error updating review status:', err);
-      const message = formatApiError(err, 'Unable to update review status. Please try again.');
-      setError(message);
-      toast.error(message);
-    } finally {
-      setUpdatingHostId(null);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast is stable
-  }, [applyFollowUpdate]);
+  const { mutate: setFollow } = follow;
+  const handleFollowChange = useCallback((hostId: number, status: FollowStatus | 'none') => {
+    setFollow({ hostId, status });
+  }, [setFollow]);
 
   // -------------------------------------------------------------------------
   // Active-filter chips (derived from current filter state).
@@ -1492,17 +1502,11 @@ export default function Hosts() {
     pageCount: Math.max(Math.ceil(totalHosts / rowsPerPage), 1),
   });
 
-  // Memoize: buildHostQueryContext() returns a fresh object each call, so
-  // calling it inline on every render handed InventoryDownloadDialog / ToolReadyOutput
-  // / HostBulkBar a new prop reference every render, breaking their memo and
-  // re-running their effects.  One stable reference per filter/page change.
-  const exportQueryContext = useMemo(buildHostQueryContext, [buildHostQueryContext]);
-
   // After a failed refetch we keep the previous rows visible (to preserve scroll
   // position), but they may no longer match the active filters/query — so mark
   // them stale and pause actions that would act on possibly-mismatched rows
   // (bulk operations + export) until a fetch succeeds.
-  const showingStaleResults = error !== null && hosts.length > 0;
+  const showingStaleResults = listError !== null && hosts.length > 0;
 
   if (loading && !hosts.length && !hasFetchedOnceRef.current) {
     return <ListPageSkeleton titleWidth={180} actionCount={3} tableProps={{ rows: 10, columns: 6 }} />;
@@ -1557,7 +1561,7 @@ export default function Hosts() {
                 variant="outline"
                 size="sm"
                 disabled={filterDataLoading}
-                onClick={() => fetchFilterData(buildFacetParams())}
+                onClick={refreshFacets}
               >
                 <RefreshCw className={`size-3.5 ${filterDataLoading ? 'animate-spin' : ''}`} aria-hidden />
                 Retry
@@ -1566,7 +1570,7 @@ export default function Hosts() {
                 variant="ghost"
                 size="sm"
                 aria-label="Dismiss filter data warning"
-                onClick={() => setFilterDataError(null)}
+                onClick={() => setDismissedFacetError(facetsQuery.error)}
               >
                 <X className="size-3.5" aria-hidden />
               </Button>
@@ -1824,7 +1828,7 @@ export default function Hosts() {
               {showingStaleResults &&
                 ' Showing previous results — they may not match the current filters; bulk actions and export are paused until a refresh succeeds.'}
             </span>
-            <Button variant="outline" size="sm" onClick={() => fetchHosts()}>
+            <Button variant="outline" size="sm" onClick={() => { void hostsQuery.refetch(); }}>
               Retry
             </Button>
           </AlertDescription>
@@ -1992,13 +1996,10 @@ export default function Hosts() {
                     selectedIds={selectedIds}
                     selectedIps={selectedIps}
                     totalMatching={totalHosts}
-                    queryContext={exportQueryContext}
+                    queryContext={queryContext}
                     onClear={() => setRowSelection({})}
-                    onApplied={() => {
-                      setRowSelection({});
-                      fetchHosts();
-                      fetchFilterData(buildFacetParams());
-                    }}
+                    // The bar re-reads the rows and the facets it changed.
+                    onApplied={() => setRowSelection({})}
                   />
                 )}
               </div>
@@ -2025,14 +2026,14 @@ export default function Hosts() {
       <InventoryDownloadDialog
         open={canExport && inventoryDialogOpen}
         onClose={() => setInventoryDialogOpen(false)}
-        filters={exportQueryContext}
+        filters={queryContext}
         totalHosts={totalHosts}
       />
 
       <ToolReadyOutput
         open={canExport && toolReadyDialogOpen}
         onClose={() => setToolReadyDialogOpen(false)}
-        filters={exportQueryContext}
+        filters={queryContext}
         totalHosts={totalHosts}
         selectedCount={selectedIds.length}
       />
@@ -2199,9 +2200,7 @@ export default function Hosts() {
               <HostInspector
                 hostId={inspectedHostId}
                 density="sheet"
-                onFollowChange={(id, follow) =>
-                  setHosts((prev) => prev.map((h) => (h.id === id ? { ...h, follow } : h)))
-                }
+                onFollowChange={(id, followInfo) => applyFollowUpdate(id, followInfo ?? null)}
                 onDirtyChange={(dirty) => {
                   inspectorDirtyRef.current = dirty;
                 }}

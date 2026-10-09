@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertCircle, Download, FileDown, Loader2 } from 'lucide-react';
 import {
   downloadInventoryCsv,
@@ -21,7 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from './ui/dialog';
-import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
+import { pollEvery, queryErrorText } from '../lib/query';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
@@ -65,22 +66,23 @@ const STATUS_VARIANT: Record<ReportJob['status'], 'success' | 'destructive' | 's
 };
 
 const isRunning = (job: ReportJob) => job.status === 'queued' || job.status === 'processing';
+const holdsRunningJob = (jobs: ReportJob[] | undefined): boolean => !!jobs?.some(isRunning);
+/** How many recent jobs the dialog lists. */
+const RECENT_JOBS = 10;
+const NO_JOBS: ReportJob[] = [];
+/** How often a running job is looked at again (`pollEvery`: half as often
+ *  while the server is failing; it stops when none is running). */
+const JOB_POLL_MS = 2500;
 const jobError = (job: ReportJob) => job.error_message || job.last_error || null;
 
 const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open, onClose, filters, totalHosts }) => {
-  // Which action is in flight ('csv', 'json', 'download-<id>') so only that
-  // button spins and the rest disable.  For the CSV this covers the whole
-  // streamed download; for the JSON only the call that queues it — the job
-  // itself runs server-side and the dialog may be closed while it does.
-  const [busy, setBusy] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   // The JSON job started from this dialog.  Its row in the list below is the
   // source of truth for status; this id only decides which job gets the
   // "preparing / ready / failed" panel.
   const [trackedJobId, setTrackedJobId] = useState<number | null>(null);
+  // The one line for an action that was refused; the next action clears it.
   const [error, setError] = useState<string | null>(null);
-  // Recent JSON jobs — closing the dialog or leaving the page does not strand
-  // one that is still being prepared, or one that is ready.
-  const [recentJobs, setRecentJobs] = useState<ReportJob[]>([]);
   // Retry / cancel / dismiss are a project analyst's, or the person's who
   // asked for that job (R32).  A job that does not say who asked for it keeps
   // its controls — the server decides.
@@ -89,102 +91,93 @@ const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open,
   const mayManageJob = (job: ReportJob) =>
     canWrite || job.requested_by_id == null || job.requested_by_id === user?.id;
 
-  // A failed refresh keeps the list as it is (stale beats blank) but is NOT
-  // swallowed: the poller needs the rejection to back off, and the reader
-  // needs to know the status shown may be stale.
-  const [listStale, setListStale] = useState<string | null>(null);
-  const refreshRecentJobs = React.useCallback(async (): Promise<boolean> => {
-    try {
-      setRecentJobs(await listReportJobs(10));
-      setListStale(null);
-      return true;
-    } catch (err) {
-      setListStale(formatApiError(err, 'Could not refresh the status.'));
-      return false;
-    }
-  }, []);
-  // Poll callback: rejects on failure so useVisibilityPoll backs off; the
-  // fire-and-forget callers keep the boolean form.
-  const pollRecentJobs = React.useCallback(async () => {
-    if (!(await refreshRecentJobs())) throw new Error('inventory job refresh failed');
-  }, [refreshRecentJobs]);
-
-  // Retry / cancel a job.  A 409 means its state changed under us (the worker
-  // just claimed a queued job) — say so and refresh, so the row is true.
-  const runJobAction = React.useCallback(
-    async (action: (id: number) => Promise<ReportJob>, jobId: number) => {
-      try {
-        await action(jobId);
-      } catch (e) {
-        setError(formatApiError(e, 'That could not be done — the job may have changed state.'));
-      } finally {
-        refreshRecentJobs();
-      }
-    },
-    [refreshRecentJobs],
-  );
+  // Recent JSON jobs, read as the dialog opens — closing it or leaving the
+  // page does not strand one that is still being prepared, or one that is
+  // ready.  While a job is still running the list is re-read (visible tab
+  // only, slower while failing) so it advances queued → preparing → ready
+  // without a manual refresh; with none running nothing polls.
+  const jobsQuery = useQuery({
+    queryKey: ['listReportJobs', RECENT_JOBS],
+    queryFn: () => listReportJobs(RECENT_JOBS),
+    enabled: open,
+    ...pollEvery((query) => (holdsRunningJob(query.state.data) ? JOB_POLL_MS : null)),
+  });
+  const recentJobs = jobsQuery.data ?? NO_JOBS;
+  // A failed refresh keeps the list as it is (stale beats blank) and says
+  // that the status shown may be stale.
+  const listStale = queryErrorText(jobsQuery.error, 'Could not refresh the status.');
+  const refreshRecentJobs = () => queryClient.invalidateQueries({ queryKey: ['listReportJobs'] });
 
   useEffect(() => {
-    if (open) {
-      setError(null);
-      refreshRecentJobs();
-    }
-  }, [open, refreshRecentJobs]);
-
-  // While the dialog is open and a job is still running, poll so it advances
-  // queued → preparing → ready without a manual refresh.  useVisibilityPoll
-  // never overlaps requests and backs off on failure.
-  useVisibilityPoll(pollRecentJobs, open && recentJobs.some(isRunning) ? 2500 : null);
+    if (open) setError(null);
+  }, [open]);
 
   const activeFilters = useMemo(() => describeInventoryFilters(filters), [filters]);
-  const isBusy = busy !== null;
 
-  const downloadCsv = async () => {
-    setBusy('csv');
-    setError(null);
-    try {
-      await downloadInventoryCsv(filters);
-      onClose();
-    } catch (err) {
-      setError(formatApiError(err, 'The CSV could not be downloaded.'));
-    } finally {
-      setBusy(null);
-    }
-  };
+  const csv = useMutation({
+    mutationFn: () => downloadInventoryCsv(filters),
+    onMutate: () => setError(null),
+    onSuccess: () => onClose(),
+    onError: (err) => setError(formatApiError(err, 'The CSV could not be downloaded.')),
+  });
 
-  const prepareJson = async () => {
-    setBusy('json');
-    setError(null);
-    try {
-      const job = await enqueueInventoryJson(filters);
+  const json = useMutation({
+    mutationFn: () => enqueueInventoryJson(filters),
+    onMutate: () => setError(null),
+    onSuccess: (job) => {
       setTrackedJobId(job.id);
-      setRecentJobs((prev) => [job, ...prev.filter((j) => j.id !== job.id)]);
-      refreshRecentJobs();
-    } catch (err) {
-      setError(formatApiError(err, 'The JSON could not be queued.'));
-    } finally {
-      setBusy(null);
-    }
-  };
+      // Listed at once; the re-read then says what the server holds.
+      queryClient.setQueryData<ReportJob[]>(
+        ['listReportJobs', RECENT_JOBS], (prev) => [job, ...(prev ?? []).filter((j) => j.id !== job.id)],
+      );
+      void refreshRecentJobs();
+    },
+    onError: (err) => setError(formatApiError(err, 'The JSON could not be queued.')),
+  });
 
   // One way to fetch a finished file, for the panel and for a row: a refusal
   // (the file expired, the role changed) is said, never an unhandled rejection.
-  const downloadJob = async (job: ReportJob, { closeAfter }: { closeAfter: boolean }) => {
-    setBusy(`download-${job.id}`);
-    setError(null);
-    try {
-      await downloadReportJob(job.id);
+  const download = useMutation({
+    mutationFn: ({ job }: { job: ReportJob; closeAfter: boolean }) => downloadReportJob(job.id),
+    onMutate: () => setError(null),
+    onSuccess: (_file, { closeAfter }) => {
       if (closeAfter) {
         setTrackedJobId(null);
         onClose();
       }
-    } catch (err) {
+    },
+    onError: (err) => {
       setError(formatApiError(err, 'The file could not be downloaded.'));
-      refreshRecentJobs();
-    } finally {
-      setBusy(null);
-    }
-  };
+      void refreshRecentJobs();
+    },
+  });
+  const downloadJob = (job: ReportJob, { closeAfter }: { closeAfter: boolean }) => download.mutate({ job, closeAfter });
+
+  // Retry / cancel a job.  A 409 means its state changed under us (the worker
+  // just claimed a queued job) — say so and refresh, so the row is true.
+  const jobAction = useMutation({
+    mutationFn: ({ action, jobId }: { action: 'retry' | 'cancel'; jobId: number }) =>
+      (action === 'retry' ? retryReportJob(jobId) : cancelReportJob(jobId)),
+    onError: (err) => setError(formatApiError(err, 'That could not be done — the job may have changed state.')),
+    onSettled: () => { void refreshRecentJobs(); },
+  });
+
+  const dismiss = useMutation({
+    mutationFn: (jobId: number) => dismissReportJob(jobId),
+    onSuccess: () => { void refreshRecentJobs(); },
+    // Said (R34): the ✕ used to do nothing on a refusal.
+    onError: (err) => setError(formatApiError(err, 'That job could not be dismissed.')),
+  });
+
+  // Which action is in flight ('csv', 'json', 'download-<id>') so only that
+  // button spins and the rest disable.  For the CSV this covers the whole
+  // streamed download; for the JSON only the call that queues it — the job
+  // itself runs server-side and the dialog may be closed while it does.
+  const busy = csv.isPending ? 'csv'
+    : json.isPending ? 'json'
+      : download.isPending ? `download-${download.variables.job.id}`
+        : null;
+  const isBusy = busy !== null;
 
   // The job started from this dialog, as the list currently knows it.
   const trackedJob = trackedJobId != null ? recentJobs.find((j) => j.id === trackedJobId) ?? null : null;
@@ -232,7 +225,7 @@ const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open,
                 One row per host: address, name, site, OS, open ports, severity counts, findings, tags.
               </p>
             </div>
-            <Button className="shrink-0" variant="outline" onClick={downloadCsv} disabled={isBusy}>
+            <Button className="shrink-0" variant="outline" onClick={() => csv.mutate()} disabled={isBusy}>
               {busy === 'csv' ? (
                 <Loader2 className="size-4 animate-spin" aria-hidden />
               ) : (
@@ -250,7 +243,7 @@ const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open,
                 background; you can close this dialog meanwhile.
               </p>
             </div>
-            <Button className="shrink-0" variant="outline" onClick={prepareJson} disabled={isBusy}>
+            <Button className="shrink-0" variant="outline" onClick={() => json.mutate()} disabled={isBusy}>
               {busy === 'json' && <Loader2 className="size-4 animate-spin" aria-hidden />}
               {busy === 'json' ? 'Queuing…' : 'Prepare JSON'}
             </Button>
@@ -349,7 +342,7 @@ const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open,
                         variant="ghost"
                         className="h-6 shrink-0"
                         aria-label={`Retry report job ${job.id}`}
-                        onClick={() => runJobAction(retryReportJob, job.id)}
+                        onClick={() => jobAction.mutate({ action: 'retry', jobId: job.id })}
                       >
                         Retry
                       </Button>
@@ -360,7 +353,7 @@ const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open,
                         variant="ghost"
                         className="h-6 shrink-0"
                         aria-label={`Cancel report job ${job.id}`}
-                        onClick={() => runJobAction(cancelReportJob, job.id)}
+                        onClick={() => jobAction.mutate({ action: 'cancel', jobId: job.id })}
                       >
                         Cancel
                       </Button>
@@ -382,15 +375,7 @@ const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open,
                         variant="ghost"
                         className="h-6 shrink-0"
                         aria-label={`Dismiss report job ${job.id}`}
-                        onClick={async () => {
-                          try {
-                            await dismissReportJob(job.id);
-                            refreshRecentJobs();
-                          } catch (e) {
-                            // Said (R34): the ✕ used to do nothing on a refusal.
-                            setError(formatApiError(e, 'That job could not be dismissed.'));
-                          }
-                        }}
+                        onClick={() => dismiss.mutate(job.id)}
                       >
                         ✕
                       </Button>

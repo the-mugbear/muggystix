@@ -1,19 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
-import { type ListPage, type ListPageRequest, useListQuery } from './useListQuery';
+import { GLOBAL, queryErrorText } from '../lib/query';
+import type { ListPage, ListPageRequest } from './useListQuery';
 import type { UrlPage } from './useUrlPage';
 
 /**
  * usePagedList — one page of a list at a time ("1–25 of N", previous / next),
- * on `useListQuery` (UI_STYLE_GUIDE §39, §42): the latest request wins, a
- * failed read is an error and never an empty list, and a reload keeps the
- * page the reader is on.
+ * on `useQuery` (lib/query; UI_STYLE_GUIDE §39, §42, §48): a failed read is
+ * an error and never an empty list, and a reload keeps the page the reader is
+ * on.  What this adds to the query is the PAGE: which one is asked for, where
+ * it is kept, and when it goes back to the first.
  *
  *   const list = usePagedList(
+ *     'getThings',
  *     ({ offset, limit, signal }) => getThings({ kind, offset, limit, signal }),
- *     [kind, refreshKey],
+ *     [kind],
  *   );
  *   list.rows / list.total / list.page / list.setPage(n) / list.reload()
+ *
+ * `name` is the API function the fetcher calls; the query key is
+ * `[name, ...deps, { page, pageSize }]`, so `deps` are plain values.
  *
  * New `deps` (a filter, the page's Refresh) start from the first page.  A page
  * that an action emptied — the last row of the last page was dealt with —
@@ -39,6 +46,8 @@ export interface PagedList<T, P extends ListPage<T>> {
   /** The last response of ANY page or filter — for what must not blink while
    *  the next page loads (filter chips and their counts). */
   lastResponse: P | null;
+  /** When the page on screen was last read successfully. */
+  loadedAt: Date | null;
 }
 
 export interface PagedListOptions {
@@ -47,12 +56,15 @@ export interface PagedListOptions {
   /** Keep the page in the address instead of in the component
    *  (`useUrlPage()`): it survives a reload and Back from a row's own page. */
   page?: UrlPage;
+  /** The list is not one project's (lib/query `GLOBAL`). */
+  global?: boolean;
 }
 
 export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
+  name: string,
   fetchPage: (request: ListPageRequest) => Promise<P>,
   deps: ReadonlyArray<unknown>,
-  { pageSize = 25, errorMessage, page: url }: PagedListOptions = {},
+  { pageSize = 25, errorMessage, page: url, global: isGlobal = false }: PagedListOptions = {},
 ): PagedList<T, P> {
   // The page belongs to the deps it was chosen under: with new deps it is the
   // first page at once, with no render in which the old page number is asked
@@ -92,14 +104,18 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
     [depsKey, setUrlPage],
   );
 
-  const list = useListQuery<T, P>(
-    ({ limit, signal }) => fetchPage({ offset: page * pageSize, limit, signal }),
-    [depsKey, page],
-    { pageSize, maxReload: pageSize, errorMessage },
-  );
+  const query = useQuery<P>({
+    // `depsKey` is the deps, already as one plain value.
+    queryKey: [...(isGlobal ? [GLOBAL] : []), name, depsKey, { page, pageSize }],
+    queryFn: ({ signal }) => fetchPage({ offset: page * pageSize, limit: pageSize, signal }),
+  });
+  const response = query.data ?? null;
+  const rows = response ? response.items : null;
+  const total = response ? response.total : 0;
+  const { refetch } = query;
+  const reload = useCallback(async () => { await refetch(); }, [refetch]);
 
   // The page on screen no longer exists (its rows were dealt with).
-  const { rows, total } = list;
   useEffect(() => {
     if (rows !== null && rows.length === 0 && total > 0 && page > 0) {
       setPage(Math.max(0, Math.ceil(total / pageSize) - 1));
@@ -107,15 +123,16 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
   }, [rows, total, page, pageSize, setPage]);
 
   const lastResponse = useRef<P | null>(null);
-  if (list.response) lastResponse.current = list.response;
+  if (response) lastResponse.current = response;
 
   return {
     rows, total,
-    loading: list.loading,
-    error: list.error,
+    loading: query.isFetching,
+    error: queryErrorText(query.error, errorMessage ?? 'Could not load the list.'),
     page, pageSize, setPage,
-    reload: list.reload,
-    response: list.response,
+    reload,
+    response,
     lastResponse: lastResponse.current,
+    loadedAt: query.dataUpdatedAt ? new Date(query.dataUpdatedAt) : null,
   };
 }

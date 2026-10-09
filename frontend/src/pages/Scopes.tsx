@@ -1,4 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import {
+  useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData,
+} from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
@@ -30,6 +33,7 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
 import ScopeExport from '../components/ScopeExport';
 import OutOfScopeExport from '../components/OutOfScopeExport';
 import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
@@ -143,6 +147,9 @@ const EmptyCellEdit: React.FC<{ label: string; onClick: () => void }> = ({ label
   </button>
 );
 
+const SUBNET_PAGE_SIZE = 200;
+const NO_LABELS: SubnetLabelWithCounts[] = [];
+
 const Scopes: React.FC = () => {
   const toast = useToast();
   // Changing the scope is a project analyst's (R32); the page reads the same
@@ -151,16 +158,11 @@ const Scopes: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [confirmEl, confirm] = useConfirm();
 
-  const [scope, setScope] = useState<Scope | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [coverage, setCoverage] = useState<ScopeCoverageSummary | null>(null);
+  const queryClient = useQueryClient();
 
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
-  const [domainsRefreshKey, setDomainsRefreshKey] = useState(0);
 
   const [exportScopeId, setExportScopeId] = useState<number | null>(null);
   const [exportScopeName, setExportScopeName] = useState('');
@@ -168,7 +170,6 @@ const Scopes: React.FC = () => {
 
   const [newCidr, setNewCidr] = useState('');
   const [newDescription, setNewDescription] = useState('');
-  const [addingSubnet, setAddingSubnet] = useState(false);
   // v5.290.0 — a rejected entry is explained under the field, not in a
   // toast carrying Python's parser text.
   const [newCidrError, setNewCidrError] = useState<string | null>(null);
@@ -178,13 +179,6 @@ const Scopes: React.FC = () => {
   const [editCidrError, setEditCidrError] = useState<string | null>(null);
   const [editDescDraft, setEditDescDraft] = useState('');
   const [editSiteDraft, setEditSiteDraft] = useState('');
-  const [savingSubnet, setSavingSubnet] = useState(false);
-
-  // v2.94.0 — the subnet list is server-paginated so a 6000-subnet project
-  // doesn't block /scopes on a multi-MB payload + 6000-row render.  We load
-  // a page at a time and append via "Load more"; reloads after a mutation
-  // re-fetch as many subnets as are currently shown so the view is stable.
-  const [loadingMore, setLoadingMore] = useState(false);
 
   // Subnet search — a case-insensitive substring filter over cidr +
   // description, applied server-side (before pagination) so users can jump
@@ -203,187 +197,123 @@ const Scopes: React.FC = () => {
       return next;
     }, { replace: true });
   }, [debouncedSubnetSearch, setSearchParams]);
-  const searchRef = useRef(debouncedSubnetSearch);
-  searchRef.current = debouncedSubnetSearch;
 
-  // v2.86.0 — subnet-label state.  The project-wide label catalogue
-  // is fetched on mount and refreshed whenever the manager dialog
-  // mutates it; selectedSubnetIds drives the bulk-apply affordance
+  // v2.86.0 — subnet labels.  The project-wide catalogue is one read, shared
+  // with the manager dialog (the same key): what the dialog changes is here
+  // without a callback.  selectedSubnetIds drives the bulk-apply affordance
   // that appears in the toolbar once any subnet is checked.
-  const [labelCatalogue, setLabelCatalogue] = useState<SubnetLabelWithCounts[]>([]);
   const [labelManagerOpen, setLabelManagerOpen] = useState(false);
   const [siteManagerOpen, setSiteManagerOpen] = useState(false);
   const [selectedSubnetIds, setSelectedSubnetIds] = useState<Set<number>>(new Set());
-  const [bulkApplying, setBulkApplying] = useState(false);
 
+  const labelsQuery = useQuery({
+    queryKey: ['listSubnetLabels'],
+    queryFn: () => listSubnetLabels(),
+  });
+  const labelCatalogue = labelsQuery.data ?? NO_LABELS;
   // A failed catalogue is said (R34): it used to look like "this project has
   // no labels", with Apply label… disabled and nothing to explain it.
-  const [labelCatalogueError, setLabelCatalogueError] = useState<string | null>(null);
-  const fetchLabelCatalogue = async () => {
-    try {
-      const rows = await listSubnetLabels();
-      setLabelCatalogue(rows);
-      setLabelCatalogueError(null);
-    } catch (err) {
-      setLabelCatalogueError(formatApiError(err, 'The subnet labels could not be loaded.'));
-    }
-  };
+  const labelCatalogueError = queryErrorText(labelsQuery.error, 'The subnet labels could not be loaded.');
 
-  useEffect(() => {
-    loadData(true);
-    fetchLabelCatalogue();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the first load, once per mount (the page remounts per project)
-  }, []);
-
-  const SUBNET_PAGE_SIZE = 200;
-
-  // Re-fetch as many subnets as are currently shown (at least one page) so a
-  // reload triggered by a mutation keeps the user's "load more" progress.
-  const currentSubnetWindow = () =>
-    Math.max(scope?.subnets.length ?? 0, SUBNET_PAGE_SIZE);
-
-  // Single place that shapes the paginated scope fetch and injects the active
-  // search term.  The four callers below (initial load, refresh, search,
-  // load-more) all route through here so a new param (e.g. withFindingsOnly)
-  // only has to be threaded in once instead of four times.
-  const fetchScopePage = (skip: number, limit: number) =>
-    getDefaultScope({
-      subnetsSkip: skip,
-      subnetsLimit: limit,
+  // v2.94.0 — the subnet list is server-paginated so a 6000-subnet project
+  // doesn't block /scopes on a multi-MB payload + 6000-row render.  A page
+  // at a time, appended by "Load more"; a reload after a change re-reads
+  // every page that is shown, so the view is stable.  The search is in the
+  // key: a slow reload of one search cannot answer for another (R33).
+  const scopeQuery = useInfiniteQuery({
+    queryKey: ['getDefaultScope', { subnetsSearch: debouncedSubnetSearch.trim() }],
+    queryFn: ({ pageParam }) => getDefaultScope({
+      subnetsSkip: pageParam,
+      subnetsLimit: SUBNET_PAGE_SIZE,
       subnetsSearch: debouncedSubnetSearch,
-    });
+    }),
+    initialPageParam: 0,
+    getNextPageParam: (last: Scope, pages: Scope[]) => {
+      const loaded = pages.reduce((n, page) => n + page.subnets.length, 0);
+      return last.subnets_total !== undefined && loaded < last.subnets_total ? loaded : undefined;
+    },
+  });
+  const scopePages = scopeQuery.data?.pages;
+  const loadedScope = useMemo<Scope | null>(() => {
+    if (!scopePages?.length) return null;
+    const last = scopePages[scopePages.length - 1];
+    return {
+      ...scopePages[0],
+      subnets: scopePages.flatMap((page) => page.subnets),
+      subnets_total: last.subnets_total ?? scopePages[0].subnets_total,
+    };
+  }, [scopePages]);
+  // The list under the search box stays while the next search loads, and
+  // when it fails: the rows of the last search that answered.
+  const lastScope = useRef<Scope | null>(null);
+  if (loadedScope) lastScope.current = loadedScope;
+  const scope = loadedScope ?? lastScope.current;
 
-  // Latest request wins (R33).  Every fetch that REPLACES the scope — the
-  // first load, a reload after a change, a search — takes a new generation,
-  // and a response from an older one is dropped: a slow reload issued before
-  // a search used to land after it and put the unfiltered list back under
-  // the search box.  "Load more" appends, so it only checks that nothing
-  // replaced the list while it was in flight.
-  const scopeGen = useRef(0);
-  // The coverage has a lane of its own: it does not depend on the subnet
-  // search, so a search that supersedes a load or a reload must not take the
-  // coverage with it.  (A search typed during the first load left the page
-  // without its lead and measures; one typed after a change left the numbers
-  // from before the change.)
-  const coverageGen = useRef(0);
-  const readCoverage = () => {
-    const gen = ++coverageGen.current;
-    const request = getScopeCoverage();
-    request.then(
-      (data) => { if (gen === coverageGen.current) setCoverage(data); },
-      () => undefined,  // reported by the caller's own await
-    );
-    return request;
-  };
+  // The coverage is a read of its own: it does not depend on the subnet
+  // search, so a search never takes the lead and the measures with it.
+  const coverageQuery = useQuery({
+    queryKey: ['getScopeCoverage'],
+    queryFn: () => getScopeCoverage(),
+  });
+  const coverage = coverageQuery.data ?? null;
 
-  const loadData = async (showSpinner = false) => {
-    const gen = ++scopeGen.current;
-    if (showSpinner) setLoading(true);
-    try {
-      const [scopeData] = await Promise.all([
-        fetchScopePage(0, currentSubnetWindow()),
-        readCoverage(),
-      ]);
-      if (gen !== scopeGen.current) return;
-      setScope(scopeData);
-      setError(null);
-    } catch (err) {
-      if (gen !== scopeGen.current) return;
-      setError(formatApiError(err, 'Failed to load scope data'));
-    } finally {
-      // The spinner belongs to the first load only; a newer request never
-      // shows one, so clearing it here cannot hide a load in flight.
-      if (showSpinner) setLoading(false);
-    }
-  };
+  // The spinner belongs to the first load only.
+  const loading = !coverageQuery.isFetched || (scope == null && !scopeQuery.isFetched);
+  const firstLoadError = (scope == null ? scopeQuery.error : null) ?? (coverage == null ? coverageQuery.error : null);
+  const error = queryErrorText(firstLoadError, 'Failed to load scope data');
 
-  const refreshScope = async () => {
-    const gen = ++scopeGen.current;
-    try {
-      const [scopeData] = await Promise.all([
-        fetchScopePage(0, currentSubnetWindow()),
-        readCoverage(),
-      ]);
-      if (gen !== scopeGen.current) return;
-      setScope(scopeData);
-    } catch (err) {
-      if (gen !== scopeGen.current) return;
-      // Said, not only logged: the page otherwise kept showing the state
-      // from before the change the operator just made.
-      console.error('Error refreshing scope:', err);
-      toast.error('The change was saved, but the scope could not be reloaded — refresh the page.');
-    }
-  };
-
-  // Re-fetch the first page whenever the (debounced) search term changes.
-  // Skip the initial mount — the [] effect's loadData() already covers it,
-  // so this only fires on real search edits.
-  const searchInitialized = useRef(false);
+  // A search that could not be read: said, and the rows that were shown stay.
+  const searchError = scopeQuery.isError && loadedScope == null && scope != null ? scopeQuery.error : null;
   useEffect(() => {
-    if (!searchInitialized.current) {
-      searchInitialized.current = true;
-      return;
-    }
-    const gen = ++scopeGen.current;
-    (async () => {
-      try {
-        const scopeData = await fetchScopePage(0, SUBNET_PAGE_SIZE);
-        if (gen === scopeGen.current) setScope(scopeData);
-      } catch (err) {
-        if (gen !== scopeGen.current) return;
-        toast.error(formatApiError(err, 'Failed to search subnets.'));
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSubnetSearch]);
+    if (searchError) toast.error(formatApiError(searchError, 'Failed to search subnets.'));
+  }, [searchError, toast]);
 
+  // Nothing re-reads the scope but a change (no poll, no Refresh), so a
+  // failed re-read is a change that the page does not show.  Said, not only
+  // logged: the page otherwise keeps the state from before the change.
+  const reloadFailed = scopeQuery.isRefetchError || coverageQuery.isRefetchError;
+  useEffect(() => {
+    if (reloadFailed) toast.error('The change was saved, but the scope could not be reloaded — refresh the page.');
+  }, [reloadFailed, toast]);
+
+  /** After a change to the scope: its subnets and where the hosts stand. */
+  const scopeChanged = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['getDefaultScope'] }),
+    queryClient.invalidateQueries({ queryKey: ['getScopeCoverage'] }),
+  ]);
+
+  const loadingMore = scopeQuery.isFetchingNextPage;
   const loadMoreSubnets = async () => {
     if (!scope || loadingMore) return;
-    // A page asked for under one search is dropped if the search changed
-    // while it loaded, instead of being appended to the new result.
-    const askedFor = debouncedSubnetSearch;
-    const gen = scopeGen.current;
-    setLoadingMore(true);
-    try {
-      const next = await fetchScopePage(scope.subnets.length, SUBNET_PAGE_SIZE);
-      if (askedFor !== searchRef.current || gen !== scopeGen.current) return;
-      setScope((prev) =>
-        prev
-          ? {
-              ...prev,
-              subnets: [...prev.subnets, ...next.subnets],
-              subnets_total: next.subnets_total ?? prev.subnets_total,
-            }
-          : next,
-      );
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to load more subnets.'));
-    } finally {
-      setLoadingMore(false);
-    }
+    const result = await scopeQuery.fetchNextPage();
+    if (result.isFetchNextPageError) toast.error(formatApiError(result.error, 'Failed to load more subnets.'));
   };
 
-  const handleAddSubnet = async () => {
+  const addSubnet = useMutation({
+    mutationFn: ({ scopeId, cidr, description }: { scopeId: number; cidr: string; description?: string }) =>
+      addScopeSubnets(scopeId, [{ cidr, description }]),
+    onSuccess: (_added, { cidr }) => {
+      toast.success(`Added ${cidr}.`);
+      setNewCidr('');
+      setNewDescription('');
+      return scopeChanged();
+    },
+    onError: (err) => setNewCidrError(formatApiError(err, 'Failed to add entry.')),
+  });
+  const addingSubnet = addSubnet.isPending;
+
+  const handleAddSubnet = () => {
     if (!scope || !newCidr.trim()) return;
     if (!isIpOrCidr(newCidr)) {
       setNewCidrError(IP_OR_CIDR_HINT);
       return;
     }
     setNewCidrError(null);
-    setAddingSubnet(true);
-    try {
-      await addScopeSubnets(scope.id, [
-        { cidr: newCidr.trim(), description: newDescription.trim() || undefined },
-      ]);
-      toast.success(`Added ${newCidr.trim()}.`);
-      setNewCidr('');
-      setNewDescription('');
-      await refreshScope();
-    } catch (err: unknown) {
-      setNewCidrError(formatApiError(err, 'Failed to add entry.'));
-    } finally {
-      setAddingSubnet(false);
-    }
+    addSubnet.mutate({
+      scopeId: scope.id,
+      cidr: newCidr.trim(),
+      description: newDescription.trim() || undefined,
+    });
   };
 
   const startEditSubnet = (
@@ -403,48 +333,55 @@ const Scopes: React.FC = () => {
     setEditSiteDraft('');
   };
 
-  const handleSaveSubnet = async (subnetId: number) => {
+  const saveSubnet = useMutation({
+    mutationFn: ({ scopeId, subnetId, ...changes }: {
+      scopeId: number; subnetId: number; cidr: string; description: string; site: string;
+    }) => updateSubnet(scopeId, subnetId, changes),
+    onSuccess: () => {
+      toast.success('Entry updated.');
+      cancelEditSubnet();
+      return scopeChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update entry.')),
+  });
+  const savingSubnet = saveSubnet.isPending;
+
+  const handleSaveSubnet = (subnetId: number) => {
     if (!scope) return;
     if (!isIpOrCidr(editCidrDraft)) {
       setEditCidrError(IP_OR_CIDR_HINT);
       return;
     }
     setEditCidrError(null);
-    setSavingSubnet(true);
-    try {
-      await updateSubnet(scope.id, subnetId, {
-        cidr: editCidrDraft.trim(),
-        description: editDescDraft.trim(),
-        site: editSiteDraft.trim(),
-      });
-      toast.success('Entry updated.');
-      cancelEditSubnet();
-      await refreshScope();
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to update entry.'));
-    } finally {
-      setSavingSubnet(false);
-    }
+    saveSubnet.mutate({
+      scopeId: scope.id,
+      subnetId,
+      cidr: editCidrDraft.trim(),
+      description: editDescDraft.trim(),
+      site: editSiteDraft.trim(),
+    });
   };
 
   // v2.86.0 — bulk-apply one label across every selected subnet.
   // Server-idempotent: re-applying to a subnet that already carries
-  // the label is a no-op.  We refresh both the scope and the catalogue
+  // the label is a no-op.  Both the scope and the catalogue are re-read
   // so the chips + per-label counts stay accurate.
-  const handleBulkApplyLabel = async (labelId: number, labelName: string) => {
-    const ids = Array.from(selectedSubnetIds);
-    if (ids.length === 0) return;
-    setBulkApplying(true);
-    try {
-      await bulkApplySubnetLabel(labelId, ids);
+  const bulkApply = useMutation({
+    mutationFn: ({ labelId, ids }: { labelId: number; labelName: string; ids: number[] }) =>
+      bulkApplySubnetLabel(labelId, ids),
+    onSuccess: (_label, { labelName, ids }) => {
       toast.success(`Applied "${labelName}" to ${ids.length} subnet${ids.length === 1 ? '' : 's'}.`);
       setSelectedSubnetIds(new Set());
-      await Promise.all([refreshScope(), fetchLabelCatalogue()]);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to apply label.'));
-    } finally {
-      setBulkApplying(false);
-    }
+      return Promise.all([scopeChanged(), queryClient.invalidateQueries({ queryKey: ['listSubnetLabels'] })]);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to apply label.')),
+  });
+  const bulkApplying = bulkApply.isPending;
+
+  const handleBulkApplyLabel = (labelId: number, labelName: string) => {
+    const ids = Array.from(selectedSubnetIds);
+    if (ids.length === 0) return;
+    bulkApply.mutate({ labelId, labelName, ids });
   };
 
   const toggleSubnetSelected = (subnetId: number) => {
@@ -462,20 +399,17 @@ const Scopes: React.FC = () => {
     });
   };
 
-  // Reflect a single-subnet label change locally without a full reload.
-  // The PUT already authoritative-set the labels, so we patch state in
-  // place and just kick the catalogue counts.
-  const applyLabelEditToLocal = (subnetId: number, nextLabels: SubnetLabelInfo[]) => {
-    setScope((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        subnets: prev.subnets.map((s) =>
-          s.id === subnetId ? { ...s, labels: nextLabels } : s,
-        ),
-      };
+  // A single subnet's label change, without re-reading the scope: the PUT
+  // answered with the subnet's labels, so they are put on its row wherever
+  // the scope is held.  (The editor re-reads the catalogue's counts.)
+  const applyLabelEdit = (subnetId: number, nextLabels: SubnetLabelInfo[]) => {
+    queryClient.setQueriesData<InfiniteData<Scope, number>>({ queryKey: ['getDefaultScope'] }, (held) => held && {
+      ...held,
+      pages: held.pages.map((page) => ({
+        ...page,
+        subnets: page.subnets.map((s) => (s.id === subnetId ? { ...s, labels: nextLabels } : s)),
+      })),
     });
-    fetchLabelCatalogue();
   };
 
   // A subnet's label chips and their editor — in the Labels column, or inside
@@ -495,7 +429,7 @@ const Scopes: React.FC = () => {
         subnetCidr={subnet.cidr}
         currentLabels={subnetLabels}
         catalogue={labelCatalogue}
-        onSaved={(next) => applyLabelEditToLocal(subnet.id, next)}
+        onSaved={(next) => applyLabelEdit(subnet.id, next)}
       >
         <Button
           variant="ghost"
@@ -518,6 +452,16 @@ const Scopes: React.FC = () => {
     </div>
   );
 
+  const removeSubnet = useMutation({
+    mutationFn: ({ scopeId, subnetId }: { scopeId: number; subnetId: number; cidr: string }) =>
+      deleteSubnet(scopeId, subnetId),
+    onSuccess: (_void, { cidr }) => {
+      toast.success(`Deleted ${cidr}.`);
+      return scopeChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to delete entry.')),
+  });
+
   const handleDeleteSubnet = async (subnetId: number, cidr: string) => {
     if (!scope) return;
     const ok = await confirm({
@@ -528,37 +472,33 @@ const Scopes: React.FC = () => {
       confirmLabel: 'Delete',
     });
     if (!ok) return;
-    try {
-      await deleteSubnet(scope.id, subnetId);
-      toast.success(`Deleted ${cidr}.`);
-      await refreshScope();
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to delete entry.'));
-    }
+    removeSubnet.mutate({ scopeId: scope.id, subnetId, cidr });
   };
 
-  const onDrop = async (acceptedFiles: File[]) => {
-    const file = acceptedFiles[0];
-    if (!file) return;
-
-    setUploading(true);
-    setUploadError(null);
-    setStatusMessage(null);
-
-    try {
-      const response = await uploadSubnetFile(file);
+  const upload = useMutation({
+    mutationFn: (file: File) => uploadSubnetFile(file),
+    onMutate: () => {
+      setUploadError(null);
+      setStatusMessage(null);
+    },
+    onSuccess: async (response, file) => {
       setStatusMessage(response.message || `Scope file "${file.name}" uploaded successfully!`);
-      await loadData();
-      // The domains card owns its own paged list; a file with domain rows
-      // has to make it reload.
-      if (response.domains_added) setDomainsRefreshKey((k) => k + 1);
+      // A file's label column adds to the catalogue; its domain rows are the
+      // domains section's list.
+      void queryClient.invalidateQueries({ queryKey: ['listSubnetLabels'] });
+      if (response.domains_added) void queryClient.invalidateQueries({ queryKey: ['listScopeDomains'] });
+      await scopeChanged();
       setUploadOpen(false);
       setTimeout(() => setStatusMessage(null), 3000);
-    } catch (err: unknown) {
-      setUploadError(formatApiError(err, 'Upload failed. Please try again.'));
-    } finally {
-      setUploading(false);
-    }
+    },
+    onError: (err) => setUploadError(formatApiError(err, 'Upload failed. Please try again.')),
+  });
+  const uploading = upload.isPending;
+
+  const onDrop = (acceptedFiles: File[]) => {
+    const file = acceptedFiles[0];
+    if (!file) return;
+    upload.mutate(file);
   };
 
   const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({
@@ -786,7 +726,7 @@ const Scopes: React.FC = () => {
             {labelCatalogueError && (
               <p role="status" className="mb-sm flex flex-wrap items-center gap-xs break-words text-caption text-muted-foreground">
                 <span className="min-w-0">{labelCatalogueError} Labels already on a subnet are still shown; applying one needs the list.</span>
-                <Button variant="link" size="sm" className="h-auto p-0" onClick={() => void fetchLabelCatalogue()}>
+                <Button variant="link" size="sm" className="h-auto p-0" onClick={() => void labelsQuery.refetch()}>
                   Retry
                 </Button>
               </p>
@@ -1157,7 +1097,7 @@ const Scopes: React.FC = () => {
         {/* v5.193.0 — domain scope alongside subnet scope.  Refreshes the
             coverage numbers on change (name-reachable hosts move between states). */}
         {scope != null && (
-          <ScopeDomainsCard scopeId={scope.id} refreshKey={domainsRefreshKey} onChanged={loadData} canEdit={canWrite} />
+          <ScopeDomainsCard scopeId={scope.id} canEdit={canWrite} />
         )}
 
         {coverage && coverage.out_of_scope_hosts > 0 && (
@@ -1306,18 +1246,7 @@ const Scopes: React.FC = () => {
         </DialogContent>
       </Dialog>
 
-      <SubnetLabelManagerDialog
-        open={labelManagerOpen}
-        onOpenChange={setLabelManagerOpen}
-        onCatalogueChange={() => {
-          fetchLabelCatalogue();
-          // Reload the scope so any renamed/deleted labels in the
-          // chips column refresh (a delete cascades server-side and
-          // the local `subnet.labels` would otherwise show stale
-          // entries).
-          refreshScope();
-        }}
-      />
+      <SubnetLabelManagerDialog open={labelManagerOpen} onOpenChange={setLabelManagerOpen} />
 
       <SiteManagerDialog open={siteManagerOpen} onOpenChange={setSiteManagerOpen} />
 

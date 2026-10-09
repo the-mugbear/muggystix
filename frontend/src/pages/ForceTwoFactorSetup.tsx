@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { copyToClipboard } from '../utils/clipboard';
 import { downloadTextFile } from '../utils/download';
 import { useNavigate } from 'react-router-dom';
@@ -33,7 +34,6 @@ const ForceTwoFactorSetup: React.FC = () => {
   const toast = useToast();
 
   const [step, setStep] = useState<Step>('choose');
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [showImport, setShowImport] = useState(false);
   const [importSecret, setImportSecret] = useState('');
@@ -41,35 +41,33 @@ const ForceTwoFactorSetup: React.FC = () => {
   const [code, setCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
 
-  const startSetup = async () => {
-    setBusy(true);
-    setError('');
-    try {
-      const body = showImport && importSecret.trim() ? { existing_secret: importSecret.trim() } : {};
-      const { data } = await apiClient.post('/auth/2fa/setup', body);
+  const starting = useMutation({
+    mutationFn: async (body: { existing_secret?: string }) =>
+      (await apiClient.post<SetupData>('/auth/2fa/setup', body)).data,
+    onMutate: () => setError(''),
+    onSuccess: (data) => {
       setSetupData(data);
       setCode('');
       setStep('confirm');
-    } catch (err) {
-      setError(formatApiError(err, 'Could not start 2FA setup.'));
-    } finally {
-      setBusy(false);
-    }
+    },
+    onError: (err) => setError(formatApiError(err, 'Could not start 2FA setup.')),
+  });
+  const startSetup = () => {
+    starting.mutate(showImport && importSecret.trim() ? { existing_secret: importSecret.trim() } : {});
   };
 
-  const confirmEnable = async () => {
-    setBusy(true);
-    setError('');
-    try {
-      const { data } = await apiClient.post('/auth/2fa/enable', { code: code.trim() });
+  const enabling = useMutation({
+    mutationFn: async (enteredCode: string) =>
+      (await apiClient.post<{ recovery_codes: string[] }>('/auth/2fa/enable', { code: enteredCode })).data,
+    onMutate: () => setError(''),
+    onSuccess: (data) => {
       setRecoveryCodes(data.recovery_codes);
       setStep('recovery');
-    } catch (err) {
-      setError(formatApiError(err, 'That code was not accepted.'));
-    } finally {
-      setBusy(false);
-    }
-  };
+    },
+    onError: (err) => setError(formatApiError(err, 'That code was not accepted.')),
+  });
+  const confirmEnable = () => enabling.mutate(code.trim());
+  const busy = starting.isPending || enabling.isPending;
 
   const finish = () => navigate('/', { replace: true });
 

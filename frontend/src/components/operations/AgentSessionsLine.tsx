@@ -13,7 +13,8 @@
  * to that page — where every session of the project is listed.  A failed read
  * says so — it is never "no session is live".
  */
-import React, { useEffect, useState } from 'react';
+import React, { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Bot } from 'lucide-react';
 
@@ -22,32 +23,25 @@ import { useAuth } from '../../contexts/AuthContext';
 import { SESSIONS_LIST_PATH, liveSessionsSummary, myActiveSessionFilters } from '../../utils/agentRuns';
 import { cn } from '../../utils/cn';
 
-const AgentSessionsLine: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
+const AgentSessionsLine: React.FC = () => {
   const { user } = useAuth();
   const userId = user?.id;
-  const [text, setText] = useState<string | null>(null);
-  const [waiting, setWaiting] = useState(false);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
+  const sessions = useQuery({
+    queryKey: ['listAgentSessions', userId == null ? null : myActiveSessionFilters(userId)],
+    queryFn: ({ signal }) => listAgentSessions(myActiveSessionFilters(userId as number), { signal }),
     // Without the reader's id there is no "mine" to ask for — and the
     // project-wide list is not this page's to show.
-    if (userId == null) return undefined;
-    const controller = new AbortController();
-    listAgentSessions(myActiveSessionFilters(userId), { signal: controller.signal })
-      .then((resp) => {
-        if (controller.signal.aborted) return;
-        const summary = liveSessionsSummary(resp.sessions, Date.now(), { mine: true });
-        setText(summary.text);
-        setWaiting(summary.waiting);
-        setFailed(false);
-      })
-      .catch(() => {
-        if (controller.signal.aborted) return;
-        setFailed(true);
-      });
-    return () => controller.abort();
-  }, [refreshKey, userId]);
+    enabled: userId != null,
+  });
+  const rows = sessions.data?.sessions;
+  // The sentence is as of the read it was made from (`dataUpdatedAt`).
+  const summary = useMemo(
+    () => (rows ? liveSessionsSummary(rows, sessions.dataUpdatedAt, { mine: true }) : null),
+    [rows, sessions.dataUpdatedAt],
+  );
+  const text = summary?.text ?? null;
+  const waiting = summary?.waiting ?? false;
+  const failed = sessions.isError;
 
   if (text == null && !failed) return null;
   return (

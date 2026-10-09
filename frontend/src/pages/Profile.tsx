@@ -1,4 +1,5 @@
-import React, { useCallback, useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import {
   Loader2,
@@ -11,6 +12,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { useProject } from '../contexts/ProjectContext';
 import apiClient from '../services/api';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { personInitials } from '../utils/people';
 import { useToast } from '../contexts/ToastContext';
@@ -80,6 +82,9 @@ const roleVariant = (
 
 const formatDate = (s: string | null | undefined) => formatTimestamp(s);
 
+/** The signed-in user's own sessions — not a project's. */
+const SESSIONS_KEY = [GLOBAL, '/auth/sessions'];
+
 const Profile: React.FC = () => {
   const { user, updateUser, logout } = useAuth();
   const { selectProject, projects } = useProject();
@@ -87,7 +92,7 @@ const Profile: React.FC = () => {
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
 
-  const [saving, setSaving] = useState(false);
+  const queryClient = useQueryClient();
   const [profileForm, setProfileForm] = useState({ full_name: user?.full_name || '' });
 
   const [passwordForm, setPasswordForm] = useState({
@@ -96,7 +101,6 @@ const Profile: React.FC = () => {
     confirm_password: '',
   });
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
-  const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordError, setPasswordError] = useState<string>('');
   // Block submit + announce when the confirmation diverges (a11y: associated
   // with the field via role=alert + aria-describedby).
@@ -104,100 +108,85 @@ const Profile: React.FC = () => {
     passwordForm.confirm_password.length > 0 &&
     passwordForm.new_password !== passwordForm.confirm_password;
 
-  const [sessions, setSessions] = useState<UserSession[]>([]);
-  const [sessionsLoading, setSessionsLoading] = useState(true);
+  // The signed-in user's own sessions.  A failed read is a toast over an empty
+  // list, as it always was.
+  const sessionsQuery = useQuery({
+    queryKey: SESSIONS_KEY,
+    queryFn: async () => (await apiClient.get<UserSession[]>('/auth/sessions')).data,
+  });
+  const sessions = sessionsQuery.data ?? [];
+  const sessionsLoading = sessionsQuery.isPending;
+  const sessionsFailure = sessionsQuery.error;
+  useEffect(() => {
+    if (sessionsFailure) toast.error(formatApiError(sessionsFailure, 'Failed to load sessions.'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- said once per failure; the toast API is not part of it
+  }, [sessionsFailure]);
 
   // Project associations — the projects this user is a member of, with
-  // their per-project role. Loaded once on mount; refreshable via the
-  // Refresh button on the card so a freshly-added project shows up
-  // without a full page reload.
-  const [memberships, setMemberships] = useState<MyProjectMembership[] | null>(null);
-  const [membershipsLoading, setMembershipsLoading] = useState(true);
-  const [membershipsError, setMembershipsError] = useState<string | null>(null);
-
-  const fetchMemberships = useCallback(() => {
-    let cancelled = false;
-    setMembershipsLoading(true);
-    setMembershipsError(null);
-    apiClient
-      .get<MyProjectMembership[]>('/users/profile/projects')
-      .then((r) => {
-        if (!cancelled) setMemberships(r.data);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setMemberships(null);
-        setMembershipsError(formatApiError(err, 'Failed to load project associations.'));
-      })
-      .finally(() => {
-        if (!cancelled) setMembershipsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => fetchMemberships(), [fetchMemberships]);
-
-  useEffect(() => {
-    let cancelled = false;
-    apiClient
-      .get('/auth/sessions')
-      .then((r) => {
-        if (!cancelled) setSessions(r.data);
-      })
-      .catch((err) => {
-        if (!cancelled) toast.error(formatApiError(err, 'Failed to load sessions.'));
-      })
-      .finally(() => {
-        if (!cancelled) setSessionsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // their per-project role. Refreshable via the Refresh button on the section
+  // so a freshly-added project shows up without a full page reload.
+  const membershipsQuery = useQuery({
+    queryKey: [GLOBAL, '/users/profile/projects'],
+    queryFn: async () => (await apiClient.get<MyProjectMembership[]>('/users/profile/projects')).data,
+  });
+  const membershipsLoading = membershipsQuery.isFetching;
+  const membershipsError = membershipsLoading
+    ? null
+    : queryErrorText(membershipsQuery.error, 'Failed to load project associations.');
+  // A failed refresh shows the failure, not the list it could not confirm.
+  const memberships: MyProjectMembership[] | null = membershipsQuery.isError ? null : membershipsQuery.data ?? null;
+  const fetchMemberships = () => { void membershipsQuery.refetch(); };
 
   // Save only means something when the name differs from what is saved.
   const profileDirty = profileForm.full_name.trim() !== (user?.full_name ?? '').trim();
 
-  const handleProfileSubmit = async (e: React.FormEvent) => {
+  const profileSave = useMutation({
+    mutationFn: (form: { full_name: string }) => apiClient.put('/users/profile', form),
+    onSuccess: (_response, form) => {
+      if (user) updateUser({ ...user, full_name: form.full_name });
+      toast.success('Profile updated.');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update profile.')),
+  });
+  const saving = profileSave.isPending;
+  const handleProfileSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!profileDirty || saving) return;
-    setSaving(true);
-    try {
-      await apiClient.put('/users/profile', profileForm);
-      if (user) updateUser({ ...user, full_name: profileForm.full_name });
-      toast.success('Profile updated.');
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to update profile.'));
-    } finally {
-      setSaving(false);
-    }
+    profileSave.mutate(profileForm);
   };
 
-  const handlePasswordSubmit = async (e: React.FormEvent) => {
+  const passwordChange = useMutation({
+    mutationFn: (body: { current_password: string; new_password: string }) =>
+      apiClient.post('/auth/change-password', body),
+    onSuccess: () => {
+      setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
+      setPasswordDialogOpen(false);
+      toast.success('Password changed.');
+    },
+    onError: (err) => setPasswordError(formatApiError(err, 'Failed to change password.')),
+  });
+  const passwordSaving = passwordChange.isPending;
+  const handlePasswordSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setPasswordError('');
     if (passwordForm.new_password !== passwordForm.confirm_password) {
       setPasswordError('New passwords do not match.');
       return;
     }
-    setPasswordSaving(true);
-    try {
-      await apiClient.post('/auth/change-password', {
-        current_password: passwordForm.current_password,
-        new_password: passwordForm.new_password,
-      });
-      setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
-      setPasswordDialogOpen(false);
-      toast.success('Password changed.');
-    } catch (err: unknown) {
-      setPasswordError(formatApiError(err, 'Failed to change password.'));
-    } finally {
-      setPasswordSaving(false);
-    }
+    passwordChange.mutate({
+      current_password: passwordForm.current_password,
+      new_password: passwordForm.new_password,
+    });
   };
+
+  const revoke = useMutation({
+    mutationFn: (session: UserSession) => apiClient.delete(`/auth/sessions/${session.id}`),
+    onSuccess: (_response, session) => {
+      queryClient.setQueryData<UserSession[]>(SESSIONS_KEY, (prev) => prev?.filter((s) => s.id !== session.id));
+      toast.success('Session revoked.');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to revoke session.')),
+  });
 
   const handleRevokeSession = async (session: UserSession) => {
     if (session.current) {
@@ -220,13 +209,7 @@ const Profile: React.FC = () => {
       confirmLabel: 'Revoke',
     });
     if (!ok) return;
-    try {
-      await apiClient.delete(`/auth/sessions/${session.id}`);
-      setSessions((prev) => prev.filter((s) => s.id !== session.id));
-      toast.success('Session revoked.');
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to revoke session.'));
-    }
+    revoke.mutate(session);
   };
 
   if (!user) {

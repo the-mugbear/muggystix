@@ -238,6 +238,9 @@ describe('HostInspector smoke', () => {
 
     const { rerender } = render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
     fireEvent.click(await screen.findByRole('button', { name: 'Show 3 informational findings' }));
+    // The request is sent a tick after the click; the mocked answers above are
+    // handed out in the order the requests are made.
+    await waitFor(() => expect(getHost).toHaveBeenLastCalledWith(1, { includeInfo: true }));
     rerender(<MemoryRouter><HostInspector hostId={2} /></MemoryRouter>);
     await screen.findByRole('button', { name: 'Show 2 informational findings' });
 

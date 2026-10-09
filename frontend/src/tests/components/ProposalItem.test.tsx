@@ -17,6 +17,7 @@ vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
 }));
 
+import { readsOnScreen } from '../helpers/readsOnScreen';
 import ProposalItem, { describeProposal } from '../../components/proposals/ProposalItem';
 import type { Proposal } from '../../services/api';
 
@@ -100,24 +101,49 @@ describe('ProposalItem', () => {
 });
 
 describe('v5.316.1 — walkthrough fixes', () => {
-  it('names a client briefly: a browser UA is not a line of text', async () => {
-    const { shortClient } = await import('../../utils/proposalEvents');
-    expect(shortClient('claude-code 2.1.0')).toBe('claude-code 2.1.0');
-    expect(shortClient('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0 Safari/537.3'))
-      .toBe('a browser');
-    expect(shortClient('curl/8.5.0')).toBe('curl/8.5.0');
-  });
+  // 5.351.0 — a decision announced itself with a window event
+  // (`nm:proposals-changed`) that the finding page listened for, beside a
+  // callback that re-read and an invalidation of the count: up to three reads
+  // of one list.  It now says which reads are out of date, once; whatever
+  // shows them — the top bar's count, the Proposals page, the finding's own
+  // pending list, the finding, its history and its images — reads again.
+  const everyRead = {
+    getProposalSummary: 'the top bar’s count', listProposals: 'the lists of proposals',
+    getFinding: 'the finding', getFindingHistory: 'its history', getFindingImages: 'its images',
+  };
 
-  it('a decision tells the top bar at once', async () => {
-    const { PROPOSALS_CHANGED_EVENT } = await import('../../utils/proposalEvents');
-    const heard = vi.fn();
-    window.addEventListener(PROPOSALS_CHANGED_EVENT, heard);
+  it('a decision tells the top bar at once, and every other read it changed — once each', async () => {
+    const { reread, ReadsOnScreen } = readsOnScreen(everyRead);
     rejectProposal.mockResolvedValue({ ...base, status: 'rejected' });
-    renderItem(base);
+    render(<MemoryRouter><ReadsOnScreen /><ProposalItem proposal={base} canDecide /></MemoryRouter>);
     fireEvent.click(screen.getByRole('button', { name: /^Reject…$/ }));
     fireEvent.click(screen.getByRole('button', { name: /^Reject$/ }));
-    await waitFor(() => expect(heard).toHaveBeenCalledTimes(1));
-    window.removeEventListener(PROPOSALS_CHANGED_EVENT, heard);
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('the top bar’s count'));
+    await waitFor(() => expect(reread).toHaveBeenCalledTimes(5));
+    expect(reread.mock.calls.map(([what]) => what).sort()).toEqual(Object.values(everyRead).sort());
+  });
+
+  it('a page is told when the reads a decision changed have been read again', async () => {
+    const { reread, ReadsOnScreen } = readsOnScreen(everyRead);
+    acceptProposal.mockResolvedValue({ ...base, status: 'accepted' });
+    let settledWith: number | null = null;
+    const onDecided = vi.fn((_updated: Proposal, settled: Promise<void>) => {
+      void settled.then(() => { settledWith = reread.mock.calls.length; });
+    });
+    render(<MemoryRouter><ReadsOnScreen /><ProposalItem proposal={base} canDecide onDecided={onDecided} /></MemoryRouter>);
+    fireEvent.click(screen.getByRole('button', { name: /^Accept$/ }));
+    await waitFor(() => expect(settledWith).toBe(5));
+    expect(onDecided).toHaveBeenCalledTimes(1);
+    expect(onDecided.mock.calls[0][0]).toMatchObject({ id: 7, status: 'accepted' });
+  });
+
+  it('a refused decision reads nothing again', async () => {
+    const { reread, ReadsOnScreen } = readsOnScreen(everyRead);
+    acceptProposal.mockRejectedValue(new Error('no'));
+    render(<MemoryRouter><ReadsOnScreen /><ProposalItem proposal={base} canDecide /></MemoryRouter>);
+    fireEvent.click(screen.getByRole('button', { name: /^Accept$/ }));
+    expect(await screen.findByText(/no|Could not accept/)).toBeInTheDocument();
+    expect(reread).not.toHaveBeenCalled();
   });
 
   it('on the finding’s own page the target is text, not a link back to it', () => {

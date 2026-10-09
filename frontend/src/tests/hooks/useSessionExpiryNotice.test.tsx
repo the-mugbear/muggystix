@@ -9,10 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const toast = vi.hoisted(() => ({
   success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: vi.fn(), dismiss: vi.fn(),
 }));
-const auth = vi.hoisted(() => ({ token: null as string | null }));
+const auth = vi.hoisted(() => ({ token: null as string | null, renewSession: vi.fn() }));
 const signIn = vi.hoisted(() => vi.fn());
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
-vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ token: auth.token }) }));
+vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ token: auth.token, renewSession: auth.renewSession }),
+}));
 vi.mock('../../utils/sessionExpiry', async (original) => ({
   ...(await original<typeof import('../../utils/sessionExpiry')>()),
   signInAgain: signIn,
@@ -38,6 +40,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   auth.token = null;
+  auth.renewSession.mockResolvedValue(undefined);
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -208,7 +211,7 @@ describe('useSessionExpiryNotice', () => {
 });
 
 describe('SessionExpiryNotice', () => {
-  it('is one toast that stays, says the local time, and offers to sign in again', () => {
+  it('is one toast that stays, says the local time, and offers to stay signed in — then to sign in again', () => {
     const token = jwt(480);
     const end = START + 480 * MIN;
     localStorage.setItem('auth_token', token);
@@ -219,21 +222,50 @@ describe('SessionExpiryNotice', () => {
     advance(470 * MIN);
     expect(toast.warning).toHaveBeenCalledTimes(1);
     const [message, options] = toast.warning.mock.calls[0];
-    expect(message).toBe(`Your session ends at ${formatClockTime(end)}. Save your work: anything unsaved is lost when it ends.`);
+    expect(message).toBe(`Your session ends at ${formatClockTime(end)} unless you carry on working. Anything unsaved is lost when it ends.`);
     // One id: each stage replaces the last.  It stays until closed.
-    expect(options).toMatchObject({ id: SESSION_NOTICE_ID, autoHideMs: null, action: { label: 'Sign in again' } });
+    expect(options).toMatchObject({ id: SESSION_NOTICE_ID, autoHideMs: null, action: { label: 'Stay signed in' } });
     options.action.onClick();
-    expect(signIn).toHaveBeenCalledTimes(1);
+    expect(auth.renewSession).toHaveBeenCalledTimes(1);
+    expect(signIn).not.toHaveBeenCalled();
 
     advance(9 * MIN);
     expect(toast.warning).toHaveBeenCalledTimes(2);
     expect(toast.warning.mock.calls[1][0]).toBe(sessionNoticeText('last', end));
-    expect(toast.warning.mock.calls[1][1]).toMatchObject({ id: SESSION_NOTICE_ID, autoHideMs: null });
+    expect(toast.warning.mock.calls[1][1]).toMatchObject({ id: SESSION_NOTICE_ID, autoHideMs: null, action: { label: 'Stay signed in' } });
 
     advance(MIN);
     expect(toast.error).toHaveBeenCalledTimes(1);
     expect(toast.error.mock.calls[0][0]).toBe(`Your session ended at ${formatClockTime(end)}. Copy anything unsaved before you sign in again.`);
-    expect(toast.error.mock.calls[0][1]).toMatchObject({ id: SESSION_NOTICE_ID, autoHideMs: null, action: { label: 'Sign in again' } });
+    const ended = toast.error.mock.calls[0][1];
+    expect(ended).toMatchObject({ id: SESSION_NOTICE_ID, autoHideMs: null, action: { label: 'Sign in again' } });
+    // A session that is over cannot be renewed: the only way on is to sign in.
+    ended.action.onClick();
+    expect(signIn).toHaveBeenCalledTimes(1);
+    expect(auth.renewSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('renews when the reader does something, and the renewed session takes the notice away', () => {
+    const token = jwt(480, { iat: START / 1000 });
+    localStorage.setItem('auth_token', token);
+    auth.token = token;
+    const view = render(<SessionExpiryNotice />);
+    advance(472 * MIN);
+    expect(toast.warning).toHaveBeenCalledTimes(1);
+
+    act(() => { window.dispatchEvent(new Event('pointerdown')); });
+    expect(auth.renewSession).toHaveBeenCalledTimes(1);
+
+    // What the provider does with the answer: a later end, stored and in state.
+    const renewed = jwt(472 + 480, { iat: (START + 472 * MIN) / 1000 });
+    localStorage.setItem('auth_token', renewed);
+    auth.token = renewed;
+    view.rerender(<SessionExpiryNotice />);
+    expect(toast.dismiss).toHaveBeenCalledWith(SESSION_NOTICE_ID);
+    // The first session's end passes in silence.
+    advance(30 * MIN);
+    expect(toast.warning).toHaveBeenCalledTimes(1);
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   it('says nothing for a session whose token does not give an end', () => {

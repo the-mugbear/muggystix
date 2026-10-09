@@ -12,7 +12,8 @@
  * on a page humans use to learn about tools. So the prose fields are editable in
  * the same dialog, and prefilled for an existing tool.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
 import { Button } from './ui/button';
@@ -37,17 +38,18 @@ import {
 import { Textarea } from './ui/textarea';
 import { Alert, AlertDescription } from './ui/alert';
 import { useToast } from '../contexts/ToastContext';
-import { formatApiError } from '../utils/apiErrors';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import {
   updateToolRegistryEntry,
   type ToolRegistryEntry,
+  type ToolRegistryResponse,
+  type ToolRegistryUpdate,
 } from '../services/api';
 
 interface Props {
   tool: ToolRegistryEntry | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSaved: (updated: ToolRegistryEntry) => void;
 }
 
 type VettedStatus = 'reference' | 'rejected';
@@ -57,53 +59,44 @@ const STATUS_HELP: Record<VettedStatus, string> = {
   rejected: 'Declined. The row stays so the next agent that asks gets the same answer.',
 };
 
-const ToolVettingDialog: React.FC<Props> = ({ tool, open, onOpenChange, onSaved }) => {
+/** Mounted per tool opened (the wrapper below), so the fields start from that
+ *  tool's row and a save's failure never shows on the next one. */
+const VettingForm: React.FC<Props & { tool: ToolRegistryEntry }> = ({ tool, open, onOpenChange }) => {
   const toast = useToast();
-  const [status, setStatus] = useState<VettedStatus>('reference');
-  const [description, setDescription] = useState('');
-  const [category, setCategory] = useState('');
-  const [install, setInstall] = useState('');
-  const [url, setUrl] = useState('');
-  const [ports, setPorts] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  // `suggested` is not a status an operator can set, so a pending row opens
+  // on the decision they are actually here to make.
+  const [status, setStatus] = useState<VettedStatus>(
+    tool.status === 'suggested' ? 'reference' : tool.status,
+  );
+  const [description, setDescription] = useState(tool.description ?? '');
+  const [category, setCategory] = useState(tool.category ?? '');
+  const [install, setInstall] = useState(tool.install ?? '');
+  const [url, setUrl] = useState(tool.url ?? '');
+  const [ports, setPorts] = useState(tool.ports ?? '');
 
-  useEffect(() => {
-    if (!tool) return;
-    // `suggested` is not a status an operator can set, so a pending row opens
-    // on the decision they are actually here to make.
-    setStatus(tool.status === 'suggested' ? 'reference' : (tool.status as VettedStatus));
-    setDescription(tool.description ?? '');
-    setCategory(tool.category ?? '');
-    setInstall(tool.install ?? '');
-    setUrl(tool.url ?? '');
-    setPorts(tool.ports ?? '');
-    setError(null);
-  }, [tool]);
-
-  if (!tool) return null;
-
-  const save = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      const updated = await updateToolRegistryEntry(tool.name, {
-        status,
-        description: description.trim(),
-        category: category.trim() || 'Uncategorised',
-        install: install.trim(),
-        url: url.trim(),
-        ports: ports.trim(),
-      });
-      toast.success(status === 'reference' ? `${tool.name} is in the catalogue` : `${tool.name} was declined`);
-      onSaved({ ...tool, ...updated });
+  const saving = useMutation({
+    mutationFn: (update: ToolRegistryUpdate) => updateToolRegistryEntry(tool.name, update),
+    onSuccess: (updated, sent) => {
+      // The catalogue page shows the row as the server now has it.
+      queryClient.setQueryData<ToolRegistryResponse>([GLOBAL, 'getToolRegistry'], (old) => (old ? {
+        ...old,
+        tools: old.tools.map((t) => (t.name === tool.name ? { ...t, ...updated } : t)),
+      } : old));
+      toast.success(sent.status === 'reference' ? `${tool.name} is in the catalogue` : `${tool.name} was declined`);
       onOpenChange(false);
-    } catch (e) {
-      setError(formatApiError(e, 'Could not save this tool.'));
-    } finally {
-      setSaving(false);
-    }
-  };
+    },
+  });
+  const busy = saving.isPending;
+  const error = queryErrorText(saving.error, 'Could not save this tool.');
+  const save = () => saving.mutate({
+    status,
+    description: description.trim(),
+    category: category.trim() || 'Uncategorised',
+    install: install.trim(),
+    url: url.trim(),
+    ports: ports.trim(),
+  });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -207,11 +200,11 @@ const ToolVettingDialog: React.FC<Props> = ({ tool, open, onOpenChange, onSaved 
           </div>
         </DialogBody>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
             Cancel
           </Button>
-          <Button onClick={save} disabled={saving}>
-            {saving ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
+          <Button onClick={save} disabled={busy}>
+            {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
             Save
           </Button>
         </DialogFooter>
@@ -219,5 +212,9 @@ const ToolVettingDialog: React.FC<Props> = ({ tool, open, onOpenChange, onSaved 
     </Dialog>
   );
 };
+
+const ToolVettingDialog: React.FC<Props> = ({ tool, open, onOpenChange }) => (
+  tool ? <VettingForm key={tool.name} tool={tool} open={open} onOpenChange={onOpenChange} /> : null
+);
 
 export default ToolVettingDialog;

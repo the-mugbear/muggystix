@@ -12,6 +12,7 @@
  * own project.
  */
 import React, { useEffect, useMemo, useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Copy, Download, History, Search, X } from 'lucide-react';
 
@@ -21,6 +22,7 @@ import {
   type RemediationRow, type RemediationState, type RemediationTeam,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
+import { GLOBAL, queryErrorText } from '../../lib/query';
 import { copyToClipboard } from '../../utils/clipboard';
 import { saveBlob } from '../../utils/download';
 import { usePagedList } from '../../hooks/usePagedList';
@@ -88,10 +90,6 @@ export interface RemediationWorkListProps {
   }>;
   /** Told each page that loads, for the page's lead sentence. */
   onLoaded?: (page: RemediationPage, filtered: boolean) => void;
-  /** Bumped by the page to re-read (after a change made elsewhere on it). */
-  reloadKey?: number;
-  /** Called after any save, so the page's other figures can follow. */
-  onChanged?: () => void;
   /** `scope="all"`: open a row's host or finding in ITS project (the page
    *  switches project first).  A row whose project cannot be opened — an
    *  archived one, or one the reader is not in — stays text. */
@@ -102,7 +100,7 @@ export interface RemediationWorkListProps {
 }
 
 export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
-  scope, canWrite, policy, projects, onLoaded, reloadKey = 0, onChanged, canOpen, onOpen, where = 'in this project',
+  scope, canWrite, policy, projects, onLoaded, canOpen, onOpen, where = 'in this project',
 }) => {
   const toast = useToast();
   const across = scope === 'all';
@@ -200,12 +198,15 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   // host or a finding, returns to the rows that were on screen.
   const urlPage = useUrlPage();
   const list = usePagedList<RemediationRow, RemediationPage>(
+    across ? 'listRemediationOverview' : 'listRemediation',
     ({ offset, limit, signal }) => {
       const query = { ...filters, group, offset, limit };
       return across ? listRemediationOverview(query, signal) : listRemediation(query, signal);
     },
-    [across, filters, group, pageSize, view === 'rows'],
-    { pageSize, errorMessage: 'The remediation list could not be loaded.', page: urlPage },
+    [filters, group, pageSize, view === 'rows'],
+    // Across projects the rows are not one project's: a GLOBAL key, like the
+    // contacts and the teams below.
+    { pageSize, errorMessage: 'The remediation list could not be loaded.', page: urlPage, global: across },
   );
   const rows = list.rows ?? NO_ROWS;
   const counts = list.lastResponse?.state_counts ?? null;
@@ -216,28 +217,24 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [list.lastResponse]);
 
-  // The contacts, read only while that view is open.
-  const people = usePagedList<RemediationContact, { items: RemediationContact[]; total: number }>(
-    async ({ signal }) => {
-      if (view !== 'contacts') return { items: [], total: 0 };
-      const items = await listRemediationContacts(across ? 'all' : undefined, projectId ?? undefined, signal);
-      return { items, total: items.length };
-    },
-    [across, projectId, view],
-    { pageSize: 200, errorMessage: 'The contacts could not be loaded.' },
-  );
-  const contacts = people.rows ?? NO_CONTACTS;
+  // The contacts and the teams, each read only while its view is open.
+  const people = useQuery({
+    queryKey: across
+      ? [GLOBAL, 'listRemediationContacts', 'all', projectId ?? undefined]
+      : ['listRemediationContacts', undefined, projectId ?? undefined],
+    queryFn: ({ signal }) => listRemediationContacts(across ? 'all' : undefined, projectId ?? undefined, signal),
+    enabled: view === 'contacts',
+  });
+  const contacts = people.data ?? NO_CONTACTS;
 
-  const groups = usePagedList<RemediationTeam, { items: RemediationTeam[]; total: number }>(
-    async ({ signal }) => {
-      if (view !== 'teams') return { items: [], total: 0 };
-      const items = await listRemediationTeams(across ? 'all' : undefined, projectId ?? undefined, signal);
-      return { items, total: items.length };
-    },
-    [across, projectId, view],
-    { pageSize: 200, errorMessage: 'The teams could not be loaded.' },
-  );
-  const teams = groups.rows ?? NO_TEAMS;
+  const groups = useQuery({
+    queryKey: across
+      ? [GLOBAL, 'listRemediationTeams', 'all', projectId ?? undefined]
+      : ['listRemediationTeams', undefined, projectId ?? undefined],
+    queryFn: ({ signal }) => listRemediationTeams(across ? 'all' : undefined, projectId ?? undefined, signal),
+    enabled: view === 'teams',
+  });
+  const teams = groups.data ?? NO_TEAMS;
 
   // Open the rows view on a set of filters, dropping the ones that would
   // contradict them.
@@ -264,10 +261,8 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   });
 
   // --- handing it to someone else -----------------------------------------
-  const [exporting, setExporting] = useState(false);
-  const exportCsv = async () => {
-    setExporting(true);
-    try {
+  const csv = useMutation({
+    mutationFn: async (): Promise<{ all: RemediationRow[]; total: number }> => {
       const all: RemediationRow[] = [];
       let total = Infinity;
       // The same filters, 200 rows a call, one call at a time.
@@ -280,17 +275,18 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
       }
       saveBlob(new Blob([`\uFEFF${remediationCsv(all)}`], { type: 'text/csv;charset=utf-8' }),
         `remediation-${list.lastResponse?.as_of ?? 'export'}.csv`);
+      return { all, total };
+    },
+    onSuccess: ({ all, total }) => {
       if (total > all.length) {
         toast.warning(`The file holds the first ${all.length.toLocaleString()} of ${total.toLocaleString()} rows. Narrow the list to get the rest.`);
       } else {
         toast.success(`${all.length.toLocaleString()} ${all.length === 1 ? 'row' : 'rows'} saved as CSV.`);
       }
-    } catch {
-      toast.error('The CSV could not be built. Nothing was saved.');
-    } finally {
-      setExporting(false);
-    }
-  };
+    },
+    onError: () => toast.error('The CSV could not be built. Nothing was saved.'),
+  });
+  const exporting = csv.isPending;
   const copySummary = async () => {
     if (!list.lastResponse) return;
     const text = remediationSummary(list.lastResponse, {
@@ -300,11 +296,6 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     if (await copyToClipboard(text)) toast.success('Summary copied.');
     else toast.error('The summary could not be copied.');
   };
-
-  useEffect(() => {
-    if (reloadKey > 0) { void list.reload(); void people.reload(); void groups.reload(); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reloadKey]);
 
   const keys = useMemo(() => rows.map((r) => r.finding_host_id), [rows]);
   const selection = useRowSelection(keys);
@@ -324,13 +315,11 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   const reportProject = across ? projects?.find((p) => p.project_id === projectId) ?? null : null;
   const canReport = canWrite && (!across || reportProject != null);
 
-  const changed = () => {
-    selection.clear();
-    void list.reload();
-    void people.reload();
-    void groups.reload();
-    onChanged?.();
-  };
+
+  // After a save.  The write itself has every remediation read on screen
+  // re-read in place (`invalidateRemediationReads`): the reader keeps their
+  // page.  What is left for the list is its own selection.
+  const changed = () => selection.clear();
 
   // Every row of a narrowed list is that host's (or that finding's), so the
   // first one names it; the id stands in until a row has loaded.
@@ -433,8 +422,11 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
 
       {view === 'teams' ? (
         <ListBody
-          rows={groups.rows}
-          state={{ loading: groups.loading, error: groups.error, onRetry: () => void groups.reload() }}
+          rows={groups.data ?? null}
+          state={{
+            loading: groups.isFetching, error: queryErrorText(groups.error, 'The teams could not be loaded.'),
+            onRetry: () => void groups.refetch(),
+          }}
           what="the teams"
           empty="No finding has a team yet. Set a team on a row — or on a selection — and it shows here."
         >
@@ -480,8 +472,11 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
         </ListBody>
       ) : view === 'contacts' ? (
         <ListBody
-          rows={people.rows}
-          state={{ loading: people.loading, error: people.error, onRetry: () => void people.reload() }}
+          rows={people.data ?? null}
+          state={{
+            loading: people.isFetching, error: queryErrorText(people.error, 'The contacts could not be loaded.'),
+            onRetry: () => void people.refetch(),
+          }}
           what="the contacts"
           empty="Nobody has been assigned a finding yet. Name a contact on a row and they show here."
         >
@@ -649,7 +644,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                 <Copy className="size-4" aria-hidden /> Copy summary
               </Button>
               <Button size="sm" variant="outline" className="h-8" disabled={exporting || list.total === 0}
-                title="Save the rows matching these filters as a CSV file" onClick={() => void exportCsv()}>
+                title="Save the rows matching these filters as a CSV file" onClick={() => csv.mutate()}>
                 <Download className="size-4" aria-hidden /> {exporting ? 'Building…' : 'CSV'}
               </Button>
             </span>

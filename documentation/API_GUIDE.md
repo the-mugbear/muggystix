@@ -36,6 +36,8 @@ The first-boot admin (`DEFAULT_ADMIN_USERNAME`, default `admin`) gets `DEFAULT_A
 
 The two-factor step (`/auth/login/2fa`) has its own per-username limit — 10 in 15 minutes — counted over wrong codes only, so password failures do not use it up. The client address is the peer nginx saw. Timing of the bcrypt path is equalized between "unknown username", "inactive user" and "valid user, wrong password" — every branch pays the same bcrypt cost via a precomputed dummy hash. Username enumeration via login timing is closed.
 
+A sign-in session ends `ACCESS_TOKEN_EXPIRE_MINUTES` (default 480) after its last renewal, not after sign-in. `POST /auth/session/renew` is the only thing that renews it: an ordinary request does not, so a page that polls in an unattended tab does not keep itself signed in. The web client calls it when the user presses a key or clicks, at most every few minutes. A session in continuous use has no upper limit.
+
 Expired user sessions are reaped hourly by a background task in the API process; `GET /auth/sessions` only returns rows where `expires_at > now() AND revoked_at IS NULL`.
 
 The **global** role is binary — `admin` (user management, system settings, audit log) or `member`. Capability tiers — `admin` > `analyst` > `auditor` > `viewer` — live on the **project membership** (`ProjectMembership.role`) and are checked by `require_project_role`. There is no global analyst/auditor/viewer.
@@ -75,6 +77,7 @@ X-API-Key: nm_agent_<plaintext>
 - `GET /auth/sessions` — list active sessions for the current user.
 - `DELETE /auth/sessions/{session_id}` — revoke a specific session (logs the user out on that device).
 - `POST /auth/logout` — revoke the current session.
+- `POST /auth/session/renew` — start the calling session's lifetime again from now (§1.1). Returns `{access_token, token_type, expires_in}`: a token for the SAME session (same `jti`, one row in `GET /auth/sessions`) with a later expiry; the token it replaces stays valid until its own. `401` when the session is over or revoked — a renewal never revives one. Not audited.
 - `POST /auth/change-password` — required on first login when `must_change_password=True`.
 - `GET /auth/profile` — returns the current user's profile including the `must_change_password` flag.
 
@@ -118,6 +121,7 @@ X-API-Key: nm_agent_<plaintext>
 | POST | `/auth/login` | Body: `{username, password}`. Returns JWT + profile, or a 2FA challenge (`two_factor_required`, `challenge_token`). |
 | POST | `/auth/login/2fa` | Body: `{challenge_token, code}` (TOTP or recovery code). Returns JWT + profile. |
 | POST | `/auth/logout` | Revokes the current session. |
+| POST | `/auth/session/renew` | Starts the session's lifetime again from now; returns a token for the same session (§1.3). |
 | POST | `/auth/change-password` | Required when `must_change_password=True`. Revokes every sign-in session and ends the user's agent sessions (§1.2). |
 | GET | `/auth/profile` | Current user + `must_change_password` flag. |
 | GET | `/auth/sessions` | List active sessions for current user. |

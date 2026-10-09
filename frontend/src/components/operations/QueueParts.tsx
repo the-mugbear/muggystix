@@ -18,17 +18,40 @@
  *    screen (§41): a row that leaves the list leaves the selection, so a bulk
  *    action never reaches a row the reader cannot see.
  *  - `BulkBar` — what is selected and what can be done with it.
+ *  - `useOperationsChanged` — after an action in a list: the reads the page
+ *    shows are out of date (5.351.0).
  */
 import React from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 
+import { invalidateReads } from '../../lib/query';
 import { Button } from '../ui/button';
 import { cn } from '../../utils/cn';
 import { selectAllState } from '../../utils/selection';
 
 const LINK_CLASS =
   'rounded text-caption text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+
+/** The reads Operations is made of, by API function: the counts (the light
+ *  workbench call, the queue's total) and each tab's list.  Any action in a
+ *  list — take, claim, still reviewed, re-open, an undo — moves a row between
+ *  them, so all are out of date together. */
+export const OPERATIONS_READS = [
+  'getWorkbench', 'getInvestigationQueue',
+  'getMyFindingsPage', 'getMyReviewHostsPage', 'getMyTestsPage', 'getReviewFollowupsPage',
+] as const;
+
+/** After an action in a list: the counts and the list on screen are read
+ *  again, in place (only what is on screen is asked for — a tab that is not
+ *  open has no read to repeat). */
+export function useOperationsChanged(): () => void {
+  const queryClient = useQueryClient();
+  return React.useCallback(() => {
+    void invalidateReads(queryClient, ...OPERATIONS_READS);
+  }, [queryClient]);
+}
 
 /** Where the reader is in a paged list. */
 export interface Pager {

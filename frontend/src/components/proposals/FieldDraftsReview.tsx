@@ -10,7 +10,7 @@
 import React, { useState } from 'react';
 
 import type { Proposal } from '../../services/api';
-import { useProposalDecision } from '../../hooks/useProposalDecision';
+import { type OnProposalDecided, useProposalDecision } from '../../hooks/useProposalDecision';
 import type { EvidenceResolver } from '../../utils/reportImages';
 import { cn } from '../../utils/cn';
 import { scrollBelowChrome } from '../../utils/uiStyles';
@@ -44,13 +44,13 @@ interface Props {
   /** This field's pending finding_text proposals, oldest first. */
   drafts: Proposal[];
   canDecide: boolean;
-  onDecided: (updated: Proposal) => void;
+  onDecided?: OnProposalDecided;
   evidence?: EvidenceResolver;
 }
 
 const Draft: React.FC<{
   pr: Proposal; label: string; current: string | null | undefined;
-  canDecide: boolean; onDecided: (updated: Proposal) => void; evidence?: EvidenceResolver;
+  canDecide: boolean; onDecided?: OnProposalDecided; evidence?: EvidenceResolver;
 }> = ({ pr, label, current, canDecide, onDecided, evidence }) => {
   const decision = useProposalDecision(pr, onDecided);
   const value = String(pr.payload?.value ?? '');

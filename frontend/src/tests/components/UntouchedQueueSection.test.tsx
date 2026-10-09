@@ -22,6 +22,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+import { readsOnScreen } from '../helpers/readsOnScreen';
 import UntouchedQueueSection, {
   type UntouchedQueueSectionProps,
 } from '../../components/operations/UntouchedQueueSection';
@@ -65,7 +66,11 @@ const queue = (over: Partial<InvestigationQueueResponse> = {}): InvestigationQue
   ...over,
 });
 
-const onChanged = vi.fn();
+// 5.351.0 — an action no longer calls a parent's `onChanged` (which re-read
+// the queue and the counts): it says which reads are out of date, and what is
+// on screen is read again.  These stand in for the tab's queue and the page's
+// counts; `reread` says which of them was asked for again.
+const { reread, ReadsOnScreen } = readsOnScreen({ getInvestigationQueue: 'list', getWorkbench: 'counts' });
 const onTier = vi.fn();
 const onRetry = vi.fn();
 const onPage = vi.fn();
@@ -82,11 +87,11 @@ const props = (over: Partial<UntouchedQueueSectionProps> & { page?: number } = {
     rows: data ? data.items : null,
     state: { loading: false, error: null, onRetry },
     pager: { page, pageSize: 25, total, onPage },
-    tier, onTier, canWrite: true, onChanged, ...rest,
+    tier, onTier, canWrite: true, ...rest,
   };
 };
 const renderIt = (over: Partial<UntouchedQueueSectionProps> & { page?: number } = {}) =>
-  render(<MemoryRouter><LocationProbe /><UntouchedQueueSection {...props(over)} /></MemoryRouter>);
+  render(<MemoryRouter><LocationProbe /><ReadsOnScreen /><UntouchedQueueSection {...props(over)} /></MemoryRouter>);
 const rowOf = (ip: string) => screen.getByRole('link', { name: ip }).closest('tr') as HTMLElement;
 const q = (el: HTMLElement) => new URL(el.getAttribute('href')!, 'https://x').searchParams.get('q');
 
@@ -249,7 +254,8 @@ describe('Untouched, with a reason — actions', () => {
     renderIt();
     fireEvent.click(within(rowOf('10.0.0.7')).getByRole('button', { name: 'Review' }));
     await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(7, 'in_review'));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('counts'));
   });
 
   it('bulk Review takes every selected host, and reports a partial failure honestly', async () => {
@@ -265,7 +271,7 @@ describe('Untouched, with a reason — actions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Review (2)' }));
     await waitFor(() => expect(api.followHost).toHaveBeenCalledTimes(2));
     expect(await screen.findByText(/Took 1 of 2 hosts into review; 1 could not be taken \(not a member\)/)).toBeInTheDocument();
-    expect(onChanged).toHaveBeenCalled();
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
   });
 
   it('a reader gets the rows and links, without checkboxes or Review', () => {

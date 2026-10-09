@@ -7,16 +7,16 @@
  * inline, and status/owner are editable in place. The place My Work,
  * reports, and notifications link a finding to.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT, SEVERITY_LABEL } from '../utils/severity';
 import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, ExternalLink, Loader2, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
 
 import {
   Finding,
   FindingSeverity,
   FindingStatus,
-  FindingStatusHistoryEntry,
   Annotation,
   ProjectMember,
   getFinding,
@@ -47,7 +47,7 @@ import { useProjectRole } from '../hooks/useProjectRole';
 import { useFindingImages } from '../hooks/useFindingImages';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDiscardGuard } from '../hooks/useDiscardGuard';
-import { useLatestRequest } from '../hooks/useLatestRequest';
+import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { DetailSkeleton } from '../components/PageSkeleton';
 import { Badge } from '../components/ui/badge';
@@ -56,7 +56,7 @@ import PostureSection, { SectionCount } from '../components/posture/PostureSecti
 import FindingEndpoints from '../components/findings/FindingEndpoints';
 import SectionJumpBar, { JumpEntry, jumpTargetStyle } from '../components/SectionJumpBar';
 import { useFindingProposals } from '../hooks/useFindingProposals';
-import type { Proposal } from '../services/api';
+import type { OnProposalDecided } from '../hooks/useProposalDecision';
 import { formatTimestamp } from '../utils/relativeTime';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -115,99 +115,54 @@ const FindingDetail: React.FC = () => {
     void confirmLeave().then((ok) => { if (ok) navigate(returnTo); });
   };
 
-  const [finding, setFinding] = useState<Finding | null>(null);
-  // Project roster for the owner picker — accountability for driving the
-  // finding to closure (distinct from a host's review analyst).  Loaded
-  // below, for analyst+ only — viewers can't reassign.
-  const [history, setHistory] = useState<FindingStatusHistoryEntry[]>([]);
-  // M2 — history is ancillary: it loads with its own state and never gates
-  // the finding itself.
-  const [historyLoading, setHistoryLoading] = useState(true);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  // C2 — a metadata edit refreshes in the background: the page stays
-  // mounted (so the comment composer keeps its draft) and only the edited
-  // control shows a pending state.
-  const [refreshing, setRefreshing] = useState<'status' | 'severity' | null>(null);
-  // H1-style split for the source-evidence thread: a failed fetch is shown
-  // as unavailable, not as "no evidence".
-  const [evidenceError, setEvidenceError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  // The finding is ONE query.  A write route that answers with the finding
+  // replaces it (`replaceFinding`); the others read it again (`reread`).
+  // The skeleton shows only while there is no finding yet.
+  const findingQuery = useQuery({ queryKey: ['getFinding', id], queryFn: () => getFinding(id) });
+  const finding = findingQuery.data ?? null;
+  // M2 — history is ancillary: its own query, it never gates the finding.
+  const historyQuery = useQuery({ queryKey: ['getFindingHistory', id], queryFn: () => getFindingHistory(id) });
+  const history = historyQuery.data ?? [];
+  const historyLoading = historyQuery.isFetching;
+  const historyError = queryErrorText(historyQuery.error, 'History unavailable.');
   // Terminal-disposition "why" prompt — mirrors the /findings list so a
   // status change on this page also captures the audit rationale.
   const [summaryPrompt, setSummaryPrompt] = useState<{ status: FindingStatus } | null>(null);
   const [summaryText, setSummaryText] = useState('');
-  // The note thread this finding was promoted from — body + image evidence,
-  // shown inline (the page previously only linked out to it).
-  const [evidenceThread, setEvidenceThread] = useState<Annotation[]>([]);
   const [addHostsOpen, setAddHostsOpen] = useState(false);
-  // Bumped after an AI draft so the page's proposals re-read.
-  const [proposalsKey, setProposalsKey] = useState(0);
 
-  const loadHistory = useCallback(async () => {
-    setHistoryLoading(true);
-    try {
-      setHistory(await getFindingHistory(id));
-      setHistoryError(null);
-    } catch (err) {
-      setHistoryError(formatApiError(err, 'History unavailable.'));
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [id]);
-
-  // Initial load: the skeleton shows only while there is no finding yet.
-  const loadFinding = useCallback(async () => {
-    setLoading(true);
-    try {
-      setFinding(await getFinding(id));
-      setError(null);
-    } catch (err) {
-      setError(formatApiError(err, 'Failed to load finding.'));
-    } finally {
-      setLoading(false);
-    }
-  }, [id]);
+  // The endpoint routes (and rename, owner, report text) answer with the
+  // finding, so a change updates the page from the response (C2: no second
+  // read of thousands of endpoints); only the history, which an endpoint
+  // change appended to, is re-read.
+  const replaceFinding = useCallback((updated: Finding, appendsHistory = true) => {
+    queryClient.setQueryData(['getFinding', id], updated);
+    if (appendsHistory) void queryClient.invalidateQueries({ queryKey: ['getFindingHistory', id] });
+  }, [queryClient, id]);
 
   // Background refresh after an edit: content stays mounted; a failed refresh
   // keeps what is on screen and says so rather than blanking the page.
-  // Both refreshes share one lane: an older read never lands over a newer one.
-  const runRefresh = useLatestRequest();
-  const reread = useCallback(
-    () => runRefresh(() => Promise.all([getFinding(id), getFindingHistory(id)])),
-    [id, runRefresh],
-  );
+  // Returns why the page could not refresh, or null.
+  const refetchFinding = findingQuery.refetch;
+  const refetchHistory = historyQuery.refetch;
+  const reread = useCallback(async (): Promise<{ error: unknown } | null> => {
+    const [f, h] = await Promise.all([refetchFinding(), refetchHistory()]);
+    return f.isError ? { error: f.error } : h.isError ? { error: h.error } : null;
+  }, [refetchFinding, refetchHistory]);
 
-  const refresh = useCallback(async (what: 'status' | 'severity') => {
-    setRefreshing(what);
-    const r = await reread();
-    if (r.stale) return;
-    if (r.ok) {
-      setFinding(r.value[0]);
-      setHistory(r.value[1]);
-      setHistoryError(null);
-    } else {
-      toast.warning(formatApiError(r.error, 'Saved, but the page could not refresh — reload to see the change.'));
-    }
-    setRefreshing(null);
-  }, [reread, toast]);
-
-  // An accepted proposal changed the finding (text, an endpoint): re-read it
-  // and its history quietly.
-  const refreshAfterProposal = useCallback(async () => {
-    const r = await reread();
-    if (r.stale) return;
-    if (r.ok) {
-      setFinding(r.value[0]);
-      setHistory(r.value[1]);
-    } else {
-      toast.warning('Accepted, but the page could not refresh — reload to see the change.');
-    }
-    // The read that superseded a status / severity refresh has landed.
-    setRefreshing(null);
-  }, [reread, toast]);
-
-  useEffect(() => { void loadFinding(); void loadHistory(); }, [loadFinding, loadHistory]);
+  // An accepted proposal changed the finding (text, an endpoint).  The
+  // decision asks for the finding, its history, its images and the pending
+  // proposals again itself (`useProposalDecision`); the page's part is to say
+  // so when the finding could not be read again.
+  const proposalDecided = useCallback<OnProposalDecided>((updated, settled) => {
+    if (updated.status !== 'accepted') return;
+    void settled.then(() => {
+      const failed = [['getFinding', id], ['getFindingHistory', id]]
+        .some((key) => queryClient.getQueryState(key)?.status === 'error');
+      if (failed) toast.warning('Accepted, but the page could not refresh — reload to see the change.');
+    });
+  }, [queryClient, id, toast]);
 
   // Roster for the owner picker (analyst+ only — viewers can't reassign).
   const roster = useProjectRoster({ enabled: canManage });
@@ -223,59 +178,60 @@ const FindingDetail: React.FC = () => {
 
   const evidenceHostId = finding?.hosts[0]?.host_id ?? null;
 
-  // Fetch the source note thread (root + replies, with image attachments) so
-  // the finding shows the actual evidence inline, not just a link out.
-  useEffect(() => {
-    const rootId = finding?.evidence_annotation_id;
-    if (!finding || finding.source !== 'note' || !rootId || !evidenceHostId) {
-      setEvidenceThread([]);
-      return;
-    }
-    let cancelled = false;
-    setEvidenceError(null);
-    getHostNotes(evidenceHostId)
-      .then((notes) => {
-        if (cancelled) return;
-        // Walk the subtree from the root note via parent_id links.
-        const inThread = new Set<number>([rootId]);
-        let changed = true;
-        while (changed) {
-          changed = false;
-          for (const n of notes) {
-            if (!inThread.has(n.id) && n.parent_id != null && inThread.has(n.parent_id)) {
-              inThread.add(n.id);
-              changed = true;
-            }
-          }
+  // The note thread this finding was promoted from (root + replies, with
+  // image attachments), shown inline — not just a link out.  H1-style split:
+  // a failed read is shown as unavailable, not as "no evidence".
+  const evidenceRootId = finding?.source === 'note' ? finding.evidence_annotation_id ?? null : null;
+  const hostNotesQuery = useQuery({
+    queryKey: ['getHostNotes', evidenceHostId],
+    queryFn: () => getHostNotes(evidenceHostId as number),
+    enabled: !!evidenceRootId && !!evidenceHostId,
+  });
+  const evidenceError = queryErrorText(hostNotesQuery.error, 'Evidence note unavailable.');
+  const hostNotes = hostNotesQuery.isError ? undefined : hostNotesQuery.data;
+  const evidenceThread = useMemo<Annotation[]>(() => {
+    if (!hostNotes || !evidenceRootId) return [];
+    // Walk the subtree from the root note via parent_id links.
+    const inThread = new Set<number>([evidenceRootId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const n of hostNotes) {
+        if (!inThread.has(n.id) && n.parent_id != null && inThread.has(n.parent_id)) {
+          inThread.add(n.id);
+          changed = true;
         }
-        setEvidenceThread(notes.filter((n) => inThread.has(n.id)).sort((a, b) => a.id - b.id));
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setEvidenceThread([]);
-        setEvidenceError(formatApiError(err, 'Evidence note unavailable.'));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [finding, evidenceHostId]);
-
-  const applyStatus = async (status: FindingStatus, summary?: string) => {
-    if (!finding) return;
-    try {
-      await setFindingStatus(finding.id, status, summary);
-      await refresh('status'); // status + history trail together, in the background
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update status.'));
+      }
     }
-  };
+    return hostNotes.filter((n) => inThread.has(n.id)).sort((a, b) => a.id - b.id);
+  }, [hostNotes, evidenceRootId]);
 
-  // The endpoint routes answer with the finding, so a change updates the page
-  // from the response (C2: no second read of thousands of endpoints); only
-  // the history, which the change appended to, is re-read.
-  const handleEndpointsChanged = (updated: Finding) => {
-    setFinding(updated);
-    void loadHistory();
+  // C2 — a status or severity edit is saved, then the finding and its history
+  // are read again in the background: the page stays mounted (so the comment
+  // composer keeps its draft) and only the edited control shows it is busy —
+  // until that read is back.
+  const rereadAfterSave = async () => {
+    const failed = await reread();
+    if (failed) toast.warning(formatApiError(failed.error, 'Saved, but the page could not refresh — reload to see the change.'));
+  };
+  const statusChange = useMutation({
+    mutationFn: (v: { status: FindingStatus; summary?: string }) => setFindingStatus(id, v.status, v.summary),
+    onSuccess: rereadAfterSave, // status + history trail together
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update status.')),
+  });
+  const severityChange = useMutation({
+    mutationFn: (severity: FindingSeverity) => updateFinding(id, { severity }),
+    onSuccess: async (_updated, severity) => {
+      await rereadAfterSave(); // headline badge + rollups
+      toast.success(`Severity reclassified to ${SEVERITY_LABEL[severity]}.`);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update severity.')),
+  });
+  const refreshing: 'status' | 'severity' | null = statusChange.isPending
+    ? 'status' : severityChange.isPending ? 'severity' : null;
+
+  const applyStatus = (status: FindingStatus, summary?: string) => {
+    if (finding) statusChange.mutate({ status, summary });
   };
 
   const handleStatus = (status: FindingStatus) => {
@@ -292,26 +248,22 @@ const FindingDetail: React.FC = () => {
     }
   };
 
-  const handleSeverity = async (severity: FindingSeverity) => {
+  const handleSeverity = (severity: FindingSeverity) => {
     if (!finding || severity === finding.severity) return;
-    try {
-      await updateFinding(finding.id, { severity });
-      await refresh('severity'); // headline badge + rollups, in the background
-      toast.success(`Severity reclassified to ${SEVERITY_LABEL[severity]}.`);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update severity.'));
-    }
+    severityChange.mutate(severity);
   };
 
-  const handleOwner = async (ownerId: number | null) => {
-    if (!finding || ownerId === finding.owner_id) return;
-    try {
-      const updated = await updateFinding(finding.id, { owner_id: ownerId });
-      setFinding(updated);
+  const ownerChange = useMutation({
+    mutationFn: (ownerId: number | null) => updateFinding(id, { owner_id: ownerId }),
+    onSuccess: (updated, ownerId) => {
+      replaceFinding(updated, false);
       toast.success(ownerId == null ? 'Owner cleared.' : `Owner set to ${updated.owner_name ?? 'user'}.`);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update owner.'));
-    }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update owner.')),
+  });
+  const handleOwner = (ownerId: number | null) => {
+    if (!finding || ownerId === finding.owner_id) return;
+    ownerChange.mutate(ownerId);
   };
 
   // v5.256.0 — authored content: the finding's author (or a project admin)
@@ -326,14 +278,9 @@ const FindingDetail: React.FC = () => {
   const findingImages = useFindingImages(finding?.id ?? null);
   // 5.334.0 — one read of the pending proposals; each is shown where it
   // applies (the summary at the top, report text, the endpoint rows).
-  const proposals = useFindingProposals(finding?.id ?? null, proposalsKey);
-  const reloadProposals = proposals.reload;
+  const proposals = useFindingProposals(finding?.id ?? null);
   const endpointIds = useMemo(() => new Set((finding?.hosts ?? []).map((h) => h.id)), [finding?.hosts]);
   const reloadImages = findingImages.reload;
-  const proposalDecided = useCallback((updated: Proposal) => {
-    if (updated.status === 'accepted') { void refreshAfterProposal(); reloadImages(); }
-    void reloadProposals();
-  }, [refreshAfterProposal, reloadImages, reloadProposals]);
   const imagesById = useMemo(
     () => new Map(findingImages.images.map((img) => [img.id, img])), [findingImages.images],
   );
@@ -342,32 +289,62 @@ const FindingDetail: React.FC = () => {
       canManage && (!!finding?.viewer_is_project_admin || (user?.id != null && att.uploaded_by_id === user.id)),
     placement: (att: NoteAttachment) => imagesById.get(att.id),
     captionMax: findingImages.captionMax,
-    onImagesChanged: reloadImages,
     // The thread's thumbnails come from the page's one cache of image bytes.
     thumbnails: findingImages.thumbnails,
   }), [
-    canManage, finding?.viewer_is_project_admin, user?.id, imagesById, findingImages.captionMax, reloadImages,
+    canManage, finding?.viewer_is_project_admin, user?.id, imagesById, findingImages.captionMax,
     findingImages.thumbnails,
   ]);
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
-  const [titleSaving, setTitleSaving] = useState(false);
+  const rename = useMutation({
+    mutationFn: (title: string) => updateFinding(id, { title }),
+    onSuccess: (updated) => {
+      replaceFinding(updated, false);
+      setTitleDraft(null);
+      toast.success('Finding renamed.');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to rename the finding.')),
+  });
+  const titleSaving = rename.isPending;
 
-  const saveTitle = async () => {
+  const saveTitle = () => {
     if (!finding || titleDraft === null) return;
     const title = titleDraft.trim();
     if (!title) return;
     if (title === finding.title) { setTitleDraft(null); return; }
-    setTitleSaving(true);
-    try {
-      setFinding(await updateFinding(finding.id, { title }));
-      setTitleDraft(null);
-      toast.success('Finding renamed.');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to rename the finding.'));
-    } finally {
-      setTitleSaving(false);
-    }
+    rename.mutate(title);
   };
+
+  const remove = useMutation({
+    mutationFn: () => deleteFinding(id),
+    onSuccess: () => {
+      toast.success('Finding deleted.');
+      navigate(returnTo);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to delete the finding.')),
+  });
+
+  // Undo of a removal: the row goes back with its name and its own state.
+  const restoreEndpoint = useMutation({
+    mutationFn: (v: { row: FindingHostInfo; label: string }) => addFindingHosts(id, [], [
+      { host_id: v.row.host_id, name_id: v.row.name_id ?? null, host_status: v.row.host_status },
+    ]),
+    onSuccess: (reverted, v) => {
+      replaceFinding(reverted);
+      toast.success(`Put ${v.label} back on the finding.`);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to undo the removal.')),
+  });
+  const removeEndpoint = useMutation({
+    mutationFn: (v: { row: FindingHostInfo; label: string }) => removeFindingEndpoint(id, v.row.id),
+    onSuccess: (updated, v) => {
+      replaceFinding(updated, false);
+      toast.success(`Removed ${v.label} from the finding.`, {
+        action: { label: 'Undo', onClick: () => restoreEndpoint.mutate(v) },
+      });
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to remove the endpoint.')),
+  });
 
   const handleDelete = async () => {
     if (!finding) return;
@@ -394,13 +371,7 @@ const FindingDetail: React.FC = () => {
       confirmLabel: 'Delete finding',
     });
     if (!ok) return;
-    try {
-      await deleteFinding(finding.id);
-      toast.success('Finding deleted.');
-      navigate(returnTo);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to delete the finding.'));
-    }
+    remove.mutate();
   };
 
   // A host may carry several affected-endpoint rows (one per named endpoint).
@@ -419,24 +390,7 @@ const FindingDetail: React.FC = () => {
       confirmLabel: 'Remove',
     });
     if (!ok) return;
-    try {
-      const updated = await removeFindingEndpoint(finding.id, row.id);
-      setFinding(updated);
-      toast.success(`Removed ${label} from the finding.`, {
-        action: {
-          label: 'Undo',
-          onClick: () => {
-            addFindingHosts(finding.id, [], [
-              { host_id: row.host_id, name_id: row.name_id ?? null, host_status: row.host_status },
-            ])
-              .then((reverted) => { setFinding(reverted); toast.success(`Put ${label} back on the finding.`); })
-              .catch((err) => toast.error(formatApiError(err, 'Failed to undo the removal.')));
-          },
-        },
-      });
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to remove the endpoint.'));
-    }
+    removeEndpoint.mutate({ row, label });
   };
 
   // The jump bar: one entry per section, in page order.  The bar leaves out
@@ -461,21 +415,22 @@ const FindingDetail: React.FC = () => {
     const before = new Set(finding?.hosts.map((h) => h.host_id) ?? []);
     const added = new Set(updated.hosts.map((h) => h.host_id).filter((id) => !before.has(id)));
     const skipped = requested.filter((id) => !added.has(id)).length;
-    setFinding(updated);
-    void loadHistory();
+    replaceFinding(updated);
     const addedText = `Added ${added.size} host${added.size === 1 ? '' : 's'}`;
     toast.success(skipped ? `${addedText} · ${skipped} already affected` : `${addedText}.`);
   };
 
-  if (loading && !finding) return <DetailSkeleton />;
-  if (error || !finding) {
+  if (!finding && findingQuery.isFetching) return <DetailSkeleton />;
+  if (!finding) {
     return (
       <div className="p-md md:p-lg">
         <Button variant="ghost" size="sm" onClick={() => navigate(returnTo)}>
           <ArrowLeft className="size-4" aria-hidden /> Findings
         </Button>
-        <p className="mt-md text-destructive">{error || 'Finding not found.'}</p>
-        <Button variant="outline" size="sm" className="mt-sm" onClick={() => void loadFinding()}>
+        <p className="mt-md text-destructive">
+          {queryErrorText(findingQuery.error, 'Failed to load finding.') || 'Finding not found.'}
+        </p>
+        <Button variant="outline" size="sm" className="mt-sm" onClick={() => void findingQuery.refetch()}>
           <RefreshCw className="size-4" aria-hidden /> Retry
         </Button>
       </div>
@@ -657,7 +612,7 @@ const FindingDetail: React.FC = () => {
             key={finding.id}
             finding={finding}
             canManage={canManage}
-            onChanged={handleEndpointsChanged}
+            onChanged={replaceFinding}
             onRemove={(row) => void handleRemoveEndpoint(row)}
             focusEndpointId={focusEndpointId}
             proposals={proposals.byEndpoint}
@@ -697,9 +652,8 @@ const FindingDetail: React.FC = () => {
       <FindingReportTextCard
         finding={finding} canEdit={canModify} canPropose={canManage}
         // Saved text may place or release an image: re-read where each one is.
-        onSaved={(f) => { setFinding(f); reloadImages(); }}
+        onSaved={(f) => { replaceFinding(f, false); reloadImages(); }}
         images={findingImages}
-        onDrafted={() => setProposalsKey((k) => k + 1)}
         drafts={proposals.textByField}
         canDecide={canManage}
         onProposalDecided={proposalDecided}
@@ -778,7 +732,7 @@ const FindingDetail: React.FC = () => {
           ) : historyError ? (
             <div className="flex flex-wrap items-center gap-sm">
               <p className="text-caption text-destructive">History unavailable — {historyError}</p>
-              <Button variant="outline" size="sm" onClick={() => void loadHistory()} disabled={historyLoading}>
+              <Button variant="outline" size="sm" onClick={() => void historyQuery.refetch()} disabled={historyLoading}>
                 <RefreshCw className="size-4" aria-hidden /> Retry
               </Button>
             </div>

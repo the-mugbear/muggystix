@@ -16,6 +16,9 @@
  * — the next step must not be hidden behind a collapsed row.
  */
 import React, { useEffect, useMemo, useState } from 'react';
+import {
+  keepPreviousData, useInfiniteQuery, useMutation, useQueryClient, type InfiniteData,
+} from '@tanstack/react-query';
 import { Link, useLocation } from 'react-router-dom';
 import { Bot, ChevronDown, ChevronRight, ClipboardList, Loader2, MoreHorizontal, Plus, RefreshCw } from 'lucide-react';
 
@@ -24,9 +27,11 @@ import {
   PromotedEvidence,
   listEvidenceRecords,
   updateHostTest,
+  type EvidenceList,
   type EvidenceRecord,
   type HostTest,
 } from '../../services/api';
+import { queryErrorText } from '../../lib/query';
 import { agentInstruction } from '../../utils/agentRuns';
 import { formatApiError } from '../../utils/apiErrors';
 import { cn } from '../../utils/cn';
@@ -91,6 +96,9 @@ export const TONE_CLASS: Record<ResultTone, string> = {
 };
 
 const isActive = (status: string): boolean => status === 'proposed' || status === 'in_progress';
+/** The server's answer to a change made on a revision the test has left. */
+const isStale = (err: unknown): boolean =>
+  (err as { response?: { status?: number } })?.response?.status === 409;
 /** "To do" is what needs a person, which includes a finished test whose result
  *  nobody has decided on; "Done" is the rest of the finished ones. */
 const filterOf = (t: HostTest): Exclude<Filter, 'all'> =>
@@ -115,30 +123,23 @@ const PromoteEvidence: React.FC<{
   const [severity, setSeverity] = useState<FindingSeverity>(
     (SEVERITIES as readonly string[]).includes(test.priority) ? (test.priority as FindingSeverity) : 'medium',
   );
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const create = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      // Title and severity go with a linked test too, but the server uses
-      // them only if the observation it named has since left the host: while
-      // it is there, the observation names and rates its own finding.
-      const made = await createFindingFromEvidence(rec.id, { title: title.trim(), severity });
-      onCreated(made);
-    } catch (err) {
-      setError(formatApiError(err, 'Could not create the finding.'));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const promote = useMutation({
+    // Title and severity go with a linked test too, but the server uses
+    // them only if the observation it named has since left the host: while
+    // it is there, the observation names and rates its own finding.
+    mutationFn: () => createFindingFromEvidence(rec.id, { title: title.trim(), severity }),
+    // Said wherever the reader is by then: the finding was made.
+    onSuccess: onCreated,
+  });
+  const busy = promote.isPending;
+  const error = queryErrorText(promote.error, 'Could not create the finding.');
+  const create = () => promote.mutate();
 
   if (linked) {
     return (
       <div className="space-y-xxs">
         <div className="flex min-w-0 flex-wrap items-center gap-xs">
-          <Button size="sm" disabled={busy} onClick={() => void create()}>
+          <Button size="sm" disabled={busy} onClick={create}>
             {busy && <Loader2 className="size-3.5 animate-spin" aria-hidden />} Promote to finding
           </Button>
           <span className="min-w-0 break-words text-caption text-muted-foreground">
@@ -172,7 +173,7 @@ const PromoteEvidence: React.FC<{
         Created as confirmed on this host, with this record as its evidence. Write the report text on the finding.
       </p>
       <div className="flex flex-wrap gap-xs">
-        <Button size="sm" disabled={busy || title.trim().length === 0} onClick={() => void create()}>
+        <Button size="sm" disabled={busy || title.trim().length === 0} onClick={create}>
           {busy && <Loader2 className="size-3.5 animate-spin" aria-hidden />} Create finding
         </Button>
       </div>
@@ -185,30 +186,30 @@ const PromoteEvidence: React.FC<{
 const TestEvidence: React.FC<{ test: HostTest; ctl: HostTestsController }> = ({ test, ctl }) => {
   const testId = test.id;
   const count = test.evidence_count;
-  const [items, setItems] = useState<EvidenceRecord[] | null>(null);
-  const [total, setTotal] = useState(count);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = async (offset: number) => {
-    setLoading(true);
-    try {
-      const page = await listEvidenceRecords({ host_test_id: testId, limit: EVIDENCE_PAGE, offset });
-      setItems((prev) => (offset === 0 ? page.items : [...(prev ?? []), ...page.items]));
-      setTotal(page.total);
-      setError(null);
-    } catch (err) {
-      setError(formatApiError(err, 'Could not load the evidence for this test.'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Again whenever a result is added (the count is the signal).
-  useEffect(() => {
-    if (count > 0) void load(0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [testId, count]);
+  const queryClient = useQueryClient();
+  // The test's count of results is in the key: a result added to the test is
+  // a new list, read from its first page, with the one on screen kept until
+  // it lands.  (Not `useListQuery`, which shows nothing between two keys.)
+  const queryKey = useMemo(
+    () => ['listEvidenceRecords', { host_test_id: testId, limit: EVIDENCE_PAGE }, { results: count }] as const,
+    [testId, count],
+  );
+  const query = useInfiniteQuery({
+    queryKey,
+    queryFn: ({ pageParam }) => listEvidenceRecords({ host_test_id: testId, limit: EVIDENCE_PAGE, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((n, page) => n + page.items.length, 0);
+      return last.items.length > 0 && loaded < last.total ? loaded : undefined;
+    },
+    enabled: count > 0,
+    placeholderData: keepPreviousData,
+  });
+  const pages = query.data?.pages;
+  const items = useMemo(() => (pages ? pages.flatMap((page) => page.items) : null), [pages]);
+  const total = pages?.length ? pages[pages.length - 1].total : count;
+  const loading = query.isFetching;
+  const error = queryErrorText(query.error, 'Could not load the evidence for this test.');
 
   if (count === 0) {
     return (
@@ -220,7 +221,7 @@ const TestEvidence: React.FC<{ test: HostTest; ctl: HostTestsController }> = ({ 
   if (error && !items) {
     return (
       <p role="alert" className="text-caption text-destructive">
-        {error} <Button variant="ghost" size="sm" onClick={() => void load(0)}>Retry</Button>
+        {error} <Button variant="ghost" size="sm" onClick={() => void query.refetch()}>Retry</Button>
       </p>
     );
   }
@@ -249,7 +250,15 @@ const TestEvidence: React.FC<{ test: HostTest; ctl: HostTestsController }> = ({ 
                   rec={rec}
                   test={test}
                   onCreated={(made) => {
-                    setItems((prev) => prev?.map((r) => (r.id === rec.id ? { ...r, finding_id: made.finding_id } : r)) ?? prev);
+                    // The record now names its finding; the rest of the host
+                    // page is the controller's to bring up to date.
+                    queryClient.setQueryData<InfiniteData<EvidenceList, number>>(queryKey, (prev) => (prev ? {
+                      ...prev,
+                      pages: prev.pages.map((page) => ({
+                        ...page,
+                        items: page.items.map((r) => (r.id === rec.id ? { ...r, finding_id: made.finding_id } : r)),
+                      })),
+                    } : prev));
                     ctl.onFindingCreated(made.finding_id, made);
                   }}
                 />
@@ -260,7 +269,7 @@ const TestEvidence: React.FC<{ test: HostTest; ctl: HostTestsController }> = ({ 
       </ul>
       {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
       {items.length < total && (
-        <Button variant="ghost" size="sm" disabled={loading} onClick={() => void load(items.length)}>
+        <Button variant="ghost" size="sm" disabled={loading} onClick={() => void query.fetchNextPage()}>
           Show more evidence ({(total - items.length).toLocaleString()} left)
         </Button>
       )}
@@ -285,8 +294,6 @@ export const HostTestRow: React.FC<{
   useEffect(() => { if (defaultOpen) setOpen(true); }, [defaultOpen]);
   const [dismissing, setDismissing] = useState(false);
   const [reason, setReason] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // A result that showed an issue opens the row: the next step is inside it.
   useEffect(() => { if (needsDecision) setOpen(true); }, [needsDecision]);
@@ -295,25 +302,28 @@ export const HostTestRow: React.FC<{
   useEffect(() => { onDirty?.(test.id, dirty); }, [dirty, onDirty, test.id]);
   useEffect(() => () => onDirty?.(test.id, false), [onDirty, test.id]);
 
-  const patch = async (change: Parameters<typeof updateHostTest>[1]) => {
-    setSaving(true);
-    setError(null);
-    try {
-      ctl.replace(await updateHostTest(test.id, change));
+  // Every change carries the revision it was made on (`expected_revision`);
+  // the server refuses it with a 409 when the test has moved since.
+  const change = useMutation({
+    mutationFn: (body: Parameters<typeof updateHostTest>[1]) => updateHostTest(test.id, body),
+    onSuccess: (updated) => {
+      ctl.replace(updated);
       setDismissing(false);
       setReason('');
-    } catch (err) {
-      const status = (err as { response?: { status?: number } })?.response?.status;
-      if (status === 409) {
+    },
+    onError: (err) => {
+      if (isStale(err)) {
         ctl.markStale();
         void ctl.reload();
-      } else {
-        setError(formatApiError(err, 'Could not save the change.'));
       }
-    } finally {
-      setSaving(false);
-    }
-  };
+    },
+  });
+  const patch = change.mutate;
+  const saving = change.isPending;
+  // A stale write is said once, above the list; anything else on the row.
+  const error = change.error && !isStale(change.error)
+    ? formatApiError(change.error, 'Could not save the change.')
+    : null;
 
   const active = isActive(test.status);
   const canClaim = ctl.userId != null && active && test.assigned_to_id !== ctl.userId;
@@ -387,12 +397,12 @@ export const HostTestRow: React.FC<{
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               {canClaim && (
-                <DropdownMenuItem onSelect={() => void patch({ expected_revision: test.revision, assigned_to_id: ctl.userId })}>
+                <DropdownMenuItem onSelect={() => patch({ expected_revision: test.revision, assigned_to_id: ctl.userId })}>
                   {test.assigned_to_id == null ? 'Claim' : 'Take over'}
                 </DropdownMenuItem>
               )}
               {!active && (
-                <DropdownMenuItem onSelect={() => void patch({ expected_revision: test.revision, status: 'proposed' })}>
+                <DropdownMenuItem onSelect={() => patch({ expected_revision: test.revision, status: 'proposed' })}>
                   Reopen
                 </DropdownMenuItem>
               )}
@@ -400,7 +410,7 @@ export const HostTestRow: React.FC<{
                 <DropdownMenuItem onSelect={() => ctl.openResult(test)}>Record another result</DropdownMenuItem>
               )}
               {test.status !== 'dismissed' && (
-                <DropdownMenuItem onSelect={() => { setOpen(true); setError(null); setDismissing(true); }}>
+                <DropdownMenuItem onSelect={() => { setOpen(true); change.reset(); setDismissing(true); }}>
                   Dismiss…
                 </DropdownMenuItem>
               )}
@@ -484,7 +494,7 @@ export const HostTestRow: React.FC<{
               />
               <div className="flex flex-wrap gap-xs">
                 <Button size="sm" variant="destructive" disabled={saving || reason.trim().length === 0}
-                  onClick={() => void patch({
+                  onClick={() => patch({
                     expected_revision: test.revision, status: 'dismissed', dismissed_reason: reason.trim(),
                   })}>
                   Dismiss test

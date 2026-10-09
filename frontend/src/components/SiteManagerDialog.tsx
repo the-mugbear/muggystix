@@ -4,7 +4,8 @@
  * created by naming them on subnets (CSV col 4 / inline edit); this edits
  * their metadata, not the name.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
 import { listSites, updateSite, type Site } from '../services/api';
@@ -28,26 +29,31 @@ interface SiteManagerDialogProps {
 
 export const SiteManagerDialog: React.FC<SiteManagerDialogProps> = ({ open, onOpenChange }) => {
   const toast = useToast();
-  const [sites, setSites] = useState<Site[]>([]);
-  const [loading, setLoading] = useState(false);
-
+  const queryClient = useQueryClient();
+  // Read each time the dialog opens; closed, it asks for nothing.
+  const query = useQuery({
+    queryKey: ['listSites'],
+    queryFn: () => listSites(),
+    enabled: open,
+  });
+  const sites = query.data ?? [];
+  const loading = query.isFetching;
+  const loadError = query.error;
+  // Once per failed read (a reopened dialog reads again before it says so).
   useEffect(() => {
-    if (!open) return;
-    setLoading(true);
-    listSites()
-      .then(setSites)
-      .catch((e) => toast.error(formatApiError(e, 'Failed to load sites.')))
-      .finally(() => setLoading(false));
-  }, [open, toast]);
+    if (open && loadError && !loading) toast.error(formatApiError(loadError, 'Failed to load sites.'));
+  }, [open, loadError, loading, toast]);
 
-  const patch = async (id: number, payload: Parameters<typeof updateSite>[1]) => {
-    try {
-      const updated = await updateSite(id, payload);
-      setSites((prev) => prev.map((s) => (s.id === id ? updated : s)));
-    } catch (e) {
-      toast.error(formatApiError(e, 'Failed to update site.'));
-    }
-  };
+  const update = useMutation({
+    mutationFn: ({ id, payload }: { id: number; payload: Parameters<typeof updateSite>[1] }) =>
+      updateSite(id, payload),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<Site[]>(['listSites'], (prev) =>
+        prev?.map((s) => (s.id === updated.id ? updated : s)));
+    },
+    onError: (e) => toast.error(formatApiError(e, 'Failed to update site.')),
+  });
+  const patch = (id: number, payload: Parameters<typeof updateSite>[1]) => update.mutate({ id, payload });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -111,7 +117,7 @@ export const SiteManagerDialog: React.FC<SiteManagerDialogProps> = ({ open, onOp
                           const raw = e.target.value.trim();
                           const next = raw === '' ? null : Number(raw);
                           if (next !== s.expected_host_count) {
-                            void patch(s.id, { expected_host_count: next });
+                            patch(s.id, { expected_host_count: next });
                           }
                         }}
                       />

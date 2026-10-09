@@ -5,33 +5,23 @@
  * showed the issue were on the host page, a click away and unnamed.
  * Renders nothing when the finding has none.
  */
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 
-import { listEvidenceRecords, type EvidenceRecord } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { listEvidenceRecords } from '../services/api';
+import { queryErrorText } from '../lib/query';
 import PostureSection, { SectionCount } from './posture/PostureSection';
 import { EvidenceItem } from './host-inspector/HostEvidenceSection';
 
 const FindingEvidence: React.FC<{ findingId: number }> = ({ findingId }) => {
-  const [items, setItems] = useState<EvidenceRecord[] | null>(null);
-  const [total, setTotal] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    listEvidenceRecords({ finding_id: findingId, limit: 50 })
-      .then((page) => {
-        if (!live) return;
-        setItems(page.items);
-        setTotal(page.total);
-        setError(null);
-      })
-      .catch((err) => {
-        if (live) setError(formatApiError(err, 'The evidence for this finding could not be loaded.'));
-      });
-    return () => { live = false; };
-  }, [findingId]);
+  const query = useQuery({
+    queryKey: ['listEvidenceRecords', { finding_id: findingId, limit: 50 }],
+    queryFn: () => listEvidenceRecords({ finding_id: findingId, limit: 50 }),
+  });
+  const items = query.data?.items ?? null;
+  const total = query.data?.total ?? 0;
+  const error = queryErrorText(query.error, 'The evidence for this finding could not be loaded.');
 
   if (!error && (!items || items.length === 0)) return null;
   return (

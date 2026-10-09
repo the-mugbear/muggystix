@@ -7,10 +7,11 @@
  * obvious at a glance, and their project/role chips). Replaces the bare table.
  */
 import React, { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Loader2, RefreshCw, Users } from 'lucide-react';
 
 import { TeamMember, getPortfolioTeam } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -86,21 +87,13 @@ const MemberCard: React.FC<{ m: TeamMember; maxTasks: number; maxReview: number 
 };
 
 export const PortfolioTeam: React.FC = () => {
-  const [members, setMembers] = React.useState<TeamMember[] | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<string | null>(null);
-  const [nonce, setNonce] = React.useState(0);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    getPortfolioTeam()
-      .then((r) => { if (!cancelled) setMembers(r.members); })
-      .catch((err) => { if (!cancelled) setError(formatApiError(err, 'Failed to load the team roster.')); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [nonce]);
+  const query = useQuery({
+    queryKey: [GLOBAL, 'getPortfolioTeam'],
+    queryFn: () => getPortfolioTeam(),
+  });
+  const members = query.data?.members;
+  const loading = query.isFetching;
+  const error = queryErrorText(query.error, 'Failed to load the team roster.');
 
   const sorted = useMemo(
     () => [...(members ?? [])].sort((a, b) =>
@@ -129,7 +122,7 @@ export const PortfolioTeam: React.FC = () => {
       <Alert variant="destructive">
         <AlertDescription className="flex flex-wrap items-center justify-between gap-sm">
           <span>{error}</span>
-          <Button size="sm" variant="outline" onClick={() => setNonce((n) => n + 1)}>
+          <Button size="sm" variant="outline" onClick={() => { void query.refetch(); }}>
             <RefreshCw className="size-4" aria-hidden /> Retry
           </Button>
         </AlertDescription>

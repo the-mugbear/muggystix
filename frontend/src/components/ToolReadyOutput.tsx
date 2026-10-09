@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { copyToClipboard as copyText } from '../utils/clipboard';
 import { downloadTextFile } from '../utils/download';
-import { formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
 import { Code, Copy, Download, Loader2 } from 'lucide-react';
 import { getToolReadyOutput, ToolReadyResult } from '../services/api';
 import { Alert, AlertDescription } from './ui/alert';
@@ -62,41 +63,35 @@ export default function ToolReadyOutput({
   // Default in-scope: a declared domain must cover a name before it becomes
   // a target — the same rule the agent's scope guardrail applies.
   const [inScopeNamesOnly, setInScopeNamesOnly] = useState(true);
-  const [result, setResult] = useState<ToolReadyResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Asked for by the button, so a mutation: its answer is the output shown,
+  // and asking again starts from nothing.
+  const generate = useMutation({
+    mutationFn: () => getToolReadyOutput(selectedFormat, {
+      ...filters,
+      includePorts,
+      ...(NAME_AWARE_FORMATS.has(selectedFormat)
+        ? { namesScope: (inScopeNamesOnly ? 'in_scope' : 'all') as 'in_scope' | 'all' }
+        : {}),
+    }),
+    onError: (err) => console.error('Error generating tool output:', err),
+  });
+  const result: ToolReadyResult | null = generate.data ?? null;
+  const loading = generate.isPending;
+  const error = queryErrorText(generate.error, 'Failed to generate output');
   const output = result?.output ?? '';
   const preview = output.length > PREVIEW_CHARS ? output.slice(0, PREVIEW_CHARS) : output;
 
+  // Each opening starts empty.
+  const { reset } = generate;
   React.useEffect(() => {
     if (open) {
-      setResult(null);
-      setError(null);
+      reset();
       setCopied(false);
     }
-  }, [open]);
+  }, [open, reset]);
 
-  const generateOutput = async () => {
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    try {
-      const apiFilters = {
-        ...filters,
-        includePorts,
-        ...(NAME_AWARE_FORMATS.has(selectedFormat)
-          ? { namesScope: (inScopeNamesOnly ? 'in_scope' : 'all') as 'in_scope' | 'all' }
-          : {}),
-      };
-      setResult(await getToolReadyOutput(selectedFormat, apiFilters));
-    } catch (err) {
-      console.error('Error generating tool output:', err);
-      setError(formatApiError(err, 'Failed to generate output'));
-    } finally {
-      setLoading(false);
-    }
-  };
+  const generateOutput = () => generate.mutate();
 
   const copyToClipboard = async () => {
     // copyText (utils/clipboard) adds an execCommand fallback for non-secure
@@ -182,7 +177,7 @@ export default function ToolReadyOutput({
           </div>
         )}
 
-        <Button onClick={generateOutput} disabled={loading} className="w-full">
+        <Button onClick={() => generateOutput()} disabled={loading} className="w-full">
           {loading ? (
             <>
               <Loader2 className="size-4 animate-spin" aria-hidden />

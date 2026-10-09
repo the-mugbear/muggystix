@@ -18,7 +18,8 @@
  * UI-style-guide compliance: tables are table-fixed with truncating labels; no
  * page-level overflow; every state (loading / error / empty) renders a fallback.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 
@@ -26,15 +27,13 @@ import {
   getEvidenceCoverage,
   getEvidenceGaps,
   type EvidenceCoverageResponse,
-  type EvidenceGapsResponse,
   type EvidenceMatrix,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { copyToClipboard } from '../utils/clipboard';
 import { agentInstruction } from '../utils/agentRuns';
 import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
-import { formatApiError } from '../utils/apiErrors';
-import { useProject } from '../contexts/ProjectContext';
+import { queryErrorText } from '../lib/query';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -94,20 +93,17 @@ const gapCellStyle = (eligible: number, assessed: number): React.CSSProperties =
  */
 const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ selection, onClose }) => {
   const toast = useToast();
-  const [gaps, setGaps] = useState<EvidenceGapsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // One gap's hosts: another cell is another read, and never shows the
+  // previous cell's hosts while it loads.
+  const gapsQuery = useQuery({
+    queryKey: ['getEvidenceGaps', selection.domain, { segment: selection.segment }],
+    queryFn: ({ signal }) => getEvidenceGaps(selection.domain, { segment: selection.segment, signal }),
+  });
+  const gaps = gapsQuery.data ?? null;
+  const loading = gapsQuery.isPending;
+  const error = queryErrorText(gapsQuery.error, 'Could not load the gap.');
+  // (The panel is keyed by its cell, so "Show more" starts closed for each.)
   const [showAll, setShowAll] = useState(false);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true); setGaps(null); setError(null); setShowAll(false);
-    getEvidenceGaps(selection.domain, { segment: selection.segment, signal: controller.signal })
-      .then((g) => { if (!controller.signal.aborted) setGaps(g); })
-      .catch((e) => { if (!controller.signal.aborted) setError(formatApiError(e, 'Could not load the gap.')); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [selection.domain, selection.segment]);
 
   const where = selection.segmentLabel ?? 'the whole project';
   const copyIps = async () => {
@@ -385,27 +381,23 @@ const EvidenceLead: React.FC<{
 };
 
 const Evidence: React.FC = () => {
-  const { currentProject } = useProject();
-  const [data, setData] = useState<EvidenceCoverageResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [nonce, setNonce] = useState(0);
+  // One project's coverage: another project's (or its selected cell) never
+  // stays on screen — the cache is partitioned by project, and `Layout`
+  // remounts the page per project.
+  const coverage = useQuery({
+    queryKey: ['getEvidenceCoverage'],
+    queryFn: ({ signal }) => getEvidenceCoverage({ signal }),
+  });
+  const data = coverage.data ?? null;
+  const loading = coverage.isFetching;
+  const error = queryErrorText(coverage.error, 'Could not load evidence coverage.');
+  const loadedAt = useMemo(
+    () => (coverage.dataUpdatedAt ? new Date(coverage.dataUpdatedAt) : null),
+    [coverage.dataUpdatedAt],
+  );
+  const { refetch } = coverage;
+  const reload = useCallback(() => { void refetch(); }, [refetch]);
   const [selection, setSelection] = useState<Selection | null>(null);
-  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
-  const reload = useCallback(() => setNonce((n) => n + 1), []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true);
-    getEvidenceCoverage({ signal: controller.signal })
-      .then((d) => { if (!controller.signal.aborted) { setData(d); setError(null); setLoadedAt(new Date()); } })
-      .catch((e) => { if (!controller.signal.aborted) setError(formatApiError(e, 'Could not load evidence coverage.')); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [currentProject?.id, nonce]);
-
-  // Another project's coverage (or its selected cell) must not stay on screen.
-  useEffect(() => { setData(null); setError(null); setSelection(null); }, [currentProject?.id]);
 
   // Every cell with a gap, largest first — ranked over ALL columns, not only the
   // ones the matrix has room to draw.
@@ -481,7 +473,10 @@ const Evidence: React.FC = () => {
                 <p className="text-metadata text-muted-foreground">The per-segment breakdown is not available from this server version.</p>
               )}
               <CredentialedLine data={data} />
-              {selection && <GapPanel selection={selection} onClose={() => setSelection(null)} />}
+              {selection && (
+                <GapPanel key={`${selection.domain}|${selection.segment ?? ''}`}
+                  selection={selection} onClose={() => setSelection(null)} />
+              )}
             </PostureSection>
 
             <PostureSection

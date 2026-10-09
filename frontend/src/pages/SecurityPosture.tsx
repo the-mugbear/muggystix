@@ -14,7 +14,8 @@
  * UI-style-guide: tables are table-fixed with truncating cells; every state
  * (loading / error / empty) renders a safe fallback; no page-level overflow.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useMemo } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
   AlertTriangle, ArrowUpRight, Clock, FileText, HelpCircle, Loader2, RefreshCw,
@@ -28,8 +29,8 @@ import { downloadSystemicReport, gridCellHostsHref } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { buildFindingsUrl, buildHostsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
 import { formatApiError } from '../utils/apiErrors';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import { safeFallback } from '../utils/uiStyles';
-import { useProject } from '../contexts/ProjectContext';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
@@ -84,59 +85,38 @@ const EvidenceCurrency: React.FC<{ evidence: PostureResponse['evidence'] }> = ({
 };
 
 const SecurityPosture: React.FC = () => {
-  const { currentProject } = useProject();
-  const [data, setData] = useState<PostureResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  // One project's posture: the cache is partitioned by project, so a switch
+  // asks again and never shows the previous project's answer (a Refresh keeps
+  // the data on screen; it is the same project).
+  const posture = useQuery({
+    queryKey: ['getPosture'],
+    queryFn: ({ signal }) => getPosture({ signal }),
+  });
+  const data = posture.data ?? null;
+  const loading = posture.isFetching;
+  const error = queryErrorText(posture.error, 'Could not load security posture.');
+  const loadedAt = useMemo(
+    () => (posture.dataUpdatedAt ? new Date(posture.dataUpdatedAt) : null),
+    [posture.dataUpdatedAt],
+  );
 
-  const [reloadNonce, setReloadNonce] = useState(0);
-  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const toast = useToast();
   const { canExport } = useProjectRole();
-  const [briefing, setBriefing] = useState(false);
   // "Create briefing" — the executive systemic report, from this page rather
   // than via the Hosts export detour. Synchronous standalone HTML; the
   // Overview has no site selection, so it is estate-wide here (Segments
   // offers the per-site variant).
-  const createBriefing = useCallback(async () => {
-    setBriefing(true);
-    try {
-      await downloadSystemicReport();
-    } catch (e) {
-      toast.error(formatApiError(e, 'Could not create the briefing.'));
-    } finally {
-      setBriefing(false);
-    }
-  }, [toast]);
-  const load = useCallback(() => setReloadNonce((n) => n + 1), []);
-
-  // Each fetch aborts the previous in-flight one — a rapid project switch
-  // (A→B→A) or Refresh previously raced, letting a slower response win and
-  // painting another project's posture onto this one. Keyed on the project id
-  // so a switch re-fetches; the abort guard makes the last *intended* response
-  // the one that lands.
-  useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true);
-    getPosture({ signal: controller.signal })
-      .then((d) => {
-        if (controller.signal.aborted) return;
-        setData(d); setError(null); setLoadedAt(new Date());
-      })
-      .catch((e) => {
-        if (controller.signal.aborted) return;
-        setError(formatApiError(e, 'Could not load security posture.'));
-      })
-      .finally(() => {
-        if (controller.signal.aborted) return;
-        setLoading(false);
-      });
-    return () => controller.abort();
-  }, [currentProject?.id, reloadNonce]);
-
-  // A project switch must not leave the PREVIOUS project's posture on screen
-  // while the new one loads (a Refresh keeps the data; it is the same project).
-  useEffect(() => { setData(null); setError(null); }, [currentProject?.id]);
+  const briefing = useMutation({
+    mutationFn: () => downloadSystemicReport(),
+    onError: (e) => toast.error(formatApiError(e, 'Could not create the briefing.')),
+  });
+  // Refresh and Retry: the posture, and the sections further down that read
+  // for themselves ("Where the team has been" — only once it has been asked
+  // for — and "Scanner observations and scope").
+  const load = useCallback(() => {
+    void invalidateReads(queryClient, 'getPosture', 'getAddressTerrain', 'getDashboardStats', 'getProjectCoverage');
+  }, [queryClient]);
 
   return (
     <div className="space-y-md p-md md:p-lg">
@@ -149,8 +129,8 @@ const SecurityPosture: React.FC = () => {
             {/* The briefing is a report (`/reports/systemic.html`, AUDITOR on
                 the server): not offered to a project viewer. */}
             {canExport && (
-              <Button size="sm" variant="outline" onClick={createBriefing} disabled={briefing}>
-                {briefing
+              <Button size="sm" variant="outline" onClick={() => briefing.mutate()} disabled={briefing.isPending}>
+                {briefing.isPending
                   ? <Loader2 className="size-3.5 animate-spin" aria-hidden />
                   : <FileText className="size-3.5" aria-hidden />}
                 Create briefing
@@ -194,10 +174,10 @@ const SecurityPosture: React.FC = () => {
               (one request when the section nears the viewport; the 3D map and
               three.js only when the reader opens it — the app's one 3D
               surface), then what the scanners reported and where the hosts
-              stand against scope.  Each loads for itself; `reloadNonce` is
-              the page's Refresh. */}
-          <AddressTerrainSection refreshKey={reloadNonce} />
-          <ExposureSection refreshKey={reloadNonce} />
+              stand against scope.  Each reads for itself; the page's Refresh
+              reaches them by the reads' names (`load`). */}
+          <AddressTerrainSection />
+          <ExposureSection />
           <PromotedFindings data={data} />
         </div>
       ) : null}

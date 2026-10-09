@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { ShieldAlert, Loader2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import api from '../services/api';
@@ -20,13 +21,24 @@ const ForceChangePassword: React.FC = () => {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
 
   const allRulesMet = isPasswordValid(newPassword);
   const passwordsMatch = newPassword === confirmPassword && newPassword.length > 0;
   const hasError = error.length > 0;
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const change = useMutation({
+    mutationFn: (body: { current_password: string; new_password: string }) =>
+      api.post('/auth/change-password', body),
+    onSuccess: () => {
+      updateUser({ must_change_password: false });
+      // Backend revokes all sessions on password change; force re-login.
+      logout();
+    },
+    onError: (err) => setError(formatApiError(err, 'Password change failed.')),
+  });
+  const isLoading = change.isPending;
+
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -39,20 +51,7 @@ const ForceChangePassword: React.FC = () => {
       return;
     }
 
-    setIsLoading(true);
-    try {
-      await api.post('/auth/change-password', {
-        current_password: currentPassword,
-        new_password: newPassword,
-      });
-      updateUser({ must_change_password: false });
-      // Backend revokes all sessions on password change; force re-login.
-      logout();
-    } catch (err: unknown) {
-      setError(formatApiError(err, 'Password change failed.'));
-    } finally {
-      setIsLoading(false);
-    }
+    change.mutate({ current_password: currentPassword, new_password: newPassword });
   };
 
   return (

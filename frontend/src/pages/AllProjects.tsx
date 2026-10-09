@@ -7,6 +7,7 @@
  */
 import { formatDate } from '../utils/relativeTime';
 import React, { useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, Plus } from 'lucide-react';
 
@@ -38,18 +39,15 @@ const AllProjects: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [creating, setCreating] = useState(false);
 
   const openSettings = (p: Project) => {
     if (currentProject?.id !== p.id) selectProject(p);
     navigate('/project-settings');
   };
 
-  const create = async () => {
-    if (!name.trim()) return;
-    setCreating(true);
-    try {
-      const created = await createProject(name.trim(), description.trim() || undefined);
+  const creation = useMutation({
+    mutationFn: (body: { name: string; description?: string }) => createProject(body.name, body.description),
+    onSuccess: (created) => {
       setOpen(false);
       setName('');
       setDescription('');
@@ -60,11 +58,13 @@ const AllProjects: React.FC = () => {
       adoptProject(created);
       navigate('/scopes');
       toast.success(`Created ${created.name} and switched to it — you are its admin. Start by declaring its scope.`);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not create the project.'));
-    } finally {
-      setCreating(false);
-    }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not create the project.')),
+  });
+  const creating = creation.isPending;
+  const create = () => {
+    if (!name.trim()) return;
+    creation.mutate({ name: name.trim(), description: description.trim() || undefined });
   };
 
   return (

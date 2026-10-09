@@ -17,6 +17,7 @@
  * No "Open in Hosts" link: no page lists tests across hosts.
  */
 import React from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 
 import type { MyTaskItem, MyTaskReason } from '../../services/api';
@@ -31,7 +32,7 @@ import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 import {
-  FilterChips, ListBody, PagedFooter, WaitingCell, type ListState, type Pager,
+  FilterChips, ListBody, PagedFooter, WaitingCell, useOperationsChanged, type ListState, type Pager,
 } from './QueueParts';
 
 export const TESTS_TAB_TITLE = 'Tests to do';
@@ -74,19 +75,19 @@ export interface MyTestsTableProps {
   onKind: (kind: MyTaskReason | null) => void;
   /** The reader's project role allows writes — Claim is hidden otherwise. */
   canWrite: boolean;
-  /** After a claim (or its undo): refresh the list and the counts. */
-  onChanged: () => void;
   keysActive?: boolean;
 }
 
 export const MyTestsTable: React.FC<MyTestsTableProps> = ({
-  rows: loaded, state, pager, kindCounts, kind, onKind, canWrite, onChanged, keysActive = true,
+  rows: loaded, state, pager, kindCounts, kind, onKind, canWrite, keysActive = true,
 }) => {
   const { user } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
+  // After a claim (or its undo): the list and the page's counts are read
+  // again, in place (5.351.0 — there is no `onChanged` for the parent to wire).
+  const changed = useOperationsChanged();
   const rows = loaded ?? NO_ROWS;
-  const [claimingId, setClaimingId] = React.useState<number | null>(null);
   const testPath = (t: MyTaskItem) => `/hosts/${t.host_id}#host-test-${t.test_id}`;
   // "Back to my work" on the host page returns to this tab.
   const navState = FROM_TESTS_TAB;
@@ -96,36 +97,33 @@ export const MyTestsTable: React.FC<MyTestsTableProps> = ({
     { enabled: keysActive, resetKey: `${kind}:${pager.page}`, getId: (i) => rows[i]?.test_id },
   );
 
-  const claim = async (t: MyTaskItem) => {
-    if (user?.id == null) return;
-    setClaimingId(t.test_id);
-    try {
-      const claimed = await updateHostTest(t.test_id, {
-        assigned_to_id: user.id,
-        expected_revision: t.revision,
-      });
+  const undoClaim = useMutation({
+    mutationFn: (claimed: { test_id: number; revision: number }) =>
+      updateHostTest(claimed.test_id, { assigned_to_id: null, expected_revision: claimed.revision }),
+    onSuccess: changed,
+    onError: (err) => toast.error(formatApiError(err, 'Could not undo the claim.')),
+  });
+  const claiming = useMutation({
+    mutationFn: ({ test, userId }: { test: MyTaskItem; userId: number }) =>
+      updateHostTest(test.test_id, { assigned_to_id: userId, expected_revision: test.revision }),
+    onSuccess: (claimed, { test }) => {
       // Undoable: the test was unassigned before the claim.
       toast.success("Claimed — it's now in your assigned tests", {
         autoHideMs: 6000,
         action: {
           label: 'Undo',
-          onClick: () => {
-            updateHostTest(t.test_id, {
-              assigned_to_id: null,
-              expected_revision: claimed.revision,
-            })
-              .then(onChanged)
-              .catch((err) => toast.error(formatApiError(err, 'Could not undo the claim.')));
-          },
+          onClick: () => undoClaim.mutate({ test_id: test.test_id, revision: claimed.revision }),
         },
       });
-      onChanged(); // it moves from "free to claim" to "assigned to me"
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to claim.'));
-    } finally {
-      setClaimingId(null);
-    }
+      changed(); // it moves from "free to claim" to "assigned to me"
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to claim.')),
+  });
+  const claim = (t: MyTaskItem) => {
+    if (user?.id == null) return;
+    claiming.mutate({ test: t, userId: user.id });
   };
+  const claimingId = claiming.isPending ? claiming.variables.test.test_id : null;
 
   const known = (v: number | null) => v ?? 0;
   const mine = kindCounts.assigned == null && kindCounts.in_review == null
@@ -218,7 +216,7 @@ export const MyTestsTable: React.FC<MyTestsTableProps> = ({
                               <Button
                                 size="sm" variant="ghost" className="h-7 text-info"
                                 disabled={claimingId === t.test_id}
-                                onClick={() => void claim(t)}
+                                onClick={() => claim(t)}
                                 title="Assign this test to yourself. It joins your assigned tests."
                               >
                                 {claimingId === t.test_id ? 'Claiming…' : 'Claim'}

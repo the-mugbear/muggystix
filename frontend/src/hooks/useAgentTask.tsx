@@ -7,6 +7,7 @@
  * renders `dialog` once and calls `give(task)` from as many controls as it has.
  */
 import React, { useCallback, useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
 
 import StartAssistDialog from '../components/StartAssistDialog';
 import { useAuth } from '../contexts/AuthContext';
@@ -30,17 +31,23 @@ export const useAgentTask = (): AgentTask => {
   const [instruction, setInstruction] = useState<string | null>(null);
   const [sessions, setSessions] = useState<AgentSessionRow[]>([]);
 
+  // Asked at the moment of the click, not read from a list that may be a
+  // minute old: whether to copy or to open the dialog turns on it.
+  const { mutateAsync: lookUp } = useMutation({
+    mutationFn: (userId: number) => listAgentSessions(myActiveSessionFilters(userId)),
+  });
+
   /** This operator's sessions whose key still works (as `useMyAssistSessions`). */
   const mine = useCallback(async (): Promise<AgentSessionRow[]> => {
     if (user?.id == null) return [];
     try {
-      const { sessions: rows } = await listAgentSessions(myActiveSessionFilters(user.id));
+      const { sessions: rows } = await lookUp(user.id);
       const now = Date.now();
       return rows.filter((s) => hasLiveKey(s, now));
     } catch {
       return [];
     }
-  }, [user?.id]);
+  }, [user?.id, lookUp]);
 
   const give = useCallback(async (task: string) => {
     const live = await mine();

@@ -15,7 +15,8 @@
  *  - closed and filtered ports are one summary line until asked for.
  * The freed width goes to Version, the column an analyst actually reads.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { copyToClipboard } from '../../utils/clipboard';
 import {
   ArrowDown, ArrowUp, ChevronDown, ChevronRight, Copy, Lock, Network, ShieldCheck, Terminal,
@@ -266,6 +267,11 @@ interface PortDetailsCardProps {
   webPathCount?: number;
 }
 
+// One empty list each, so "nothing loaded" is the same value on every render.
+const NO_WEB: WebInterface[] = [];
+const NO_NETEXEC: NetexecResult[] = [];
+const NO_PATHS: WebPath[] = [];
+
 /** Ports by number, then protocol (53/tcp before 53/udp); `desc` reverses both. */
 export const sortPortsBy = <T extends { port_number: number | null; protocol?: string | null }>(
   ports: T[], dir: 'asc' | 'desc',
@@ -285,59 +291,42 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   // no sort the rows came in the order the server returned them — arrival
   // order, "80, 21, 53, 139, 23" — which is no order a reader can use.
   const [portSortDir, setPortSortDir] = useState<'asc' | 'desc'>('asc');
-  const [endpoints, setEndpoints] = useState<Map<number, PortEndpoint[]>>(new Map());
-  const [webError, setWebError] = useState(false);
+  // What follows is one host's view state: the inspector that renders this
+  // card is keyed by the host, so another host starts clean.
   // Which endpoint a port's commands address; absent = the default below.
   const [helperTarget, setHelperTarget] = useState<Record<number, string>>({});
   const [showNotOpen, setShowNotOpen] = useState(false);
-  // v5.297.0 — the host's evidence, loaded once and split by port.
-  const [webRows, setWebRows] = useState<WebInterface[]>([]);
-  const [netexecRows, setNetexecRows] = useState<NetexecResult[]>([]);
-  const [pathRows, setPathRows] = useState<WebPath[]>([]);
-  const [evidenceError, setEvidenceError] = useState(false);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
-  // Join the host's web interfaces onto ports by ``port_id`` as NAMED
+  // v5.297.0 — the host's evidence, read once and split by port.
+  //
+  // The web interfaces are joined onto ports by ``port_id`` as NAMED
   // ENDPOINTS (utils/portEndpoints): newest observation per (port, name),
   // nothing merged across names. Non-fatal: on failure the column falls back
   // to nmap's tunnel attribute and the section says the load failed (so a
   // fetch error reads differently from "no TLS evidence") rather than breaking
-  // the port table. State is reset per host — the inspector stays mounted
-  // across prev/next, so a stale map would otherwise bleed onto the next host.
-  useEffect(() => {
-    let cancelled = false;
-    setEndpoints(new Map());
-    setWebRows([]);
-    setHelperTarget({});
-    setWebError(false);
-    setShowNotOpen(false);
-    getHostWebInterfaces(hostId)
-      .then((interfaces) => {
-        if (cancelled) return;
-        setEndpoints(endpointsByPort(interfaces));
-        setWebRows(interfaces);
-      })
-      .catch(() => { if (!cancelled) setWebError(true); });
-    return () => { cancelled = true; };
-  }, [hostId]);
-
+  // the port table.
+  const web = useQuery({
+    queryKey: ['getHostWebInterfaces', hostId],
+    queryFn: () => getHostWebInterfaces(hostId),
+  });
   // NetExec / SMBMap results and discovered paths: only when the host has any.
-  useEffect(() => {
-    let cancelled = false;
-    setNetexecRows([]);
-    setPathRows([]);
-    setEvidenceError(false);
-    setExpanded(new Set());
-    const loads: Promise<unknown>[] = [];
-    if (netexecCount > 0) {
-      loads.push(getHostNetexecResults(hostId).then((r) => { if (!cancelled) setNetexecRows(r); }));
-    }
-    if (webPathCount > 0) {
-      loads.push(getHostWebPaths(hostId).then((r) => { if (!cancelled) setPathRows(r); }));
-    }
-    Promise.all(loads).catch(() => { if (!cancelled) setEvidenceError(true); });
-    return () => { cancelled = true; };
-  }, [hostId, netexecCount, webPathCount]);
+  const netexec = useQuery({
+    queryKey: ['getHostNetexecResults', hostId],
+    queryFn: () => getHostNetexecResults(hostId),
+    enabled: netexecCount > 0,
+  });
+  const paths = useQuery({
+    queryKey: ['getHostWebPaths', hostId],
+    queryFn: () => getHostWebPaths(hostId),
+    enabled: webPathCount > 0,
+  });
+  const webRows = web.data ?? NO_WEB;
+  const netexecRows = (netexecCount > 0 && netexec.data) || NO_NETEXEC;
+  const pathRows = (webPathCount > 0 && paths.data) || NO_PATHS;
+  const endpoints = useMemo(() => endpointsByPort(webRows), [webRows]);
+  const webError = web.isError;
+  const evidenceError = (netexecCount > 0 && netexec.isError) || (webPathCount > 0 && paths.isError);
 
   const all = useMemo(
     () => ({ vulnerabilities, netexec: netexecRows, web: webRows, paths: pathRows }),

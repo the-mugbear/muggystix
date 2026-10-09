@@ -16,6 +16,7 @@
  * page checks type and size first so a wrong file fails before it is sent.
  */
 import React, { useEffect, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
 import {
@@ -131,24 +132,21 @@ const uploadLine = (a: ReportTemplateAsset): string | null => {
 /** The image the render would use, fetched with the session (an <img> cannot
  *  send the token).  Refetched whenever the file changes. */
 const AssetThumbnail: React.FC<{ templateName: string; asset: ReportTemplateAsset }> = ({ templateName, asset }) => {
-  const [url, setUrl] = useState<string | null>(null);
   const version = asset.upload?.sha256 ?? (asset.installed ? 'installed' : '');
+  // `version` is in the key for the file it names, not for the request.
+  const { data: blob } = useQuery({
+    queryKey: ['fetchReportTemplateAssetPreview', templateName, asset.id, version],
+    queryFn: () => fetchReportTemplateAssetPreview(templateName, asset.id),
+    enabled: asset.present && PREVIEWABLE.has(asset.kind ?? ''),
+  });
+  // The object URL lives as long as its image is the one shown.
+  const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
-    if (!asset.present || !PREVIEWABLE.has(asset.kind ?? '')) { setUrl(null); return undefined; }
-    let objectUrl: string | null = null;
-    let cancelled = false;
-    fetchReportTemplateAssetPreview(templateName, asset.id)
-      .then((blob) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setUrl(objectUrl);
-      })
-      .catch(() => { if (!cancelled) setUrl(null); });
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [templateName, asset.id, asset.present, asset.kind, version]);
+    if (!blob) { setUrl(null); return undefined; }
+    const objectUrl = URL.createObjectURL(blob);
+    setUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [blob]);
   if (!url) return null;
   return (
     <img
@@ -160,48 +158,41 @@ const AssetThumbnail: React.FC<{ templateName: string; asset: ReportTemplateAsse
 };
 
 /** Upload / replace / remove one template file (global administrators). */
-const AssetUpload: React.FC<{
-  templateName: string;
-  asset: ReportTemplateAsset;
-  onTemplateChange: (template: ReportTemplate) => void;
-}> = ({ templateName, asset, onTemplateChange }) => {
+const AssetUpload: React.FC<{ templateName: string; asset: ReportTemplateAsset }> = ({ templateName, asset }) => {
+  const queryClient = useQueryClient();
   const input = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
+  // A file refused here, before it is sent.
+  const [refused, setRefused] = useState<string | null>(null);
+  // One change at a time, upload or removal; the server answers with the
+  // template as it now stands, which goes where the template list is read.
+  const change = useMutation({
+    mutationFn: (file: File | null) => (file
+      ? uploadReportTemplateAsset(templateName, asset.id, file)
+      : removeReportTemplateAsset(templateName, asset.id)),
+    onSuccess: ({ template }) => {
+      queryClient.setQueryData<ReportTemplate[]>(['listReportTemplates'],
+        (all) => all?.map((x) => (x.name === template.name ? template : x)));
+    },
+  });
+  const busy = change.isPending;
+  const error = refused ?? (change.error ? errorDetail(change.error) : null);
+  // An upload's warnings; a removal has none to show.
+  const warnings = change.isSuccess && change.variables ? change.data.warnings ?? [] : [];
   const kind = (asset.kind ?? '') as UploadKind;
   if (!asset.uploadable || !(kind in KIND)) return null;
 
-  const choose = async (file: File | undefined) => {
+  const choose = (file: File | undefined) => {
     if (input.current) input.current.value = '';
     if (!file) return;
-    setWarnings([]);
     const problem = assetFileProblem(asset, file);
-    if (problem) { setError(problem); return; }
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await uploadReportTemplateAsset(templateName, asset.id, file);
-      setWarnings(result.warnings ?? []);
-      onTemplateChange(result.template);
-    } catch (err) {
-      setError(errorDetail(err));
-    } finally {
-      setBusy(false);
-    }
+    setRefused(problem);
+    if (problem) { change.reset(); return; }
+    change.mutate(file);
   };
 
-  const remove = async () => {
-    setBusy(true);
-    setError(null);
-    setWarnings([]);
-    try {
-      onTemplateChange((await removeReportTemplateAsset(templateName, asset.id)).template);
-    } catch (err) {
-      setError(errorDetail(err));
-    } finally {
-      setBusy(false);
-    }
+  const remove = () => {
+    setRefused(null);
+    change.mutate(null);
   };
 
   return (
@@ -213,13 +204,13 @@ const AssetUpload: React.FC<{
           accept={KIND[kind].accept}
           className="hidden"
           aria-label={`Upload ${asset.label}`}
-          onChange={(e) => void choose(e.target.files?.[0])}
+          onChange={(e) => choose(e.target.files?.[0])}
         />
         <Button size="sm" variant="outline" disabled={busy} onClick={() => input.current?.click()}>
           {busy ? 'Working…' : asset.source === 'uploaded' ? 'Replace' : 'Upload'}
         </Button>
         {asset.source === 'uploaded' && (
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => void remove()}>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={remove}>
             Remove upload
           </Button>
         )}
@@ -246,12 +237,10 @@ export interface TemplateImagesProps {
   template: ReportTemplate | undefined;
   /** The template's folder name — shown even when it is not listed. */
   templateName: string | null;
-  /** Server paths and install instructions — only for someone who can put
-   *  files on the server (a global admin); everyone else sees the status. */
+  /** Server paths and install instructions, and upload / replace / remove
+   *  (v5.311.0) — only for someone who can put files on the server (a global
+   *  admin); everyone else sees the status. */
   showServerPaths?: boolean;
-  /** Given with `showServerPaths` (a global admin): offer upload / replace /
-   *  remove, and report the changed template here (v5.311.0). */
-  onTemplateChange?: (template: ReportTemplate) => void;
 }
 
 /**
@@ -275,9 +264,9 @@ export const TemplateFilesLine: React.FC<{ template: ReportTemplate | undefined 
 };
 
 const TemplateImages: React.FC<TemplateImagesProps> = ({
-  template, templateName, showServerPaths = false, onTemplateChange,
+  template, templateName, showServerPaths = false,
 }) => {
-  const canUpload = showServerPaths && Boolean(onTemplateChange);
+  const canUpload = showServerPaths;
   if (!templateName) {
     return <p className="text-caption text-muted-foreground">No template chosen.</p>;
   }
@@ -340,9 +329,7 @@ const TemplateImages: React.FC<TemplateImagesProps> = ({
                 </p>
               )}
               <AssetThumbnail templateName={template.name} asset={a} />
-              {canUpload && onTemplateChange && (
-                <AssetUpload templateName={template.name} asset={a} onTemplateChange={onTemplateChange} />
-              )}
+              {canUpload && <AssetUpload templateName={template.name} asset={a} />}
             </div>
           </li>
         ))}

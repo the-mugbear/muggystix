@@ -1,12 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Globe, Loader2 } from 'lucide-react';
 
-import {
-  getHostDnsRecords,
-  HostDnsRecordRow,
-  HostDnsRecordsResponse,
-} from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { getHostDnsRecords, HostDnsRecordRow } from '../services/api';
+import { queryErrorText } from '../lib/query';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { InspectorSection } from './host-inspector/InspectorSection';
@@ -56,39 +53,18 @@ const sortRecordTypes = (types: string[]): string[] => {
 };
 
 const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId, embedded = false }) => {
-  const [open, setOpen] = useState(false);
-  const [data, setData] = useState<HostDnsRecordsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  // Fetch inside the effect and guard EVERY state write with `cancelled`, so an
-  // out-of-order resolve can't paint host A's DNS into host B's inspector. The
-  // SideSheet keeps HostInspector mounted across prev/next, so a slower request
-  // for A can otherwise land after B's and win — wrong-asset evidence, worse
-  // than a loading flash. `data` is cleared on hostId change so a stale card
-  // never lingers under the new host while it loads.
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setData(null);
-    setOpen(false);
-    getHostDnsRecords(hostId)
-      .then((res) => {
-        if (!cancelled) setData(res);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(formatApiError(err, 'DNS records could not be loaded for this host.'));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [hostId]);
+  // The disclosure is one host's: opened for host A, it is closed for host B.
+  const [openFor, setOpenFor] = useState<number | null>(null);
+  const open = openFor === hostId;
+  const setOpen = (update: (was: boolean) => boolean) =>
+    setOpenFor((was) => (update(was === hostId) ? hostId : null));
+  const query = useQuery({
+    queryKey: ['getHostDnsRecords', hostId],
+    queryFn: () => getHostDnsRecords(hostId),
+  });
+  const data = query.data ?? null;
+  const loading = query.isPending;
+  const error = queryErrorText(query.error, 'DNS records could not be loaded for this host.');
 
   // Render-nothing path: only when there's no DNS data ANYWHERE in the
   // project.  If records exist project-wide but none match this host, we

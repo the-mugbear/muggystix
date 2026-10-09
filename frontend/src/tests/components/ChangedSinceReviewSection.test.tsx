@@ -25,6 +25,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+import { readsOnScreen } from '../helpers/readsOnScreen';
 import ChangedSinceReviewSection from '../../components/operations/ChangedSinceReviewSection';
 import type { ReviewFollowupRow, ReviewFollowupsResponse } from '../../services/api';
 
@@ -62,7 +63,11 @@ const data = (items: ReviewFollowupRow[], over: Partial<ReviewFollowupsResponse>
   items, total: items.length, ...over,
 });
 
-const onChanged = vi.fn();
+// 5.351.0 — an action no longer calls a parent's `onChanged` (which re-read
+// the list and the counts): it says which reads are out of date, and what is
+// on screen is read again.  These stand in for the tab's list and the page's
+// counts; `reread` says which of them was asked for again.
+const { reread, ReadsOnScreen } = readsOnScreen({ getReviewFollowupsPage: 'list', getWorkbench: 'counts' });
 const onPage = vi.fn();
 const onRetry = vi.fn();
 type Props = React.ComponentProps<typeof ChangedSinceReviewSection>;
@@ -74,7 +79,6 @@ const propsFor = (d: ReviewFollowupsResponse, extra: Partial<Props> & { page?: n
     state: { loading: false, error: null, onRetry },
     pager: { page, pageSize: 25, total: d.total, onPage },
     canWrite: true,
-    onChanged,
     ...rest,
   };
 };
@@ -83,6 +87,7 @@ const renderIt = (d: ReviewFollowupsResponse, extra: Partial<Props> & { page?: n
     <MemoryRouter>
       <LocationProbe />
       <ChangedSinceReviewSection {...propsFor(d, extra)} />
+      <ReadsOnScreen />
     </MemoryRouter>,
   );
 const rowOf = (ip: string) => screen.getByRole('link', { name: ip }).closest('tr') as HTMLElement;
@@ -196,7 +201,8 @@ describe('Changed since review — answering a change', () => {
     renderIt(data([row(), observed]));
     fireEvent.click(within(rowOf('10.8.0.2')).getByRole('button', { name: 'Still reviewed' }));
     await waitFor(() => expect(api.markStillReviewed).toHaveBeenCalledWith([21]));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('counts'));
     expect(api.followHost).not.toHaveBeenCalled();
   });
 
@@ -215,7 +221,7 @@ describe('Changed since review — answering a change', () => {
     renderIt(data([row()]));
     fireEvent.click(screen.getByRole('button', { name: 'Still reviewed' }));
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
-    expect(onChanged).not.toHaveBeenCalled();
+    expect(reread).not.toHaveBeenCalled();
     expect(screen.getByRole('link', { name: '10.8.0.2' })).toBeInTheDocument();
   });
 
@@ -227,7 +233,8 @@ describe('Changed since review — answering a change', () => {
     expect(api.followHost).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: /Confirm: clears the conclusion/ }));
     await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(21, 'in_review'));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('counts'));
   });
 
 });
@@ -266,7 +273,7 @@ describe('Changed since review — selection and bulk', () => {
     fireEvent.click(still);
     await waitFor(() => expect(api.markStillReviewed).toHaveBeenCalledTimes(1));
     expect(api.markStillReviewed).toHaveBeenCalledWith([21, 31, 32, 23]);
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
     await waitFor(() => expect(screen.queryByRole('toolbar')).not.toBeInTheDocument());
   });
 
@@ -285,7 +292,7 @@ describe('Changed since review — selection and bulk', () => {
     await waitFor(() => expect(api.followHost).toHaveBeenCalledTimes(3));
     expect(await screen.findByText(/Re-opened 2 of 3 hosts; 1 could not be re-opened \(host is locked\)/)).toBeInTheDocument();
     expect(toast.success).not.toHaveBeenCalled();
-    expect(onChanged).toHaveBeenCalled();
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('list'));
   });
 
   it('a row that leaves the list leaves the selection', () => {

@@ -12,11 +12,12 @@
  * The section says when its history starts, and a day nobody recorded is
  * absent, not zero.  Every value is also in the table view.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import * as Plot from '@observablehq/plot';
 
-import { getRemediationTrend, type RemediationTrend as Trend } from '../../services/api';
-import { formatApiError } from '../../utils/apiErrors';
+import { getRemediationTrend } from '../../services/api';
+import { GLOBAL, queryErrorText } from '../../lib/query';
 import { formatDate } from '../../utils/relativeTime';
 import PlotFigure from '../charts/PlotFigure';
 import { useWidth } from '../oversight/GrowthCharts';
@@ -62,29 +63,21 @@ export interface RemediationTrendProps {
   scope: 'project' | 'all';
   /** With `all`: one project. */
   projectId?: number;
-  /** Bumped by the page after a save. */
-  reloadKey?: number;
 }
 
-export const RemediationTrend: React.FC<RemediationTrendProps> = ({ scope, projectId, reloadKey = 0 }) => {
+export const RemediationTrend: React.FC<RemediationTrendProps> = ({ scope, projectId }) => {
   const [ref, width] = useWidth();
-  const [trend, setTrend] = useState<Trend | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [showTable, setShowTable] = useState(false);
-  const generation = useRef(0);
-
-  useEffect(() => {
-    const mine = ++generation.current;
-    const controller = new AbortController();
-    getRemediationTrend(scope === 'all' ? 'all' : undefined, projectId, controller.signal)
-      .then((result) => { if (mine === generation.current) { setTrend(result); setError(null); } })
-      .catch((err) => {
-        if (mine === generation.current && !controller.signal.aborted) {
-          setError(formatApiError(err, 'The history could not be loaded.'));
-        }
-      });
-    return () => controller.abort();
-  }, [scope, projectId, reloadKey]);
+  const across = scope === 'all';
+  // Re-read after a save by the write itself (`invalidateRemediationReads`).
+  // Another project's history replaces the one on screen when it arrives.
+  const query = useQuery({
+    queryKey: across ? [GLOBAL, 'getRemediationTrend', 'all', projectId] : ['getRemediationTrend', undefined, projectId],
+    queryFn: ({ signal }) => getRemediationTrend(across ? 'all' : undefined, projectId, signal),
+    placeholderData: keepPreviousData,
+  });
+  const trend = query.data ?? null;
+  const error = queryErrorText(query.error, 'The history could not be loaded.');
 
   const daily = useMemo(
     () => (trend?.daily ?? []).map((d) => ({ date: new Date(`${d.day}T00:00:00Z`), value: d.overdue, day: d.day })),

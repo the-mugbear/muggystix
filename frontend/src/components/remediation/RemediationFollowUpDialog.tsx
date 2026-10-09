@@ -7,16 +7,18 @@
  * way, then records the follow-up so the next admin sees the contact was
  * already chased.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Copy, Loader2 } from 'lucide-react';
 
 import {
   getRemediationFollowUp, recordRemediationFollowUp, recordRemediationFollowUpOverview, type RemediationFollowUp,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
+import { GLOBAL, queryErrorText } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { copyToClipboard } from '../../utils/clipboard';
-import { localToday } from '../../utils/remediation';
+import { invalidateRemediationReads, localToday } from '../../utils/remediation';
 import { Button } from '../ui/button';
 import {
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -33,6 +35,13 @@ export const HORIZONS: Array<{ days: number; label: string }> = [
   { days: 90, label: 'Overdue, due soon, and due in the next 90 days' },
 ];
 
+/** Why the follow-up was not recorded, and on how many rows it was before that. */
+class NotRecorded extends Error {
+  constructor(readonly reason: unknown, readonly recorded: number) {
+    super('The follow-up was not recorded.');
+  }
+}
+
 export const RemediationFollowUpDialog: React.FC<{
   contactEmail: string;
   /** `all`: across every project the reader administers. */
@@ -47,75 +56,77 @@ export const RemediationFollowUpDialog: React.FC<{
   onRecorded: () => void;
 }> = ({ contactEmail, scope, projectId, canWrite, initialAhead = 0, onClose, onRecorded }) => {
   const toast = useToast();
-  const [data, setData] = useState<RemediationFollowUp | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [text, setText] = useState('');
+  const queryClient = useQueryClient();
+  const across = scope === 'all';
   const [copied, setCopied] = useState(false);
-  const [on, setOn] = useState(localToday());
   const [note, setNote] = useState('');
-  const [busy, setBusy] = useState(false);
   // How far ahead the reminder looks: 0 = overdue and due soon only.
   const [ahead, setAhead] = useState<number>(initialAhead);
-  const [loading, setLoading] = useState(true);
-  const live = useRef(true);
 
-  useEffect(() => {
-    live.current = true;
-    const controller = new AbortController();
-    setLoading(true);
-    setError(null);
-    getRemediationFollowUp(contactEmail, scope === 'all' ? 'all' : undefined, projectId, controller.signal, ahead)
-      // The day is the SERVER's (`as_of`): the message says "as of" it, and
-      // the reader's own calendar may be a day behind or ahead.
-      .then((result) => {
-        // An answer for another horizon (the choice changed meanwhile) is dropped.
-        if (!live.current || controller.signal.aborted) return;
-        setData(result); setText(result.text); setOn(result.as_of); setLoading(false);
-      })
-      .catch((err) => {
-        if (!live.current || controller.signal.aborted) return;
-        setLoading(false);
-        setError(formatApiError(err, 'The follow-up could not be prepared.'));
-      });
-    return () => { live.current = false; controller.abort(); };
-  }, [contactEmail, scope, projectId, ahead]);
+  // Keyed by the horizon: an answer for another one (the choice changed
+  // meanwhile) is never the one on screen.
+  const query = useQuery({
+    queryKey: across
+      ? [GLOBAL, 'getRemediationFollowUp', contactEmail, 'all', projectId, ahead]
+      : ['getRemediationFollowUp', contactEmail, undefined, projectId, ahead],
+    queryFn: ({ signal }) => getRemediationFollowUp(contactEmail, across ? 'all' : undefined, projectId, signal, ahead),
+  });
+  // The last message prepared stays on screen while another horizon is asked
+  // for — and when that fails, so the choice can be changed back.
+  const last = useRef<RemediationFollowUp | null>(null);
+  if (query.data) last.current = query.data;
+  const data = query.data ?? last.current;
+  const loading = query.isFetching;
+  const error = loading ? null : queryErrorText(query.error, 'The follow-up could not be prepared.');
+
+  // What the reader changed, over the message it was changed in: another
+  // horizon is another message, with its own text and day.  The day is the
+  // SERVER's (`as_of`): the message says "as of" it, and the reader's own
+  // calendar may be a day behind or ahead.
+  const [edits, setEdits] = useState<{ over: RemediationFollowUp | null; text?: string; on?: string }>({ over: null });
+  const mine = edits.over === data ? edits : null;
+  const text = mine?.text ?? data?.text ?? '';
+  const on = mine?.on ?? data?.as_of ?? localToday();
+  const setText = (value: string) => setEdits({ over: data, on: mine?.on, text: value });
+  const setOn = (value: string) => setEdits({ over: data, text: mine?.text, on: value });
 
   const copy = async () => {
-    const ok = await copyToClipboard(text);
-    if (!live.current) return;
-    if (ok) { setCopied(true); window.setTimeout(() => { if (live.current) setCopied(false); }, 2000); }
+    if (await copyToClipboard(text)) { setCopied(true); window.setTimeout(() => setCopied(false), 2000); }
     else toast.error('The message could not be copied. Select the text and copy it by hand.');
   };
 
-  const record = async () => {
-    if (!data || !on) return;
-    setBusy(true);
-    const body = {
-      contact_email: data.contact_email, followed_up_on: on, ...(note.trim() ? { note: note.trim() } : {}),
-      // What the reminder listed is what is recorded.
-      ...(ahead > 0 ? { upcoming_days: ahead } : {}),
-    };
-    let recorded = 0;
-    let projects: number | null = null;
-    try {
-      if (scope === 'all' && projectId == null) {
-        // Every project at once, all or nothing.  A server without that route
-        // (404 / 405) is asked one project at a time, as before.
-        try {
-          const result = await recordRemediationFollowUpOverview(body);
-          recorded = result.recorded;
-          projects = result.projects;
-        } catch (err) {
-          const status = (err as { response?: { status?: number } })?.response?.status;
-          if (status !== 404 && status !== 405) throw err;
-          for (const id of data.project_ids) recorded += (await recordRemediationFollowUp(body, id)).recorded;
+  const recording = useMutation({
+    mutationFn: async (prepared: RemediationFollowUp): Promise<{ recorded: number; projects: number | null }> => {
+      const body = {
+        contact_email: prepared.contact_email, followed_up_on: on, ...(note.trim() ? { note: note.trim() } : {}),
+        // What the reminder listed is what is recorded.
+        ...(ahead > 0 ? { upcoming_days: ahead } : {}),
+      };
+      let recorded = 0;
+      try {
+        if (across && projectId == null) {
+          // Every project at once, all or nothing.  A server without that route
+          // (404 / 405) is asked one project at a time, as before.
+          try {
+            const result = await recordRemediationFollowUpOverview(body);
+            return { recorded: result.recorded, projects: result.projects };
+          } catch (err) {
+            const status = (err as { response?: { status?: number } })?.response?.status;
+            if (status !== 404 && status !== 405) throw err;
+            for (const id of prepared.project_ids) recorded += (await recordRemediationFollowUp(body, id)).recorded;
+          }
+        } else if (across) {
+          // One chosen project, through the mount that serves archived ones.
+          for (const id of prepared.project_ids) recorded += (await recordRemediationFollowUp(body, id)).recorded;
+        } else {
+          recorded = (await recordRemediationFollowUp(body)).recorded;
         }
-      } else if (scope === 'all') {
-        // One chosen project, through the mount that serves archived ones.
-        for (const id of data.project_ids) recorded += (await recordRemediationFollowUp(body, id)).recorded;
-      } else {
-        recorded = (await recordRemediationFollowUp(body)).recorded;
+      } catch (err) {
+        throw new NotRecorded(err, recorded);
       }
+      return { recorded, projects: null };
+    },
+    onSuccess: ({ recorded, projects }) => {
       toast.success(recorded === 0
         ? 'Already recorded for that day.'
         : projects != null
@@ -123,12 +134,19 @@ export const RemediationFollowUpDialog: React.FC<{
           : `Follow-up recorded on ${recorded.toLocaleString()} ${recorded === 1 ? 'finding on a host' : 'findings on hosts'}.`);
       onRecorded();
       onClose();
-    } catch (err) {
-      if (recorded > 0) onRecorded();
-      toast.error(formatApiError(err, 'The follow-up was not recorded.'));
-    } finally {
-      if (live.current) setBusy(false);
-    }
+    },
+    onError: (err) => {
+      const failed = err instanceof NotRecorded ? err : new NotRecorded(err, 0);
+      if (failed.recorded > 0) onRecorded();
+      toast.error(formatApiError(failed.reason, 'The follow-up was not recorded.'));
+    },
+    // Recorded in full or in part: the contacts and the rows are re-read.
+    onSettled: () => { void invalidateRemediationReads(queryClient); },
+  });
+  const busy = recording.isPending;
+  const record = () => {
+    if (!data || !on) return;
+    recording.mutate(data);
   };
 
   const who = data?.contact_name ? `${data.contact_name} (${contactEmail})` : contactEmail;
@@ -207,7 +225,7 @@ export const RemediationFollowUpDialog: React.FC<{
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={busy}>Close</Button>
           {canWrite && data != null && !nothing && (
-            <Button onClick={() => void record()} disabled={busy || loading || !!error || !on}>
+            <Button onClick={record} disabled={busy || loading || !!error || !on}>
               {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Record follow-up
             </Button>
           )}

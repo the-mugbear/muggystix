@@ -9,7 +9,8 @@
  * Creation deliberately stays where it already works — tagging hosts — which
  * is also what guarantees every tag has at least one host behind it.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Loader2, Pencil, RefreshCw, Trash2, X } from 'lucide-react';
 import {
   HostTagWithCount,
@@ -20,6 +21,7 @@ import {
 import { useProject } from '../contexts/ProjectContext';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { projectRoleAtLeast } from '../utils/projectRole';
 import { safeFallback } from '../utils/uiStyles';
@@ -29,6 +31,8 @@ import PostureSection from './posture/PostureSection';
 import { CharacterCount } from './ui/character-count';
 import { Input } from './ui/input';
 
+const NO_TAGS: HostTagWithCount[] = [];
+
 const TagManagement: React.FC = () => {
   const { currentProject } = useProject();
   // Renaming and deleting a tag need the project analyst (the list is every
@@ -37,33 +41,26 @@ const TagManagement: React.FC = () => {
   const canEdit = currentProject?.my_role === undefined || projectRoleAtLeast(currentProject.my_role, 'analyst');
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
-  const [tags, setTags] = useState<HostTagWithCount[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draftName, setDraftName] = useState('');
-  const [busyId, setBusyId] = useState<number | null>(null);
 
   const projectId = currentProject?.id;
 
-  const reload = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setTags(await listHostTags());
-    } catch (err) {
-      setError(formatApiError(err, 'Failed to load tags.'));
-      setTags([]);
-    } finally {
-      setLoading(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the API client reads the current project itself; projectId is here so a project switch re-reads
-  }, [projectId]);
-
-  useEffect(() => {
-    if (!projectId) return;
-    void reload();
-  }, [reload, projectId]);
+  const tagsQuery = useQuery({
+    queryKey: ['listHostTags'],
+    queryFn: () => listHostTags(),
+    enabled: !!projectId,
+  });
+  // A read that failed shows its error and no rows — not the rows of before.
+  const tags = (!tagsQuery.isError && tagsQuery.data) || NO_TAGS;
+  const loading = tagsQuery.isFetching;
+  const error = loading ? null : queryErrorText(tagsQuery.error, 'Failed to load tags.');
+  const reload = () => tagsQuery.refetch();
+  // A tag is read by the tag pickers, the Hosts filters and the host rows.
+  // Returned from a write's `onSuccess`, so the row stays busy until the list
+  // on screen is the new one.
+  const tagsChanged = () => invalidateReads(queryClient, 'listHostTags', 'getHostFilterData', 'getHosts');
 
   const startEdit = (tag: HostTagWithCount) => {
     setEditingId(tag.id);
@@ -75,25 +72,34 @@ const TagManagement: React.FC = () => {
     setDraftName('');
   };
 
-  const saveEdit = async (tag: HostTagWithCount) => {
+  const rename = useMutation({
+    mutationFn: ({ tag, name }: { tag: HostTagWithCount; name: string }) => updateHostTag(tag.id, { name }),
+    onSuccess: (_updated, { name }) => {
+      toast.success(`Renamed to “${name}”.`);
+      cancelEdit();
+      return tagsChanged();
+    },
+    // 409 = another tag already owns that name. Surface it rather than
+    // silently discarding the edit.
+    onError: (err) => toast.error(formatApiError(err, 'Failed to rename tag.')),
+  });
+  const remove = useMutation({
+    mutationFn: (tag: HostTagWithCount) => deleteHostTag(tag.id),
+    onSuccess: (_done, tag) => {
+      toast.success(`Deleted “${tag.name}”.`);
+      return tagsChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to delete tag.')),
+  });
+  const busyId = rename.isPending ? rename.variables.tag.id : remove.isPending ? remove.variables.id : null;
+
+  const saveEdit = (tag: HostTagWithCount) => {
     const name = draftName.trim();
     if (!name || name === tag.name) {
       cancelEdit();
       return;
     }
-    setBusyId(tag.id);
-    try {
-      await updateHostTag(tag.id, { name });
-      toast.success(`Renamed to “${name}”.`);
-      cancelEdit();
-      await reload();
-    } catch (err) {
-      // 409 = another tag already owns that name. Surface it rather than
-      // silently discarding the edit.
-      toast.error(formatApiError(err, 'Failed to rename tag.'));
-    } finally {
-      setBusyId(null);
-    }
+    rename.mutate({ tag, name });
   };
 
   const handleDelete = async (tag: HostTagWithCount) => {
@@ -107,17 +113,7 @@ const TagManagement: React.FC = () => {
       severity: 'danger',
       confirmLabel: 'Delete tag',
     });
-    if (!ok) return;
-    setBusyId(tag.id);
-    try {
-      await deleteHostTag(tag.id);
-      toast.success(`Deleted “${tag.name}”.`);
-      await reload();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to delete tag.'));
-    } finally {
-      setBusyId(null);
-    }
+    if (ok) remove.mutate(tag);
   };
 
   if (!projectId) return null;

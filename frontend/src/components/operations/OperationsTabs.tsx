@@ -10,8 +10,8 @@
  * Counts and rows are separate requests.  The counts are the page's light
  * workbench call (and the queue's total); a tab's rows are fetched only when
  * the tab is opened — Radix mounts the active panel alone — through
- * `usePagedList` (§39: the latest request wins, a failed read is "could not
- * be checked", never an empty list).  Each list route is the function that
+ * `usePagedList` (§39: a failed read is "could not be checked", never an
+ * empty list).  Each list route is the function that
  * produced its tab's count, so the count is the size of the list paged here
  * (`backend/tests/test_operations_tabs.py`).
  *
@@ -61,35 +61,28 @@ function listProps<T, P extends ListPage<T>>(
   };
 }
 
+/** A panel reads its own list (by the API function's name: an action in a
+ *  list and the page's Refresh say which reads are out of date by that name
+ *  — `QueueParts.OPERATIONS_READS`). */
 interface PanelProps {
   /** The reader's project role allows writes (hooks/useProjectRole). */
   canWrite: boolean;
-  /** The page's Refresh: read the list again from its first page. */
-  refreshKey: number;
-  /** After an action: the page re-reads the counts (quietly). */
-  onCountsChanged: () => void;
 }
 
-/** After an action in a list: its rows in place, and the page's counts. */
-const useChanged = (reload: () => Promise<void>, onCountsChanged: () => void) =>
-  React.useCallback(() => {
-    void reload();
-    onCountsChanged();
-  }, [reload, onCountsChanged]);
-
-const FindingsPanel: React.FC<PanelProps & {
+const FindingsPanel: React.FC<{
   need: FindingNeed | null;
   onNeed: (need: FindingNeed | null) => void;
   /** The workbench's count per kind of work, until this list has its own. */
   pageNeeds: Record<FindingNeed, number | null>;
-}> = ({ refreshKey, need, onNeed, pageNeeds }) => {
+}> = ({ need, onNeed, pageNeeds }) => {
   const list = usePagedList<MyFindingItem, MyFindingsResponse & ListPage<MyFindingItem>>(
+    'getMyFindingsPage',
     async (req) => {
       const r = await getMyFindingsPage(need, req);
       // The size of the list being paged: both kinds, or the chosen one.
       return { ...r, total: need ? (r.need_counts?.[need] ?? r.items.length) : r.total_open };
     },
-    [need, refreshKey],
+    [need],
     usePage(),
   );
   // The chips' counts are this list's own (the same statement as the rows'
@@ -98,13 +91,14 @@ const FindingsPanel: React.FC<PanelProps & {
   return <FindingsNeedingMeTable {...listProps(list)} needCounts={needCounts} need={need} onNeed={onNeed} />;
 };
 
-const HostsPanel: React.FC<PanelProps> = ({ refreshKey, canWrite }) => {
+const HostsPanel: React.FC<PanelProps> = ({ canWrite }) => {
   const list = usePagedList<MyAttentionHost, MyAttentionResponse & ListPage<MyAttentionHost>>(
+    'getMyReviewHostsPage',
     async (req) => {
       const r = await getMyReviewHostsPage(req);
       return { ...r, total: r.in_review_count };
     },
-    [refreshKey],
+    [],
     usePage(),
   );
   return <ReviewHostsTable {...listProps(list)} canWrite={canWrite} />;
@@ -115,15 +109,16 @@ const TestsPanel: React.FC<PanelProps & {
   onKind: (kind: MyTaskReason | null) => void;
   /** The workbench's count per kind, until this list has its own. */
   pageGroups: MyTasksReasonCounts | null;
-}> = ({ refreshKey, canWrite, onCountsChanged, kind, onKind, pageGroups }) => {
+}> = ({ canWrite, kind, onKind, pageGroups }) => {
   const list = usePagedList<MyTaskItem, MyTasksResponse & ListPage<MyTaskItem>>(
+    'getMyTestsPage',
     async (req) => {
       const r = await getMyTestsPage(kind, req);
       const groups = r.group_counts;
       // The size of the list being paged: every kind, or the chosen one.
       return { ...r, total: kind ? (groups?.[kind] ?? r.items.length) : r.total_open };
     },
-    [kind, refreshKey],
+    [kind],
     usePage(),
   );
   // The chips' counts are this list's own (the same statement as the rows'
@@ -132,7 +127,6 @@ const TestsPanel: React.FC<PanelProps & {
   const kindCounts: Record<MyTaskReason, number | null> = groups
     ? { assigned: groups.assigned, in_review: groups.in_review, triage: groups.triage }
     : { assigned: null, in_review: null, triage: null };
-  const onChanged = useChanged(list.reload, onCountsChanged);
   return (
     <MyTestsTable
       {...listProps(list)}
@@ -140,35 +134,34 @@ const TestsPanel: React.FC<PanelProps & {
       kind={kind}
       onKind={onKind}
       canWrite={canWrite}
-      onChanged={onChanged}
     />
   );
 };
 
-const ChangedPanel: React.FC<PanelProps> = ({ refreshKey, canWrite, onCountsChanged }) => {
+const ChangedPanel: React.FC<PanelProps> = ({ canWrite }) => {
   const list = usePagedList<ReviewFollowupRow, ReviewFollowupsResponse>(
+    'getReviewFollowupsPage',
     (req) => getReviewFollowupsPage(req),
-    [refreshKey],
+    [],
     usePage(),
   );
-  const onChanged = useChanged(list.reload, onCountsChanged);
-  return <ChangedSinceReviewSection {...listProps(list)} canWrite={canWrite} onChanged={onChanged} />;
+  return <ChangedSinceReviewSection {...listProps(list)} canWrite={canWrite} />;
 };
 
 const PickUpPanel: React.FC<PanelProps & {
   tier: number | null;
   onTier: (tier: number | null) => void;
-}> = ({ refreshKey, canWrite, onCountsChanged, tier, onTier }) => {
+}> = ({ canWrite, tier, onTier }) => {
   const list = usePagedList<InvestigateRow, InvestigationQueueResponse & ListPage<InvestigateRow>>(
+    'getInvestigationQueue',
     async (req) => {
       const r = await getInvestigationQueue(tier, req);
       // The size of the list being paged: the whole queue, or the tier's hosts.
       return { ...r, total: tier != null ? (r.tier_counts?.[tier - 1] ?? r.items.length) : r.queue_total };
     },
-    [tier, refreshKey],
+    [tier],
     usePage(),
   );
-  const onChanged = useChanged(list.reload, onCountsChanged);
   return (
     <UntouchedQueueSection
       {...listProps(list)}
@@ -176,7 +169,6 @@ const PickUpPanel: React.FC<PanelProps & {
       tier={tier}
       onTier={onTier}
       canWrite={canWrite}
-      onChanged={onChanged}
     />
   );
 };
@@ -202,8 +194,6 @@ export interface OperationsTabsProps {
   /** The queue's total (pick up) is still loading. */
   pickupLoading: boolean;
   canWrite: boolean;
-  refreshKey: number;
-  onCountsChanged: () => void;
   tier: number | null;
   onTier: (tier: number | null) => void;
   testKind: MyTaskReason | null;
@@ -216,10 +206,10 @@ export interface OperationsTabsProps {
 }
 
 export const OperationsTabs: React.FC<OperationsTabsProps> = ({
-  tab, onTab, counts, countsLoading, pickupLoading, canWrite, refreshKey, onCountsChanged,
+  tab, onTab, counts, countsLoading, pickupLoading, canWrite,
   tier, onTier, testKind, onTestKind, testGroups = null, findingNeed, onFindingNeed,
 }) => {
-  const panel: PanelProps = { canWrite, refreshKey, onCountsChanged };
+  const panel: PanelProps = { canWrite };
   const pageNeeds = { decide: counts.findingsDecide, write: counts.findingsWrite };
   const loadingOf = (t: OperationsTab) => (t === 'pickup' ? pickupLoading : countsLoading);
   return (
@@ -260,7 +250,7 @@ export const OperationsTabs: React.FC<OperationsTabsProps> = ({
         </div>
       )}
       <TabsContent value="findings" className="min-w-0">
-        <FindingsPanel {...panel} need={findingNeed} onNeed={onFindingNeed} pageNeeds={pageNeeds} />
+        <FindingsPanel need={findingNeed} onNeed={onFindingNeed} pageNeeds={pageNeeds} />
       </TabsContent>
       <TabsContent value="hosts" className="min-w-0"><HostsPanel {...panel} /></TabsContent>
       <TabsContent value="tests" className="min-w-0">

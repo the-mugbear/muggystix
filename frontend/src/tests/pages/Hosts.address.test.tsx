@@ -65,7 +65,14 @@ const open = (entry: string) => {
   render(<RouterProvider router={router} />);
   return router;
 };
-const asked = () => mocked.getHosts.mock.calls.map(([params]) => params as Record<string, unknown>);
+/** The list's own table.  The page skeleton — what is on screen until the
+ *  first read is in — is a table too, and the rows arrive a tick after the
+ *  request resolves (they used to land before the first look). */
+const findHostsTable = () => waitFor(() => {
+  expect(screen.queryByText('Loading table…')).toBeNull();
+  return screen.getByRole('table');
+});
+const asked =() => mocked.getHosts.mock.calls.map(([params]) => params as Record<string, unknown>);
 const last = () => asked()[asked().length - 1];
 
 describe('Hosts — the list is its address (real router)', () => {
@@ -84,7 +91,7 @@ describe('Hosts — the list is its address (real router)', () => {
 
   it('reads conditions, sort and page from the address it was opened at, and asks once', async () => {
     const router = open('/hosts?has_critical_vulns=true&ports=22,443&sort_by=ip_address&page=3');
-    await screen.findByRole('table');
+    await findHostsTable();
     expect(last()).toMatchObject({
       has_critical_vulns: true, ports: '22,443', sort_by: 'ip_address', sort_order: 'asc', skip: 50,
     });
@@ -96,7 +103,7 @@ describe('Hosts — the list is its address (real router)', () => {
   it('a page change replaces the address, and the list read back from it is the one asked for', async () => {
     const user = userEvent.setup({ skipHover: true });
     const router = open('/hosts?has_critical_vulns=true');
-    await screen.findByRole('table');
+    await findHostsTable();
     await user.click(screen.getByLabelText('Next page'));
     await waitFor(() => expect(last()).toMatchObject({ has_critical_vulns: true, skip: 25 }));
     expect(router.state.location.search).toContain('has_critical_vulns=true');
@@ -121,7 +128,7 @@ describe('Hosts — the list is its address (real router)', () => {
 
   it('a navigation to another /hosts address is a new list; Back is the one before', async () => {
     const router = open('/hosts?has_critical_vulns=true&page=2');
-    await screen.findByRole('table');
+    await findHostsTable();
     await act(async () => { await router.navigate('/hosts?q=port%3A22'); });
     await waitFor(() => expect(last()).toMatchObject({ q: 'port:22', skip: 0 }));
     expect(last().has_critical_vulns).toBeUndefined();

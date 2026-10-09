@@ -8,13 +8,15 @@
  * always apply are the server's and are shown, not edited.  Only the boxes
  * that changed are sent.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
 import {
   getReportWritingGuidance, updateReportWritingGuidance, type ReportWritingGuidance,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
+import { GLOBAL, queryErrorText } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { formatTimestamp } from '../../utils/relativeTime';
 import PostureSection from '../posture/PostureSection';
@@ -38,35 +40,38 @@ export const changedSections = (guidance: ReportWritingGuidance, draft: Draft): 
 
 export const ReportWritingGuidanceSection: React.FC = () => {
   const toast = useToast();
-  const [guidance, setGuidance] = useState<ReportWritingGuidance | null>(null);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: [GLOBAL, 'getReportWritingGuidance'],
+    queryFn: ({ signal }) => getReportWritingGuidance(signal),
+  });
+  const guidance = query.data ?? null;
+  const error = queryErrorText(query.error, 'The report writing guidance could not be loaded.');
+  const load = () => { void query.refetch(); };
 
-  const load = () => {
-    setError(null);
-    getReportWritingGuidance()
-      .then((g) => { setGuidance(g); setDraft(draftOf(g)); })
-      .catch((err) => setError(formatApiError(err, 'The report writing guidance could not be loaded.')));
-  };
-  useEffect(load, []);
+  // What the reader typed, per box, over what is stored: nothing is copied
+  // out of the server's answer, so a save or a reload cannot leave the two
+  // out of step.
+  const [edits, setEdits] = useState<Draft>({});
+  const draft: Draft | null = guidance ? { ...draftOf(guidance), ...edits } : null;
+  const setDraft = (next: Draft) => setEdits(next);
 
   const changed = guidance && draft ? changedSections(guidance, draft) : {};
   const dirty = Object.keys(changed).length > 0;
 
-  const save = async () => {
-    if (!guidance || !draft || !dirty) return;
-    setBusy(true);
-    try {
-      const next = await updateReportWritingGuidance(changed);
-      setGuidance(next);
-      setDraft(draftOf(next));
+  const saving = useMutation({
+    mutationFn: (sections: Record<string, string>) => updateReportWritingGuidance(sections),
+    onSuccess: (next) => {
+      queryClient.setQueryData([GLOBAL, 'getReportWritingGuidance'], next);
+      setEdits({});
       toast.success('Writing guidance saved. The next draft is written to it.');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not save the writing guidance.'));
-    } finally {
-      setBusy(false);
-    }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not save the writing guidance.')),
+  });
+  const busy = saving.isPending;
+  const save = () => {
+    if (!guidance || !draft || !dirty) return;
+    saving.mutate(changed);
   };
 
   return (
@@ -81,7 +86,7 @@ export const ReportWritingGuidanceSection: React.FC = () => {
       )}
       {!guidance && !error && <p className="text-caption text-muted-foreground">Loading…</p>}
       {guidance && draft && (
-        <form className="max-w-4xl" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+        <form className="max-w-4xl" onSubmit={(e) => { e.preventDefault(); save(); }}>
           <div className="flex flex-col gap-sm">
             {guidance.sections.map((section) => {
               const id = `ss-guidance-${section.key}`;
@@ -121,7 +126,7 @@ export const ReportWritingGuidanceSection: React.FC = () => {
                 {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Save guidance
               </Button>
               <Button type="button" size="sm" variant="ghost" disabled={busy}
-                onClick={() => setDraft(draftOf(guidance))}>Discard</Button>
+                onClick={() => setEdits({})}>Discard</Button>
             </div>
           )}
 

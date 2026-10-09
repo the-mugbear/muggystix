@@ -492,6 +492,43 @@ describe('FindingDetail — each proposal is reviewed where it applies (5.334.0)
     await waitFor(() => expect(mocked.listProposals.mock.calls.length).toBeGreaterThan(calls));
   });
 
+  // 5.351.0 — a decision was followed by a callback that re-read, a window
+  // event that re-read the proposals again, and an invalidation: the pending
+  // proposals were asked for two or three times.  The decision now says once
+  // which reads are out of date.
+  it('an accepted draft reads the finding, its history, its images and the proposals again — once each', async () => {
+    mocked.acceptProposal.mockResolvedValue({ ...proposal({ id: 1, kind: 'finding_text', field: 'recommendation' }), status: 'accepted' });
+    renderAt('/findings/7');
+    const drafts = await screen.findByTestId('drafts-recommendation');
+    await waitFor(() => expect(mocked.getFindingImages).toHaveBeenCalled());
+    const before = {
+      finding: mocked.getFinding.mock.calls.length, history: mocked.getFindingHistory.mock.calls.length,
+      images: mocked.getFindingImages.mock.calls.length, proposals: mocked.listProposals.mock.calls.length,
+    };
+    fireEvent.click(within(drafts).getByRole('button', { name: /^Accept$/ }));
+    await waitFor(() => expect(mocked.listProposals.mock.calls.length).toBe(before.proposals + 1));
+    await waitFor(() => expect(mocked.getFinding.mock.calls.length).toBe(before.finding + 1));
+    await waitFor(() => expect(mocked.getFindingHistory.mock.calls.length).toBe(before.history + 1));
+    await waitFor(() => expect(mocked.getFindingImages.mock.calls.length).toBe(before.images + 1));
+    // …and no second round follows.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(mocked.listProposals.mock.calls.length).toBe(before.proposals + 1);
+    expect(mocked.getFinding.mock.calls.length).toBe(before.finding + 1);
+    expect(toastMock.warning).not.toHaveBeenCalled();
+  });
+
+  it('an accepted draft whose finding cannot be read again says so and keeps the page', async () => {
+    mocked.acceptProposal.mockResolvedValue({ ...proposal({ id: 1, kind: 'finding_text', field: 'recommendation' }), status: 'accepted' });
+    renderAt('/findings/7');
+    const drafts = await screen.findByTestId('drafts-recommendation');
+    mocked.getFinding.mockRejectedValueOnce(new Error('down'));
+    fireEvent.click(within(drafts).getByRole('button', { name: /^Accept$/ }));
+    await waitFor(() => expect(toastMock.warning).toHaveBeenCalledWith(
+      'Accepted, but the page could not refresh — reload to see the change.',
+    ));
+    expect(screen.getByText('Weak TLS on portal')).toBeInTheDocument();
+  });
+
   // The two refreshes share one lane: the status change's slower re-read used
   // to land after the accept's and put the page back to the older finding.
   it('a slow refresh never lands over a newer one', async () => {

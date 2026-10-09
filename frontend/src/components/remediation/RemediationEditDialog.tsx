@@ -6,6 +6,7 @@
  * through the one write path, `POST /remediation/apply`.
  */
 import React, { useMemo, useRef, useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
 import {
@@ -14,8 +15,8 @@ import {
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
 import {
-  applyRowsFor, draftCaution, draftChanges, draftFor, draftProblem, hasChanges, localToday, noteRequirement,
-  policyDueLine, REMEDIATION_STATUSES, REMEDIATION_STATUS_LABEL, type RemediationDraft,
+  applyRowsFor, draftCaution, draftChanges, draftFor, draftProblem, hasChanges, invalidateRemediationReads,
+  localToday, noteRequirement, policyDueLine, REMEDIATION_STATUSES, REMEDIATION_STATUS_LABEL, type RemediationDraft,
 } from '../../utils/remediation';
 import { Button } from '../ui/button';
 import {
@@ -30,6 +31,13 @@ const UNCHANGED = '__unchanged__';
 
 const newKey = (): string =>
   (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+
+/** Across projects: the project whose save was refused, and the ones written before it. */
+class RefusedProject extends Error {
+  constructor(readonly reason: unknown, readonly project: string, readonly saved: string[]) {
+    super(`Could not save for ${project}.`);
+  }
+}
 
 export const RemediationEditDialog: React.FC<{
   /** The rows being edited; the dialog is open while there are any. */
@@ -47,9 +55,9 @@ export const RemediationEditDialog: React.FC<{
   today?: string;
 }> = ({ rows, onClose, onSaved, policy = null, acrossProjects = false, today }) => {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const opened = useMemo(() => draftFor(rows), [rows]);
   const [draft, setDraft] = useState<RemediationDraft>(opened);
-  const [busy, setBusy] = useState(false);
   // One key per opening: a second click on Save is the same note, not another.
   const requestKey = useMemo(newKey, [rows]);
 
@@ -99,37 +107,33 @@ export const RemediationEditDialog: React.FC<{
     return bad;
   };
 
-  const save = async () => {
-    if (checkDates() || problem || !dirty || noteMissing) return;
-    setBusy(true);
-    try {
+  const saving = useMutation({
+    mutationFn: async (): Promise<{ changed: number; notes: number }> => {
+      if (!acrossProjects) {
+        const result = await applyRemediation(applyRowsFor(rows, changes, draft.note, requestKey), { overwrite: true });
+        return { changed: result.summary.changed, notes: result.summary.notes_added };
+      }
+      // One call per project, one at a time: a refusal stops before the
+      // next project is written, and the message says which were saved.
       let changed = 0;
       let notes = 0;
-      if (acrossProjects) {
-        // One call per project, one at a time: a refusal stops before the
-        // next project is written, and the message says which were saved.
-        const byProject = new Map<number, RemediationRow[]>();
-        rows.forEach((r) => byProject.set(r.project_id, [...(byProject.get(r.project_id) ?? []), r]));
-        const saved: string[] = [];
-        for (const [projectId, group] of byProject) {
-          try {
-            const result = await applyRemediation(
-              applyRowsFor(group, changes, draft.note, requestKey), { overwrite: true }, projectId);
-            changed += result.summary.changed;
-            notes += result.summary.notes_added;
-            saved.push(group[0].project_name);
-          } catch (err) {
-            if (saved.length > 0) onSaved();
-            toast.error(formatApiError(err, `Could not save for ${group[0].project_name}.`)
-              + (saved.length > 0 ? ` Already saved: ${saved.join(', ')}.` : ' Nothing was changed.'));
-            return;
-          }
+      const byProject = new Map<number, RemediationRow[]>();
+      rows.forEach((r) => byProject.set(r.project_id, [...(byProject.get(r.project_id) ?? []), r]));
+      const saved: string[] = [];
+      for (const [projectId, group] of byProject) {
+        try {
+          const result = await applyRemediation(
+            applyRowsFor(group, changes, draft.note, requestKey), { overwrite: true }, projectId);
+          changed += result.summary.changed;
+          notes += result.summary.notes_added;
+          saved.push(group[0].project_name);
+        } catch (err) {
+          throw new RefusedProject(err, group[0].project_name, saved);
         }
-      } else {
-        const result = await applyRemediation(applyRowsFor(rows, changes, draft.note, requestKey), { overwrite: true });
-        changed = result.summary.changed;
-        notes = result.summary.notes_added;
       }
+      return { changed, notes };
+    },
+    onSuccess: ({ changed, notes }) => {
       toast.success(
         changed === 0 && notes > 0
           ? `Note added to ${notes === 1 ? 'the timeline' : `${notes} timelines`}.`
@@ -139,11 +143,24 @@ export const RemediationEditDialog: React.FC<{
       );
       onSaved();
       onClose();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not save. Nothing was changed.'));
-    } finally {
-      setBusy(false);
-    }
+    },
+    onError: (err) => {
+      if (!(err instanceof RefusedProject)) {
+        toast.error(formatApiError(err, 'Could not save. Nothing was changed.'));
+        return;
+      }
+      if (err.saved.length > 0) onSaved();
+      toast.error(formatApiError(err.reason, `Could not save for ${err.project}.`)
+        + (err.saved.length > 0 ? ` Already saved: ${err.saved.join(', ')}.` : ' Nothing was changed.'));
+    },
+    // Whatever was written — all of it, or the projects before a refusal —
+    // every remediation read on screen is re-read in place.
+    onSettled: () => { void invalidateRemediationReads(queryClient); },
+  });
+  const busy = saving.isPending;
+  const save = () => {
+    if (checkDates() || problem || !dirty || noteMissing) return;
+    saving.mutate();
   };
 
   return (
@@ -315,7 +332,7 @@ export const RemediationEditDialog: React.FC<{
         </DialogBody>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
-          <Button onClick={() => void save()} disabled={busy || halfDate || !dirty || !!problem || noteMissing}>
+          <Button onClick={save} disabled={busy || halfDate || !dirty || !!problem || noteMissing}>
             {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Save
           </Button>
         </DialogFooter>

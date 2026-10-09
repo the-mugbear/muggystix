@@ -9,17 +9,17 @@
  * on a tool with `?tool=<id or registry name>` (Tool reference, the host
  * inspector) or `?format=<file_type>` (Ingestion Results).
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { AlertTriangle, Search } from 'lucide-react';
 
 import {
   CoverageLevel,
   CoverageSignal,
-  ParserCoverageResponse,
   getParserCoverage,
 } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { cn } from '../utils/cn';
 import {
   FilteredTool,
@@ -182,8 +182,6 @@ const ToolSection: React.FC<{
 
 const ToolCoverage: React.FC = () => {
   const [params, setParams] = useSearchParams();
-  const [data, setData] = useState<ParserCoverageResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const query = params.get('q') ?? '';
   const levelParam = params.get('level');
@@ -197,13 +195,12 @@ const ToolCoverage: React.FC = () => {
     setParams(next, { replace: true });
   };
 
-  useEffect(() => {
-    let cancelled = false;
-    getParserCoverage()
-      .then((r) => { if (!cancelled) setData(r); })
-      .catch((err) => { if (!cancelled) setError(formatApiError(err, 'Could not load what BlueStick reads.')); });
-    return () => { cancelled = true; };
-  }, []);
+  const coverage = useQuery({
+    queryKey: [GLOBAL, 'getParserCoverage'],
+    queryFn: () => getParserCoverage(),
+  });
+  const data = coverage.data ?? null;
+  const error = queryErrorText(coverage.error, 'Could not load what BlueStick reads.');
 
   const tools = useMemo(() => data?.tools ?? [], [data]);
   const focus = useMemo(

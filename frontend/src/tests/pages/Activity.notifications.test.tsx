@@ -4,7 +4,8 @@
  * nothing when its tests were on several hosts), and a proposal on no finding
  * yet opened `/proposals?scope=mine` — the one view that hides it.
  */
-import { fireEvent, render, screen } from '@testing-library/react';
+import React from 'react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -23,6 +24,7 @@ vi.mock('../../services/api', () => ({
   markAllNotificationsRead: vi.fn().mockResolvedValue(0),
 }));
 
+import { readsOnScreen } from '../helpers/readsOnScreen';
 import Activity from '../../pages/Activity';
 import { notificationHref } from '../../utils/notificationLinks';
 
@@ -57,6 +59,41 @@ describe('Activity — opening a notification', () => {
       finding_id: null,
     }));
     expect(navigate).toHaveBeenCalledWith('/proposals?agent_session_id=88&scope=all');
+  });
+});
+
+// 5.351.0 — the page told the top bar through a window event
+// (`nm:notifications-marked-read`) that Layout listened for.  Marking read
+// now says the bell's count is out of date; this stands in for the bell's
+// read, which is the reader's whatever the project (a GLOBAL key).
+describe('Activity — the bell follows a notification marked read', () => {
+  const bell = () => readsOnScreen({ getUnreadNotificationCount: 'the bell’s count' }, { global: ['getUnreadNotificationCount'] });
+  const openPage = async (ReadsOnScreen: React.FC) => {
+    getNotifications.mockResolvedValue({
+      notifications: [note({ id: 1, title: 'First' }), note({ id: 2, title: 'Second' })], total: 2, unread_count: 2,
+    });
+    render(<MemoryRouter initialEntries={['/activity']}><ReadsOnScreen /><Activity /></MemoryRouter>);
+    await screen.findByRole('button', { name: /First/ });
+  };
+
+  it('opening one reads the count again, once, and takes it out of the panel', async () => {
+    const { reread, ReadsOnScreen } = bell();
+    await openPage(ReadsOnScreen);
+    expect(reread).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /First/ }));
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('the bell’s count'));
+    expect(reread).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: /First/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Second/ })).toBeInTheDocument();
+  });
+
+  it('“Mark all read” reads the count again, once', async () => {
+    const { reread, ReadsOnScreen } = bell();
+    await openPage(ReadsOnScreen);
+    fireEvent.click(screen.getByRole('button', { name: 'Mark all read' }));
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('the bell’s count'));
+    expect(reread).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: /Second/ })).not.toBeInTheDocument();
   });
 });
 

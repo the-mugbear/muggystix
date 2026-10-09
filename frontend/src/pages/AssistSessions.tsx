@@ -8,44 +8,35 @@
  * which session had it and redirects. A session started since has no such
  * id; a bare `/assist-sessions` goes to the list.
  */
-import React, { useEffect, useState } from 'react';
+import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 
 import { getAgentSessionByLegacyAssistId } from '../services/api';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
-import { formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
 import { SESSIONS_LIST_PATH, agentSessionPath } from '../utils/agentRuns';
 
 const AssistSessions: React.FC = () => {
   const { sessionId } = useParams<{ sessionId?: string }>();
   const legacyId = sessionId ? Number(sessionId) : null;
-  const [target, setTarget] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const known = legacyId != null && Number.isFinite(legacyId);
+  const session = useQuery({
+    queryKey: ['getAgentSessionByLegacyAssistId', legacyId],
+    queryFn: () => getAgentSessionByLegacyAssistId(legacyId as number),
+    enabled: known,
+  });
+  const error = queryErrorText(
+    session.error,
+    'No agent session has this older link’s number. Find it under Agent Sessions.',
+  );
 
-  useEffect(() => {
-    if (legacyId == null || !Number.isFinite(legacyId)) return;
-    let cancelled = false;
-    getAgentSessionByLegacyAssistId(legacyId)
-      .then((session) => {
-        if (!cancelled) setTarget(agentSessionPath(session.id));
-      })
-      .catch((e) => {
-        if (!cancelled) {
-          setError(formatApiError(
-            e,
-            'No agent session has this older link’s number. Find it under Agent Sessions.',
-          ));
-        }
-      });
-    return () => { cancelled = true; };
-  }, [legacyId]);
-
-  if (legacyId == null || !Number.isFinite(legacyId)) {
+  if (!known) {
     return <Navigate to={SESSIONS_LIST_PATH} replace />;
   }
-  if (target) return <Navigate to={target} replace />;
+  if (session.data) return <Navigate to={agentSessionPath(session.data.id)} replace />;
 
   return (
     <div className="p-md md:p-lg">

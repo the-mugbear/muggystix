@@ -21,10 +21,14 @@
  * the global role to Member converts them into normal memberships
  * that this dialog can manage.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, Trash2 } from 'lucide-react';
-import apiClient from '../services/api';
+import apiClient, {
+  addProjectMember, getProjects, removeProjectMember, updateProjectMemberRole,
+} from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -80,6 +84,9 @@ interface ProjectSummary {
   is_archived?: boolean;
 }
 
+/** Key name of `GET /users/{id}/memberships` (no barrel function). */
+const USER_MEMBERSHIPS = '/users/{id}/memberships';
+
 const PROJECT_ROLES: Array<{ value: string; label: string; help: string }> = [
   { value: 'admin', label: 'Admin', help: 'Manage membership; everything analyst can do.' },
   { value: 'analyst', label: 'Analyst', help: 'Read/write security data.' },
@@ -113,47 +120,42 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
 }) => {
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
-  const [memberships, setMemberships] = useState<MembershipRow[] | null>(null);
-  const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Granular saving flags keyed by project_id so the row UI can show a
-  // spinner per row without blocking other rows.
-  const [savingProjectId, setSavingProjectId] = useState<number | null>(null);
+  const queryClient = useQueryClient();
   const [addPickerProjectId, setAddPickerProjectId] = useState<string>('');
   const [addPickerRole, setAddPickerRole] = useState<string>('viewer');
+  const userId = user?.id ?? null;
 
-  const reload = useCallback(async () => {
-    if (!user) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const [memberRes, projectRes] = await Promise.all([
-        apiClient.get<MembershipRow[]>(`/users/${user.id}/memberships`),
-        apiClient.get<ProjectSummary[]>('/projects/'),
-      ]);
-      setMemberships(memberRes.data);
-      setProjects(projectRes.data);
-    } catch (err) {
-      setError(formatApiError(err, "Failed to load this user's memberships."));
-      setMemberships([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [user]);
+  // Both lists belong to the open dialog: asked for when it opens on a user,
+  // gone when it closes.
+  const membershipsQuery = useQuery({
+    queryKey: [GLOBAL, USER_MEMBERSHIPS, userId],
+    queryFn: async () => (await apiClient.get<MembershipRow[]>(`/users/${userId}/memberships`)).data,
+    enabled: userId != null,
+  });
+  const projectsQuery = useQuery({
+    queryKey: [GLOBAL, 'getProjects'],
+    queryFn: () => getProjects(),
+    enabled: userId != null,
+  });
+  const failure = membershipsQuery.error ?? projectsQuery.error;
+  const error = queryErrorText(failure, "Failed to load this user's memberships.");
+  const loading = membershipsQuery.isFetching || projectsQuery.isFetching;
+  // Nothing is listed unless both answered; a failure is said above an empty list.
+  const memberships: MembershipRow[] | null = useMemo(() => {
+    if (failure) return [];
+    return projectsQuery.data ? membershipsQuery.data ?? null : null;
+  }, [failure, projectsQuery.data, membershipsQuery.data]);
+  const projects: ProjectSummary[] = useMemo(
+    () => (failure ? [] : projectsQuery.data ?? []), [failure, projectsQuery.data],
+  );
 
+  // The next open starts with an empty picker.
   useEffect(() => {
-    if (user) {
-      void reload();
-    } else {
-      // Clear state on close so the next open starts fresh.
-      setMemberships(null);
-      setProjects([]);
-      setError(null);
+    if (userId == null) {
       setAddPickerProjectId('');
       setAddPickerRole('viewer');
     }
-  }, [user, reload]);
+  }, [userId]);
 
   // Projects the target user is NOT already a member of (and that aren't
   // archived).  Drives the "Add to project" picker.
@@ -165,23 +167,64 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [memberships, projects]);
 
-  const handleRoleChange = async (row: MembershipRow, newRole: string) => {
+  // A membership is shown here, on that project's roster and in its pickers.
+  // The projects are read again with it, as they always were.
+  const membershipsChanged = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: [GLOBAL, USER_MEMBERSHIPS] }),
+    queryClient.invalidateQueries({ queryKey: [GLOBAL, 'getProjects'] }),
+    queryClient.invalidateQueries({ queryKey: [GLOBAL, 'getProjectMembers'] }),
+    queryClient.invalidateQueries({ queryKey: ['listProjectMembers'] }),
+  ]);
+
+  const changingRole = useMutation({
+    mutationFn: ({ row, role }: { row: MembershipRow; role: string }) =>
+      updateProjectMemberRole(row.project_id, userId as number, role),
+    onSuccess: (_updated, { row, role }) => {
+      toast.success(`${user?.username} is now ${role} on ${row.project_name}.`);
+      return membershipsChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update role.')),
+  });
+  const handleRoleChange = (row: MembershipRow, newRole: string) => {
     if (!user) return;
     if (row.role === newRole) return;
-    setSavingProjectId(row.project_id);
-    try {
-      await apiClient.put(
-        `/projects/${row.project_id}/members/${user.id}`,
-        { role: newRole },
-      );
-      toast.success(`${user.username} is now ${newRole} on ${row.project_name}.`);
-      await reload();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update role.'));
-    } finally {
-      setSavingProjectId(null);
-    }
+    changingRole.mutate({ row, role: newRole });
   };
+
+  const removing = useMutation({
+    mutationFn: (row: MembershipRow) => removeProjectMember(row.project_id, userId as number),
+    onSuccess: (_void, row) => {
+      toast.success(`Removed ${user?.username} from ${row.project_name}.`);
+      return membershipsChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to remove user from project.')),
+  });
+
+  const adding = useMutation({
+    mutationFn: ({ projectId, role }: { projectId: number; role: string }) =>
+      addProjectMember(projectId, userId as number, role),
+    onSuccess: (_added, { projectId, role }) => {
+      const project = projects.find((p) => p.id === projectId);
+      toast.success(
+        `Added ${user?.username} to ${project?.name ?? `project ${projectId}`} as ${role}.`,
+      );
+      setAddPickerProjectId('');
+      setAddPickerRole('viewer');
+      return membershipsChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to add user to project.')),
+  });
+  const handleAdd = () => {
+    if (!user || !addPickerProjectId) return;
+    adding.mutate({ projectId: Number(addPickerProjectId), role: addPickerRole });
+  };
+
+  // One change at a time; the row it belongs to shows the spinner.
+  const savingProjectId: number | null = changingRole.isPending
+    ? changingRole.variables.row.project_id
+    : removing.isPending
+      ? removing.variables.project_id
+      : adding.isPending ? adding.variables.projectId : null;
 
   const handleRemove = async (row: MembershipRow) => {
     if (!user) return;
@@ -199,39 +242,7 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
       confirmLabel: 'Remove',
     });
     if (!ok) return;
-    setSavingProjectId(row.project_id);
-    try {
-      await apiClient.delete(`/projects/${row.project_id}/members/${user.id}`);
-      toast.success(`Removed ${user.username} from ${row.project_name}.`);
-      await reload();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to remove user from project.'));
-    } finally {
-      setSavingProjectId(null);
-    }
-  };
-
-  const handleAdd = async () => {
-    if (!user || !addPickerProjectId) return;
-    const projectId = Number(addPickerProjectId);
-    setSavingProjectId(projectId);
-    try {
-      await apiClient.post(`/projects/${projectId}/members`, {
-        user_id: user.id,
-        role: addPickerRole,
-      });
-      const project = projects.find((p) => p.id === projectId);
-      toast.success(
-        `Added ${user.username} to ${project?.name ?? `project ${projectId}`} as ${addPickerRole}.`,
-      );
-      setAddPickerProjectId('');
-      setAddPickerRole('viewer');
-      await reload();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to add user to project.'));
-    } finally {
-      setSavingProjectId(null);
-    }
+    removing.mutate(row);
   };
 
   return (

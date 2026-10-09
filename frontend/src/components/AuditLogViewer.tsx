@@ -11,15 +11,16 @@
  * since 5.350.0; a section of System Settings before) and not a project one.
  * Login attempts and user administration aren't project events.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { AlertCircle, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
 import {
+  AuditLogPage,
   AuditLogRow,
-  AuditStats,
   getAuditStats,
   listAuditLogs,
 } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { formatAuditDetails } from '../utils/auditDetails';
 import { personName } from '../utils/people';
 import { safeFallback } from '../utils/uiStyles';
@@ -43,46 +44,46 @@ function when(value?: string | null): string {
 }
 
 const AuditLogViewer: React.FC = () => {
-  const [rows, setRows] = useState<AuditLogRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [skip, setSkip] = useState(0);
-  const [stats, setStats] = useState<AuditStats | null>(null);
-  const [actionFilter, setActionFilter] = useState('all');
-  const [resourceFilter, setResourceFilter] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Which page is asked for; a new filter starts from the first.
+  const [asked, setAsked] = useState(0);
+  const [actionFilter, setActionFilterValue] = useState('all');
+  const [resourceFilter, setResourceFilterValue] = useState('');
+  const setActionFilter = (value: string) => { setActionFilterValue(value); setAsked(0); };
+  const setResourceFilter = (value: string) => { setResourceFilterValue(value); setAsked(0); };
 
-  const reload = useCallback(async (nextSkip: number) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const page = await listAuditLogs({
-        skip: nextSkip,
-        limit: PAGE_SIZE,
-        ...(actionFilter !== 'all' ? { action: actionFilter } : {}),
-        ...(resourceFilter.trim() ? { resource_type: resourceFilter.trim() } : {}),
-      });
-      setRows(page.logs ?? []);
-      setTotal(page.total ?? 0);
-      setSkip(nextSkip);
-    } catch (err) {
-      // A failed fetch must not render as an empty (i.e. "nothing happened")
-      // audit trail — that is the most misleading possible state here.
-      setError(formatApiError(err, 'Failed to load audit log.'));
-      setRows([]);
-      setTotal(0);
-    } finally {
-      setLoading(false);
-    }
-  }, [actionFilter, resourceFilter]);
+  const params = {
+    skip: asked,
+    limit: PAGE_SIZE,
+    ...(actionFilter !== 'all' ? { action: actionFilter } : {}),
+    ...(resourceFilter.trim() ? { resource_type: resourceFilter.trim() } : {}),
+  };
+  const query = useQuery({
+    queryKey: [GLOBAL, 'listAuditLogs', params],
+    queryFn: () => listAuditLogs(params),
+    // The page on screen stays until the next one answers.
+    placeholderData: keepPreviousData,
+  });
+  const loading = query.isFetching;
+  // A failed fetch must not render as an empty (i.e. "nothing happened")
+  // audit trail — that is the most misleading possible state here: it is said,
+  // and the rows that were shown go with it.
+  const error = queryErrorText(query.error, 'Failed to load audit log.');
+  const page: AuditLogPage | null = query.isError ? null : query.data ?? null;
+  const rows: AuditLogRow[] = page?.logs ?? [];
+  const total = page?.total ?? 0;
+  // The rows on screen are the ones the server answered with, which is the
+  // previous page while the next is on its way.
+  const skip = query.isPlaceholderData ? page?.skip ?? asked : asked;
+  const reload = (nextSkip: number) => {
+    if (nextSkip === asked) void query.refetch();
+    else setAsked(nextSkip);
+  };
 
-  useEffect(() => { void reload(0); }, [reload]);
-
-  useEffect(() => {
-    getAuditStats()
-      .then(setStats)
-      .catch(() => setStats(null));  // stats are a nicety; the table is the feature
-  }, []);
+  // Stats are a nicety; the table is the feature — a failure shows none.
+  const { data: stats = null } = useQuery({
+    queryKey: [GLOBAL, 'getAuditStats'],
+    queryFn: () => getAuditStats(),
+  });
 
   const actionOptions = stats?.top_actions?.map((a) => a.action) ?? [];
   const pageEnd = Math.min(skip + PAGE_SIZE, total);
@@ -114,7 +115,7 @@ const AuditLogViewer: React.FC = () => {
         </>
       }
       actions={
-        <Button size="sm" variant="outline" onClick={() => void reload(skip)} disabled={loading}>
+        <Button size="sm" variant="outline" onClick={() => reload(asked)} disabled={loading}>
           <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} aria-hidden />
           Refresh
         </Button>
@@ -260,14 +261,14 @@ const AuditLogViewer: React.FC = () => {
                 <Button
                   size="sm" variant="outline"
                   disabled={skip === 0 || loading}
-                  onClick={() => void reload(Math.max(0, skip - PAGE_SIZE))}
+                  onClick={() => reload(Math.max(0, skip - PAGE_SIZE))}
                 >
                   Previous
                 </Button>
                 <Button
                   size="sm" variant="outline"
                   disabled={pageEnd >= total || loading}
-                  onClick={() => void reload(skip + PAGE_SIZE)}
+                  onClick={() => reload(skip + PAGE_SIZE)}
                 >
                   Next
                 </Button>

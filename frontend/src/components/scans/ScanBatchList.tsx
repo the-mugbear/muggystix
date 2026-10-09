@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Layers, Loader2 } from 'lucide-react';
 import { getBatchUnimportedJobs, getScans } from '../../services/api';
@@ -116,40 +117,38 @@ export function batchRefusedAtUpload(b: ScanBatchSummary): number {
 export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
   batch: b, filters, onViewScan, colSpan, stagedJobs = [], onReviewStaged, timeFormat,
 }) => {
-  const [state, setState] = useState<Scan[] | 'loading' | 'error' | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  // A batch's files are read when it is expanded, and follow the page's
+  // filters while it stays open (the rows on screen stay until the new ones
+  // arrive).
+  const fileOptions = { ...filters, batchId: b.id, sortBy: 'filename' as const, sortOrder: 'asc' as const };
+  const files = useQuery({
+    queryKey: ['getScans', fileOptions, { limit: FILES_PER_BATCH }],
+    queryFn: ({ signal }) => getScans(0, FILES_PER_BATCH, { ...fileOptions, signal }),
+    enabled: expanded,
+    placeholderData: keepPreviousData,
+  });
   // v5.289.0 — the batch's files that did NOT import (failed, discarded,
   // expired, cancelled…), so the operator sees WHICH files failed and why;
   // an expanded batch listed only its imported files.  `null` = could not be
   // read (said on its own row; the imported files still show).
-  const [unimported, setUnimported] = useState<IngestionJob[] | null>([]);
+  const notImported = useQuery({
+    queryKey: ['getBatchUnimportedJobs', b.id],
+    queryFn: () => getBatchUnimportedJobs(b.id),
+    enabled: expanded,
+  });
+  const unimported: IngestionJob[] | null = notImported.isError ? null : notImported.data ?? [];
+  // The two lists appear together: the files that failed come first, and
+  // must not push the others down after they are on screen.
+  const state: Scan[] | 'loading' | 'error' | null = !expanded
+    ? null
+    : files.isError && files.data === undefined
+      ? 'error'
+      : files.data === undefined || notImported.isPending
+        ? 'loading'
+        : files.data;
 
-  const toggle = async () => {
-    if (state) {
-      setState(null);
-      return;
-    }
-    setState('loading');
-    try {
-      const [files, jobs] = await Promise.all([
-        getScans(0, FILES_PER_BATCH, {
-          ...filters,
-          batchId: b.id,
-          sortBy: 'filename',
-          sortOrder: 'asc',
-        }),
-        getBatchUnimportedJobs(b.id).catch((err) => {
-          console.error('Error loading the batch files that did not import:', err);
-          return null;
-        }),
-      ]);
-      setUnimported(jobs);
-      // Collapsed while loading → stay collapsed.
-      setState((prev) => (prev ? files : prev));
-    } catch (err) {
-      console.error('Error loading batch files:', err);
-      setState((prev) => (prev ? 'error' : prev));
-    }
-  };
+  const toggle = () => setExpanded((was) => !was);
 
   const name = batchDisplayName(b.label);
   const uploader = b.created_by_name || b.created_by;
@@ -382,7 +381,7 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
               <button
                 type="button"
                 className={ROW_LINK_CLASS}
-                onClick={() => void toggle()}
+                onClick={toggle}
                 aria-expanded={!!state}
                 aria-label={`${state ? 'Hide' : 'Show'} the files of ${name.title}`}
               >

@@ -38,11 +38,9 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => navigate };
 });
-// The 60 s tick, run by hand.
-const pollTick = vi.hoisted(() => ({ current: null as null | (() => Promise<void>) }));
-vi.mock('../../hooks/useVisibilityPoll', () => ({
-  useVisibilityPoll: (fn: () => Promise<void>) => { pollTick.current = fn; },
-}));
+// The poll's re-read, run by hand: a polled query (`pollEvery`) reads again
+// when the tab becomes visible, which is what this event says.
+const pollTick = () => { window.dispatchEvent(new Event('visibilitychange')); };
 
 import { LIST_CURSOR_CLASS } from '../../hooks/useListCursor';
 import Proposals from '../../pages/Proposals';
@@ -116,12 +114,21 @@ describe('Proposals page', () => {
     expect(listProposals).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 50, limit: 50 }));
 
     rejectProposal.mockResolvedValue({ ...row(1), status: 'rejected' });
+    listProposals.mockClear();
+    getProposalSummary.mockClear();
     fireEvent.click(screen.getAllByRole('button', { name: /Reject…/ })[0]);
     fireEvent.click(screen.getByRole('button', { name: /^Reject$/ }));
     await waitFor(() => expect(rejectProposal).toHaveBeenCalled());
-    await waitFor(() => expect(listProposals).toHaveBeenLastCalledWith(
-      expect.objectContaining({ offset: 0, limit: 100 }),
-    ));
+    // Both loaded pages are read again, a page at a time (it was one request
+    // of `limit: 100` — the old hook's `maxReload`), and all 100 rows stay.
+    await waitFor(() => expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ offset: 50, limit: 50 })));
+    expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ offset: 0, limit: 50 }));
+    await waitFor(() => expect(document.querySelectorAll('[data-proposal]')).toHaveLength(100));
+    // 5.351.0 — ONE re-read: the decision says which reads are out of date
+    // itself.  (The row's callback re-read the list and the count, and the
+    // decision invalidated the count again: the count was asked for twice.)
+    expect(listProposals).toHaveBeenCalledTimes(2);
+    expect(getProposalSummary).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -429,7 +436,7 @@ describe('Proposals page — keyboard review', () => {
     fireEvent.keyDown(window, { key: 'j' });
     expect(cursorRow()).toBe('2');
     listProposals.mockResolvedValue({ total: 4, items: [row(99), ...page(1, 3)], has_more: false });
-    await act(async () => { await pollTick.current?.(); });
+    await act(async () => { pollTick(); });
     await waitFor(() => expect(document.querySelectorAll('[data-proposal]')).toHaveLength(4));
     expect(cursorRow()).toBe('2');
     acceptProposal.mockResolvedValue({ ...row(2), status: 'accepted' });
@@ -442,7 +449,7 @@ describe('Proposals page — keyboard review', () => {
     fireEvent.keyDown(window, { key: 'j' });
     fireEvent.keyDown(window, { key: 'j' });
     listProposals.mockResolvedValue({ total: 2, items: [row(1), row(3)], has_more: false });
-    await act(async () => { await pollTick.current?.(); });
+    await act(async () => { pollTick(); });
     await waitFor(() => expect(document.querySelectorAll('[data-proposal]')).toHaveLength(2));
     expect(cursorRow()).toBe('3');
   });

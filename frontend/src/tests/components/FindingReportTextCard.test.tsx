@@ -21,6 +21,7 @@ vi.mock('../../contexts/ToastContext', () => ({
 }));
 
 import { MemoryRouter } from 'react-router-dom';
+import { readsOnScreen } from '../helpers/readsOnScreen';
 import FindingReportTextCard from '../../components/FindingReportTextCard';
 import type { Proposal } from '../../services/api';
 
@@ -32,9 +33,19 @@ const finding = {
   },
 } as never;
 
+// 5.351.0 — a draft no longer calls the page's `onDrafted` (which bumped a
+// key to re-read the page's proposals): it says the proposals and their
+// count are out of date, and what shows them reads again.  These stand in
+// for the finding page's pending proposals and the top bar's count.
+const { reread, ReadsOnScreen } = readsOnScreen({ listProposals: 'proposals', getProposalSummary: 'count' });
+const renderDrafting = () => render(
+  <><ReadsOnScreen /><FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} /></>,
+);
+
 beforeEach(() => {
   draftFindingText.mockReset();
   updateFinding.mockReset();
+  reread.mockClear();
 });
 
 describe('FindingReportTextCard — drafting', () => {
@@ -43,11 +54,13 @@ describe('FindingReportTextCard — drafting', () => {
       proposals: [{ id: 1, field: 'impact' }, { id: 2, field: 'recommendation' }],
       provider_id: 1, provider_type: 'openai', model_id: 'm',
     });
-    const onDrafted = vi.fn();
-    render(<FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} onDrafted={onDrafted} />);
+    renderDrafting();
     fireEvent.click(screen.getByRole('button', { name: /Draft empty sections/ }));
 
-    await waitFor(() => expect(onDrafted).toHaveBeenCalledTimes(1));
+    // The page's proposals and the top bar's count are read again, once each.
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('proposals'));
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('count'));
+    expect(reread).toHaveBeenCalledTimes(2);
     expect(draftFindingText).toHaveBeenCalledWith(42, ['impact', 'recommendation']);
     // No editor was opened and nothing was saved: the drafts wait as proposals.
     expect(screen.queryByLabelText('Impact')).not.toBeInTheDocument();
@@ -62,13 +75,13 @@ describe('FindingReportTextCard — drafting', () => {
       declined: { recommendation: 'No product or version is recorded for the affected service.' },
       provider_id: 1, provider_type: 'openai', model_id: 'm',
     });
-    const onDrafted = vi.fn();
-    render(<FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} onDrafted={onDrafted} />);
+    renderDrafting();
     fireEvent.click(screen.getByRole('button', { name: /Draft empty sections/ }));
     expect(await screen.findByTestId('declined-recommendation')).toHaveTextContent(
       'Not drafted — not enough information: No product or version is recorded for the affected service.',
     );
-    expect(onDrafted).toHaveBeenCalledTimes(1);
+    // One section was drafted: the proposals are read again.
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('proposals'));
     expect(updateFinding).not.toHaveBeenCalled();
   });
 
@@ -77,21 +90,20 @@ describe('FindingReportTextCard — drafting', () => {
       proposals: [], declined: { impact: 'Nothing shows who reaches the service.', recommendation: 'No version.' },
       provider_id: 1, provider_type: 'openai', model_id: 'm',
     });
-    const onDrafted = vi.fn();
-    render(<FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} onDrafted={onDrafted} />);
+    renderDrafting();
     fireEvent.click(screen.getByRole('button', { name: /Draft empty sections/ }));
     expect(await screen.findByTestId('declined-impact')).toHaveTextContent(/Nothing shows who reaches the service/);
     expect(screen.getByTestId('declined-recommendation')).toBeInTheDocument();
-    expect(onDrafted).not.toHaveBeenCalled();
+    // Nothing was proposed: nothing is read again.
+    expect(reread).not.toHaveBeenCalled();
   });
 
   it('says why a draft failed', async () => {
     draftFindingText.mockRejectedValue(new Error('No LLM provider is configured.'));
-    const onDrafted = vi.fn();
-    render(<FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} onDrafted={onDrafted} />);
+    renderDrafting();
     fireEvent.click(screen.getByRole('button', { name: /Draft empty sections/ }));
     expect(await screen.findByText(/No LLM provider is configured|Could not draft/)).toBeInTheDocument();
-    expect(onDrafted).not.toHaveBeenCalled();
+    expect(reread).not.toHaveBeenCalled();
   });
 
   it('lets an analyst who is not the author draft, but not edit', () => {
@@ -340,7 +352,7 @@ describe('FindingReportTextCard — drafts waiting (5.334.0)', () => {
 
   it('“Draft empty sections” leaves a section that already has a draft alone', async () => {
     draftFindingText.mockResolvedValue({ proposals: [{ id: 3, field: 'recommendation' }] });
-    renderCard({ drafts: new Map([['impact', [draft(1, 'impact', 'Relay.')]]]), onDrafted: vi.fn() });
+    renderCard({ drafts: new Map([['impact', [draft(1, 'impact', 'Relay.')]]]) });
     fireEvent.click(screen.getByRole('button', { name: /Draft empty sections/ }));
     await waitFor(() => expect(draftFindingText).toHaveBeenCalledWith(42, ['recommendation']));
   });
@@ -380,7 +392,12 @@ describe('FindingReportTextCard — drafts waiting (5.334.0)', () => {
     acceptProposal.mockResolvedValue({ ...draft(1, 'impact', 'Relay.'), status: 'accepted' });
     renderCard({ drafts: new Map([['impact', [draft(1, 'impact', 'Relay.')]]]), onProposalDecided });
     fireEvent.click(within(screen.getByTestId('drafts-impact')).getByRole('button', { name: /^Accept$/ }));
-    await waitFor(() => expect(onProposalDecided).toHaveBeenCalledWith(expect.objectContaining({ status: 'accepted' })));
+    // …with the promise of the re-read the decision asked for (5.351.0: the
+    // page no longer re-reads from this callback; it waits on that to say
+    // when the finding could not be read again).
+    await waitFor(() => expect(onProposalDecided).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'accepted' }), expect.any(Promise),
+    ));
   });
 });
 

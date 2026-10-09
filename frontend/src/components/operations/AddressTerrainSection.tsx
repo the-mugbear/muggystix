@@ -22,10 +22,11 @@
  * only then: a reader who never opens it never downloads it.
  */
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { Loader2, Map as MapIcon, Minus, Plus, RefreshCw, RotateCcw, Table2 } from 'lucide-react';
 
-import { getAddressTerrain, type AddressTerrainResponse, type TerrainBlock } from '../../services/api';
+import { getAddressTerrain, type TerrainBlock } from '../../services/api';
 import PostureSection, { SectionCount } from '../posture/PostureSection';
 import { Button } from '../ui/button';
 import { InfoTip } from '../ui/info-tip';
@@ -108,14 +109,20 @@ const Swatch: React.FC<{ colour: string; shape?: 'square' | 'diamond' }> = ({ co
   />
 );
 
-const AddressTerrainSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
+const AddressTerrainSection: React.FC = () => {
   const navigate = useNavigate();
   const palette = useTerrainPalette();
   const [rootRef, near] = useNearViewport<HTMLElement>();
-  const [data, setData] = useState<AddressTerrainResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [unavailable, setUnavailable] = useState(false);
-  const [nonce, setNonce] = useState(0);
+  // Nothing is asked for until the section nears the viewport.  The page's
+  // Refresh reaches this read by its name (`getAddressTerrain`) — and only
+  // once it has been asked for.
+  const terrain = useQuery({
+    queryKey: ['getAddressTerrain'],
+    queryFn: ({ signal }) => getAddressTerrain(signal),
+    enabled: near,
+  });
+  const data = terrain.data ?? null;
+  const unavailable = terrain.isError;
   const [canWebgl] = useState(webglAvailable);
   const [view, setView] = useState<View>(canWebgl ? 'map' : 'table');
   // Closed by default: the sentence and the hot block carry the finding.
@@ -127,17 +134,6 @@ const AddressTerrainSection: React.FC<{ refreshKey?: number }> = ({ refreshKey =
   const [hovered, setHovered] = useState<number | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const sceneRef = useRef<TerrainSceneHandle>(null);
-
-  useEffect(() => {
-    if (!near) return undefined;
-    const controller = new AbortController();
-    setLoading(true);
-    getAddressTerrain(controller.signal)
-      .then((r) => { setData(r); setUnavailable(false); })
-      .catch((e) => { if (!controller.signal.aborted && e?.name !== 'CanceledError') setUnavailable(true); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [near, refreshKey, nonce]);
 
   const layout = useMemo(() => (data ? layoutTerrain(data.blocks) : null), [data]);
   const summary = useMemo(() => (data ? summariseTerrain(data.blocks) : null), [data]);
@@ -198,7 +194,7 @@ const AddressTerrainSection: React.FC<{ refreshKey?: number }> = ({ refreshKey =
         title={title}
         description="How far the team has taken the hosts of each address block: tested, planned, someone has it, untouched."
       >
-        {!data && (loading || !near) && !unavailable && (
+        {!data && !unavailable && (
           <p role="status" aria-live="polite" className="flex items-center gap-xs text-metadata text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden /> Loading the address blocks…
           </p>
@@ -206,7 +202,7 @@ const AddressTerrainSection: React.FC<{ refreshKey?: number }> = ({ refreshKey =
         {unavailable && !data && (
           <p className="flex items-center gap-sm text-metadata text-muted-foreground">
             The address map could not be loaded.
-            <Button size="sm" variant="outline" onClick={() => setNonce((v) => v + 1)}>
+            <Button size="sm" variant="outline" onClick={() => void terrain.refetch()}>
               <RefreshCw className="size-4" aria-hidden /> Retry
             </Button>
           </p>

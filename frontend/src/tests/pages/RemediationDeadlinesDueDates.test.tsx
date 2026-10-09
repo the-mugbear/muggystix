@@ -224,7 +224,12 @@ describe('F — what a changed timeline would do, before saving', () => {
     current: states({ overdue: 5, on_track: 20 }), proposed: states({ overdue: 14, on_track: 11 }),
     becomes_overdue: 12, no_longer_overdue: 3, becomes_due_soon: 0, ...over,
   });
-  const settle = async (ms = PREVIEW_DELAY_MS) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+  // The second step lets an answer that has arrived reach the page: a query's
+  // result is delivered on the next timer tick, not inside the request's promise.
+  const settle = async (ms = PREVIEW_DELAY_MS) => {
+    await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  };
   const mount = async () => {
     render(<RemediationSettingsSection />);
     await screen.findByLabelText('High');

@@ -556,71 +556,50 @@ These are good candidates for standardization if repeated:
 - `<RunKindBadge>` (from `src/components/RunKindBadge.tsx`) — one run-kind badge wherever agent runs are listed
 - `ListFilterBar` / `ListFilterSearch` (from `src/components/ListFilterBar.tsx`) — the shared filter row (§27)
 
-### 38. useEffect cancellation convention (v2.42.0)
-When a `useEffect` kicks off an async fetch, use a **`let cancelled = false;` flag**
-plus an `if (cancelled) return;` guard before each `setState`, and clear the
-flag in the cleanup return.  Don't mix this pattern with bare
-`.catch(() => undefined)` in the same component — pick one.
+### 38. An effect never fetches (2026-10-09; was the `cancelled`-flag convention)
+A `useEffect` does not call the API.  Reading from the server is a query and
+writing to it is a mutation (§48); the `let cancelled = false` flag, the
+generation counter and the hand-made `AbortController` that an effect-fetch
+needed are gone with it, and the lint rule refuses a new one.  Pass the
+query's `signal` to an API function that takes one — the library cancels a
+read nobody is waiting for.
 
-```tsx
-useEffect(() => {
-  let cancelled = false;
-  fetchData()
-    .then((data) => {
-      if (cancelled) return;
-      setData(data);
-    })
-    .catch((err) => {
-      if (cancelled) return;
-      setError(formatApiError(err, 'Failed to load …'));
-    });
-  return () => { cancelled = true; };
-}, [deps]);
-```
+An effect is still right for what is not server state: a subscription, a
+timer, focus, the address bar.  The Rules of Hooks and effect dependencies
+are lint rules (`npm run lint`, part of the gate, which allows no warning).
 
-The cancellation flag is the source of truth.  `.catch(() => undefined)` is
-acceptable only as a one-off when the failure is genuinely fire-and-forget
-(e.g. an analytics ping); for anything that produces visible state, the
-cancelled-flag guard is the convention.
-
-For requests that should be physically aborted (large downloads, expensive
-endpoints), use `AbortController` and pass `controller.signal` to the API
-client — `controller.abort()` in the cleanup.
-
-The Rules of Hooks and effect dependencies are lint rules (`npm run lint`,
-part of the gate, which allows no warning). A state update after unmount is
-already a no-op and needs no guard; `hooks/useIsMounted` is for what outlives
-the component — a toast that speaks about "this" record, a window event, a
-follow-up request — which a save that answers after the reader moved on must
-not do.
+"Only while the reader is still here" after a write is said with the callback
+given to `mutate(vars, { onSuccess })` (it does not run once the component is
+gone); "wherever the reader is now" (a toast, an invalidation) goes in the
+`useMutation` options.
 
 ### 39. List pages fetch with `useListQuery` (2026-10-01)
-A list page — rows that refetch when a filter, sort or page changes — fetches
-through `hooks/useListQuery.ts`.  Do not hand-roll `loading` / `error` /
-`rows` state for a new list.
+Every read is a query (§48).  A list with "Show more" — rows that refetch
+when a filter or sort changes — uses `hooks/useListQuery.ts`, a thin helper
+on `useInfiniteQuery`.  Do not hand-roll `loading` / `error` / `rows` state.
 
 ```tsx
 const list = useListQuery(
+  'listThings',                   // the API function the fetcher calls: the key's name
   ({ offset, limit, signal }) => listThings({ status, offset, limit }, signal),
-  [status],                       // what decides WHEN to refetch
-  { pageSize: 50, poll: 60_000 }, // poll is optional
+  [status],                       // plain values: with the name, the query key
+  { pageSize: 50, poll: 60_000 }, // poll is optional; `global: true` for a list that is not one project's
 );
 // list.rows (null until loaded) · list.total · list.loading · list.error
 // list.reload() after a change · list.loadMore() for "Show more"
 ```
 
-The hook guarantees four things, the same on every list:
+The same on every list:
 
-- **The latest request wins.**  A slow response for an earlier filter never
-  replaces the current rows: a new filter and a reload supersede whatever is
-  in flight, and a superseded response writes nothing.
-- **The background never takes what the reader asked for.**  The poll tick
-  skips its turn while any request is in flight (it does not supersede it),
-  and a "load more" asked for during a reload waits for it and appends after
-  the fresh rows.
+- **The rows are this filter's or none.**  The filter is part of the query
+  key, so an answer for an earlier filter cannot be shown under the current
+  one; `rows` is `null` until the current one has loaded.
+- **The background never takes what the reader asked for.**  A "Show more"
+  asked for during a re-read waits for it and appends after the fresh rows.
 - **A failed load is an `error`, never an empty list.**  A failed reload
   keeps the rows that were shown.
-- **A reload keeps what "load more" had loaded.**
+- **A reload keeps what "Show more" had loaded** (it re-reads each loaded
+  page).
 
 **A list that polls or reloads anchors its keyboard cursor by id.**  Rows move
 under an index: pass `useListCursor(count, onOpen, { getId })` the id of row `index`
@@ -634,22 +613,22 @@ with a modifier, an auto-repeat (`allowRepeat` for cursor movement), a text
 field, a Select trigger or an open list / menu (their typeahead owns the
 letters) and an open dialog (`allowDialog` for a surface that is one).
 
-Proposals, Ingestion Results and Feedback use it.  A page that already has a
-guard of its own (`useLatestRequest`, a generation counter) moves when it is
-next reworked — do not migrate one for its own sake.  A fetch with **no**
-guard is a defect: give it `useLatestRequest` at least.
+Proposals, Feedback, the scope's names, a session's tests and the scanner
+observations use it.  There is no other guard to choose from: a hand-made
+generation counter, a `cancelled` flag or an `AbortController` around a fetch
+is the old mechanism and is not written again (§48).
 
-Detail pages (`/findings/:id`, `/scans/:id`…) are remounted on navigation by
-the route error boundary's `key={location.pathname}` (`App.tsx`), which is
-what keeps a late response for the previous id from landing.  A panel that
-shows one record inside a page that stays open across records does the same
-thing itself: it is **keyed by the record** (`<Body key={hostId} …/>` — the
-host inspector, `HostFindingsCard`, the standalone `HostTestsSection`), so a
-change of record remounts it and a completion for the previous one has no
-state to land in.  Do not write per-request "is this still the host on
-screen?" checks; key the panel.
+A record's data is keyed by the record (`['getHost', hostId]`), so a late
+answer for the previous record has no query to land in — on a detail page and
+in a panel that stays open across records alike.  A panel that shows one
+record is still **keyed by the record** (`<Body key={hostId} …/>` — the host
+inspector, `HostFindingsCard`, the standalone `HostTestsSection`, the
+remediation timeline's body) for its LOCAL state: an open dialog, a draft, a
+selection must not follow the reader to another host.  Do not write
+per-request "is this still the host on screen?" checks.
 
-**A paged list keeps its page in the address.**  Pass `usePagedList` the
+**A paged list keeps its page in the address.**  Use `usePagedList('apiFn',
+fetchPage, deps, …)` (on `useQuery`) with the
 page from `hooks/useUrlPage` (`{ pageSize, page: useUrlPage() }`): `?page=`,
 1-based and left out for the first page, replaced (not pushed) when the
 reader pages.  New deps — a filter, a tab — start from page 1, and a link to
@@ -756,7 +735,7 @@ project, and the same host could appear three times.  The shape is:
   list says so in its label, and a tab with no exact list has no link.
 - **Counts and rows are separate requests.**  The counts come from one light
   call; a tab's rows are fetched when the tab is opened, through
-  `hooks/usePagedList` (on `useListQuery`, §39).  Each list route is the
+  `hooks/usePagedList` (§39).  Each list route is the
   function that produced the tab's count, and a backend test pins count ==
   the list paged through, with fixtures larger than a page.
 - **The tab is in the URL** (`?tab=`, plus the tab's own filters), a click is
@@ -867,17 +846,24 @@ From the codebase review of 2026-10-07 (5.339.0).
 - **Unsaved writing is guarded.** An editor holding text the reader typed uses
   `hooks/useDiscardGuard`; an expired session returns to where the reader was
   (`utils/loginReturn` — only a path inside the app is honoured).
-- **A session that is about to end says so.** A session has a fixed length
-  and is not renewed. Ten minutes before its end, and again one minute before,
-  ONE toast that stays until closed (`components/SessionExpiryNotice`, a single
-  toast id, so each stage replaces the last) says when it ends in the reader's
-  local time and that unsaved work should be saved, with "Sign in again", which
-  returns to the page the reader is on; after the end it says the session has
-  ended. It is a toast, never a dialog: it takes no focus and blocks no typing.
-  The end is read from the stored token's expiry and used for nothing else; a
-  token that does not give one shows no notice. The wait is one timeout for the
-  next moment something changes, worked out again when the tab is shown and
-  when another tab replaces the token — never a ticking interval.
+- **A session stays open while the reader works, and ends after they stop.**
+  It ends a fixed time after the reader last pressed a key or clicked
+  (`hooks/useSessionRenewal`, which asks `AuthContext.renewSession` once the
+  stored token is a few minutes old). A request alone never renews: pages
+  poll, and an unattended tab must not keep itself signed in. A new source of
+  "the reader did something" is added to that hook's list and nowhere else.
+- **A session that is about to end says so.** Ten minutes before its end, and
+  again one minute before, ONE toast that stays until closed or the session is
+  renewed (`components/SessionExpiryNotice`, a single toast id, so each stage
+  replaces the last) says when it ends in the reader's local time unless they
+  carry on working, with "Stay signed in"; after the end it says the session
+  has ended, with "Sign in again", which returns to the page the reader is on.
+  It is a toast, never a dialog: it takes no focus and blocks no typing.
+  The end is read from the stored token's expiry and used for nothing but the
+  notice and the renewal; a token that does not give one shows no notice. The
+  wait is one timeout for the next moment something changes, worked out again
+  when the tab is shown and when another tab replaces the token — never a
+  ticking interval.
 - **A startup check that fails for a reason other than "not signed in" does
   not sign the reader out.** Only a 401 ends a session.
 - **One helper each, enforced by lint:** a file save goes through `utils/download`
@@ -1023,6 +1009,83 @@ panel as three thousand, only shorter. No threshold, no second layout for
   state and that it filters. Fills come from the states' theme tones in
   `utils/findingStatus.ts`; two states that would differ only by red against
   green differ by pattern too. No legend — the chips already name the states.
+
+### 48. Server state is TanStack Query (2026-10-09)
+There is ONE way the app talks to the server: `@tanstack/react-query`.  A read
+is `useQuery` (or `useInfiniteQuery`), a write is `useMutation`, and an API
+function is called only inside a `queryFn` or a `mutationFn` — never in an
+effect, never bare in an event handler, never in a hand-made `load()`.  The
+lint rule `bluestick/api-in-query-only` enforces it.  `src/lib/query.ts` holds
+what the whole app shares.
+
+```tsx
+const thing = useQuery({
+  queryKey: ['getThing', thingId],                      // the API function's name, then its arguments
+  queryFn: ({ signal }) => getThing(thingId, signal),
+  enabled: thingId != null,
+});
+const save = useMutation({
+  mutationFn: (body: Body) => updateThing(thingId, body),
+  onSuccess: (updated) => {
+    queryClient.setQueryData(['getThing', thingId], updated);   // the server's answer, or…
+    void invalidateReads(queryClient, 'listThings');            // …say which reads are out of date
+  },
+  onError: (err) => toast.error(formatApiError(err, 'Could not save.')),
+});
+```
+
+- **Key = the API function's name, then its arguments.**  There is no registry
+  of keys; the name is the identity, so a write reaches every read of that
+  function with `invalidateReads(queryClient, 'listThings')`.
+- **A key never names the project.**  The cache is partitioned by signed-in
+  user and project inside the key's hash (`setQueryScope`, set by the two
+  contexts): one project's rows cannot answer another's question.  Data that
+  is not one project's — the project list, users, installation settings,
+  Oversight, Portfolio — starts its key with `GLOBAL`.
+- **An async completion keeps the identity it started with.**  The scope is
+  read when a key is hashed, which protects a read but not a write that lands
+  late (a save started in project A answering after a switch to B).  So a
+  component takes the client from `useQueryClient()` — under the project
+  provider that is `scopedClient`, which drops a `setQueryData` made under
+  another scope — and never writes project data through the module's
+  `queryClient`.
+- **Nothing is copied out of a query.**  The page renders `data`; sorting and
+  grouping are `useMemo` over it.  A form seeded from the server keeps only
+  the reader's EDITS in state and lays them over the data — no effect that
+  copies an answer into the form.
+- **A write refreshes what it changed, itself** (`setQueryData` or
+  `invalidateReads`).  No `reload()` handed down as a prop, no `refreshKey`
+  bumped by a parent, no window event announcing a change: those were the old
+  mechanism.  A callback that changes local UI state (closes a dialog) stays.
+- **Defaults, on purpose** (`lib/query.ts`): no automatic retry and no
+  re-ask when a second reader mounts — a failure is said, with Retry
+  (`refetch`); no refetch on focus; nothing kept once nothing shows it
+  (`gcTime: 0`), so a page that is opened reads from the server; requests are
+  never paused for a browser that believes it is offline (isolated networks).
+  A read that should be remembered says so (`rememberFor(ms)`: project
+  members, the installation's settings).  A query whose own lifecycle differs
+  from a default overrides it explicitly, with a comment and a test — never
+  to work around a page's problem.
+- **Polling is an option of the query**: `...pollEvery(ms)`, or
+  `pollEvery((query) => stillRunning(query.state.data) ? 2500 : null)` for a
+  job — visible tab only, once on return to the tab, half as often while the
+  server is failing.  No `setInterval`.
+- **An action from a click that is not a write** (a download, a dry run, a
+  one-off lookup) is a `useMutation` too: it carries the pending and error
+  state.  A preview that follows what is typed is a `useQuery` with the
+  debounced input in its key.
+- **A secret shown once** (a new agent key, a password being sent) lives in a
+  mutation with `gcTime: 0` that is `reset()` when done — never in a query.
+- **Tests** mock the `services/api` barrel as before; `setupTests.ts` wraps
+  every `render` / `renderHook` in a fresh client, so an ordinary test does
+  not wrap its renders, and no test mocks the library.  A test of what is
+  remembered between two mounts shares one client on purpose, passed as the
+  `wrapper`; the recipe and the scenarios a shared mechanism needs are in
+  `TESTING_FRAMEWORK_DOCUMENTATION.md` ("Testing server state").
+
+Named exceptions (each carries an `eslint-disable` saying why): the sign-in
+check on load in `AuthContext` and the staged-upload orchestration
+(`hooks/useUploadReview`, which takes its API as an injected object).
 
 ## Final Rule
 If a UI change looks correct only with fixture data, it is not finished.

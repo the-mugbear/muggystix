@@ -4,10 +4,12 @@
  * test.  Scoped to the active project (the API client targets it via the
  * `p()` prefix), independent of the member-management project picker.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, Send, Trash2 } from 'lucide-react';
 import {
   WebhookConfig,
+  WebhookCreatePayload,
   WebhookEventType,
   createWebhook,
   deleteWebhook,
@@ -16,9 +18,9 @@ import {
   testWebhook,
   updateWebhook,
 } from '../services/api';
-import { useProject } from '../contexts/ProjectContext';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
+import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -30,14 +32,9 @@ import { Label } from './ui/label';
 import { Switch } from './ui/switch';
 
 const WebhookSettings: React.FC = () => {
-  const { currentProject } = useProject();
   const toast = useToast();
+  const queryClient = useQueryClient();
   const [confirmEl, confirm] = useConfirm();
-  const [webhooks, setWebhooks] = useState<WebhookConfig[]>([]);
-  const [eventTypes, setEventTypes] = useState<WebhookEventType[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<number | null>(null);
 
   // Add-form state.
   const [showForm, setShowForm] = useState(false);
@@ -45,28 +42,17 @@ const WebhookSettings: React.FC = () => {
   const [url, setUrl] = useState('');
   const [secret, setSecret] = useState('');
   const [selectedEvents, setSelectedEvents] = useState<Set<string>>(new Set());
-  const [creating, setCreating] = useState(false);
 
-  const projectId = currentProject?.id;
-
-  const reload = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [hooks, types] = await Promise.all([listWebhooks(), listWebhookEventTypes()]);
-      setWebhooks(hooks);
-      setEventTypes(types);
-    } catch (err) {
-      setError(formatApiError(err, 'Failed to load webhooks.'));
-    } finally {
-      setLoading(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the API client reads the current project itself; projectId is here so a project switch re-reads
-  }, [projectId]);
-
-  useEffect(() => {
-    reload();
-  }, [reload]);
+  const hooksQuery = useQuery({ queryKey: ['listWebhooks'], queryFn: () => listWebhooks() });
+  const typesQuery = useQuery({ queryKey: ['listWebhookEventTypes'], queryFn: () => listWebhookEventTypes() });
+  const webhooks: WebhookConfig[] = hooksQuery.data ?? [];
+  const eventTypes: WebhookEventType[] = typesQuery.data ?? [];
+  const loading = hooksQuery.isFetching || typesQuery.isFetching;
+  const error = loading ? null : queryErrorText(hooksQuery.error ?? typesQuery.error, 'Failed to load webhooks.');
+  /** Patch the list in place with what a write is known to have done. */
+  const setWebhooks = (update: (prev: WebhookConfig[]) => WebhookConfig[]) => {
+    queryClient.setQueryData<WebhookConfig[]>(['listWebhooks'], (prev) => (prev ? update(prev) : prev));
+  };
 
   const resetForm = () => {
     setName('');
@@ -76,53 +62,59 @@ const WebhookSettings: React.FC = () => {
     setShowForm(false);
   };
 
-  const handleCreate = async () => {
-    setCreating(true);
-    try {
-      await createWebhook({
-        name: name.trim(),
-        url: url.trim(),
-        secret: secret.trim() || null,
-        events: Array.from(selectedEvents),
-        is_active: true,
-      });
+  const create = useMutation({
+    mutationFn: (payload: WebhookCreatePayload) => createWebhook(payload),
+    onSuccess: () => {
       toast.success('Webhook created');
       resetForm();
-      reload();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to create webhook.'));
-    } finally {
-      setCreating(false);
-    }
-  };
+      void queryClient.invalidateQueries({ queryKey: ['listWebhooks'] });
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to create webhook.')),
+  });
+  const creating = create.isPending;
+  const handleCreate = () => create.mutate({
+    name: name.trim(),
+    url: url.trim(),
+    secret: secret.trim() || null,
+    events: Array.from(selectedEvents),
+    is_active: true,
+  });
 
-  const handleToggle = async (hook: WebhookConfig) => {
-    setBusyId(hook.id);
-    try {
-      await updateWebhook(hook.id, { is_active: !hook.is_active });
+  const toggle = useMutation({
+    mutationFn: (hook: WebhookConfig) => updateWebhook(hook.id, { is_active: !hook.is_active }),
+    onSuccess: (_updated, hook) => {
       setWebhooks((prev) => prev.map((h) => (h.id === hook.id ? { ...h, is_active: !h.is_active } : h)));
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update webhook.'));
-    } finally {
-      setBusyId(null);
-    }
-  };
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update webhook.')),
+  });
+  const handleToggle = (hook: WebhookConfig) => toggle.mutate(hook);
 
-  const handleTest = async (hook: WebhookConfig) => {
-    setBusyId(hook.id);
-    try {
-      const result = await testWebhook(hook.id);
+  // Not a write: one test delivery, whose outcome is a toast.
+  const test = useMutation({
+    mutationFn: (hook: WebhookConfig) => testWebhook(hook.id),
+    onSuccess: (result) => {
       if (result.ok) {
         toast.success(`Test delivered (HTTP ${result.status_code})`);
       } else {
         toast.error(`Test failed: ${result.error ?? `HTTP ${result.status_code}`}`);
       }
-    } catch (err) {
-      toast.error(formatApiError(err, 'Test request failed.'));
-    } finally {
-      setBusyId(null);
-    }
-  };
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Test request failed.')),
+  });
+  const handleTest = (hook: WebhookConfig) => test.mutate(hook);
+
+  const remove = useMutation({
+    mutationFn: (hook: WebhookConfig) => deleteWebhook(hook.id),
+    onSuccess: (_void, hook) => {
+      setWebhooks((prev) => prev.filter((h) => h.id !== hook.id));
+      toast.info('Webhook deleted', { autoHideMs: 2000 });
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to delete webhook.')),
+  });
+  // One row is busy at a time, whichever action it is.
+  const busyId = toggle.isPending
+    ? toggle.variables.id
+    : test.isPending ? test.variables.id : remove.isPending ? remove.variables.id : null;
 
   const handleDelete = async (hook: WebhookConfig) => {
     // v4.56.0 (UX·1) — was: delete on icon click with no confirm,
@@ -140,16 +132,7 @@ const WebhookSettings: React.FC = () => {
       confirmLabel: 'Delete webhook',
     });
     if (!ok) return;
-    setBusyId(hook.id);
-    try {
-      await deleteWebhook(hook.id);
-      setWebhooks((prev) => prev.filter((h) => h.id !== hook.id));
-      toast.info('Webhook deleted', { autoHideMs: 2000 });
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to delete webhook.'));
-    } finally {
-      setBusyId(null);
-    }
+    remove.mutate(hook);
   };
 
   const toggleEvent = (key: string) => {

@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { copyToClipboard } from '../utils/clipboard';
 import { downloadTextFile } from '../utils/download';
 import { ShieldOff, Loader2, KeyRound, Copy, Download } from 'lucide-react';
 import apiClient from '../services/api';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useToast } from '../contexts/ToastContext';
 import PostureSection from './posture/PostureSection';
@@ -28,12 +30,15 @@ interface SetupData {
 
 type View = 'status' | 'setup' | 'recovery';
 
+/** The signed-in user's own 2FA state — not a project's. */
+const TWO_FACTOR_STATUS_KEY = [GLOBAL, '/auth/2fa/status'];
+
 const TwoFactorCard: React.FC = () => {
   const toast = useToast();
-  const [status, setStatus] = useState<Status | null>(null);
+  const queryClient = useQueryClient();
   const [view, setView] = useState<View>('status');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Why the last action failed; a status that could not be read is the query's.
+  const [actionError, setError] = useState<string | null>(null);
 
   // Enrollment state.
   const [importSecret, setImportSecret] = useState('');
@@ -46,75 +51,77 @@ const TwoFactorCard: React.FC = () => {
   const [password, setPassword] = useState('');
   const [pwAction, setPwAction] = useState<null | 'disable' | 'regenerate'>(null);
 
-  const loadStatus = async () => {
-    try {
-      const { data } = await apiClient.get('/auth/2fa/status');
-      setStatus(data);
-    } catch (err) {
-      setError(formatApiError(err, 'Could not load 2FA status.'));
-    }
-  };
+  const statusQuery = useQuery({
+    queryKey: TWO_FACTOR_STATUS_KEY,
+    queryFn: async () => (await apiClient.get<Status>('/auth/2fa/status')).data,
+  });
+  const status = statusQuery.data ?? null;
+  const error = actionError ?? queryErrorText(statusQuery.error, 'Could not load 2FA status.');
+  // Each step ends by reading the status again, and is busy until it has.
+  const rereadStatus = () => queryClient.invalidateQueries({ queryKey: TWO_FACTOR_STATUS_KEY });
 
-  useEffect(() => {
-    loadStatus();
-  }, []);
-
-  const startSetup = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const body = showImport && importSecret.trim() ? { existing_secret: importSecret.trim() } : {};
-      const { data } = await apiClient.post('/auth/2fa/setup', body);
+  const starting = useMutation({
+    mutationFn: async (body: { existing_secret?: string }) =>
+      (await apiClient.post<SetupData>('/auth/2fa/setup', body)).data,
+    onMutate: () => setError(null),
+    onSuccess: (data) => {
       setSetupData(data);
       setCode('');
       setView('setup');
-    } catch (err) {
-      setError(formatApiError(err, 'Could not start 2FA setup.'));
-    } finally {
-      setBusy(false);
-    }
+    },
+    onError: (err) => setError(formatApiError(err, 'Could not start 2FA setup.')),
+  });
+  const startSetup = () => {
+    starting.mutate(showImport && importSecret.trim() ? { existing_secret: importSecret.trim() } : {});
   };
 
-  const confirmEnable = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const { data } = await apiClient.post('/auth/2fa/enable', { code: code.trim() });
+  const enabling = useMutation({
+    mutationFn: async (enteredCode: string) =>
+      (await apiClient.post<{ recovery_codes: string[] }>('/auth/2fa/enable', { code: enteredCode })).data,
+    onMutate: () => setError(null),
+    onSuccess: (data) => {
       setRecoveryCodes(data.recovery_codes);
       setView('recovery');
       setImportSecret('');
       setShowImport(false);
-      await loadStatus();
-    } catch (err) {
-      setError(formatApiError(err, 'That code was not accepted.'));
-    } finally {
-      setBusy(false);
-    }
-  };
+      return rereadStatus();
+    },
+    onError: (err) => setError(formatApiError(err, 'That code was not accepted.')),
+  });
+  const confirmEnable = () => enabling.mutate(code.trim());
 
-  const runPwAction = async () => {
-    if (!pwAction) return;
-    setBusy(true);
-    setError(null);
-    try {
-      if (pwAction === 'disable') {
-        await apiClient.post('/auth/2fa/disable', { password });
+  // Disable, or new recovery codes: both ask for the password again.
+  const reauthenticated = useMutation({
+    mutationFn: async (body: { action: 'disable' | 'regenerate'; password: string }) => {
+      if (body.action === 'disable') {
+        await apiClient.post('/auth/2fa/disable', { password: body.password });
+        return null;
+      }
+      const { data } = await apiClient.post<{ recovery_codes: string[] }>(
+        '/auth/2fa/recovery-codes', { password: body.password },
+      );
+      return data.recovery_codes;
+    },
+    onMutate: () => setError(null),
+    onSuccess: (codes) => {
+      if (codes === null) {
         toast.success('Two-factor authentication disabled.');
         setView('status');
       } else {
-        const { data } = await apiClient.post('/auth/2fa/recovery-codes', { password });
-        setRecoveryCodes(data.recovery_codes);
+        setRecoveryCodes(codes);
         setView('recovery');
       }
       setPassword('');
       setPwAction(null);
-      await loadStatus();
-    } catch (err) {
-      setError(formatApiError(err, 'Action failed — check your password.'));
-    } finally {
-      setBusy(false);
-    }
+      return rereadStatus();
+    },
+    onError: (err) => setError(formatApiError(err, 'Action failed — check your password.')),
+  });
+  const runPwAction = () => {
+    if (!pwAction) return;
+    reauthenticated.mutate({ action: pwAction, password });
   };
+  const busy = starting.isPending || enabling.isPending || reauthenticated.isPending;
 
   const copyCodes = () => {
     copyToClipboard(recoveryCodes.join('\n')).then((ok) => {

@@ -8,6 +8,36 @@ import { vi } from 'vitest';
 // Mock axios for API calls
 vi.mock('axios');
 
+// ---------------------------------------------------------------------------
+// Server state (5.351.0).  Every component reads through @tanstack/react-query
+// and so needs a QueryClientProvider above it.  `render` and `renderHook` give
+// each call a FRESH client with the app's own defaults (lib/query: no retry,
+// nothing cached after unmount), so no test sees another's data and no test
+// file has to wrap its own renders.  A test's own `wrapper` goes inside it.
+// ---------------------------------------------------------------------------
+vi.mock('@testing-library/react', async () => {
+  const actual = await vi.importActual<typeof import('@testing-library/react')>('@testing-library/react');
+  const React = await vi.importActual<typeof import('react')>('react');
+  const { QueryClientProvider } = await vi.importActual<typeof import('@tanstack/react-query')>('@tanstack/react-query');
+  const { createQueryClient } = await vi.importActual<typeof import('./lib/query')>('./lib/query');
+  type Wrapper = React.ComponentType<{ children: React.ReactNode }>;
+  const withClient = (Inner?: Wrapper): Wrapper => {
+    const client = createQueryClient();
+    return ({ children }) => React.createElement(
+      QueryClientProvider, { client }, Inner ? React.createElement(Inner, null, children) : children,
+    );
+  };
+  return {
+    ...actual,
+    render: (ui: React.ReactElement, options?: Record<string, unknown>) => actual.render(
+      ui, { ...options, wrapper: withClient(options?.wrapper as Wrapper | undefined) } as never,
+    ),
+    renderHook: (callback: (props: unknown) => unknown, options?: Record<string, unknown>) => actual.renderHook(
+      callback, { ...options, wrapper: withClient(options?.wrapper as Wrapper | undefined) } as never,
+    ),
+  };
+});
+
 // Mock react-router-dom for navigation
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');

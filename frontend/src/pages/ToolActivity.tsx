@@ -21,6 +21,7 @@
  * a click on a chart column.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Clock, RefreshCw, Search, ExternalLink, AlertTriangle, Info } from 'lucide-react';
 import {
@@ -30,8 +31,7 @@ import {
   getScansAt,
   getScansBetween,
 } from '../services/api';
-import { useLatestRequest } from '../hooks/useLatestRequest';
-import { formatApiError } from '../utils/apiErrors';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -210,6 +210,26 @@ export function readActivityQuery(params: URLSearchParams) {
 /** The window a query ran for — what the URL names. */
 type AskedWindow = { at: string; tolerance: number } | { from: string; to: string };
 
+/** The tool / target a query is narrowed to (left out when not set). */
+interface AttributionFilters { tool?: string; target?: string }
+
+/** A focused query as it is asked of the server: the API function and its
+ *  arguments — which is also what its answer is kept under. */
+type FocusedQuestion =
+  | { fn: 'getScansAt'; params: { ts: string; toleranceSeconds: number } & AttributionFilters }
+  | { fn: 'getScansBetween'; params: { from: string; to: string } & AttributionFilters };
+
+const answerQuestion = (question: FocusedQuestion): Promise<ActivityResponse> => (
+  question.fn === 'getScansAt' ? getScansAt(question.params) : getScansBetween(question.params)
+);
+
+/** The week snapshot's question: the 7 days ending now. */
+const pastWeek = (filters: AttributionFilters) => {
+  const now = new Date();
+  const weekAgo = new Date(now.getTime() - WEEK_SECONDS * 1000);
+  return { from: weekAgo.toISOString(), to: now.toISOString(), ...filters };
+};
+
 export const ToolActivity: React.FC = () => {
   const navigate = useNavigate();
   const { projects, currentProject, selectProject } = useProject();
@@ -256,25 +276,51 @@ export const ToolActivity: React.FC = () => {
   // did <tool> touch <target> this week?" on its own.
   const [tool, setTool] = useState(fromUrl.tool);
   const [target, setTarget] = useState(fromUrl.target);
+  // The tool / target as a query carries them: trimmed, and left out when empty.
+  const usedTool = tool.trim();
+  const usedTarget = target.trim();
+  const filters = useMemo(
+    () => ({ tool: usedTool || undefined, target: usedTarget || undefined }),
+    [usedTool, usedTarget],
+  );
+  // The question the form states now.
+  const formQuestion = useCallback((): FocusedQuestion => (mode === 'at'
+    ? { fn: 'getScansAt', params: { ts: localInputToUtcIso(tsLocal), toleranceSeconds: tolerance, ...filters } }
+    : {
+        fn: 'getScansBetween',
+        params: { from: localInputToUtcIso(fromLocal), to: localInputToUtcIso(toLocal), ...filters },
+      }
+  ), [mode, tsLocal, tolerance, fromLocal, toLocal, filters]);
+
+  // The focused query that was ASKED — by Correlate, a chart column, or a
+  // link that names a window (a link IS a question: it runs on arrival).
+  // Nothing is asked on a bare arrival: the page used to run "now ± 5
+  // minutes" on mount, so it always opened on "0 activities matched … No
+  // activity in this window" — an answer to a question nobody asked
+  // (screenshot review 2026-09-23).
+  const [question, setQuestion] = useState<FocusedQuestion | null>(
+    () => (fromUrl.at || (fromUrl.from && fromUrl.to) ? formQuestion() : null),
+  );
   // The window last asked for — what the URL names.  The form's default
   // "now" is not a query, so it is not written until one is run.
   //
   // The URL names what a query RAN with, never what is being typed (M10):
   // the tolerance, the tool and the target used to be written on every
   // change, so the address described a query nobody had asked — and a copied
-  // link ran one.  `asked` is the window (with ITS tolerance); `attribution`
-  // is the tool / target the last query — the focused one or the week
-  // snapshot — was filtered by.
-  const [asked, setAsked] = useState<AskedWindow | null>(
-    fromUrl.from && fromUrl.to
-      ? { from: fromUrl.from.toISOString(), to: fromUrl.to.toISOString() }
-      : fromUrl.at ? { at: fromUrl.at.toISOString(), tolerance: fromUrl.tolerance ?? 300 } : null,
-  );
+  // link ran one.  `asked` is the question's window (with ITS tolerance);
+  // `attribution` is the tool / target the last query — the focused one or
+  // the week snapshot — was filtered by.
+  const asked = useMemo<AskedWindow | null>(() => {
+    if (!question) return null;
+    return question.fn === 'getScansAt'
+      ? { at: question.params.ts, tolerance: question.params.toleranceSeconds }
+      : { from: question.params.from, to: question.params.to };
+  }, [question]);
   // On arrival the snapshot is filtered by the link's tool and target.
-  const [attribution, setAttribution] = useState({ tool: fromUrl.tool, target: fromUrl.target });
-  const noteAttribution = useCallback((usedTool: string, usedTarget: string) => {
+  const [attribution, setAttribution] = useState({ tool: usedTool, target: usedTarget });
+  const noteAttribution = useCallback((ranTool: string, ranTarget: string) => {
     setAttribution((prev) => (
-      prev.tool === usedTool && prev.target === usedTarget ? prev : { tool: usedTool, target: usedTarget }
+      prev.tool === ranTool && prev.target === ranTarget ? prev : { tool: ranTool, target: ranTarget }
     ));
   }, []);
   useEffect(() => {
@@ -293,111 +339,63 @@ export const ToolActivity: React.FC = () => {
       return next.toString() === prev.toString() ? prev : next;
     }, { replace: true });
   }, [asked, attribution, setSearchParams]);
-  const [response, setResponse] = useState<ActivityResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // The focused query's answer.  The page is cross-project, so neither read
+  // is one project's.  The answer on screen stays while the next question
+  // loads; a question that failed has no answer (never the previous one's).
+  // Only the question asked last is answered: an earlier, slower response
+  // has nowhere to land (review 2026-10-01 follow-up).
+  const focusedQuery = useQuery({
+    queryKey: [GLOBAL, question?.fn ?? 'getScansAt', question?.params ?? null],
+    queryFn: () => answerQuestion(question as FocusedQuestion),
+    enabled: question != null,
+    placeholderData: keepPreviousData,
+  });
+  const response: ActivityResponse | null = focusedQuery.isError ? null : focusedQuery.data ?? null;
+  const loading = focusedQuery.isFetching;
+  const error = queryErrorText(focusedQuery.error, 'Failed to load activity');
   // Post-search client-side project filter.  Empty set = show all
   // (we apply this AFTER the query so the analyst can drill in
   // without re-fetching).
   const [projectFilter, setProjectFilter] = useState<Set<number>>(new Set());
 
-  // v4.21.0 — week-snapshot timeline state.  Independent of the
-  // form's timestamp/tolerance; always shows the past 7 days so the
-  // analyst can spot activity clusters visually before drilling in
-  // with a focused query.  Re-fetched on Refresh, not on every form
-  // submit (the snapshot is a context surface, not a query result).
-  const [weekResponse, setWeekResponse] = useState<ActivityResponse | null>(null);
-  const [weekLoading, setWeekLoading] = useState(false);
-  // Lock the week's [start, end] at fetch time so the highlight band's
-  // % positions don't drift while the user navigates.
-  const [weekRange, setWeekRange] = useState<{ start: string; end: string } | null>(null);
-  // v4.24.0 — surface week-snapshot failures.  Empty + zero is
-  // ambiguous between "quiet week" and "backend failed"; the analyst
-  // needs to know which.
-  const [weekError, setWeekError] = useState<string | null>(null);
-
-  // `range` runs a range query for exactly those instants (a chart bin was
+  // `range` asks a range query for exactly those instants (a chart bin was
   // chosen) without waiting for the form state it also sets to settle.
-  // Only the newest question is answered (review 2026-10-01 follow-up): a
-  // second Correlate, or a chart bin chosen while a query was in flight, used
-  // to be overwritten by the earlier, slower response — under a form and a
-  // URL that named the later window.
-  const runLatestSearch = useLatestRequest();
-  const search = useCallback(async (range?: { from: string; to: string }) => {
-    setLoading(true);
-    setError(null);
-    const usedTool = tool.trim();
-    const usedTarget = target.trim();
-    const filters = { tool: usedTool || undefined, target: usedTarget || undefined };
+  const { refetch: askAgain } = focusedQuery;
+  const search = useCallback((range?: { from: string; to: string }) => {
     noteAttribution(usedTool, usedTarget);
-    setAsked(range
-      ?? (mode === 'at'
-        ? { at: localInputToUtcIso(tsLocal), tolerance }
-        : { from: localInputToUtcIso(fromLocal), to: localInputToUtcIso(toLocal) }));
-    const result = await runLatestSearch(() => (range
-      ? getScansBetween({ from: range.from, to: range.to, ...filters })
-      : mode === 'at'
-        ? getScansAt({
-            ts: localInputToUtcIso(tsLocal),
-            toleranceSeconds: tolerance,
-            ...filters,
-          })
-        : getScansBetween({
-            from: localInputToUtcIso(fromLocal),
-            to: localInputToUtcIso(toLocal),
-            ...filters,
-          })));
-    if (result.stale) return; // the newer query owns the result and `loading`
-    if (result.ok) {
-      setResponse(result.value);
-      setProjectFilter(new Set()); // reset chip filter on new search
-    } else {
-      setError(formatApiError(result.error, 'Failed to load activity'));
-      setResponse(null);
-    }
-    setLoading(false);
-  }, [mode, tsLocal, tolerance, fromLocal, toLocal, tool, target, runLatestSearch, noteAttribution]);
+    setProjectFilter(new Set()); // a new search starts with every project shown
+    const next: FocusedQuestion = range
+      ? { fn: 'getScansBetween', params: { from: range.from, to: range.to, ...filters } }
+      : formQuestion();
+    // The same question again (Correlate twice, Refresh) is asked again.
+    if (question && JSON.stringify(question) === JSON.stringify(next)) void askAgain();
+    else setQuestion(next);
+  }, [askAgain, filters, formQuestion, noteAttribution, question, usedTool, usedTarget]);
 
-  const loadWeek = useCallback(async () => {
-    setWeekLoading(true);
-    setWeekError(null);
-    try {
-      const now = new Date();
-      const weekAgo = new Date(now.getTime() - WEEK_SECONDS * 1000);
-      const range = { start: weekAgo.toISOString(), end: now.toISOString() };
-      setWeekRange(range);
-      const usedTool = tool.trim();
-      const usedTarget = target.trim();
-      noteAttribution(usedTool, usedTarget);
-      const data = await getScansBetween({
-        from: range.start,
-        to: range.end,
-        tool: usedTool || undefined,
-        target: usedTarget || undefined,
-      });
-      setWeekResponse(data);
-    } catch (err) {
-      // Don't gate the focused query on this — the snapshot is
-      // supplementary.  But empty + zero is indistinguishable from a
-      // quiet week, so capture the error and render it above the
-      // timeline as a non-blocking warning.
-      setWeekError(formatApiError(err, 'Past-7-day snapshot unavailable.'));
-      setWeekResponse(null);
-    } finally {
-      setWeekLoading(false);
-    }
-  }, [tool, target, noteAttribution]);
-
-  // Only the snapshot loads on arrival. The focused query waits for the
-  // analyst: it used to run "now ± 5 minutes" on mount, so the page always
-  // opened on "0 activities matched … No activity in this window" — an
-  // answer to a question nobody asked (screenshot review 2026-09-23).
-  // A link that names a window IS a question: it runs on arrival.
-  useEffect(() => {
-    loadWeek();
-    if (fromUrl.at || (fromUrl.from && fromUrl.to)) void search();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // v4.21.0 — the week snapshot.  Independent of the form's timestamp /
+  // tolerance; always the past 7 days, so the analyst can spot activity
+  // clusters before drilling in with a focused query.  Asked on arrival, on
+  // Correlate and on Refresh — each time for the 7 days ending THEN, so its
+  // [start, end] is fixed when it is asked and the highlight band's
+  // positions don't drift while the user navigates.
+  const [weekAsked, setWeekAsked] = useState(() => pastWeek(filters));
+  const weekQuery = useQuery({
+    queryKey: [GLOBAL, 'getScansBetween', weekAsked],
+    queryFn: () => getScansBetween(weekAsked),
+    placeholderData: keepPreviousData,
+  });
+  // v4.24.0 — a failed snapshot is said (a non-blocking warning above the
+  // chart): empty + zero is ambiguous between "quiet week" and "backend
+  // failed".  It does not gate the focused query — the snapshot is
+  // supplementary.
+  const weekResponse: ActivityResponse | null = weekQuery.isError ? null : weekQuery.data ?? null;
+  const weekLoading = weekQuery.isFetching;
+  const weekError = queryErrorText(weekQuery.error, 'Past-7-day snapshot unavailable.');
+  const weekRange = useMemo(() => ({ start: weekAsked.from, end: weekAsked.to }), [weekAsked]);
+  const loadWeek = useCallback(() => {
+    noteAttribution(usedTool, usedTarget);
+    setWeekAsked(pastWeek(filters));
+  }, [filters, noteAttribution, usedTool, usedTarget]);
 
   // A chart bin was chosen: correlate exactly that range, and show it in
   // the form so the query on screen is the one that ran.
@@ -406,7 +404,7 @@ export const ToolActivity: React.FC = () => {
       setMode('between');
       setFromLocal(toLocalInput(new Date(fromIso)));
       setToLocal(toLocalInput(new Date(toIso)));
-      void search({ from: fromIso, to: toIso });
+      search({ from: fromIso, to: toIso });
     },
     [search],
   );
@@ -477,7 +475,7 @@ export const ToolActivity: React.FC = () => {
   // Truthy when the queried window falls within the past 7 days
   // (i.e. the highlight band will actually render on the snapshot).
   const queryInsideWeek = useMemo(() => {
-    if (!queryWindow || !weekRange) return false;
+    if (!queryWindow) return false;
     const qs = new Date(queryWindow.start).getTime();
     const qe = new Date(queryWindow.end).getTime();
     const ws = new Date(weekRange.start).getTime();
@@ -550,60 +548,58 @@ export const ToolActivity: React.FC = () => {
       {/* Week-snapshot timeline — independent of the timestamp/tolerance
           form.  Always shows the past 7 days so the analyst can read
           activity density at-a-glance before specifying a focus. */}
-      {weekRange && (
-        <PostureSection
-          title={
-            <>
-              Past 7 days
-              {attributionActive && (
-                <span className="min-w-0 break-all font-normal">
-                  for {[tool.trim() && `“${tool.trim()}”`, target.trim()].filter(Boolean).join(' on ')}
-                </span>
-              )}
-              <SectionCount>
-                {weekLoading
-                  ? 'refreshing…'
-                  : (() => {
-                      const returned = weekResponse?.items.length ?? 0;
-                      // `≥` when capped: the backend's `total` is
-                      // post-truncation and reads 500 even when thousands
-                      // matched.
-                      const truncated = !!weekResponse?.truncated;
-                      const returnedLabel = truncated ? `≥${returned}` : `${returned}`;
-                      const base =
-                        projectFilter.size > 0
-                          ? `showing ${filteredWeekItems.length} of ${returnedLabel} (filtered)`
-                          : `${returnedLabel} activit${returned === 1 && !truncated ? 'y' : 'ies'}`;
-                      return truncated ? `${base} · first 500 only — tighten the time range` : base;
-                    })()}
-              </SectionCount>
-            </>
-          }
-          description={
-            <>
-              What started when, across the projects you can see
-              {attributionActive ? ', narrowed to the tool / target below' : ''}.
-              The shaded band is the Correlate window; click a column to
-              correlate that range.{' '}
-              {queryWindow && !queryInsideWeek && (
-                <span className="text-warning">
-                  The Correlate window is outside the past 7 days, so its band
-                  is not on this chart.
-                </span>
-              )}
-            </>
-          }
-        >
-          <ActivityHistogram
-            items={filteredWeekItems}
-            windowStart={weekRange.start}
-            windowEnd={weekRange.end}
-            highlightStart={queryInsideWeek ? queryWindow?.start ?? null : null}
-            highlightEnd={queryInsideWeek ? queryWindow?.end ?? null : null}
-            onSelectBin={correlateRange}
-          />
-        </PostureSection>
-      )}
+      <PostureSection
+        title={
+          <>
+            Past 7 days
+            {attributionActive && (
+              <span className="min-w-0 break-all font-normal">
+                for {[tool.trim() && `“${tool.trim()}”`, target.trim()].filter(Boolean).join(' on ')}
+              </span>
+            )}
+            <SectionCount>
+              {weekLoading
+                ? 'refreshing…'
+                : (() => {
+                    const returned = weekResponse?.items.length ?? 0;
+                    // `≥` when capped: the backend's `total` is
+                    // post-truncation and reads 500 even when thousands
+                    // matched.
+                    const truncated = !!weekResponse?.truncated;
+                    const returnedLabel = truncated ? `≥${returned}` : `${returned}`;
+                    const base =
+                      projectFilter.size > 0
+                        ? `showing ${filteredWeekItems.length} of ${returnedLabel} (filtered)`
+                        : `${returnedLabel} activit${returned === 1 && !truncated ? 'y' : 'ies'}`;
+                    return truncated ? `${base} · first 500 only — tighten the time range` : base;
+                  })()}
+            </SectionCount>
+          </>
+        }
+        description={
+          <>
+            What started when, across the projects you can see
+            {attributionActive ? ', narrowed to the tool / target below' : ''}.
+            The shaded band is the Correlate window; click a column to
+            correlate that range.{' '}
+            {queryWindow && !queryInsideWeek && (
+              <span className="text-warning">
+                The Correlate window is outside the past 7 days, so its band
+                is not on this chart.
+              </span>
+            )}
+          </>
+        }
+      >
+        <ActivityHistogram
+          items={filteredWeekItems}
+          windowStart={weekRange.start}
+          windowEnd={weekRange.end}
+          highlightStart={queryInsideWeek ? queryWindow?.start ?? null : null}
+          highlightEnd={queryInsideWeek ? queryWindow?.end ?? null : null}
+          onSelectBin={correlateRange}
+        />
+      </PostureSection>
 
       <PostureSection title="Correlate">
           <form
@@ -611,7 +607,7 @@ export const ToolActivity: React.FC = () => {
             onSubmit={(e) => {
               e.preventDefault();
               search();
-              void loadWeek();
+              loadWeek();
             }}
           >
             <div className="flex flex-col gap-xxs">
@@ -722,9 +718,9 @@ export const ToolActivity: React.FC = () => {
               type="button"
               variant="outline"
               onClick={() => {
-                void loadWeek();
+                loadWeek();
                 // Re-run the focused query only if one has been run.
-                if (response) void search();
+                if (response) search();
               }}
               disabled={weekLoading || loading}
               aria-label="Refresh week snapshot"

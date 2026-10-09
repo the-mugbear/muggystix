@@ -8,16 +8,16 @@
  * shows the last ~8 sessions; a "View all" link takes you to the
  * full /agent-activity timeline.
  *
- * Polls every 60s while the trigger is rendered.  Renders nothing
+ * Polls while the trigger is rendered (`pollEvery`).  Renders nothing
  * (no trigger, no popover) when:
  *   - the user isn't authenticated, OR
  *   - no project is loaded, OR
  *   - the project has zero agent sessions on file
  * so the topbar stays uncluttered for unused projects.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import {
   Bot,
   ChevronRight,
@@ -30,11 +30,13 @@ import {
 } from 'lucide-react';
 import {
   AgentSessionFilters,
+  AgentSessionListResponse,
   AgentSessionRow,
   listAgentSessions,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useProject } from '../contexts/ProjectContext';
+import { pollEvery } from '../lib/query';
 import { cn } from '../utils/cn';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -49,6 +51,12 @@ const ACTIVE_POLL_MS = 60_000;
 // sessions — drops the rail's idle network/render cost ~5×.  Audit H19.
 const IDLE_POLL_MS = 5 * 60_000;
 const PEEK_LIMIT = 8;
+
+const RECENT_FILTERS: AgentSessionFilters = { limit: PEEK_LIMIT };
+const ACTIVE_FILTERS: AgentSessionFilters = { status: 'active', kind: 'project', limit: 1 };
+const RECENT_KEY = ['listAgentSessions', RECENT_FILTERS] as const;
+const ACTIVE_KEY = ['listAgentSessions', ACTIVE_FILTERS] as const;
+const NO_SESSIONS: AgentSessionRow[] = [];
 
 const KIND_LABEL: Record<string, string> = {
   // 5.312.0 — the unified session, the row every new session is; it read as
@@ -90,70 +98,43 @@ const AgentActivityRail: React.FC = () => {
   const { isAuthenticated } = useAuth();
   const { currentProject } = useProject();
   const [open, setOpen] = useState(false);
-  const [sessions, setSessions] = useState<AgentSessionRow[]>([]);
-  const [activeCount, setActiveCount] = useState<number>(0);
-  const [loaded, setLoaded] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const enabled = isAuthenticated && !!currentProject;
 
-  const fetchData = useCallback(async () => {
-    if (!isAuthenticated || !currentProject) return;
-    setLoading(true);
-    try {
-      // Two cheap requests in parallel — the recent list + just the
-      // active count for the badge.  Both hit the same endpoint with
-      // different filters.  5.313.0 — the badge counts agent SESSIONS
-      // (kind 'project'): a run is part of its session, so counting runs
-      // too told the operator one live agent was two or three.
-      const [recent, active] = await Promise.all([
-        listAgentSessions({ limit: PEEK_LIMIT } satisfies AgentSessionFilters),
-        listAgentSessions({ status: 'active', kind: 'project', limit: 1 } satisfies AgentSessionFilters),
-      ]);
-      setSessions(recent.sessions);
-      setActiveCount(active.total);
-      setLoaded(true);
-    } catch {
-      // Silent — the rail is ambient; failing is the same as having
-      // nothing to show.  Notifications surface API outages through
-      // their own polling path.
-    } finally {
-      setLoading(false);
-    }
-  }, [isAuthenticated, currentProject]);
-
-  useEffect(() => {
-    if (!isAuthenticated || !currentProject) {
-      setSessions([]);
-      setActiveCount(0);
-      setLoaded(false);
-      return;
-    }
-    fetchData();
-  }, [isAuthenticated, currentProject, fetchData]);
-
-  // Visibility-gated polling — background tabs no longer hammer the
-  // API (audit CRIT-17). Cadence still tightens when the popover is
-  // open or there's a live session to track; otherwise backs off to
-  // 5min so the rail isn't waking the browser every minute on a
-  // normal page.
-  const cadence = open || activeCount > 0 ? ACTIVE_POLL_MS : IDLE_POLL_MS;
-  useVisibilityPoll(
-    fetchData,
-    cadence,
-    isAuthenticated && !!currentProject,
-  );
-
-  // When the popover opens, fetch fresh data immediately so the user
-  // sees the latest state without waiting for the next poll tick.
-  useEffect(() => {
-    if (open) fetchData();
-  }, [open, fetchData]);
+  // Two cheap reads of the same endpoint — the recent list, and just the
+  // active count for the badge.  5.313.0 — the badge counts agent SESSIONS
+  // (kind 'project'): a run is part of its session, so counting runs too
+  // told the operator one live agent was two or three.
+  // A failure is silent — the rail is ambient; failing is the same as having
+  // nothing new to show.  Notifications surface API outages through their own
+  // polling path.
+  // Polled only in a visible tab.  The cadence tightens when the popover is
+  // open or there's a live session to track; otherwise it backs off to 5min
+  // so the rail isn't waking the browser every minute on a normal page.
+  const cadence = (liveCount: number) => (open || liveCount > 0 ? ACTIVE_POLL_MS : IDLE_POLL_MS);
+  const active = useQuery({
+    queryKey: ACTIVE_KEY,
+    queryFn: ({ signal }) => listAgentSessions(ACTIVE_FILTERS, { signal }),
+    enabled,
+    // Its own answer is the live count that sets the cadence.
+    ...pollEvery((query) => cadence((query.state.data as AgentSessionListResponse | undefined)?.total ?? 0)),
+  });
+  const activeCount = active.data?.total ?? 0;
+  const recent = useQuery({
+    queryKey: RECENT_KEY,
+    queryFn: ({ signal }) => listAgentSessions(RECENT_FILTERS, { signal }),
+    enabled,
+    ...pollEvery(cadence(activeCount)),
+  });
+  const sessions = recent.data?.sessions ?? NO_SESSIONS;
+  const loaded = recent.data !== undefined && active.data !== undefined;
+  const loading = recent.isFetching || active.isFetching;
+  const fetchData = () => {
+    void recent.refetch();
+    void active.refetch();
+  };
 
   const totalShown = sessions.length;
-
-  const dotTone = useMemo(() => {
-    if (activeCount > 0) return 'bg-info';
-    return null;
-  }, [activeCount]);
+  const dotTone = activeCount > 0 ? 'bg-info' : null;
 
   // Hide the trigger entirely until the first fetch returns AND we
   // know the project has at least one agent session on file.
@@ -161,7 +142,15 @@ const AgentActivityRail: React.FC = () => {
   if (loaded && totalShown === 0 && activeCount === 0) return null;
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        // Opening reads at once, so the reader sees the latest state without
+        // waiting for the next poll.
+        if (next) fetchData();
+      }}
+    >
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>

@@ -1,10 +1,12 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { flushSync } from 'react-dom';
+import { useMutation } from '@tanstack/react-query';
 import { createAuthLogger } from '../utils/logger';
 import { accountChangedElsewhere, reloadForAccountChange } from '../utils/authSession';
 import { returnPathAfterLogin } from '../utils/loginReturn';
 import api, { setCurrentProjectId } from '../services/api';
+import { getQueryScope, setQueryScope } from '../lib/query';
 
 interface User {
   id: number;
@@ -31,6 +33,12 @@ interface AuthContextType {
   // Complete a 2FA login with the challenge token + a TOTP or recovery code.
   verify2fa: (challengeToken: string, code: string) => Promise<void>;
   logout: () => void;
+  /**
+   * Start the session's lifetime again from now (`POST /auth/session/renew`)
+   * and store the token that says so.  Called when the reader does something
+   * (`hooks/useSessionRenewal`); calls made while one is away share it.
+   */
+  renewSession: () => Promise<void>;
   updateUser: (updates: Partial<User>) => void;
   isAuthenticated: boolean;
   isLoading: boolean;
@@ -72,6 +80,9 @@ const ROLE_HIERARCHY = {
 
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
+  // The query cache is partitioned by who is signed in (lib/query): set while
+  // rendering, so every query under this provider is keyed for this user.
+  setQueryScope({ ...getQueryScope(), userId: user?.id ?? null });
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const navigate = useNavigate();
@@ -186,6 +197,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       // Auth header is injected by the request interceptor in
       // services/api from the same localStorage token; no need to
       // write it twice (audit PRF·L3).
+      // A NAMED EXCEPTION to "an API call is inside a queryFn / mutationFn"
+      // (UI_STYLE_GUIDE §48): this is the sign-in check on load.  The query
+      // cache is partitioned by the signed-in user, and this call is what
+      // decides who that is — as a query it would be keyed for nobody, then
+      // asked again for the user it found.
+      // eslint-disable-next-line bluestick/api-in-query-only
       const response = await api.get('/auth/profile');
 
       authLogger.info('Token verification successful', {
@@ -239,10 +256,48 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   }, [authLogger, location, navigate]);
 
+  // The three requests a control makes — sign in, the second factor, sign
+  // out — are mutations (lib/query).  What follows each one, and in what
+  // order, stays in the callbacks below; nothing reads these mutations' state.
+  // A mutation remembers what it was called with, and here that is a
+  // password or a one-time code: `gcTime: 0` and the `reset` after each call
+  // let go of it as soon as the request has settled.
+  const { mutateAsync: requestLogin, reset: forgetLogin } = useMutation({
+    mutationFn: (body: { username: string; password: string }) => api.post('/auth/login', body),
+    gcTime: 0,
+  });
+  const { mutateAsync: requestSecondFactor, reset: forgetSecondFactor } = useMutation({
+    mutationFn: (body: { challenge_token: string; code: string }) => api.post('/auth/login/2fa', body),
+    gcTime: 0,
+  });
+  const { mutateAsync: requestLogout } = useMutation({
+    mutationFn: () => api.post('/auth/logout'),
+  });
+
+  const { mutateAsync: requestRenewal } = useMutation({
+    mutationFn: () => api.post('/auth/session/renew'),
+  });
+  const renewing = useRef<Promise<void> | null>(null);
+  const renewSession = useCallback((): Promise<void> => {
+    if (renewing.current) return renewing.current;
+    const sentWith = localStorage.getItem('auth_token');
+    const run = requestRenewal()
+      .then(({ data }) => {
+        // Signed out, signed in again, or renewed by another tab while the
+        // request was away: what is stored now is newer than this answer.
+        if (localStorage.getItem('auth_token') !== sentWith) return;
+        localStorage.setItem('auth_token', data.access_token);
+        setToken(data.access_token);
+      })
+      .finally(() => { renewing.current = null; });
+    renewing.current = run;
+    return run;
+  }, [requestRenewal]);
+
   const verify2fa = useCallback(async (challengeToken: string, code: string) => {
     const timer = authLogger.timer('2FA verify');
     try {
-      const { data } = await api.post('/auth/login/2fa', { challenge_token: challengeToken, code });
+      const { data } = await requestSecondFactor({ challenge_token: challengeToken, code }).finally(forgetSecondFactor);
       completeLogin(data);
       timer();
     } catch (error: unknown) {
@@ -252,7 +307,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       timer();
       throw new Error(detail);
     }
-  }, [authLogger, completeLogin]);
+  }, [authLogger, completeLogin, requestSecondFactor, forgetSecondFactor]);
 
   const login = useCallback(async (username: string, password: string): Promise<LoginOutcome> => {
     const timer = authLogger.timer('Login process');
@@ -265,7 +320,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
     try {
       authLogger.debug('Sending login request to API');
-      const { data } = await api.post('/auth/login', { username, password });
+      const { data } = await requestLogin({ username, password }).finally(forgetLogin);
 
       // 2FA gate: password OK but the account needs a second factor. Don't
       // store anything yet — hand the challenge back so the Login page can
@@ -288,7 +343,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       timer();
       throw new Error(detail);
     }
-  }, [authLogger, completeLogin, location.pathname, location.state]);
+  }, [authLogger, completeLogin, location.pathname, location.state, requestLogin, forgetLogin]);
 
   const logout = useCallback(async () => {
     const timer = authLogger.timer('Logout process');
@@ -306,7 +361,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       if (token) {
         authLogger.debug('Calling logout endpoint');
         // Call logout endpoint to revoke session
-        await api.post('/auth/logout');
+        await requestLogout();
         authLogger.debug('Logout endpoint called successfully');
       } else {
         authLogger.debug('No token available for logout endpoint call');
@@ -320,7 +375,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       timer();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- clearAuthData is a new function every render and reads only the user and token already listed
-  }, [authLogger, navigate, token, user?.id, user?.username]);
+  }, [authLogger, navigate, requestLogout, token, user?.id, user?.username]);
 
   const clearAuthData = () => {
     authLogger.debug('Clearing authentication data', {
@@ -415,13 +470,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     login,
     verify2fa,
     logout,
+    renewSession,
     updateUser,
     isAuthenticated,
     isLoading,
     authStatus,
     hasRole,
     hasPermission,
-  }), [user, token, login, verify2fa, logout, updateUser, isAuthenticated, isLoading, authStatus, hasRole, hasPermission]);
+  }), [user, token, login, verify2fa, logout, renewSession, updateUser, isAuthenticated, isLoading, authStatus, hasRole, hasPermission]);
 
   return (
     <AuthContext.Provider value={value}>

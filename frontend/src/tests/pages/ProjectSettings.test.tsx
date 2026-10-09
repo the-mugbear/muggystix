@@ -35,7 +35,6 @@ vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
 }));
 let myRole = 'admin';
-const refreshProjects = vi.fn();
 // A NEW object on every call, on purpose: the page must not loop or reset its
 // form when a refresh hands back an equal project.
 vi.mock('../../contexts/ProjectContext', () => ({
@@ -45,7 +44,6 @@ vi.mock('../../contexts/ProjectContext', () => ({
       start_date: null, end_date: null, my_role: myRole,
     },
     projects: [{ id: 3 }, { id: 4 }],
-    refreshProjects,
   }),
 }));
 let globalRole = 'member';

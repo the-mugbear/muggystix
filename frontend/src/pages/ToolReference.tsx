@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { copyToClipboard } from '../utils/clipboard';
 import { Search, ExternalLink, Loader2 } from 'lucide-react';
@@ -33,6 +34,7 @@ import {
   getToolRegistry,
   ToolRegistryEntry,
 } from '../services/api';
+import { GLOBAL } from '../lib/query';
 import { cn } from '../utils/cn';
 import { safeHttpHref } from '../utils/safeHref';
 
@@ -153,40 +155,23 @@ const CATEGORY_TONE: Record<string, CategoryTone> = {
 const ToolReference: React.FC = () => {
   const toast = useToast();
   const [filter, setFilter] = useState('');
-  const [tools, setTools] = useState<ToolEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [vetting, setVetting] = useState<ToolEntry | null>(null);
   const { hasRole } = useAuth();
 
-  useEffect(() => {
-    let cancelled = false;
-    getToolRegistry()
-      .then((res) => {
-        if (cancelled) return;
-        setTools(res.tools);
-        setError(null);
-      })
-      .catch(() => {
-        if (!cancelled) setError('Could not load the tool catalogue.');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // A vetted row is put back into this read by the dialog that saved it.
+  const registry = useQuery({
+    queryKey: [GLOBAL, 'getToolRegistry'],
+    queryFn: () => getToolRegistry(),
+  });
+  const tools = useMemo(() => registry.data?.tools ?? [], [registry.data]);
+  const loading = registry.isPending;
+  const error = registry.error ? 'Could not load the tool catalogue.' : null;
 
   // Vetting is admin-only and deployment-wide (the catalogue is shared by every
   // project), so the affordance only exists for admins — the read view is
   // unchanged for everyone else.
   const isAdmin = hasRole('admin');
   const pending = useMemo(() => tools.filter((t) => t.status === 'suggested'), [tools]);
-
-  const applyUpdate = (updated: ToolEntry) => {
-    setTools((prev) => prev.map((t) => (t.name === updated.name ? { ...t, ...updated } : t)));
-  };
 
   const lowerFilter = filter.toLowerCase();
   const filtered = tools.filter(
@@ -494,7 +479,6 @@ const ToolReference: React.FC = () => {
         onOpenChange={(open) => {
           if (!open) setVetting(null);
         }}
-        onSaved={applyUpdate}
       />
     </div>
   );

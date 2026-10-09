@@ -24,6 +24,7 @@
  * backend refuses anyone else with 403 and the page hides the button.
  */
 import React, { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, RotateCcw } from 'lucide-react';
 import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
@@ -36,12 +37,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from './ui/dialog';
-import {
-  resumeAgentSession,
-  type AgentSessionRow,
-  type ResumeAgentSessionResponse,
-} from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { resumeAgentSession, type AgentSessionRow } from '../services/api';
+import { invalidateReads, queryErrorText } from '../lib/query';
+import { AGENT_SESSION_READS } from '../utils/agentRuns';
 import { formatTimestamp } from '../utils/relativeTime';
 import AgentSessionCredentials, { KeyHandoffFooter } from './AgentSessionCredentials';
 
@@ -49,8 +47,6 @@ export interface ResumeAgentSessionDialogProps {
   /** The active project session to resume; null keeps the dialog closed. */
   session: AgentSessionRow | null;
   onOpenChange: (next: boolean) => void;
-  /** Fired after a key rotation so the timeline re-reads key expiry. */
-  onResumed?: () => void;
 }
 
 const fmtTime = (iso?: string | null): string => formatTimestamp(iso);
@@ -69,17 +65,29 @@ export const resumePromptLine = (sessionId: number): string =>
 export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> = ({
   session,
   onOpenChange,
-  onResumed,
 }) => {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<ResumeAgentSessionResponse | null>(null);
+  const queryClient = useQueryClient();
+  // The replacement key is shown once: it is this dialog's mutation result
+  // and nothing else's — never a query, and dropped with the dialog
+  // (`reset`, `gcTime: 0`).
+  const rotate = useMutation({
+    mutationFn: (sessionId: number) => resumeAgentSession(sessionId),
+    gcTime: 0,
+    onSuccess: () => {
+      // Every read of sessions is out of date (the session's page and its
+      // key expiry, the list, the rail, the Operations line).  A re-read
+      // that fails does not fail the rotation: the key in its answer is
+      // shown once.
+      void invalidateReads(queryClient, ...AGENT_SESSION_READS);
+    },
+  });
+  const loading = rotate.isPending;
+  const error = queryErrorText(rotate.error, 'Could not resume the agent session.');
+  const result = rotate.data ?? null;
   const [keyCopied, setKeyCopied] = useState(false);
 
   const reset = () => {
-    setLoading(false);
-    setError(null);
-    setResult(null);
+    rotate.reset();
     setKeyCopied(false);
   };
 
@@ -93,19 +101,9 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
   const keyRevoked = keyExpiry == null;
   const pastCap = renewDeadline != null && renewDeadline <= now;
 
-  const handleRotate = async () => {
+  const handleRotate = () => {
     if (!session) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const resp = await resumeAgentSession(session.id);
-      setResult(resp);
-      onResumed?.();
-    } catch (err) {
-      setError(formatApiError(err, 'Could not resume the agent session.'));
-    } finally {
-      setLoading(false);
-    }
+    rotate.mutate(session.id);
   };
 
   const handleClose = () => {

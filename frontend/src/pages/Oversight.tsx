@@ -22,7 +22,8 @@
  * page "65 targets tested"; the counts are unchanged, the words now agree.
  * The API's field names (`targets_tested`, `hosts_tested`) are unchanged.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Copy } from 'lucide-react';
 
@@ -63,7 +64,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { formatStatusLabel } from '../utils/statusMeta';
 import { describeProjects, parseProjectIds, serializeProjectIds } from '../utils/oversightProjects';
-import { formatApiError } from '../utils/apiErrors';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { formatDate } from '../utils/relativeTime';
 import {
   DATE_PRESETS, DEFAULT_PRESET, DatePreset, customRangeError, presetRange,
@@ -418,25 +419,24 @@ const Oversight: React.FC = () => {
     severity_basis: basis,
   }), [range.start, range.end, projectIds, statusFilter, testerFilter, overlap, basis]);
 
-  const [data, setData] = useState<OversightResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [nonce, setNonce] = useState(0);
+  // The key is the query, which is the address (`?range=`, `?projects=`,
+  // `?status=`…): a link to a filtered Oversight asks for exactly that.
+  const dashboard = useQuery({
+    queryKey: [GLOBAL, 'getOversightDashboard', query],
+    queryFn: () => getOversightDashboard(query),
+  });
+  // The figures stay on screen while other filters load, and when that read
+  // fails ("Showing the last figures that loaded").
+  const lastLoaded = useRef<OversightResponse | null>(null);
+  if (dashboard.data) lastLoaded.current = dashboard.data;
+  const data = dashboard.data ?? lastLoaded.current;
+  const loading = dashboard.isFetching;
+  const error = loading ? null : queryErrorText(dashboard.error, 'Failed to load Oversight.');
+  const refresh = () => { void dashboard.refetch(); };
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<ProjectSort>('critical');
   const [page, setPage] = useState(0);
   const [shareOpen, setShareOpen] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    getOversightDashboard(query)
-      .then((r) => { if (!cancelled) setData(r); })
-      .catch((err) => { if (!cancelled) setError(formatApiError(err, 'Failed to load Oversight.')); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [query, nonce]);
 
   const setParam = useCallback((updates: Record<string, string | null>) => {
     const next = new URLSearchParams(params);
@@ -524,7 +524,7 @@ const Oversight: React.FC = () => {
           <LastUpdated
             compact
             lastFetched={data?.generated_at ?? null}
-            onRefresh={() => setNonce((x) => x + 1)}
+            onRefresh={refresh}
             isLoading={loading}
             label="oversight"
           />
@@ -606,7 +606,7 @@ const Oversight: React.FC = () => {
         <Alert variant="destructive">
           <AlertDescription className="flex flex-wrap items-center justify-between gap-sm">
             <span>{error}{data ? ' Showing the last figures that loaded.' : ''}</span>
-            <Button size="sm" variant="outline" onClick={() => setNonce((x) => x + 1)}>Retry</Button>
+            <Button size="sm" variant="outline" onClick={refresh}>Retry</Button>
           </AlertDescription>
         </Alert>
       )}

@@ -23,6 +23,7 @@
  * unread notifications panel with the ?mentions=mine deep link.
  */
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { MessageSquare, Bell, ArrowRight, Paperclip, RefreshCw, Loader2 } from 'lucide-react';
 import {
@@ -31,20 +32,24 @@ import {
   getNoteActivity,
   NoteActivityItem,
   NoteActivityAuthor,
+  NoteActivityResponse,
   markActivitySeen,
   getNotifications,
   markNotificationsRead,
   markAllNotificationsRead,
   NotificationItem,
+  NotificationListResponse,
 } from '../services/api';
 import { AgentAuthorBadge } from '../components/AgentAuthorBadge';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
-import { formatApiError } from '../utils/apiErrors';
 import { useAuth } from '../contexts/AuthContext';
+import { GLOBAL, invalidateReads, queryErrorText } from '../lib/query';
 import { notificationHref } from '../utils/notificationLinks';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useListCursor } from '../hooks/useListCursor';
+import { useListQuery, type ListPage } from '../hooks/useListQuery';
 import {
   Select,
   SelectContent,
@@ -84,6 +89,17 @@ type FeedItem =
 
 /** How many finding discussions the feed asks for (the endpoint's maximum). */
 const DISCUSSION_LIMIT = 100;
+/** Notes are paged ("Load more") rather than capped at one fetch — which made
+ *  the thread / host counts and the feed silently miss everything past it. */
+const NOTES_PAGE_SIZE = 100;
+/** How many unread notifications the panel asks for. */
+const UNREAD_LIMIT = 50;
+/** The reader's unread notifications: theirs, whatever the project. */
+const UNREAD_KEY = [GLOBAL, 'getNotifications', true, UNREAD_LIMIT] as const;
+
+const NO_NOTES: NoteActivityItem[] = [];
+const NO_NOTIFICATIONS: NotificationItem[] = [];
+const NO_AUTHORS: NoteActivityAuthor[] = [];
 
 /** A finding's status as the row's chip, in the tone of its population
  *  (utils/findingStatus): under investigation, confirmed, closed. */
@@ -141,10 +157,7 @@ const Activity: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const mentionsFilter = searchParams.get('mentions');
   const mentionsPanelRef = useRef<HTMLDivElement | null>(null);
-  const [notes, setNotes] = useState<NoteActivityItem[]>([]);
-  const [totalNotes, setTotalNotes] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const queryClient = useQueryClient();
   // The author filter lives in the URL (`?author=<id>` or `?author=me`,
   // 5.329.0), so "my activity" is a link (Operations' "My work" heading
   // carried one until the page became tabs, 5.331.0) and the choice survives
@@ -160,74 +173,71 @@ const Activity: React.FC = () => {
     else params.set('author', user?.id != null && next === String(user.id) ? 'me' : next);
     setSearchParams(params, { replace: true });
   }, [searchParams, setSearchParams, user?.id]);
-  const [authors, setAuthors] = useState<NoteActivityAuthor[]>([]);
   const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  // Unread notifications, snapshot pre-mark-read so they stay visible until
-  // dismissed or opened, even after the bell badge has been zeroed out.
-  const [unreadNotifications, setUnreadNotifications] = useState<NotificationItem[]>([]);
-  const [notificationsFailed, setNotificationsFailed] = useState(false);
-  const [notificationsLoaded, setNotificationsLoaded] = useState(false);
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [mentionsDismissed, setMentionsDismissed] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(search), 300);
-    return () => clearTimeout(timer);
-  }, [search]);
-
-  // Page through notes rather than capping at one 100-note fetch (which made
-  // the thread/host counts and the feed silently miss everything past 100).
-  const PAGE_SIZE = 100;
-  // Only the latest request applies: a slower response for an older filter
-  // used to overwrite the newer one, and a "Load more" page that landed after
-  // a filter change was appended to the new list (review 2026-09-23 R11).
-  const fetchGenRef = useRef(0);
-  const fetchActivity = useCallback(async (skip = 0) => {
-    const append = skip > 0;
-    const gen = append ? fetchGenRef.current : ++fetchGenRef.current;
-    const current = () => gen === fetchGenRef.current;
-    try {
-      if (append) setLoadingMore(true); else setLoading(true);
-      setFetchError(null);
-      const params: Record<string, string | number> = { limit: PAGE_SIZE, skip };
+  // Host notes, a page at a time ("Load more"); a filter starts from the
+  // first page and never shows the previous filter's notes.
+  const noteList = useListQuery<NoteActivityItem, NoteActivityResponse & ListPage<NoteActivityItem>>(
+    'getNoteActivity',
+    async ({ offset, limit }) => {
+      const params: { limit: number; skip: number; author_id?: number; search?: string } = { limit, skip: offset };
       if (authorFilter) params.author_id = Number(authorFilter);
       if (debouncedSearch) params.search = debouncedSearch;
       const data = await getNoteActivity(params);
-      if (!current()) return;
-      setNotes((prev) => (append ? [...prev, ...data.notes] : data.notes));
-      setTotalNotes(data.total_notes);
-      if (data.authors) setAuthors(data.authors);
-    } catch (err) {
-      if (!current()) return;
-      setFetchError(formatApiError(err, 'Failed to load activity.'));
-    } finally {
-      if (current()) {
-        if (append) setLoadingMore(false); else setLoading(false);
-      }
-    }
-  }, [authorFilter, debouncedSearch]);
+      return { ...data, items: data.notes, total: data.total_notes };
+    },
+    [authorFilter, debouncedSearch],
+    { pageSize: NOTES_PAGE_SIZE, errorMessage: 'Failed to load activity.' },
+  );
+  const notes = noteList.rows ?? NO_NOTES;
+  const totalNotes = noteList.total;
+  const loading = noteList.loading;
+  const loadingMore = noteList.loadingMore;
+  // The authors to filter by are the last ones the server named — under any
+  // filter — so the control does not come and go while a search is typed.
+  const authorsRef = useRef<NoteActivityAuthor[]>(NO_AUTHORS);
+  if (noteList.response?.authors) authorsRef.current = noteList.response.authors;
+  const authors = authorsRef.current;
 
-  // A filter change refetches from the first page (append=false replaces).
-  useEffect(() => {
-    fetchActivity(0);
-  }, [fetchActivity]);
+  // "Load more" is an action: its failure is said like the list's, for the
+  // filter it was asked under.
+  const filterKey = `${authorFilter}|${debouncedSearch}`;
+  const { loadMore, reload: reloadNotes } = noteList;
+  const more = useMutation({ mutationFn: (_filter: string) => loadMore() });
+  const moreError = more.variables === filterKey ? queryErrorText(more.error, 'Failed to load activity.') : null;
+  const fetchError = noteList.error ?? moreError;
+  const { reset: resetMore } = more;
+  const retryNotes = () => {
+    resetMore();
+    void reloadNotes();
+  };
 
   // Finding discussions: the same search and author.
-  const [discussions, setDiscussions] = useState<{ items: FindingDiscussion[]; total: number } | null>(null);
-  const [discussionError, setDiscussionError] = useState<string | null>(null);
-  useEffect(() => {
-    const controller = new AbortController();
-    getFindingDiscussions(
-      { search: debouncedSearch || undefined, author_id: authorFilter ? Number(authorFilter) : undefined, limit: DISCUSSION_LIMIT },
-      controller.signal,
-    )
-      .then((d) => { if (!controller.signal.aborted) { setDiscussions(d); setDiscussionError(null); } })
-      .catch((err) => {
-        if (!controller.signal.aborted) setDiscussionError(formatApiError(err, 'Finding comments could not be loaded.'));
-      });
-    return () => controller.abort();
-  }, [debouncedSearch, authorFilter]);
+  const discussionFilters = useMemo(() => ({
+    search: debouncedSearch || undefined,
+    author_id: authorFilter ? Number(authorFilter) : undefined,
+    limit: DISCUSSION_LIMIT,
+  }), [debouncedSearch, authorFilter]);
+  const discussionsQuery = useQuery({
+    queryKey: ['getFindingDiscussions', discussionFilters],
+    queryFn: ({ signal }) => getFindingDiscussions(discussionFilters, signal),
+  });
+  const discussions = discussionsQuery.data ?? null;
+  const discussionError = queryErrorText(discussionsQuery.error, 'Finding comments could not be loaded.');
+
+  // The reader's unread notifications, read ONCE when the page opens: they
+  // stay listed until dismissed or opened, even after the bell badge has been
+  // zeroed out.  Notifications are NOT marked read just because the page
+  // opened (§21): only when one is opened, or by "Mark all read".
+  const notificationsQuery = useQuery({
+    queryKey: UNREAD_KEY,
+    queryFn: () => getNotifications(true, UNREAD_LIMIT),
+  });
+  const unreadNotifications = notificationsQuery.data?.notifications ?? NO_NOTIFICATIONS;
+  const notificationsFailed = notificationsQuery.isError;
+  const notificationsLoaded = notificationsQuery.isSuccess;
 
   // FRX·H6: scroll the notifications panel into view when arriving from the bell.
   useEffect(() => {
@@ -240,46 +250,35 @@ const Activity: React.FC = () => {
     }
   }, [mentionsFilter, unreadNotifications.length, mentionsDismissed]);
 
-  useEffect(() => {
-    // Mount-only: mark the activity FEED seen (the "since last visit" cursor)
-    // and load the user's unread notifications for the panel.  Notifications
-    // are NOT marked read just because the page opened (§21): a notification
-    // is marked read only when opened or via "Mark all read".
-    let cancelled = false;
-    Promise.all([
-      markActivitySeen().catch(() => undefined),
-      getNotifications(true, 50).catch(() => null),
-    ])
-      .then(([, res]) => {
-        if (cancelled) return;
-        if (!res) {
-          setNotificationsFailed(true);
-          return;
-        }
-        setUnreadNotifications(res.notifications);
-        setNotificationsLoaded(true);
-      })
-      .catch((err) => console.error('Activity initial-load handler threw:', err));
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Opening the page marks the activity FEED seen (the "since last visit"
+  // cursor) — once, whatever comes of it.
+  const { mutate: markSeen } = useMutation({ mutationFn: () => markActivitySeen() });
+  useEffect(() => { markSeen(); }, [markSeen]);
 
-  const dismissMention = useCallback(async (id: number) => {
-    setUnreadNotifications((prev) => prev.filter((n) => n.id !== id));
-    await markNotificationsRead([id]).catch(() => undefined);
-    window.dispatchEvent(new CustomEvent('nm:notifications-marked-read'));
-  }, []);
-
-  const markAllMentionsRead = useCallback(async () => {
-    setUnreadNotifications([]);
-    await markAllNotificationsRead().catch(() => undefined);
-    window.dispatchEvent(new CustomEvent('nm:notifications-marked-read'));
-  }, []);
+  // A notification leaves the panel at once; the server is told, and the
+  // bell in the top bar reads its count again either way (components/Layout).
+  const bellChanged = useCallback(() => {
+    void invalidateReads(queryClient, 'getUnreadNotificationCount');
+  }, [queryClient]);
+  const setUnread = useCallback((keep: (n: NotificationItem) => boolean) => {
+    queryClient.setQueryData<NotificationListResponse>(UNREAD_KEY, (old) => (
+      old ? { ...old, notifications: old.notifications.filter(keep) } : old
+    ));
+  }, [queryClient]);
+  const { mutate: dismissMention } = useMutation({
+    mutationFn: (id: number) => markNotificationsRead([id]),
+    onMutate: (id) => setUnread((n) => n.id !== id),
+    onSettled: bellChanged,
+  });
+  const { mutate: markAllMentionsRead } = useMutation({
+    mutationFn: () => markAllNotificationsRead(),
+    onMutate: () => setUnread(() => false),
+    onSettled: bellChanged,
+  });
 
   // Open a notification's source: mark it read, then deep-link by kind.
   const openMention = useCallback((n: NotificationItem) => {
-    void dismissMention(n.id);
+    dismissMention(n.id);
     const to = notificationHref(n);
     if (to) navigate(to);
   }, [dismissMention, navigate]);
@@ -364,6 +363,13 @@ const Activity: React.FC = () => {
 
   const hostCount = useMemo(() => new Set(notes.map((n) => n.host_id)).size, [notes]);
   const findingRowsShown = feed.filter((i) => i.kind === 'finding').length;
+  // The header's figures are counted over rows: until they have been read
+  // (a first load, a filter that is loading) a figure is "…", and "—" when
+  // the read failed — never 0, which says there are none.
+  const notesKnown = noteList.rows !== null;
+  const notesUnknown = fetchError ? '—' : '…';
+  const discussionsKnown = discussions !== null;
+  const discussionsUnknown = discussionError ? '—' : '…';
   const filtered = Boolean(authorFilter || debouncedSearch);
 
   // j/k (↓/↑) move a row cursor through the feed (days in order), Enter opens
@@ -390,8 +396,11 @@ const Activity: React.FC = () => {
             loaded so far, not the full set.  Both kinds of discussion are
             counted — the line used to leave finding comments out. */}
         <p className="text-caption text-muted-foreground" aria-live="polite" aria-label="Discussions in view">
-          {threadGroups.length} host-note thread{threadGroups.length === 1 ? '' : 's'} on {hostCount} host{hostCount === 1 ? '' : 's'}
-          {' · '}{findingRowsShown} finding discussion{findingRowsShown === 1 ? '' : 's'} in view
+          {/* A figure whose rows have not been read (a first load, a filter
+              that is loading) is not known: "…", never 0. */}
+          {notesKnown ? threadGroups.length : notesUnknown} host-note thread{notesKnown && threadGroups.length === 1 ? '' : 's'}
+          {' '}on {notesKnown ? hostCount : notesUnknown} host{notesKnown && hostCount === 1 ? '' : 's'}
+          {' · '}{discussionsKnown ? findingRowsShown : discussionsUnknown} finding discussion{discussionsKnown && findingRowsShown === 1 ? '' : 's'} in view
           {notes.length < totalNotes && <> · {notes.length.toLocaleString()} of {totalNotes.toLocaleString()} notes loaded</>}
         </p>
       </header>
@@ -433,7 +442,7 @@ const Activity: React.FC = () => {
               {unreadNotifications.length} unread notification{unreadNotifications.length === 1 ? '' : 's'}
             </h2>
             <div className="flex items-center gap-xs">
-              <Button variant="ghost" size="sm" onClick={() => void markAllMentionsRead()}>
+              <Button variant="ghost" size="sm" onClick={() => markAllMentionsRead()}>
                 Mark all read
               </Button>
               {/* Hide for this visit without marking read (read-state is durable). */}
@@ -510,7 +519,7 @@ const Activity: React.FC = () => {
         <Alert variant="destructive">
           <AlertDescription className="flex flex-wrap items-center justify-between gap-sm">
             <span>{fetchError}</span>
-            <Button size="sm" variant="outline" onClick={() => fetchActivity()}>
+            <Button size="sm" variant="outline" onClick={retryNotes}>
               <RefreshCw className="size-4" aria-hidden />
               Retry
             </Button>
@@ -522,6 +531,10 @@ const Activity: React.FC = () => {
         <p className="inline-flex items-center gap-xs text-metadata text-muted-foreground" role="status">
           <Loader2 className="size-4 animate-spin" aria-hidden /> Loading activity…
         </p>
+      ) : noteList.rows === null && fetchError ? (
+        // The notes could not be read: said above, with Retry — never "No
+        // activity yet", and not a feed with the notes missing from it.
+        null
       ) : feed.length === 0 ? (
         <div className="flex max-w-2xl items-start gap-sm border-l-4 border-border py-xs pl-md">
           <MessageSquare className="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden />
@@ -579,7 +592,7 @@ const Activity: React.FC = () => {
             <div className="flex justify-center pt-sm">
               <Button
                 variant="outline"
-                onClick={() => fetchActivity(notes.length)}
+                onClick={() => more.mutate(filterKey)}
                 disabled={loadingMore}
               >
                 {loadingMore

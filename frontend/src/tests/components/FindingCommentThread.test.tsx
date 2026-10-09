@@ -1,3 +1,4 @@
+import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -17,6 +18,7 @@ vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, confirmMock]
 vi.mock('../../components/host-inspector/NoteAttachments', () => ({ default: () => null }));
 
 import * as api from '../../services/api';
+import { readsOnScreen } from '../helpers/readsOnScreen';
 import FindingCommentThread from '../../components/FindingCommentThread';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
@@ -226,6 +228,70 @@ describe('FindingCommentThread — v5.256.0: a comment is its author\'s', () => 
     expect(toastMock.info).toHaveBeenCalledWith(expect.stringMatching(/has replies/));
     expect(confirmMock).not.toHaveBeenCalled();
     expect(mocked.deleteFindingNote).not.toHaveBeenCalled();
+  });
+});
+
+// 5.351.0 — a screenshot on a comment is one of the FINDING's images (the
+// report text's "Insert image", each image's caption and placement).  The
+// thread re-read itself, but the finding's images stayed as first read until
+// the reader pressed Refresh.  This stands in for the page's read of them.
+describe('FindingCommentThread — a screenshot is one of the finding’s images', () => {
+  const images = () => readsOnScreen({ getFindingImages: 'the finding’s images' });
+  const renderWith = (ReadsOnScreen: React.FC) =>
+    render(<><ReadsOnScreen /><FindingCommentThread findingId={7} canManage /></>);
+
+  it('a comment posted with a screenshot reads them again; one without does not', async () => {
+    const { reread, ReadsOnScreen } = images();
+    mocked.createFindingNote.mockResolvedValue(note(42, 'plain'));
+    mocked.uploadFindingNoteAttachment.mockResolvedValue({ id: 1 });
+    renderWith(ReadsOnScreen);
+    await screen.findByText(/No comments yet/);
+
+    fireEvent.change(screen.getByLabelText('New comment'), { target: { value: 'plain' } });
+    fireEvent.click(screen.getByRole('button', { name: /Comment/ }));
+    await waitFor(() => expect(mocked.getFindingNotes).toHaveBeenCalledTimes(2));   // the thread re-read
+    expect(reread).not.toHaveBeenCalled();
+
+    pasteImage('shot.png');
+    fireEvent.click(screen.getByRole('button', { name: /Comment/ }));
+    await waitFor(() => expect(mocked.uploadFindingNoteAttachment).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(reread).toHaveBeenCalledTimes(1));
+  });
+
+  it('a screenshot that failed to attach reads nothing again until its retry lands', async () => {
+    const { reread, ReadsOnScreen } = images();
+    mocked.createFindingNote.mockResolvedValue(note(42));
+    mocked.uploadFindingNoteAttachment.mockRejectedValueOnce(new Error('413'));
+    renderWith(ReadsOnScreen);
+    await screen.findByText(/No comments yet/);
+    pasteImage('shot.png');
+    fireEvent.click(screen.getByRole('button', { name: /Comment/ }));
+    await screen.findByText(/attachment failed/);
+    expect(reread).not.toHaveBeenCalled();
+
+    mocked.uploadFindingNoteAttachment.mockResolvedValueOnce({ id: 1 });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry shot.png' }));
+    await waitFor(() => expect(reread).toHaveBeenCalledTimes(1));
+  });
+
+  it('deleting a comment that carried screenshots reads them again; a bare one does not', async () => {
+    const { reread, ReadsOnScreen } = images();
+    mocked.getFindingNotes.mockResolvedValue([
+      note(1, 'bare'), { ...note(2, 'with shots'), attachments: [{ id: 9, filename: 'shot.png' }] },
+    ]);
+    mocked.deleteFindingNote.mockResolvedValue(undefined);
+    confirmMock.mockResolvedValue(true);
+    renderWith(ReadsOnScreen);
+    await screen.findByText('with shots');
+    const [bare, withShots] = screen.getAllByRole('button', { name: /Delete comment/ });
+
+    fireEvent.click(bare);
+    await waitFor(() => expect(screen.queryByText('bare')).toBeNull());
+    expect(reread).not.toHaveBeenCalled();
+
+    fireEvent.click(withShots);
+    await waitFor(() => expect(screen.queryByText('with shots')).toBeNull());
+    await waitFor(() => expect(reread).toHaveBeenCalledTimes(1));
   });
 });
 

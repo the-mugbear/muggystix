@@ -21,14 +21,19 @@
  * `ready`, `failed`.  "Not one of this finding's images" may only be said
  * when the list is `ready`.
  *
+ * The list is a query (`['getFindingImages', findingId]`, lib/query).  The
+ * object URLs are NOT server state and are this hook's: it makes them, and
+ * it must revoke them.
+ *
  * The API is an injectable dependency so the state machine is tested with
  * `renderHook` (see `tests/hooks/useFindingImages.test.ts`).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
 
 import { getFindingImages, getNoteAttachmentObjectUrl } from '../services/api';
 import type { FindingImage } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
 import {
   EvidenceImages, IMAGE_FETCH_CONCURRENCY, ImageListStatus, ImageThumbnails,
 } from '../utils/evidenceImages';
@@ -65,26 +70,39 @@ export interface FindingImagesState {
 const defaultDeps = (): FindingImagesDeps => ({ getFindingImages, getNoteAttachmentObjectUrl });
 
 const NO_IDS: ReadonlySet<number> = new Set();
+const NO_IMAGES: FindingImage[] = [];
 
 export function useFindingImages(
   findingId: number | null | undefined,
   injected?: FindingImagesDeps,
 ): FindingImagesState {
   const deps = useMemo(() => injected ?? defaultDeps(), [injected]);
-  const [images, setImages] = useState<FindingImage[]>([]);
-  const [captionMax, setCaptionMax] = useState(2000);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Which finding's list has been read.  Compared with `findingId` in render,
-  // so the first render for another finding is already "loading" — not one
-  // frame of "ready, and empty".
-  const [readFor, setReadFor] = useState<number | null>(null);
+  // The list: one query per finding, so another finding's first render is
+  // already "loading" and a late answer for the one the page left lands
+  // nowhere.
+  const list = useQuery({
+    queryKey: ['getFindingImages', findingId],
+    queryFn: () => deps.getFindingImages(findingId as number),
+    enabled: findingId != null,
+  });
+  const images = list.data?.items ?? NO_IMAGES;
+  const captionMax = list.data?.caption_max ?? 2000;
+  const error = queryErrorText(list.error, 'Could not load the finding’s images.');
+  const listStatus: ImageListStatus = findingId == null || list.data ? 'ready' : error ? 'failed' : 'loading';
+  const { refetch } = list;
+  const reload = useCallback(() => {
+    if (findingId != null) void refetch();
+  }, [findingId, refetch]);
+
+  // The bytes.  Each image is asked for through this mutation (a download,
+  // not a read to cache: what comes back is an object URL this hook must
+  // revoke), a few at a time from the queue below.
+  const { mutateAsync: fetchBytes } = useMutation({
+    mutationFn: (id: number) => deps.getNoteAttachmentObjectUrl(id),
+    gcTime: 0,
+  });
   const [urls, setUrls] = useState<Record<number, string>>({});
   const [failedIds, setFailedIds] = useState<ReadonlySet<number>>(NO_IDS);
-  const [reloadKey, setReloadKey] = useState(0);
-  // Which finding the state is for: a response that arrives after the page
-  // moved to another finding is dropped.
-  const generation = useRef(0);
   // Which finding the byte cache is for.
   const cacheEpoch = useRef(0);
   const requested = useRef(new Set<number>());
@@ -92,41 +110,15 @@ export function useFindingImages(
   const draining = useRef(false);
   const created = useRef<string[]>([]);
   const unmounted = useRef(false);
-  const depsRef = useRef(deps);
-  depsRef.current = deps;
 
   // Another finding: its images are not this one's.
   useEffect(() => {
     cacheEpoch.current += 1;
     requested.current = new Set();
     queue.current = [];
-    setImages([]);
     setUrls({});
     setFailedIds(NO_IDS);
-    setError(null);
   }, [findingId]);
-
-  useEffect(() => {
-    if (findingId == null) return undefined;
-    const mine = ++generation.current;
-    setLoading(true);
-    depsRef.current.getFindingImages(findingId).then(
-      (list) => {
-        if (generation.current !== mine) return;
-        setImages(list.items ?? []);
-        setCaptionMax(list.caption_max ?? 2000);
-        setReadFor(findingId);
-        setError(null);
-        setLoading(false);
-      },
-      (err) => {
-        if (generation.current !== mine) return;
-        setError(formatApiError(err, 'Could not load the finding’s images.'));
-        setLoading(false);
-      },
-    );
-    return () => { generation.current += 1; };
-  }, [findingId, reloadKey]);
 
   useEffect(() => {
     unmounted.current = false;
@@ -137,9 +129,6 @@ export function useFindingImages(
     };
   }, []);
 
-  const known = findingId != null && readFor === findingId;
-  const listStatus: ImageListStatus = findingId == null || known ? 'ready' : error ? 'failed' : 'loading';
-
   const placeable = useMemo(() => images.filter((i) => i.in_report && i.printable), [images]);
   const byId = useMemo(() => new Map(placeable.map((i) => [i.id, i])), [placeable]);
   const listed = useMemo(() => new Set(images.map((i) => i.id)), [images]);
@@ -147,7 +136,7 @@ export function useFindingImages(
   const fetchOne = useCallback(async (id: number) => {
     const epoch = cacheEpoch.current;
     try {
-      const url = await depsRef.current.getNoteAttachmentObjectUrl(id);
+      const url = await fetchBytes(id);
       // The page is gone, or moved to another finding: nothing will show this
       // URL and nothing would ever revoke it.
       if (unmounted.current || cacheEpoch.current !== epoch) {
@@ -160,7 +149,7 @@ export function useFindingImages(
       if (unmounted.current || cacheEpoch.current !== epoch) return;
       setFailedIds((prev) => new Set(prev).add(id));
     }
-  }, []);
+  }, [fetchBytes]);
 
   const drain = useCallback(async () => {
     if (draining.current) return;
@@ -204,7 +193,6 @@ export function useFindingImages(
     if (listed.has(id)) request(id);
   }, [listed, request]);
 
-  const reload = useCallback(() => setReloadKey((k) => k + 1), []);
   const failed = useCallback((id: number) => failedIds.has(id), [failedIds]);
 
   const resolver = useMemo<EvidenceImages>(() => ({
@@ -229,6 +217,6 @@ export function useFindingImages(
   }), [listStatus, listed, urls, ensureListed, failed, retry]);
 
   return {
-    images, placeable, captionMax, loading, error, listStatus, reload, urls, resolver, thumbnails,
+    images, placeable, captionMax, loading: list.isFetching, error, listStatus, reload, urls, resolver, thumbnails,
   };
 }

@@ -3,17 +3,21 @@
  * and every note, newest first by when it happened.  A project admin adds a
  * note here; a note is its author's to remove, a recorded change is nobody's.
  *
- * The panel stays mounted while the reader moves between hosts, so every
- * completion checks it is still for the host on screen.
+ * The sheet stays mounted while the reader moves between hosts; what it shows
+ * (`TimelineBody`) is keyed by the host, so a read or a save that completes
+ * for the previous host has nowhere to land.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
 import {
   addRemediationNote, deleteRemediationNote, listRemediationEvents, type RemediationEvent,
+  type RemediationEventPage,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useConfirm } from '../../hooks/useConfirm';
+import { queryErrorText } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { formatDate, formatTimestamp } from '../../utils/relativeTime';
 import {
@@ -109,61 +113,44 @@ const Entry: React.FC<{
   );
 };
 
-export const RemediationTimeline: React.FC<{
-  /** The host on screen; null closes the panel. */
-  host: { host_id: number; ip_address: string; hostname: string | null } | null;
+/** One host's entries and its note form.  Keyed by the host (and its project)
+ *  where it is rendered: the note being typed, how far back the list reaches
+ *  and every request in flight belong to that host and go with it. */
+const TimelineBody: React.FC<{
+  hostId: number;
   canWrite: boolean;
-  onClose: () => void;
-  /** Set on the cross-project page: the host's project, read and written
-   *  through the mount that also serves archived projects. */
   projectId?: number;
-}> = ({ host, canWrite, onClose, projectId }) => {
+  confirm: ReturnType<typeof useConfirm>[1];
+}> = ({ hostId, canWrite, projectId, confirm }) => {
   const toast = useToast();
-  const [confirmDialog, confirm] = useConfirm();
-  const hostId = host?.host_id ?? null;
-  const current = useRef<number | null>(hostId);
-  current.current = hostId;
-
-  const [events, setEvents] = useState<RemediationEvent[] | null>(null);
-  const [total, setTotal] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [note, setNote] = useState('');
   const [when, setWhen] = useState('');
-  const [saving, setSaving] = useState(false);
-  const loadGeneration = useRef(0);
+  // How many entries are asked for: "Show older entries" raises it.
+  const [limit, setLimit] = useState(PAGE);
 
-  const load = useCallback(async (wanted = PAGE) => {
-    if (hostId == null) return;
-    // Bounded HERE, for every caller: a refresh after adding a note to 200
-    // shown entries asked for 201 and was refused (422), which left the old
-    // entries and an error under a cleared note field.
-    const limit = Math.min(MAX, Math.max(1, wanted));
-    // The newest read wins: "Show older entries" answering after the re-read
-    // that follows a new note would put the list back without the note.
-    const generation = ++loadGeneration.current;
-    const stale = () => current.current !== hostId || generation !== loadGeneration.current;
-    try {
-      const page = await listRemediationEvents(hostId, { limit }, undefined, projectId);
-      if (stale()) return;
-      setEvents(page.items);
-      setTotal(page.total);
-      setError(null);
-    } catch (err) {
-      if (stale()) return;
-      setError(formatApiError(err, 'The timeline could not be loaded.'));
-    }
-  }, [hostId, projectId]);
+  const query = useQuery({
+    queryKey: ['listRemediationEvents', hostId, { limit }, projectId],
+    queryFn: ({ signal }) => listRemediationEvents(hostId, { limit }, signal, projectId),
+  });
+  // The entries stay on screen while more are asked for, and when that fails.
+  const last = useRef<RemediationEventPage | null>(null);
+  if (query.data) last.current = query.data;
+  const page = query.data ?? last.current;
+  const events = page ? page.items : null;
+  const total = page ? page.total : 0;
+  const error = queryErrorText(query.error, 'The timeline could not be loaded.');
 
-  useEffect(() => {
-    setEvents(null);
-    setTotal(0);
-    setError(null);
-    setNote('');
-    setWhen('');
-    // A save still in flight is the previous host's.
-    setSaving(false);
-    void load();
-  }, [load]);
+  // Read the list again reaching back `wanted` entries.  Bounded HERE, for
+  // every caller: a refresh after adding a note to 200 shown entries asked
+  // for 201 and was refused (422), which left the old entries and an error
+  // under a cleared note field.
+  const reread = (wanted: number): Promise<unknown> => {
+    const next = Math.min(MAX, Math.max(1, wanted));
+    if (next === limit) return queryClient.invalidateQueries({ queryKey: ['listRemediationEvents'] });
+    setLimit(next);
+    return Promise.resolve();
+  };
 
   // A date and time typed halfway has no value; adding the note would record
   // it as "now" while the field still shows the half-typed date.
@@ -175,27 +162,30 @@ export const RemediationTimeline: React.FC<{
     return bad;
   };
 
-  const add = async () => {
-    const body = note.trim();
-    if (checkWhen() || !body || hostId == null) return;
-    const submittedFor = hostId;
-    setSaving(true);
-    try {
-      await addRemediationNote({
-        host_id: submittedFor, body,
-        ...(when ? { occurred_at: new Date(when).toISOString() } : {}),
-      }, projectId);
-      if (current.current !== submittedFor) return;
+  const adding = useMutation({
+    mutationFn: (body: string) => addRemediationNote({
+      host_id: hostId, body,
+      ...(when ? { occurred_at: new Date(when).toISOString() } : {}),
+    }, projectId),
+    // The button stays busy until the list shows the note.
+    onSuccess: () => {
       setNote('');
       setWhen('');
-      await load(Math.max(PAGE, (events?.length ?? 0) + 1));
-    } catch (err) {
-      if (current.current === submittedFor) toast.error(formatApiError(err, 'The note was not added.'));
-    } finally {
-      if (current.current === submittedFor) setSaving(false);
-    }
+      return reread(Math.max(PAGE, (events?.length ?? 0) + 1));
+    },
+  });
+  const saving = adding.isPending;
+  const add = () => {
+    const body = note.trim();
+    if (checkWhen() || !body) return;
+    // Said only while this host is still the one on screen.
+    adding.mutate(body, { onError: (err) => toast.error(formatApiError(err, 'The note was not added.')) });
   };
 
+  const removing = useMutation({
+    mutationFn: (event: RemediationEvent) => deleteRemediationNote(event.id, projectId),
+    onSuccess: () => reread(Math.max(PAGE, events?.length ?? 0)),
+  });
   const remove = async (event: RemediationEvent) => {
     const ok = await confirm({
       title: 'Remove this note?',
@@ -203,14 +193,85 @@ export const RemediationTimeline: React.FC<{
       confirmLabel: 'Remove',
     });
     if (!ok) return;
-    const submittedFor = hostId;
-    try {
-      await deleteRemediationNote(event.id, projectId);
-      if (current.current === submittedFor) await load(Math.max(PAGE, events?.length ?? 0));
-    } catch (err) {
-      if (current.current === submittedFor) toast.error(formatApiError(err, 'The note was not removed.'));
-    }
+    removing.mutate(event, { onError: (err) => toast.error(formatApiError(err, 'The note was not removed.')) });
   };
+
+  return (
+    <>
+      {canWrite && (
+        <div className="mb-md flex min-w-0 flex-col gap-xs">
+          <Label htmlFor="rem-timeline-note">Add a note</Label>
+          <Textarea id="rem-timeline-note" rows={3} maxLength={10000} value={note}
+            placeholder="Contacted the owner, will respond on Friday"
+            onChange={(e) => setNote(e.target.value)} />
+          <div className="flex min-w-0 flex-wrap items-end gap-sm">
+            <div className="min-w-0">
+              <Label htmlFor="rem-timeline-when" className="text-caption text-muted-foreground">
+                When it happened (if not now)
+              </Label>
+              <Input id="rem-timeline-when" type="datetime-local" className="h-8 w-56" ref={whenRef} value={when}
+                onBlur={checkWhen} onKeyUp={checkWhen}
+                onChange={(e) => setWhen(e.target.value)} />
+            </div>
+            <Button size="sm" onClick={add} disabled={saving || halfWhen || !note.trim()}>
+              {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Add note
+            </Button>
+          </div>
+          {halfWhen && (
+            <p role="alert" className="text-caption text-destructive">
+              The date and time are only partly filled in. Finish them, or clear the field to record the note as now.
+            </p>
+          )}
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="mb-xs break-words text-caption text-destructive">
+          {error}{events !== null ? ' The entries below are as last loaded.' : ''}
+        </p>
+      )}
+      {events === null ? (
+        !error && <p className="text-caption text-muted-foreground">Loading…</p>
+      ) : events.length === 0 ? (
+        <p className="text-metadata text-muted-foreground">
+          Nothing recorded for this host yet. A change to a contact, date or status shows here, and so does each note.
+        </p>
+      ) : (
+        <>
+          <ul className="min-w-0">
+            {groupTimeline(events).map((g) => (
+              <Entry key={g.first.id} group={g} canWrite={canWrite} onDelete={(ev) => void remove(ev)} />
+            ))}
+          </ul>
+          {events.length < total && (events.length < MAX ? (
+            // A failed "Show older" is asked again by the same button.
+            <Button variant="ghost" size="sm" className="mt-xs"
+              onClick={() => {
+                const next = Math.min(MAX, events.length + PAGE);
+                if (next === limit) void query.refetch(); else setLimit(next);
+              }}>
+              Show older entries ({(total - events.length).toLocaleString()} more)
+            </Button>
+          ) : (
+            <p className="mt-xs text-caption text-muted-foreground">
+              The newest {MAX} of {total.toLocaleString()} entries.
+            </p>
+          ))}
+        </>
+      )}
+    </>
+  );
+};
+
+export const RemediationTimeline: React.FC<{
+  /** The host on screen; null closes the panel. */
+  host: { host_id: number; ip_address: string; hostname: string | null } | null;
+  canWrite: boolean;
+  onClose: () => void;
+  /** Set on the cross-project page: the host's project, read and written
+   *  through the mount that also serves archived projects. */
+  projectId?: number;
+}> = ({ host, canWrite, onClose, projectId }) => {
+  const [confirmDialog, confirm] = useConfirm();
 
   return (
     <SideSheet open={host != null} onOpenChange={(v) => { if (!v) onClose(); }}>
@@ -225,60 +286,9 @@ export const RemediationTimeline: React.FC<{
           </SideSheetDescription>
         </SideSheetHeader>
         <SideSheetBody>
-          {canWrite && (
-            <div className="mb-md flex min-w-0 flex-col gap-xs">
-              <Label htmlFor="rem-timeline-note">Add a note</Label>
-              <Textarea id="rem-timeline-note" rows={3} maxLength={10000} value={note}
-                placeholder="Contacted the owner, will respond on Friday"
-                onChange={(e) => setNote(e.target.value)} />
-              <div className="flex min-w-0 flex-wrap items-end gap-sm">
-                <div className="min-w-0">
-                  <Label htmlFor="rem-timeline-when" className="text-caption text-muted-foreground">
-                    When it happened (if not now)
-                  </Label>
-                  <Input id="rem-timeline-when" type="datetime-local" className="h-8 w-56" ref={whenRef} value={when}
-                    onBlur={checkWhen} onKeyUp={checkWhen}
-                    onChange={(e) => setWhen(e.target.value)} />
-                </div>
-                <Button size="sm" onClick={() => void add()} disabled={saving || halfWhen || !note.trim()}>
-                  {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Add note
-                </Button>
-              </div>
-              {halfWhen && (
-                <p role="alert" className="text-caption text-destructive">
-                  The date and time are only partly filled in. Finish them, or clear the field to record the note as now.
-                </p>
-              )}
-            </div>
-          )}
-          {error && (
-            <p role="alert" className="mb-xs break-words text-caption text-destructive">
-              {error}{events !== null ? ' The entries below are as last loaded.' : ''}
-            </p>
-          )}
-          {events === null ? (
-            !error && <p className="text-caption text-muted-foreground">Loading…</p>
-          ) : events.length === 0 ? (
-            <p className="text-metadata text-muted-foreground">
-              Nothing recorded for this host yet. A change to a contact, date or status shows here, and so does each note.
-            </p>
-          ) : (
-            <>
-              <ul className="min-w-0">
-                {groupTimeline(events).map((g) => (
-                  <Entry key={g.first.id} group={g} canWrite={canWrite} onDelete={(ev) => void remove(ev)} />
-                ))}
-              </ul>
-              {events.length < total && (events.length < MAX ? (
-                <Button variant="ghost" size="sm" className="mt-xs" onClick={() => void load(Math.min(MAX, events.length + PAGE))}>
-                  Show older entries ({(total - events.length).toLocaleString()} more)
-                </Button>
-              ) : (
-                <p className="mt-xs text-caption text-muted-foreground">
-                  The newest {MAX} of {total.toLocaleString()} entries.
-                </p>
-              ))}
-            </>
+          {host && (
+            <TimelineBody key={`${projectId ?? ''}:${host.host_id}`} hostId={host.host_id} canWrite={canWrite}
+              projectId={projectId} confirm={confirm} />
           )}
         </SideSheetBody>
       </SideSheetContent>

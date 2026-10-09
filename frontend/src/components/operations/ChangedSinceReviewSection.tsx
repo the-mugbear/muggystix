@@ -22,8 +22,13 @@
  * 5.331.0 — the content of Operations' "Changed since review" tab: the tab
  * is its heading and carries its count; this is one page of the list (the
  * caller pages it — `Pager`), with the panel's states from `ListBody`.
+ *
+ * 5.351.0 — an action says which reads are out of date
+ * (`QueueParts.useOperationsChanged`): the list and the page's counts are
+ * read again in place.  There is no `onChanged` for the parent to wire.
  */
 import React from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 
 import type { ReviewFollowupRow } from '../../services/api';
@@ -41,7 +46,7 @@ import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 import {
-  BulkBar, ListBody, PagedFooter, useRowSelection, type ListState, type Pager,
+  BulkBar, ListBody, PagedFooter, useOperationsChanged, useRowSelection, type ListState, type Pager,
 } from './QueueParts';
 
 export const CHANGED_SINCE_REVIEW_TITLE = 'Changed since review';
@@ -66,18 +71,16 @@ export const ChangedSinceReviewSection: React.FC<{
   pager: Pager;
   /** The reader's project role allows writes (hooks/useProjectRole). */
   canWrite: boolean;
-  /** After an action: refresh the list and the counts without blanking the page. */
-  onChanged: () => void;
   /** This list owns the page's j / k / Enter / x keys (the tab on screen). */
   keysActive?: boolean;
-}> = ({ rows: loaded, state, pager, canWrite, onChanged, keysActive = true }) => {
+}> = ({ rows: loaded, state, pager, canWrite, keysActive = true }) => {
   const toast = useToast();
   const navigate = useNavigate();
+  // After an action: the list and the counts are read again, in place.
+  const changed = useOperationsChanged();
   const rows = loaded ?? NO_ROWS;
   const keys = React.useMemo(() => rows.map(rowKey), [rows]);
   const selection = useRowSelection(keys);
-  const [busyKey, setBusyKey] = React.useState<string | null>(null);
-  const [bulkBusy, setBulkBusy] = React.useState(false);
   const [outcome, setOutcome] = React.useState<string | null>(null);
   // Re-opening a finished review clears its conclusion, which no undo puts
   // back exactly: it asks for a second click (one row, or the bulk button).
@@ -111,76 +114,89 @@ export const ChangedSinceReviewSection: React.FC<{
     return () => window.removeEventListener('keydown', onKey);
   });
 
-  const stillReviewed = async (targets: ReviewFollowupRow[], busy: (on: boolean) => void) => {
-    const ids = [...new Set(targets.map((r) => r.host_id))];
-    if (ids.length === 0) return;
-    busy(true);
-    setOutcome(null);
-    try {
-      await markStillReviewed(ids);
+  // "Still reviewed" — one request for one row or for the selection (all or
+  // nothing on the server).  `row` names the row whose own button asked.
+  const confirm = useMutation({
+    mutationFn: ({ targets }: { targets: ReviewFollowupRow[]; row: string | null }) =>
+      markStillReviewed([...new Set(targets.map((r) => r.host_id))]),
+    onSuccess: (_saved, { targets }) => {
+      const count = new Set(targets.map((r) => r.host_id)).size;
       toast.success(
-        ids.length === 1
+        count === 1
           ? `${targets[0].ip_address}: your review stands as of now`
-          : `Your review of ${hosts(ids.length)} stands as of now`,
+          : `Your review of ${hosts(count)} stands as of now`,
         { autoHideMs: 3000 },
       );
       selection.clear();
-      onChanged();
-    } catch (err) {
-      // All or nothing on the server: nothing was changed.
-      toast.error(formatApiError(err, 'Could not confirm the review. Nothing was changed.'));
-    } finally {
-      busy(false);
-    }
+      changed();
+    },
+    // All or nothing on the server: nothing was changed.
+    onError: (err) => toast.error(formatApiError(err, 'Could not confirm the review. Nothing was changed.')),
+  });
+  const stillReviewed = (targets: ReviewFollowupRow[], row: string | null) => {
+    if (targets.length === 0) return;
+    setOutcome(null);
+    confirm.mutate({ targets, row });
   };
 
-  const reopenOne = async (row: ReviewFollowupRow) => {
+  const reopen = useMutation({
+    mutationFn: (row: ReviewFollowupRow) => followHost(row.host_id, 'in_review'),
+    onSuccess: (_follow, row) => {
+      toast.success(`${row.ip_address} is back in your review queue`, { autoHideMs: 2500 });
+      changed();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not re-open the review.')),
+  });
+  const reopenOne = (row: ReviewFollowupRow) => {
     const key = rowKey(row);
     if (armed !== key) {
       setArmed(key);
       return;
     }
     setArmed(null);
-    setBusyKey(key);
-    try {
-      await followHost(row.host_id, 'in_review');
-      toast.success(`${row.ip_address} is back in your review queue`, { autoHideMs: 2500 });
-      onChanged();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not re-open the review.'));
-    } finally {
-      setBusyKey(null);
-    }
+    reopen.mutate(row);
   };
 
   const picked = rows.filter((r) => selection.isSelected(rowKey(r)));
   const confirmable = picked.filter(canConfirmReview);
   const pickedHostIds = picked.map((r) => r.host_id);
 
-  const reopenMany = async () => {
+  // One call per host, a few at a time: the batch is one action, and it
+  // settles with every host's own outcome.
+  const reopenBulk = useMutation({
+    mutationFn: (hostIds: number[]) =>
+      runLimited(hostIds, BULK_CONCURRENCY, (id) => followHost(id, 'in_review')),
+    onSuccess: (results) => {
+      const failed = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+      const done = results.length - failed.length;
+      if (failed.length === 0) {
+        toast.success(`${hosts(done)} back in your review queue`, { autoHideMs: 3000 });
+      } else {
+        // Partial failure, said as it is: what moved, what did not, and why.
+        setOutcome(
+          `Re-opened ${done} of ${hosts(results.length)}; ${failed.length} could not be re-opened `
+          + `(${formatApiError(failed[0].reason, 'the request failed')}). They are still listed below.`,
+        );
+      }
+      selection.clear();
+      if (done > 0) changed();
+    },
+  });
+  const reopenMany = () => {
     if (armed !== 'bulk') {
       setArmed('bulk');
       return;
     }
     setArmed(null);
-    setBulkBusy(true);
     setOutcome(null);
-    const results = await runLimited(pickedHostIds, BULK_CONCURRENCY, (id) => followHost(id, 'in_review'));
-    const failed = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
-    const done = results.length - failed.length;
-    if (failed.length === 0) {
-      toast.success(`${hosts(done)} back in your review queue`, { autoHideMs: 3000 });
-    } else {
-      // Partial failure, said as it is: what moved, what did not, and why.
-      setOutcome(
-        `Re-opened ${done} of ${hosts(results.length)}; ${failed.length} could not be re-opened `
-        + `(${formatApiError(failed[0].reason, 'the request failed')}). They are still listed below.`,
-      );
-    }
-    selection.clear();
-    setBulkBusy(false);
-    if (done > 0) onChanged();
+    reopenBulk.mutate(pickedHostIds);
   };
+
+  // The row whose own action is in flight, and whether a bulk one is.
+  const busyKey = confirm.isPending && confirm.variables.row != null
+    ? confirm.variables.row
+    : reopen.isPending ? rowKey(reopen.variables) : null;
+  const bulkBusy = reopenBulk.isPending || (confirm.isPending && confirm.variables.row == null);
 
   return (
     <div className="min-w-0">
@@ -203,14 +219,14 @@ export const ChangedSinceReviewSection: React.FC<{
               <Button
                 size="sm" variant="outline" className="h-7"
                 disabled={bulkBusy || confirmable.length === 0}
-                onClick={() => void stillReviewed(confirmable, setBulkBusy)}
+                onClick={() => stillReviewed(confirmable, null)}
                 title={confirmable.length < picked.length
                   ? `${picked.length - confirmable.length} of the selected reviews cannot be confirmed here: concluded “needs more evidence”.`
                   : 'You looked at what changed and your review stands: the review date moves to now, the conclusion stays.'}
               >
                 Still reviewed ({confirmable.length})
               </Button>
-              <Button size="sm" variant="outline" className="h-7" disabled={bulkBusy} onClick={() => void reopenMany()}>
+              <Button size="sm" variant="outline" className="h-7" disabled={bulkBusy} onClick={reopenMany}>
                 {armed === 'bulk'
                   ? `Click to confirm — clears ${picked.length} conclusion${picked.length === 1 ? '' : 's'}`
                   : `Re-open review (${pickedHostIds.length})`}
@@ -297,7 +313,7 @@ export const ChangedSinceReviewSection: React.FC<{
                           <Button
                             size="sm" variant="ghost" className="h-7 text-info"
                             disabled={busyKey === key || bulkBusy}
-                            onClick={() => void stillReviewed([row], (on) => setBusyKey(on ? key : null))}
+                            onClick={() => stillReviewed([row], key)}
                             title="You looked at what changed and your review stands: the review date moves to now, the conclusion stays."
                           >
                             Still reviewed
@@ -306,7 +322,7 @@ export const ChangedSinceReviewSection: React.FC<{
                         <Button
                           size="sm" variant="ghost" className={cn('h-7', !canConfirmReview(row) && 'text-info')}
                           disabled={busyKey === key || bulkBusy}
-                          onClick={() => void reopenOne(row)}
+                          onClick={() => reopenOne(row)}
                           title="Put this host back In Review. It returns to your queue and your conclusion is cleared — click again to confirm."
                         >
                           {armed === key ? 'Confirm: clears the conclusion' : 'Re-open review'}

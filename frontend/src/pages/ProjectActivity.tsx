@@ -15,7 +15,8 @@
  * work and its controls) first, then the history — one row per session, its work under it, each opening the session
  * page (`/agent-sessions/:id`) — and the analytics last.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
+import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Bot, ChevronRight, Loader2, Play, RefreshCw, Search } from 'lucide-react';
 import {
@@ -27,12 +28,10 @@ import {
   getAgentActivitySummary,
   ModelToolSummaryRow,
 } from '../services/api';
-import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import { useAgentSessionControls } from '../hooks/useAgentSessionControls';
 import { useCanStartAgentSession } from '../hooks/useCanStartAgentSession';
-import { useLatestRequest } from '../hooks/useLatestRequest';
+import { invalidateReads, pollEvery, queryErrorText } from '../lib/query';
 import { safeFallback } from '../utils/uiStyles';
-import { formatApiError } from '../utils/apiErrors';
 import { InfoTip } from '../components/ui/info-tip';
 import PostureLead, { LeadTone } from '../components/posture/PostureLead';
 import PostureMeasure from '../components/posture/PostureMeasure';
@@ -85,6 +84,8 @@ import {
   liveSessionsSummary,
   sessionRowPath,
 } from '../utils/agentRuns';
+
+const NO_SESSIONS: AgentSessionRow[] = [];
 
 /** A live key with no call for this long is said to be quiet. */
 const QUIET_AFTER_MS = 15 * 60_000;
@@ -414,21 +415,17 @@ const StartSessionButton: React.FC = () => (
 );
 
 const ProjectActivity: React.FC = () => {
-  const [lastFetched, setLastFetched] = useState<Date | null>(null);
-  const [live, setLive] = useState<AgentSessionRow[] | null>(null);
-  const [liveError, setLiveError] = useState<string | null>(null);
-  const [rows, setRows] = useState<AgentSessionRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [summary, setSummary] = useState<ModelToolSummaryRow[] | null>(null);
-  const [apiSummary, setApiSummary] = useState<AgentActivitySummary | null>(null);
-  const [apiSummaryError, setApiSummaryError] = useState(false);
+  const queryClient = useQueryClient();
   // Grows on "Load older sessions" so the history isn't silently capped.
   const [limit, setLimit] = useState(200);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshNonce, setRefreshNonce] = useState(0);
-  const refresh = useCallback(() => setRefreshNonce((n) => n + 1), []);
-  const controls = useAgentSessionControls(refresh);
+  // Refresh and the analytics' Retry: every read on the page, by its API
+  // function's name (the live list and the history are both
+  // `listAgentSessions`).  An ended or resumed session asks for them again
+  // itself (`useAgentSessionControls`).
+  const refresh = useCallback(() => {
+    void invalidateReads(queryClient, 'listAgentSessions', 'getAgentSessionSummary', 'getAgentActivitySummary');
+  }, [queryClient]);
+  const controls = useAgentSessionControls();
   const canStartAgent = useCanStartAgentSession();
 
   // B15 — the history's filters live in the URL (`?kind=&model=&tool=`,
@@ -457,6 +454,61 @@ const ProjectActivity: React.FC = () => {
     return next;
   }, { replace: true });
 
+  // The live sessions: every active project session, whatever the history's
+  // filters say — this section answers "what is running right now".  Key
+  // state and last calls move while the page is open, so it is re-read each
+  // minute (not in a hidden tab).
+  const liveQuery = useQuery({
+    queryKey: ['listAgentSessions', LIVE_SESSION_FILTERS],
+    queryFn: () => listAgentSessions(LIVE_SESSION_FILTERS),
+    ...pollEvery(60_000),
+  });
+  const live: AgentSessionRow[] | null = liveQuery.data?.sessions ?? null;
+  const liveError = queryErrorText(liveQuery.error, 'Could not load the live sessions.');
+
+  // The history, under the URL's filters.  The rows on screen stay while
+  // another filter, or a longer page, loads.
+  const historyFilters = useMemo(() => {
+    const filters: Record<string, string | number> = { limit };
+    if (kindFilter) filters.kind = kindFilter;
+    if (modelFilter) filters.model = modelFilter;
+    if (toolFilter) filters.tool = toolFilter;
+    return filters;
+  }, [kindFilter, modelFilter, toolFilter, limit]);
+  const historyQuery = useQuery({
+    queryKey: ['listAgentSessions', historyFilters],
+    queryFn: () => listAgentSessions(historyFilters),
+    placeholderData: keepPreviousData,
+  });
+  const rows = historyQuery.data?.sessions ?? NO_SESSIONS;
+  const total = historyQuery.data?.total ?? 0;
+
+  const summaryQuery = useQuery({
+    queryKey: ['getAgentSessionSummary'],
+    queryFn: () => getAgentSessionSummary(),
+  });
+  const summary: ModelToolSummaryRow[] | null = summaryQuery.data?.summary ?? null;
+
+  // API-call analytics is best-effort — its failure must not blank the
+  // history; the section shows "unavailable + Retry" instead (and never the
+  // figures of an earlier read under it).
+  const apiSummaryQuery = useQuery({
+    queryKey: ['getAgentActivitySummary'],
+    queryFn: () => getAgentActivitySummary(),
+  });
+  const apiSummaryError = apiSummaryQuery.isError;
+  const apiSummary: AgentActivitySummary | null = apiSummaryError ? null : apiSummaryQuery.data ?? null;
+
+  const loading = historyQuery.isFetching || summaryQuery.isFetching || apiSummaryQuery.isFetching;
+  const error = queryErrorText(historyQuery.error ?? summaryQuery.error, 'Failed to load agent sessions.');
+  // As of the OLDER of the history and its roll-up, once both are here.
+  const historyAt = historyQuery.dataUpdatedAt;
+  const summaryAt = summaryQuery.dataUpdatedAt;
+  const lastFetched = useMemo(
+    () => (historyAt && summaryAt ? new Date(Math.min(historyAt, summaryAt)) : null),
+    [historyAt, summaryAt],
+  );
+
   const knownModels = useMemo(() => {
     if (!summary) return [];
     const set = new Set<string>();
@@ -469,61 +521,6 @@ const ProjectActivity: React.FC = () => {
     summary.forEach((r) => r.generated_by_tool && set.add(r.generated_by_tool));
     return Array.from(set).sort();
   }, [summary]);
-
-  // The live sessions: every active project session, whatever the history's
-  // filters say — this section answers "what is running right now".
-  const loadLive = useCallback(async () => {
-    try {
-      const list = await listAgentSessions(LIVE_SESSION_FILTERS);
-      setLive(list.sessions);
-      setLiveError(null);
-    } catch (e: unknown) {
-      setLiveError(formatApiError(e, 'Could not load the live sessions.'));
-    }
-  }, []);
-
-  // Only the latest fetch may set state: a slow response for an older filter
-  // would otherwise land after the newer one and show the wrong history.
-  const runLatest = useLatestRequest();
-  const fetchAll = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    setApiSummaryError(false);
-    const filters: Record<string, string | number> = { limit };
-    if (kindFilter) filters.kind = kindFilter;
-    if (modelFilter) filters.model = modelFilter;
-    if (toolFilter) filters.tool = toolFilter;
-    // API-call analytics is best-effort — its failure must not blank the
-    // history; the section shows "unavailable + Retry" instead.
-    let apiSumFailed = false;
-    const r = await runLatest(() => Promise.all([
-      listAgentSessions(filters),
-      getAgentSessionSummary(),
-      getAgentActivitySummary().catch(() => { apiSumFailed = true; return null; }),
-      loadLive(),
-    ]));
-    if (r.stale) return;
-    if (r.ok) {
-      const [list, sum, apiSum] = r.value;
-      setRows(list.sessions);
-      setTotal(list.total);
-      setSummary(sum.summary);
-      setApiSummary(apiSum);
-      setApiSummaryError(apiSumFailed);
-      setLastFetched(new Date());
-    } else {
-      setError(formatApiError(r.error, 'Failed to load agent sessions.'));
-    }
-    setLoading(false);
-  }, [kindFilter, modelFilter, toolFilter, limit, loadLive, runLatest]);
-
-  useEffect(() => {
-    void fetchAll();
-  }, [fetchAll, refreshNonce]);
-
-  // Key state and last calls move while the page is open; the live list is
-  // re-read each minute (not in a hidden tab).
-  useVisibilityPoll(loadLive, 60_000);
 
   const showModelFilter = knownModels.length > 0 || modelFilter !== '';
   const showToolFilter = knownTools.length > 0 || toolFilter !== '';
@@ -572,7 +569,7 @@ const ProjectActivity: React.FC = () => {
         {liveError && (
           <div className="flex flex-wrap items-center gap-xs">
             <p className="text-caption text-destructive">{liveError}</p>
-            <Button size="sm" variant="outline" onClick={() => void loadLive()}>
+            <Button size="sm" variant="outline" onClick={() => void liveQuery.refetch()}>
               <RefreshCw className="size-3.5" aria-hidden /> Retry
             </Button>
           </div>
@@ -802,7 +799,8 @@ const ProjectActivity: React.FC = () => {
                 </NavigableTableRow>
               );
             })}
-            {!loading && rows.length === 0 && (
+            {/* A history that could not be read is said above, not as "none". */}
+            {!loading && !historyQuery.isError && rows.length === 0 && (
               <TableRow>
                 <TableCell colSpan={7} className="py-xl text-center">
                   <Search className="mx-auto mb-xs size-9 text-muted-foreground/50" aria-hidden />

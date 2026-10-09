@@ -8,22 +8,24 @@
  * Sections, not cards (UI_STYLE_GUIDE §7): a lead sentence, one strip of
  * measures (pending by kind — each opens its list), then the list.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, X } from 'lucide-react';
 
 import {
   decideProposals, getProposalSummary, listProposals, Proposal, PROPOSAL_BULK_MAX, ProposalKind,
-  ProposalStatus, ProposalSummary,
+  ProposalStatus,
 } from '../services/api';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useListCursor } from '../hooks/useListCursor';
-import { ListPage, useListQuery } from '../hooks/useListQuery';
+import { useListQuery } from '../hooks/useListQuery';
+import { PROPOSAL_DECISION_READS } from '../hooks/useProposalDecision';
+import { invalidateReads, pollEvery, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { isPageShortcutEvent } from '../utils/keyboard';
-import { announceProposalsChanged } from '../utils/proposalEvents';
 import { FilterChips } from '../components/operations/QueueParts';
 import PostureSection from '../components/posture/PostureSection';
 import ProposalItem, { REJECT_NOTE_PLACEHOLDER } from '../components/proposals/ProposalItem';
@@ -35,8 +37,6 @@ import {
 } from '../components/ui/select';
 
 const PAGE = 50;
-/** The list endpoint's `limit` ceiling. */
-const MAX_RELOAD = 500;
 
 const KINDS: Array<{ kind: ProposalKind; label: string; info: string }> = [
   { kind: 'finding_text', label: 'Report text', info: 'A finding’s description, impact, recommendation, steps, references or CVSS vector.' },
@@ -49,9 +49,6 @@ const KINDS: Array<{ kind: ProposalKind; label: string; info: string }> = [
 const STATUSES: ProposalStatus[] = ['pending', 'accepted', 'rejected', 'superseded'];
 
 type Scope = 'mine' | 'all';
-
-/** The first page carries the measures' summary beside the rows. */
-type ProposalPage = ListPage<Proposal> & { summary?: ProposalSummary };
 
 /** Where Enter takes the reviewer from a proposal: the finding it is about
  *  (or made), else the host its observation sits on. */
@@ -97,42 +94,66 @@ const Proposals: React.FC = () => {
   // notified about) or `all`.  Unset, a project admin sees all and everyone
   // else their own; the server says which (the summary's flag).
   const scopeParam = params.get('scope');
-  const [defaultScope, setDefaultScope] = useState<Scope | null>(null);
-  useEffect(() => {
-    if (scopeParam === 'mine' || scopeParam === 'all') return;
-    getProposalSummary()
-      .then((s) => setDefaultScope(s.viewer_is_project_admin ? 'all' : 'mine'))
-      .catch(() => setDefaultScope('mine'));
-  }, [scopeParam]);
+  // The pending counts — the query the top bar's count reads too, so the two
+  // are one request and cannot disagree.  It does not depend on the filter:
+  // the measures keep their value while another list loads.
+  const summaryQuery = useQuery({
+    queryKey: ['getProposalSummary'],
+    queryFn: () => getProposalSummary(),
+    ...pollEvery(60_000),
+  });
+  const summary = summaryQuery.data ?? null;
+  // A summary that could not be read is not an admin's: their own.
+  const defaultScope: Scope | null = summary
+    ? (summary.viewer_is_project_admin ? 'all' : 'mine')
+    : summaryQuery.isError ? 'mine' : null;
   const scope: Scope | null = scopeParam === 'mine' || scopeParam === 'all' ? scopeParam : defaultScope;
 
-  const [bulkBusy, setBulkBusy] = useState(false);
   const bulkNote = useRef('');
-  // One request lane for the filter, "Show more", a decision's re-read and
-  // the 60 s tick (R33): a response for an earlier filter never lands.  A
-  // slow "pending" response used to replace the "Accepted" list, Accept
-  // buttons included.  A re-read keeps every row "Show more" had loaded.
-  const list = useListQuery<Proposal, ProposalPage>(
-    async ({ offset, limit }) => {
-      const query = listProposals({
-        status, kind, agent_session_id: sessionId, mine: scope === 'mine' ? true : undefined, limit, offset,
-      });
-      if (offset > 0) return query;
-      const [res, sum] = await Promise.all([query, getProposalSummary()]);
-      return { ...res, summary: sum };
-    },
-    [status, kind, sessionId, scope],
+  // The filter is the query's key (R33): a response for an earlier filter
+  // never lands.  A slow "pending" response used to replace the "Accepted"
+  // list, Accept buttons included.  A re-read keeps every row "Show more" had
+  // loaded.
+  const filter = { status, kind, agent_session_id: sessionId, mine: scope === 'mine' ? true : undefined };
+  const list = useListQuery<Proposal>(
+    'listProposals',
+    ({ offset, limit }) => listProposals({ ...filter, limit, offset }),
+    [filter],
     {
-      pageSize: PAGE, maxReload: MAX_RELOAD, poll: 60_000,
+      pageSize: PAGE, poll: 60_000,
       enabled: scope !== null,  // the default is still being read
       errorMessage: 'Could not load the proposals.',
     },
   );
-  const { rows: items, total, error, loadingMore, reload: load } = list;
-  // The measures keep their last value while a new filter loads.
-  const [summary, setSummary] = useState<ProposalSummary | null>(null);
-  const latestSummary = list.response?.summary;
-  useEffect(() => { if (latestSummary) setSummary(latestSummary); }, [latestSummary]);
+  const { rows: items, total, loadingMore } = list;
+  const error = list.error ?? queryErrorText(summaryQuery.error, 'Could not load the proposals.');
+
+  // A decision changes the lists of proposals, the pending counts and the
+  // finding it was about: every read of those, here and in the top bar.  A
+  // row's own decision says so itself (`useProposalDecision`); this is for
+  // "all shown", which is one request of its own.
+  const queryClient = useQueryClient();
+  const afterDecision = () => invalidateReads(queryClient, ...PROPOSAL_DECISION_READS);
+
+  // "Accept / Reject all shown": ONE request for the whole batch, never
+  // several (see `bulk`).
+  const bulkDecide = useMutation({
+    mutationFn: (v: { ids: number[]; action: 'accept' | 'reject'; note?: string }) =>
+      decideProposals(v.ids, v.action, v.note),
+    onSuccess: (res, v) => {
+      if (res.failed.length) {
+        // 5.317.2 — "left pending" was wrong for one already decided or
+        // superseded meanwhile; the server's reason says what happened.
+        toast.warning(`${res.decided.length} decided; ${res.failed.length} not (${String(res.failed[0].detail)}).`);
+      } else {
+        toast.success(`${res.decided.length} ${v.action === 'accept' ? 'accepted' : 'rejected'}.`);
+      }
+      // Busy until the list has been read again.
+      return afterDecision();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not decide them.')),
+  });
+  const bulkBusy = bulkDecide.isPending;
 
   const more = async () => {
     try {
@@ -229,24 +250,8 @@ const Proposals: React.FC = () => {
       confirmLabel: partial ? `${verb} the first ${batch.length}` : `${verb} all shown`,
     });
     if (!ok) return;
-    setBulkBusy(true);
-    try {
-      const note = action === 'reject' ? bulkNote.current.trim() || undefined : undefined;
-      const res = await decideProposals(batch.map((p) => p.id), action, note);
-      if (res.failed.length) {
-        // 5.317.2 — "left pending" was wrong for one already decided or
-        // superseded meanwhile; the server's reason says what happened.
-        toast.warning(`${res.decided.length} decided; ${res.failed.length} not (${String(res.failed[0].detail)}).`);
-      } else {
-        toast.success(`${res.decided.length} ${action === 'accept' ? 'accepted' : 'rejected'}.`);
-      }
-      announceProposalsChanged();
-      await load();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not decide them.'));
-    } finally {
-      setBulkBusy(false);
-    }
+    const note = action === 'reject' ? bulkNote.current.trim() || undefined : undefined;
+    bulkDecide.mutate({ ids: batch.map((p) => p.id), action, note });
   };
 
   const pending = (scope === 'mine' ? summary?.pending_mine : summary?.pending) ?? 0;
@@ -353,7 +358,7 @@ const Proposals: React.FC = () => {
             </p>
             {items.map((pr, i) => (
               <ProposalItem key={pr.id} proposal={pr} canDecide={canDecide} showTarget
-                rowProps={cursorRowProps(i)} onDecided={() => void load()} />
+                rowProps={cursorRowProps(i)} />
             ))}
             {items.length < total && (
               <Button variant="ghost" size="sm" className="mt-xs" onClick={() => void more()} disabled={loadingMore}>

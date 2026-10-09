@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 
+import { readsOnScreen } from '../helpers/readsOnScreen';
 import AssistSessionsPanel from '../../components/AssistSessionsPanel';
 import { TooltipProvider } from '../../components/ui/tooltip';
 import type { AgentSessionRow } from '../../services/api';
@@ -38,17 +39,25 @@ const session = (over: Partial<AgentSessionRow> = {}): AgentSessionRow => ({
   ...over,
 });
 
-const renderPanel = (sessions: AgentSessionRow[], onChanged = vi.fn(), onNavigate = vi.fn()) =>
+// 5.351.0 — an End no longer runs a caller's re-read (`onChanged`): it says
+// the reads of sessions are out of date, and whatever lists them reads again.
+// This stands in for the caller's list of the operator's sessions.  `onEnded`
+// remains for the one caller whose list is not a query (`useAgentTask`).
+const { reread, ReadsOnScreen } = readsOnScreen({ listAgentSessions: 'sessions' });
+
+const renderPanel = (sessions: AgentSessionRow[], onEnded = vi.fn(), onNavigate = vi.fn()) =>
   render(
     <MemoryRouter>
       <TooltipProvider>
-        <AssistSessionsPanel sessions={sessions} onChanged={onChanged} onNavigate={onNavigate} />
+        <ReadsOnScreen />
+        <AssistSessionsPanel sessions={sessions} onEnded={onEnded} onNavigate={onNavigate} />
       </TooltipProvider>
     </MemoryRouter>,
   );
 
 beforeEach(() => {
   endAgentSession.mockReset().mockResolvedValue(undefined);
+  reread.mockClear();
   success.mockReset();
   error.mockReset();
 });
@@ -102,15 +111,18 @@ describe('AssistSessionsPanel', () => {
   });
 
   it('ends a session only after confirmation, then refreshes', async () => {
-    const onChanged = vi.fn();
-    renderPanel([session()], onChanged);
+    const onEnded = vi.fn();
+    renderPanel([session()], onEnded);
 
     fireEvent.click(screen.getByRole('button', { name: /end agent session 12/i }));
     // Revoking a key mid-conversation is disruptive enough to confirm.
     fireEvent.click(await screen.findByRole('button', { name: /^end session$/i }));
 
     await waitFor(() => expect(endAgentSession).toHaveBeenCalledWith(12));
-    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    // The lists of sessions are read again — once — and the caller is told.
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('sessions'));
+    await waitFor(() => expect(onEnded).toHaveBeenCalledTimes(1));
+    expect(reread).toHaveBeenCalledTimes(1);
     expect(success).toHaveBeenCalled();
   });
 
@@ -123,15 +135,16 @@ describe('AssistSessionsPanel', () => {
 
   it('surfaces a failure instead of silently appearing to succeed', async () => {
     endAgentSession.mockRejectedValue(new Error('boom'));
-    const onChanged = vi.fn();
-    renderPanel([session()], onChanged);
+    const onEnded = vi.fn();
+    renderPanel([session()], onEnded);
 
     fireEvent.click(screen.getByRole('button', { name: /end agent session 12/i }));
     fireEvent.click(await screen.findByRole('button', { name: /^end session$/i }));
 
     await waitFor(() => expect(error).toHaveBeenCalled());
     expect(success).not.toHaveBeenCalled();
-    expect(onChanged).not.toHaveBeenCalled();
+    expect(onEnded).not.toHaveBeenCalled();
+    expect(reread).not.toHaveBeenCalled();
   });
 
   it('lists every active session, not just the first', () => {

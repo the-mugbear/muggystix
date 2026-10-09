@@ -1,4 +1,5 @@
-import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState } from 'react';
+import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
 import { Loader2, ImageOff, ImagePlus, Pencil, Trash2 } from 'lucide-react';
 import {
   NoteAttachment,
@@ -16,6 +17,7 @@ import { Checkbox } from '../ui/checkbox';
 import { Textarea } from '../ui/textarea';
 import ScreenshotLightbox from '../ScreenshotLightbox';
 import { useToast } from '../../contexts/ToastContext';
+import { invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 
 interface NoteAttachmentsProps {
@@ -25,8 +27,10 @@ interface NoteAttachmentsProps {
   attachments: NoteAttachment[];
   /** Analyst+ — gates the attach/delete affordances (display is always on). */
   canManage: boolean;
-  /** Reload the notes thread after an upload/delete so the new state shows. */
-  onChanged: () => void;
+  /** An image was added, removed or changed.  A host note's thread is read
+   *  again here (its attachments come with `getHost`), so only another owner
+   *  of the note (a finding's comment thread) needs to be told. */
+  onChanged?: () => void;
   /**
    * Override the upload call so the same component serves other annotation
    * targets (e.g. a finding's comment thread). Defaults to the host-note
@@ -63,9 +67,6 @@ export interface ReportMarking {
   placement?: (attachment: NoteAttachment) => ImagePlacement | undefined;
   /** Longest caption the server accepts. */
   captionMax?: number;
-  /** A caption, a mark or an image changed: the page re-reads the finding's
-   *  images (the editor's picker and the placed images follow). */
-  onImagesChanged?: () => void;
   /**
    * The page's one cache of image bytes (`useFindingImages().thumbnails`).
    * With it, an image on the finding's list is shown from that cache — the
@@ -106,15 +107,8 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   useImperativeHandle(ref, () => ({
     openPicker: () => { if (!busyRef.current) fileRef.current?.click(); },
   }), []);
-  const createdUrls = useRef<string[]>([]);
-  const [urls, setUrls] = useState<Record<number, string>>({});
-  const [uploading, setUploading] = useState(false);
+  const queryClient = useQueryClient();
   const [lightbox, setLightbox] = useState<{ src: string; caption: string } | null>(null);
-
-  // A fetch that failed: the thumbnail says so (and a click tries again)
-  // instead of spinning for ever.
-  const [ownFailed, setOwnFailed] = useState<ReadonlySet<number>>(new Set());
-  const [retryKey, setRetryKey] = useState(0);
 
   const idsKey = attachments.map((a) => a.id).join(',');
 
@@ -124,7 +118,6 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   const shared = reportMarking?.thumbnails;
   const sharedWaiting = shared?.listStatus === 'loading';
   const fromShared = (id: number) => !!shared && shared.has(id);
-  const sharedKey = shared ? attachments.map((a) => (shared.has(a.id) ? '1' : '0')).join('') : '';
   const ensureShared = shared?.ensure;
   useEffect(() => {
     if (!ensureShared) return;
@@ -132,75 +125,47 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idsKey, ensureShared]);
 
+  // The images the shared cache does not serve are read here, each as an
+  // object URL made from the authenticated bytes.  A URL is this component's
+  // to release: every one made is revoked when it goes, and one that arrives
+  // after that is revoked at once.
+  const createdUrls = useRef<string[]>([]);
+  const gone = useRef(false);
   useEffect(() => {
-    if (sharedWaiting) return undefined;
-    let cancelled = false;
-    (async () => {
-      for (const att of attachments) {
-        if (urls[att.id] || fromShared(att.id)) continue;
-        try {
-          const url = await getNoteAttachmentObjectUrl(att.id);
-          if (cancelled) {
-            URL.revokeObjectURL(url);
-          } else {
-            createdUrls.current.push(url);
-            setUrls((m) => ({ ...m, [att.id]: url }));
-            setOwnFailed((prev) => {
-              if (!prev.has(att.id)) return prev;
-              const next = new Set(prev);
-              next.delete(att.id);
-              return next;
-            });
-          }
-        } catch {
-          // A failed fetch does not break the note; the thumbnail says so.
-          if (!cancelled) setOwnFailed((prev) => new Set(prev).add(att.id));
-        }
-      }
-    })();
+    gone.current = false;
+    const made = createdUrls.current;
     return () => {
-      cancelled = true;
+      gone.current = true;
+      made.forEach(URL.revokeObjectURL);
+      made.length = 0;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idsKey, sharedKey, sharedWaiting, retryKey]);
+  }, []);
+  // (So the key names this instance: a URL is never handed to another one,
+  // which would be left showing it after this one revoked it.)
+  const instance = useId();
+  const own = useQueries({
+    queries: attachments.map((att) => ({
+      queryKey: ['getNoteAttachmentObjectUrl', att.id, instance],
+      queryFn: async () => {
+        const url = await getNoteAttachmentObjectUrl(att.id);
+        if (gone.current) URL.revokeObjectURL(url);
+        else createdUrls.current.push(url);
+        return url;
+      },
+      enabled: !sharedWaiting && !fromShared(att.id),
+      // The bytes of an attachment never change: read once while it is shown.
+      staleTime: Infinity,
+    })),
+  });
+  const ownOf = (id: number) => own[attachments.findIndex((a) => a.id === id)];
 
-  // Revoke every object URL we created when the component unmounts.
-  useEffect(() => () => createdUrls.current.forEach(URL.revokeObjectURL), []);
-
-  const thumbnailUrl = (id: number): string | undefined => (fromShared(id) ? shared?.urls[id] : urls[id]);
-  const thumbnailFailed = (id: number): boolean => (fromShared(id) ? !!shared?.failed(id) : ownFailed.has(id));
+  const thumbnailUrl = (id: number): string | undefined => (fromShared(id) ? shared?.urls[id] : ownOf(id)?.data);
+  // A fetch that failed: the thumbnail says so (and a click tries again)
+  // instead of spinning for ever.
+  const thumbnailFailed = (id: number): boolean => (fromShared(id) ? !!shared?.failed(id) : !!ownOf(id)?.isError);
   const retryThumbnail = (id: number) => {
     if (fromShared(id)) shared?.retry(id);
-    else setRetryKey((k) => k + 1);
-  };
-
-  const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (fileRef.current) fileRef.current.value = '';
-    if (!file) return;
-    // Guard the handler, not only the visible control (the picker can already
-    // be open when an upload starts).
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setUploading(true);
-    onBusyChange?.(true);
-    try {
-      if (uploadFn) {
-        await uploadFn(file);
-      } else if (hostId != null) {
-        await uploadNoteAttachment(hostId, noteId, file);
-      } else {
-        throw new Error('No upload target configured for this attachment.');
-      }
-      onChanged();
-      reportMarking?.onImagesChanged?.();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not attach image.'));
-    } finally {
-      busyRef.current = false;
-      setUploading(false);
-      onBusyChange?.(false);
-    }
+    else void ownOf(id)?.refetch();
   };
 
   // What the server refused, per image, kept beside it until the next change:
@@ -212,42 +177,78 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
     if (message) next[id] = message; else delete next[id];
     return next;
   });
+  // After a change the thread is read again: a host note's attachments come
+  // with the host (`getHost`); any other owner says how through `onChanged`.
+  // On a finding (`reportMarking`) a caption, a mark or an image is also one
+  // of the finding's images: the editor's picker and the placed images follow.
   const changed = () => {
-    onChanged();
-    reportMarking?.onImagesChanged?.();
+    if (hostId != null) void queryClient.invalidateQueries({ queryKey: ['getHost', hostId] });
+    onChanged?.();
+    if (reportMarking) void invalidateReads(queryClient, 'getFindingImages');
+  };
+
+  const upload = useMutation({
+    mutationFn: (file: File): Promise<unknown> => {
+      if (uploadFn) return uploadFn(file);
+      if (hostId != null) return uploadNoteAttachment(hostId, noteId, file);
+      return Promise.reject(new Error('No upload target configured for this attachment.'));
+    },
+    onSuccess: changed,
+    onError: (err) => toast.error(formatApiError(err, 'Could not attach image.')),
+    onSettled: () => {
+      busyRef.current = false;
+      onBusyChange?.(false);
+    },
+  });
+  const uploading = upload.isPending;
+
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (fileRef.current) fileRef.current.value = '';
+    if (!file) return;
+    // Guard the handler, not only the visible control (the picker can already
+    // be open when an upload starts).
+    if (busyRef.current) return;
+    busyRef.current = true;
+    onBusyChange?.(true);
+    upload.mutate(file);
   };
 
   // Optimistic: the mark flips at once and the thread reloads behind it.
   const [reportOverride, setReportOverride] = useState<Record<number, boolean>>({});
-  const onMark = async (att: NoteAttachment, include: boolean) => {
-    setReportOverride((m) => ({ ...m, [att.id]: include }));
-    try {
-      await setNoteAttachmentInReport(att.id, include);
-      refuse(att.id, null);
+  const mark = useMutation({
+    mutationFn: ({ id, include }: { id: number; include: boolean }) => setNoteAttachmentInReport(id, include),
+    onMutate: ({ id, include }) => setReportOverride((m) => ({ ...m, [id]: include })),
+    onSuccess: (_stored, { id }) => {
+      refuse(id, null);
       changed();
-    } catch (err) {
+    },
+    onError: (err, { id }) => {
       setReportOverride((m) => {
         const next = { ...m };
-        delete next[att.id];
+        delete next[id];
         return next;
       });
       const message = formatApiError(err, 'Could not change whether the image goes in the report.');
-      refuse(att.id, message);
+      refuse(id, message);
       toast.error(message);
-    }
-  };
+    },
+  });
+  const onMark = (att: NoteAttachment, include: boolean) => mark.mutate({ id: att.id, include });
 
-  const onDelete = async (id: number) => {
-    try {
-      await deleteNoteAttachment(id);
+  const remove = useMutation({
+    mutationFn: (id: number) => deleteNoteAttachment(id),
+    onSuccess: (_none, id) => {
       refuse(id, null);
       changed();
-    } catch (err) {
+    },
+    onError: (err, id) => {
       const message = formatApiError(err, 'Could not delete attachment.');
       refuse(id, message);
       toast.error(message);
-    }
-  };
+    },
+  });
+  const onDelete = (id: number) => remove.mutate(id);
 
   // One caption is edited at a time — but a save belongs to ITS image (S6).
   // Saving A and then opening the editor on B used to close B's editor (its
@@ -285,29 +286,33 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
     delete next[id];
     return next;
   });
-  const saveCaption = async () => {
-    if (!captionEdit || captionSaving.has(captionEdit.id)) return;
-    const { id, text } = captionEdit;
-    setCaptionSaving((prev) => new Set(prev).add(id));
-    try {
-      await setNoteAttachmentCaption(id, text.trim());
+  // Several images' captions can be on their way at once, so which are is
+  // kept per image here; the mutation itself only knows its latest call.
+  const captionSave = useMutation({
+    mutationFn: ({ id, text }: { id: number; text: string }) => setNoteAttachmentCaption(id, text.trim()),
+    onMutate: ({ id }) => setCaptionSaving((prev) => new Set(prev).add(id)),
+    onSuccess: (_stored, { id }) => {
       refuse(id, null);
       forgetUnsaved(id);
       // Only the editor that is still this image's closes.
       setCaptionEdit((current) => (current?.id === id ? null : current));
       changed();
-    } catch (err) {
+    },
+    onError: (err, { id, text }) => {
       refuse(id, formatApiError(err, 'Could not save the caption.'));
       // The words are kept for when this image's editor is opened again; an
       // editor that has moved to another image is left as it is.
       setCaptionUnsaved((m) => ({ ...m, [id]: text }));
-    } finally {
-      setCaptionSaving((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    }
+    },
+    onSettled: (_stored, _err, { id }) => setCaptionSaving((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    }),
+  });
+  const saveCaption = () => {
+    if (!captionEdit || captionSaving.has(captionEdit.id)) return;
+    captionSave.mutate(captionEdit);
   };
 
   if (attachments.length === 0 && !canManage) return null;
@@ -401,12 +406,12 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
                             // A caption is one line of words: Enter saves it,
                             // Shift+Enter still breaks the line.
                             e.preventDefault();
-                            void saveCaption();
+                            saveCaption();
                           }
                         }}
                       />
                       <div className="flex flex-wrap items-center gap-xs">
-                        <Button type="button" size="sm" disabled={saving} onClick={() => void saveCaption()}>
+                        <Button type="button" size="sm" disabled={saving} onClick={saveCaption}>
                           {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save caption
                         </Button>
                         <Button type="button" variant="ghost" size="sm" disabled={saving}
@@ -447,7 +452,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
                       <label className="flex shrink-0 cursor-pointer items-center gap-xxs">
                         <Checkbox
                           checked={inReport}
-                          onCheckedChange={(v) => void onMark(att, v === true)}
+                          onCheckedChange={(v) => onMark(att, v === true)}
                           aria-label={`Include ${att.filename} in the report`}
                         />
                         In report

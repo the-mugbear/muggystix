@@ -10,7 +10,8 @@
  * whether the queue is healthy and, when it isn't, what to do about it.
  * Raw counts appear only where they change the operator's next action.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react';
 
@@ -18,11 +19,10 @@ import {
   getQueueMetrics,
   type DiskSnapshot,
   type FailedJobsInProject,
-  type QueueMetrics,
   type QueueSnapshot,
 } from '../services/api';
 import { useProject } from '../contexts/ProjectContext';
-import { formatApiError } from '../utils/apiErrors';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import PostureSection from './posture/PostureSection';
 import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
@@ -228,24 +228,16 @@ const VerdictRow: React.FC<{ verdict: Verdict }> = ({ verdict }) => {
 };
 
 export const QueueHealthCard: React.FC = () => {
-  const [metrics, setMetrics] = useState<QueueMetrics | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      setMetrics(await getQueueMetrics());
-    } catch (err) {
-      setError(formatApiError(err, 'Could not load queue metrics.'));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  const query = useQuery({
+    queryKey: [GLOBAL, 'getQueueMetrics'],
+    queryFn: () => getQueueMetrics(),
+  });
+  const metrics = query.data ?? null;
+  // Only the first read is "loading": a Refresh keeps the verdicts on screen
+  // and the button usable, as before.
+  const loading = query.isPending;
+  const error = query.isFetching ? null : queryErrorText(query.error, 'Could not load queue metrics.');
+  const load = () => { void query.refetch(); };
 
   return (
     <PostureSection

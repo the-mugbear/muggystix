@@ -12,6 +12,7 @@ const toastMock = { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
 
 import * as api from '../../services/api';
+import { readsOnScreen } from '../helpers/readsOnScreen';
 import NoteAttachments from '../../components/host-inspector/NoteAttachments';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
@@ -97,10 +98,16 @@ describe('NoteAttachments — captions and placement on a finding', () => {
   it('edits a caption in place and tells the page', async () => {
     mocked.setNoteAttachmentCaption = vi.fn().mockResolvedValue(att(1, { caption: 'New words' }));
     const onChanged = vi.fn();
-    const onImagesChanged = vi.fn();
+    // 5.351.0 — the page was told through `reportMarking.onImagesChanged`
+    // (which re-read the finding's images); the change now says that read is
+    // out of date itself.  This stands in for the page's read of them.
+    const { reread, ReadsOnScreen } = readsOnScreen({ getFindingImages: 'the finding’s images' });
     render(
-      <NoteAttachments noteId={5} canManage onChanged={onChanged} attachments={[att(1, { caption: 'Old words' })]}
-        reportMarking={{ canMark: () => true, captionMax: 2000, onImagesChanged }} />,
+      <>
+        <ReadsOnScreen />
+        <NoteAttachments noteId={5} canManage onChanged={onChanged} attachments={[att(1, { caption: 'Old words' })]}
+          reportMarking={{ canMark: () => true, captionMax: 2000 }} />
+      </>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Edit caption for shot-1.png' }));
     const box = screen.getByRole('textbox', { name: 'Caption for shot-1.png' });
@@ -109,7 +116,8 @@ describe('NoteAttachments — captions and placement on a finding', () => {
     fireEvent.change(box, { target: { value: '  New words  ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save caption' }));
     await waitFor(() => expect(mocked.setNoteAttachmentCaption).toHaveBeenCalledWith(1, 'New words'));
-    await waitFor(() => expect(onImagesChanged).toHaveBeenCalled());
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('the finding’s images'));
+    expect(reread).toHaveBeenCalledTimes(1);
     expect(onChanged).toHaveBeenCalled();
     expect(screen.queryByRole('textbox', { name: 'Caption for shot-1.png' })).not.toBeInTheDocument();
   });

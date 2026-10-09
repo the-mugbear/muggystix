@@ -15,7 +15,8 @@
  * (`my_role` from the API) — the server enforces the same.
  */
 import { formatDate } from '../utils/relativeTime';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, Trash2, UserPlus } from 'lucide-react';
 
@@ -26,6 +27,7 @@ import {
   removeProjectMember, updateProject, updateProjectMemberRole,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { GLOBAL, invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
 import { safeFallback } from '../utils/uiStyles';
@@ -86,7 +88,7 @@ const memberName = (m: { full_name: string | null; username: string }) => m.full
 interface Details { name: string; description: string; status: string; start: string; end: string }
 
 const ProjectSettings: React.FC = () => {
-  const { currentProject, projects, refreshProjects } = useProject();
+  const { currentProject, projects } = useProject();
   const { user } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
@@ -97,100 +99,158 @@ const ProjectSettings: React.FC = () => {
   // A role that has not loaded leaves the decision to the server (§40).
   const canSeeWebhooks = canAdmin || currentProject?.my_role == null;
 
+  const queryClient = useQueryClient();
+  // The project list is the context's (`[GLOBAL, 'getProjects']`).  After a
+  // write that changed it, it is read again in place — this page stays on
+  // screen — and what the write says waits for that read.
+  const projectsChanged = () => invalidateReads(queryClient, 'getProjects');
+
   // --- Details -----------------------------------------------------------
-  // Keyed on the values, not the object's identity: a refresh that hands
-  // back an equal project must not reset what is being typed.
+  // What is saved comes from the project; the form holds only what the reader
+  // changed, laid over it — so a refresh that hands back the project again
+  // cannot reset what is being typed, and nothing is copied into state.
   const p = currentProject;
-  const fromProject = useCallback((): Details => ({
+  const saved: Details = {
     name: p?.name ?? '',
     description: p?.description ?? '',
     status: p?.status ?? 'active',
     start: p?.start_date ? p.start_date.split('T')[0] : '',
     end: p?.end_date ? p.end_date.split('T')[0] : '',
-  }), [p?.name, p?.description, p?.status, p?.start_date, p?.end_date]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [details, setDetails] = useState<Details>(fromProject);
-  const [savingDetails, setSavingDetails] = useState(false);
-  useEffect(() => { setDetails(fromProject()); }, [fromProject]);
-  const detailsDirty = JSON.stringify(details) !== JSON.stringify(fromProject());
+  };
+  const [edits, setEdits] = useState<Partial<Details>>({});
+  const details: Details = { ...saved, ...edits };
+  const setDetails = (next: Details) => setEdits(next);
+  const detailsDirty = JSON.stringify(details) !== JSON.stringify(saved);
 
-  const saveDetails = async () => {
+  const detailsSave = useMutation({
+    mutationFn: (body: { projectId: number; details: Details }) => updateProject(body.projectId, {
+      name: body.details.name.trim(),
+      description: body.details.description.trim(),
+      status: body.details.status,
+      start_date: body.details.start ? new Date(body.details.start).toISOString() : null,
+      end_date: body.details.end ? new Date(body.details.end).toISOString() : null,
+    }),
+    onSuccess: async (updated) => {
+      // The form shows the project list's row: put the server's answer there
+      // first, so a failed re-read cannot show the old values under "saved".
+      queryClient.setQueryData<Array<{ id: number }>>([GLOBAL, 'getProjects'], (list) => (
+        list?.map((p) => (p.id === updated.id ? { ...p, ...updated } : p))
+      ));
+      await projectsChanged();
+      setEdits({});
+      toast.success('Project details saved.');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not save the project details.')),
+  });
+  const savingDetails = detailsSave.isPending;
+  const saveDetails = () => {
     if (!currentProject) return;
     if (!details.name.trim()) { toast.error('A project needs a name.'); return; }
     if (details.start && details.end && details.end < details.start) {
       toast.error('The end date is before the start date.');
       return;
     }
-    setSavingDetails(true);
-    try {
-      await updateProject(currentProject.id, {
-        name: details.name.trim(),
-        description: details.description.trim(),
-        status: details.status,
-        start_date: details.start ? new Date(details.start).toISOString() : null,
-        end_date: details.end ? new Date(details.end).toISOString() : null,
-      });
-      await refreshProjects();
-      toast.success('Project details saved.');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not save the project details.'));
-    } finally {
-      setSavingDetails(false);
-    }
+    detailsSave.mutate({ projectId: currentProject.id, details });
   };
 
   // --- Members -----------------------------------------------------------
-  const [members, setMembers] = useState<Member[] | null>(null);
-  const [membersError, setMembersError] = useState<string | null>(null);
+  // `getProjectMembers` names its project (it also serves Portfolio's sheet
+  // and the admin's memberships dialog), so the id is in the key and the key
+  // is GLOBAL — one roster per project wherever it is shown.
   const projectId = currentProject?.id;
-  const loadMembers = useCallback(async () => {
-    if (!projectId) return;
-    try {
-      setMembers((await getProjectMembers(projectId)) as unknown as Member[]);
-      setMembersError(null);
-    } catch (err) {
-      setMembersError(formatApiError(err, 'Could not load the members.'));
-    }
-  }, [projectId]);
-  useEffect(() => { setMembers(null); void loadMembers(); }, [loadMembers]);
+  const membersKey = [GLOBAL, 'getProjectMembers', projectId];
+  const membersQuery = useQuery({
+    queryKey: membersKey,
+    queryFn: async () => (await getProjectMembers(projectId as number)) as unknown as Member[],
+    enabled: !!projectId,
+  });
+  const members: Member[] | null = membersQuery.data ?? null;
+  const membersError = queryErrorText(membersQuery.error, 'Could not load the members.');
+  const loadMembers = () => { void membersQuery.refetch(); };
+  /** Patch the roster on screen with what a write is known to have done. */
+  const setMembers = (update: (prev: Member[]) => Member[]) => {
+    queryClient.setQueryData<Member[]>(membersKey, (prev) => update(prev ?? []));
+  };
+  // The pickers of this project (owner, assignee, @mention) read the same people.
+  const pickersChanged = () => queryClient.invalidateQueries({ queryKey: ['listProjectMembers'] });
 
   const [addOpen, setAddOpen] = useState(false);
-  const [directory, setDirectory] = useState<DirectoryEntry[] | null>(null);
-  const [directoryFailed, setDirectoryFailed] = useState(false);
   const [newUser, setNewUser] = useState<string | null>(null);
   const [newRole, setNewRole] = useState('analyst');
-  const [adding, setAdding] = useState(false);
-  const openAdd = async () => {
+  // The people who could be added: asked for each time the dialog opens.
+  const directoryQuery = useQuery({
+    queryKey: [GLOBAL, 'getUserDirectory'],
+    queryFn: () => getUserDirectory(),
+    enabled: addOpen,
+  });
+  // Said as a failure: an empty list read "Everyone is already a member".
+  const directoryFailed = directoryQuery.isError && !directoryQuery.isFetching;
+  const directory: DirectoryEntry[] | null = useMemo(() => {
+    if (directoryQuery.isError) return directoryQuery.isFetching ? null : [];
+    return directoryQuery.data
+      ? directoryQuery.data.map((u) => ({ id: u.id, username: u.username, full_name: u.full_name ?? null }))
+      : null;
+  }, [directoryQuery.data, directoryQuery.isError, directoryQuery.isFetching]);
+  const openAdd = () => {
     setNewUser(null);
     setNewRole('analyst');
     setAddOpen(true);
-    setDirectoryFailed(false);
-    try {
-      setDirectory((await getUserDirectory()).map((u) => ({ id: u.id, username: u.username, full_name: u.full_name ?? null })));
-    } catch {
-      // Said as a failure: an empty list read "Everyone is already a member".
-      setDirectory([]);
-      setDirectoryFailed(true);
-    }
   };
   const candidates = useMemo(
     () => (directory ?? []).filter((u) => !(members ?? []).some((m) => m.user_id === u.id)),
     [directory, members],
   );
-  const addMember = async () => {
-    if (!currentProject || !newUser) return;
-    setAdding(true);
-    try {
-      await addProjectMember(currentProject.id, Number(newUser), newRole);
+  const addition = useMutation({
+    mutationFn: (body: { projectId: number; userId: number; role: string }) =>
+      addProjectMember(body.projectId, body.userId, body.role),
+    onSuccess: async () => {
       setAddOpen(false);
-      await loadMembers();
-      await refreshProjects();
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [GLOBAL, 'getProjectMembers'] }),
+        pickersChanged(),
+      ]);
+      await projectsChanged();
       toast.success('Member added.');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not add the member.'));
-    } finally {
-      setAdding(false);
-    }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not add the member.')),
+  });
+  const adding = addition.isPending;
+  const addMember = () => {
+    if (!currentProject || !newUser) return;
+    addition.mutate({ projectId: currentProject.id, userId: Number(newUser), role: newRole });
   };
+
+  const roleChange = useMutation({
+    mutationFn: (body: { projectId: number; member: Member; role: string; self: boolean }) =>
+      updateProjectMemberRole(body.projectId, body.member.user_id, body.role),
+    onSuccess: async (_updated, { member, role, self }) => {
+      setMembers((prev) => prev.map((x) => (x.user_id === member.user_id ? { ...x, role } : x)));
+      void pickersChanged();
+      if (self) await projectsChanged();
+      toast.success(`${memberName(member)} is now ${roleLabel(role)}.`);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not change the role.')),
+  });
+  const removal = useMutation({
+    mutationFn: (body: { projectId: number; member: Member }) =>
+      removeProjectMember(body.projectId, body.member.user_id),
+    onSuccess: async (_void, { member }) => {
+      setMembers((prev) => prev.filter((x) => x.user_id !== member.user_id));
+      void pickersChanged();
+      await projectsChanged();
+      toast.success('Member removed.');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not remove the member.')),
+  });
+  const deletion = useMutation({
+    mutationFn: (project: { id: number; name: string }) => deleteProjectRequest(project.id),
+    onSuccess: async (_void, project) => {
+      await projectsChanged();
+      toast.success(`Project "${project.name}" deleted.`);
+      navigate('/operations');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not delete the project.')),
+  });
 
   const admins = (members ?? []).filter((m) => m.role === 'admin');
   const changeRole = async (m: Member, role: string) => {
@@ -208,14 +268,7 @@ const ProjectSettings: React.FC = () => {
       });
       if (!ok) return;
     }
-    try {
-      await updateProjectMemberRole(currentProject.id, m.user_id, role);
-      setMembers((prev) => (prev ?? []).map((x) => (x.user_id === m.user_id ? { ...x, role } : x)));
-      if (self) await refreshProjects();
-      toast.success(`${memberName(m)} is now ${roleLabel(role)}.`);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not change the role.'));
-    }
+    roleChange.mutate({ projectId: currentProject.id, member: m, role, self });
   };
 
   const removeMember = async (m: Member) => {
@@ -227,14 +280,7 @@ const ProjectSettings: React.FC = () => {
       confirmLabel: 'Remove',
     });
     if (!ok) return;
-    try {
-      await removeProjectMember(currentProject.id, m.user_id);
-      setMembers((prev) => (prev ?? []).filter((x) => x.user_id !== m.user_id));
-      await refreshProjects();
-      toast.success('Member removed.');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not remove the member.'));
-    }
+    removal.mutate({ projectId: currentProject.id, member: m });
   };
 
   // --- Delete ------------------------------------------------------------
@@ -257,14 +303,7 @@ const ProjectSettings: React.FC = () => {
       confirmTypedName: true,
     });
     if (!ok) return;
-    try {
-      await deleteProjectRequest(currentProject.id);
-      await refreshProjects();
-      toast.success(`Project "${currentProject.name}" deleted.`);
-      navigate('/operations');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not delete the project.'));
-    }
+    deletion.mutate({ id: currentProject.id, name: currentProject.name });
   };
 
   if (!currentProject) {
@@ -295,7 +334,7 @@ const ProjectSettings: React.FC = () => {
 
       <PostureSection title="Details" description="The dates are the engagement window: they appear on client reports and scope the Oversight filters.">
         {/* Capped so the inputs stay a readable length on the full-width page. */}
-        <form className="max-w-4xl space-y-md" onSubmit={(e) => { e.preventDefault(); void saveDetails(); }}>
+        <form className="max-w-4xl space-y-md" onSubmit={(e) => { e.preventDefault(); saveDetails(); }}>
           <div className="grid gap-md md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
             <div className="min-w-0 space-y-xxs">
               <Label htmlFor="ps-name">Name</Label>
@@ -338,7 +377,7 @@ const ProjectSettings: React.FC = () => {
                 {savingDetails && <Loader2 className="size-4 animate-spin" aria-hidden />} Save details
               </Button>
               <Button type="button" variant="ghost" size="sm" disabled={!detailsDirty || savingDetails}
-                onClick={() => setDetails(fromProject())}>
+                onClick={() => setEdits({})}>
                 Undo changes
               </Button>
             </div>
@@ -352,7 +391,7 @@ const ProjectSettings: React.FC = () => {
           <React.Fragment key={r.value}>{i > 0 && ' · '}<span className="font-medium text-foreground">{r.label}</span> — {r.can}</React.Fragment>
         ))}. Global administrators may do everything in every project.</>}
         actions={canAdmin ? (
-          <Button size="sm" variant="outline" onClick={() => void openAdd()}>
+          <Button size="sm" variant="outline" onClick={openAdd}>
             <UserPlus className="size-4" aria-hidden /> Add member
           </Button>
         ) : undefined}
@@ -360,7 +399,7 @@ const ProjectSettings: React.FC = () => {
         {membersError ? (
           <div className="flex flex-wrap items-center gap-sm">
             <p className="text-caption text-destructive">{membersError}</p>
-            <Button size="sm" variant="outline" onClick={() => void loadMembers()}>Retry</Button>
+            <Button size="sm" variant="outline" onClick={loadMembers}>Retry</Button>
           </div>
         ) : members === null ? (
           <p className="inline-flex items-center gap-xs text-caption text-muted-foreground">
@@ -489,7 +528,7 @@ const ProjectSettings: React.FC = () => {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)} disabled={adding}>Cancel</Button>
-            <Button onClick={() => void addMember()} disabled={adding || !newUser}>
+            <Button onClick={addMember} disabled={adding || !newUser}>
               {adding && <Loader2 className="size-4 animate-spin" aria-hidden />} Add member
             </Button>
           </DialogFooter>

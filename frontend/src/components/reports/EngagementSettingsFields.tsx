@@ -5,6 +5,7 @@
  * fields.  The team is picked from project members (name and role editable).
  */
 import React from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Plus, Trash2, Users } from 'lucide-react';
 
@@ -73,20 +74,17 @@ const EngagementSettingsFields: React.FC<Props> = ({
   // The project's analysts and admins (name, role line, email) — added once
   // each; whoever is already listed keeps what was written for them.
   const toast = useToast();
-  const [addingTeam, setAddingTeam] = React.useState(false);
-  const addProjectTeam = async () => {
-    setAddingTeam(true);
-    try {
-      const team = await getProjectReportTeam();
+  // Asked for by the button, each time: the team as the project has it now.
+  const projectTeam = useMutation({
+    mutationFn: () => getProjectReportTeam(),
+    onSuccess: (team) => {
       const fresh = team.filter((t) => !value.testers.some((x) => x.user_id != null && x.user_id === t.user_id));
       if (fresh.length === 0) toast.info('Everyone on the project is already listed.');
       else set('testers', [...value.testers, ...fresh]);
-    } catch (err) {
-      toast.error(formatApiError(err, "Could not load the project's members."));
-    } finally {
-      setAddingTeam(false);
-    }
-  };
+    },
+    onError: (err) => toast.error(formatApiError(err, "Could not load the project's members.")),
+  });
+  const addingTeam = projectTeam.isPending;
 
   return (
     <div className="space-y-md">
@@ -150,7 +148,7 @@ const EngagementSettingsFields: React.FC<Props> = ({
           )}
           {members.length > 0 && (
             <Button type="button" variant="outline" size="sm" disabled={disabled || addingTeam}
-              onClick={() => void addProjectTeam()}>
+              onClick={() => projectTeam.mutate()}>
               <Users className="size-4" aria-hidden /> Add the project&apos;s members
             </Button>
           )}

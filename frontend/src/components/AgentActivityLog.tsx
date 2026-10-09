@@ -1,11 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronUp, Loader2, RefreshCw } from 'lucide-react';
 import {
   AgentApiCallRow,
   AgentActivityFilters,
   getAgentSessionApiActivity,
 } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -31,13 +32,12 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { formatTimestamp } from '../utils/relativeTime';
 
-// The feed is one agent session's, by the session id (5.328.0 — it was keyed
-// by a second id, the session's detail row). A test plan was a second source
-// until 5.320.0.
-type Source = { kind: 'session'; sessionId: number };
+const LIMIT = 100;
 
 interface AgentActivityLogProps {
-  source: Source;
+  /** The feed is one agent session's, by the session id (5.328.0 — it was
+   *  keyed by a second id, the session's detail row). */
+  sessionId: number;
   title?: string;
   /** Subtitle hint shown under the title.  Defaults to a generic
    *  "every request the agent made" line. */
@@ -53,10 +53,6 @@ interface AgentActivityLogProps {
    *  project-wide firehose; the in-tab toggle flips to "All". */
   defaultMineOnly?: boolean;
 }
-
-const SOURCE_LABEL: Record<Source['kind'], string> = {
-  session: 'session',
-};
 
 const STATUS_PRESETS: Array<{ label: string; min?: number; max?: number }> = [
   { label: 'All' },
@@ -245,23 +241,17 @@ const ExpandableRow: React.FC<{ row: AgentApiCallRow }> = ({ row }) => {
 };
 
 const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
-  source,
+  sessionId,
   title = 'Agent API activity',
   subtitle,
   defaultMethodFilter = '',
   defaultStatusPreset = 0,
   defaultMineOnly = true,
 }) => {
-  const [rows, setRows] = useState<AgentApiCallRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [statusPreset, setStatusPreset] = useState(defaultStatusPreset);
   const [methodFilter, setMethodFilter] = useState(defaultMethodFilter);
   const [targetIpFilter, setTargetIpFilter] = useState('');
   const [mineOnly, setMineOnly] = useState(defaultMineOnly);
-  const [limit] = useState(100);
-  const [refreshNonce, setRefreshNonce] = useState(0);
 
   // Audit FBK·H12 + PRF·H4: the Target IP input used to fire a request
   // on every keystroke.  Debounce the *server-bound* value while the
@@ -270,7 +260,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
   const debouncedTargetIp = useDebouncedValue(targetIpFilter, 300);
 
   const filters = useMemo<AgentActivityFilters>(() => {
-    const f: AgentActivityFilters = { limit };
+    const f: AgentActivityFilters = { limit: LIMIT };
     if (methodFilter) f.method = methodFilter;
     if (debouncedTargetIp.trim()) f.target_ip = debouncedTargetIp.trim();
     if (mineOnly) f.mine = true;
@@ -278,29 +268,20 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
     if (preset.min != null) f.status_min = preset.min;
     if (preset.max != null) f.status_max = preset.max;
     return f;
-  }, [methodFilter, debouncedTargetIp, mineOnly, statusPreset, limit]);
+  }, [methodFilter, debouncedTargetIp, mineOnly, statusPreset]);
 
-  const fetchActivity = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await getAgentSessionApiActivity(source.sessionId, filters);
-      setRows(result.items);
-      setTotal(result.total);
-    } catch (e: unknown) {
-      // formatApiError unwraps FastAPI error shapes and gives a clean
-      // message instead of "Network Error" / "Request failed with
-      // status code 500" (audit H13).
-      setError(formatApiError(e, 'Failed to load activity log.'));
-    } finally {
-      setLoading(false);
-    }
-  }, [source, filters]);
-
-  useEffect(() => {
-    fetchActivity();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchActivity, refreshNonce]);
+  const activity = useQuery({
+    queryKey: ['getAgentSessionApiActivity', sessionId, filters],
+    queryFn: () => getAgentSessionApiActivity(sessionId, filters),
+    // The calls of the previous filter stay on screen while the next loads.
+    placeholderData: keepPreviousData,
+  });
+  const rows = activity.data?.items ?? [];
+  const total = activity.data?.total ?? 0;
+  const loading = activity.isFetching;
+  // Gone while the next read is in flight; it says so again if that fails too.
+  const error = loading ? null : queryErrorText(activity.error, 'Failed to load activity log.');
+  const refresh = () => { void activity.refetch(); };
 
   return (
     <Card>
@@ -312,7 +293,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
               {subtitle ?? (
                 <>
                   Every request the agent made to BlueStick for this{' '}
-                  {SOURCE_LABEL[source.kind]}. Filter by host or IP to
+                  session. Filter by host or IP to
                   verify the agent queried what you expected.
                 </>
               )}
@@ -323,7 +304,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => setRefreshNonce((n) => n + 1)}
+                onClick={refresh}
                 disabled={loading}
                 aria-label={`Refresh ${title}`}
               >
@@ -429,7 +410,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
                 <TableRow>
                   <TableCell colSpan={8} className="py-md text-metadata text-muted-foreground">
                     No matching API calls. The agent may not have started this{' '}
-                    {SOURCE_LABEL[source.kind]} yet, or your filters
+                    session yet, or your filters
                     excluded every call.
                     {mineOnly && (
                       <>
@@ -449,7 +430,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
           <div className="mt-sm flex justify-center">
             <Button
               variant="outline"
-              onClick={() => setRefreshNonce((n) => n + 1)}
+              onClick={refresh}
               disabled={loading}
             >
               {loading ? 'Loading…' : 'Refresh'}

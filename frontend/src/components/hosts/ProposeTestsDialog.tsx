@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
-import { formatApiError } from '../../utils/apiErrors';
+import { queryErrorText } from '../../lib/query';
 import { agentInstruction } from '../../utils/agentRuns';
 import AgentTaskButton from '../agent-sessions/AgentTaskButton';
 import { useCanStartAgentSession } from '../../hooks/useCanStartAgentSession';
@@ -54,31 +55,18 @@ const ProposeTestsDialog: React.FC<ProposeTestsDialogProps> = ({
 }) => {
   const canUseAgent = useCanStartAgentSession();
   const [what, setWhat] = useState('');
-  const [ids, setIds] = useState<number[] | null>(null);
-  const [resolveError, setResolveError] = useState<string | null>(null);
-  const [resolving, setResolving] = useState(false);
 
-  // Resolve the fixed list once per opening.
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    setIds(null);
-    setResolveError(null);
-    setResolving(true);
-    resolveIds()
-      .then((resolved) => {
-        if (!cancelled) setIds(resolved);
-      })
-      .catch((err) => {
-        if (!cancelled) setResolveError(formatApiError(err, 'Could not resolve the selection.'));
-      })
-      .finally(() => {
-        if (!cancelled) setResolving(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, resolveIds]);
+  // Resolve the fixed list once per opening: the read runs while the dialog
+  // is open, and each opening asks again — the list of the opening before is
+  // never shown as this one's.
+  const resolved = useQuery({
+    queryKey: ['getMatchingHostIds', 'proposeTests', selectionSummary],
+    queryFn: () => resolveIds(),
+    enabled: open,
+  });
+  const resolving = open && resolved.isFetching;
+  const ids = resolving || resolved.isError ? null : resolved.data ?? null;
+  const resolveError = resolving ? null : queryErrorText(resolved.error, 'Could not resolve the selection.');
 
   const count = ids?.length ?? 0;
   const tooMany = count > AGENT_TASK_MAX_HOSTS;

@@ -157,6 +157,14 @@ export const hasLiveKey = (
 export const myActiveSessionFilters = (userId: number) =>
   ({ kind: 'project', status: 'active', user_id: userId }) as const;
 
+/** What ending or resuming a session puts out of date, by API function: the
+ *  lists of sessions (Agent Sessions, the top bar's rail, Operations' line,
+ *  "your sessions"), the session's own page with its notes, and the counts
+ *  over sessions.  One list for End and Resume (`invalidateReads`). */
+export const AGENT_SESSION_READS = [
+  'listAgentSessions', 'getAgentSession', 'getAgentSessionNotes', 'getAgentSessionSummary', 'getAgentActivitySummary',
+] as const;
+
 /** 5.313.0 — the one-line tasks the per-object entry points hand to the
  *  operator's agent session (AgentTaskButton). There are no per-workflow keys.
  *  5.313.1 — a scan is no run: the agent reads the scope and uploads to its

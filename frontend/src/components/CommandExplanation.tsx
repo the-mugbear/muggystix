@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { AlertOctagon, Code, Info, Loader2, ShieldAlert, Terminal, TriangleAlert } from 'lucide-react';
-import { getScanCommandExplanation, CommandExplanation } from '../services/api';
+import { getScanCommandExplanation } from '../services/api';
 import { Alert, AlertDescription } from './ui/alert';
 import {
   Accordion,
@@ -71,28 +72,14 @@ const overallRiskVariant = (
 };
 
 const CommandExplanationComponent: React.FC<CommandExplanationProps> = ({ scanId }) => {
-  const [explanation, setExplanation] = useState<CommandExplanation | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const query = useQuery({
+    queryKey: ['getScanCommandExplanation', scanId],
+    queryFn: () => getScanCommandExplanation(scanId),
+  });
+  const explanation = query.data ?? null;
+  const error = query.isError ? 'Failed to load command explanation' : null;
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        setLoading(true);
-        setError(null);
-        const data = await getScanCommandExplanation(scanId);
-        setExplanation(data);
-      } catch (err) {
-        console.error('Error loading command explanation:', err);
-        setError('Failed to load command explanation');
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, [scanId]);
-
-  if (loading) {
+  if (query.isPending) {
     return (
       <div className="flex items-center justify-center py-md">
         <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden />

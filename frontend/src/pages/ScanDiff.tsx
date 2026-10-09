@@ -9,7 +9,8 @@
  *
  * The page's job is to show *what changed*, not to enumerate every row.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, GitCompareArrows, SquareArrowOutUpRight } from 'lucide-react';
 import {
@@ -21,7 +22,7 @@ import {
   compareScans,
   getScans,
 } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { TableSkeleton } from '../components/PageSkeleton';
 import { Badge } from '../components/ui/badge';
@@ -305,24 +306,14 @@ const HostStateCard: React.FC<{
 
 const ScanPicker: React.FC = () => {
   const navigate = useNavigate();
-  const [scans, setScans] = useState<Scan[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [aSel, setASel] = useState<string>('');
   const [bSel, setBSel] = useState<string>('');
-
-  useEffect(() => {
-    let cancelled = false;
-    getScans(0, 200)
-      .then((rows) => {
-        if (!cancelled) setScans(rows);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(formatApiError(err, 'Failed to load scans.'));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const list = useQuery({
+    queryKey: ['getScans', {}, { limit: 200 }],
+    queryFn: ({ signal }) => getScans(0, 200, { signal }),
+  });
+  const scans: Scan[] | null = list.data ?? null;
+  const error = queryErrorText(list.error, 'Failed to load scans.');
 
   const canCompare = aSel && bSel && aSel !== bSel;
 
@@ -408,32 +399,14 @@ const ScanDiff: React.FC = () => {
   const bId = bRaw ? parseInt(bRaw, 10) : NaN;
   const haveParams = !Number.isNaN(aId) && !Number.isNaN(bId) && aId !== bId;
 
-  const [diff, setDiff] = useState<ScanDiffResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!haveParams) {
-      setDiff(null);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const resp = await compareScans(aId, bId);
-        if (!cancelled) setDiff(resp);
-      } catch (err) {
-        if (!cancelled) setError(formatApiError(err, 'Failed to compare the selected scans.'));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [haveParams, aId, bId]);
+  const comparison = useQuery({
+    queryKey: ['compareScans', aId, bId],
+    queryFn: () => compareScans(aId, bId),
+    enabled: haveParams,
+  });
+  const diff: ScanDiffResponse | null = haveParams ? comparison.data ?? null : null;
+  const loading = haveParams && comparison.isFetching;
+  const error = haveParams ? queryErrorText(comparison.error, 'Failed to compare the selected scans.') : null;
 
   const hostsDelta = diff ? diff.scan_b.total_hosts - diff.scan_a.total_hosts : 0;
   const upDelta = diff ? diff.scan_b.up_hosts - diff.scan_a.up_hosts : 0;

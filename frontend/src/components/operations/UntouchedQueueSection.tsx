@@ -22,6 +22,7 @@
  * host, with or without a reason — a larger list than this one.
  */
 import React from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 
 import type { InvestigateRow, InvestigationQueueResponse } from '../../services/api';
@@ -38,7 +39,8 @@ import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 import {
-  BulkBar, FilterChips, ListBody, PagedFooter, useRowSelection, type ListState, type Pager,
+  BulkBar, FilterChips, ListBody, PagedFooter, useOperationsChanged, useRowSelection,
+  type ListState, type Pager,
 } from './QueueParts';
 
 export const UNTOUCHED_QUEUE_TITLE = 'Untouched, with a reason';
@@ -61,7 +63,6 @@ export interface UntouchedQueueSectionProps {
   tier: number | null;
   onTier: (tier: number | null) => void;
   canWrite: boolean;
-  onChanged: () => void;
   /** This list owns the page's j / k / Enter / x keys (the tab on screen). */
   keysActive?: boolean;
 }
@@ -69,15 +70,16 @@ export interface UntouchedQueueSectionProps {
 const NO_ROWS: InvestigateRow[] = [];
 
 export const UntouchedQueueSection: React.FC<UntouchedQueueSectionProps> = ({
-  data, rows: loaded, state, pager, tier, onTier, canWrite, onChanged, keysActive = true,
+  data, rows: loaded, state, pager, tier, onTier, canWrite, keysActive = true,
 }) => {
   const toast = useToast();
   const navigate = useNavigate();
+  // After an action (or its undo): the queue and the page's counts are read
+  // again, in place (5.351.0 — there is no `onChanged` for the parent to wire).
+  const changed = useOperationsChanged();
   const rows = loaded ?? NO_ROWS;
   const keys = React.useMemo(() => rows.map((r) => r.host_id), [rows]);
   const selection = useRowSelection(keys);
-  const [takingId, setTakingId] = React.useState<number | null>(null);
-  const [bulkBusy, setBulkBusy] = React.useState(false);
   const [outcome, setOutcome] = React.useState<string | null>(null);
 
   const queueTotal = data?.queue_total ?? 0;
@@ -105,47 +107,49 @@ export const UntouchedQueueSection: React.FC<UntouchedQueueSectionProps> = ({
 
   // Take the host: In Review under the reader.  The queue lists only hosts
   // nobody follows, so removing the new review is an exact undo.
-  const take = async (row: InvestigateRow) => {
-    setTakingId(row.host_id);
-    try {
-      await followHost(row.host_id, 'in_review');
+  const undoTake = useMutation({
+    mutationFn: (hostId: number) => unfollowHost(hostId),
+    onSuccess: changed,
+    onError: (err) => toast.error(formatApiError(err, 'Could not undo.')),
+  });
+  const taking = useMutation({
+    mutationFn: (row: InvestigateRow) => followHost(row.host_id, 'in_review'),
+    onSuccess: (_follow, row) => {
       toast.success(`${row.ip_address} is now in your review queue`, {
         autoHideMs: 6000,
-        action: {
-          label: 'Undo',
-          onClick: () => {
-            unfollowHost(row.host_id)
-              .then(onChanged)
-              .catch((err) => toast.error(formatApiError(err, 'Could not undo.')));
-          },
-        },
+        action: { label: 'Undo', onClick: () => undoTake.mutate(row.host_id) },
       });
-      onChanged();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not take the host into review.'));
-    } finally {
-      setTakingId(null);
-    }
-  };
+      changed();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not take the host into review.')),
+  });
+  const take = (row: InvestigateRow) => taking.mutate(row);
+  const takingId = taking.isPending ? taking.variables.host_id : null;
 
-  const takeMany = async () => {
-    const ids = selection.selected;
-    setBulkBusy(true);
+  // One call per host, a few at a time: the batch is one action, and it
+  // settles with every host's own outcome.
+  const takingMany = useMutation({
+    mutationFn: (hostIds: number[]) =>
+      runLimited(hostIds, BULK_CONCURRENCY, (id) => followHost(id, 'in_review')),
+    onSuccess: (results) => {
+      const failed = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+      const done = results.length - failed.length;
+      if (failed.length === 0) {
+        toast.success(`${hosts(done)} now in your review queue`, { autoHideMs: 3000 });
+      } else {
+        setOutcome(
+          `Took ${done} of ${hosts(results.length)} into review; ${failed.length} could not be taken `
+          + `(${formatApiError(failed[0].reason, 'the request failed')}). They are still listed below.`,
+        );
+      }
+      selection.clear();
+      if (done > 0) changed();
+    },
+  });
+  const bulkBusy = takingMany.isPending;
+  const takeMany = () => {
     setOutcome(null);
-    const results = await runLimited(ids, BULK_CONCURRENCY, (id) => followHost(id, 'in_review'));
-    const failed = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
-    const done = results.length - failed.length;
-    if (failed.length === 0) {
-      toast.success(`${hosts(done)} now in your review queue`, { autoHideMs: 3000 });
-    } else {
-      setOutcome(
-        `Took ${done} of ${hosts(results.length)} into review; ${failed.length} could not be taken `
-        + `(${formatApiError(failed[0].reason, 'the request failed')}). They are still listed below.`,
-      );
-    }
-    selection.clear();
-    setBulkBusy(false);
-    if (done > 0) onChanged();
+    takingMany.mutate(selection.selected);
   };
 
   const description = (
@@ -205,7 +209,7 @@ export const UntouchedQueueSection: React.FC<UntouchedQueueSectionProps> = ({
         <div>
           {canWrite && (
             <BulkBar count={selection.selected.length} noun="host" onClear={selection.clear} outcome={outcome}>
-              <Button size="sm" variant="outline" className="h-7" disabled={bulkBusy} onClick={() => void takeMany()}>
+              <Button size="sm" variant="outline" className="h-7" disabled={bulkBusy} onClick={takeMany}>
                 {bulkBusy ? 'Taking…' : `Review (${selection.selected.length})`}
               </Button>
             </BulkBar>
@@ -292,7 +296,7 @@ export const UntouchedQueueSection: React.FC<UntouchedQueueSectionProps> = ({
                         <Button
                           size="sm" variant="ghost" className="h-7 text-info"
                           disabled={takingId === row.host_id || bulkBusy}
-                          onClick={() => void take(row)}
+                          onClick={() => take(row)}
                           title="Mark this host In Review under you. It leaves this queue and joins your own."
                         >
                           {takingId === row.host_id ? 'Taking…' : 'Review'}

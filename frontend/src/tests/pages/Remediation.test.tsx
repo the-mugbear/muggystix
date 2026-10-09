@@ -271,7 +271,7 @@ describe('Remediation', () => {
     expect(within(table).queryByRole('checkbox')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
     fireEvent.click(within(table).getByRole('button', { name: 'Timeline for 10.0.0.1' }));
-    await waitFor(() => expect(listRemediationEvents).toHaveBeenCalledWith(101, { limit: 50 }, undefined, undefined));
+    await waitFor(() => expect(listRemediationEvents).toHaveBeenCalledWith(101, { limit: 50 }, expect.any(AbortSignal), undefined));
     expect(screen.queryByLabelText('Add a note')).not.toBeInTheDocument();
   });
 
@@ -359,7 +359,7 @@ describe('Remediation', () => {
     await waitFor(() => expect(addRemediationNote).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByLabelText('Add a note')).toHaveValue(''));
     expect(listRemediationEvents.mock.calls.every(([, q]) => q.limit <= 200)).toBe(true);
-    expect(listRemediationEvents).toHaveBeenLastCalledWith(101, { limit: 200 }, undefined, undefined);
+    expect(listRemediationEvents).toHaveBeenLastCalledWith(101, { limit: 200 }, expect.any(AbortSignal), undefined);
     expect(within(screen.getByRole('dialog')).queryByRole('alert')).not.toBeInTheDocument();
   });
 
@@ -487,7 +487,7 @@ describe('Remediation', () => {
     // The reader moves to another host's timeline while the save is in flight.
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     fireEvent.click(within(table).getByRole('button', { name: 'Timeline for 10.0.0.3', hidden: true }));
-    await waitFor(() => expect(listRemediationEvents).toHaveBeenCalledWith(103, { limit: 50 }, undefined, undefined));
+    await waitFor(() => expect(listRemediationEvents).toHaveBeenCalledWith(103, { limit: 50 }, expect.any(AbortSignal), undefined));
     fireEvent.change(await screen.findByLabelText('Add a note'), { target: { value: 'For the other host' } });
     expect(screen.getByRole('button', { name: 'Add note' })).toBeEnabled();
   });
@@ -547,7 +547,7 @@ describe('Remediation', () => {
     await screen.findByRole('table', { name: /remediation/i });
     fireEvent.keyDown(window, { key: 'j' });
     fireEvent.keyDown(window, { key: 'Enter' });
-    await waitFor(() => expect(listRemediationEvents).toHaveBeenCalledWith(101, { limit: 50 }, undefined, undefined));
+    await waitFor(() => expect(listRemediationEvents).toHaveBeenCalledWith(101, { limit: 50 }, expect.any(AbortSignal), undefined));
     expect(screen.queryByLabelText('Contact email')).not.toBeInTheDocument();
   });
 

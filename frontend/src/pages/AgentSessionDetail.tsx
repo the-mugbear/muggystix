@@ -10,16 +10,12 @@
  * (`/assist-sessions/:id`) was keyed by a second id sequence (session #72 =
  * detail #52); that path now redirects here.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, Loader2, StickyNote } from 'lucide-react';
 
-import {
-  AgentSessionNotes,
-  AgentSessionRow,
-  getAgentSession,
-  getAgentSessionNotes,
-} from '../services/api';
+import { getAgentSession, getAgentSessionNotes } from '../services/api';
 import AgentActivityLog from '../components/AgentActivityLog';
 import {
   AuthorityBadge,
@@ -38,7 +34,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
-import { formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
 import { formatTimestamp } from '../utils/relativeTime';
 import { safeFallback } from '../utils/uiStyles';
 import { SESSIONS_LIST_PATH } from '../utils/agentRuns';
@@ -84,62 +80,37 @@ const Fact: React.FC<{ label: string; title?: string; children: React.ReactNode 
 const AgentSessionDetail: React.FC = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
   const id = Number(sessionId);
-  const [row, setRow] = useState<AgentSessionRow | null>(null);
-  const [notes, setNotes] = useState<AgentSessionNotes | null>(null);
-  const [notesError, setNotesError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [lastFetched, setLastFetched] = useState<Date | null>(null);
-  const [nonce, setNonce] = useState(0);
-  const refresh = useCallback(() => setNonce((n) => n + 1), []);
-  const controls = useAgentSessionControls(refresh);
-  // Stable per session: the log refetches when its source object changes.
-  const activitySource = useMemo(() => ({ kind: 'session' as const, sessionId: id }), [id]);
-
-  // Another session (Back/Forward reuses this element): drop the previous
-  // one's data, so its notes never show under this session's header.
-  useEffect(() => {
-    setRow(null);
-    setNotes(null);
-    setNotesError(null);
-    setError(null);
-  }, [id]);
-
-  useEffect(() => {
-    if (!Number.isFinite(id) || id <= 0) {
-      setError('Not a session id.');
-      setLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    (async () => {
-      try {
-        const next = await getAgentSession(id);
-        if (cancelled) return;
-        setRow(next);
-        setError(null);
-        setLastFetched(new Date());
-        // The notes are their own read: when it fails, the session, its
-        // controls and its calls still show.
-        try {
-          const written = await getAgentSessionNotes(next.id);
-          if (!cancelled) { setNotes(written); setNotesError(null); }
-        } catch (e) {
-          // No notes from an earlier read beside the error.
-          if (!cancelled) {
-            setNotes(null);
-            setNotesError(formatApiError(e, 'Could not load the session’s notes.'));
-          }
-        }
-      } catch (e) {
-        if (!cancelled) setError(formatApiError(e, 'Could not load this agent session.'));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [id, nonce]);
+  const validId = Number.isFinite(id) && id > 0;
+  const session = useQuery({
+    queryKey: ['getAgentSession', id],
+    queryFn: () => getAgentSession(id),
+    enabled: validId,
+  });
+  const row = session.data ?? null;
+  const rowId = row?.id;
+  // The notes are their own read: when it fails, the session, its controls
+  // and its calls still show.
+  const written = useQuery({
+    queryKey: ['getAgentSessionNotes', rowId],
+    queryFn: () => getAgentSessionNotes(rowId as number),
+    enabled: rowId != null,
+  });
+  const notesError = queryErrorText(written.error, 'Could not load the session’s notes.');
+  // No notes from an earlier read beside the error.
+  const notes = notesError ? null : written.data ?? null;
+  const error = validId
+    ? queryErrorText(session.error, 'Could not load this agent session.')
+    : 'Not a session id.';
+  const loading = session.isFetching || written.isFetching;
+  const lastFetched = session.dataUpdatedAt ? new Date(session.dataUpdatedAt) : null;
+  const { refetch: refetchSession } = session;
+  const { refetch: refetchNotes } = written;
+  // The Refresh button.  (An End or a Resume asks for these again itself.)
+  const refresh = useCallback(() => {
+    void refetchSession();
+    if (rowId != null) void refetchNotes();
+  }, [refetchSession, refetchNotes, rowId]);
+  const controls = useAgentSessionControls();
 
   const back = (
     <Button variant="ghost" size="sm" className="mb-xs px-0" asChild>
@@ -303,7 +274,7 @@ const AgentSessionDetail: React.FC = () => {
       )}
 
       <AgentActivityLog
-        source={activitySource}
+        sessionId={row.id}
         title="API activity"
         subtitle="Every request this session's agent made, in order. Filter by host or IP to answer 'did it look at the right things?'"
         defaultMineOnly={false}

@@ -16,7 +16,6 @@ vi.mock('../../contexts/AuthContext', () => ({
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({ currentProject: { id: 1, name: 'P', my_role: role.value } }),
 }));
-vi.mock('../../hooks/useVisibilityPoll', () => ({ useVisibilityPoll: vi.fn() }));
 vi.mock('../../services/api', () => ({
   downloadInventoryCsv: vi.fn(),
   enqueueInventoryJson: vi.fn(),

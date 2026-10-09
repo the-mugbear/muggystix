@@ -1,4 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import {
+  keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData,
+} from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
@@ -19,7 +22,8 @@ import {
   PauseCircle,
 } from 'lucide-react';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
-import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
+import { invalidateReads, pollEvery, queryErrorText, rememberFor } from '../lib/query';
+import { INGESTION_JOB_READS } from '../utils/ingestionReads';
 import {
   getScans,
   getScansSummary,
@@ -40,10 +44,7 @@ import {
 } from '../services/api';
 import type {
   Scan,
-  ScanInventorySummary,
   IngestionJob,
-  CommandExplanation,
-  ScanDeletionImpact,
   ScanBatchSummary,
   ImportHistoryEntry,
 } from '../services/api';
@@ -83,7 +84,7 @@ import ImportResult from '../components/scans/ImportResult';
 import UploadReviewDialog from '../components/scans/UploadReviewDialog';
 import { ScanBatchRow } from '../components/scans/ScanBatchList';
 import { ROW_LINK_CLASS, ScanRowActions } from '../components/scans/ScanRowActions';
-import { hydrateHistoryRows, orderHistoryRows, type HistoryFilters } from '../utils/importHistory';
+import { hydrateHistoryRows, orderHistoryRows } from '../utils/importHistory';
 import { ScanWhenCell, ViewerZoneHint } from '../components/scans/ScanTimeCells';
 import { formatDuration } from '../utils/scanTime';
 import {
@@ -115,27 +116,53 @@ const JOB_STATUS_LABEL: Record<string, string> = {
   completed: 'Completed',
 };
 
+/** One page of the import history as the page lists it.  Grouped by upload it
+ *  is the server's ORDER (`entries`) with the rows that order names, fetched
+ *  by id; as all files it is the files themselves, already in order. */
+interface HistoryPage {
+  flat: boolean;
+  entries: ImportHistoryEntry[];
+  scans: Scan[];
+  batches: ScanBatchSummary[];
+  /** One kind of row could not be loaded: the page is missing entries. */
+  partial: boolean;
+  total: number | null;
+  hasMore: boolean;
+}
+
+/** What the ingestion queue strip reads. */
+const QUEUE_READS = ['getRecentIngestionJobs', 'getStagedIngestionJobs'] as const;
+/** What lists or counts the imported files. */
+const INVENTORY_READS = [
+  'getImportHistory', 'getScans', 'getScanBatches', 'getScansSummary', 'getBatchUnimportedJobs',
+] as const;
+
+/** How often the queue is read again while a job is queued or processing. */
+const ACTIVE_QUEUE_POLL_MS = 5000;
+/** How often the queue's "Auto" switch reads it again when nothing is running. */
+const AUTO_QUEUE_POLL_MS = 15_000;
+const holdsActiveJob = (jobs: IngestionJob[] | undefined): boolean =>
+  !!jobs?.some((j) => j.status === 'queued' || j.status === 'processing');
+
+const markerKeyOf = (marker: { count: number; latest_id?: number | null }): string =>
+  `${marker.count}:${marker.latest_id ?? ''}`;
+
 export default function Scans() {
   const navigate = useNavigate();
   const toast = useToast();
+  const queryClient = useQueryClient();
   const [confirmDialog, confirm] = useConfirm();
-  const [scans, setScans] = useState<Scan[]>([]);
-  // Filter-aware totals for the headline cards — fetched server-side so they
-  // reflect every matching scan, not just the loaded (paginated) page.
-  const [inventorySummary, setInventorySummary] = useState<ScanInventorySummary | null>(null);
-  // The summary read failed: its counts are shown as not known, never as the
-  // previous filter's or the loaded rows'.
-  const [summaryFailed, setSummaryFailed] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const fetchGenRef = useRef(0);
+  const invalidate = useCallback((names: readonly string[]) => {
+    void invalidateReads(queryClient, ...names);
+  }, [queryClient]);
+  const refreshQueue = useCallback(() => invalidate(QUEUE_READS), [invalidate]);
+  const refreshInventory = useCallback(() => invalidate(INVENTORY_READS), [invalidate]);
+  // What a change to one ingestion job (retry, cancel, dismiss, discard) puts
+  // out of date: the queue, and the counts and lists of imports that failed.
+  const jobsChanged = useCallback(() => invalidate(INGESTION_JOB_READS), [invalidate]);
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [scanToDelete, setScanToDelete] = useState<Scan | null>(null);
-  const [deleteLoading, setDeleteLoading] = useState(false);
-  const [deletionImpact, setDeletionImpact] = useState<ScanDeletionImpact | null>(null);
-  const [impactLoading, setImpactLoading] = useState(false);
-  const [impactError, setImpactError] = useState(false);
   // Hosts the delete removes that carry people's work: the reader's tick, and
   // the server's refusal when it found such hosts the dialog had not shown.
   const [workReviewed, setWorkReviewed] = useState(false);
@@ -143,8 +170,25 @@ export default function Scans() {
   // The server's words when it refused the delete because an import is
   // running in the project; the preview says the same before the click.
   const [importRefusal, setImportRefusal] = useState<string | null>(null);
+  // What the delete will remove, asked while the dialog is open — and again
+  // after a refusal.  Hosts are deduplicated across scans, so this is rarely a
+  // blanket wipe.
+  const deleteId = scanToDelete?.id ?? null;
+  const impactQuery = useQuery({
+    queryKey: ['getScanDeletionImpact', deleteId],
+    queryFn: async () => {
+      const impact = await getScanDeletionImpact(deleteId as number);
+      // An answer that is not about this scan is not a summary of it.
+      if (impact?.scan_id !== deleteId) throw new Error('The removal summary is not about this scan.');
+      return impact;
+    },
+    enabled: deleteDialogOpen && deleteId != null,
+  });
+  const impactLoading = impactQuery.isFetching;
+  const impactError = !impactLoading && impactQuery.isError;
+  // While it is read again the previous answer is not shown: the delete waits.
+  const deletionImpact = !impactLoading && !impactQuery.isError ? impactQuery.data ?? null : null;
   const importRunning = importRunningNotice(deletionImpact);
-  const impactRequest = useRef(0);
   // Known from the preview; from the refusal when the preview could not be
   // read.  While the preview is loading it is not known, and the delete waits.
   const hostsWithWork = deletionImpact
@@ -193,25 +237,48 @@ export default function Scans() {
   // waiting", a queue row's Review, a batch's Review).  It replaced the
   // one-file FormatRetryDialog, which made a 26-file drop 26 dialogs.
   const [reviewResume, setReviewResume] = useState<{ jobs: IngestionJob[] } | null>(null);
-  const [activeJobs, setActiveJobs] = useState<Record<number, IngestionJob>>({});
-  const [recentJobs, setRecentJobs] = useState<IngestionJob[]>([]);
-  // v5.271.0 — every staged job, not just those among the 25 recent: the
-  // 26th file of a drop was missing from the queue, its Review and its Discard.
-  const [stagedJobs, setStagedJobs] = useState<IngestionJob[]>([]);
-  const [recentJobsFetched, setRecentJobsFetched] = useState<Date | null>(null);
-  const [recentJobsLoading, setRecentJobsLoading] = useState(false);
+
+  // The ingestion queue: the 25 most recent jobs, and (v5.271.0) EVERY staged
+  // job — the 26th file of a drop was missing from the queue, its Review and
+  // its Discard.  Re-read every 5 s while a job is queued or processing;
+  // otherwise every 15 s when the reader turned the queue's "Auto" switch on
+  // (off when the page opens, and not remembered), and not at all without it.
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const queuePollMs = (jobs: IngestionJob[] | undefined): number | null => {
+    if (holdsActiveJob(jobs)) return ACTIVE_QUEUE_POLL_MS;
+    return autoRefresh ? AUTO_QUEUE_POLL_MS : null;
+  };
+  const recentQuery = useQuery({
+    queryKey: ['getRecentIngestionJobs', 25],
+    queryFn: () => getRecentIngestionJobs(25),
+    ...pollEvery((query) => queuePollMs(query.state.data)),
+  });
+  const stagedQuery = useQuery({
+    queryKey: ['getStagedIngestionJobs'],
+    queryFn: () => getStagedIngestionJobs(),
+    ...pollEvery(queuePollMs(recentQuery.data)),
+  });
+  // The two are shown together, so the queue never appears first without the
+  // staged files the recent jobs do not reach.
+  const queueRead = !recentQuery.isPending && !stagedQuery.isPending;
+  const recentJobs = useMemo(() => (queueRead ? recentQuery.data ?? [] : []), [queueRead, recentQuery.data]);
+  // The staged list is a completion of the recent one; if it cannot be read,
+  // the queue still shows the staged jobs among the recent.
+  const stagedJobs = useMemo(() => {
+    if (!queueRead) return [];
+    return stagedQuery.isError || !stagedQuery.data
+      ? recentJobs.filter((j) => j.status === 'staged')
+      : stagedQuery.data;
+  }, [queueRead, recentJobs, stagedQuery.isError, stagedQuery.data]);
+  const recentJobsFetched = useMemo(
+    () => (recentQuery.dataUpdatedAt ? new Date(recentQuery.dataUpdatedAt) : null),
+    [recentQuery.dataUpdatedAt],
+  );
+  const recentJobsLoading = recentQuery.isFetching || stagedQuery.isFetching;
   // v5.270.0 — the queue could not be read: said, never shown as "nothing failed".
-  const [recentJobsError, setRecentJobsError] = useState(false);
+  const recentJobsError = recentQuery.isError;
 
   const [expandedScanIds, setExpandedScanIds] = useState<number[]>([]);
-  // v5.207.0 — upload batches, one row per sweep. Their files leave the flat
-  // inventory unless the operator asks to list them individually.
-  const [batches, setBatches] = useState<ScanBatchSummary[]>([]);
-  // v5.239.0 — the import history's ORDER (batches and single files together,
-  // newest first), from the server; `scans` and `batches` hold the rows.
-  const [history, setHistory] = useState<ImportHistoryEntry[]>([]);
-  const [historyPartial, setHistoryPartial] = useState(false);
-  const [historyTotal, setHistoryTotal] = useState<number | null>(null);
 
   // ---------------------------------------------------------------------
   // Scan Inventory filters + pagination (v4.47.0 QoL pass).
@@ -281,8 +348,6 @@ export default function Scans() {
   const { canWrite, isProjectAdmin } = useProjectRole();
   const skipInformational = currentProject?.skip_informational_effective ?? false;
   const debouncedSearchText = useDebouncedValue(searchText, 300);
-  const [hasMoreScans, setHasMoreScans] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
   // Avoid the URL-sync effect firing during the very first render before
   // the user has touched anything — react-router would still write an
   // empty query string, which churns the browser history.
@@ -314,7 +379,6 @@ export default function Scans() {
     [debouncedSearchText, toolFilter, createdAfterIso, uploaderFilter],
   );
   const [expandedJobIds, setExpandedJobIds] = useState<Set<number>>(new Set());
-  const [commandCache, setCommandCache] = useState<Record<number, CommandExplanation>>({});
 
   const toggleJobExpanded = (id: number) => {
     setExpandedJobIds((prev) => {
@@ -325,141 +389,95 @@ export default function Scans() {
     });
   };
 
-  const fetchRecentJobs = useCallback(async () => {
-    setRecentJobsLoading(true);
-    try {
-      const [jobs, staged] = await Promise.all([
-        getRecentIngestionJobs(25),
-        // The staged list is a completion of the recent one; if it cannot
-        // be read, the queue still shows the staged jobs among the recent.
-        getStagedIngestionJobs().catch((err) => {
-          console.error('Error fetching staged ingestion jobs:', err);
-          return null;
-        }),
-      ]);
-      setRecentJobs(jobs);
-      setStagedJobs(staged ?? jobs.filter((j) => j.status === 'staged'));
-      setRecentJobsFetched(new Date());
-      setRecentJobsError(false);
-    } catch (err) {
-      console.error('Error fetching ingestion jobs:', err);
-      setRecentJobsError(true);
-    } finally {
-      setRecentJobsLoading(false);
-    }
-  }, []);
-
-  const hydrateHistory = useCallback(
-    (items: ImportHistoryEntry[], filters: HistoryFilters) =>
-      hydrateHistoryRows(items, filters, { getScans, getScanBatches }),
-    [],
-  );
-
-  const fetchScans = useCallback(async () => {
-    // Only the latest call applies its result: filters, the job poll and the
-    // inventory marker all call this, and an older, slower response used to
-    // land last (review 2026-09-23 R11).
-    const gen = ++fetchGenRef.current;
-    const current = () => gen === fetchGenRef.current;
-    const filters = listFilters;
-    if (showBatchFiles) {
-      // All files: one flat, sortable list of every imported file.
-      try {
-        const data = await getScans(0, SCAN_LIMIT, { ...filters, sortBy, sortOrder, unbatched: false });
-        if (!current()) return;
-        setScans(data);
-        setHasMoreScans(data.length === SCAN_LIMIT);
-        setHistoryError(null);
-      } catch (err) {
-        if (!current()) return;
-        console.error('Error fetching scans:', err);
-        setHistoryError(formatApiError(err, 'Could not load the imported scans.'));
+  // The import history, a page at a time ("Load more").
+  //   Grouped by upload (v5.239.0): the SERVER decides the order of batches
+  //   and single files together (`GET /scans/history`); a page is that order
+  //   plus its rows, fetched by id from the endpoints that compute them.  They
+  //   were two cards paginated separately, which no client-side merge can put
+  //   in order past the first page.
+  //   All files: one flat, sortable list of every imported file.
+  // A new filter keeps the rows on screen until its own arrive; a failure is
+  // said as one (it used to read "No scans uploaded yet").
+  const historyQuery = useInfiniteQuery<HistoryPage, unknown, InfiniteData<HistoryPage, number>, unknown[], number>({
+    queryKey: showBatchFiles
+      ? ['getScans', { ...listFilters, sortBy, sortOrder, unbatched: false }, { limit: SCAN_LIMIT }]
+      : ['getImportHistory', listFilters, { limit: HISTORY_PAGE }],
+    queryFn: async ({ pageParam, signal }) => {
+      if (showBatchFiles) {
+        const files = await getScans(pageParam, SCAN_LIMIT, {
+          ...listFilters, sortBy, sortOrder, unbatched: false, signal,
+        });
+        return {
+          flat: true, entries: [], scans: files, batches: [], partial: false, total: null,
+          hasMore: files.length === SCAN_LIMIT,
+        };
       }
-      setBatches([]);
-      setHistory([]);
-      setHistoryPartial(false);
-    } else {
-      // Grouped by upload (v5.239.0): the SERVER decides the order of batches
-      // and single files together; this page only fills the rows in.  They
-      // were two cards paginated separately, which no client-side merge can
-      // put in order past the first page.
-      try {
-        const page = await getImportHistory({ ...filters, limit: HISTORY_PAGE });
-        const rows = await hydrateHistory(page.items, filters);
-        if (!current()) return;
-        setHistory(page.items);
-        setHistoryTotal(typeof page.total === 'number' ? page.total : null);
-        setScans(rows.scans);
-        setBatches(rows.batches);
-        setHistoryPartial(rows.partial);
-        setHasMoreScans(page.has_more);
-        setHistoryError(null);
-      } catch (err) {
-        if (!current()) return;
-        // A failure is said as one; it used to read "No scans uploaded yet"
-        // on a first load, and leave the previous filter's rows on a change.
-        console.error('Error fetching import history:', err);
-        setHistoryError(formatApiError(err, 'Could not load the import history.'));
-      }
-    }
-    setLoading(false);
-    // Headline totals are filter-aware and independent of pagination, so a
-    // failure here must not block the table from rendering — fetch separately.
-    try {
-      const summary = await getScansSummary(filters);
-      if (current()) { setInventorySummary(summary); setSummaryFailed(false); }
-    } catch (err) {
-      console.error('Error fetching scan summary:', err);
-      // The counts on screen belong to another filter: not known beats wrong.
-      if (current()) { setInventorySummary(null); setSummaryFailed(true); }
-    }
-  }, [listFilters, sortBy, sortOrder, showBatchFiles, hydrateHistory]);
-
-  const loadMoreScans = useCallback(async () => {
-    if (loadingMore || !hasMoreScans) return;
-    // A page that lands after the filters changed belongs to the old list.
-    const gen = fetchGenRef.current;
-    setLoadingMore(true);
-    try {
-      const filters = listFilters;
-      if (!showBatchFiles) {
-        const page = await getImportHistory({ ...filters, skip: history.length, limit: HISTORY_PAGE });
-        const rows = await hydrateHistory(page.items, filters);
-        if (gen !== fetchGenRef.current) return;
-        setHistory((prev) => [...prev, ...page.items]);
-        setScans((prev) => [...prev, ...rows.scans]);
-        setBatches((prev) => [...prev, ...rows.batches]);
-        if (rows.partial) setHistoryPartial(true);
-        setHasMoreScans(page.has_more);
-        return;
-      }
-      const data = await getScans(scans.length, SCAN_LIMIT, {
-        ...filters,
-        sortBy,
-        sortOrder,
-        unbatched: false,
+      const page = await getImportHistory({
+        ...listFilters, ...(pageParam > 0 ? { skip: pageParam } : {}), limit: HISTORY_PAGE, signal,
       });
-      if (gen !== fetchGenRef.current) return;
-      setScans((prev) => [...prev, ...data]);
-      setHasMoreScans(data.length === SCAN_LIMIT);
-    } catch (err) {
-      if (gen !== fetchGenRef.current) return;
-      toast.error(formatApiError(err, 'Could not load more of the import history'));
-    } finally {
-      setLoadingMore(false);
+      const rows = await hydrateHistoryRows(page.items, listFilters, { getScans, getScanBatches });
+      return {
+        flat: false, entries: page.items, scans: rows.scans, batches: rows.batches, partial: rows.partial,
+        total: typeof page.total === 'number' ? page.total : null,
+        hasMore: page.has_more,
+      };
+    },
+    initialPageParam: 0,
+    getNextPageParam: (last, pages) => (last.hasMore
+      ? pages.reduce((n, page) => n + (page.flat ? page.scans.length : page.entries.length), 0)
+      : undefined),
+    placeholderData: keepPreviousData,
+  });
+  const historyPages = historyQuery.data?.pages;
+  // v5.239.0 — the import history's ORDER (batches and single files together,
+  // newest first), from the server; `scans` and `batches` hold the rows.
+  const history = useMemo(() => historyPages?.flatMap((page) => page.entries) ?? [], [historyPages]);
+  const scans = useMemo(() => historyPages?.flatMap((page) => page.scans) ?? [], [historyPages]);
+  // v5.207.0 — upload batches, one row per sweep. Their files leave the flat
+  // inventory unless the operator asks to list them individually.
+  const batches = useMemo(() => historyPages?.flatMap((page) => page.batches) ?? [], [historyPages]);
+  const historyPartial = !!historyPages?.some((page) => page.partial);
+  const historyTotal = historyPages?.[0]?.total ?? null;
+  // Which way the rows ON SCREEN are listed: while the other view loads, they
+  // are still the previous view's.
+  const listedFlat = historyPages?.[0]?.flat ?? showBatchFiles;
+  // The skeleton is for the first read only.  A read that failed with nothing
+  // to show and is being tried again keeps the page — and what it said went
+  // wrong — until the answer arrives: the upload review may be open on it.
+  const loading = historyQuery.isPending && historyQuery.errorUpdateCount === 0;
+  const retryingFailedLoad = historyQuery.isPending && historyQuery.errorUpdateCount > 0;
+  // A failed "Load more" is a toast; it is not a failure of the list on screen.
+  const failedNow = historyQuery.isFetchNextPageError
+    ? null
+    : queryErrorText(
+      historyQuery.error,
+      showBatchFiles ? 'Could not load the imported scans.' : 'Could not load the import history.',
+    );
+  const lastFailure = useRef<string | null>(null);
+  if (failedNow) lastFailure.current = failedNow;
+  else if (!retryingFailedLoad) lastFailure.current = null;
+  const historyError = failedNow ?? (retryingFailedLoad ? lastFailure.current : null);
+  const hasMoreScans = historyQuery.hasNextPage;
+  const loadingMore = historyQuery.isFetchingNextPage;
+  const { fetchNextPage } = historyQuery;
+  const loadMoreScans = useCallback(async () => {
+    const result = await fetchNextPage();
+    if (result.isFetchNextPageError) {
+      toast.error(formatApiError(result.error, 'Could not load more of the import history'));
     }
-  }, [
-    toast,
-    hydrateHistory,
-    scans.length,
-    listFilters,
-    sortBy,
-    sortOrder,
-    showBatchFiles,
-    loadingMore,
-    hasMoreScans,
-    history.length,
-  ]);
+  }, [fetchNextPage, toast]);
+
+  // Filter-aware totals for the lead and the tool counts — counted server-side
+  // so they reflect every matching file, not just the loaded pages.  Its own
+  // read: a failure here must not block the table.  When it fails its counts
+  // are shown as not known, never as the previous filter's or the loaded rows'.
+  const summaryQuery = useQuery({
+    queryKey: ['getScansSummary', listFilters],
+    queryFn: ({ signal }) => getScansSummary({ ...listFilters, signal }),
+    placeholderData: keepPreviousData,
+  });
+  const summaryFailed = summaryQuery.isError || (summaryQuery.isPending && summaryQuery.errorUpdateCount > 0);
+  const inventorySummary = summaryFailed ? null : summaryQuery.data ?? null;
 
   // Per-row tool badge rendered as a clickable filter — same behaviour
   // as the section-header chips.  stopPropagation so it doesn't also
@@ -525,10 +543,10 @@ export default function Scans() {
   // all-files view keeps the sortable ones.
   const historyRows = useMemo(() => orderHistoryRows(history, scans, batches), [history, scans, batches]);
   const tableRows = useMemo(
-    () => (showBatchFiles
+    () => (listedFlat
       ? scans.map((scan) => ({ kind: 'scan' as const, key: `scan-${scan.id}`, scan }))
       : historyRows),
-    [showBatchFiles, scans, historyRows],
+    [listedFlat, scans, historyRows],
   );
   const historyHeader = (column: SortBy, label: string, className?: string) =>
     showBatchFiles
@@ -565,30 +583,17 @@ export default function Scans() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedSearchText, toolFilter, dateRangeDays, sinceIso, sortBy, sortOrder, showBatchFiles, uploaderFilter]);
 
-  useEffect(() => {
-    fetchScans();
-    fetchRecentJobs();
-  }, [fetchScans, fetchRecentJobs]);
+  // The command's explanation is read by the expanded row itself
+  // (`ScanCommandDetail`), the first time it opens.
+  const toggleScanExpanded = useCallback((scanId: number) => {
+    setExpandedScanIds((prev) => (prev.includes(scanId) ? prev.filter((id) => id !== scanId) : [...prev, scanId]));
+  }, []);
 
-  const toggleScanExpanded = useCallback(
-    (scanId: number) => {
-      setExpandedScanIds((prev) => (prev.includes(scanId) ? prev.filter((id) => id !== scanId) : [...prev, scanId]));
-      if (!commandCache[scanId]) {
-        getScanCommandExplanation(scanId)
-          .then((data) => setCommandCache((prev) => ({ ...prev, [scanId]: data })))
-          // Audit FBK·L6 — on failure DON'T write to the cache.  The
-          // pre-audit shape stored a synthetic "Failed to load" entry,
-          // which then short-circuited every subsequent re-open via the
-          // `!commandCache[scanId]` guard and the user could never
-          // retry.  Leaving the entry undefined means the next click
-          // re-triggers the fetch.
-          .catch(() => {
-            /* leave cache untouched so the next click retries */
-          });
-      }
-    },
-    [commandCache],
-  );
+  // The import results of files that just finished: a lookup by id, asked
+  // once per batch of finished files.
+  const { mutateAsync: lookUpResults } = useMutation({
+    mutationFn: (ids: number[]) => getScans(0, ids.length, { ids }),
+  });
 
   // v5.222.0 — the banner entry that submitted a job follows it: queued /
   // processing show the worker's message; completed fetches the scan row's
@@ -599,11 +604,10 @@ export default function Scans() {
     if (jobs.length === 0) return;
 
     // v5.239.1 — the import results of the files that just finished, in ONE
-    // request.  This was a getScans() per finished file, issued from INSIDE
-    // the state updater below: a 30-file drop finishing together sent ~25
-    // identical-shaped requests in 300 ms, and an updater is not a place for
-    // side effects (React may run it more than once).  `requested` makes each
-    // file's result fetched once however many poll ticks report it complete.
+    // request.  This was a getScans() per finished file: a 30-file drop
+    // finishing together sent ~25 identical-shaped requests in 300 ms.
+    // `requested` makes each file's result fetched once however many times a
+    // job is reported complete.
     const wanted: Array<{ key: string; scanId: number }> = [];
     for (const [key, entry] of Object.entries(uploadProgressRef.current)) {
       if (entry.jobId == null || entry.result || resultRequestedRef.current.has(key)) continue;
@@ -615,7 +619,7 @@ export default function Scans() {
     }
     if (wanted.length > 0) {
       const ids = Array.from(new Set(wanted.map((w) => w.scanId)));
-      getScans(0, ids.length, { ids })
+      lookUpResults(ids)
         .then((rows) => {
           const byId = new Map(rows.map((row) => [row.id, row]));
           setUploadProgress((p) => {
@@ -628,7 +632,7 @@ export default function Scans() {
           });
         })
         .catch(() => {
-          // Let a later poll tick try again rather than leave the rows blank.
+          // Not asked for, as far as a later report of the job is concerned.
           wanted.forEach((w) => resultRequestedRef.current.delete(w.key));
         });
     }
@@ -662,85 +666,61 @@ export default function Scans() {
       }
       return changed ? nextEntries : prev;
     });
-  }, []);
+  }, [lookUpResults]);
 
   // v5.248.0 — following the started files is ONE request per tick
-  // (`GET /upload/jobs?ids=`), on the visibility-aware poll. It was one GET per
-  // job on a fixed 4 s interval: 30 files meant 30 requests a tick, a slow
-  // response overlapped the next tick, and a hidden tab kept going.
-  const pollJobs = useCallback(async () => {
-    const asked = activeJobIds;
-    if (asked.length === 0) return;
-    const jobs = await getIngestionJobsByIds(asked); // a rejection backs the poll off
-    const returned = new Set(jobs.map((j) => j.id));
-    const doneIds: number[] = [];
-    let anyCompleted = false;
-    const next: Record<number, IngestionJob> = {};
-    for (const job of jobs) {
-      next[job.id] = job;
-      if (job.status === 'completed' || job.status === 'failed') {
-        doneIds.push(job.id);
-        if (job.status === 'completed') anyCompleted = true;
-      }
-    }
+  // (`GET /upload/jobs?ids=`): at once for a file just handed over, then every
+  // 4 s while the tab is visible.  It was one GET per job on a fixed interval:
+  // 30 files meant 30 requests a tick, and a hidden tab kept going.
+  const followedQuery = useQuery({
+    queryKey: ['getIngestionJobsByIds', activeJobIds],
+    queryFn: () => getIngestionJobsByIds(activeJobIds),
+    enabled: activeJobIds.length > 0,
+    ...pollEvery(4000),
+  });
+  // The answer is for exactly `activeJobIds` (they are its key).
+  const followedJobs = followedQuery.data;
+  useEffect(() => {
+    if (!followedJobs) return;
+    const returned = new Set(followedJobs.map((j) => j.id));
+    const done = followedJobs.filter((j) => j.status === 'completed' || j.status === 'failed');
     // A job the server no longer returns (deleted, or not this user's) was a
     // 404 the old per-job poll retried for the life of the page.
-    const goneIds = asked.filter((id) => !returned.has(id));
-    setActiveJobs((prev) => ({ ...prev, ...next }));
+    const goneIds = activeJobIds.filter((id) => !returned.has(id));
     // v5.222.0 — carry the job's state onto the file's banner entry.
-    applyJobsToUploadEntries(jobs);
-    if (doneIds.length > 0 || goneIds.length > 0) {
-      const stop = new Set([...doneIds, ...goneIds]);
+    applyJobsToUploadEntries(followedJobs);
+    if (done.length > 0 || goneIds.length > 0) {
+      const stop = new Set([...done.map((j) => j.id), ...goneIds]);
       setActiveJobIds((prev) => prev.filter((id) => !stop.has(id)));
-      fetchRecentJobs();
-      if (anyCompleted) fetchScans();
+      refreshQueue();
+      if (done.some((j) => j.status === 'completed')) refreshInventory();
     }
-  }, [activeJobIds, fetchScans, fetchRecentJobs, applyJobsToUploadEntries]);
-
-  useVisibilityPoll(pollJobs, 4000, activeJobIds.length > 0);
-  // The poll waits one interval before its first run; a file just handed over
-  // should show its state at once.
-  const pollJobsRef = useRef(pollJobs);
-  pollJobsRef.current = pollJobs;
-  useEffect(() => {
-    if (activeJobIds.length > 0) void pollJobsRef.current().catch(() => undefined);
-  }, [activeJobIds]);
-
-  // Recent-jobs polling — depend only on the boolean, not the full
-  // recentJobs array.  Pre-audit (H20) this effect re-ran on every
-  // poll tick (because each tick called setRecentJobs), which cleared
-  // and recreated the interval, producing uneven cadence and
-  // occasional duplicate intervals.
-  const hasActiveRecent = useMemo(
-    () => recentJobs.some((j) => j.status === 'queued' || j.status === 'processing'),
-    [recentJobs],
+  }, [followedJobs, activeJobIds, applyJobsToUploadEntries, refreshQueue, refreshInventory]);
+  const activeJobs = useMemo(
+    () => new Map((followedJobs ?? []).map((job) => [job.id, job])),
+    [followedJobs],
   );
-  // Visibility-aware and settle-then-wait (v5.248.0) — it was a fixed interval
-  // that overlapped a slow response and kept running in a hidden tab.
-  useVisibilityPoll(fetchRecentJobs, 5000, hasActiveRecent);
 
   // v5.207.0 — refresh when ANY scan lands. The job polling above only
   // follows uploads this tab submitted, so scans from an agent or another
   // tab raised counters elsewhere while this list stayed stale. Polls a
-  // count + newest-id marker (one indexed query) while the tab is visible.
+  // count + newest-id marker (one indexed query) while the tab is visible;
+  // the first answer is the baseline.
+  const markerQuery = useQuery({
+    queryKey: ['getScanInventoryMarker'],
+    queryFn: () => getScanInventoryMarker(),
+    ...pollEvery(15_000),
+  });
+  const markerKey = markerQuery.data ? markerKeyOf(markerQuery.data) : null;
   const inventoryMarkerRef = useRef<string | null>(null);
-  const checkInventoryMarker = useCallback(async () => {
-    // Not caught: a rejection is what makes the poll back off during an
-    // outage (it used to swallow the error and keep its 15 s cadence).
-    const marker = await getScanInventoryMarker();
-    const key = `${marker.count}:${marker.latest_id ?? ''}`;
-    if (inventoryMarkerRef.current !== null && inventoryMarkerRef.current !== key) {
-      fetchScans();
-      fetchRecentJobs();
-    }
-    inventoryMarkerRef.current = key;
-  }, [fetchScans, fetchRecentJobs]);
-  useVisibilityPoll(checkInventoryMarker, 15_000);
-  // Take the baseline at once, so the first change is seen on the first tick.
   useEffect(() => {
-    void checkInventoryMarker().catch(() => undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (markerKey === null) return;
+    if (inventoryMarkerRef.current !== null && inventoryMarkerRef.current !== markerKey) {
+      refreshInventory();
+      refreshQueue();
+    }
+    inventoryMarkerRef.current = markerKey;
+  }, [markerKey, refreshInventory, refreshQueue]);
 
   const groupedScans = useMemo(
     () =>
@@ -834,51 +814,33 @@ export default function Scans() {
   });
 
   const handleViewScan = (scanId: number) => navigate(`/scans/${scanId}`);
-  // Fetch the real impact so the modal can detail exactly what's removed.
-  // Hosts are deduplicated across scans, so this is rarely a blanket wipe.
-  // Every load un-ticks the review box: a tick is about the list on screen.
-  const loadDeletionImpact = (scanId: number) => {
-    const request = ++impactRequest.current;
-    setDeletionImpact(null);
-    setImpactError(false);
-    setImpactLoading(true);
-    setWorkReviewed(false);
-    return getScanDeletionImpact(scanId)
-      .then((impact) => {
-        // Ignore a stale response if the user already targeted another scan;
-        // an answer that is not about this scan is not a summary of it.
-        if (request !== impactRequest.current) return;
-        if (impact?.scan_id === scanId) setDeletionImpact(impact);
-        else setImpactError(true);
-      })
-      .catch(() => {
-        if (request === impactRequest.current) setImpactError(true);
-      })
-      .finally(() => {
-        if (request === impactRequest.current) setImpactLoading(false);
-      });
-  };
+  // The dialog's preview (`impactQuery`) is read when it opens.  Every read
+  // un-ticks the review box: a tick is about the list on screen.
   const handleDeleteClick = (scan: Scan) => {
     setScanToDelete(scan);
     setWorkRefusal(null);
     setImportRefusal(null);
+    setWorkReviewed(false);
     setDeleteDialogOpen(true);
-    void loadDeletionImpact(scan.id);
   };
-  const handleDeleteConfirm = async () => {
-    if (!scanToDelete || deleteLoading) return;
-    setDeleteLoading(true);
-    setImportRefusal(null);
-    try {
-      if (workReviewed) await deleteScan(scanToDelete.id, { confirmHostsWithWork: true });
-      else await deleteScan(scanToDelete.id);
-      setScans((prev) => prev.filter((s) => s.id !== scanToDelete.id));
-      toast.success(`Scan "${scanToDelete.filename}" deleted.`);
+  const { refetch: reloadImpact } = impactQuery;
+  const { refetch: reloadMarker } = markerQuery;
+  const deletion = useMutation({
+    mutationFn: ({ scan, confirmed }: { scan: Scan; confirmed: boolean }) =>
+      (confirmed ? deleteScan(scan.id, { confirmHostsWithWork: true }) : deleteScan(scan.id)),
+    onSuccess: (_result, { scan }) => {
+      toast.success(`Scan "${scan.filename}" deleted.`);
       setDeleteDialogOpen(false);
       setScanToDelete(null);
-      setDeletionImpact(null);
       setWorkRefusal(null);
-    } catch (err) {
+      refreshInventory();
+      // The inventory marker moves with this delete, and the lists are being
+      // read again already: its new value is the baseline, not a change.
+      void reloadMarker().then((marker) => {
+        if (marker.data) inventoryMarkerRef.current = markerKeyOf(marker.data);
+      });
+    },
+    onError: async (err, { scan }) => {
       const refusal = hostsWithWorkRefusal(err);
       const importing = importRunningRefusal(err);
       if (importing) {
@@ -886,22 +848,76 @@ export default function Scans() {
         // was changed: say so in the server's words over a fresh preview,
         // which also says whether the import is still running.
         setImportRefusal(importing);
-        await loadDeletionImpact(scanToDelete.id);
+        setWorkReviewed(false);
+        await reloadImpact();
       } else if (refusal) {
         // Hosts this scan removes carry work the reader has not confirmed
         // (added since the preview, or the preview never loaded).  Show the
         // server's words over a fresh list and ask again.
         setWorkRefusal(refusal);
-        await loadDeletionImpact(scanToDelete.id);
+        setWorkReviewed(false);
+        await reloadImpact();
       } else {
         // Keep the dialog open on failure so the reader can retry, and say
         // what failed: the row is still in the list.
-        toast.error(formatApiError(err, `Failed to delete scan "${scanToDelete.filename}".`));
+        toast.error(formatApiError(err, `Failed to delete scan "${scan.filename}".`));
       }
-    } finally {
-      setDeleteLoading(false);
-    }
+    },
+  });
+  // Busy until the preview has been read again after a refusal.
+  const deleteLoading = deletion.isPending;
+  const handleDeleteConfirm = () => {
+    if (!scanToDelete || deleteLoading) return;
+    setImportRefusal(null);
+    deletion.mutate({ scan: scanToDelete, confirmed: workReviewed });
   };
+
+  // What an operator does to one job of the queue.  Each says what happened
+  // and puts the queue (and the failure counts) out of date.
+  const discardStaged = useMutation({
+    mutationFn: (ids: number[]) => discardStagedJobs(ids),
+    onSuccess: (res, ids) => {
+      const n = ids.length;
+      toast.info(
+        res.discarded === n
+          ? `Discarded ${res.discarded} staged upload${res.discarded === 1 ? '' : 's'}`
+          : `Discarded ${res.discarded} of ${n}; the rest were no longer staged`,
+      );
+      jobsChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not discard the staged uploads')),
+  });
+  const discardJob = useMutation({
+    mutationFn: (job: IngestionJob) => discardIngestionJob(job.id),
+    onSuccess: () => {
+      toast.info('Staged upload discarded');
+      jobsChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not discard the staged upload')),
+  });
+  const cancelJob = useMutation({
+    mutationFn: (job: IngestionJob) => cancelIngestionJob(job.id),
+    onSuccess: () => {
+      toast.info('Ingestion cancelled');
+      jobsChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not cancel ingestion')),
+  });
+  const retryJob = useMutation({
+    mutationFn: (job: IngestionJob) => retryIngestionJob(job.id),
+    onSuccess: () => {
+      toast.info('Re-queued for parsing');
+      jobsChanged();
+    },
+    // 409 when the upload was already cleaned up — the message tells the user
+    // to re-upload.
+    onError: (err) => toast.error(formatApiError(err, 'Could not retry ingestion')),
+  });
+  const dismissJob = useMutation({
+    mutationFn: (job: IngestionJob) => dismissIngestionJob(job.id),
+    onSuccess: () => jobsChanged(),
+    onError: (err) => toast.error(formatApiError(err, 'Could not dismiss the failed import')),
+  });
 
   // v2.59.0 — Scan Timeline removed from this page and replaced by the
   // cross-project /tool-activity surface, which plots SOC-correlation
@@ -913,90 +929,6 @@ export default function Scans() {
   // were dropped as duplicative; kept as a no-op so the JSX call sites stay
   // small and a future Scan-column headline has somewhere to land.
   const statusBadge = (_scan: Scan): React.ReactNode => null;
-
-  const commandDetail = (scan: Scan) => {
-    const explanation = commandCache[scan.id];
-    const hasCommand = !!(scan.command_line && scan.command_line.trim());
-
-    if (!hasCommand) {
-      return (
-        <div className="rounded-control bg-accent px-md py-sm text-metadata text-muted-foreground">
-          No command line data available for this scan.
-          {scan.tool_name && !['nmap', 'masscan'].includes((scan.tool_name || '').toLowerCase()) && (
-            <> {scan.tool_name} output does not include producing configuration.</>
-          )}
-        </div>
-      );
-    }
-
-    return (
-      <div className="flex flex-col gap-sm rounded-control bg-accent px-md py-sm">
-        <div>
-          <p className="mb-xxs text-caption font-semibold text-muted-foreground">Command</p>
-          <div className="break-words rounded-control border border-border bg-card px-sm py-xs font-mono text-caption">
-            {scan.command_line}
-          </div>
-        </div>
-        {(scan.version || scan.tool_name || scan.uploaded_by) && (
-          <div className="flex flex-wrap gap-md text-caption text-muted-foreground">
-            {scan.version && (
-              <span>
-                <strong>Version:</strong> {scan.version}
-              </span>
-            )}
-            {scan.tool_name && (
-              <span>
-                <strong>Tool:</strong> {scan.tool_name}
-              </span>
-            )}
-            {scan.uploaded_by && (
-              <span>
-                <strong>Uploaded by:</strong> {scan.uploaded_by_name || scan.uploaded_by}
-              </span>
-            )}
-          </div>
-        )}
-        {!explanation && (
-          <div className="flex items-center gap-xs text-caption text-muted-foreground">
-            <Loader2 className="size-3 animate-spin" aria-hidden />
-            Loading argument analysis…
-          </div>
-        )}
-        {explanation?.has_command && explanation.arguments && explanation.arguments.length > 0 && (
-          <div>
-            <p className="mb-xxs text-caption font-semibold text-muted-foreground">
-              Arguments ({explanation.arguments.length})
-            </p>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-1/5">Flag</TableHead>
-                  <TableHead className="w-1/6">Category</TableHead>
-                  <TableHead>Description</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {explanation.arguments.map((arg, idx) => (
-                  <TableRow key={idx}>
-                    <TableCell className="truncate font-mono">{arg.arg}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{arg.category}</Badge>
-                    </TableCell>
-                    <TableCell className="truncate">{arg.description}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
-        {explanation?.summary && (
-          <Alert variant="info">
-            <AlertDescription>{explanation.summary}</AlertDescription>
-          </Alert>
-        )}
-      </div>
-    );
-  };
 
   // The newest upload among what is loaded (the first page is newest first).
   const lastImportAt = [
@@ -1139,7 +1071,7 @@ export default function Scans() {
       {activeJobIds.length > 0 && (
         <div className="mb-sm flex flex-col gap-xs" aria-live="polite" aria-atomic="false">
           {activeJobIds.map((jobId) => {
-            const job = activeJobs[jobId];
+            const job = activeJobs.get(jobId);
             if (!job) return null;
             if (Object.values(uploadProgress).some((e) => e.jobId === jobId)) return null;
             return (
@@ -1249,17 +1181,7 @@ export default function Scans() {
                         confirmLabel: `Discard ${n}`,
                       });
                       if (!ok) return;
-                      try {
-                        const res = await discardStagedJobs(ids);
-                        toast.info(
-                          res.discarded === n
-                            ? `Discarded ${res.discarded} staged upload${res.discarded === 1 ? '' : 's'}`
-                            : `Discarded ${res.discarded} of ${n}; the rest were no longer staged`,
-                        );
-                        await fetchRecentJobs();
-                      } catch (err) {
-                        toast.error(formatApiError(err, 'Could not discard the staged uploads'));
-                      }
+                      discardStaged.mutate(ids);
                     }}
                   >
                     Discard {stagedJobs.length} staged
@@ -1267,10 +1189,12 @@ export default function Scans() {
                 )}
                 <LastUpdated
                   lastFetched={recentJobsFetched}
-                  onRefresh={fetchRecentJobs}
+                  onRefresh={refreshQueue}
                   isLoading={recentJobsLoading}
                   label="ingestion jobs"
-                  intervalMs={15000}
+                  intervalMs={AUTO_QUEUE_POLL_MS}
+                  autoRefresh={autoRefresh}
+                  onAutoRefreshChange={setAutoRefresh}
                 />
               </div>
             </div>
@@ -1535,15 +1459,7 @@ export default function Scans() {
                                   size="sm"
                                   variant="ghost"
                                   className="text-destructive"
-                                  onClick={async () => {
-                                    try {
-                                      await discardIngestionJob(job.id);
-                                      toast.info('Staged upload discarded');
-                                      await fetchRecentJobs();
-                                    } catch (err) {
-                                      toast.error(formatApiError(err, 'Could not discard the staged upload'));
-                                    }
-                                  }}
+                                  onClick={() => discardJob.mutate(job)}
                                   aria-label={`Discard staged upload ${job.original_filename}`}
                                 >
                                   Discard
@@ -1566,13 +1482,7 @@ export default function Scans() {
                                     confirmLabel: 'Cancel job',
                                   });
                                   if (!ok) return;
-                                  try {
-                                    await cancelIngestionJob(job.id);
-                                    toast.info('Ingestion cancelled');
-                                    await fetchRecentJobs();
-                                  } catch (err) {
-                                    toast.error(formatApiError(err, 'Could not cancel ingestion'));
-                                  }
+                                  cancelJob.mutate(job);
                                 }}
                                 aria-label={`Cancel ingestion for ${job.original_filename}`}
                               >
@@ -1583,17 +1493,7 @@ export default function Scans() {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                onClick={async () => {
-                                  try {
-                                    await retryIngestionJob(job.id);
-                                    toast.info('Re-queued for parsing');
-                                    await fetchRecentJobs();
-                                  } catch (err) {
-                                    // 409 when the upload was already cleaned
-                                    // up — the message tells the user to re-upload.
-                                    toast.error(formatApiError(err, 'Could not retry ingestion'));
-                                  }
-                                }}
+                                onClick={() => retryJob.mutate(job)}
                                 aria-label={`Retry failed ingestion for ${job.original_filename}`}
                               >
                                 Retry
@@ -1603,14 +1503,7 @@ export default function Scans() {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                onClick={async () => {
-                                  try {
-                                    await dismissIngestionJob(job.id);
-                                    await fetchRecentJobs();
-                                  } catch (err) {
-                                    toast.error(formatApiError(err, 'Could not dismiss the failed import'));
-                                  }
-                                }}
+                                onClick={() => dismissJob.mutate(job)}
                                 aria-label={`Dismiss failed ingestion for ${job.original_filename}`}
                               >
                                 Dismiss
@@ -1669,7 +1562,7 @@ export default function Scans() {
               {historyError}
               {(scans.length > 0 || batches.length > 0) && ' The rows below are from the last successful load.'}
             </span>
-            <Button size="sm" variant="outline" onClick={() => void fetchScans()}>Retry</Button>
+            <Button size="sm" variant="outline" onClick={refreshInventory}>Retry</Button>
           </AlertDescription>
         </Alert>
       )}
@@ -1821,7 +1714,7 @@ export default function Scans() {
               Refresh to try again.
             </p>
           )}
-          {(showBatchFiles ? scans.length === 0 : historyRows.length === 0) ? (
+          {tableRows.length === 0 ? (
             // Filter-aware empty state — section header + filters
             // remain visible so the user can clear or refine without
             // navigating away.
@@ -2067,7 +1960,7 @@ export default function Scans() {
                         {hasCommand && isExpanded && (
                           <TableRow>
                             <TableCell colSpan={5} className="py-sm">
-                              {commandDetail(scan)}
+                              <ScanCommandDetail scan={scan} />
                             </TableCell>
                           </TableRow>
                         )}
@@ -2111,7 +2004,7 @@ export default function Scans() {
             // Cleared on close: left set, the next "Upload scans" would bring
             // back files discarded in this review.
             setReviewResume(null);
-            void fetchRecentJobs();
+            refreshQueue();
           }
         }}
         resume={reviewResume}
@@ -2368,6 +2261,116 @@ export default function Scans() {
     </div>
   );
 }
+
+/**
+ * A file row's expanded detail: the command that produced the scan and what
+ * its arguments mean.  The explanation is read the first time the row opens
+ * and kept while the page is in use (a command does not change); a read that
+ * failed is asked again the next time the row opens.
+ */
+export const ScanCommandDetail: React.FC<{ scan: Scan }> = ({ scan }) => {
+  const hasCommand = !!(scan.command_line && scan.command_line.trim());
+  const explained = useQuery({
+    queryKey: ['getScanCommandExplanation', scan.id],
+    queryFn: () => getScanCommandExplanation(scan.id),
+    enabled: hasCommand,
+    ...rememberFor(30 * 60_000),
+    // This query's own lifecycle: the answer is remembered for the visit, so a
+    // remembered FAILURE would be too.  Opening the row again asks again (the
+    // shared default is not to, so one component's failure is not hidden by
+    // another's mount — here there is one reader, and reopening is the retry).
+    retryOnMount: true,
+  });
+  const explanation = explained.data;
+
+  if (!hasCommand) {
+    return (
+      <div className="rounded-control bg-accent px-md py-sm text-metadata text-muted-foreground">
+        No command line data available for this scan.
+        {scan.tool_name && !['nmap', 'masscan'].includes((scan.tool_name || '').toLowerCase()) && (
+          <> {scan.tool_name} output does not include producing configuration.</>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-sm rounded-control bg-accent px-md py-sm">
+      <div>
+        <p className="mb-xxs text-caption font-semibold text-muted-foreground">Command</p>
+        <div className="break-words rounded-control border border-border bg-card px-sm py-xs font-mono text-caption">
+          {scan.command_line}
+        </div>
+      </div>
+      {(scan.version || scan.tool_name || scan.uploaded_by) && (
+        <div className="flex flex-wrap gap-md text-caption text-muted-foreground">
+          {scan.version && (
+            <span>
+              <strong>Version:</strong> {scan.version}
+            </span>
+          )}
+          {scan.tool_name && (
+            <span>
+              <strong>Tool:</strong> {scan.tool_name}
+            </span>
+          )}
+          {scan.uploaded_by && (
+            <span>
+              <strong>Uploaded by:</strong> {scan.uploaded_by_name || scan.uploaded_by}
+            </span>
+          )}
+        </div>
+      )}
+      {!explanation && explained.isError && !explained.isFetching && (
+        // Failed is not loading (code review 2026-10-09: the spinner stayed for ever).
+        <p role="alert" className="text-caption text-destructive">
+          Couldn&rsquo;t load the argument analysis.{' '}
+          <button type="button" className="text-info hover:underline" onClick={() => void explained.refetch()}>
+            Retry
+          </button>
+        </p>
+      )}
+      {!explanation && (!explained.isError || explained.isFetching) && (
+        <div className="flex items-center gap-xs text-caption text-muted-foreground">
+          <Loader2 className="size-3 animate-spin" aria-hidden />
+          Loading argument analysis…
+        </div>
+      )}
+      {explanation?.has_command && explanation.arguments && explanation.arguments.length > 0 && (
+        <div>
+          <p className="mb-xxs text-caption font-semibold text-muted-foreground">
+            Arguments ({explanation.arguments.length})
+          </p>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-1/5">Flag</TableHead>
+                <TableHead className="w-1/6">Category</TableHead>
+                <TableHead>Description</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {explanation.arguments.map((arg, idx) => (
+                <TableRow key={idx}>
+                  <TableCell className="truncate font-mono">{arg.arg}</TableCell>
+                  <TableCell>
+                    <Badge variant="outline">{arg.category}</Badge>
+                  </TableCell>
+                  <TableCell className="truncate">{arg.description}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+      {explanation?.summary && (
+        <Alert variant="info">
+          <AlertDescription>{explanation.summary}</AlertDescription>
+        </Alert>
+      )}
+    </div>
+  );
+};
 
 /**
  * The page's lead (v5.270.0): how much has been imported, whether anything

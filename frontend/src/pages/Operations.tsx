@@ -30,13 +30,13 @@
  * list, the recent-activity column and the Project state section went
  * (Agent Sessions, Collaboration and Posture hold them).
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, Loader2, MessageCircleQuestion, RefreshCw, Sparkles } from 'lucide-react';
 import StartAssistDialog from '../components/StartAssistDialog';
 import {
   OperationsBlockers,
-  ProjectCoverageResponse,
   SinceLastVisit,
   WorkbenchResponse,
   getProjectCoverage,
@@ -49,10 +49,11 @@ import { useProject } from '../contexts/ProjectContext';
 import { projectRoleAtLeast } from '../utils/projectRole';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useCanStartAgentSession } from '../hooks/useCanStartAgentSession';
-import { formatApiError } from '../utils/apiErrors';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
 import AgentSessionsLine from '../components/operations/AgentSessionsLine';
 import OperationsTabs from '../components/operations/OperationsTabs';
+import { OPERATIONS_READS } from '../components/operations/QueueParts';
 import LastUpdated from '../components/LastUpdated';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -70,13 +71,18 @@ import {
 } from '../utils/operationsTabs';
 import { useMyAssistSessions } from '../hooks/useMyAssistSessions';
 
-/** The page's independently fetched sources, each with its own load time. */
-type LoadedSource = 'workbench' | 'coverage';
-/** The oldest load on the page; null until something has loaded. */
-const oldestLoad = (loaded: Partial<Record<LoadedSource, Date>>): Date | null => {
-  const times = Object.values(loaded).filter((d): d is Date => d instanceof Date);
-  return times.length ? times.reduce((a, b) => (a.getTime() <= b.getTime() ? a : b)) : null;
+/** The oldest of the page's loads (each `dataUpdatedAt`, 0 = not loaded yet);
+ *  null until something has loaded. */
+const oldestLoad = (...loadedAt: number[]): Date | null => {
+  const times = loadedAt.filter((t) => t > 0);
+  return times.length ? new Date(Math.min(...times)) : null;
 };
+
+/** The light workbench call: every tab's count, the blockers and the
+ *  since-last-visit diff — no rows, and not the queue. */
+const LIGHT_WORKBENCH = { includeInvestigate: false, includeRows: false } as const;
+/** The queue's size: one row is asked for, the totals are whole-queue. */
+const QUEUE_TOTAL_ONLY = { limit: 1 } as const;
 
 const IMPORT_ERRORS_PATH = '/parse-errors?status=needs_attention';
 
@@ -245,41 +251,43 @@ const Operations: React.FC = () => {
   const canStartScan = currentProject?.my_role === undefined
     || projectRoleAtLeast(currentProject.my_role, 'analyst');
 
-  const [coverage, setCoverage] = useState<ProjectCoverageResponse | null>(null);
-  const [coverageLoading, setCoverageLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  // Operations owns ONE light /workbench fetch: every tab's count, the
+  const queryClient = useQueryClient();
+  // Three independent reads, in parallel; each isolates its own failure, so
+  // an outage shows as counts that "could not be checked" instead of
+  // blanking the page.
+  //
+  // Coverage is structural: it says whether the project has scopes and hosts
+  // at all, which decides between the setup blocks and the page — so its
+  // failure raises the page-level error.  (Its scope states and the
+  // scanner-observation counts are shown on Posture since 5.330.0.)
+  const coverageQuery = useQuery({
+    queryKey: ['getProjectCoverage'],
+    queryFn: () => getProjectCoverage(),
+  });
+  const coverage = coverageQuery.data ?? null;
+  const error = queryErrorText(coverageQuery.error, 'Failed to load Operations data.');
+  // Operations owns ONE light /workbench read: every tab's count, the
   // blockers and the since-last-visit diff — no rows (5.331.0).  A tab's rows
   // are its panel's own request, made when the tab is opened.
-  const [workbench, setWorkbench] = useState<WorkbenchResponse | null>(null);
-  const [workbenchLoading, setWorkbenchLoading] = useState(true);
-  const [workbenchError, setWorkbenchError] = useState<string | null>(null);
+  const workbenchQuery = useQuery({
+    queryKey: ['getWorkbench', LIGHT_WORKBENCH],
+    queryFn: () => getWorkbench(LIGHT_WORKBENCH),
+  });
+  // Counts that could not be read again are not known: never the previous
+  // ones under a failure.
+  const workbench: WorkbenchResponse | null = workbenchQuery.isError ? null : workbenchQuery.data ?? null;
+  const workbenchLoading = workbenchQuery.isFetching;
+  const workbenchError = queryErrorText(workbenchQuery.error, 'Could not load your workbench.');
 
   // The untouched queue's SIZE, on its own request (v5.304.1: on a large
-  // project the queue was most of the workbench's time): one row is asked
-  // for, the totals are whole-queue.  null = not known — loading, or it could
-  // not be computed — and never shown as 0.
-  const [pickupTotal, setPickupTotal] = useState<number | null>(null);
-  const [pickupLoading, setPickupLoading] = useState(true);
-  const pickupGenRef = useRef(0);
-  // `quiet`: after an action — keep the count shown until the new one arrives.
-  const loadPickupTotal = useCallback((quiet = false) => {
-    const gen = ++pickupGenRef.current;
-    if (!quiet) setPickupLoading(true);
-    return getInvestigationQueue(null, { limit: 1 })
-      .then((q) => {
-        if (gen !== pickupGenRef.current) return;
-        setPickupTotal(q.queue_total);
-      })
-      .catch(() => {
-        if (gen !== pickupGenRef.current) return;
-        setPickupTotal(null);
-      })
-      .finally(() => {
-        if (gen !== pickupGenRef.current) return;
-        setPickupLoading(false);
-      });
-  }, []);
+  // project the queue was most of the workbench's time).  null = not known —
+  // loading, or it could not be computed (a 503) — and never shown as 0.
+  const pickupQuery = useQuery({
+    queryKey: ['getInvestigationQueue', null, QUEUE_TOTAL_ONLY],
+    queryFn: () => getInvestigationQueue(null, QUEUE_TOTAL_ONLY),
+  });
+  const pickupTotal: number | null = pickupQuery.isError ? null : pickupQuery.data?.queue_total ?? null;
+  const pickupLoading = pickupQuery.isFetching;
 
   // The tab, the Pick up tier, the Tests kind and the Findings need live in
   // the URL, so a link to "the exploitable criticals", "what is free to
@@ -306,131 +314,60 @@ const Operations: React.FC = () => {
   const setTestKind = useCallback((next: MyTaskReason | null) => setTabFilter('kind', next), [setTabFilter]);
   const setFindingNeed = useCallback((next: FindingNeed | null) => setTabFilter('need', next), [setTabFilter]);
 
-  const [sinceDismissed, setSinceDismissed] = useState(false);
   // §27: do NOT advance the "since last visit" cursor merely because the page
   // loaded — that silently discarded changes the user never actually reviewed.
-  // We only bootstrap it once on the genuine first visit (nothing to review
-  // yet); thereafter it advances only when the user acknowledges the banner.
+  // It is bootstrapped once, on the genuine first visit (no prior baseline,
+  // so nothing to lose); thereafter it advances only when the user
+  // acknowledges the banner, so a glance doesn't discard unreviewed changes.
+  const { mutate: bootstrapSeen } = useMutation({ mutationFn: () => markWorkbenchSeen() });
   const seenBootstrappedRef = useRef(false);
-  // Stale-write guard: `reload` is fired imperatively from Refresh, every
-  // section's Retry, and the mount effect, so two can overlap. Each run claims
-  // the next generation; a run only writes state if it's still the latest,
-  // so a slower earlier payload can't land on top of a newer one.
-  const reloadGenRef = useRef(0);
-  const [sinceSaving, setSinceSaving] = useState(false);
-  const [sinceError, setSinceError] = useState<string | null>(null);
-  const sinceAsOf = workbench?.since_last_visit.as_of ?? null;
-  const dismissSince = useCallback(() => {
-    // Acknowledge the snapshot that was DISPLAYED (its `as_of`), not "now":
-    // a scan that landed after the page loaded must resurface. The banner
-    // only goes once the cursor is saved — a silent failure brought the same
-    // changes back on the next visit with no explanation.
-    setSinceSaving(true);
-    setSinceError(null);
-    markWorkbenchSeen(sinceAsOf)
-      .then(() => setSinceDismissed(true))
-      .catch((err) => setSinceError(formatApiError(err, 'Could not save the acknowledgement. Try again.')))
-      .finally(() => setSinceSaving(false));
-  }, [sinceAsOf]);
-
-  // When each independently fetched source last SUCCEEDED. Several sections
-  // keep their previous data on a failed refresh; the page's Refresh shows the
-  // oldest of them.
-  const [loadedAt, setLoadedAt] = useState<Partial<Record<LoadedSource, Date>>>({});
-  const markLoaded = useCallback((source: LoadedSource) => {
-    setLoadedAt((prev) => ({ ...prev, [source]: new Date() }));
-  }, []);
-
-  const reload = useCallback(async () => {
-    const gen = ++reloadGenRef.current;
-    const isStale = () => gen !== reloadGenRef.current;
-    setError(null);
-    setCoverageLoading(true);
-    setWorkbenchLoading(true);
-    setWorkbenchError(null);
-
-    // The workbench and the queue's total are independent of the coverage
-    // load — each isolates its own failure, so an outage shows as counts that
-    // "could not be checked" instead of blanking the page.
-    void loadPickupTotal();
-    getWorkbench({ includeInvestigate: false, includeRows: false })
-      .then((wb) => {
-        if (isStale()) return;
-        setWorkbench(wb);
-        markLoaded('workbench');
-        // A fresh snapshot is diffed against the saved cursor, so anything it
-        // reports arrived after the last acknowledgement — show it again.
-        setSinceDismissed(false);
-        setSinceError(null);
-        // Bootstrap the cursor on the very first visit only (no prior baseline,
-        // so nothing to lose) — otherwise leave it until the user acknowledges
-        // the banner, so a glance doesn't discard unreviewed changes.
-        if (!seenBootstrappedRef.current && wb.since_last_visit.is_first_visit) {
-          seenBootstrappedRef.current = true;
-          markWorkbenchSeen().catch(() => undefined);
-        }
-      })
-      .catch((err) => {
-        if (isStale()) return;
-        setWorkbench(null);
-        setWorkbenchError(formatApiError(err, 'Could not load your workbench.'));
-      })
-      .finally(() => {
-        if (isStale()) return;
-        setWorkbenchLoading(false);
-      });
-
-    // Coverage is structural: it says whether the project has scopes and
-    // hosts at all, which decides between the setup blocks and the page — so
-    // its failure raises the page-level error.  (Its scope states and the
-    // scanner-observation counts are shown on Posture since 5.330.0.)
-    try {
-      const value = await getProjectCoverage();
-      // A newer reload superseded us while this was in flight — drop the
-      // payload so it can't overwrite the fresher one.
-      if (isStale()) return;
-      setCoverage(value);
-      markLoaded('coverage');
-    } catch (err) {
-      if (isStale()) return;
-      setError(formatApiError(err, 'Failed to load Operations data.'));
-    }
-    setCoverageLoading(false);
-  }, [loadPickupTotal, markLoaded]);
-
+  const isFirstVisit = workbench?.since_last_visit.is_first_visit === true;
   useEffect(() => {
-    void reload();
-    // Once per mount: `reload` is stable.
-  }, [reload]);
+    if (!isFirstVisit || seenBootstrappedRef.current) return;
+    seenBootstrappedRef.current = true;
+    bootstrapSeen();
+  }, [isFirstVisit, bootstrapSeen]);
 
-  // After an action in a list (take, still reviewed, re-open, claim, undo):
-  // the counts, without spinners (5.304.0) — the list re-reads its own rows
-  // in place.  The full `reload` blanked the page and moved it under the
-  // pointer after each click.
-  const countsGenRef = useRef(0);
-  const refreshCountsQuietly = useCallback(() => {
-    const gen = ++countsGenRef.current;
-    getWorkbench({ includeInvestigate: false, includeRows: false })
-      .then((wb) => {
-        // Two actions in a row: only the newer answer is the state now.
-        if (gen !== countsGenRef.current) return;
-        setWorkbench(wb);
-        markLoaded('workbench');
-      })
-      .catch(() => { /* the next full refresh reports it */ });
-    // Taking a host into review moves it out of the untouched queue.
-    void loadPickupTotal(true);
-  }, [loadPickupTotal, markLoaded]);
+  // Acknowledge the snapshot that was DISPLAYED (its `as_of`), not "now": a
+  // scan that landed after the page loaded must resurface.  The banner only
+  // goes once the cursor is saved — a silent failure brought the same changes
+  // back on the next visit with no explanation.
+  //
+  // What was acknowledged is ONE snapshot (the read it came from): a fresher
+  // one is diffed against the saved cursor, so anything it reports arrived
+  // after the acknowledgement and is shown again.
+  const snapshotAt = workbenchQuery.dataUpdatedAt;
+  const [acknowledgedSnapshot, setAcknowledgedSnapshot] = useState<number | null>(null);
+  const sinceDismissed = acknowledgedSnapshot != null && acknowledgedSnapshot === snapshotAt;
+  const acknowledge = useMutation({
+    mutationFn: (seen: { asOf: string | null; snapshot: number }) => markWorkbenchSeen(seen.asOf),
+    onSuccess: (_saved, seen) => setAcknowledgedSnapshot(seen.snapshot),
+  });
+  const sinceAsOf = workbench?.since_last_visit.as_of ?? null;
+  const dismissSince = () => acknowledge.mutate({ asOf: sinceAsOf, snapshot: snapshotAt });
+  const sinceError = queryErrorText(acknowledge.error, 'Could not save the acknowledgement. Try again.');
 
-  // The page Refresh: the selected tab's list and the agent-sessions line
-  // fetch for themselves, so `reload` alone left them showing what they
-  // loaded on mount. The key is bumped only here (not inside `reload`, which
-  // also runs on mount — that would fetch them twice).
-  const [refreshKey, setRefreshKey] = useState(0);
+  // Retry on the counts' failure: the page's three reads again.
+  const reload = () => {
+    void coverageQuery.refetch();
+    void workbenchQuery.refetch();
+    void pickupQuery.refetch();
+  };
+
+  // The page Refresh reaches everything on it: the three reads above, the
+  // selected tab's list — from its first page — and the agent-sessions line.
+  // (After an action in a list the same reads are repeated without the
+  // structural one: `useOperationsChanged`.)
+  const { reset: resetAcknowledge } = acknowledge;
   const refreshAll = useCallback(() => {
-    setRefreshKey((k) => k + 1);
-    void reload();
-  }, [reload]);
+    resetAcknowledge();
+    if (pageParams.has('page')) {
+      const params = new URLSearchParams(pageParams);
+      params.delete('page');
+      setPageParams(params, { replace: true });
+    }
+    void invalidateReads(queryClient, 'getProjectCoverage', ...OPERATIONS_READS, 'listAgentSessions');
+  }, [pageParams, queryClient, resetAcknowledge, setPageParams]);
 
   // FRX·CRIT-2: brand-new projects (no scopes AND no hosts) see the welcome
   // block alone — Refresh chrome just adds noise before anything exists.
@@ -458,10 +395,8 @@ const Operations: React.FC = () => {
   // An active assist session is an outstanding agent key. Surface the count on
   // the entry point so an operator doesn't mint a second one without knowing
   // the first is still live — assist has no one-active-session constraint.
-  const {
-    sessions: myAssistSessions,
-    refresh: refreshAssistSessions,
-  } = useMyAssistSessions();
+  // (A session started or ended in the dialog invalidates this read itself.)
+  const { sessions: myAssistSessions } = useMyAssistSessions();
 
   // The tab bar's counts: the workbench's own totals and the queue's.
   const counts: OperationsTabCounts = operationsTabCounts(workbench, pickupTotal);
@@ -470,13 +405,20 @@ const Operations: React.FC = () => {
   // ONCE, when the counts first arrive (or fail): finishing the last finding
   // must not move the reader to another tab under their hands.
   const [defaultTab, setDefaultTab] = useState<OperationsTab | null>(null);
+  const countsSettled = !workbenchQuery.isPending;
   useEffect(() => {
-    if (defaultTab != null || workbenchLoading) return;
+    if (defaultTab != null || !countsSettled) return;
     setDefaultTab(workbench ? firstNonEmptyTab(operationsTabCounts(workbench, null)) : 'findings');
-  }, [defaultTab, workbench, workbenchLoading]);
+  }, [defaultTab, workbench, countsSettled]);
   const tab = urlTab ?? defaultTab;
   // A link that opens a tab of this page, keeping the page's parameters.
   const toTab = (target: OperationsTab, filter?: TabFilter | null) => tabSearch(pageParams, target, filter);
+  // One freshness for the page: the OLDEST of its loads (a read that failed
+  // again keeps the time it last succeeded).
+  const lastFetched = useMemo(
+    () => oldestLoad(workbenchQuery.dataUpdatedAt, coverageQuery.dataUpdatedAt),
+    [workbenchQuery.dataUpdatedAt, coverageQuery.dataUpdatedAt],
+  );
 
   return (
     <div className="min-w-0 p-md md:p-lg">
@@ -510,9 +452,9 @@ const Operations: React.FC = () => {
                 load on it, and one refresh that reaches every section. */}
             <LastUpdated
               compact
-              lastFetched={oldestLoad(loadedAt)}
+              lastFetched={lastFetched}
               onRefresh={refreshAll}
-              isLoading={coverageLoading}
+              isLoading={coverageQuery.isFetching}
               label="Operations"
             />
           </>
@@ -523,7 +465,6 @@ const Operations: React.FC = () => {
         open={canStartAgent && assistDialogOpen}
         onOpenChange={setAssistDialogOpen}
         mySessions={myAssistSessions}
-        onSessionsChanged={refreshAssistSessions}
       />
 
       {error && (
@@ -588,7 +529,7 @@ const Operations: React.FC = () => {
               <AlertDescription>
                 <p className="break-words">{workbenchError}</p>
                 <p className="mt-xxs">The tabs below still load their own lists; a count shown as “—” could not be checked.</p>
-                <Button size="sm" variant="outline" className="mt-xs" onClick={() => void reload()}>
+                <Button size="sm" variant="outline" className="mt-xs" onClick={reload}>
                   <RefreshCw className="size-3.5" aria-hidden /> Retry
                 </Button>
               </AlertDescription>
@@ -600,7 +541,7 @@ const Operations: React.FC = () => {
             <SinceLastVisitBanner
               since={workbench.since_last_visit}
               onDismiss={dismissSince}
-              saving={sinceSaving}
+              saving={acknowledge.isPending}
               error={sinceError}
             />
           )}
@@ -618,8 +559,6 @@ const Operations: React.FC = () => {
             countsLoading={workbenchLoading}
             pickupLoading={pickupLoading}
             canWrite={canWrite}
-            refreshKey={refreshKey}
-            onCountsChanged={refreshCountsQuietly}
             tier={tier}
             onTier={setTier}
             testKind={testKind}
@@ -629,7 +568,7 @@ const Operations: React.FC = () => {
             onFindingNeed={setFindingNeed}
           />
 
-          <AgentSessionsLine refreshKey={refreshKey} />
+          <AgentSessionsLine />
         </div>
       )}
     </div>

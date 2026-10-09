@@ -2,21 +2,23 @@
  * Freshness indicator with manual + optional auto-refresh.
  *
  * Surfaces "Updated 20s ago" alongside a refresh button so operators
- * always know how stale a dashboard or job list is.  Pages that want
- * background polling can pass `defaultAutoRefresh` and the user can
- * toggle it from the same control without round-tripping through a
- * settings menu.
+ * always know how stale a dashboard or job list is.  A page that polls
+ * in the background on request shows the "Auto" switch in the same
+ * control, without round-tripping through a settings menu.
  *
- * The component owns the auto-refresh interval — it calls `onRefresh`
- * on tick when enabled.  Pages just have to provide:
- *   - the timestamp of the last successful fetch
- *   - the refresh callback (must be stable; wrap in useCallback if it
- *     closes over state)
- *   - a label (e.g. "Dashboard" or "Jobs") for the auto-refresh
- *     tooltip
+ * Pages provide:
+ *   - the timestamp of the last successful fetch (a query's `dataUpdatedAt`)
+ *   - the refresh callback (the query's `refetch`)
+ *   - a label (e.g. "Dashboard" or "Jobs") for the auto-refresh tooltip
+ *
+ * **Auto-refresh is the page's query polling** (5.351.0): the page holds the
+ * switch (`autoRefresh` + `onAutoRefreshChange`) and gives its query
+ * `...pollEvery(autoRefresh ? intervalMs : null)` (lib/query).  This
+ * component runs no timer: it only shows the switch (`pages/Scans.tsx` is
+ * the one caller of the non-compact form).
  */
 
-import React, { useState } from 'react';
+import React from 'react';
 import { RefreshCw } from 'lucide-react';
 import { cn } from '../utils/cn';
 import { Button } from './ui/button';
@@ -24,20 +26,21 @@ import { Label } from './ui/label';
 import { Switch } from './ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { useNow } from '../hooks/useNow';
-import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import { formatRelativeTime } from '../utils/relativeTime';
 
 export interface LastUpdatedProps {
   /** Timestamp of the most recent successful fetch (Date or ISO string). null = never fetched. */
   lastFetched: Date | string | null;
-  /** Called when the user clicks refresh, or when the auto-refresh interval ticks. */
+  /** Called when the user clicks refresh. */
   onRefresh: () => void;
   /** True while a fetch is in flight — disables the refresh button and dims the timestamp. */
   isLoading?: boolean;
-  /** Auto-refresh interval in milliseconds. Default 60000 (60s). */
+  /** Auto-refresh interval in milliseconds, as the switch's tooltip says it. Default 60000 (60s). */
   intervalMs?: number;
-  /** Whether auto-refresh starts enabled. Default false (manual only). */
-  defaultAutoRefresh?: boolean;
+  /** Whether the page's query is polling (the switch's position).  Non-compact only. */
+  autoRefresh?: boolean;
+  /** The reader moved the switch: the page turns its query's poll on or off.  Non-compact only. */
+  onAutoRefreshChange?: (on: boolean) => void;
   /** Short label used in the auto-refresh switch tooltip ("Auto-refresh dashboard"). */
   label?: string;
   /** Compact mode hides the auto-refresh toggle and only shows the timestamp + button. */
@@ -59,18 +62,15 @@ export const LastUpdated: React.FC<LastUpdatedProps> = ({
   onRefresh,
   isLoading = false,
   intervalMs = 60000,
-  defaultAutoRefresh = false,
+  autoRefresh = false,
+  onAutoRefreshChange,
   label = 'data',
   compact = false,
 }) => {
-  const [autoRefresh, setAutoRefresh] = useState(defaultAutoRefresh);
   // Shared 10s "now" tick — every LastUpdated on the page subscribes
   // to the same underlying setInterval registered by useNow, instead
   // of each instance owning its own (audit PRF·L2).
   useNow(10_000);
-
-  // Auto-refresh — visibility-gated so backgrounded tabs stop firing.
-  useVisibilityPoll(onRefresh, autoRefresh ? intervalMs : null);
 
   const relative = formatRelative(lastFetched);
   const switchId = React.useId();
@@ -106,7 +106,7 @@ export const LastUpdated: React.FC<LastUpdatedProps> = ({
               <Switch
                 id={switchId}
                 checked={autoRefresh}
-                onCheckedChange={setAutoRefresh}
+                onCheckedChange={onAutoRefreshChange}
               />
               <Label htmlFor={switchId} className="text-caption text-muted-foreground">
                 Auto

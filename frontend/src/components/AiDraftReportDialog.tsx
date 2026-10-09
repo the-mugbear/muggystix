@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { copyToClipboard } from '../utils/clipboard';
 import { downloadTextFile } from '../utils/download';
 import { useNavigate } from 'react-router-dom';
@@ -19,6 +20,7 @@ import {
   type LLMProviderEntry,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
@@ -63,6 +65,12 @@ const ElapsedSeconds: React.FC<{ startedAt: number }> = ({ startedAt }) => {
   return <>{Math.max(0, Math.floor((now - startedAt) / 1000))}s</>;
 };
 
+/** The operator pressed Cancel: said as such, never as a failure. */
+const wasCancelled = (err: unknown): boolean => {
+  const e = asAxiosError(err);
+  return e.name === 'CanceledError' || e.code === 'ERR_CANCELED';
+};
+
 /**
  * "Draft with AI (beta)" — asks a configured LLM provider to draft a markdown
  * report from the project's promoted findings, then hands the raw markdown to
@@ -73,83 +81,72 @@ const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ open, onClose
   const navigate = useNavigate();
   const toast = useToast();
 
-  const [providers, setProviders] = useState<LLMProviderEntry[]>([]);
-  const [providersLoaded, setProvidersLoaded] = useState(false);
-  const [providersError, setProvidersError] = useState<string | null>(null);
-  const [providerId, setProviderId] = useState<number | ''>('');
+  // The providers are the installation's, read each time the dialog opens.
+  const providersQuery = useQuery({
+    queryKey: [GLOBAL, 'listLLMProviders'],
+    queryFn: () => listLLMProviders(),
+    enabled: open,
+  });
+  const providers: LLMProviderEntry[] = providersQuery.data ?? [];
+  const providersLoaded = !providersQuery.isFetching;
+  const providersError = queryErrorText(providersQuery.error, 'Failed to load LLM providers.');
+  const loadProviders = () => { void providersQuery.refetch(); };
+  // The default provider until the operator picks another.
+  const [chosenProvider, setChosenProvider] = useState<number | ''>('');
+  const defaultProviderId: number | '' = providers.length > 0
+    ? (providers.find((prov) => prov.is_default) ?? providers[0]).id
+    : '';
+  const providerId = chosenProvider !== '' ? chosenProvider : defaultProviderId;
 
   const [audience, setAudience] = useState('');
   const [instructions, setInstructions] = useState('');
 
-  const [loading, setLoading] = useState(false);
-  const [loadingStartedAt, setLoadingStartedAt] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<DraftReportResponse | null>(null);
-  // The operator-owned, editable copy of the draft. Seeded from the model's
-  // output, then diverges as the human edits.
-  const [draft, setDraft] = useState('');
-
+  // Cancel is the operator's: the request in flight is theirs to stop.
   const abortRef = useRef<AbortController | null>(null);
+  const generate = useMutation({
+    mutationFn: (request: Parameters<typeof draftReportWithAI>[0]) => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+      return draftReportWithAI(request, { signal: controller.signal });
+    },
+    onMutate: () => setEdited(null),
+    onSuccess: (res) => {
+      toast.success(`Draft ready — built from ${res.finding_total} finding${res.finding_total === 1 ? '' : 's'}.`);
+    },
+    onError: (err) => {
+      if (wasCancelled(err)) toast.info('Draft cancelled.');
+    },
+    onSettled: () => { abortRef.current = null; },
+  });
+  const loading = generate.isPending;
+  const loadingStartedAt = loading ? generate.submittedAt : null;
+  const result: DraftReportResponse | null = generate.data ?? null;
+  // Backend `detail` (400 user-fixable / 502 provider failure) is surfaced
+  // verbatim by formatApiError.
+  const error = generate.error && !wasCancelled(generate.error)
+    ? formatApiError(generate.error, 'Failed to draft the report.')
+    : null;
+  // The operator-owned, editable copy of the draft: the model's output until
+  // the human edits it.
+  const [edited, setEdited] = useState<string | null>(null);
+  const draft = edited ?? result?.content ?? '';
+  const setDraft = setEdited;
 
-  const loadProviders = useCallback(async () => {
-    setProvidersError(null);
-    try {
-      const list = await listLLMProviders();
-      setProviders(list);
-      const def = list.find((prov) => prov.is_default) || list[0];
-      if (def) setProviderId(def.id);
-    } catch (err: unknown) {
-      setProvidersError(formatApiError(err, 'Failed to load LLM providers.'));
-    } finally {
-      setProvidersLoaded(true);
-    }
-  }, []);
-
-  // Load providers when the dialog opens; reset transient state so a reopen
-  // doesn't show a stale draft or error.
+  // A reopen doesn't show a stale draft, error or choice of provider.
+  const resetGenerate = generate.reset;
   useEffect(() => {
     if (!open) return;
-    setError(null);
-    setResult(null);
-    setDraft('');
-    setProvidersLoaded(false);
-    loadProviders();
-  }, [open, loadProviders]);
+    resetGenerate();
+    setEdited(null);
+    setChosenProvider('');
+  }, [open, resetGenerate]);
 
-  useEffect(() => {
-    setLoadingStartedAt(loading ? Date.now() : null);
-  }, [loading]);
-
-  const handleGenerate = async () => {
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    abortRef.current = new AbortController();
-    try {
-      const res = await draftReportWithAI(
-        {
-          provider_id: providerId === '' ? undefined : (providerId as number),
-          audience: audience.trim() || undefined,
-          instructions: instructions.trim() || undefined,
-        },
-        { signal: abortRef.current.signal },
-      );
-      setResult(res);
-      setDraft(res.content);
-      toast.success(`Draft ready — built from ${res.finding_total} finding${res.finding_total === 1 ? '' : 's'}.`);
-    } catch (err: unknown) {
-      const e = asAxiosError(err);
-      if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') {
-        toast.info('Draft cancelled.');
-      } else {
-        // Backend `detail` (400 user-fixable / 502 provider failure) is surfaced
-        // verbatim by formatApiError.
-        setError(formatApiError(err, 'Failed to draft the report.'));
-      }
-    } finally {
-      setLoading(false);
-      abortRef.current = null;
-    }
+  const handleGenerate = () => {
+    generate.mutate({
+      provider_id: providerId === '' ? undefined : providerId,
+      audience: audience.trim() || undefined,
+      instructions: instructions.trim() || undefined,
+    });
   };
 
   const handleCancel = () => abortRef.current?.abort();
@@ -232,7 +229,7 @@ const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ open, onClose
                   <Label htmlFor="ai-draft-provider">Provider</Label>
                   <Select
                     value={providerId === '' ? '' : String(providerId)}
-                    onValueChange={(v) => setProviderId(v ? Number(v) : '')}
+                    onValueChange={(v) => setChosenProvider(v ? Number(v) : '')}
                     disabled={loading}
                   >
                     <SelectTrigger id="ai-draft-provider">

@@ -254,7 +254,9 @@ describe('Agent Sessions', () => {
     renderPage();
 
     const table = await screen.findByTestId('runs-table');
-    const rows = within(table).getAllByTestId('run-row');
+    // The table is there before its rows are (5.351.0: the test read them in
+    // the same tick as the table).
+    const rows = await within(table).findAllByTestId('run-row');
     for (const link of within(rows[0]).getAllByRole('link', { name: 'Open agent session 60' })) {
       expect(link).toHaveAttribute('href', '/agent-sessions/60');
     }
@@ -428,7 +430,9 @@ describe('Agent Sessions — filters in the URL', () => {
     expect(mockedApi.listAgentSessions).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'assist', model: 'claude-opus-4-7', tool: 'claude-code' }),
     );
-    expect(screen.getByLabelText('Filter sessions by model')).toHaveTextContent('claude-opus-4-7');
+    // The chosen model's name is an option once the roll-up has named it
+    // (5.351.0: the test read it in the same tick as the table).
+    await waitFor(() => expect(screen.getByLabelText('Filter sessions by model')).toHaveTextContent('claude-opus-4-7'));
     expect(screen.getByLabelText('Filter sessions by client')).toHaveTextContent('claude-code');
   });
 

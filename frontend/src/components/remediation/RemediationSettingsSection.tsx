@@ -12,7 +12,8 @@
  * deadline.  The zone decides which calendar day is "today" on the server —
  * this page never works a state out itself.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
 import {
@@ -20,9 +21,11 @@ import {
   type RemediationPolicy, type RemediationPolicyPreview, type RemediationState,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
+import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { setRemediationPolicy } from '../../hooks/useRemediationPolicy';
+import { GLOBAL, queryErrorText } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
-import { severityWord } from '../../utils/remediation';
+import { invalidateRemediationReads, severityWord } from '../../utils/remediation';
 import PostureSection from '../posture/PostureSection';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -105,91 +108,89 @@ export const policyEffect = (preview: RemediationPolicyPreview): string => {
     : 'No finding changes state.';
 };
 
+/** What Save would send — and what the preview asks about. */
+const bodyOf = (from: Draft, stored: RemediationPolicy) => {
+  const zone = from.time_zone.trim();
+  return {
+    days: Object.fromEntries(SEVERITIES.map((s) => [s, from[s].trim() === '' ? null : Number(from[s])])),
+    due_soon_days: Number(from.due_soon),
+    // Sent only when it changed: the days are one form, the zone moves
+    // every state at once and should not ride along unnoticed.
+    ...(zone !== zoneOf(stored) ? { time_zone: zone } : {}),
+  };
+};
+
+// The same read as `hooks/useRemediationPolicy` (the navigation's).
+const POLICY_KEY = [GLOBAL, 'getRemediationPolicy'];
+
 export const RemediationSettingsSection: React.FC = () => {
   const toast = useToast();
-  const [policy, setPolicy] = useState<RemediationPolicy | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [busy, setBusy] = useState<'switch' | 'days' | null>(null);
+  const queryClient = useQueryClient();
+  const query = useQuery({ queryKey: POLICY_KEY, queryFn: ({ signal }) => getRemediationPolicy(signal) });
+  const policy = query.data ?? null;
+  const error = queryErrorText(query.error, 'The remediation settings could not be loaded.');
+  const load = () => { void query.refetch(); };
 
-  const load = () => {
-    setError(null);
-    getRemediationPolicy()
-      .then((p) => { setPolicy(p); setDraft(draftOf(p)); })
-      .catch((err) => setError(formatApiError(err, 'The remediation settings could not be loaded.')));
-  };
-  useEffect(load, []);
+  // What was typed, per field, over what is stored.
+  const [edits, setEdits] = useState<Draft>({});
+  const draft: Draft | null = policy ? { ...draftOf(policy), ...edits } : null;
+  const edit = (field: string, value: string) => setEdits((e) => ({ ...e, [field]: value }));
 
   const saved = (next: RemediationPolicy) => {
-    setPolicy(next);
-    setDraft(draftOf(next));
+    queryClient.setQueryData(POLICY_KEY, next);
+    setEdits({});
     setRemediationPolicy(next);          // the navigation follows at once
+    // Every deadline and state is worked out from the policy.
+    void invalidateRemediationReads(queryClient);
   };
 
-  const toggle = async (on: boolean) => {
-    setBusy('switch');
-    try {
-      saved(await updateRemediationPolicy({ enabled: on }));
+  const toggling = useMutation({
+    mutationFn: (on: boolean) => updateRemediationPolicy({ enabled: on }),
+    onSuccess: (next, on) => {
+      saved(next);
       toast.success(on
         ? 'Remediation tracking is on. Projects now have a Remediation page.'
         : 'Remediation tracking is off. What was recorded is kept.');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not change the setting.'));
-    } finally {
-      setBusy(null);
-    }
-  };
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not change the setting.')),
+  });
 
   const problem = draft ? (daysProblem(draft) ?? zoneProblem(draft.time_zone)) : null;
   const dirty = !!policy && !!draft && JSON.stringify(draft) !== JSON.stringify(draftOf(policy));
 
-  // What Save would send — and what the preview asks about.
-  const bodyOf = (from: Draft, stored: RemediationPolicy) => {
-    const zone = from.time_zone.trim();
-    return {
-      days: Object.fromEntries(SEVERITIES.map((s) => [s, from[s].trim() === '' ? null : Number(from[s])])),
-      due_soon_days: Number(from.due_soon),
-      // Sent only when it changed: the days are one form, the zone moves
-      // every state at once and should not ride along unnoticed.
-      ...(zone !== zoneOf(stored) ? { time_zone: zone } : {}),
-    };
-  };
-
   // What the change would do, asked of the server a moment after the last
-  // keystroke and BEFORE saving.  The next keystroke cancels the question;
-  // an answer for fields that have since changed is never shown.
-  const [effect, setEffect] = useState<
-    { status: 'idle' | 'asking' | 'failed' } | { status: 'ready'; preview: RemediationPolicyPreview }
-  >({ status: 'idle' });
+  // keystroke and BEFORE saving.  The question is keyed by what Save would
+  // send: the next keystroke is another question (this one is cancelled, and
+  // the new one waits for the typing to stop), so an answer for fields that
+  // have since changed is never shown.
   const draftKey = draft ? JSON.stringify(draft) : '';
+  const settledKey = useDebouncedValue(draftKey, PREVIEW_DELAY_MS);
   const tracking = !!policy?.enabled;
-  useEffect(() => {
-    if (!policy || !draft || !dirty || problem || !tracking) { setEffect({ status: 'idle' }); return undefined; }
-    let live = true;
-    const controller = new AbortController();
-    setEffect({ status: 'asking' });
-    const timer = window.setTimeout(() => {
-      previewRemediationPolicy(bodyOf(draft, policy), controller.signal)
-        .then((preview) => { if (live) setEffect({ status: 'ready', preview }); })
-        .catch(() => { if (live && !controller.signal.aborted) setEffect({ status: 'failed' }); });
-    }, PREVIEW_DELAY_MS);
-    return () => { live = false; window.clearTimeout(timer); controller.abort(); };
-    // `draftKey` stands for the draft; `policy` changes only on a save.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftKey, dirty, problem, tracking, policy]);
+  const asks = !!policy && !!draft && dirty && !problem && tracking;
+  const body = policy && draft && !problem ? bodyOf(draft, policy) : null;
+  const preview = useQuery({
+    queryKey: [GLOBAL, 'previewRemediationPolicy', body],
+    queryFn: ({ signal }) => previewRemediationPolicy(body as NonNullable<typeof body>, signal),
+    enabled: asks && settledKey === draftKey,
+  });
+  const effect: { status: 'idle' | 'asking' | 'failed' } | { status: 'ready'; preview: RemediationPolicyPreview } =
+    !asks ? { status: 'idle' }
+      : preview.data ? { status: 'ready', preview: preview.data }
+        : preview.isError ? { status: 'failed' } : { status: 'asking' };
 
-  const saveDays = async () => {
-    if (!draft || !policy || problem) return;
-    setBusy('days');
-    try {
-      saved(await updateRemediationPolicy(bodyOf(draft, policy)));
+  const savingDays = useMutation({
+    mutationFn: (next: ReturnType<typeof bodyOf>) => updateRemediationPolicy(next),
+    onSuccess: (next) => {
+      saved(next);
       toast.success('Timelines saved. Open deadlines now follow them.');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not save the timelines.'));
-    } finally {
-      setBusy(null);
-    }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not save the timelines.')),
+  });
+  const saveDays = () => {
+    if (!draft || !policy || problem) return;
+    savingDays.mutate(bodyOf(draft, policy));
   };
+  const busy = toggling.isPending ? 'switch' : savingDays.isPending ? 'days' : null;
 
   return (
     <PostureSection
@@ -206,7 +207,7 @@ export const RemediationSettingsSection: React.FC = () => {
         <div className="max-w-4xl">
           <div className="flex items-start gap-sm">
             <Switch id="ss-remediation" checked={policy.enabled} disabled={busy !== null}
-              onCheckedChange={(v) => void toggle(v)} aria-describedby="ss-remediation-hint" />
+              onCheckedChange={(v) => toggling.mutate(v)} aria-describedby="ss-remediation-hint" />
             <div className="min-w-0">
               <Label htmlFor="ss-remediation">Track remediation on this installation</Label>
               <p id="ss-remediation-hint" className="text-caption text-muted-foreground">
@@ -217,7 +218,7 @@ export const RemediationSettingsSection: React.FC = () => {
             </div>
           </div>
 
-          <form className="mt-md" onSubmit={(e) => { e.preventDefault(); void saveDays(); }}>
+          <form className="mt-md" onSubmit={(e) => { e.preventDefault(); saveDays(); }}>
             <p className="text-metadata font-medium">Days to remediate, from the day a finding is assigned</p>
             <div className="mt-xs grid grid-cols-2 gap-sm sm:grid-cols-3 lg:grid-cols-6">
               {SEVERITIES.map((severity) => (
@@ -225,7 +226,7 @@ export const RemediationSettingsSection: React.FC = () => {
                   <Label htmlFor={`ss-days-${severity}`}>{severityWord(severity)}</Label>
                   <Input id={`ss-days-${severity}`} inputMode="numeric" value={draft[severity]}
                     placeholder="No deadline" maxLength={4}
-                    onChange={(e) => setDraft({ ...draft, [severity]: e.target.value })} />
+                    onChange={(e) => edit(severity, e.target.value)} />
                 </div>
               ))}
               <div className="min-w-0">
@@ -233,7 +234,7 @@ export const RemediationSettingsSection: React.FC = () => {
                     below its neighbours (seen in the browser). */}
                 <Label htmlFor="ss-days-soon" title="How many days before a deadline a finding counts as due soon">Warn before</Label>
                 <Input id="ss-days-soon" inputMode="numeric" value={draft.due_soon} maxLength={3}
-                  onChange={(e) => setDraft({ ...draft, due_soon: e.target.value })} />
+                  onChange={(e) => edit('due_soon', e.target.value)} />
               </div>
             </div>
             <p className="mt-xs text-caption text-muted-foreground">
@@ -244,7 +245,7 @@ export const RemediationSettingsSection: React.FC = () => {
                 title="The time zone whose calendar day is today for every deadline">Time zone</Label>
               <Input id="ss-remediation-zone" value={draft.time_zone} maxLength={64} spellCheck={false}
                 autoComplete="off" placeholder="UTC" aria-describedby="ss-remediation-zone-hint"
-                onChange={(e) => setDraft({ ...draft, time_zone: e.target.value })} />
+                onChange={(e) => edit('time_zone', e.target.value)} />
               <p id="ss-remediation-zone-hint" className="mt-xs text-caption text-muted-foreground">
                 An IANA name, such as Europe/Paris. A deadline passes when the day ends there.
               </p>
@@ -264,7 +265,7 @@ export const RemediationSettingsSection: React.FC = () => {
                   {busy === 'days' && <Loader2 className="size-4 animate-spin" aria-hidden />} Save timelines
                 </Button>
                 <Button type="button" size="sm" variant="ghost" disabled={busy !== null}
-                  onClick={() => setDraft(draftOf(policy))}>Discard</Button>
+                  onClick={() => setEdits({})}>Discard</Button>
               </div>
             )}
           </form>

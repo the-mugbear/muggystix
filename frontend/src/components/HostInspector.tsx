@@ -2,10 +2,12 @@
  * HostInspector — the data-bearing body of the host detail surface.
  *
  * Renders host overview, tests, vulnerabilities, notes (threaded),
- * data conflicts (when toggled) and port details.  Owns its API calls:
- * getHost, getHostConflicts, getHostFollowers, and the per-action
- * mutations (follow, note CRUD).  The Tests and Evidence sections
- * load their own data (HostTestsSection, HostEvidenceSection).
+ * data conflicts (when toggled) and port details.  Owns its reads
+ * (`getHost` — the host, its notes and the caller's follow state —
+ * `getHostConflicts`, `getHostFollowers`) and the per-action mutations
+ * (follow, note CRUD, promote / dismiss).  The other sections read their own
+ * data; what a write changes elsewhere on the page is invalidated by the
+ * read's name, never passed down as a refresh counter.
  *
  * Used in two contexts:
  *  - Standalone page (`pages/HostDetail.tsx`): the page renders
@@ -18,7 +20,8 @@
  * that the same shape appears in both contexts.  Page chrome and
  * sheet header therefore stay minimal.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { SEVERITY_RANK, SEVERITY_BADGE_VARIANT, SEVERITY_HSL, type Severity } from '../utils/severity';
 import { Link, useNavigate } from 'react-router-dom';
 import {
@@ -63,7 +66,6 @@ import type {
   FindingHostStatus,
   FindingStatus,
   HostVulnerability,
-  PromoteVulnerabilityPreview,
   ReviewConclusion,
 } from '../services/api';
 import { buildHostsUrl } from '../utils/drilldownLinks';
@@ -83,7 +85,7 @@ import { previewThreads, rootNoteId } from '../utils/notePreview';
 import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
 import ProductObservationGroup from './host-inspector/ProductObservationGroup';
 import ProvenanceCard, { provenanceExceedsSummary, attributionIsStale } from './host-inspector/ProvenanceCard';
-import HostEvidenceSection from './host-inspector/HostEvidenceSection';
+import HostEvidenceSection, { hostEvidenceKey } from './host-inspector/HostEvidenceSection';
 import { HostTestsSection } from './host-inspector/HostTestsSection';
 import { HostTestsProvider, useHostTestsController } from './host-inspector/hostTestsController';
 import ScopeMembershipCard from './host-inspector/ScopeMembershipCard';
@@ -102,7 +104,6 @@ import { announceMentionOutcome } from '../utils/mentions';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { DetailSkeleton } from './PageSkeleton';
 import { useConfirm } from '../hooks/useConfirm';
-import { useIsMounted } from '../hooks/useIsMounted';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent } from './ui/card';
@@ -184,6 +185,12 @@ const FOLLOW_STATUS_META: Record<
 
 
 
+// One empty list each, so "nothing loaded" is the same value on every render.
+const NO_NOTES: Annotation[] = [];
+const NO_CONFLICTS: HostConflict[] = [];
+const NO_CONFLICT_HISTORY: ConflictHistoryEntry[] = [];
+const NO_FOLLOWERS: HostFollowerEntry[] = [];
+
 interface PendingImage {
   file: File;
   url: string;
@@ -203,8 +210,9 @@ export interface HostInspectorProps {
    */
   density?: 'page' | 'sheet';
   /**
-   * Called when the inspector loads the host successfully.  Useful
-   * for the parent (e.g. SideSheet header) to show host metadata
+   * Called with the host when it is loaded, and again whenever what the
+   * inspector holds of it changes (a re-read, a note, the follow state).
+   * Useful for the parent (e.g. SideSheet header) to show host metadata
    * outside the body.
    */
   onHostLoaded?: (host: Host) => void;
@@ -292,30 +300,73 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     },
     [onQueryHosts, navigate],
   );
-  const [host, setHost] = useState<Host | null>(null);
-  // After an assignment or tag change from the facts box.
-  const reloadHost = useCallback(() => {
-    getHost(hostId)
-      .then((fresh) => setHost((prev) => (prev && prev.id === fresh.id ? fresh : prev)))
-      .catch(() => { /* the control reported the write; a failed re-read keeps the old view */ });
-  }, [hostId]);
-  const [conflicts, setConflicts] = useState<HostConflict[]>([]);
-  const [conflictHistory, setConflictHistory] = useState<ConflictHistoryEntry[]>([]);
+  const queryClient = useQueryClient();
+  // THE read of this host.  Its notes and the caller's follow state come with
+  // it, so they are read from it — never copied out; a write puts the server's
+  // answer back in (`putHost`) or says the host is out of date (invalidating
+  // `['getHost', hostId]`, which the assignee / tag controls, a note's images
+  // and a test's result do from where they are written).  A re-read that
+  // fails keeps what is on screen.
+  const hostKey = useMemo(() => ['getHost', hostId] as const, [hostId]);
+  const hostQuery = useQuery({ queryKey: hostKey, queryFn: () => getHost(hostId) });
+  const host = hostQuery.data ?? null;
+  const putHost = useCallback((update: (previous: Host) => Host) => {
+    queryClient.setQueryData<Host>(hostKey, (previous) => (previous ? update(previous) : previous));
+  }, [queryClient, hostKey]);
+  const notes = host?.notes ?? NO_NOTES;
+  const followStatus: FollowStatus | '' = host?.follow?.status ?? '';
+
+  const conflictsQuery = useQuery({
+    queryKey: ['getHostConflicts', hostId],
+    queryFn: () => getHostConflicts(hostId),
+  });
+  const conflicts = conflictsQuery.data?.confidence || NO_CONFLICTS;
+  const conflictHistory = conflictsQuery.data?.conflict_history || NO_CONFLICT_HISTORY;
   // Canonical conflict count from the API (same definition as the Hosts-list
   // badge).  The old "N conflicts" derived from `conflicts.length` (per-field
   // confidence records, host + port) — a different number that disagreed with
   // the list badge.
-  const [conflictCount, setConflictCount] = useState(0);
+  const conflictCount = conflictsQuery.data?.conflict_count ?? 0;
+  // getHostConflicts already swallows 404 (older deployments), so a failure
+  // here is a real one — said, instead of letting an empty list read as "no
+  // conflicts" (a data-quality false negative).
+  const conflictsError = conflictsQuery.isError;
   const [showConflicts, setShowConflicts] = useState(false);
-  const [conflictsError, setConflictsError] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [followStatus, setFollowStatus] = useState<FollowStatus | ''>('');
-  const [followLoading, setFollowLoading] = useState(false);
+
+  const followersQuery = useQuery({
+    queryKey: ['getHostFollowers', hostId],
+    queryFn: () => getHostFollowers(hostId),
+  });
+  const followersError = followersQuery.isError;
+  const otherFollowers = (!followersError && followersQuery.data?.followers) || NO_FOLLOWERS;
+
+  // Opening a host is recorded (the "viewed" fact), and again on Retry.
+  const { mutate: recordView } = useMutation({ mutationFn: (id: number) => recordHostView(id) });
+  useEffect(() => { recordView(hostId); }, [recordView, hostId]);
+
+  // The skeleton stands for "nothing to show yet": the first read, and a
+  // Retry after it failed.  A re-read behind a host that is on screen does
+  // not bring it back.
+  const loading = hostQuery.isPending || (hostQuery.isError && hostQuery.isFetching && !host);
+  const fetchError = !hostQuery.isError
+    ? null
+    : (() => {
+      const status = asAxiosError(hostQuery.error).response?.status;
+      if (status === 404) return 'Host not found';
+      if (status === 401 || status === 403) return 'You do not have permission to view this host';
+      return 'Failed to load host details. The server may be unavailable.';
+    })();
+  const retry = () => {
+    void hostQuery.refetch();
+    void conflictsQuery.refetch();
+    void followersQuery.refetch();
+    recordView(hostId);
+  };
+
   // §9 review-completion dialog (opened by "Mark reviewed").
   const [reviewCompletionOpen, setReviewCompletionOpen] = useState(false);
   const [reviewConclusion, setReviewConclusion] = useState<ReviewConclusion>('no_issue');
   const [reviewSummaryText, setReviewSummaryText] = useState('');
-  const [notes, setNotes] = useState<Annotation[]>([]);
   // v2.43.0 — MONO-2: thread grouping for <NoteThread>.  MUST live above
   // the conditional early returns (loading / !host) so the hook count is
   // stable across the first-paint-with-skeleton → data-loaded transition.
@@ -357,23 +408,15 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   // created; it stays here (bound to its own `noteId`) until the user
   // retries or removes it — never silently dropped (UX review C3).
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [noteSubmitting, setNoteSubmitting] = useState(false);
   const [replyTo, setReplyTo] = useState<{ id: number; author: string } | null>(null);
   const [replyBody, setReplyBody] = useState('');
   const [noteError, setNoteError] = useState<string | null>(null);
   // The thread shows its newest threads until asked for the rest (v5.240.0).
   const [showAllNotes, setShowAllNotes] = useState(false);
-  // Bumped when a finding is made from a test result, so the inline
-  // HostFindingsCard refetches.
-  const [findingsRefresh, setFindingsRefresh] = useState(0);
-  // Bumped when a test result or a finding from one is recorded below.
-  const [evidenceRefresh, setEvidenceRefresh] = useState(0);
   // The host's tests, held once: the Weaknesses rows and the Tests section
-  // both read them, and the result panel is rendered once (5.322.0).
-  const onTestResultRecorded = useCallback(() => {
-    setEvidenceRefresh((n) => n + 1);
-    reloadHost();
-  }, [reloadHost]);
+  // both read them, and the result panel is rendered once (5.322.0).  What a
+  // result or a finding from one changes elsewhere on this page (the findings,
+  // the other evidence, the host's own row) the controller says itself.
   const onTestFindingCreated = useCallback((findingId: number, made?: PromotedEvidence) => {
     // The test leaves the to-do list with its finding made, so the way to the
     // write-up is offered here rather than on a row that is no longer shown.
@@ -383,29 +426,19 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
       autoHideMs: 8000,
       action: { label: 'Write it up', onClick: () => navigate(`/findings/${findingId}?edit=report-text`) },
     });
-    setFindingsRefresh((n) => n + 1);
-    setEvidenceRefresh((n) => n + 1);
-    // A linked result promotes the scanner observation: its row must say so.
-    reloadHost();
-  }, [reloadHost, toast, navigate]);
+  }, [toast, navigate]);
   const { controller: hostTests, element: hostTestsElement } = useHostTestsController({
     hostId,
     canEdit: canManageEntries,
     userId: user?.id,
-    onResultRecorded: onTestResultRecorded,
     onFindingCreated: onTestFindingCreated,
   });
-  const testsReloadRef = React.useRef(hostTests.reload);
-  testsReloadRef.current = hostTests.reload;
   const testsToDo = (hostTests.tests ?? []).filter(testNeedsWork).length;
   // Note-details editor: a thread's type and pin.
   const [detailsNote, setDetailsNote] = useState<Annotation | null>(null);
   const [detailsType, setDetailsType] = useState<string>('none');
   const NOTE_TYPES = ['observation', 'question', 'decision', 'handoff'] as const;
   const [detailsPinned, setDetailsPinned] = useState(false);
-  // Port-table sort by port number (null = scan order). Shared across the
-  // open/closed/filtered port tables so they stay consistent.
-  const [detailsSaving, setDetailsSaving] = useState(false);
 
   const openNoteDetails = (note: Annotation) => {
     setDetailsNote(note);
@@ -413,30 +446,33 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     setDetailsPinned(!!note.pinned);
   };
 
-  const handleSaveNoteDetails = async () => {
-    if (!detailsNote) return;
-    setDetailsSaving(true);
-    try {
+  const noteDetails = useMutation({
+    mutationFn: ({ note, type, pinned }: { note: Annotation; type: string; pinned: boolean }) => {
       // The type goes only when it changed: a thread labelled before 5.326.0
       // may carry "finding" or "action", which can be kept but not chosen.
-      const typeChanged = detailsType !== (detailsNote.note_type || 'none');
-      const updated = await updateAnnotation(hostId, detailsNote.id, {
-        ...(typeChanged ? { note_type: detailsType === 'none' ? null : (detailsType as NoteType) } : {}),
-        pinned: detailsPinned,
+      const typeChanged = type !== (note.note_type || 'none');
+      return updateAnnotation(hostId, note.id, {
+        ...(typeChanged ? { note_type: type === 'none' ? null : (type as NoteType) } : {}),
+        pinned,
       });
-      setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+    },
+    onSuccess: (updated) => {
+      putHost((previous) => ({
+        ...previous, notes: (previous.notes ?? []).map((n) => (n.id === updated.id ? updated : n)),
+      }));
       toast.success('Note details updated.');
       setDetailsNote(null);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update note details.'));
-    } finally {
-      setDetailsSaving(false);
-    }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update note details.')),
+  });
+  const detailsSaving = noteDetails.isPending;
+  const handleSaveNoteDetails = () => {
+    if (!detailsNote) return;
+    noteDetails.mutate({ note: detailsNote, type: detailsType, pinned: detailsPinned });
   };
 
   // Promote / dismiss a scanner vulnerability as a finding (status 'confirmed'
   // promotes; a terminal status dismisses). Idempotent server-side.
-  const [vulnActionId, setVulnActionId] = useState<number | null>(null);
   // vulnId → finding id, optimistically set after a promote/dismiss so the
   // row shows "Promoted" immediately (the host's vuln rows only carry the
   // authoritative finding_id on the next host load).
@@ -447,51 +483,44 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   const [triageVuln, setTriageVuln] = useState<
     { id: number; title: string; intent: 'confirmed' | 'false_positive' } | null
   >(null);
-  const [triagePreview, setTriagePreview] = useState<PromoteVulnerabilityPreview | null>(null);
-  const [triagePreviewLoading, setTriagePreviewLoading] = useState(false);
   const [triageReason, setTriageReason] = useState('');
-  const [triagePreviewRetry, setTriagePreviewRetry] = useState(0);
   // v5.238.0 — how far a false-positive dismissal reaches.  It is made in ONE
   // host's inspector about that host's observation, so it defaults to this
   // host; marking the issue a false positive everywhere is an explicit choice.
   const [triageScope, setTriageScope] = useState<'host' | 'issue'>('host');
   const [dismissedHereVulns, setDismissedHereVulns] = useState<Record<number, boolean>>({});
 
-  // Fetch the blast radius whenever a triage opens (or Retry is pressed).
+  // The blast radius, read whenever a triage opens (and again on Retry).
   // The action reaches hosts other than this one, so without the preview the
   // dialog does not offer it: confirm stays disabled until the set is known.
-  useEffect(() => {
-    if (!triageVuln) { setTriagePreview(null); return; }
-    let cancelled = false;
-    setTriagePreviewLoading(true);
-    setTriagePreview(null);
-    previewPromoteVulnerability(triageVuln.id)
-      .then((p) => { if (!cancelled) setTriagePreview(p); })
-      .catch(() => { /* preview stays null: the dialog offers Retry, not proceed */ })
-      .finally(() => { if (!cancelled) setTriagePreviewLoading(false); });
-    return () => { cancelled = true; };
-  }, [triageVuln, triagePreviewRetry]);
+  // A failed read leaves it unknown: the dialog offers Retry, not proceed.
+  const triageVulnId = triageVuln?.id;
+  const triagePreviewQuery = useQuery({
+    queryKey: ['previewPromoteVulnerability', triageVulnId],
+    queryFn: () => previewPromoteVulnerability(triageVulnId as number),
+    enabled: triageVulnId != null,
+  });
+  const triagePreview = (triageVulnId != null && triagePreviewQuery.data) || null;
+  const triagePreviewLoading = triageVulnId != null && triagePreviewQuery.isFetching;
 
-  const handlePromoteVuln = async () => {
-    if (!triageVuln) return;
-    const { id: vulnId, intent } = triageVuln;
-    const reason = triageReason.trim();
-    setVulnActionId(vulnId);
-    try {
-      const hostOnly = intent === 'false_positive' && triageScope === 'host';
-      const finding = await promoteVulnerability(vulnId, {
-        status: intent,
-        summary: reason || undefined,
-        // ALWAYS sent (v5.245.0): what the dialog showed is what the server
-        // does, whatever its default — the API's default for a promotion is
-        // still the whole issue, the dialog's is this host.
-        scope: triageScope,
-      });
+  type Triage = { vulnId: number; intent: 'confirmed' | 'false_positive'; scope: 'host' | 'issue'; reason: string };
+  const triage = useMutation({
+    mutationFn: ({ vulnId, intent, scope, reason }: Triage) => promoteVulnerability(vulnId, {
+      status: intent,
+      summary: reason || undefined,
+      // ALWAYS sent (v5.245.0): what the dialog showed is what the server
+      // does, whatever its default — the API's default for a promotion is
+      // still the whole issue, the dialog's is this host.
+      scope,
+    }),
+    // The toast names the finding and is true wherever the reader is by then.
+    onSuccess: (finding, { intent, scope }) => {
+      const hostOnly = intent === 'false_positive' && scope === 'host';
       // Scanner findings span every host with the same plugin — report it.
       const span = finding.host_count > 1 ? ` across ${finding.host_count} hosts` : '';
       toast.success(
         intent === 'confirmed'
-          ? (triageScope === 'host'
+          ? (scope === 'host'
             ? `Promoted to finding for this host: ${finding.title}`
             : `Promoted to finding${span}: ${finding.title}`)
           : hostOnly
@@ -505,22 +534,32 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
             : { label: 'Open finding', onClick: () => navigate(`/findings/${finding.id}`) },
         },
       );
-      // The toast names the finding and is true wherever the reader is; the
-      // rest is this panel's, and re-reads nothing once the reader has left.
-      if (!isMounted()) return;
-      setPromotedVulns((prev) => ({ ...prev, [vulnId]: finding.id }));
-      if (hostOnly) setDismissedHereVulns((prev) => ({ ...prev, [vulnId]: true }));
-      setFindingsRefresh((n) => n + 1);
-      // The promotion took the issue's test results onto the finding.
-      setEvidenceRefresh((n) => n + 1);
-      void testsReloadRef.current?.();
-      setTriageVuln(null);
-      setTriageReason('');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update vulnerability.'));
-    } finally {
-      setVulnActionId(null);
-    }
+      // This host has a finding it did not (or one changed); the promotion
+      // took the issue's test results onto the finding, so the tests and the
+      // other evidence are out of date too.
+      void queryClient.invalidateQueries({ queryKey: ['listFindings'] });
+      void queryClient.invalidateQueries({ queryKey: ['listHostTests'] });
+      void queryClient.invalidateQueries({ queryKey: hostEvidenceKey(hostId) });
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update vulnerability.')),
+  });
+  const vulnActionId = triage.isPending ? triage.variables.vulnId : null;
+  const handlePromoteVuln = () => {
+    if (!triageVuln) return;
+    const { id: vulnId, intent } = triageVuln;
+    const scope = triageScope;
+    // The rest is this panel's own state: it is set only while the reader is
+    // still on this host.
+    triage.mutate({ vulnId, intent, scope, reason: triageReason.trim() }, {
+      onSuccess: (finding) => {
+        setPromotedVulns((prev) => ({ ...prev, [vulnId]: finding.id }));
+        if (intent === 'false_positive' && scope === 'host') {
+          setDismissedHereVulns((prev) => ({ ...prev, [vulnId]: true }));
+        }
+        setTriageVuln(null);
+        setTriageReason('');
+      },
+    });
   };
   const openTriage = (vulnId: number, title: string, intent: 'confirmed' | 'false_positive') => {
     setTriageReason('');
@@ -528,11 +567,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     setTriageVuln({ id: vulnId, title, intent });
   };
 
-  const [noteActionId, setNoteActionId] = useState<number | null>(null);
   const [showAllVulnerabilities, setShowAllVulnerabilities] = useState(false);
-  // v5.215.0 — informational rows are left out of the detail payload until
-  // asked; the loader lives below, next to the fetch-generation guard it uses.
-  const [loadingInformational, setLoadingInformational] = useState(false);
   // Per-vuln expand state for the (often long) description writeup.
   const [expandedVulnIds, setExpandedVulnIds] = useState<Set<number>>(new Set());
   const toggleVulnDescription = (id: number) =>
@@ -542,35 +577,28 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
       else next.add(id);
       return next;
     });
-  const [fetchError, setFetchError] = useState<string | null>(null);
-  const [otherFollowers, setOtherFollowers] = useState<HostFollowerEntry[]>([]);
-  const [followersError, setFollowersError] = useState(false);
-  const [retryNonce, setRetryNonce] = useState(0);
   const [confirmEl, confirm] = useConfirm();
 
-  // This inspector is one host's for its whole life (it is keyed by the host),
-  // so a completion that arrives after the reader stepped on updates state
-  // nobody sees.  What it must still not do is speak about "this host" over
-  // the next one: those toasts ask `isMounted()` first.
-  const isMounted = useIsMounted();
-  // "N informational · show" refetches the host with the hidden rows included.
-  const loadInformational = async () => {
-    setLoadingInformational(true);
-    try {
-      const withInfo = await getHost(hostId, { includeInfo: true });
-      setHost((prev) => (
-        prev
-          ? { ...prev, vulnerabilities: withInfo.vulnerabilities, informational_included: true }
-          : withInfo
-      ));
-    } catch (err: unknown) {
-      // Said, not only logged (R34): the "show" link otherwise spun and
-      // stopped with nothing changed.
-      if (isMounted()) toast.error(formatApiError(err, 'Could not load the informational observations.'));
-    } finally {
-      setLoadingInformational(false);
-    }
-  };
+  // This inspector is one host's for its whole life (it is keyed by the host).
+  // What a write that answers after the reader stepped on must not do is
+  // speak about "this host" over the next one: those toasts are given to
+  // `mutate()` itself, which answers only while the inspector is on screen.
+
+  // v5.215.0 — informational rows are left out of the detail payload until
+  // asked.  "N informational · show" reads the host with the hidden rows
+  // included and lays them over the host on screen.
+  const informational = useMutation({
+    mutationFn: () => getHost(hostId, { includeInfo: true }),
+    onSuccess: (withInfo) => putHost((previous) => ({
+      ...previous, vulnerabilities: withInfo.vulnerabilities, informational_included: true,
+    })),
+  });
+  const loadingInformational = informational.isPending;
+  const loadInformational = () => informational.mutate(undefined, {
+    // Said, not only logged (R34): the "show" link otherwise spun and
+    // stopped with nothing changed.
+    onError: (err) => toast.error(formatApiError(err, 'Could not load the informational observations.')),
+  });
   const onDirtyChangeRef = React.useRef(onDirtyChange);
   useEffect(() => {
     onDirtyChangeRef.current = onDirtyChange;
@@ -585,6 +613,9 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   }, [composerDirty]);
   const onHostLoadedRef = React.useRef(onHostLoaded);
   onHostLoadedRef.current = onHostLoaded;
+  useEffect(() => {
+    if (host) onHostLoadedRef.current?.(host);
+  }, [host]);
 
   // Deep-link to an exact note: when the URL carries #note-<id> (from the
   // Activity feed / mentions / a finding's evidence link), scroll that note
@@ -658,100 +689,31 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     pendingImagesRef.current.forEach((p) => URL.revokeObjectURL(p.url));
   }, []);
 
-  // The host is read on mount and again on Retry; a retry supersedes the
-  // attempt before it.
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setFetchError(null);
-
-    // The primary host fetch releases the loading skeleton; conflicts and
-    // followers land in their own subsections as they resolve.
-    const fetchHost = async () => {
-      try {
-        const hostData = await getHost(hostId);
-        if (cancelled) return;
-        setHost(hostData);
-        setFollowStatus(hostData.follow?.status ?? '');
-        setNotes(hostData.notes ?? []);
-        onHostLoadedRef.current?.(hostData);
-      } catch (err: unknown) {
-        if (cancelled) return;
-        console.error('Error fetching host details:', err);
-        const status = asAxiosError(err).response?.status;
-        if (status === 404) setFetchError('Host not found');
-        else if (status === 401 || status === 403)
-          setFetchError('You do not have permission to view this host');
-        else setFetchError('Failed to load host details. The server may be unavailable.');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    fetchHost();
-
-    getHostConflicts(hostId)
-      .then((conflictData) => {
-        if (cancelled) return;
-        setConflicts(conflictData?.confidence || []);
-        setConflictHistory(conflictData?.conflict_history || []);
-        setConflictCount(conflictData?.conflict_count ?? 0);
-        setConflictsError(false);
-      })
-      .catch(() => {
-        // getHostConflicts already swallows 404 (older deployments), so a
-        // rejection here is a real failure — surface it instead of letting an
-        // empty list read as "no conflicts" (a data-quality false negative).
-        if (!cancelled) setConflictsError(true);
-      });
-
-    recordHostView(hostId).catch(() => {});
-
-    getHostFollowers(hostId)
-      .then((data) => {
-        if (cancelled) return;
-        setOtherFollowers(data.followers ?? []);
-        setFollowersError(false);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setOtherFollowers([]);
-        setFollowersError(true);
-      });
-    return () => { cancelled = true; };
-  }, [hostId, retryNonce]);
-
-  const updateFollow = async (
-    status: FollowStatus | 'none',
-    review?: { review_conclusion?: ReviewConclusion; review_summary?: string },
-  ): Promise<boolean> => {
-    setFollowLoading(true);
-    try {
-      // The list's row is told either way (the callback names the host); the
-      // toasts say "this host", so only while the reader is still on it.
-      if (status === 'none') {
-        await unfollowHost(hostId);
-        onFollowChange?.(hostId, null);
-        if (!isMounted()) return false;
-        setFollowStatus('');
-        setHost((previous) => (previous ? { ...previous, follow: null } : previous));
-        toast.info('Removed from your follow list', { autoHideMs: 2000 });
-      } else {
-        const response = await followHost(hostId, status, review);
-        onFollowChange?.(hostId, response);
-        if (!isMounted()) return false;
-        setFollowStatus(response.status);
-        setHost((previous) => (previous ? { ...previous, follow: response } : previous));
-        toast.success(`Marked as ${FOLLOW_STATUS_META[status].label}`, { autoHideMs: 2000 });
-      }
-      return true;
-    } catch (err) {
-      console.error('Failed to update follow status:', err);
-      if (isMounted()) toast.error('Failed to update follow status. Please try again.');
-      return false;
-    } finally {
-      setFollowLoading(false);
-    }
+  type FollowChange = {
+    status: FollowStatus | 'none';
+    review?: { review_conclusion?: ReviewConclusion; review_summary?: string };
+  };
+  const follow = useMutation({
+    mutationFn: ({ status, review }: FollowChange): Promise<Host['follow']> => (
+      status === 'none' ? unfollowHost(hostId).then(() => null) : followHost(hostId, status, review)
+    ),
+    // The list's row is told either way (the callback names the host).
+    onSuccess: (response) => {
+      onFollowChange?.(hostId, response ?? null);
+      putHost((previous) => ({ ...previous, follow: response ?? null }));
+    },
+  });
+  const followLoading = follow.isPending;
+  const updateFollow = (status: FollowChange['status'], review?: FollowChange['review'], onSaved?: () => void) => {
+    // The toasts say "this host", so only while the reader is still on it.
+    follow.mutate({ status, review }, {
+      onSuccess: () => {
+        if (status === 'none') toast.info('Removed from your follow list', { autoHideMs: 2000 });
+        else toast.success(`Marked as ${FOLLOW_STATUS_META[status].label}`, { autoHideMs: 2000 });
+        onSaved?.();
+      },
+      onError: () => toast.error('Failed to update follow status. Please try again.'),
+    });
   };
 
   const openReviewCompletion = () => {
@@ -763,13 +725,12 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   // conclusion and the next task were two separate trips through the queue
   // chrome.  Only after the save succeeded: a failed save must not carry the
   // operator away from the host whose conclusion was lost.
-  const submitReviewCompletion = async (advance = false) => {
+  const submitReviewCompletion = (advance = false) => {
     setReviewCompletionOpen(false);
-    const saved = await updateFollow('reviewed', {
+    updateFollow('reviewed', {
       review_conclusion: reviewConclusion,
       review_summary: reviewSummaryText.trim() || undefined,
-    });
-    if (saved && advance) onNextUnreviewed?.();
+    }, advance ? onNextUnreviewed : undefined);
   };
 
   const addPendingImages = useCallback((files: File[]) => {
@@ -806,83 +767,93 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     });
   }, []);
 
-  // Attach one already-uploaded file's metadata to a note in both local
-  // copies (the notes list and host.notes) so thumbnails show without a
-  // reload.
-  const appendAttachment = useCallback((noteId: number, attachment: NoteAttachment) => {
-    const add = (n: Annotation) =>
-      n.id === noteId ? { ...n, attachments: [...(n.attachments ?? []), attachment] } : n;
-    setNotes((previous) => previous.map(add));
-    setHost((previous) =>
-      previous ? { ...previous, notes: (previous.notes ?? []).map(add) } : previous,
-    );
-  }, []);
-
-  const handleCreateNote = async () => {
-    if (!noteBody.trim()) {
-      setNoteError('Add a short note before saving.');
-      return;
-    }
-    // Files still bound to an earlier note's retry queue stay with that note;
-    // only fresh files go on the new one.
-    const toUpload = pendingImages.filter((p) => !p.error);
-    setNoteSubmitting(true);
-    try {
-      const response = await createAnnotation(hostId, {
-        body: noteBody.trim(),
-      });
-      if (response.mention_warning) toast.warning(response.mention_warning);
-      else announceMentionOutcome(toast, response);
+  // A new thread: the note, then its screenshots one after another — one
+  // write as far as the composer is concerned.  A screenshot that fails does
+  // not fail the note: it comes back bound to the note that now exists.
+  const postNote = useMutation({
+    mutationFn: async ({ body, images }: { body: string; images: PendingImage[] }) => {
+      const note = await createAnnotation(hostId, { body });
       const uploaded: NoteAttachment[] = [];
       const failed: PendingImage[] = [];
-      for (const img of toUpload) {
+      for (const img of images) {
         try {
-          uploaded.push(await uploadNoteAttachment(hostId, response.id, img.file));
+          uploaded.push(await uploadNoteAttachment(hostId, note.id, img.file));
           URL.revokeObjectURL(img.url);
         } catch (e) {
-          failed.push({ ...img, error: formatApiError(e, 'Upload failed.'), noteId: response.id });
+          failed.push({ ...img, error: formatApiError(e, 'Upload failed.'), noteId: note.id });
         }
       }
-      const noteWithImages = uploaded.length ? { ...response, attachments: uploaded } : response;
-      setNotes((previous) => [noteWithImages, ...previous]);
-      setHost((previous) =>
-        previous ? { ...previous, notes: [noteWithImages, ...(previous.notes ?? [])] } : previous,
-      );
+      return { note, uploaded, failed };
+    },
+    onSuccess: ({ note, uploaded, failed }) => {
+      if (note.mention_warning) toast.warning(note.mention_warning);
+      else announceMentionOutcome(toast, note);
+      const noteWithImages = uploaded.length ? { ...note, attachments: uploaded } : note;
+      putHost((previous) => ({ ...previous, notes: [noteWithImages, ...(previous.notes ?? [])] }));
       // Keep the failed files (with their previews) so they can be retried
       // against the note that now exists — the clipboard is gone, this is
       // the only copy (UX review C3).
       setPendingImages((prev) => [...prev.filter((p) => p.error), ...failed]);
       setNoteBody('');
       setNoteError(null);
-    } catch (err) {
-      console.error('Failed to save note:', err);
-      setNoteError('Unable to save note right now. Please try again.');
-    } finally {
-      setNoteSubmitting(false);
+    },
+    onError: () => setNoteError('Unable to save note right now. Please try again.'),
+  });
+  const handleCreateNote = () => {
+    if (!noteBody.trim()) {
+      setNoteError('Add a short note before saving.');
+      return;
     }
+    // Files still bound to an earlier note's retry queue stay with that note;
+    // only fresh files go on the new one.
+    postNote.mutate({ body: noteBody.trim(), images: pendingImages.filter((p) => !p.error) });
   };
 
   // Retry one failed attachment against the note it was meant for.  Never
   // creates a second note.
-  const retryPendingImage = async (idx: number) => {
-    const target = pendingImages[idx];
-    if (!target || target.noteId == null) return;
-    const noteId = target.noteId;
-    setPendingImages((prev) => prev.map((p, i) => (i === idx ? { ...p, error: 'Uploading…' } : p)));
-    try {
-      const attachment = await uploadNoteAttachment(hostId, noteId, target.file);
+  const retryImage = useMutation({
+    mutationFn: ({ target, noteId }: { target: PendingImage; noteId: number }) =>
+      uploadNoteAttachment(hostId, noteId, target.file),
+    onMutate: ({ target }) => setPendingImages(
+      (prev) => prev.map((p) => (p.url === target.url ? { ...p, error: 'Uploading…' } : p)),
+    ),
+    onSuccess: (attachment, { target, noteId }) => {
       URL.revokeObjectURL(target.url);
       setPendingImages((prev) => prev.filter((p) => p.url !== target.url));
-      appendAttachment(noteId, attachment);
-    } catch (e) {
-      setPendingImages((prev) =>
-        prev.map((p) => (p.url === target.url ? { ...p, error: formatApiError(e, 'Upload failed.') } : p)),
-      );
-    }
+      // On the note at once, so the thumbnail shows without a re-read.
+      putHost((previous) => ({
+        ...previous,
+        notes: (previous.notes ?? []).map((n) => (
+          n.id === noteId ? { ...n, attachments: [...(n.attachments ?? []), attachment] } : n
+        )),
+      }));
+    },
+    onError: (e, { target }) => setPendingImages(
+      (prev) => prev.map((p) => (p.url === target.url ? { ...p, error: formatApiError(e, 'Upload failed.') } : p)),
+    ),
+  });
+  const retryPendingImage = (idx: number) => {
+    const target = pendingImages[idx];
+    if (!target || target.noteId == null) return;
+    retryImage.mutate({ target, noteId: target.noteId });
   };
 
   const failedAttachmentCount = pendingImages.filter((p) => p.error && p.error !== 'Uploading…').length;
 
+  const deleteNote = useMutation({
+    mutationFn: (noteId: number) => deleteAnnotation(hostId, noteId),
+    onSuccess: (_none, noteId) => {
+      putHost((previous) => ({
+        ...previous, notes: (previous.notes ?? []).filter((note) => note.id !== noteId),
+      }));
+      toast.success('Note deleted.');
+    },
+    // Pre-audit (C8): console.error only — user clicked Trash and
+    // the note stayed in the list with no signal whether the click
+    // did anything.
+    onError: (err) => toast.error(formatApiError(err, 'Failed to delete note.')),
+  });
+  const noteActionId = deleteNote.isPending ? deleteNote.variables : null;
   const handleDeleteNote = async (noteId: number) => {
     const note = notes.find((n) => n.id === noteId);
     const preview = note?.body ? note.body.slice(0, 140) : 'This note';
@@ -893,45 +864,26 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
       confirmLabel: 'Delete',
     });
     if (!ok) return;
-    setNoteActionId(noteId);
-    try {
-      await deleteAnnotation(hostId, noteId);
-      setNotes((previous) => previous.filter((note) => note.id !== noteId));
-      setHost((previous) =>
-        previous
-          ? { ...previous, notes: (previous.notes ?? []).filter((note) => note.id !== noteId) }
-          : previous,
-      );
-      toast.success('Note deleted.');
-    } catch (err) {
-      // Pre-audit (C8): console.error only — user clicked Trash and
-      // the note stayed in the list with no signal whether the click
-      // did anything.
-      toast.error(formatApiError(err, 'Failed to delete note.'));
-    } finally {
-      setNoteActionId(null);
-    }
+    deleteNote.mutate(noteId);
   };
 
-  const handleReply = async () => {
-    if (!replyTo || !replyBody.trim()) return;
-    setNoteSubmitting(true);
-    try {
-      const newNote = await createAnnotation(hostId, {
-        body: replyBody.trim(),
-        parent_id: replyTo.id,
-      });
+  const postReply = useMutation({
+    mutationFn: ({ body, parentId }: { body: string; parentId: number }) =>
+      createAnnotation(hostId, { body, parent_id: parentId }),
+    onSuccess: (newNote) => {
       if (newNote.mention_warning) toast.warning(newNote.mention_warning);
       else if (!announceMentionOutcome(toast, newNote)) toast.success('Reply posted.');
-      setNotes((prev) => [newNote, ...prev]);
+      putHost((previous) => ({ ...previous, notes: [newNote, ...(previous.notes ?? [])] }));
       setReplyTo(null);
       setReplyBody('');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to post reply.'));
-    } finally {
-      setNoteSubmitting(false);
-    }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to post reply.')),
+  });
+  const handleReply = () => {
+    if (!replyTo || !replyBody.trim()) return;
+    postReply.mutate({ body: replyBody.trim(), parentId: replyTo.id });
   };
+  const noteSubmitting = postNote.isPending || postReply.isPending;
 
   if (loading) {
     return <DetailSkeleton />;
@@ -945,7 +897,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
           <AlertDescription>{fetchError || 'Host not found'}</AlertDescription>
         </Alert>
         <div className="flex flex-wrap justify-center gap-xs">
-          <Button onClick={() => setRetryNonce((n) => n + 1)}>
+          <Button onClick={retry}>
             <RefreshCw className="size-4" aria-hidden />
             Retry
           </Button>
@@ -1139,7 +1091,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
               size="sm"
               variant="ghost"
               className="text-caption text-muted-foreground"
-              onClick={() => void loadInformational()}
+              onClick={loadInformational}
               disabled={loadingInformational}
               aria-label={`Show ${host.informational_count} informational findings`}
             >
@@ -1511,7 +1463,6 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
                     hostId={host.id}
                     assignees={host.assignees ?? []}
                     canEdit={canManageEntries}
-                    onChanged={reloadHost}
                   />
                 </dd>
               </div>
@@ -1575,7 +1526,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
                 <div className="flex gap-sm sm:col-span-2">
                   <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">Tags</dt>
                   <dd className="min-w-0">
-                    <TagControl hostId={host.id} tags={host.tags ?? []} canEdit={canManageEntries} onChanged={reloadHost} />
+                    <TagControl hostId={host.id} tags={host.tags ?? []} canEdit={canManageEntries} />
                   </dd>
                 </div>
               )}
@@ -1773,7 +1724,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
       {observationsSection}
 
       {/* This host's findings, inline. */}
-      <HostFindingsCard hostId={host.id} refreshKey={findingsRefresh} />
+      <HostFindingsCard hostId={host.id} />
 
       {/* Services — one row per open port; a row opens to its weaknesses,
           access, web pages and paths, and the tools' output. */}
@@ -1820,7 +1771,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
           against it (the evidence a test's result is). */}
       <HostTestsSection key={host.id} hostId={host.id} canEdit={canManageEntries} userId={user?.id} onDirtyChange={setFindingsDraftDirty} />
 
-      <HostEvidenceSection hostId={host.id} refreshKey={evidenceRefresh} />
+      <HostEvidenceSection hostId={host.id} />
 
       {/* Discussion — one section: the composer (a single line until used)
           over the thread, after the evidence it is written about. Notes are
@@ -1873,7 +1824,6 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
               currentUserId={user?.id ?? null}
               hostId={hostId}
               canManageNotes={canManageEntries}
-              onAttachmentsChanged={() => setRetryNonce((n) => n + 1)}
             />
           )}
           {hiddenNoteCount > 0 && (
@@ -1923,13 +1873,13 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
             <Button
               variant={onNextUnreviewed ? 'outline' : 'default'}
               disabled={followLoading}
-              onClick={() => void submitReviewCompletion(false)}
+              onClick={() => submitReviewCompletion(false)}
             >
               <CheckCircle2 className="size-3.5" aria-hidden /> Mark reviewed
             </Button>
             {/* Only inside a queue (the Hosts side sheet passes the step). */}
             {onNextUnreviewed && (
-              <Button disabled={followLoading} onClick={() => void submitReviewCompletion(true)}>
+              <Button disabled={followLoading} onClick={() => submitReviewCompletion(true)}>
                 <CheckCircle2 className="size-3.5" aria-hidden /> Save and next unreviewed
               </Button>
             )}
@@ -2103,7 +2053,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
                     Couldn&rsquo;t determine which hosts this affects. It can reach hosts other
                     than this one, so it isn&rsquo;t offered until that is known.
                   </span>
-                  <Button size="sm" variant="outline" onClick={() => setTriagePreviewRetry((n) => n + 1)}>
+                  <Button size="sm" variant="outline" onClick={() => void triagePreviewQuery.refetch()}>
                     Retry
                   </Button>
                 </span>
@@ -2135,7 +2085,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
               disabled={vulnActionId === triageVuln?.id
                 || !triagePreview
                 || (triageVuln?.intent === 'false_positive' && !triageReason.trim())}
-              onClick={() => void handlePromoteVuln()}
+              onClick={handlePromoteVuln}
             >
               {triageVuln?.intent === 'confirmed' ? 'Promote' : 'Dismiss'}
             </Button>

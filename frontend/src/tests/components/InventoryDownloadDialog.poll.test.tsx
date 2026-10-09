@@ -1,8 +1,8 @@
 import { render, screen, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Real polling hook here on purpose: the unit suite mocks it, so it could not
-// see that a swallowed refresh failure defeats the hook's backoff.
+// The poll on the clock, on purpose: a swallowed refresh failure would defeat
+// its backoff, and only the cadence of the requests shows that.
 vi.mock('../../services/api', () => ({
   downloadInventoryCsv: vi.fn(),
   enqueueInventoryJson: vi.fn(),
@@ -21,7 +21,7 @@ import InventoryDownloadDialog from '../../components/InventoryDownloadDialog';
 
 const running = { id: 1, project_id: 1, status: 'processing', format: 'json', report_type: 'comprehensive', created_at: '2026-10-07T10:00:00Z' };
 
-describe('InventoryDownloadDialog job polling (real useVisibilityPoll)', () => {
+describe('InventoryDownloadDialog job polling', () => {
   // shouldAdvanceTime keeps waitFor/findBy usable; the poll cadence (seconds)
   // is still driven explicitly below.
   beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });

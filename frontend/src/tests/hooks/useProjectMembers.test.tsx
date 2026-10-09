@@ -3,6 +3,11 @@
  * project, shared by every picker and by the mention helpers.  A failed load
  * is `error` (with a retry) — it used to be an empty list at five call sites,
  * which the pickers showed as "No members".
+ *
+ * 5.351.0 — the cache is the query cache: readers share it when they are
+ * under one client (one render here; every `render` has a client of its own),
+ * and "per project" is the cache scope the real ProjectProvider sets, which
+ * `switchTo` sets here in its place.
  */
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,6 +20,13 @@ vi.mock('../../contexts/ProjectContext', () => ({
 }));
 
 import { resetProjectMembersCache, useProjectMembers, useProjectRoster } from '../../hooks/useProjectMembers';
+import { getQueryScope, setQueryScope } from '../../lib/query';
+
+/** What ProjectProvider does on a switch: the project, and the cache scope with it. */
+const switchTo = (id: number) => {
+  project.id = id;
+  setQueryScope({ ...getQueryScope(), projectId: id });
+};
 
 const member = (user_id: number, username: string | null, full_name: string | null = null) => ({
   id: user_id, project_id: 1, user_id, username, full_name, role: 'analyst', created_at: '',
@@ -26,19 +38,29 @@ const NAMELESS = member(3, null, 'No Username');
 beforeEach(() => {
   listProjectMembers.mockReset();
   resetProjectMembersCache();
-  project.id = 1;
+  switchTo(1);
 });
 
 describe('useProjectRoster', () => {
   it('returns the full rows once loaded, and asks once for every reader of the project', async () => {
     listProjectMembers.mockResolvedValue([ANA, BEN]);
-    const first = renderHook(() => useProjectRoster());
-    const second = renderHook(() => useProjectRoster());
-    expect(first.result.current).toMatchObject({ status: 'loading', members: [] });
-    await waitFor(() => expect(first.result.current.status).toBe('ready'));
-    await waitFor(() => expect(second.result.current.status).toBe('ready'));
-    expect(first.result.current.members).toEqual([ANA, BEN]);
-    expect(second.result.current.members[0]).toMatchObject({ user_id: 1, role: 'analyst' });
+    // Two pickers on one page, and a third opened later.
+    const { result, rerender } = renderHook(
+      ({ third }) => ({ first: useProjectRoster(), second: useProjectRoster(), third: useProjectRoster({ enabled: third }) }),
+      { initialProps: { third: false } },
+    );
+    expect(result.current.first).toMatchObject({ status: 'loading', members: [] });
+    await waitFor(() => expect(result.current.first.status).toBe('ready'));
+    await waitFor(() => expect(result.current.second.status).toBe('ready'));
+    expect(result.current.first.members).toEqual([ANA, BEN]);
+    expect(result.current.second.members[0]).toMatchObject({ user_id: 1, role: 'analyst' });
+    expect(listProjectMembers).toHaveBeenCalledTimes(1);
+
+    // Kept for a few minutes: the later reader has the rows at once and asks nothing.
+    expect(result.current.third).toMatchObject({ status: 'loading', members: [] });   // it has not asked yet
+    rerender({ third: true });
+    expect(result.current.third).toMatchObject({ status: 'ready', members: [ANA, BEN] });
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
     expect(listProjectMembers).toHaveBeenCalledTimes(1);
   });
 
@@ -57,12 +79,17 @@ describe('useProjectRoster', () => {
 
   it('a failure is not cached: the next reader asks again', async () => {
     listProjectMembers.mockRejectedValueOnce(new Error('503'));
-    const failed = renderHook(() => useProjectRoster());
-    await waitFor(() => expect(failed.result.current.status).toBe('error'));
+    const { result, rerender } = renderHook(
+      ({ next }) => ({ failed: useProjectRoster(), next: useProjectRoster({ enabled: next }) }),
+      { initialProps: { next: false } },
+    );
+    await waitFor(() => expect(result.current.failed.status).toBe('error'));
+    expect(listProjectMembers).toHaveBeenCalledTimes(1);   // no automatic retry
     listProjectMembers.mockResolvedValue([BEN]);
-    const next = renderHook(() => useProjectRoster());
-    await waitFor(() => expect(next.result.current.status).toBe('ready'));
-    expect(next.result.current.members).toEqual([BEN]);
+    rerender({ next: true });
+    await waitFor(() => expect(result.current.next.status).toBe('ready'));
+    expect(result.current.next.members).toEqual([BEN]);
+    expect(listProjectMembers).toHaveBeenCalledTimes(2);
   });
 
   it('keeps each project’s roster apart and never shows one project the other’s rows', async () => {
@@ -72,15 +99,15 @@ describe('useProjectRoster', () => {
 
     let answer!: (rows: unknown) => void;
     listProjectMembers.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
-    project.id = 2;
+    switchTo(2);
     rerender();
     // Project 2 has not answered: its picker is loading, not showing project 1's people.
     expect(result.current).toMatchObject({ status: 'loading', members: [] });
     await act(async () => { answer([BEN]); });
-    expect(result.current.members).toEqual([BEN]);
+    await waitFor(() => expect(result.current.members).toEqual([BEN]));
 
     // Back on project 1: its own cached rows, no third request.
-    project.id = 1;
+    switchTo(1);
     rerender();
     await waitFor(() => expect(result.current.members).toEqual([ANA]));
     expect(listProjectMembers).toHaveBeenCalledTimes(2);
@@ -99,14 +126,13 @@ describe('useProjectRoster', () => {
 describe('useProjectMembers — the mention shape of the same cache', () => {
   it('gives usernames with their names, leaving out members with no username', async () => {
     listProjectMembers.mockResolvedValue([ANA, BEN, NAMELESS]);
-    const roster = renderHook(() => useProjectRoster());
-    const mentions = renderHook(() => useProjectMembers());
-    await waitFor(() => expect(mentions.result.current).toHaveLength(2));
-    expect(mentions.result.current).toEqual([
+    const { result } = renderHook(() => ({ roster: useProjectRoster(), mentions: useProjectMembers() }));
+    await waitFor(() => expect(result.current.mentions).toHaveLength(2));
+    expect(result.current.mentions).toEqual([
       { username: 'ana', full_name: 'Ana Analyst' },
       { username: 'ben', full_name: null },
     ]);
-    await waitFor(() => expect(roster.result.current.status).toBe('ready'));
+    await waitFor(() => expect(result.current.roster.status).toBe('ready'));
     expect(listProjectMembers).toHaveBeenCalledTimes(1);
   });
 

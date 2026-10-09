@@ -5,7 +5,8 @@
  * before it lands in a report. Threaded (replies indent under their parent);
  * screenshots paste or upload straight onto a comment and ride into the report.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ImagePlus, Loader2, Send, CornerDownRight, Pencil, RefreshCw, Trash2, X } from 'lucide-react';
 
 import {
@@ -23,6 +24,7 @@ import { Button } from './ui/button';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useToast } from '../contexts/ToastContext';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { announceMentionOutcome } from '../utils/mentions';
 import { safeFallback } from '../utils/uiStyles';
@@ -58,37 +60,33 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
   const [confirmDialog, confirm] = useConfirm();
   // v5.256.0 — a comment is its author's: only they edit or delete it.
   const [editing, setEditing] = useState<{ id: number; text: string } | null>(null);
-  const [noteBusy, setNoteBusy] = useState<number | null>(null);
-  // `notes === null` = never loaded successfully; distinct from "loaded, and
-  // there are none" so a failed fetch is never presented as an empty record
-  // (UX review H1).
-  const [notes, setNotes] = useState<Annotation[] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [body, setBody] = useState('');
   const [pending, setPending] = useState<PendingFile[]>([]);
   const [replyTo, setReplyTo] = useState<Annotation | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [retrying, setRetrying] = useState<string | null>(null);
   const nextPendingId = useRef(0);
   const newPendingId = () => `pf-${++nextPendingId.current}`;
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      setNotes(await getFindingNotes(findingId));
-      setLoadError(null);
-    } catch (err) {
-      // Keep whatever was on screen; say the refresh failed rather than
-      // blanking the thread or pretending it is empty.
-      setLoadError(formatApiError(err, "Comments couldn't load."));
-    } finally {
-      setLoading(false);
-    }
-  }, [findingId]);
-
-  useEffect(() => { void load(); }, [load]);
+  const queryClient = useQueryClient();
+  const notesKey = ['getFindingNotes', findingId];
+  const query = useQuery({ queryKey: notesKey, queryFn: () => getFindingNotes(findingId) });
+  // `notes === null` = never loaded successfully; distinct from "loaded, and
+  // there are none" so a failed fetch is never presented as an empty record
+  // (UX review H1).  A failed re-read keeps whatever was on screen and says
+  // the refresh failed rather than blanking the thread.
+  const notes = query.data ?? null;
+  const loading = query.isFetching;
+  const loadError = queryErrorText(query.error, "Comments couldn't load.");
+  const load = () => query.refetch();
+  const setNotes = (update: (prev: Annotation[]) => Annotation[]) =>
+    queryClient.setQueryData<Annotation[]>(notesKey, (prev) => (prev ? update(prev) : prev));
+  // A comment was added to: the thread is read again (the promise is that
+  // read), and with a screenshot so are the finding's images — the report
+  // text's "Insert image" and each image's row follow.
+  const threadChanged = ({ images }: { images: boolean }) => {
+    if (images) void invalidateReads(queryClient, 'getFindingImages');
+    return queryClient.invalidateQueries({ queryKey: notesKey });
+  };
 
   const noteCount = notes ? notes.length : null;
   useEffect(() => { onCount?.(noteCount); }, [onCount, noteCount]);
@@ -123,32 +121,70 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
 
   // Upload one file against an already-saved comment; on failure keep it in
   // the queue with the reason. Never creates a second comment.
+  const upload = useMutation({
+    mutationFn: (v: { noteId: number; file: File }) => uploadFindingNoteAttachment(findingId, v.noteId, v.file),
+  });
   const attachOne = async (entry: PendingFile, noteId: number): Promise<PendingFile | null> => {
     try {
-      await uploadFindingNoteAttachment(findingId, noteId, entry.file);
+      await upload.mutateAsync({ noteId, file: entry.file });
       return null;
     } catch (err) {
       return { ...entry, noteId, error: formatApiError(err, `Could not attach ${entry.file.name || 'screenshot'}.`) };
     }
   };
 
-  const retryFailed = async (id: string) => {
-    const entry = pending.find((e) => e.id === id);
-    if (!entry || entry.noteId == null || retrying !== null) return;
-    setRetrying(id);
-    try {
-      const failed = await attachOne(entry, entry.noteId);
+  const retry = useMutation({
+    mutationFn: (entry: PendingFile & { noteId: number }) => attachOne(entry, entry.noteId),
+    onSuccess: (failed, entry) => {
       // Reconcile by id: if the entry was removed while the upload ran, the
       // rest of the queue is left untouched.
-      setPending((p) => (failed ? p.map((e) => (e.id === id ? failed : e)) : p.filter((e) => e.id !== id)));
-      if (!failed) await load();
-      else toast.error(failed.error ?? 'Could not attach file.');
-    } finally {
-      setRetrying(null);
-    }
+      setPending((p) => (failed ? p.map((e) => (e.id === entry.id ? failed : e)) : p.filter((e) => e.id !== entry.id)));
+      if (failed) {
+        toast.error(failed.error ?? 'Could not attach file.');
+        return undefined;
+      }
+      // Still "retrying" until the thread shows the image.
+      return threadChanged({ images: true });
+    },
+  });
+  const retrying = retry.isPending ? retry.variables.id : null;
+  const retryFailed = (id: string) => {
+    const entry = pending.find((e) => e.id === id);
+    if (!entry || entry.noteId == null || retrying !== null) return;
+    retry.mutate({ ...entry, noteId: entry.noteId });
   };
 
-  const submit = async () => {
+  // A comment and its files are one action: the comment is created, then each
+  // file is attached to it in turn.
+  const post = useMutation({
+    mutationFn: async (v: { text: string; parentId: number | null; fresh: PendingFile[]; leftovers: PendingFile[] }) => {
+      const note = await createFindingNote(findingId, v.text, v.parentId);
+      const failed: PendingFile[] = [];
+      for (const entry of v.fresh) {
+        const f = await attachOne(entry, note.id);
+        if (f) failed.push(f);
+      }
+      return { note, failed };
+    },
+    onSuccess: ({ note, failed }, v) => {
+      if (note.mention_warning) toast.warning(note.mention_warning);
+      else announceMentionOutcome(toast, note);
+      // The comment itself posted: clear the text and reply target. Keep
+      // only the files that did not make it, tied to the saved comment.
+      setBody('');
+      setReplyTo(null);
+      setPending([...v.leftovers, ...failed]);
+      if (failed.length) {
+        toast.error(`Comment saved · ${failed.length} attachment${failed.length === 1 ? '' : 's'} failed — retry or remove below.`);
+      }
+      // Busy until the thread shows the comment.
+      return threadChanged({ images: v.fresh.length > failed.length });
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not post comment.')),
+  });
+  const submitting = post.isPending;
+
+  const submit = () => {
     if (submitting) return;
     if (!body.trim() && pending.length === 0) return;
     // Files left over from an earlier comment's failed uploads belong to THAT
@@ -157,48 +193,40 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
     const fresh = pending.filter((e) => e.noteId == null);
     const leftovers = pending.filter((e) => e.noteId != null);
     if (!body.trim() && fresh.length === 0) return;
-    setSubmitting(true);
-    try {
-      const note = await createFindingNote(findingId, body, replyTo?.id ?? null);
-      if (note.mention_warning) toast.warning(note.mention_warning);
-      else announceMentionOutcome(toast, note);
-      const failed: PendingFile[] = [];
-      for (const entry of fresh) {
-        const f = await attachOne(entry, note.id);
-        if (f) failed.push(f);
-      }
-      // The comment itself posted: clear the text and reply target. Keep
-      // only the files that did not make it, tied to the saved comment.
-      setBody('');
-      setReplyTo(null);
-      setPending([...leftovers, ...failed]);
-      if (failed.length) {
-        toast.error(`Comment saved · ${failed.length} attachment${failed.length === 1 ? '' : 's'} failed — retry or remove below.`);
-      }
-      await load();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not post comment.'));
-    } finally {
-      setSubmitting(false);
-    }
+    post.mutate({ text: body, parentId: replyTo?.id ?? null, fresh, leftovers });
   };
 
-  const saveEdit = async () => {
+  const edit = useMutation({
+    mutationFn: (v: { id: number; text: string }) => updateFindingNote(findingId, v.id, v.text),
+    onSuccess: (updated) => {
+      if (updated.mention_warning) toast.warning(updated.mention_warning);
+      else announceMentionOutcome(toast, updated);
+      setNotes((prev) => prev.map((n) => (n.id === updated.id ? { ...n, ...updated } : n)));
+      setEditing(null);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not save the comment.')),
+  });
+
+  const remove = useMutation({
+    mutationFn: (note: Annotation) => deleteFindingNote(findingId, note.id),
+    onSuccess: (_done, note) => {
+      setNotes((prev) => prev.filter((n) => n.id !== note.id));
+      setReplyTo((current) => (current?.id === note.id ? null : current));
+      // Its screenshots went with it: they are no longer the finding's images.
+      if (note.attachments?.length) void invalidateReads(queryClient, 'getFindingImages');
+      toast.success('Comment deleted.');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not delete the comment.')),
+  });
+
+  // The comment whose own save or delete is in flight.
+  const noteBusy = edit.isPending ? edit.variables.id : remove.isPending ? remove.variables.id : null;
+
+  const saveEdit = () => {
     if (!editing || noteBusy !== null) return;
     const text = editing.text.trim();
     if (!text) return;
-    setNoteBusy(editing.id);
-    try {
-      const updated = await updateFindingNote(findingId, editing.id, text);
-      if (updated.mention_warning) toast.warning(updated.mention_warning);
-      else announceMentionOutcome(toast, updated);
-      setNotes((prev) => (prev ? prev.map((n) => (n.id === updated.id ? { ...n, ...updated } : n)) : prev));
-      setEditing(null);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not save the comment.'));
-    } finally {
-      setNoteBusy(null);
-    }
+    edit.mutate({ id: editing.id, text });
   };
 
   const removeNote = async (note: Annotation, hasReplies: boolean) => {
@@ -215,17 +243,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
       confirmLabel: 'Delete',
     });
     if (!ok) return;
-    setNoteBusy(note.id);
-    try {
-      await deleteFindingNote(findingId, note.id);
-      setNotes((prev) => (prev ? prev.filter((n) => n.id !== note.id) : prev));
-      if (replyTo?.id === note.id) setReplyTo(null);
-      toast.success('Comment deleted.');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not delete the comment.'));
-    } finally {
-      setNoteBusy(null);
-    }
+    remove.mutate(note);
   };
 
   // v5.264.0 — a conversation, oldest first: the viewer's comments on the

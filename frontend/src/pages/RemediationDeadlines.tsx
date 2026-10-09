@@ -11,7 +11,8 @@
  *
  * It exists only on an installation that turned remediation tracking on.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import {
@@ -22,7 +23,7 @@ import { useProject } from '../contexts/ProjectContext';
 import { idParam } from '../utils/remediation';
 import RemediationTrend from '../components/remediation/RemediationTrend';
 import { useRemediationPolicy } from '../hooks/useRemediationPolicy';
-import { formatApiError } from '../utils/apiErrors';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { REPORTED_FIXED, timelineSummary } from '../utils/remediation';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import RemediationWorkList from '../components/remediation/RemediationWorkList';
@@ -43,7 +44,6 @@ const RemediationDeadlines: React.FC = () => {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const { projects: mine, selectProject } = useProject();
-  const [changes, setChanges] = useState(0);
   // A row opens its host or finding in ITS project: switch, then go.  Only a
   // project the reader can switch to — an archived one is not in that list —
   // so the page never shows one project's page under another's name.
@@ -54,25 +54,19 @@ const RemediationDeadlines: React.FC = () => {
     selectProject(project);
     navigate(path);
   };
-  const [projects, setProjects] = useState<RemediationProjects | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Re-read after a save by the write itself (`invalidateRemediationReads`).
+  const query = useQuery({
+    queryKey: [GLOBAL, 'listRemediationProjects'],
+    queryFn: ({ signal }) => listRemediationProjects(signal),
+    enabled,
+  });
+  const projects: RemediationProjects | null = query.data ?? null;
+  const error = queryErrorText(query.error, 'The projects could not be loaded.');
+  const load = () => { void query.refetch(); };
   const [page, setPage] = useState<RemediationPage | null>(null);
   const [filtered, setFiltered] = useState(false);
   const [showIdle, setShowIdle] = useState(false);
-  const generation = useRef(0);
   const listRef = useRef<HTMLDivElement>(null);
-
-  const load = () => {
-    const mine = ++generation.current;
-    listRemediationProjects()
-      .then((result) => { if (mine === generation.current) { setProjects(result); setError(null); } })
-      .catch((err) => { if (mine === generation.current) setError(formatApiError(err, 'The projects could not be loaded.')); });
-  };
-  useEffect(() => {
-    if (enabled) load();
-    return () => { generation.current += 1; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled]);
 
   if (!enabled) {
     return (
@@ -203,7 +197,6 @@ const RemediationDeadlines: React.FC = () => {
                 policy={policy}
                 projects={projects?.items}
                 onLoaded={(next, isFiltered) => { setPage(next); setFiltered(isFiltered); }}
-                onChanged={() => { load(); setChanges((n) => n + 1); }}
                 canOpen={canOpen}
                 onOpen={onOpen}
                 where="across the projects you administer"
@@ -212,7 +205,7 @@ const RemediationDeadlines: React.FC = () => {
           </div>
 
           <PostureSection title="Over time">
-            <RemediationTrend scope="all" projectId={idParam(params.get('project')) ?? undefined} reloadKey={changes} />
+            <RemediationTrend scope="all" projectId={idParam(params.get('project')) ?? undefined} />
           </PostureSection>
         </>
       )}

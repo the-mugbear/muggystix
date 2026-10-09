@@ -12,7 +12,8 @@
  * the status counts and the weakness markers are derived here, never asked
  * for again.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Copy, Loader2 } from 'lucide-react';
 
 import {
@@ -21,12 +22,15 @@ import {
   listProposals,
   recordHostTestResult,
   type HostTest,
+  type HostTestCreateBody,
   type HostTestOutcome,
+  type HostTestPage,
   type HostTestPriority,
+  type HostTestResultBody,
   type PromotedEvidence,
 } from '../../services/api';
 import { useAgentTask } from '../../hooks/useAgentTask';
-import { useIsMounted } from '../../hooks/useIsMounted';
+import { queryErrorText } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { copyToClipboard } from '../../utils/clipboard';
 import { resolveCommand } from '../../utils/hostTests';
@@ -35,6 +39,7 @@ import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
+import { hostEvidenceKey } from './HostEvidenceSection';
 import { openHostTest, type AddTestTarget, type HostTestsController } from './hostTestsContext';
 import {
   SideSheet,
@@ -47,6 +52,10 @@ import {
 
 /** A host's tests are read in one request; past this the list says so. */
 export const HOST_TESTS_LIMIT = 200;
+
+/** The key of the one read of a host's tests. */
+const hostTestsKey = (hostId: number) =>
+  ['listHostTests', { host_id: hostId, limit: HOST_TESTS_LIMIT }] as const;
 
 export {
   HostTestsProvider, OPEN_HOST_TEST_EVENT, openHostTest, useHostTests,
@@ -94,17 +103,20 @@ interface ResultPanelProps {
   onDraft: (dirty: boolean) => void;
 }
 
+/** The test changed underneath a result: what the list holds for it now. */
+type StaleTest = Error & { staleTest: true; fresh: HostTest | null };
+const staleTest = (fresh: HostTest | null): StaleTest =>
+  Object.assign(new Error('The test changed while it was open.'), { staleTest: true as const, fresh });
+const isStaleTest = (err: unknown): err is StaleTest =>
+  err instanceof Error && (err as Partial<StaleTest>).staleTest === true;
+
 const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onStale, onDraft }) => {
-  // The panel goes with its host's inspector. A save that answers after that
-  // has nothing to update, and must not set off the host's re-reads.
-  const isMounted = useIsMounted();
   const [current, setCurrent] = useState<HostTest | null>(test);
   const [outcome, setOutcome] = useState<HostTestOutcome | ''>('');
   const [summary, setSummary] = useState('');
   const [output, setOutput] = useState('');
   // One key per opening, so a double click stores one record.
   const [requestKey, setRequestKey] = useState(newKey);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -114,7 +126,6 @@ const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onSta
       setSummary('');
       setOutput('');
       setError(null);
-      setSaving(false);
       setRequestKey(newKey());
     }
     // A different test, or the panel reopening — not every re-render of it.
@@ -124,39 +135,56 @@ const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onSta
   const dirty = current != null && (summary.trim().length > 0 || output.length > 0);
   useEffect(() => { onDraft(dirty); }, [dirty, onDraft]);
 
-  const save = async () => {
+  // One request records the result and moves the test.  A refusal for a stale
+  // revision reads the test again before it settles, so Save stays busy until
+  // the fresh copy is in hand.
+  const record = useMutation({
+    mutationFn: async ({ id, body }: { id: number; body: HostTestResultBody }) => {
+      try {
+        return await recordHostTestResult(id, body);
+      } catch (err) {
+        const status = (err as { response?: { status?: number } })?.response?.status;
+        if (status === 409) throw staleTest(await onStale(id));
+        throw err;
+      }
+    },
+  });
+  const saving = record.isPending;
+
+  const save = () => {
     if (!current || !outcome) return;
-    setSaving(true);
     setError(null);
-    try {
-      const res = await recordHostTestResult(current.id, {
+    // These answer only while the panel is on screen: it goes with its host's
+    // inspector, and a save that answers after that has nothing to update and
+    // must not set off the host's re-reads.
+    record.mutate({
+      id: current.id,
+      body: {
         expected_revision: current.revision,
         request_key: requestKey,
         outcome,
         summary: summary.trim(),
         ...(output ? { raw_output: output } : {}),
-      });
-      if (!isMounted()) return;
-      onDraft(false);
-      onSaved(res.test);
-    } catch (err) {
-      if (!isMounted()) return;
-      const status = (err as { response?: { status?: number } })?.response?.status;
-      if (status === 409) {
-        // Keep what was typed; take the fresh revision so Save works again.
-        const fresh = await onStale(current.id);
-        if (fresh) setCurrent(fresh);
-        // A new key with the fresh copy: if the first attempt did land (a lost
-        // response), what is saved next is a further result, never a silent
-        // replay of the old one.
-        setRequestKey(newKey());
-        setError('Someone changed this test while you had it open. It has been read again — check it below, then save.');
-      } else {
-        setError(formatApiError(err, 'Could not save the result.'));
-      }
-    } finally {
-      setSaving(false);
-    }
+      },
+    }, {
+      onSuccess: (res) => {
+        onDraft(false);
+        onSaved(res.test);
+      },
+      onError: (err) => {
+        if (isStaleTest(err)) {
+          // Keep what was typed; take the fresh revision so Save works again.
+          if (err.fresh) setCurrent(err.fresh);
+          // A new key with the fresh copy: if the first attempt did land (a lost
+          // response), what is saved next is a further result, never a silent
+          // replay of the old one.
+          setRequestKey(newKey());
+          setError('Someone changed this test while you had it open. It has been read again — check it below, then save.');
+        } else {
+          setError(formatApiError(err, 'Could not save the result.'));
+        }
+      },
+    });
   };
 
   const command = current?.command
@@ -236,7 +264,7 @@ const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onSta
             </SideSheetBody>
             <SideSheetFooter>
               <Button variant="outline" disabled={saving} onClick={onClose}>Cancel</Button>
-              <Button disabled={saving || !outcome || summary.trim().length === 0} onClick={() => void save()}>
+              <Button disabled={saving || !outcome || summary.trim().length === 0} onClick={save}>
                 {saving && <Loader2 className="size-3.5 animate-spin" aria-hidden />} Save result
               </Button>
             </SideSheetFooter>
@@ -266,7 +294,6 @@ interface AddPanelProps {
 /** A person writes a test for this host — the same row an agent proposes. */
 const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose, onSaved, onDraft }) => {
   const confirms = target?.confirms;
-  const isMounted = useIsMounted();
   const [description, setDescription] = useState('');
   const [tool, setTool] = useState('');
   const [command, setCommand] = useState('');
@@ -276,8 +303,10 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
   const [mine, setMine] = useState(true);
   // One key per opening, so a double click stores one test.
   const [requestKey, setRequestKey] = useState(newKey);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const create = useMutation({ mutationFn: (body: HostTestCreateBody) => createHostTests([body]) });
+  const { reset: forgetFailure } = create;
+  const saving = create.isPending;
+  const error = queryErrorText(create.error, 'Could not add the test.');
 
   useEffect(() => {
     if (!target) return;
@@ -288,8 +317,7 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
     setRationale('');
     setPriority(asPriority(target.confirms?.severity));
     setMine(true);
-    setError(null);
-    setSaving(false);
+    forgetFailure();
     setRequestKey(newKey());
     // Each opening starts clean — not every re-render of an open panel.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -304,33 +332,28 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
   const why = rationale.trim() || (confirms ? `To confirm the scanner observation “${confirms.title}”.` : '');
   const ready = description.trim().length > 0 && tool.trim().length > 0 && why.length > 0;
 
-  const save = async () => {
+  const save = () => {
     if (!ready) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await createHostTests([{
-        request_key: requestKey,
-        host_id: hostId,
-        tool: tool.trim(),
-        description: description.trim(),
-        rationale: why,
-        priority,
-        ...(command.trim() ? { command: command.trim() } : {}),
-        ...(expected.trim() ? { expected_result: expected.trim() } : {}),
-        ...(mine && userId != null ? { assigned_to_id: userId } : {}),
-        ...(confirms ? { vulnerability_id: confirms.vulnerabilityId } : {}),
-      }]);
-      // If the analyst stepped to another host meanwhile, the answer belongs
-      // to no list on screen, and must not ask the next host's list to open it.
-      if (!isMounted()) return;
-      onDraft(false);
-      onSaved(res.items[0]);
-    } catch (err) {
-      setError(formatApiError(err, 'Could not add the test.'));
-    } finally {
-      setSaving(false);
-    }
+    create.mutate({
+      request_key: requestKey,
+      host_id: hostId,
+      tool: tool.trim(),
+      description: description.trim(),
+      rationale: why,
+      priority,
+      ...(command.trim() ? { command: command.trim() } : {}),
+      ...(expected.trim() ? { expected_result: expected.trim() } : {}),
+      ...(mine && userId != null ? { assigned_to_id: userId } : {}),
+      ...(confirms ? { vulnerability_id: confirms.vulnerabilityId } : {}),
+    }, {
+      // Answered only while the panel is on screen: if the analyst stepped to
+      // another host meanwhile, the test belongs to no list on screen, and
+      // must not ask the next host's list to open it.
+      onSuccess: (res) => {
+        onDraft(false);
+        onSaved(res.items[0]);
+      },
+    });
   };
 
   return (
@@ -410,7 +433,7 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
         </SideSheetBody>
         <SideSheetFooter>
           <Button variant="outline" disabled={saving} onClick={onClose}>Cancel</Button>
-          <Button disabled={saving || !ready} onClick={() => void save()}>
+          <Button disabled={saving || !ready} onClick={save}>
             {saving && <Loader2 className="size-3.5 animate-spin" aria-hidden />} Add test
           </Button>
         </SideSheetFooter>
@@ -437,64 +460,62 @@ export interface HostTestsControllerOptions {
 export const useHostTestsController = ({
   hostId, canEdit, userId, onResultRecorded, onFindingCreated,
 }: HostTestsControllerOptions): { controller: HostTestsController; element: React.ReactNode } => {
-  const [tests, setTests] = useState<HostTest[] | null>(null);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [staleNotice, setStaleNotice] = useState(false);
   const [resultFor, setResultFor] = useState<HostTest | null>(null);
   const [resultDraft, setResultDraft] = useState(false);
   const [addFor, setAddFor] = useState<{ confirms?: AddTestTarget } | null>(null);
   const [addDraft, setAddDraft] = useState(false);
-  const [proposalByEvidence, setProposalByEvidence] = useState<Record<number, number>>({});
   const { give: giveAgent, allowed: canAskAgent, dialog: agentDialog } = useAgentTask();
 
-  // The list is re-read after every change, and a slower earlier answer can
-  // arrive after a later one: only the latest request may write.
-  const requestRef = useRef(0);
-  const proposalRequestRef = useRef(0);
-
+  // THE read of this host's tests: the Weaknesses rows and the Tests section
+  // both get it from the controller, so there is one query for it.
+  const testsQuery = useQuery({
+    queryKey: hostTestsKey(hostId),
+    queryFn: () => listHostTests({ host_id: hostId, limit: HOST_TESTS_LIMIT }),
+  });
+  const tests = testsQuery.data?.items ?? null;
+  const total = testsQuery.data?.total ?? 0;
+  const loading = testsQuery.isFetching;
+  const error = queryErrorText(testsQuery.error, 'Tests could not be loaded.');
+  const { refetch: refetchTests } = testsQuery;
   const reload = useCallback(async (): Promise<HostTest[]> => {
-    const request = ++requestRef.current;
-    setLoading(true);
-    try {
-      const page = await listHostTests({ host_id: hostId, limit: HOST_TESTS_LIMIT });
-      if (request !== requestRef.current) return [];
-      setTests(page.items);
-      setTotal(page.total);
-      setError(null);
-      return page.items;
-    } catch (err) {
-      if (request === requestRef.current) setError(formatApiError(err, 'Tests could not be loaded.'));
-      return [];
-    } finally {
-      if (request === requestRef.current) setLoading(false);
-    }
-  }, [hostId]);
+    const read = await refetchTests();
+    return read.isError ? [] : read.data?.items ?? [];
+  }, [refetchTests]);
 
-  const loadProposals = useCallback(() => {
-    // An agent's pending "this is a finding" proposals, by the evidence they
-    // cite. A failure here only hides a shortcut to the Proposals page.
-    const request = ++proposalRequestRef.current;
-    listProposals({ host_id: hostId, status: 'pending', kind: 'finding_create', limit: 100 })
-      .then((page) => {
-        if (request !== proposalRequestRef.current) return;
-        const map: Record<number, number> = {};
-        for (const pr of page.items) for (const id of pr.evidence_ids ?? []) map[id] = pr.id;
-        setProposalByEvidence(map);
-      })
-      .catch(() => { if (request === proposalRequestRef.current) setProposalByEvidence({}); });
-  }, [hostId]);
-
-  useEffect(() => {
-    void reload();
-    loadProposals();
-  }, [reload, loadProposals]);
+  // An agent's pending "this is a finding" proposals, by the evidence they
+  // cite. A failure here only hides a shortcut to the Proposals page.
+  const proposalsKey = useMemo(
+    () => ['listProposals', { host_id: hostId, status: 'pending', kind: 'finding_create', limit: 100 }] as const,
+    [hostId],
+  );
+  const proposalsQuery = useQuery({
+    queryKey: proposalsKey,
+    queryFn: () => listProposals({ host_id: hostId, status: 'pending', kind: 'finding_create', limit: 100 }),
+  });
+  const pendingProposals = proposalsQuery.isError ? undefined : proposalsQuery.data?.items;
+  const proposalByEvidence = useMemo(() => {
+    const map: Record<number, number> = {};
+    for (const pr of pendingProposals ?? []) for (const id of pr.evidence_ids ?? []) map[id] = pr.id;
+    return map;
+  }, [pendingProposals]);
 
   const replace = useCallback((updated: HostTest) => {
     setStaleNotice(false);
-    setTests((prev) => (prev ? prev.map((t) => (t.id === updated.id ? updated : t)) : prev));
-  }, []);
+    queryClient.setQueryData<HostTestPage>(hostTestsKey(hostId), (prev) => (
+      prev ? { ...prev, items: prev.items.map((t) => (t.id === updated.id ? updated : t)) } : prev
+    ));
+  }, [queryClient, hostId]);
+
+  // What else on the host page a result changes: the host's "tested" fact and
+  // the scanner row a linked result promotes (the inspector's `getHost`), and
+  // the evidence that answers no test.  Nothing is listening when the Tests
+  // section stands alone.
+  const hostEvidenceChanged = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ['getHost', hostId] });
+    void queryClient.invalidateQueries({ queryKey: hostEvidenceKey(hostId) });
+  }, [queryClient, hostId]);
 
   const controller = useMemo<HostTestsController>(() => ({
     hostId, canEdit, userId, tests, total, loading, error, reload, replace,
@@ -507,10 +528,19 @@ export const useHostTestsController = ({
     askAgent: (instruction) => { void giveAgent(instruction); },
     canAskAgent,
     resultDraft: resultDraft || addDraft,
-    onFindingCreated: (findingId, made) => { onFindingCreated?.(findingId, made); void reload(); loadProposals(); },
+    onFindingCreated: (findingId, made) => {
+      onFindingCreated?.(findingId, made);
+      // The test now names its finding, the agent's proposal for the same
+      // result may be settled, and the host has a finding it did not.
+      void queryClient.invalidateQueries({ queryKey: hostTestsKey(hostId) });
+      void queryClient.invalidateQueries({ queryKey: proposalsKey });
+      void queryClient.invalidateQueries({ queryKey: ['listFindings'] });
+      hostEvidenceChanged();
+    },
   }), [
     hostId, canEdit, userId, tests, total, loading, error, reload, replace, staleNotice,
-    proposalByEvidence, giveAgent, canAskAgent, resultDraft, addDraft, onFindingCreated, loadProposals,
+    proposalByEvidence, giveAgent, canAskAgent, resultDraft, addDraft, onFindingCreated,
+    queryClient, proposalsKey, hostEvidenceChanged,
   ]);
 
   const element = (
@@ -522,6 +552,7 @@ export const useHostTestsController = ({
         onSaved={(updated) => {
           replace(updated);
           setResultFor(null);
+          hostEvidenceChanged();
           onResultRecorded?.();
         }}
         onStale={async (id) => (await reload()).find((t) => t.id === id) ?? null}
@@ -534,8 +565,17 @@ export const useHostTestsController = ({
         onDraft={setAddDraft}
         onSaved={(created) => {
           setStaleNotice(false);
-          setTests((prev) => (prev ? [created, ...prev.filter((t) => t.id !== created.id)] : [created]));
-          setTotal((n) => n + 1);
+          const key = hostTestsKey(hostId);
+          if (queryClient.getQueryData<HostTestPage>(key)) {
+            queryClient.setQueryData<HostTestPage>(key, (prev) => (prev ? {
+              ...prev,
+              items: [created, ...prev.items.filter((t) => t.id !== created.id)],
+              total: prev.total + 1,
+            } : prev));
+          } else {
+            // The list never loaded: read it, now with the new test in it.
+            void queryClient.invalidateQueries({ queryKey: key });
+          }
           setAddFor(null);
           openHostTest(created.id);
         }}

@@ -19,7 +19,8 @@
  * vector cells truncate; every state (loading / error / not-adopted / empty)
  * renders a safe fallback.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Copy, Download, FileText, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 
@@ -34,6 +35,7 @@ import {
   type SystemicFamily,
 } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
 import { copyToClipboard, downloadTextFile } from '../utils/clipboard';
 import { useToast } from '../contexts/ToastContext';
 import { cn } from '../utils/cn';
@@ -157,11 +159,16 @@ const Patterns: React.FC = () => {
   const { currentProject } = useProject();
   const toast = useToast();
   const { canExport } = useProjectRole();
-  const [data, setData] = useState<SystemicInsightsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [exporting, setExporting] = useState(false);
-  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
+  const patterns = useQuery({ queryKey: ['getSystemicInsights'], queryFn: () => getSystemicInsights() });
+  const data = patterns.data ?? null;
+  const loading = patterns.isFetching;
+  const error = queryErrorText(patterns.error, 'Could not load the patterns.');
+  const loadedAt = useMemo(
+    () => (patterns.dataUpdatedAt ? new Date(patterns.dataUpdatedAt) : null),
+    [patterns.dataUpdatedAt],
+  );
+  const { refetch } = patterns;
+  const load = useCallback(() => { void refetch(); }, [refetch]);
 
   const handleCopyMarkdown = useCallback(async () => {
     if (!data) return;
@@ -175,26 +182,11 @@ const Patterns: React.FC = () => {
       JSON.stringify(data, null, 2), 'application/json');
   }, [data]);
 
-  const handleExportReport = useCallback(async () => {
-    setExporting(true);
-    try {
-      await downloadSystemicReport();
-    } catch (e) {
-      toast.error(formatApiError(e, 'Could not create the briefing.'));
-    } finally {
-      setExporting(false);
-    }
-  }, [toast]);
-
-  const load = useCallback(() => {
-    setLoading(true);
-    getSystemicInsights()
-      .then((d) => { setData(d); setError(null); setLoadedAt(new Date()); })
-      .catch((e) => setError(formatApiError(e, 'Could not load the patterns.')))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => { load(); }, [load, currentProject?.id]);
+  const briefing = useMutation({
+    mutationFn: () => downloadSystemicReport(),
+    onError: (e) => toast.error(formatApiError(e, 'Could not create the briefing.')),
+  });
+  const exporting = briefing.isPending;
 
   const estate = data?.estate;
   const families = useMemo(() => data?.family_summary ?? [], [data]);
@@ -223,7 +215,7 @@ const Patterns: React.FC = () => {
               server): not offered to a project viewer.  Copy and JSON are of
               what this page already shows. */}
           {canExport && (
-            <Button size="sm" variant="outline" onClick={handleExportReport} disabled={loading || exporting}>
+            <Button size="sm" variant="outline" onClick={() => briefing.mutate()} disabled={loading || exporting}>
               {exporting ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <FileText className="size-3.5" aria-hidden />}
               Create briefing
             </Button>

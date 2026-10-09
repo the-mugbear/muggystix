@@ -10,11 +10,12 @@
  * added; this page can't. Everything else on the page is stable prose about
  * the transport and is written inline.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Lock, Radio, ShieldCheck } from 'lucide-react';
-import { getMcpTools, type McpCatalog, type McpToolDoc } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { getMcpTools, type McpToolDoc } from '../services/api';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { CardListSkeleton } from '../components/PageSkeleton';
 import McpConnectPanel from '../components/McpConnectPanel';
 import SectionJumpBar, { JumpEntry, jumpTargetStyle } from '../components/SectionJumpBar';
@@ -78,26 +79,13 @@ const paramSummary = (tool: McpToolDoc): Array<{ name: string; required: boolean
 };
 
 const McpReference: React.FC = () => {
-  const [catalog, setCatalog] = useState<McpCatalog | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getMcpTools()
-      .then((c) => {
-        if (!cancelled) setCatalog(c);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(formatApiError(e, 'Could not load the tool catalog.'));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const catalogQuery = useQuery({
+    queryKey: [GLOBAL, 'getMcpTools'],
+    queryFn: () => getMcpTools(),
+  });
+  const catalog = catalogQuery.data ?? null;
+  const loading = catalogQuery.isPending;
+  const error = queryErrorText(catalogQuery.error, 'Could not load the tool catalog.');
 
   // Grouped by capability; read-vs-write is a per-row property and shows as a
   // badge. A tool tagged for every kind of work is filed once, under

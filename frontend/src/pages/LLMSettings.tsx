@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Plus,
   Pencil,
@@ -19,6 +20,7 @@ import {
   LLMProviderCreatePayload,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
 import { Button } from '../components/ui/button';
@@ -87,36 +89,30 @@ const emptyForm: LLMProviderCreatePayload = {
 const LLMSettings: React.FC = () => {
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
-  const [providers, setProviders] = useState<LLMProviderEntry[]>([]);
-  const [types, setTypes] = useState<LLMProviderTypeOption[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const providersQuery = useQuery({
+    queryKey: [GLOBAL, 'listLLMProviders'],
+    queryFn: () => listLLMProviders(),
+  });
+  const typesQuery = useQuery({
+    queryKey: [GLOBAL, 'listLLMProviderTypes'],
+    queryFn: () => listLLMProviderTypes(),
+  });
+  const providers: LLMProviderEntry[] = providersQuery.data ?? [];
+  const types: LLMProviderTypeOption[] = typesQuery.data ?? [];
+  const loading = providersQuery.isFetching || typesQuery.isFetching;
+  const error = loading
+    ? null
+    : queryErrorText(providersQuery.error ?? typesQuery.error, 'Failed to load LLM providers.');
+  // A failed load is said on the page and as a toast (once per attempt: the
+  // message is gone while the next one is in flight).
+  useEffect(() => {
+    if (error) toast.error(error);
+  }, [error, toast]);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<LLMProviderEntry | null>(null);
   const [form, setForm] = useState<LLMProviderCreatePayload>(emptyForm);
-  const [saving, setSaving] = useState(false);
-  const [testingId, setTestingId] = useState<number | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [list, t] = await Promise.all([listLLMProviders(), listLLMProviderTypes()]);
-      setProviders(list);
-      setTypes(t);
-    } catch (err: unknown) {
-      const msg = formatApiError(err, 'Failed to load LLM providers.');
-      setError(msg);
-      toast.error(msg);
-    } finally {
-      setLoading(false);
-    }
-  }, [toast]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   const openNew = () => {
     setEditing(null);
@@ -136,10 +132,11 @@ const LLMSettings: React.FC = () => {
     setDialogOpen(true);
   };
 
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      if (editing) {
+  const providersChanged = () => queryClient.invalidateQueries({ queryKey: [GLOBAL, 'listLLMProviders'] });
+
+  const save = useMutation({
+    mutationFn: async (target: LLMProviderEntry | null): Promise<'updated' | 'added'> => {
+      if (target) {
         const payload: any = {
           name: form.name,
           base_url: form.base_url || null,
@@ -147,25 +144,45 @@ const LLMSettings: React.FC = () => {
           is_default: form.is_default,
         };
         if (form.api_key) payload.api_key = form.api_key;
-        await updateLLMProvider(editing.id, payload);
-        toast.success('Provider updated.');
-      } else {
-        await createLLMProvider({
-          ...form,
-          base_url: form.base_url || undefined,
-          model_id: form.model_id || undefined,
-          api_key: form.api_key || undefined,
-        });
-        toast.success('Provider added.');
+        await updateLLMProvider(target.id, payload);
+        return 'updated';
       }
+      await createLLMProvider({
+        ...form,
+        base_url: form.base_url || undefined,
+        model_id: form.model_id || undefined,
+        api_key: form.api_key || undefined,
+      });
+      return 'added';
+    },
+    onSuccess: (outcome) => {
+      toast.success(outcome === 'updated' ? 'Provider updated.' : 'Provider added.');
       setDialogOpen(false);
-      await load();
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to save provider.'));
-    } finally {
-      setSaving(false);
-    }
-  };
+      return providersChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to save provider.')),
+  });
+  const saving = save.isPending;
+  const handleSave = () => save.mutate(editing);
+
+  // The edit dialog's "clear" beside a stored key: removed at once, not on Save.
+  const clearKey = useMutation({
+    mutationFn: (id: number) => updateLLMProvider(id, { clear_api_key: true }),
+    onSuccess: () => {
+      toast.success('API key cleared.');
+      setForm((f) => ({ ...f, api_key: '' }));
+      return providersChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to clear API key.')),
+  });
+  const remove = useMutation({
+    mutationFn: (p: LLMProviderEntry) => deleteLLMProvider(p.id),
+    onSuccess: () => {
+      toast.success('Provider deleted.');
+      return providersChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to delete provider.')),
+  });
 
   const handleDelete = async (p: LLMProviderEntry) => {
     const ok = await confirm({
@@ -176,30 +193,23 @@ const LLMSettings: React.FC = () => {
       confirmLabel: 'Delete',
     });
     if (!ok) return;
-    try {
-      await deleteLLMProvider(p.id);
-      toast.success('Provider deleted.');
-      await load();
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to delete provider.'));
-    }
+    remove.mutate(p);
   };
 
-  const handleTest = async (p: LLMProviderEntry) => {
-    setTestingId(p.id);
-    try {
-      const result = await testLLMProvider(p.id);
+  // Not a write: one connection test, whose outcome is a toast.
+  const test = useMutation({
+    mutationFn: (p: LLMProviderEntry) => testLLMProvider(p.id),
+    onSuccess: (result, p) => {
       if (result.ok) {
         toast.success(`${p.name}: ${result.detail}`);
       } else {
         toast.error(`${p.name}: ${result.detail}`);
       }
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, `${p.name} test failed`));
-    } finally {
-      setTestingId(null);
-    }
-  };
+    },
+    onError: (err, p) => toast.error(formatApiError(err, `${p.name} test failed`)),
+  });
+  const handleTest = (p: LLMProviderEntry) => test.mutate(p);
+  const testingId = test.isPending ? test.variables.id : null;
 
   const needsKey = PROVIDER_NEEDS_KEY[form.provider_type] ?? true;
   const urlError = validateBaseUrl(form.base_url);
@@ -403,16 +413,7 @@ const LLMSettings: React.FC = () => {
                   onChange={(e) => setForm((f) => ({ ...f, api_key: e.target.value }))}
                   onClear={
                     editing && editing.has_api_key
-                      ? async () => {
-                          try {
-                            await updateLLMProvider(editing.id, { clear_api_key: true });
-                            toast.success('API key cleared.');
-                            setForm((f) => ({ ...f, api_key: '' }));
-                            await load();
-                          } catch (err: unknown) {
-                            toast.error(formatApiError(err, 'Failed to clear API key.'));
-                          }
-                        }
+                      ? () => clearKey.mutate(editing.id)
                       : undefined
                   }
                   clearTooltip="Remove the stored API key"

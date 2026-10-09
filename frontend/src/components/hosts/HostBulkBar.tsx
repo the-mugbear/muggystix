@@ -8,6 +8,7 @@
  * up from the client).
  */
 import React, { useCallback, useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Tag as TagIcon, UserPlus, Eye, X, Copy, Check, ClipboardList } from 'lucide-react';
 import ProposeTestsDialog from './ProposeTestsDialog';
 import { describeSelection } from '../../utils/hostSelection';
@@ -26,6 +27,7 @@ import { MEMBERS_LOAD_ERROR } from '../MembersLoadError';
 import { useAuth } from '../../contexts/AuthContext';
 import { useProjectRole } from '../../hooks/useProjectRole';
 import { useToast } from '../../contexts/ToastContext';
+import { invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { cn } from '../../utils/cn';
 import { copyToClipboard } from '../../utils/clipboard';
@@ -62,7 +64,8 @@ interface HostBulkBarProps {
   queryContext: Record<string, string | boolean | number | string[] | undefined>;
   /** Clear the selection (and exit select-all-matching). */
   onClear: () => void;
-  /** Re-fetch hosts + filter data after a successful mutation. */
+  /** A bulk action went through (the rows and the filters' counts are
+   *  re-read by the bar itself): the page drops the selection. */
   onApplied: () => void;
 }
 
@@ -84,8 +87,27 @@ export const BULK_SELECT_CAP = 5000;
 
 interface PendingAction {
   summary: string;
-  run: () => Promise<void>;
+  run: () => void;
 }
+
+/** What a bulk action does to the hosts it is given. */
+type BulkAction =
+  | { kind: 'tags'; action: 'add' | 'remove'; tagIds: number[]; names: string[] }
+  | { kind: 'assign'; userId: number }
+  | { kind: 'unassign' }
+  | { kind: 'follow'; status: FollowStatus };
+
+/** The past tense the result is reported in ("Tagged 12 hosts"). */
+const bulkVerb = (action: BulkAction): string => {
+  switch (action.kind) {
+    case 'tags': return action.action === 'add' ? 'Tagged' : 'Untagged';
+    case 'assign': return 'Assigned';
+    case 'unassign': return 'Unassigned';
+    default: return 'Updated';
+  }
+};
+
+const NO_TAGS: HostTagWithCount[] = [];
 
 const HostBulkBar: React.FC<HostBulkBarProps> = ({
   selectedIds,
@@ -101,8 +123,8 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   // viewer or auditor keeps those two.
   const { canWrite } = useProjectRole();
   const toast = useToast();
+  const queryClient = useQueryClient();
   const [allMatching, setAllMatching] = useState(false);
-  const [working, setWorking] = useState(false);
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [copiedIps, setCopiedIps] = useState(false);
   // v5.221.0 — hand the selection to the agent as a fixed list (design review
@@ -124,16 +146,16 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
     }
   };
 
-  const [tags, setTags] = useState<HostTagWithCount[]>([]);
+  // A failed read is an empty picker: a tag can still be made by name.
+  const tags = useQuery({
+    queryKey: ['listHostTags'],
+    queryFn: () => listHostTags(),
+    enabled: canWrite,  // the picker this fills is not rendered otherwise
+  }).data ?? NO_TAGS;
   const roster = useProjectRoster({ enabled: canWrite });
   const members = roster.members;
   const [checkedTagIds, setCheckedTagIds] = useState<Set<number>>(new Set());
   const [newTagName, setNewTagName] = useState('');
-
-  useEffect(() => {
-    if (!canWrite) return;  // the pickers these fill are not rendered
-    listHostTags().then(setTags).catch(() => setTags([]));
-  }, [canWrite]);
 
   // Leaving select-all-matching when the page selection changes keeps the
   // displayed count honest.
@@ -150,48 +172,61 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   const effectiveCount = allMatching ? reachableMatching : selectedIds.length;
   const canSelectAll = !allMatching && totalMatching > selectedIds.length && selectedIds.length > 0;
 
+  // "Every matching host" as ids: asked of the server when an action (or the
+  // hand-off to an agent) needs them, under the filters of that moment.
+  const { mutateAsync: readMatchingIds } = useMutation({
+    mutationFn: () => getMatchingHostIds(queryContext),
+  });
   const resolveIds = useCallback(async (): Promise<number[]> => {
     if (!allMatching) return selectedIds;
-    const res = await getMatchingHostIds(queryContext);
+    const res = await readMatchingIds();
     if (res.capped) {
       toast.warning(`Acting on the first ${res.ids.length} of ${res.total} matches (capped).`);
     }
     return res.ids;
-  }, [allMatching, selectedIds, queryContext, toast]);
+  }, [allMatching, selectedIds, readMatchingIds, toast]);
 
-  const execute = async (
-    fn: (ids: number[]) => Promise<{ affected: number }>,
-    verb: string,
-    after?: () => void,
-  ) => {
-    setWorking(true);
-    try {
+  // One bulk action: the selection resolved to ids, then the one request.
+  // `null` when the selection turned out to hold nothing.
+  const bulk = useMutation({
+    mutationFn: async (action: BulkAction) => {
       const ids = await resolveIds();
-      if (!ids.length) {
+      if (!ids.length) return null;
+      switch (action.kind) {
+        case 'tags':
+          return bulkTagHosts(ids, { tag_ids: action.tagIds, names: action.names, action: action.action });
+        case 'assign':
+          return bulkAssignHosts(ids, action.userId);
+        case 'unassign':
+          return bulkUnassignHosts(ids);
+        default:
+          return bulkFollowHosts(ids, action.status);
+      }
+    },
+    onSuccess: (res, action) => {
+      if (!res) {
         toast.info('No hosts selected.');
         return;
       }
-      const res = await fn(ids);
-      toast.success(`${verb} ${res.affected} host${res.affected === 1 ? '' : 's'}`, { autoHideMs: 2500 });
-      after?.();
+      toast.success(`${bulkVerb(action)} ${res.affected} host${res.affected === 1 ? '' : 's'}`, { autoHideMs: 2500 });
+      if (action.kind === 'tags') {
+        setCheckedTagIds(new Set());
+        setNewTagName('');
+      }
+      // What a bulk change is read back through: the rows, the filters'
+      // counts, the tag list and a host that is open in the inspector.
+      void invalidateReads(queryClient, 'getHosts', 'getHostFilterData', 'listHostTags', 'getHost');
       onApplied();
-    } catch (err) {
-      toast.error(formatApiError(err, `Bulk action failed.`));
-    } finally {
-      setWorking(false);
-    }
-  };
+    },
+    onError: (err) => toast.error(formatApiError(err, `Bulk action failed.`)),
+  });
+  const working = bulk.isPending;
 
   // Bulk changes to a large set — or to *every* host matching the current
   // filters — are operationally risky in a security inventory, so gate them
   // behind a confirmation that names the action, count, and filter scope.
-  const runAction = (
-    fn: (ids: number[]) => Promise<{ affected: number }>,
-    verb: string,
-    actionLabel: string,
-    after?: () => void,
-  ) => {
-    const run = () => execute(fn, verb, after);
+  const runAction = (action: BulkAction, actionLabel: string) => {
+    const run = () => bulk.mutate(action);
     if (allMatching || effectiveCount > CONFIRM_THRESHOLD) {
       setPending({
         summary:
@@ -206,23 +241,18 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
       });
       return;
     }
-    void run();
+    run();
   };
 
   const applyTags = (action: 'add' | 'remove') =>
     runAction(
-      (ids) =>
-        bulkTagHosts(ids, {
-          tag_ids: Array.from(checkedTagIds),
-          names: action === 'add' && newTagName.trim() ? [newTagName.trim()] : [],
-          action,
-        }),
-      action === 'add' ? 'Tagged' : 'Untagged',
-      action === 'add' ? 'Add tags' : 'Remove tags',
-      () => {
-        setCheckedTagIds(new Set());
-        setNewTagName('');
+      {
+        kind: 'tags',
+        action,
+        tagIds: Array.from(checkedTagIds),
+        names: action === 'add' && newTagName.trim() ? [newTagName.trim()] : [],
       },
+      action === 'add' ? 'Add tags' : 'Remove tags',
     );
 
   const toggleTag = (id: number) => {
@@ -349,7 +379,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto">
             {user && (
-              <DropdownMenuItem onSelect={() => runAction((ids) => bulkAssignHosts(ids, user.id), 'Assigned', 'Assign to me')}>
+              <DropdownMenuItem onSelect={() => runAction({ kind: 'assign', userId: user.id }, 'Assign to me')}>
                 Assign to me
               </DropdownMenuItem>
             )}
@@ -360,7 +390,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
                 return (
                   <DropdownMenuItem
                     key={m.user_id}
-                    onSelect={() => runAction((ids) => bulkAssignHosts(ids, m.user_id), 'Assigned', `Assign to ${name}`)}
+                    onSelect={() => runAction({ kind: 'assign', userId: m.user_id }, `Assign to ${name}`)}
                   >
                     {name}
                   </DropdownMenuItem>
@@ -379,7 +409,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
             {user && (
               <>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => runAction((ids) => bulkUnassignHosts(ids), 'Unassigned', 'Unassign me')}>
+                <DropdownMenuItem onSelect={() => runAction({ kind: 'unassign' }, 'Unassign me')}>
                   Unassign me
                 </DropdownMenuItem>
               </>
@@ -399,7 +429,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
             {STATUS_OPTIONS.map((opt) => (
               <DropdownMenuItem
                 key={opt.value}
-                onSelect={() => runAction((ids) => bulkFollowHosts(ids, opt.value), 'Updated', `Set status: ${opt.label}`)}
+                onSelect={() => runAction({ kind: 'follow', status: opt.value }, `Set status: ${opt.label}`)}
               >
                 {opt.label}
               </DropdownMenuItem>
@@ -444,10 +474,10 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
               Cancel
             </Button>
             <Button
-              onClick={async () => {
+              onClick={() => {
                 const p = pending;
                 setPending(null);
-                await p?.run();
+                p?.run();
               }}
               disabled={working}
             >

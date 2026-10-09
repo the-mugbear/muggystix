@@ -1,10 +1,12 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useMemo, useState, ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertCircle, Loader2, LogOut, RefreshCw } from 'lucide-react';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { createProject, getProjects, setCurrentProjectId, getCurrentProjectId, Project } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
+import { GLOBAL, ScopedQueryClient, getQueryScope, queryErrorText, setQueryScope } from '../lib/query';
 import { useAuth } from './AuthContext';
 import { CharacterCount } from '../components/ui/character-count';
 import { Input } from '../components/ui/input';
@@ -118,15 +120,87 @@ const ProjectContext = createContext<ProjectContextType>({
 
 export const useProject = () => useContext(ProjectContext);
 
+// The project list is the reader's, not one project's: `GLOBAL` (lib/query).
+// Anything else that reads or invalidates the list uses this key and so
+// keeps the selector current.
+const PROJECTS_KEY = [GLOBAL, 'getProjects'];
+const NO_PROJECTS: Project[] = [];
+
+/** The project to work in when the reader has not chosen one in this tab:
+ *   1. the one stored on this device (`preferredId` — the operator's last
+ *      active project here),
+ *   2. the most recently used that is still in the list (`nm.recentProjectIds`,
+ *      promoted on every selectProject call),
+ *   3. the first by name — only when neither resolves (a fresh install, a
+ *      new user).
+ *
+ *  There is no "default project": engagements are independent, and the old
+ *  default was whichever project happened to be created first.  `null` only
+ *  for an empty list. */
+export function pickProject(list: Project[], preferredId: number | null, recentIds: number[]): Project | null {
+  const exact = list.find((p) => p.id === preferredId);
+  const mruPick = recentIds.map((id) => list.find((p) => p.id === id)).find(Boolean);
+  return exact ?? mruPick ?? (list.length > 0 ? [...list].sort((a, b) => a.name.localeCompare(b.name))[0] : null);
+}
+
 export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [currentProject, setCurrentProject] = useState<Project | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const queryClient = useQueryClient();
+  const list = useQuery({
+    queryKey: PROJECTS_KEY,
+    queryFn: async () => {
+      try {
+        return await getProjects();
+      } catch (err) {
+        console.error('Failed to load projects:', err);
+        throw err;
+      }
+    },
+  });
+  const projects = list.data ?? NO_PROJECTS;
+
+  // What the reader chose in this tab, and the list it was chosen under.  The
+  // current project is DERIVED from it and the list — never a copy that a
+  // re-read of the list could leave behind.
+  const [chosen, setChosen] = useState<{ project: Project; under: Project[] | undefined } | null>(null);
+  const currentProject = useMemo(() => {
+    if (!list.data) return chosen?.project ?? null;
+    if (chosen) {
+      // The list's row for it (a rename shows at once)…
+      const listed = list.data.find((p) => p.id === chosen.project.id);
+      if (listed) return listed;
+      // …or the project as it was handed over, while the list is the one it
+      // was chosen under: a list that has changed since, and does not have
+      // it, says it is gone.
+      if (chosen.under === list.data) return chosen.project;
+    }
+    return pickProject(list.data, getCurrentProjectId(), readRecentProjectIds());
+  }, [list.data, chosen]);
+  // The API client addresses the current project by this id (services/api
+  // `p()`): it must be the project on screen before any child asks for data,
+  // so it is set while rendering, like the cache scope below.
+  if (currentProject && getCurrentProjectId() !== currentProject.id) setCurrentProjectId(currentProject.id);
+  // The query cache is partitioned by project (lib/query): set while
+  // rendering, so every query under this provider is keyed for this project
+  // and one project's rows never answer another's question.
+  setQueryScope({ ...getQueryScope(), projectId: currentProject?.id ?? null });
+
+  // The full-screen loader: the first read, and a refresh that was ASKED for
+  // (`refreshProjects`).  Not every read in flight — another reader of the
+  // list (a dialog that lists projects) re-reads it in the background, and a
+  // loader there would unmount the page that opened the dialog.
+  const [refreshing, setRefreshing] = useState(0);
+  const isLoading = list.isPending || refreshing > 0;
   // Fix for UX audit #2: distinguish "fetch failed" from "fetched
   // successfully but the user has no projects".  Previously any
   // failure was swallowed and users saw the misleading
   // "No Projects Available" dead end even when the backend was down.
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // The same rule as the loader: the full-screen error is for a list that
+  // was never read, or a refresh that was asked for and failed — a failed
+  // background re-read keeps the app, and the list it had.
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const loadError = list.isError && (!list.data || refreshFailed)
+    ? formatApiError(list.error, 'Failed to load projects. Check backend connection.')
+    : null;
   // Both the error and empty-project states below render *instead of*
   // the app Layout, which has no sign-out control of its own.  Without
   // a Sign Out button here a user with no project assignment (or a
@@ -135,53 +209,21 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
   const navigate = useNavigate();
   const location = useLocation();
 
+  const { refetch } = list;
   const refreshProjects = useCallback(async () => {
-    setIsLoading(true);
-    setLoadError(null);
+    setRefreshing((n) => n + 1);
     try {
-      const data = await getProjects();
-      setProjects(data);
-
-      // Auto-select order of preference:
-      //   1. The project explicitly stored in localStorage (the
-      //      operator's last active project on this device).
-      //   2. The most-recently-used project from the MRU ring
-      //      (`nm.recentProjectIds` — promoted on every selectProject
-      //      call, see below).
-      //   3. Alphabetical-first project — only when neither of the
-      //      above resolves (genuinely fresh install or new user).
-      //
-      // The previous logic fell back to `find(p => p.is_default)`. We
-      // dropped the "default project" concept entirely: pentest
-      // engagements are conceptually independent, not hierarchical,
-      // and the auto-set default was whichever project happened to
-      // be created first — never a meaningful preference. MRU is what
-      // the operator actually intends.
-      const storedId = getCurrentProjectId();
-      const exact = data.find((p) => p.id === storedId);
-      const mruIds = readRecentProjectIds();
-      const mruPick = mruIds.map((id) => data.find((p) => p.id === id)).find(Boolean);
-      const pick = exact ?? mruPick ?? (data.length > 0 ? [...data].sort((a, b) => a.name.localeCompare(b.name))[0] : null);
-      if (pick) {
-        setCurrentProject(pick);
-        setCurrentProjectId(pick.id);
-      } else {
-        // Explicit empty-success state so the empty-state UI renders
-        // only after a confirmed empty list, never after a failure.
-        setCurrentProject(null);
-      }
-    } catch (err) {
-      console.error('Failed to load projects:', err);
-      setLoadError(formatApiError(err, 'Failed to load projects. Check backend connection.'));
+      const result = await refetch();
+      setRefreshFailed(result.isError);
     } finally {
-      setIsLoading(false);
+      setRefreshing((n) => n - 1);
     }
-  }, []);
+  }, [refetch]);
 
   const selectProject = useCallback(
     (project: Project) => {
       const previousId = currentProject?.id;
-      setCurrentProject(project);
+      setChosen({ project, under: queryClient.getQueryData<Project[]>(PROJECTS_KEY) });
       setCurrentProjectId(project.id);
       pushRecentProjectId(project.id);
       announceProjectChange(project.name);
@@ -194,25 +236,21 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
         if (next) navigate(next, { replace: true });
       }
     },
-    [currentProject?.id, location.pathname, location.search, navigate],
+    [currentProject?.id, location.pathname, location.search, navigate, queryClient],
   );
 
   const adoptProject = useCallback(
     (project: Project) => {
-      setProjects((prev) => (
-        prev.some((p) => p.id === project.id)
+      queryClient.setQueryData<Project[]>(PROJECTS_KEY, (prev) => (
+        !prev || prev.some((p) => p.id === project.id)
           ? prev
           // The API lists projects by name; keep that order.
           : [...prev, project].sort((a, b) => a.name.localeCompare(b.name))
       ));
       selectProject(project);
     },
-    [selectProject],
+    [queryClient, selectProject],
   );
-
-  useEffect(() => {
-    refreshProjects();
-  }, [refreshProjects]);
 
   // Memoize so consumers don't re-render on every Provider render.
   // Same rationale as AuthContext — the topbar + every page subscribe.
@@ -284,7 +322,10 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
 
   return (
     <ProjectContext.Provider value={contextValue}>
-      {children}
+      {/* The client as THIS user and project see it: a save that answers
+          after the reader has switched project cannot write its row into the
+          other project's cache (lib/query `scopedClient`). */}
+      <ScopedQueryClient>{children}</ScopedQueryClient>
     </ProjectContext.Provider>
   );
 };
@@ -318,23 +359,20 @@ const EmptyProjectStartScreen: React.FC<EmptyProjectStartScreenProps> = ({
 }) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const create = useMutation({
+    mutationFn: (body: { name: string; description?: string }) => createProject(body.name, body.description),
+    // Re-read the project list (the provider's loader takes the screen);
+    // its pick is the new project, and this screen is not shown again.
+    // Pending until then, so the form stays locked.
+    onSuccess: () => onCreated(),
+  });
+  const creating = create.isPending;
+  const error = queryErrorText(create.error, 'Failed to create project.');
 
-  const handleCreate = async (event: React.FormEvent) => {
+  const handleCreate = (event: React.FormEvent) => {
     event.preventDefault();
     if (!name.trim() || creating) return;
-    setCreating(true);
-    setError(null);
-    try {
-      await createProject(name.trim(), description.trim() || undefined);
-      // Re-fetch the project list.  ProjectContext's auto-select picks
-      // up the new project on the next render and the screen unmounts.
-      await onCreated();
-    } catch (err: unknown) {
-      setError(formatApiError(err, 'Failed to create project.'));
-      setCreating(false);
-    }
+    create.mutate({ name: name.trim(), description: description.trim() || undefined });
   };
 
   return (

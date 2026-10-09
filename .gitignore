@@ -14,6 +14,11 @@ downloads/
 eggs/
 .eggs/
 lib/
+# …the Python packaging folder, not the frontend's source: src/lib/query.ts
+# is the app's server-state module (an ignored copy built locally and failed
+# from a clean checkout).
+!frontend/src/lib/
+!frontend/src/tests/lib/
 lib64/
 parts/
 sdist/

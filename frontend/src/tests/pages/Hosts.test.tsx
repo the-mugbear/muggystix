@@ -253,6 +253,14 @@ const renderHosts = () =>
     </MemoryRouter>
   );
 
+/** The list's own table.  The page skeleton — what is on screen until the
+ *  first read is in — is a table too, and the rows arrive a tick after the
+ *  request resolves (they used to land before the first look). */
+const findHostsTable = () => waitFor(() => {
+  expect(screen.queryByText('Loading table…')).toBeNull();
+  return screen.getByRole('table');
+});
+
 describe('Hosts', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -307,7 +315,7 @@ describe('Hosts', () => {
   it('hands the columns stable handlers that still read the filters of now', async () => {
     const user = userEvent.setup({ skipHover: true });
     renderHosts();
-    await screen.findByRole('table');
+    await findHostsTable();
     const first = columnArgs.calls[0];
 
     await user.click(screen.getByRole('button', { name: /Add filter/i }));
@@ -334,7 +342,7 @@ describe('Hosts', () => {
   // of them on every render: any state change on the page ran every cell.
   it('a change on the page that touches no row does not render the rows again', async () => {
     renderHosts();
-    await screen.findByRole('table');
+    await findHostsTable();
     await screen.findAllByText('10.0.0.20');
     await waitFor(() => expect(mockedApi.getHostFilterData).toHaveBeenCalled());
     await act(async () => { await Promise.resolve(); });
@@ -354,7 +362,7 @@ describe('Hosts', () => {
   it('opens on the page the URL names and is not thrown back to the first while it loads', async () => {
     routerState.search = '?sort_by=critical_vulns&sort_order=desc&page=2';
     renderHosts();
-    await screen.findByRole('table');
+    await findHostsTable();
     await waitFor(() => expect(mockedApi.getHosts).toHaveBeenCalledWith(
       expect.objectContaining({ skip: 25, limit: 25 }), expect.anything(),
     ));
@@ -364,7 +372,7 @@ describe('Hosts', () => {
   it('writes the page into the URL, leaves it out for the first page, and a filter change goes back to it', async () => {
     const user = userEvent.setup({ skipHover: true });
     renderHosts();
-    await screen.findByRole('table');
+    await findHostsTable();
     const lastSearch = () => String((navigateSpy.mock.calls[navigateSpy.mock.calls.length - 1]?.[0] as { search?: string })?.search);
     // Nothing was chosen yet: the address is left as it was opened.
     await waitFor(() => expect(mockedApi.getHosts).toHaveBeenCalled());
@@ -389,7 +397,7 @@ describe('Hosts', () => {
   it('remembers rows per page for the viewer, and works when nothing is stored', async () => {
     writeHostsPageSize(50);
     const { unmount } = renderHosts();
-    await screen.findByRole('table');
+    await findHostsTable();
     await waitFor(() => expect(mockedApi.getHosts).toHaveBeenCalledWith(
       expect.objectContaining({ skip: 0, limit: 50 }), expect.anything(),
     ));
@@ -401,7 +409,7 @@ describe('Hosts', () => {
     localStorage.clear();
     mockedApi.getHosts.mockClear();
     renderHosts();
-    await screen.findByRole('table');
+    await findHostsTable();
     expect(mockedApi.getHosts).toHaveBeenCalledWith(expect.objectContaining({ limit: 25 }), expect.anything());
   });
 
@@ -607,7 +615,7 @@ describe('Hosts', () => {
 
     expect(await screen.findByText(/Project default view applied/)).toBeInTheDocument();
     await waitFor(() => expect(mockedApi.getProjectDefaultView).toHaveBeenCalled());
-    await screen.findByRole('table');
+    await findHostsTable();
     expect(screen.getByText(/Project default view applied/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Back to default view' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^View: Web tier/ })).toBeInTheDocument();
@@ -629,7 +637,7 @@ describe('Hosts', () => {
     routerState.search = '?q=has%3Acritical';
     renderHosts();
 
-    await screen.findByRole('table');
+    await findHostsTable();
     await waitFor(() => {
       const calls = mockedApi.getHosts.mock.calls;
       expect(calls[calls.length - 1][0]).toMatchObject({ q: 'has:critical' });
@@ -690,7 +698,7 @@ describe('Hosts', () => {
       ));
       renderHosts();
       await waitFor(() => expect(lastParams()).toMatchObject({ skip: 0 }));
-      await screen.findByRole('table');
+      await findHostsTable();
 
       act(() => { navigateSpy('/hosts?q=port%3A22&page=4'); });
       await waitFor(() => expect(lastParams()).toMatchObject({ q: 'port:22', skip: 75 }));
@@ -702,7 +710,7 @@ describe('Hosts', () => {
     it('"hosts with this weakness" in the inspector goes to that address and closes the inspector', async () => {
       routerState.search = '?has_critical_vulns=true';
       renderHosts();
-      await screen.findByRole('table');
+      await findHostsTable();
       act(() => { columnArgs.calls[0].onOpen?.(2); });
       fireEvent.click(within(screen.getByTestId('host-inspector')).getByRole('button', { name: 'hosts with this weakness' }));
       await waitFor(() => expect(lastParams()).toMatchObject({ q: 'cve:CVE-2024-0001' }));
@@ -714,7 +722,7 @@ describe('Hosts', () => {
     it('the page’s own change is in the address at once, as a replacement', async () => {
       const user = userEvent.setup({ skipHover: true });
       renderHosts();
-      await screen.findByRole('table');
+      await findHostsTable();
       await user.click(screen.getByRole('button', { name: /Add filter/i }));
       await user.click(await screen.findByRole('button', { name: /Scanner severity/ }));
       await user.click(screen.getByRole('checkbox', { name: 'Critical' }));
@@ -801,7 +809,7 @@ describe('Hosts', () => {
     const user = userEvent.setup({ skipHover: true });
     renderHosts();
 
-    await screen.findByRole('table');
+    await findHostsTable();
     let rows = within(screen.getByRole('table')).getAllByRole('row');
     // First body row should be the largest-critical host (`10.0.0.20`).
     expect(within(rows[1]).getByText('10.0.0.20')).toBeInTheDocument();
@@ -936,7 +944,7 @@ describe('Hosts', () => {
   // table (sticky to the window's foot) and is empty until a row is selected.
   it('selecting a row does not move the table: the bulk-action slot follows it, empty until a selection', async () => {
     renderHosts();
-    const table = await screen.findByRole('table');
+    const table = await findHostsTable();
     const slot = screen.getByTestId('hosts-bulk-slot');
     const slotClass = slot.className;
     expect(slot).toBeEmptyDOMElement();
@@ -1014,7 +1022,7 @@ describe('Hosts', () => {
         expect.anything(),
       ),
     );
-    await screen.findByRole('table');
+    await findHostsTable();
     expect(screen.queryByTestId('hosts-restored-notice')).toBeNull();
   });
 });

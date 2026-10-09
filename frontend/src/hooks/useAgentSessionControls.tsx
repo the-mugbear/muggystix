@@ -7,20 +7,28 @@
  * caller's rights as the backend computes them (owner or project admin may
  * end; only the owner may resume). The page used to guess from the global
  * role, so a project admin was never offered End.
+ *
+ * An End or a Resume says itself which reads are out of date
+ * (`AGENT_SESSION_READS`): a caller passes no re-read callback.
  */
 import React, { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import ResumeAgentSessionDialog from '../components/ResumeAgentSessionDialog';
 import { CodeBlock } from '../components/ui/code-block';
 import { useToast } from '../contexts/ToastContext';
 import { endAgentSession, type AgentSessionRow } from '../services/api';
+import { invalidateReads } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
-import { WRAP_UP_PROMPT, agentConnected } from '../utils/agentRuns';
+import { AGENT_SESSION_READS, WRAP_UP_PROMPT, agentConnected } from '../utils/agentRuns';
 import { useConfirm } from './useConfirm';
 
 export interface AgentSessionControls {
   /** Render once: the confirm dialog and the resume dialog. */
   dialogs: React.ReactNode;
-  requestEnd: (row: AgentSessionRow) => Promise<void>;
+  /** Resolves true when the session was ended (false: not confirmed, or it
+   *  failed and was said).  The reads of sessions are asked again by the End
+   *  itself; the answer is for a caller whose list is not a query. */
+  requestEnd: (row: AgentSessionRow) => Promise<boolean>;
   requestResume: (row: AgentSessionRow) => void;
   /** Whether an End is in flight for this session. Several can be: ending A
    *  then B before A returns must keep both disabled until each settles. */
@@ -33,13 +41,19 @@ export const canEndSession = (row: AgentSessionRow): boolean =>
 export const canResumeSession = (row: AgentSessionRow): boolean =>
   row.kind === 'project' && row.status === 'active' && row.can_resume === true;
 
-export function useAgentSessionControls(onChanged: () => void): AgentSessionControls {
+export function useAgentSessionControls(): AgentSessionControls {
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
   const [endingIds, setEndingIds] = useState<ReadonlySet<number>>(() => new Set());
   const [resumeRow, setResumeRow] = useState<AgentSessionRow | null>(null);
+  const queryClient = useQueryClient();
+  // Several Ends can be in flight (one per session), so which rows are busy
+  // is `endingIds`, not this mutation's one `isPending`.
+  const { mutateAsync: end } = useMutation({
+    mutationFn: (sessionId: number) => endAgentSession(sessionId),
+  });
 
-  const requestEnd = async (row: AgentSessionRow) => {
+  const requestEnd = async (row: AgentSessionRow): Promise<boolean> => {
     // v5.219.0 — the wrap-up handoff. Sessions end because the human stops
     // typing, and nobody tells the agent it is done, so the feedback and the
     // clean exit never happen. If the agent is still reachable, the operator
@@ -76,14 +90,18 @@ export function useAgentSessionControls(onChanged: () => void): AgentSessionCont
         </div>
       ),
     });
-    if (!ok) return;
+    if (!ok) return false;
     setEndingIds((prev) => new Set(prev).add(row.id));
     try {
-      await endAgentSession(row.id);
+      await end(row.id);
       toast.success(`Agent session #${row.id} ended — its key is revoked.`);
-      onChanged();
+      // Every reader of the sessions: the page this was asked from, the top
+      // bar, "your sessions".
+      void invalidateReads(queryClient, ...AGENT_SESSION_READS);
+      return true;
     } catch (err) {
       toast.error(formatApiError(err, 'Could not end the agent session.'));
+      return false;
     } finally {
       // Only this session's flag: another End may still be in flight.
       setEndingIds((prev) => {
@@ -100,7 +118,6 @@ export function useAgentSessionControls(onChanged: () => void): AgentSessionCont
       <ResumeAgentSessionDialog
         session={resumeRow}
         onOpenChange={(next) => { if (!next) setResumeRow(null); }}
-        onResumed={onChanged}
       />
     </>
   );

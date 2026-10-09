@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { FolderOpen, RefreshCw, Users } from 'lucide-react';
 import LastUpdated from '../components/LastUpdated';
@@ -7,9 +8,9 @@ import ProjectMembersSheet from '../components/ProjectMembersSheet';
 import PortfolioTeam from '../components/PortfolioTeam';
 import {
   getPortfolioDashboard,
-  PortfolioDashboardResponse,
   ProjectCard,
 } from '../services/api';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { useProject } from '../contexts/ProjectContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatStatusLabel } from '../utils/statusMeta';
@@ -33,7 +34,6 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
 import { cn } from '../utils/cn';
-import { formatApiError } from '../utils/apiErrors';
 
 /**
  * Portfolio (v5.275.0) — the members' cross-project view, on the Posture
@@ -234,11 +234,17 @@ const PortfolioDashboard: React.FC = () => {
   const { projects, selectProject } = useProject();
   const { hasRole } = useAuth();
 
-  const [data, setData] = useState<PortfolioDashboardResponse | null>(null);
-  const [fetchedAt, setFetchedAt] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [reloadNonce, setReloadNonce] = useState(0);
+  const query = useQuery({
+    queryKey: [GLOBAL, 'getPortfolioDashboard'],
+    queryFn: () => getPortfolioDashboard(),
+  });
+  const data = query.data ?? null;
+  const fetchedAt = query.dataUpdatedAt ? new Date(query.dataUpdatedAt).toISOString() : null;
+  const loading = query.isFetching;
+  // A failed refresh keeps the last figures and says so; the message goes
+  // while the next attempt is in flight.
+  const error = loading ? null : queryErrorText(query.error, 'Failed to load portfolio.');
+  const reload = () => { void query.refetch(); };
   const [search, setSearch] = useState('');
   // SOC-P1/P2 — project whose members sheet is open.
   const [membersCard, setMembersCard] = useState<ProjectCard | null>(null);
@@ -253,17 +259,6 @@ const PortfolioDashboard: React.FC = () => {
     else params.delete(key);
     setSearchParams(params, { replace: true });
   };
-
-  const reload = () => setReloadNonce((x) => x + 1);
-
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-    getPortfolioDashboard()
-      .then((d) => { setData(d); setFetchedAt(new Date().toISOString()); })
-      .catch((err) => setError(formatApiError(err, 'Failed to load portfolio.')))
-      .finally(() => setLoading(false));
-  }, [reloadNonce]);
 
   // Row actions switch the active project BEFORE navigating so the
   // destination opens scoped to it.
@@ -457,7 +452,6 @@ const PortfolioDashboard: React.FC = () => {
         canManage={hasRole('admin') || membersCard?.user_role === 'admin'}
         open={membersCard !== null}
         onOpenChange={(o) => { if (!o) setMembersCard(null); }}
-        onChanged={reload}
       />
     </div>
   );

@@ -4,21 +4,18 @@
  * The page shows each proposal where it applies — report-text drafts in
  * Report text, endpoint changes on their row, the rest in the Proposals
  * summary — so the list is loaded here and handed to each, rather than each
- * section fetching its own.  Re-read on `reloadKey`, every 30 s while
- * visible, and when any proposal is decided elsewhere on the page.
+ * section fetching its own.  Re-read every 30 s while visible, and whenever a
+ * write says `listProposals` is out of date (a decision, an AI draft).
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { listProposals, Proposal } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
-import { PROPOSALS_CHANGED_EVENT } from '../utils/proposalEvents';
-import { useLatestRequest } from './useLatestRequest';
-import { useVisibilityPoll } from './useVisibilityPoll';
+import { pollEvery, queryErrorText } from '../lib/query';
 
 export interface FindingProposals {
   items: Proposal[] | null;
   error: string | null;
-  reload: () => Promise<void>;
   /** finding_text drafts by field, oldest first (so letters stay put). */
   textByField: Map<string, Proposal[]>;
   /** endpoint_status proposals by finding_host_id. */
@@ -41,28 +38,15 @@ export const groupFindingProposals = (items: Proposal[]) => {
   return { textByField, byEndpoint };
 };
 
-export const useFindingProposals = (findingId: number | null, reloadKey = 0): FindingProposals => {
-  const [items, setItems] = useState<Proposal[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const run = useLatestRequest();
-
-  const load = useCallback(async () => {
-    if (findingId == null) return;
-    const r = await run(() => listProposals({ finding_id: findingId, status: 'pending', limit: 200 }));
-    if (r.stale) return;
-    if (r.ok) { setItems(r.value.items); setError(null); }
-    else setError(formatApiError(r.error, 'Proposals unavailable.'));
-  }, [findingId, run]);
-
-  useEffect(() => { setItems(null); setError(null); }, [findingId]);
-  useEffect(() => { void load(); }, [load, reloadKey]);
-  useVisibilityPoll(load, 30_000);
-  useEffect(() => {
-    const on = () => { void load(); };
-    window.addEventListener(PROPOSALS_CHANGED_EVENT, on);
-    return () => window.removeEventListener(PROPOSALS_CHANGED_EVENT, on);
-  }, [load]);
+export const useFindingProposals = (findingId: number | null): FindingProposals => {
+  const query = useQuery({
+    queryKey: ['listProposals', { finding_id: findingId, status: 'pending', limit: 200 }],
+    queryFn: () => listProposals({ finding_id: findingId as number, status: 'pending', limit: 200 }),
+    enabled: findingId != null,
+    ...pollEvery(30_000),
+  });
+  const items = query.data?.items ?? null;
 
   const groups = useMemo(() => groupFindingProposals(items ?? []), [items]);
-  return { items, error, reload: load, ...groups };
+  return { items, error: queryErrorText(query.error, 'Proposals unavailable.'), ...groups };
 };

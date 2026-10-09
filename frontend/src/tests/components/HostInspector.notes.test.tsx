@@ -220,7 +220,8 @@ describe('HostInspector — a late completion is for the host it was sent for', 
     const { rerender } = render(<MemoryRouter><HostInspector hostId={1} onFollowChange={onFollowChange} /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText('10.0.0.1')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /Start review/ }));
-    expect(api.followHost).toHaveBeenCalledWith(1, 'in_review', undefined);
+    // (A mutation sends its request a tick after the click.)
+    await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(1, 'in_review', undefined));
 
     rerender(<MemoryRouter><HostInspector hostId={2} onFollowChange={onFollowChange} /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText('10.0.0.2')).toBeInTheDocument());

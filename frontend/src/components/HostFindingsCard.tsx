@@ -3,10 +3,12 @@
  *
  * Closes the in-context loop: a note promoted on this host shows up here
  * (and on /findings + the host-row badge), so findings live where you
- * triage rather than only on a separate page.  Refetches when refreshKey
- * changes (the inspector bumps it after a promote).
+ * triage rather than only on a separate page.  Its read is `listFindings`
+ * for this host: whatever makes or changes a finding invalidates that name
+ * (a promotion in the inspector, a test's result) and this reads again.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { SEVERITY_BADGE_VARIANT, SEVERITY_LABEL, SEVERITY_ORDER } from '../utils/severity';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, Plus } from 'lucide-react';
@@ -28,6 +30,7 @@ import { endpointPreviewIsCut } from '../utils/findingEndpoints';
 import { runLimited } from '../utils/runLimited';
 import { useToast } from '../contexts/ToastContext';
 import { useProjectRole } from '../hooks/useProjectRole';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -47,8 +50,6 @@ const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
 
 interface HostFindingsCardProps {
   hostId: number;
-  /** Bump to force a refetch (e.g. after promoting a note here). */
-  refreshKey?: number;
 }
 
 /** What a finding written by hand may start as: the two a proposed finding
@@ -68,24 +69,22 @@ const AddFindingForm: React.FC<{
   const [title, setTitle] = useState('');
   const [severity, setSeverity] = useState<FindingSeverity>('medium');
   const [status, setStatus] = useState<FindingStatus>('open');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const create = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      onAdded(await createFinding({ title: title.trim(), severity, status, host_ids: [hostId] }));
-    } catch (err) {
-      setError(formatApiError(err, 'Could not add the finding.'));
-      setBusy(false);
-    }
-  };
+  const queryClient = useQueryClient();
+  const adding = useMutation({
+    mutationFn: () => createFinding({ title: title.trim(), severity, status, host_ids: [hostId] }),
+    onSuccess: (made) => {
+      void queryClient.invalidateQueries({ queryKey: ['listFindings'] });
+      onAdded(made);
+    },
+  });
+  // Busy until the form goes: a finding that was made is not offered again.
+  const busy = adding.isPending || adding.isSuccess;
+  const error = queryErrorText(adding.error, 'Could not add the finding.');
 
   return (
     <form
       className="mb-sm space-y-xs rounded-panel border border-border p-xs"
-      onSubmit={(e) => { e.preventDefault(); if (!busy && title.trim()) void create(); }}
+      onSubmit={(e) => { e.preventDefault(); if (!busy && title.trim()) adding.mutate(); }}
     >
       <div className="flex min-w-0 flex-wrap items-end gap-xs">
         <div className="min-w-0 flex-1 basis-64">
@@ -125,30 +124,30 @@ const AddFindingForm: React.FC<{
   );
 };
 
-/** One host's findings.  Keyed by the host, so another host starts empty and
- *  an answer for the host that was left has no list to land in. */
+const NO_FINDINGS: Finding[] = [];
+
+/** One host's findings.  The read is keyed by the host; the component is too,
+ *  so a half-written "Add finding" form does not follow to the next host. */
 const HostFindingsCard: React.FC<HostFindingsCardProps> = (props) => (
   <HostFindingsCardBody key={props.hostId} {...props} />
 );
 
-const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey }) => {
+/** The key of this card's read.  It starts with `listFindings`, so whatever
+ *  makes or changes a finding and invalidates that name re-reads this too. */
+const hostFindingsKey = (hostId: number) =>
+  ['listFindings', { host_id: hostId, limit: 100 }, 'this-host-whole'] as const;
+
+const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId }) => {
   const toast = useToast();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { canWrite: canManage } = useProjectRole();
-  const [findings, setFindings] = useState<Finding[]>([]);
-  const [loaded, setLoaded] = useState(false);
   const [adding, setAdding] = useState(false);
 
-  // A refresh supersedes the read before it: only the latest may write.
-  const generation = useRef(0);
-
-  const fetchFindings = useCallback(async () => {
-    generation.current += 1;
-    const mine = generation.current;
-    const current = () => generation.current === mine;
-    try {
-      const res = await listFindings({ host_id: hostId, limit: 100 });
-      if (!current()) return;
+  const query = useQuery({
+    queryKey: hostFindingsKey(hostId),
+    queryFn: async ({ signal }) => {
+      const res = await listFindings({ host_id: hostId, limit: 100 }, signal);
       // A list row's `hosts` is a preview of at most five endpoints (C2), and
       // with `host_id` the server puts THIS host's endpoint rows first
       // (`endpoint_summaries(first_host_id=)`), so the preview is enough: no
@@ -164,32 +163,36 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId, refresh
       const whole = await runLimited<Finding, Finding>(cut, 4, (f) => getFinding(f.id));
       const byId = new Map<number, Finding>();
       whole.forEach((r) => { if (r.status === 'fulfilled') byId.set(r.value.id, r.value); });
-      if (!current()) return;
-      setFindings(res.items.map((f) => byId.get(f.id) ?? f));
-    } catch {
-      // Non-blocking surface — leave empty on error.
-    } finally {
-      if (current()) setLoaded(true);
-    }
-  }, [hostId]);
+      return res.items.map((f) => byId.get(f.id) ?? f);
+    },
+  });
+  // Non-blocking surface — a failed read leaves it empty.
+  const findings = query.data ?? NO_FINDINGS;
+  const loaded = !query.isPending;
 
-  useEffect(() => {
-    fetchFindings();
-  }, [fetchFindings, refreshKey]);
+  // A status or endpoint change answers with the finding (put in the list)
+  // and appended to its history: the trail behind the history button is out
+  // of date, and is read again when it is next opened.
+  const put = (updated: Finding) => {
+    queryClient.setQueryData<Finding[]>(
+      hostFindingsKey(hostId), (prev) => prev?.map((f) => (f.id === updated.id ? updated : f)),
+    );
+    void invalidateReads(queryClient, 'getFindingHistory');
+  };
 
-  const handleStatus = async (id: number, status: FindingStatus) => {
+  const statusChange = useMutation({
+    mutationFn: ({ id, status }: { id: number; status: FindingStatus }) => setFindingStatus(id, status),
+    onSuccess: put,
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update finding status.')),
+  });
+  const handleStatus = (id: number, status: FindingStatus) => {
     // Terminal dispositions carry an audit rationale — hand off to the canonical
     // finding workspace (which prompts for it) instead of applying silently here.
     if (TERMINAL_STATUSES.has(status)) {
       navigate(`/findings/${id}`);
       return;
     }
-    try {
-      const updated = await setFindingStatus(id, status);
-      setFindings((prev) => prev.map((f) => (f.id === id ? updated : f)));
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update finding status.'));
-    }
+    statusChange.mutate({ id, status });
   };
 
   // v5.238.1 — a finding that spans several hosts is not this host's to
@@ -197,20 +200,27 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId, refresh
   // endpoint row the host has on the finding (one per named endpoint).  The
   // selector used to set the ISSUE's status for every host from inside one
   // host's inspector — the same reach the false-positive dismissal had.
-  const handleEndpointStatus = async (f: Finding, hostStatus: FindingHostStatus) => {
+  const endpointChange = useMutation({
+    mutationFn: async ({ f, rowIds, hostStatus }: { f: Finding; rowIds: number[]; hostStatus: FindingHostStatus }) => {
+      let updated: Finding = f;
+      for (const rowId of rowIds) {
+        updated = await setFindingEndpointStatus(f.id, rowId, hostStatus);
+      }
+      return updated;
+    },
+    onSuccess: put,
+    onError: (err) => {
+      toast.error(formatApiError(err, 'Failed to update this host’s state on the finding.'));
+      // A partial multi-row update must not be left looking whole — nor its
+      // history, which the rows that did change were written to.
+      void queryClient.invalidateQueries({ queryKey: hostFindingsKey(hostId) });
+      void invalidateReads(queryClient, 'getFindingHistory');
+    },
+  });
+  const handleEndpointStatus = (f: Finding, hostStatus: FindingHostStatus) => {
     const rows = (f.hosts ?? []).filter((h) => h.host_id === hostId && h.host_status !== hostStatus);
     if (rows.length === 0) return;
-    try {
-      let updated: Finding = f;
-      for (const row of rows) {
-        updated = await setFindingEndpointStatus(f.id, row.id, hostStatus);
-      }
-      setFindings((prev) => prev.map((x) => (x.id === f.id ? updated : x)));
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update this host’s state on the finding.'));
-      // A partial multi-row update must not be left looking whole.
-      void fetchFindings();
-    }
+    endpointChange.mutate({ f, rowIds: rows.map((row) => row.id), hostStatus });
   };
 
   // No findings and nothing to do here: no section.  Someone who can write
@@ -224,7 +234,6 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId, refresh
       autoHideMs: 8000,
       action: { label: 'Write it up', onClick: () => navigate(`/findings/${made.id}?edit=report-text`) },
     });
-    void fetchFindings();
   };
 
   return (
@@ -306,7 +315,7 @@ const HostFindingsCardBody: React.FC<HostFindingsCardProps> = ({ hostId, refresh
                     </Badge>
                   </button>
                   {canManage && here.length > 0 ? (
-                    <Select value={state} onValueChange={(v) => void handleEndpointStatus(f, v as FindingHostStatus)}>
+                    <Select value={state} onValueChange={(v) => handleEndpointStatus(f, v as FindingHostStatus)}>
                       <SelectTrigger className="h-7 w-[11rem] text-caption" aria-label={`State of ${f.title} on this host`}>
                         <SelectValue />
                       </SelectTrigger>

@@ -116,7 +116,42 @@ A small rule set on purpose: the Rules of Hooks (error), effect dependencies (wa
 mock of the barrel), no hand-set `.download =` (use `utils/download.saveBlob`) and no bare
 `new Date(x).toLocaleString()` (use `formatTimestamp`). The gate runs it with
 `--max-warnings 0`. The last two were tests that searched the source; they are lint rules now,
-and those tests are gone.
+and those tests are gone. Since 5.351.0 it also carries `bluestick/api-in-query-only`
+(`frontend/eslint-rules/`, tested by `tests/lint/apiInQueryOnly.test.ts`): an API function is
+called only inside a `queryFn` or a `mutationFn`.
+
+### Testing server state (TanStack Query, 5.351.0)
+
+The contract is UI_STYLE_GUIDE §48; this is how a test meets it.
+
+- **The provider is automatic.** `src/setupTests.ts` wraps every `render` and `renderHook` in a
+  `QueryClientProvider` with a FRESH client that has the app's own defaults (`lib/query`
+  `createQueryClient`: no retry, nothing cached after unmount). A test file does not wrap its
+  renders and does not share data with the test before it. Two `render` calls are two clients:
+  to test what is REMEMBERED between two mounts, create one client in the test and pass it as
+  the `wrapper` (see `tests/pages/Scans.commandDetail.test.tsx`).
+- **Mock the API barrel, never the library.** `vi.mock('../../services/api', …)` as before. Do
+  not mock `@tanstack/react-query`: a mocked `useQuery` proves nothing about what the reader sees.
+- **Await what the reader sees.** A query's answer reaches the page a tick after the mocked
+  promise resolves, and a mutation sends its request a tick after the click: use `findBy…` /
+  `waitFor`, not a synchronous assertion right after the event. With fake timers advance with
+  `await vi.advanceTimersByTimeAsync(n)`.
+- **A call now also receives an `AbortSignal`** where the API function takes one: assert
+  `expect.any(AbortSignal)` / `expect.anything()` for that argument.
+- **Test invalidation with a mounted reader.** "The list is read again after the save" is tested
+  by having the read ON SCREEN and counting its calls — `tests/helpers/readsOnScreen.tsx` mounts
+  real queries by API-function name for a component that only writes. A prop callback that
+  existed only to make a parent re-fetch is gone; do not reintroduce one to have something to
+  assert.
+- **Scenarios every new shared mechanism needs** (each exists for the current ones):
+  - a write that completes after the reader switched project writes nothing into the other
+    project (`tests/lib/query.test.tsx`, "the reviewed case");
+  - a "Show more" queued behind a reload does nothing once the filter changed
+    (`tests/hooks/useListQuery.test.ts`);
+  - a failed read is said, and what a second mount does with a REMEMBERED failure is pinned
+    (`tests/pages/Scans.commandDetail.test.tsx`; the default is that a second reader does not
+    quietly ask again — `tests/pages/FindingDetail.test.tsx`, the members picker).
+- A regression test is run once against the code WITHOUT its fix: it must fail there.
 
 ## Regression-pin file
 

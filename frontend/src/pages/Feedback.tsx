@@ -10,6 +10,7 @@
  * filter row (ListFilterBar).  Filters live in the URL so a measure is a link.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Loader2, MessageSquareText, Star } from 'lucide-react';
 
@@ -19,12 +20,12 @@ import {
   updateAgentFeedback,
   AgentFeedbackEntry,
   AgentFeedbackListParams,
-  FeedbackStats,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useProject } from '../contexts/ProjectContext';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
-import { ListPage, useListQuery } from '../hooks/useListQuery';
+import { useListQuery } from '../hooks/useListQuery';
+import { GLOBAL, invalidateReads, queryErrorText } from '../lib/query';
 import LastUpdated from '../components/LastUpdated';
 import TimeAgo from '../components/TimeAgo';
 import PostureLead from '../components/posture/PostureLead';
@@ -58,9 +59,6 @@ const sessionPageOf = (r: AgentFeedbackEntry): string | null =>
     : null;
 
 const PAGE = 50;
-
-/** The first page carries the measures' stats beside the rows. */
-type FeedbackPage = ListPage<AgentFeedbackEntry> & { stats?: FeedbackStats };
 
 const STATUSES = [
   { value: 'new', label: 'New' },
@@ -112,6 +110,7 @@ const clientOf = (r: AgentFeedbackEntry): string | null => {
 
 const Feedback: React.FC = () => {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { projects, currentProject, selectProject } = useProject();
   const [params, setParams] = useSearchParams();
@@ -135,13 +134,10 @@ const Feedback: React.FC = () => {
 
   useEffect(() => { setParam('q', debouncedSearch); }, [debouncedSearch, setParam]);
 
-  const [stats, setStats] = useState<FeedbackStats | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  const [updatingId, setUpdatingId] = useState<number | null>(null);
 
   const [notesEntry, setNotesEntry] = useState<AgentFeedbackEntry | null>(null);
   const [notesText, setNotesText] = useState('');
-  const [notesSaving, setNotesSaving] = useState(false);
 
   const query = useMemo<AgentFeedbackListParams>(() => {
     const q: AgentFeedbackListParams = { limit: PAGE };
@@ -155,26 +151,28 @@ const Feedback: React.FC = () => {
     return q;
   }, [status, source, minRating, content, projectFilter, debouncedSearch]);
 
-  // One request lane for the filters, the refresh and "Show more" (R33): a
-  // slow response for an earlier filter or search term never replaces the
-  // rows of the current one.
-  const list = useListQuery<AgentFeedbackEntry, FeedbackPage>(
-    async ({ offset, limit }) => {
-      const rowsQuery = listAgentFeedback({ ...query, limit, ...(offset > 0 ? { skip: offset } : {}) });
-      if (offset > 0) return rowsQuery;
-      const [page, s] = await Promise.all([rowsQuery, getAgentFeedbackStats()]);
-      return { ...page, stats: s };
-    },
+  // The queue is every project's: both reads are GLOBAL.
+  const list = useListQuery<AgentFeedbackEntry>(
+    'listAgentFeedback',
+    ({ offset, limit }) => listAgentFeedback({ ...query, limit, ...(offset > 0 ? { skip: offset } : {}) }),
     [query],
-    { pageSize: PAGE, errorMessage: 'Could not load agent feedback.' },
+    { pageSize: PAGE, errorMessage: 'Could not load agent feedback.', global: true },
   );
+  // The measures count the whole queue, whatever the filters: their own read,
+  // so they keep their value while a new filter loads.
+  const statsQuery = useQuery({
+    queryKey: [GLOBAL, 'getAgentFeedbackStats'],
+    queryFn: () => getAgentFeedbackStats(),
+  });
+  const stats = statsQuery.data ?? null;
   const rows = list.rows ?? [];
-  const { total, loading, loadingMore, error, loadedAt: lastFetched } = list;
-  const load = list.reload;
+  const { total, loadingMore, loadedAt: lastFetched } = list;
+  const loading = list.loading || statsQuery.isFetching;
+  const error = list.error ?? queryErrorText(statsQuery.error, 'Could not load agent feedback.');
+  const { reload } = list;
+  const { refetch: refetchStats } = statsQuery;
+  const load = () => { void reload(); void refetchStats(); };
   const hasMore = rows.length < total;
-  // The measures keep their last value while a new filter loads.
-  const latestStats = list.response?.stats;
-  useEffect(() => { if (latestStats) setStats(latestStats); }, [latestStats]);
 
   const loadMore = async () => {
     try {
@@ -185,33 +183,37 @@ const Feedback: React.FC = () => {
   };
 
   const replaceRow = (updated: AgentFeedbackEntry) =>
-    list.setRows((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+    list.mapRows((r) => (r.id === updated.id ? updated : r));
 
-  const changeStatus = async (entry: AgentFeedbackEntry, next: string) => {
+  const statusChange = useMutation({
+    mutationFn: ({ entry, next }: { entry: AgentFeedbackEntry; next: string }) =>
+      updateAgentFeedback(entry.id, { status: next }),
+    onSuccess: (updated) => {
+      replaceRow(updated);
+      void invalidateReads(queryClient, 'getAgentFeedbackStats');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not change the status.')),
+  });
+  const updatingId = statusChange.isPending ? statusChange.variables.entry.id : null;
+  const changeStatus = (entry: AgentFeedbackEntry, next: string) => {
     if (next === entry.status) return;
-    setUpdatingId(entry.id);
-    try {
-      replaceRow(await updateAgentFeedback(entry.id, { status: next }));
-      getAgentFeedbackStats().then(setStats).catch(() => undefined);
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Could not change the status.'));
-    } finally {
-      setUpdatingId(null);
-    }
+    statusChange.mutate({ entry, next });
   };
 
-  const saveNotes = async () => {
-    if (!notesEntry) return;
-    setNotesSaving(true);
-    try {
-      replaceRow(await updateAgentFeedback(notesEntry.id, { reviewer_notes: notesText }));
+  const noteSave = useMutation({
+    mutationFn: ({ id, text }: { id: number; text: string }) =>
+      updateAgentFeedback(id, { reviewer_notes: text }),
+    onSuccess: (updated) => {
+      replaceRow(updated);
       toast.success('Reviewer note saved.');
       setNotesEntry(null);
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Could not save the note.'));
-    } finally {
-      setNotesSaving(false);
-    }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not save the note.')),
+  });
+  const notesSaving = noteSave.isPending;
+  const saveNotes = () => {
+    if (!notesEntry) return;
+    noteSave.mutate({ id: notesEntry.id, text: notesText });
   };
 
   /** Open the page that lists this session's API calls — in its own project. */
@@ -255,7 +257,7 @@ const Feedback: React.FC = () => {
             session's own API calls before acting on it.
           </p>
         </div>
-        <LastUpdated compact lastFetched={lastFetched} onRefresh={() => void load()} isLoading={loading} label="agent feedback" />
+        <LastUpdated compact lastFetched={lastFetched} onRefresh={load} isLoading={loading} label="agent feedback" />
       </div>
 
       {stats && (
@@ -354,7 +356,7 @@ const Feedback: React.FC = () => {
           </Select>
         </ListFilterBar>
 
-        {loading && rows.length === 0 ? (
+        {list.loading && rows.length === 0 ? (
           <div className="flex justify-center py-xxl">
             <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden />
           </div>

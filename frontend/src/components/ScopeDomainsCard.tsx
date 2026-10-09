@@ -1,15 +1,19 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, Trash2 } from 'lucide-react';
 
 import {
   addScopeDomains,
   deleteScopeDomain,
   listScopeDomains,
+  ScopeDomainPage,
   ScopeDomainRow,
 } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
+import { useListQuery } from '../hooks/useListQuery';
+import { invalidateReads } from '../lib/query';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -40,13 +44,10 @@ import { InfoTip } from './ui/info-tip';
  * an entry actually covers something in the names inventory.
  */
 
+const PAGE = 100;
+
 interface ScopeDomainsCardProps {
   scopeId: number;
-  /** Bump to force a reload — the scope-file upload can add domain rows
-   *  from outside this card. */
-  refreshKey?: number;
-  /** Called after any change so the parent can refresh coverage numbers. */
-  onChanged?: () => void;
   /** Whether the caller may change the scope (project analyst+).  A reader
    *  sees the list without the add row or the remove buttons. */
   canEdit?: boolean;
@@ -81,72 +82,41 @@ const TIPS = {
     'exact descendants both count the same name), so they can add up to more than this.',
 } as const;
 
-const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey = 0, onChanged, canEdit = true }) => {
+const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = true }) => {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const [confirmDialog, confirm] = useConfirm();
-  const [rows, setRows] = useState<ScopeDomainRow[] | null>(null);
-  const [total, setTotal] = useState(0);
-  // Deduplicated across entries — unlike the per-row "Names covered".
-  const [namesInScope, setNamesInScope] = useState(0);
-  const [error, setError] = useState<string | null>(null);
   const [domainInput, setDomainInput] = useState('');
   const [includeSub, setIncludeSub] = useState(false);
   const [domainError, setDomainError] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [deletingId, setDeletingId] = useState<number | null>(null);
-  const PAGE = 100;
 
   // Server-paged: a bulk import with declare-scope can create thousands of
   // entries, so the list loads a page at a time with a load-more affordance.
-  const load = async () => {
-    try {
-      setError(null);
-      const page = await listScopeDomains(scopeId, { skip: 0, limit: PAGE });
-      setRows(page.items);
-      setTotal(page.total);
-      setNamesInScope(page.names_in_scope_total ?? 0);
-    } catch (err: unknown) {
-      setError(formatApiError(err, 'Failed to load scope domains.'));
-    }
+  const list = useListQuery<ScopeDomainRow, ScopeDomainPage>(
+    'listScopeDomains',
+    ({ offset, limit }) => listScopeDomains(scopeId, { skip: offset, limit }),
+    [scopeId],
+    { pageSize: PAGE, errorMessage: 'Failed to load scope domains.' },
+  );
+  const { rows, total, error, loadingMore } = list;
+  // Deduplicated across entries — unlike the per-row "Names covered".
+  const namesInScope = list.response?.names_in_scope_total ?? 0;
+
+  const loadMore = () => {
+    list.loadMore().catch((err: unknown) => toast.error(formatApiError(err, 'Failed to load more domains.')));
   };
 
-  const loadMore = async () => {
-    if (!rows) return;
-    setLoadingMore(true);
-    try {
-      const page = await listScopeDomains(scopeId, { skip: rows.length, limit: PAGE });
-      setRows((prev) => [...(prev ?? []), ...page.items]);
-      setTotal(page.total);
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to load more domains.'));
-    } finally {
-      setLoadingMore(false);
-    }
-  };
+  // A domain entry changes this list, and where the hosts stand against the
+  // scope (name-reachable hosts move between states): the page's reads.
+  const scopeChanged = () => invalidateReads(queryClient, 'listScopeDomains', 'getScopeCoverage', 'getDefaultScope');
 
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeId, refreshKey]);
-
-  const handleAdd = async () => {
-    // One per line or comma/whitespace-separated; "*.example.com" is accepted.
-    const entries = domainInput
-      .split(/[\s,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (entries.length === 0) return;
-    setDomainError(null);
-    setAdding(true);
-    try {
-      const res = await addScopeDomains(
-        scopeId,
-        entries.map((domain) => ({ domain, include_subdomains: includeSub })),
-      );
-      setRows(res.domains);
-      setTotal(res.total);
-      setNamesInScope(res.names_in_scope_total ?? 0);
+  const add = useMutation({
+    mutationFn: (entries: string[]) => addScopeDomains(
+      scopeId,
+      entries.map((domain) => ({ domain, include_subdomains: includeSub })),
+    ),
+    onMutate: () => setDomainError(null),
+    onSuccess: (res) => {
       const parts: string[] = [];
       if (res.added) parts.push(`${res.added} added`);
       if (res.updated) parts.push(`${res.updated} widened to include subdomains`);
@@ -163,13 +133,31 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
         setDomainInput('');
         toast.success(parts.length ? parts.join(', ') : 'Already in scope');
       }
-      onChanged?.();
-    } catch (err: unknown) {
-      setDomainError(formatApiError(err, 'Failed to add domains.'));
-    } finally {
-      setAdding(false);
-    }
+      return scopeChanged();
+    },
+    onError: (err) => setDomainError(formatApiError(err, 'Failed to add domains.')),
+  });
+  const adding = add.isPending;
+
+  const handleAdd = () => {
+    // One per line or comma/whitespace-separated; "*.example.com" is accepted.
+    const entries = domainInput
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (entries.length === 0) return;
+    add.mutate(entries);
   };
+
+  const remove = useMutation({
+    mutationFn: (row: ScopeDomainRow) => deleteScopeDomain(scopeId, row.id),
+    onSuccess: (_void, row) => {
+      toast.success(`Removed ${row.domain} from scope`);
+      return scopeChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to remove domain.')),
+  });
+  const deletingId = remove.isPending ? remove.variables.id : null;
 
   const handleDelete = async (row: ScopeDomainRow) => {
     const ok = await confirm({
@@ -179,18 +167,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
       confirmLabel: 'Remove',
     });
     if (!ok) return;
-    setDeletingId(row.id);
-    try {
-      await deleteScopeDomain(scopeId, row.id);
-      setRows((prev) => (prev ? prev.filter((r) => r.id !== row.id) : prev));
-      setTotal((t) => Math.max(0, t - 1));
-      toast.success(`Removed ${row.domain} from scope`);
-      onChanged?.();
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to remove domain.'));
-    } finally {
-      setDeletingId(null);
-    }
+    remove.mutate(row);
   };
 
   return (

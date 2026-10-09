@@ -18,7 +18,6 @@ vi.mock('../../services/api', () => ({
   listReportJobs: vi.fn().mockResolvedValue([]),
   dismissReportJob: vi.fn(), retryReportJob: vi.fn(), cancelReportJob: vi.fn(),
 }));
-vi.mock('../../hooks/useVisibilityPoll', () => ({ useVisibilityPoll: vi.fn() }));
 
 import InventoryDownloadDialog from '../../components/InventoryDownloadDialog';
 import OutOfScopeExport from '../../components/OutOfScopeExport';

@@ -22,6 +22,7 @@ from app.core.security import (
     validate_password_strength,
     log_audit_event,
     create_session,
+    renew_session,
     revoke_session,
     login_lockout_active,
     login_throttle_exceeded,
@@ -84,6 +85,12 @@ class LoginResponse(BaseModel):
     token_type: str
     expires_in: int
     user: Dict[str, Any]
+
+
+class SessionRenewalResponse(BaseModel):
+    access_token: str
+    token_type: str
+    expires_in: int
 
 
 class TwoFactorChallengeResponse(BaseModel):
@@ -599,6 +606,35 @@ def get_active_sessions(
         }
         for session in sessions
     ]
+
+
+@router.post("/session/renew", response_model=SessionRenewalResponse)
+def renew_current_session(
+    current_user: User = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+):
+    """Start the calling session's lifetime again from now.
+
+    A session ends ``ACCESS_TOKEN_EXPIRE_MINUTES`` after its last renewal.
+    The client calls this when the person at the keyboard does something (a
+    key press, a click) — an ordinary request does NOT renew, because pages
+    poll and an unattended tab would then stay signed in for ever.  The
+    answer is a token for the same session with a later expiry; the one it
+    replaces stays valid until its own.  Not audited: it is routine and
+    frequent, and ``last_activity`` records it.
+    """
+    token = renew_session(db, current_user, _request_token_jti(credentials) or "")
+    if token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session expired or revoked",
+        )
+    return SessionRenewalResponse(
+        access_token=token,
+        token_type="bearer",
+        expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
 
 
 @router.delete("/sessions/{session_id}")

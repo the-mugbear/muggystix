@@ -25,6 +25,7 @@ const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 vi.mock('../../components/FindingHistoryButton', () => ({ FindingHistoryButton: () => null }));
 
+import { readsOnScreen } from '../helpers/readsOnScreen';
 import HostFindingsCard from '../../components/HostFindingsCard';
 
 const HOST = 5;
@@ -36,7 +37,14 @@ const finding = (over: Record<string, unknown>) => ({
   host_count: 1, hosts: [row(31, HOST, 'open')], evidence_annotation_id: null, ...over,
 });
 
-const renderCard = () => render(<MemoryRouter><HostFindingsCard hostId={HOST} /></MemoryRouter>);
+// The trail behind a finding's history button (mocked away above): a status
+// or endpoint change from this card appended to it, so that read is out of
+// date — the popover showed the trail as first read until the page was left.
+const { reread: historyReread, ReadsOnScreen } = readsOnScreen({ getFindingHistory: 'history' });
+
+const renderCard = () => render(
+  <MemoryRouter><ReadsOnScreen /><HostFindingsCard hostId={HOST} /></MemoryRouter>,
+);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -114,6 +122,8 @@ describe('HostFindingsCard', () => {
     // Only this host's row — never the other hosts', never the issue.
     expect(api.setFindingEndpointStatus).toHaveBeenCalledTimes(1);
     expect(api.setFindingStatus).not.toHaveBeenCalled();
+    // The change is on the finding's history: that trail is read again.
+    await waitFor(() => expect(historyReread).toHaveBeenCalledTimes(1));
 
     await user.click(issue);
     expect(navigate).toHaveBeenCalledWith('/findings/7');
@@ -143,9 +153,12 @@ describe('HostFindingsCard', () => {
     renderCard();
 
     await user.click(await screen.findByLabelText('Status for Weak TLS'));
+    expect(historyReread).not.toHaveBeenCalled();   // nothing is read again before a change
     await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
     await waitFor(() => expect(api.setFindingStatus).toHaveBeenCalledWith(7, 'confirmed'));
     expect(api.setFindingEndpointStatus).not.toHaveBeenCalled();
+    // The status change is on the finding's history: that trail is read again.
+    await waitFor(() => expect(historyReread).toHaveBeenCalledTimes(1));
   });
 
   // Branch review 2026-10-01 M13 — the inspector stays mounted across hosts.
@@ -214,7 +227,8 @@ describe('HostFindingsCard', () => {
 
     const state = await screen.findByLabelText('State of Weak TLS on this host');
     expect(state).toHaveTextContent('Remediated here');
-    expect(api.listFindings).toHaveBeenCalledWith({ host_id: HOST, limit: 100 });
+    // (The second argument is the query's abort signal.)
+    expect(api.listFindings).toHaveBeenCalledWith({ host_id: HOST, limit: 100 }, expect.any(AbortSignal));
     expect(api.getFinding).not.toHaveBeenCalled();
 
     await user.click(state);

@@ -8,7 +8,8 @@
  * the answer in plain words BEFORE anything is written; Confirm then runs the
  * same call for real.  A row that already has an assigned date is left alone.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 
@@ -16,8 +17,10 @@ import {
   assignRemediationFromReport, listClientReports, type ClientReport, type RemediationAssignFromReport,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
+import { queryErrorText } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { formatDate } from '../../utils/relativeTime';
+import { invalidateRemediationReads } from '../../utils/remediation';
 import { Button } from '../ui/button';
 import {
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -53,80 +56,54 @@ export const RemediationAssignFromReportDialog: React.FC<{
   /** The SERVER's day (the list's `as_of`): an assigned date may not be after it. */
   today?: string;
   onClose: () => void;
-  /** Called once the dates were written, so the page re-reads its list in place. */
-  onDone: () => void;
-}> = ({ today, onClose, onDone }) => {
+}> = ({ today, onClose }) => {
   const toast = useToast();
-  const [reports, setReports] = useState<ClientReport[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [reportId, setReportId] = useState<number | null>(null);
+  const queryClient = useQueryClient();
+  const list = useQuery({ queryKey: ['listClientReports'], queryFn: () => listClientReports() });
+  const loadError = queryErrorText(list.error, 'The reports could not be loaded.');
+  const reports = useMemo((): ClientReport[] | null => (list.data
+    ? list.data.items.filter((r) => r.status === 'issued')
+      .sort((a, b) => (b.issued_at ?? '').localeCompare(a.issued_at ?? ''))
+    : null), [list.data]);
+
+  // The report the reader chose; until they choose, the latest issued one.
+  const [chosen, setChosen] = useState<number | null>(null);
+  const reportId = chosen
+    ?? reports?.find((r) => r.id === list.data?.latest_issued_id)?.id ?? reports?.[0]?.id ?? null;
+  // The day the reader typed; until they type one, the server's answer.
+  const [typed, setTyped] = useState('');
+  const future = !!today && !!typed && typed > today;
+
+  // The dry run, keyed by exactly what it asks: only the answer for this
+  // report and this date is ever shown or confirmed.  With no date sent, the
+  // server answers with the report's issue day.
+  const dryRun = { report_id: reportId as number, dry_run: true, ...(typed ? { assigned_on: typed } : {}) };
+  const preview = useQuery({
+    queryKey: ['assignRemediationFromReport', dryRun],
+    queryFn: ({ signal }) => assignRemediationFromReport(dryRun, undefined, signal),
+    enabled: reportId != null && !future,
+  });
+  const shown = preview.data ?? null;
+  const previewError = queryErrorText(preview.error, 'Could not work out what this would change. Nothing was written.');
   // '' until the dry run has said which day the report was issued on.
-  const [date, setDate] = useState('');
-  const [preview, setPreview] = useState<RemediationAssignFromReport | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  // The report + date the preview on screen answers.
-  const answered = useRef('');
+  const date = typed || shown?.assigned_on || '';
 
-  useEffect(() => {
-    let live = true;
-    listClientReports()
-      .then((list) => {
-        if (!live) return;
-        const issued = list.items.filter((r) => r.status === 'issued')
-          .sort((a, b) => (b.issued_at ?? '').localeCompare(a.issued_at ?? ''));
-        setReports(issued);
-        setReportId(issued.find((r) => r.id === list.latest_issued_id)?.id ?? issued[0]?.id ?? null);
-      })
-      .catch((err) => { if (live) setLoadError(formatApiError(err, 'The reports could not be loaded.')); });
-    return () => { live = false; };
-  }, []);
-
-  const future = !!today && !!date && date > today;
-
-  useEffect(() => {
-    if (reportId == null || future) return undefined;
-    const key = `${reportId}|${date}`;
-    if (answered.current === key) return undefined;
-    let live = true;
-    const controller = new AbortController();
-    setPreview(null);
-    setPreviewError(null);
-    assignRemediationFromReport(
-      { report_id: reportId, dry_run: true, ...(date ? { assigned_on: date } : {}) }, undefined, controller.signal,
-    )
-      .then((result) => {
-        if (!live) return;
-        // With no date sent, the server answers with the report's issue day.
-        answered.current = `${reportId}|${date || result.assigned_on}`;
-        if (!date) setDate(result.assigned_on);
-        setPreview(result);
-      })
-      .catch((err) => {
-        if (!live || controller.signal.aborted) return;
-        setPreviewError(formatApiError(err, 'Could not work out what this would change. Nothing was written.'));
-      });
-    return () => { live = false; controller.abort(); };
-  }, [reportId, date, future]);
-
-  // Only a preview of exactly this report and date is shown or confirmed.
-  const shown = preview != null && answered.current === `${reportId}|${date}` ? preview : null;
-  const current = shown != null;
-
-  const confirm = async () => {
-    if (reportId == null || !date || !current || future) return;
-    setBusy(true);
-    try {
-      const result = await assignRemediationFromReport({ report_id: reportId, assigned_on: date });
+  const assigning = useMutation({
+    mutationFn: (body: { report_id: number; assigned_on: string }) => assignRemediationFromReport(body),
+    onSuccess: (result) => {
       toast.success(result.assigned === 0
         ? 'Nothing needed an assigned date.'
         : `Assigned date set on ${some(result.assigned, 'finding on a host', 'findings on hosts')}. Their deadlines are running.`);
-      onDone();
+      // The list is re-read in place: the reader keeps their page.
+      void invalidateRemediationReads(queryClient);
       onClose();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not set the assigned dates. Nothing was changed.'));
-      setBusy(false);
-    }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not set the assigned dates. Nothing was changed.')),
+  });
+  const busy = assigning.isPending;
+  const confirm = () => {
+    if (reportId == null || !date || shown == null || future) return;
+    assigning.mutate({ report_id: reportId, assigned_on: date });
   };
 
   const none = reports != null && reports.length === 0;
@@ -155,7 +132,7 @@ export const RemediationAssignFromReportDialog: React.FC<{
                 <div className="min-w-0">
                   <Label htmlFor="rem-afr-report">Issued report</Label>
                   <Select value={reportId != null ? String(reportId) : undefined} disabled={busy}
-                    onValueChange={(v) => { setReportId(Number(v)); setDate(''); setPreview(null); }}>
+                    onValueChange={(v) => { setChosen(Number(v)); setTyped(''); }}>
                     <SelectTrigger id="rem-afr-report" className="w-full min-w-0"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {reports.map((r) => (
@@ -167,7 +144,7 @@ export const RemediationAssignFromReportDialog: React.FC<{
                 <div className="min-w-0">
                   <Label htmlFor="rem-afr-date">Assigned on</Label>
                   <Input id="rem-afr-date" type="date" value={date} max={today} disabled={busy}
-                    onChange={(e) => setDate(e.target.value)} />
+                    onChange={(e) => setTyped(e.target.value)} />
                 </div>
               </div>
               {future ? (
@@ -187,8 +164,8 @@ export const RemediationAssignFromReportDialog: React.FC<{
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={busy}>{none ? 'Close' : 'Cancel'}</Button>
           {!none && (
-            <Button onClick={() => void confirm()}
-              disabled={busy || !current || future || !date || shown == null || shown.assigned === 0}>
+            <Button onClick={confirm}
+              disabled={busy || future || !date || shown == null || shown.assigned === 0}>
               {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Set the assigned date
             </Button>
           )}

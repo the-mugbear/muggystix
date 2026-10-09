@@ -40,15 +40,6 @@ vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
 // A global admin by default (server paths shown); tests switch to a member.
 const auth = vi.hoisted(() => ({ user: { id: 99, username: 'admin', full_name: 'Administrator', role: 'admin' } as Record<string, unknown> }));
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: auth.user }) }));
-// Poll once when enabled — enough to follow a job or a render in a test.
-vi.mock('../../hooks/useVisibilityPoll', async () => {
-  const react = await vi.importActual<typeof import('react')>('react');
-  return {
-    useVisibilityPoll: (cb: () => void, _ms: number, enabled = true) => {
-      react.useEffect(() => { if (enabled) void cb(); }, [enabled]); // eslint-disable-line react-hooks/exhaustive-deps
-    },
-  };
-});
 
 import * as api from '../../services/api';
 import Reports from '../../pages/Reports';
@@ -202,8 +193,10 @@ describe('Report detail — draft', () => {
     renderDetail();
     fireEvent.click(await screen.findByRole('button', { name: 'Preview Word' }));
     await waitFor(() => expect(mocked.previewClientReport).toHaveBeenCalledWith(5, 'docx'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Download the Word preview' }));
-    expect(mocked.downloadReportJob).toHaveBeenCalledWith(70);
+    // The job is asked about two seconds after it was queued (the page's own
+    // poll, `pollEvery`).
+    fireEvent.click(await screen.findByRole('button', { name: 'Download the Word preview' }, { timeout: 4000 }));
+    await waitFor(() => expect(mocked.downloadReportJob).toHaveBeenCalledWith(70));
   });
 
   // 5.293.0 — no PDF preview: the Word report exports to PDF with its design.

@@ -1,15 +1,16 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ExternalLink, Globe, Image as ImageIcon, Loader2, Lock, Unlock } from 'lucide-react';
 
 import {
   WebInterface,
-  WebInterfaceRecord,
   getHostWebInterfaces,
   getWebInterfaceRecord,
   fetchWebInterfaceScreenshot,
 } from '../services/api';
-import { asAxiosError, formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
+import { asAxiosError } from '../utils/apiErrors';
 import { latestObservations } from '../utils/latestObservations';
 import { webObservedAt } from '../utils/portEndpoints';
 import { formatRelativeTime, formatTimestamp } from '../utils/relativeTime';
@@ -45,74 +46,54 @@ interface WebInterfacesCardProps {
  * list request stays cheap even for hosts with many interfaces.
  */
 const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count, rows: given, embedded = false }) => {
-  const [fetched, setRows] = useState<WebInterface[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const rows = given ?? fetched;
+  // The same key as the Services section's read (PortDetailsCard): one
+  // request for the host's web interfaces, whoever shows them.
+  const fetchOwn = count > 0 && !given;
+  const query = useQuery({
+    queryKey: ['getHostWebInterfaces', hostId],
+    queryFn: () => getHostWebInterfaces(hostId),
+    enabled: fetchOwn,
+  });
+  const loading = fetchOwn && query.isPending;
+  const error = fetchOwn ? queryErrorText(query.error, 'Failed to load web interfaces.') : null;
+  const rows = given ?? query.data ?? null;
 
   const [lightboxOpen, setLightboxOpen] = useState(false);
-  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
-  const [lightboxLoading, setLightboxLoading] = useState(false);
-  const [lightboxError, setLightboxError] = useState<string | null>(null);
   const [lightboxCaption, setLightboxCaption] = useState<string>('');
+  // Asked for on click, one screenshot at a time; `null` = the server has none.
+  const screenshot = useMutation({
+    mutationFn: (row: WebInterface) => fetchWebInterfaceScreenshot(row.id),
+  });
+  const lightboxSrc = screenshot.data ?? null;
+  const lightboxLoading = screenshot.isPending;
+  const lightboxError = screenshot.isError
+    ? (() => {
+      const detail = asAxiosError(screenshot.error).response?.data?.detail;
+      return typeof detail === 'string' ? detail : 'Failed to load screenshot';
+    })()
+    : screenshot.isSuccess && screenshot.data === null
+      ? 'Screenshot not available on the server.'
+      : null;
 
-  useEffect(() => {
-    if (count === 0 || given) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    getHostWebInterfaces(hostId)
-      .then((data) => {
-        if (cancelled) return;
-        setRows(data);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(formatApiError(err, 'Failed to load web interfaces.'));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [hostId, count, given]);
-
-  // Revoke the blob URL when the lightbox closes or a different
-  // screenshot is loaded.  Avoids memory leaks from chained opens.
+  // Revoke the blob URL when a different screenshot is loaded or the card
+  // goes.  Avoids memory leaks from chained opens.
   useEffect(() => {
     return () => {
       if (lightboxSrc) URL.revokeObjectURL(lightboxSrc);
     };
   }, [lightboxSrc]);
 
+  const { mutate: loadScreenshot } = screenshot;
   const openScreenshot = useCallback(
-    async (row: WebInterface) => {
-      if (lightboxSrc) {
-        URL.revokeObjectURL(lightboxSrc);
-        setLightboxSrc(null);
-      }
-      setLightboxError(null);
+    (row: WebInterface) => {
       // Dated: a screenshot opened from an earlier observation must not read
       // as the site's current state.
       setLightboxCaption(`${row.title ? `${row.url} — ${row.title}` : row.url} · ${whenLabel(row)} · scan #${row.scan_id}`);
       setLightboxOpen(true);
-      setLightboxLoading(true);
-      try {
-        const url = await fetchWebInterfaceScreenshot(row.id);
-        if (url === null) {
-          setLightboxError('Screenshot not available on the server.');
-        } else {
-          setLightboxSrc(url);
-        }
-      } catch (err: unknown) {
-        const detail = asAxiosError(err).response?.data?.detail;
-        setLightboxError(typeof detail === 'string' ? detail : 'Failed to load screenshot');
-      } finally {
-        setLightboxLoading(false);
-      }
+      // Starting the next one drops the one on show (and its URL, above).
+      loadScreenshot(row);
     },
-    [lightboxSrc],
+    [loadScreenshot],
   );
 
   const closeLightbox = useCallback(() => {
@@ -309,15 +290,12 @@ const fmtBytes = (n: number): string => {
  * were kept and unreachable.  Fetched when opened, one record at a time.
  */
 const SourceRecord: React.FC<{ interfaceId: number }> = ({ interfaceId }) => {
-  const [record, setRecord] = useState<WebInterfaceRecord | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    getWebInterfaceRecord(interfaceId)
-      .then((r) => { if (!cancelled) setRecord(r); })
-      .catch((err) => { if (!cancelled) setError(formatApiError(asAxiosError(err), 'The source record could not be loaded')); });
-    return () => { cancelled = true; };
-  }, [interfaceId]);
+  const query = useQuery({
+    queryKey: ['getWebInterfaceRecord', interfaceId],
+    queryFn: () => getWebInterfaceRecord(interfaceId),
+  });
+  const record = query.data ?? null;
+  const error = queryErrorText(query.error, 'The source record could not be loaded');
   if (error) return <p className="mt-xs text-caption text-destructive">{error}</p>;
   if (!record) {
     return (

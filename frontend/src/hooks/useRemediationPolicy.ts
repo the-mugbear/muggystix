@@ -2,41 +2,30 @@
  * This installation's remediation settings — whether remediation tracking
  * exists here at all, and the timeline per severity (5.340.0).
  *
- * One request per session, shared by the navigation, the pages and the
- * dialogs.  Until it answers — and when it fails — the feature reads as OFF:
- * an installation that did not opt in must never flash a Remediation link.
+ * One query for the session (`[GLOBAL, 'getRemediationPolicy']`, lib/query),
+ * shared by the navigation, the pages and the dialogs.  Until it answers — and
+ * when it fails — the feature reads as OFF: an installation that did not opt
+ * in must never flash a Remediation link.  A failure is not kept: the next
+ * reader to mount asks again.
  * System settings calls `setRemediationPolicy` after a save so the navigation
  * follows at once.
  */
-import { useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { getRemediationPolicy, type RemediationPolicy } from '../services/api';
+import { GLOBAL, queryClient, rememberFor } from '../lib/query';
 
-let cached: RemediationPolicy | null = null;
-let pending: Promise<RemediationPolicy> | null = null;
-const listeners = new Set<(policy: RemediationPolicy | null) => void>();
+const KEY = [GLOBAL, 'getRemediationPolicy'];
 
-function load(): Promise<RemediationPolicy> {
-  if (!pending) {
-    pending = Promise.resolve()
-      .then(() => getRemediationPolicy())
-      .then((policy) => { setRemediationPolicy(policy); return policy; })
-      .catch((err) => { pending = null; throw err; });
-  }
-  return pending;
-}
-
-/** Replace the shared value (after a save) and tell every reader. */
+/** Replace the shared value (after a save): every reader follows. */
 export function setRemediationPolicy(policy: RemediationPolicy | null): void {
-  cached = policy;
-  listeners.forEach((listener) => listener(policy));
+  queryClient.setQueryData<RemediationPolicy | null>(KEY, policy);
 }
 
-/** Test hook, and sign-out: forget what was read. */
+/** Forget what the app's client read.  Tests call it between cases; each of
+ *  their renders has a client of its own, so there it changes nothing. */
 export function resetRemediationPolicy(): void {
-  cached = null;
-  pending = null;
-  listeners.forEach((listener) => listener(null));
+  queryClient.removeQueries({ queryKey: KEY });
 }
 
 export interface RemediationPolicyState {
@@ -48,21 +37,11 @@ export interface RemediationPolicyState {
 }
 
 export function useRemediationPolicy(): RemediationPolicyState {
-  const [policy, setPolicy] = useState<RemediationPolicy | null>(cached);
-  const [loading, setLoading] = useState(cached === null);
-
-  useEffect(() => {
-    let live = true;
-    const listener = (next: RemediationPolicy | null) => { if (live) setPolicy(next); };
-    listeners.add(listener);
-    if (cached === null) {
-      load().catch(() => undefined).finally(() => { if (live) setLoading(false); });
-    } else {
-      setPolicy(cached);
-      setLoading(false);
-    }
-    return () => { live = false; listeners.delete(listener); };
-  }, []);
-
-  return { policy, enabled: policy?.enabled === true, loading };
+  const query = useQuery<RemediationPolicy | null>({
+    queryKey: KEY,
+    queryFn: ({ signal }) => getRemediationPolicy(signal),
+    ...rememberFor(Infinity),
+  });
+  const policy = query.data ?? null;
+  return { policy, enabled: policy?.enabled === true, loading: query.isPending };
 }

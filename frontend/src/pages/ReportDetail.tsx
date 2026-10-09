@@ -8,7 +8,8 @@
  * it when, the template fingerprint, and Revise (a new draft that supersedes
  * it once issued).
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isClientTemplate } from '../utils/reportTemplates';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Download, Loader2, RefreshCw, Sparkles, Stamp, Trash2 } from 'lucide-react';
@@ -38,7 +39,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDiscardGuard } from '../hooks/useDiscardGuard';
 import { useProjectRoster } from '../hooks/useProjectMembers';
-import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
+import { pollEvery, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { formatTimestamp } from '../utils/relativeTime';
 import { REPORT_FIELD_LABELS } from '../utils/reportImages';
@@ -160,6 +161,16 @@ const toForm = (r: ClientReport): Form => ({
 /** "Before issuing" lists this many findings missing text, then "Show all". */
 const MISSING_PREVIEW = 10;
 
+const NO_TEMPLATES: ReportTemplate[] = [];
+/** How often an issued report still rendering is read again. */
+const RENDER_POLL_MS = 3000;
+const isRendering = (r: ClientReport | undefined): boolean =>
+  r != null && r.status !== 'draft' && r.render_status === 'pending';
+/** How often a preview job still on the worker is asked about. */
+const PREVIEW_POLL_MS = 2000;
+const isRunning = (job: ReportJob | undefined): boolean =>
+  job != null && (job.status === 'queued' || job.status === 'processing');
+
 const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const toast = useToast();
   const navigate = useNavigate();
@@ -169,54 +180,51 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const currentUser = user ? { id: user.id, name: user.full_name || user.username } : null;
   const [showAllMissing, setShowAllMissing] = useState(false);
 
-  const [report, setReport] = useState<ClientReport | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [templates, setTemplates] = useState<ReportTemplate[]>([]);
+  const queryClient = useQueryClient();
   const roster = useProjectRoster();
-  const [form, setForm] = useState<Form | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [busy, setBusy] = useState<'issue' | 'revise' | 'render' | 'delete' | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
-  const [previews, setPreviews] = useState<Partial<Record<ClientReportFormat, ReportJob>>>({});
 
-  const load = useCallback(async () => {
-    try {
-      const r = await getClientReport(id);
-      setReport(r);
-      setForm(toForm(r));
-      setError(null);
-    } catch (err) {
-      setError(formatApiError(err, 'Could not load the report.'));
-    }
-  }, [id]);
+  // An issued report renders its files on the worker: it is read again every
+  // three seconds until they are done, and not at all otherwise.
+  const reportKey = ['getClientReport', id];
+  const query = useQuery({
+    queryKey: reportKey,
+    queryFn: () => getClientReport(id),
+    ...pollEvery((q) => (isRendering(q.state.data) ? RENDER_POLL_MS : null)),
+  });
+  const report: ClientReport | null = query.data ?? null;
+  // Every write names the report by the id it was loaded with.
+  const reportId = report?.id ?? id;
+  const error = queryErrorText(query.error, 'Could not load the report.');
+  const putReport = (next: ClientReport) => queryClient.setQueryData(reportKey, next);
 
-  useEffect(() => { void load(); }, [load]);
-  useEffect(() => {
-    listReportTemplates().then(setTemplates).catch(() => {});
-  }, []);
+  const templatesQuery = useQuery({ queryKey: ['listReportTemplates'], queryFn: () => listReportTemplates() });
+  const templates: ReportTemplate[] = templatesQuery.data ?? NO_TEMPLATES;
 
-  // An issued report renders its files on the worker: follow it until done.
-  const rendering = report?.status !== 'draft' && report?.render_status === 'pending';
-  useVisibilityPoll(async () => {
-    const r = await getClientReport(id);
-    setReport(r);
-  }, 3000, rendering);
+  // What the reader changed, over the report as stored: a save, an issue or a
+  // re-read cannot leave the form and the report out of step.
+  const [edits, setEdits] = useState<Partial<Form>>({});
+  const form: Form | null = useMemo(() => (report ? { ...toForm(report), ...edits } : null), [report, edits]);
+  const edit = (changed: Partial<Form>) => setEdits((e) => ({ ...e, ...changed }));
 
-  // Draft previews are report jobs: follow the ones still running.
-  const activePreviews = Object.values(previews).filter(
-    (j): j is ReportJob => !!j && (j.status === 'queued' || j.status === 'processing'),
+  // Draft previews are report jobs.  `started` is each format's job as the
+  // worker took it; the ones still running are asked about every two seconds,
+  // from that answer on.
+  const [started, setStarted] = useState<Partial<Record<ClientReportFormat, ReportJob>>>({});
+  const startedJobs = Object.entries(started) as Array<[ClientReportFormat, ReportJob]>;
+  const followed = useQueries({
+    queries: startedJobs.map(([, job]) => ({
+      queryKey: ['getReportJob', job.id],
+      queryFn: () => getReportJob(job.id),
+      initialData: job,
+      staleTime: PREVIEW_POLL_MS,
+      enabled: (q: { state: { data?: ReportJob } }) => isRunning(q.state.data),
+      ...pollEvery(PREVIEW_POLL_MS),
+    })),
+  });
+  const previews: Partial<Record<ClientReportFormat, ReportJob>> = Object.fromEntries(
+    startedJobs.map(([fmt, job], i) => [fmt, followed[i]?.data ?? job]),
   );
-  useVisibilityPoll(async () => {
-    const updated = await Promise.all(activePreviews.map((j) => getReportJob(j.id)));
-    setPreviews((prev) => {
-      const next = { ...prev };
-      for (const job of updated) {
-        const fmt = (job.format.replace('report-', '') as ClientReportFormat);
-        next[fmt] = job;
-      }
-      return next;
-    });
-  }, 2000, activePreviews.length > 0);
 
   const dirty = useMemo(() => {
     if (!report || !form) return false;
@@ -229,55 +237,66 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     'This draft has unsaved changes — the summary, details or engagement fields you edited. Leave anyway?',
   );
 
-  const save = async () => {
+  const saveDetails = useMutation({
+    mutationFn: (next: Form) => updateClientReport(reportId, {
+      title: next.title.trim(),
+      template: next.template,
+      executive_summary: next.executive_summary.trim() || null,
+      settings: cleanSettings(next.settings),
+    }),
+    onSuccess: (updated) => {
+      putReport(updated);
+      setEdits({});
+      toast.success('Report saved.');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not save the report.')),
+  });
+  const saving = saveDetails.isPending;
+  const save = () => {
     if (!report || !form) return;
     if (!form.title.trim()) { toast.error('A report needs a title.'); return; }
-    setSaving(true);
-    try {
-      const updated = await updateClientReport(report.id, {
-        title: form.title.trim(),
-        template: form.template,
-        executive_summary: form.executive_summary.trim() || null,
-        settings: cleanSettings(form.settings),
-      });
-      setReport(updated);
-      setForm(toForm(updated));
-      toast.success('Report saved.');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not save the report.'));
-    } finally {
-      setSaving(false);
-    }
+    saveDetails.mutate(form);
   };
 
   // The template is a rendering choice beside the Preview buttons, so it is
   // saved on its own at once — other unsaved edits stay unsaved.
-  const [savingTemplate, setSavingTemplate] = useState(false);
-  const changeTemplate = async (name: string) => {
+  const templateChange = useMutation({
+    mutationFn: (name: string) => updateClientReport(reportId, { template: name }),
+    onSuccess: (updated) => {
+      putReport(updated);
+      setStarted({});
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not change the template.')),
+  });
+  const savingTemplate = templateChange.isPending;
+  const changeTemplate = (name: string) => {
     if (!report || name === report.template) return;
-    setSavingTemplate(true);
-    try {
-      const updated = await updateClientReport(report.id, { template: name });
-      setReport(updated);
-      setForm((f) => (f ? { ...f, template: updated.template } : f));
-      setPreviews({});
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not change the template.'));
-    } finally {
-      setSavingTemplate(false);
-    }
+    templateChange.mutate(name);
   };
 
-  const preview = async (fmt: ClientReportFormat) => {
-    if (!report) return;
-    try {
-      const job = await previewClientReport(report.id, fmt);
-      setPreviews((prev) => ({ ...prev, [fmt]: job }));
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not start the preview.'));
-    }
-  };
+  const startPreview = useMutation({
+    mutationFn: (fmt: ClientReportFormat) => previewClientReport(reportId, fmt),
+    onSuccess: (job, fmt) => setStarted((prev) => ({ ...prev, [fmt]: job })),
+    onError: (err) => toast.error(formatApiError(err, 'Could not start the preview.')),
+  });
+  const preview = (fmt: ClientReportFormat) => { if (report) startPreview.mutate(fmt); };
+  const downloadPreview = useMutation({
+    mutationFn: (jobId: number) => downloadReportJob(jobId),
+    onError: (err) => toast.error(formatApiError(err, 'Could not download the preview.')),
+  });
 
+  const issuing = useMutation({
+    mutationFn: () => issueClientReport(reportId),
+    onSuccess: (issued) => {
+      putReport(issued);
+      setEdits({});
+      // The project's reports gained a number; "start the clock from a
+      // report" and the Reports page read that list.
+      void queryClient.invalidateQueries({ queryKey: ['listClientReports'] });
+      toast.success(`Issued as report #${issued.number}. Rendering its files…`);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not issue the report.')),
+  });
   const issue = async () => {
     if (!report) return;
     const s = report.summary;
@@ -325,72 +344,50 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       ),
       confirmLabel: 'Issue report',
     });
-    if (!ok) return;
-    setBusy('issue');
-    try {
-      const issued = await issueClientReport(report.id);
-      setReport(issued);
-      setForm(toForm(issued));
-      toast.success(`Issued as report #${issued.number}. Rendering its files…`);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not issue the report.'));
-    } finally {
-      setBusy(null);
-    }
+    if (ok) issuing.mutate();
   };
 
-  const revise = async () => {
-    if (!report) return;
-    setBusy('revise');
-    try {
-      const draft = await reviseClientReport(report.id);
-      navigate(`/reports/${draft.id}`);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not start a revision.'));
-    } finally {
-      setBusy(null);
-    }
-  };
+  const revising = useMutation({
+    mutationFn: () => reviseClientReport(reportId),
+    onSuccess: (draft) => navigate(`/reports/${draft.id}`),
+    onError: (err) => toast.error(formatApiError(err, 'Could not start a revision.')),
+  });
 
-  const rerender = async () => {
-    if (!report) return;
-    setBusy('render');
-    try {
-      setReport(await rerenderClientReport(report.id));
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not restart the rendering.'));
-    } finally {
-      setBusy(null);
-    }
-  };
+  const rerendering = useMutation({
+    mutationFn: () => rerenderClientReport(reportId),
+    onSuccess: (next) => { putReport(next); },
+    onError: (err) => toast.error(formatApiError(err, 'Could not restart the rendering.')),
+  });
 
   // 5.319.0 — the scope file an over-cutoff report names.
-  const downloadScope = async () => {
+  const scopeDownload = useMutation({
+    mutationFn: (name: string) => downloadClientReportScope(reportId, name),
+    onError: (err) => toast.error(formatApiError(err, 'Could not download the scope file.')),
+  });
+  const downloadScope = () => {
     const file = report?.summary?.scope_external?.file;
-    if (!report || !file) return;
-    try {
-      await downloadClientReportScope(report.id, file.name);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not download the scope file.'));
-    }
+    if (file) scopeDownload.mutate(file.name);
   };
 
+  const discarding = useMutation({
+    mutationFn: () => deleteClientReport(reportId),
+    onSuccess: () => navigate('/reports'),
+    onError: (err) => toast.error(formatApiError(err, 'Could not discard the draft.')),
+  });
   const discard = async () => {
     if (!report) return;
     const ok = await confirm({
       title: 'Discard this draft?', body: `"${report.title}" is deleted. Findings are not affected.`,
       severity: 'danger', confirmLabel: 'Discard draft',
     });
-    if (!ok) return;
-    setBusy('delete');
-    try {
-      await deleteClientReport(report.id);
-      navigate('/reports');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not discard the draft.'));
-      setBusy(null);
-    }
+    if (ok) discarding.mutate();
   };
+
+  // One of these at a time; the buttons wait for it.  A discarded draft's
+  // page stays busy until the list replaces it.
+  const busy: 'issue' | 'revise' | 'render' | 'delete' | null = issuing.isPending ? 'issue'
+    : revising.isPending ? 'revise' : rerendering.isPending ? 'render'
+      : discarding.isPending || discarding.isSuccess ? 'delete' : null;
 
   if (!report && !error) return <DetailSkeleton />;
   if (!report || !form) {
@@ -398,7 +395,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       <div className="p-md md:p-lg">
         <Button variant="ghost" size="sm" onClick={() => navigate('/reports')}><ArrowLeft className="size-4" aria-hidden /> Reports</Button>
         <p className="mt-md text-destructive">{error}</p>
-        <Button variant="outline" size="sm" className="mt-sm" onClick={() => void load()}><RefreshCw className="size-4" aria-hidden /> Retry</Button>
+        <Button variant="outline" size="sm" className="mt-sm" onClick={() => void query.refetch()}><RefreshCw className="size-4" aria-hidden /> Retry</Button>
       </div>
     );
   }
@@ -475,7 +472,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               </Button>
             )}
             {report.status === 'issued' && (
-              <Button variant="outline" onClick={() => void revise()} disabled={busy !== null}>
+              <Button variant="outline" onClick={() => revising.mutate()} disabled={busy !== null}>
                 {busy === 'revise' && <Loader2 className="size-4 animate-spin" aria-hidden />} Revise
               </Button>
             )}
@@ -621,7 +618,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             <dt className="text-muted-foreground">SHA-256</dt>
             <dd className="break-all font-mono">{s.scope_external.file.sha256}</dd>
           </dl>
-          <Button size="sm" variant="outline" onClick={() => void downloadScope()} disabled={busy !== null}>
+          <Button size="sm" variant="outline" onClick={downloadScope} disabled={busy !== null}>
             <Download className="size-4" aria-hidden /> Download scope file (CSV)
           </Button>
         </PostureSection>
@@ -633,7 +630,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           <div className="mb-sm space-y-xs">
             <div className="flex min-w-0 flex-wrap items-center gap-xs">
               <Label htmlFor="report-template" className="shrink-0">Template</Label>
-              <Select value={report.template} onValueChange={(v) => void changeTemplate(v)}
+              <Select value={report.template} onValueChange={changeTemplate}
                 disabled={!editable || savingTemplate}>
                 <SelectTrigger id="report-template" className="h-8 w-[18rem] max-w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -664,7 +661,6 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                   template={template}
                   templateName={report.template}
                   showServerPaths={isAdmin}
-                  onTemplateChange={(changed) => setTemplates((all) => all.map((x) => (x.name === changed.name ? changed : x)))}
                 />
               </div>
             ) : template ? (
@@ -686,7 +682,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               const running = job && (job.status === 'queued' || job.status === 'processing');
               return (
                 <div key={fmt} className="flex min-w-0 items-center gap-xs">
-                  <Button variant="outline" size="sm" onClick={() => void preview(fmt)}
+                  <Button variant="outline" size="sm" onClick={() => preview(fmt)}
                     disabled={!!running || !report.can_edit || dirty || !!assetsBlock}
                     title={dirty ? 'Save your changes first' : assetsBlock}>
                     {running && <Loader2 className="size-4 animate-spin" aria-hidden />}
@@ -694,7 +690,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                   </Button>
                   {job?.status === 'completed' && (
                     <Button size="sm" variant="ghost" aria-label={`Download the ${FORMAT_LABEL[fmt]} preview`}
-                      onClick={() => void downloadReportJob(job.id).catch((err) => toast.error(formatApiError(err, 'Could not download the preview.')))}>
+                      onClick={() => downloadPreview.mutate(job.id)}>
                       <Download className="size-4" aria-hidden /> Download
                     </Button>
                   )}
@@ -720,7 +716,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             {report.render_status === 'failed' && (
               <div className="space-y-xxs">
                 <p className="whitespace-pre-wrap break-words font-mono text-caption text-destructive">{report.render_error}</p>
-                <Button size="sm" variant="outline" onClick={() => void rerender()} disabled={busy !== null}>
+                <Button size="sm" variant="outline" onClick={() => rerendering.mutate()} disabled={busy !== null}>
                   <RefreshCw className="size-4" aria-hidden /> Render again
                 </Button>
               </div>
@@ -744,11 +740,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
 
       <PostureSection title="Report details"
         description={editable ? 'Saved with this report only. The defaults for new reports are on the Reports page.' : 'As issued.'}>
-        <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+        <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); save(); }}>
           <div className="min-w-0 space-y-xxs">
             <Label htmlFor="report-title">Title</Label>
             <Input id="report-title" maxLength={255} value={form.title} disabled={!editable || saving}
-              onChange={(e) => setForm({ ...form, title: e.target.value })} />
+              onChange={(e) => edit({ title: e.target.value })} />
           </div>
 
           <div className="min-w-0 space-y-xxs">
@@ -763,19 +759,19 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             <p className="text-caption text-muted-foreground">Markdown. Written for this report only.</p>
             <MarkdownField id="report-summary" label={report.kind === 'addendum' ? 'Summary of changes' : 'Executive summary'}
               rows={8} maxLength={65536} value={form.executive_summary} disabled={!editable || saving}
-              onChange={(v) => setForm((f) => (f ? { ...f, executive_summary: v } : f))} />
+              onChange={(v) => edit({ executive_summary: v })} />
           </div>
 
           <EngagementSettingsFields idPrefix="report" value={form.settings} members={roster.members}
             membersStatus={roster.status} onRetryMembers={roster.retry} currentUser={currentUser}
-            readOnly={!editable} disabled={saving} onChange={(settings) => setForm({ ...form, settings })} />
+            readOnly={!editable} disabled={saving} onChange={(settings) => edit({ settings })} />
 
           {editable && (
             <div className="flex flex-wrap items-center gap-xs">
               <Button type="submit" size="sm" disabled={saving || !dirty}>
                 {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save
               </Button>
-              <Button type="button" variant="ghost" size="sm" disabled={saving || !dirty} onClick={() => setForm(toForm(report))}>
+              <Button type="button" variant="ghost" size="sm" disabled={saving || !dirty} onClick={() => setEdits({})}>
                 Undo changes
               </Button>
               {dirty && <span className="text-caption text-muted-foreground">Unsaved changes — save before previewing or issuing.</span>}
@@ -786,7 +782,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
 
       <AiDraftReportDialog open={aiOpen} onClose={() => setAiOpen(false)}
         useLabel="Use as the summary"
-        onUse={(text) => setForm((f) => (f ? { ...f, executive_summary: text } : f))} />
+        onUse={(text) => edit({ executive_summary: text })} />
       {confirmDialog}
       {leaveDialog}
     </div>

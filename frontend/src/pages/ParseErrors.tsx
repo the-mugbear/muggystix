@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, Fragment } from 'react';
+import React, { useState, useEffect, useCallback, useRef, Fragment } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { copyToClipboard } from '../utils/clipboard';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -25,8 +26,6 @@ import {
   type IngestionResultItem,
   type IngestionResultsResponse,
   type IngestionResultsSortBy,
-  type ParseError,
-  type Scan,
 } from '../services/api';
 import ImportResult from '../components/scans/ImportResult';
 import FormatRetryDialog from '../components/scans/FormatRetryDialog';
@@ -35,7 +34,9 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '../components/ui/select';
 import { useToast } from '../contexts/ToastContext';
+import { invalidateReads } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
+import { INGESTION_JOB_READS } from '../utils/ingestionReads';
 import { Badge } from '../components/ui/badge';
 import { BreakableName } from '../components/ui/breakable-name';
 import { Button } from '../components/ui/button';
@@ -164,6 +165,15 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => (
 
 const SORT_KEYS: IngestionResultsSortBy[] = ['created_at', 'original_filename', 'status', 'tool_name', 'file_size'];
 
+/** Says the reads that list or count ingestion jobs are out of date (a job was
+ *  dismissed, discarded or started again); the ones on screen are read again. */
+const useJobReadsChanged = () => {
+  const queryClient = useQueryClient();
+  return useCallback(() => {
+    void invalidateReads(queryClient, ...INGESTION_JOB_READS);
+  }, [queryClient]);
+};
+
 const ParseErrors: React.FC = () => {
   const navigate = useNavigate();
   // v5.135.0 — Scans links here with ?error_id=N. Previously it navigated to
@@ -177,9 +187,9 @@ const ParseErrors: React.FC = () => {
   const toast = useToast();
   // Retry, discard, dismiss and re-process are a project analyst's (R32).
   const { canWrite } = useProjectRole();
+  const jobReadsChanged = useJobReadsChanged();
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
-  const [selectedParseError, setSelectedParseError] = useState<ParseError | null>(null);
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
   // URL-backed (B15: search, sort, direction and page joined `status`), so a
   // filtered view can be shared and survives a reload, and so other surfaces
@@ -215,7 +225,6 @@ const ParseErrors: React.FC = () => {
     setParams({ status: value === 'all' ? null : value });
   }, [setParams]);
   const [confirmEl, askConfirm] = useConfirm();
-  const [bulkDismissing, setBulkDismissing] = useState(false);
   const sortParam = searchParams.get('sort');
   const sortBy: IngestionResultsSortBy = SORT_KEYS.includes(sortParam as IngestionResultsSortBy)
     ? (sortParam as IngestionResultsSortBy) : 'created_at';
@@ -242,6 +251,7 @@ const ParseErrors: React.FC = () => {
   // link changes the filter AND names a row in one navigation).
   const appliedSearch = urlSearch;
   const list = useListQuery<IngestionResultItem, ListPage<IngestionResultItem> & IngestionResultsResponse>(
+    'getIngestionResults',
     ({ limit }) => getIngestionResults({
       skip: page * pageSize,
       limit,
@@ -251,44 +261,42 @@ const ParseErrors: React.FC = () => {
       sortOrder,
     }),
     [statusFilter, appliedSearch, sortBy, sortOrder, page],
-    { pageSize, maxReload: pageSize, errorMessage: 'Failed to load ingestion results.' },
+    { pageSize, errorMessage: 'Failed to load ingestion results.' },
   );
   const { loading, error, loadedAt } = list;
   const loadData = list.reload;
   // The chips keep their last counts while the next query loads.
-  const [summary, setSummary] = useState<IngestionResultsResponse['summary'] | undefined>(undefined);
-  const latestSummary = list.response?.summary;
-  useEffect(() => { if (latestSummary) setSummary(latestSummary); }, [latestSummary]);
+  const lastSummary = useRef<IngestionResultsResponse['summary'] | undefined>(undefined);
+  if (list.response?.summary) lastSummary.current = list.response.summary;
+  const summary = lastSummary.current;
 
-  const handleViewParseError = async (item: IngestionResultItem) => {
-    // Audit CRIT-8 — pre-fix this catch synthesized a fake ParseError
-    // from row data and opened the dialog showing "No details
-    // available". Operators believed they were inspecting backend
-    // data; they were inspecting an invention. We now surface the
-    // failure honestly and refuse to open the dialog.
-    try {
-      // item.id is the INGESTION JOB id; this endpoint wants a ParseError id.
-      // They are independent sequences that overlap, so passing the job id
-      // didn't 404 — it returned whichever parse error happened to share the
-      // number, and the dialog presented it as this row's detail. That is the
-      // same "showing an invention as backend data" failure the CRIT-8 note
-      // below says was closed.
-      if (item.parse_error_id == null) {
-        toast.error(
-          `Ingestion #${item.id} has no recorded parse error to open.`,
-          { id: `pe-detail-${item.id}` },
-        );
-        return;
-      }
-      const detail = await getParseError(item.parse_error_id);
-      setSelectedParseError(detail);
-      setDetailDialogOpen(true);
-    } catch (err) {
+  // Audit CRIT-8 — a failed lookup used to open the dialog on a ParseError
+  // synthesized from row data ("No details available"): operators believed
+  // they were inspecting backend data. The failure is said, and the dialog
+  // opens only on what the server returned.
+  const parseErrorDetail = useMutation({
+    mutationFn: ({ parseErrorId }: { jobId: number; parseErrorId: number }) => getParseError(parseErrorId),
+    onSuccess: () => setDetailDialogOpen(true),
+    onError: (err, { jobId }) => toast.error(
+      formatApiError(err, `Couldn't load full details for ingestion #${jobId}.`),
+      { id: `pe-detail-${jobId}` },
+    ),
+  });
+  const selectedParseError = parseErrorDetail.data ?? null;
+  const handleViewParseError = (item: IngestionResultItem) => {
+    // item.id is the INGESTION JOB id; this endpoint wants a ParseError id.
+    // They are independent sequences that overlap, so passing the job id
+    // didn't 404 — it returned whichever parse error happened to share the
+    // number, and the dialog presented it as this row's detail: the same
+    // "showing an invention as backend data" failure as above.
+    if (item.parse_error_id == null) {
       toast.error(
-        formatApiError(err, `Couldn't load full details for ingestion #${item.id}.`),
+        `Ingestion #${item.id} has no recorded parse error to open.`,
         { id: `pe-detail-${item.id}` },
       );
+      return;
     }
+    parseErrorDetail.mutate({ jobId: item.id, parseErrorId: item.parse_error_id });
   };
 
   // Open and scroll to the row the caller linked to, once it has loaded. The
@@ -348,6 +356,28 @@ const ParseErrors: React.FC = () => {
   const dismissable = items.filter(
     (i) => !i.dismissed_at && (i.status === 'failed' || (i.status === 'completed' && !!i.partial)),
   );
+  const dismissRows = useMutation({
+    mutationFn: async (rows: IngestionResultItem[]) => {
+      let failed = 0;
+      for (const item of rows) {
+        try {
+          // Sequential on purpose: small, and no burst of parallel writes.
+          await dismissIngestionJob(item.id);
+        } catch {
+          failed += 1;
+        }
+      }
+      return failed;
+    },
+    onSuccess: (failed, rows) => {
+      if (failed > 0) {
+        toast.error(`${failed} of ${rows.length} could not be dismissed — you can only dismiss your own uploads unless you are an admin.`);
+      } else {
+        toast.success(`Dismissed ${rows.length} import${rows.length === 1 ? '' : 's'}`);
+      }
+      jobReadsChanged();
+    },
+  });
   const dismissShown = async () => {
     const partialCount = dismissable.filter((i) => i.status !== 'failed').length;
     const ok = await askConfirm({
@@ -362,29 +392,28 @@ const ParseErrors: React.FC = () => {
       confirmLabel: 'Dismiss',
     });
     if (!ok) return;
-    setBulkDismissing(true);
-    let failed = 0;
-    for (const item of dismissable) {
-      try {
-        // Sequential on purpose: small, and no burst of parallel writes.
-        await dismissIngestionJob(item.id);
-      } catch {
-        failed += 1;
-      }
-    }
-    setBulkDismissing(false);
-    if (failed > 0) {
-      toast.error(`${failed} of ${dismissable.length} could not be dismissed — you can only dismiss your own uploads unless you are an admin.`);
-    } else {
-      toast.success(`Dismissed ${dismissable.length} import${dismissable.length === 1 ? '' : 's'}`);
-    }
-    void loadData();
+    dismissRows.mutate(dismissable);
   };
 
   // v5.289.0 — failures whose file a later job imported (superseded): they
   // no longer need attention; clear the ones SHOWN in one action.  Exactly
   // these ids are sent; the server skips any no longer superseded.
   const supersededShown = items.filter((i) => !i.dismissed_at && i.superseded_by_job_id != null);
+  const dismissSupersededRows = useMutation({
+    mutationFn: (ids: number[]) => dismissSupersededJobs(ids),
+    onSuccess: (res, ids) => {
+      const n = ids.length;
+      if (res.dismissed === n) {
+        toast.success(`Dismissed ${n} superseded import${n === 1 ? '' : 's'}`);
+      } else {
+        toast.info(`Dismissed ${res.dismissed} of ${n} — the rest were no longer superseded, or not yours to dismiss`);
+      }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not dismiss the superseded imports.')),
+    // Refused or not, the list is read again: some may have gone meanwhile.
+    onSettled: () => jobReadsChanged(),
+  });
+  const bulkDismissing = dismissRows.isPending || dismissSupersededRows.isPending;
   const dismissSuperseded = async () => {
     const n = supersededShown.length;
     const ok = await askConfirm({
@@ -399,20 +428,7 @@ const ParseErrors: React.FC = () => {
       confirmLabel: `Dismiss ${n}`,
     });
     if (!ok) return;
-    setBulkDismissing(true);
-    try {
-      const res = await dismissSupersededJobs(supersededShown.map((i) => i.id));
-      if (res.dismissed === n) {
-        toast.success(`Dismissed ${n} superseded import${n === 1 ? '' : 's'}`);
-      } else {
-        toast.info(`Dismissed ${res.dismissed} of ${n} — the rest were no longer superseded, or not yours to dismiss`);
-      }
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not dismiss the superseded imports.'));
-    } finally {
-      setBulkDismissing(false);
-    }
-    void loadData();
+    dismissSupersededRows.mutate(supersededShown.map((i) => i.id));
   };
 
   const copyError = async (text: string) => {
@@ -727,7 +743,7 @@ const ParseErrors: React.FC = () => {
                         {isExpanded && (
                           <TableRow>
                             <TableCell colSpan={7} className="bg-accent/30 p-md">
-                              <RowDetail item={item} onViewParseError={handleViewParseError} navigate={navigate} onChanged={() => void loadData()} />
+                              <RowDetail item={item} onViewParseError={handleViewParseError} navigate={navigate} />
                             </TableCell>
                           </TableRow>
                         )}
@@ -879,10 +895,16 @@ const ParseErrors: React.FC = () => {
  * could not clear what it was sent to clear. Dismissing acknowledges the row;
  * it stays in this list, still failed / still partial.
  */
-const DismissAction: React.FC<{ item: IngestionResultItem; onChanged: () => void }> = ({ item, onChanged }) => {
+const DismissAction: React.FC<{ item: IngestionResultItem }> = ({ item }) => {
   const toast = useToast();
   const { canWrite } = useProjectRole();
-  const [saving, setSaving] = useState(false);
+  const jobReadsChanged = useJobReadsChanged();
+  const dismiss = useMutation({
+    mutationFn: () => dismissIngestionJob(item.id),
+    onSuccess: jobReadsChanged,
+    onError: (err) => toast.error(formatApiError(err, 'Could not dismiss this import.')),
+  });
+  const saving = dismiss.isPending;
   const blocked = item.status === 'failed' || (item.status === 'completed' && !!item.partial);
   if (!blocked) return null;
   if (item.dismissed_at) {
@@ -899,17 +921,7 @@ const DismissAction: React.FC<{ item: IngestionResultItem; onChanged: () => void
       variant="outline"
       disabled={saving}
       title="Acknowledge this import. It stays in this list; it stops being listed as blocked on Operations."
-      onClick={async () => {
-        setSaving(true);
-        try {
-          await dismissIngestionJob(item.id);
-          onChanged();
-        } catch (err) {
-          toast.error(formatApiError(err, 'Could not dismiss this import.'));
-        } finally {
-          setSaving(false);
-        }
-      }}
+      onClick={() => dismiss.mutate()}
     >
       {saving && <Loader2 className="size-3 animate-spin" aria-hidden />}
       Dismiss
@@ -921,10 +933,16 @@ const RowDetail: React.FC<{
   item: IngestionResultItem;
   onViewParseError: (item: IngestionResultItem) => void;
   navigate: ReturnType<typeof useNavigate>;
-  onChanged: () => void;
-}> = ({ item, onViewParseError, navigate, onChanged }) => {
+}> = ({ item, onViewParseError, navigate }) => {
   const toast = useToast();
   const { canWrite } = useProjectRole();
+  const jobReadsChanged = useJobReadsChanged();
+  const discard = useMutation({
+    mutationFn: () => discardIngestionJob(item.id),
+    onSuccess: jobReadsChanged,
+    // Said, not only logged (R34): the button used to do nothing.
+    onError: (err) => toast.error(formatApiError(err, 'Could not discard the staged upload.')),
+  });
   // v5.231.0 — retry with a reviewed format / explicit re-process, on the
   // retained file (phase E).
   const [retryOpen, setRetryOpen] = useState(false);
@@ -959,7 +977,7 @@ const RowDetail: React.FC<{
               Review format and retry
             </Button>
           )}
-          <DismissAction item={item} onChanged={onChanged} />
+          <DismissAction item={item} />
           <span className="text-caption text-muted-foreground">{retainedNote}</span>
         </div>
         <FormatRetryDialog
@@ -968,7 +986,6 @@ const RowDetail: React.FC<{
           jobId={item.id}
           filename={item.original_filename}
           mode="retry"
-          onDone={onChanged}
         />
       </div>
     );
@@ -988,15 +1005,7 @@ const RowDetail: React.FC<{
           <Button
             size="sm"
             variant="outline"
-            onClick={async () => {
-              try {
-                await discardIngestionJob(item.id);
-                onChanged();
-              } catch (err) {
-                // Said, not only logged (R34): the button used to do nothing.
-                toast.error(formatApiError(err, 'Could not discard the staged upload.'));
-              }
-            }}
+            onClick={() => discard.mutate()}
           >
             Discard
           </Button>
@@ -1008,7 +1017,6 @@ const RowDetail: React.FC<{
           jobId={item.id}
           filename={item.original_filename}
           mode="start"
-          onDone={onChanged}
         />
       </div>
     );
@@ -1028,7 +1036,7 @@ const RowDetail: React.FC<{
             <p className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono text-caption">
               {safeFallback(item.parser_warnings, 'The parser recorded no detail.')}
             </p>
-            <div><DismissAction item={item} onChanged={onChanged} /></div>
+            <div><DismissAction item={item} /></div>
           </AlertDescription>
         </Alert>
       )}
@@ -1108,7 +1116,6 @@ const RowDetail: React.FC<{
         filename={item.original_filename}
         mode="reprocess"
         priorScanId={item.scan_id}
-        onDone={onChanged}
       />
     </div>
   );
@@ -1117,20 +1124,11 @@ const RowDetail: React.FC<{
 /** Fetches the scan row's summary for a completed job and renders its
  *  import result. Quiet on failure: the fields beneath still say what parsed. */
 const CompletedImportResult: React.FC<{ scanId: number }> = ({ scanId }) => {
-  const [row, setRow] = useState<Scan | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    getScans(0, 1, { ids: [scanId] })
-      .then((rows) => {
-        if (!cancelled) setRow(rows[0] ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setRow(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [scanId]);
+  const summary = useQuery({
+    queryKey: ['getScans', { ids: [scanId] }, { limit: 1 }],
+    queryFn: ({ signal }) => getScans(0, 1, { ids: [scanId], signal }),
+  });
+  const row = summary.data?.[0] ?? null;
   if (!row) return null;
   return (
     <div className="rounded-panel border border-border p-sm">

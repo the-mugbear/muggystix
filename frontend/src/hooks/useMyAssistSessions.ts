@@ -20,12 +20,18 @@
  * list keyed by a second id, and filtered the whole project's rows here. The
  * hook keeps its name: it is what the Start Agent Session ("assist") dialog
  * and its callers use.
+ *
+ * The read is `listAgentSessions`: starting, ending or resuming a session
+ * invalidates that name, so there is no `refresh` to call.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { listAgentSessions, type AgentSessionRow } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { hasLiveKey, myActiveSessionFilters } from '../utils/agentRuns';
+
+const NONE: AgentSessionRow[] = [];
 
 export interface UseMyAssistSessions {
   /** Live sessions started by the current user, newest first. */
@@ -34,7 +40,6 @@ export interface UseMyAssistSessions {
   /** True when the list could not be loaded — callers render nothing rather
    *  than claiming "no active sessions", which would be a wrong answer. */
   failed: boolean;
-  refresh: () => Promise<void>;
 }
 
 export const useMyAssistSessions = (
@@ -42,33 +47,26 @@ export const useMyAssistSessions = (
 ): UseMyAssistSessions => {
   const { user } = useAuth();
   const userId = user?.id;
-  const [sessions, setSessions] = useState<AgentSessionRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const on = enabled && userId != null;
+  const query = useQuery({
+    queryKey: ['listAgentSessions', userId == null ? null : myActiveSessionFilters(userId)],
+    queryFn: () => listAgentSessions(myActiveSessionFilters(userId as number)),
+    enabled: on,
+  });
 
-  const refresh = useCallback(async () => {
-    if (!enabled || userId == null) return;
-    setLoading(true);
-    try {
-      const { sessions: rows } = await listAgentSessions(myActiveSessionFilters(userId));
-      const now = Date.now();
-      setSessions(rows.filter((s) => hasLiveKey(s, now)));
-      setFailed(false);
-    } catch {
-      // A failed lookup must not render as "you have no sessions" — that's
-      // the exact wrong answer for a surface about outstanding credentials.
-      setFailed(true);
-      setSessions([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [enabled, userId]);
+  // A failed lookup must not render as "you have no sessions" — that's the
+  // exact wrong answer for a surface about outstanding credentials.  It does
+  // not go on showing the sessions of the last good read either.
+  const failed = query.isError;
+  const rows = query.data?.sessions;
+  // "Live" as of the read: a key that runs out later is found by the next one.
+  const readAt = query.dataUpdatedAt;
+  const sessions = useMemo(
+    () => (rows && !failed ? rows.filter((s) => hasLiveKey(s, readAt)) : NONE),
+    [rows, failed, readAt],
+  );
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  return { sessions, loading, failed, refresh };
+  return { sessions, loading: query.isFetching, failed };
 };
 
 export default useMyAssistSessions;

@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Pencil, Plus, Trash2, X as CloseIcon } from 'lucide-react';
 
 import {
@@ -118,64 +119,63 @@ const ColorPicker: React.FC<{
 interface SubnetLabelManagerDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  // Called whenever the catalogue changes so the parent can refresh
-  // anything that displays labels (e.g. the subnets table chips).
-  onCatalogueChange?: () => void;
 }
 
 export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> = ({
-  open, onOpenChange, onCatalogueChange,
+  open, onOpenChange,
 }) => {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const [confirmDialog, confirm] = useConfirm();
-  const [labels, setLabels] = useState<SubnetLabelWithCounts[]>([]);
-  const [loading, setLoading] = useState(false);
+
+  // The project's catalogue — the same read as the Scope page's (one key), so
+  // a label created here is in the page's "Apply label…" menu without a
+  // callback.  Read again each time the dialog opens.
+  const catalogue = useQuery({
+    queryKey: ['listSubnetLabels'],
+    queryFn: () => listSubnetLabels(),
+    enabled: open,
+  });
+  const labels = catalogue.data ?? [];
+  const loading = catalogue.isFetching;
+  const loadError = catalogue.error;
+  // Once per failed read (a reopened dialog reads again before it says so).
+  useEffect(() => {
+    if (open && loadError && !loading) toast.error(formatApiError(loadError, 'Failed to load subnet labels.'));
+  }, [open, loadError, loading, toast]);
+
+  // A change to a label changes the catalogue and the chips on the scope's
+  // subnets (a rename shows there; a delete detaches server-side).
+  const catalogueChanged = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['listSubnetLabels'] });
+    void queryClient.invalidateQueries({ queryKey: ['getDefaultScope'] });
+    void queryClient.invalidateQueries({ queryKey: ['getScopeCoverage'] });
+  };
 
   // Create form
   const [newName, setNewName] = useState('');
   const [newColor, setNewColor] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
 
   // Edit-in-place state — at most one label is editable at a time.
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
   const [editColor, setEditColor] = useState<string | null>(null);
-  const [savingEdit, setSavingEdit] = useState(false);
 
-  const fetchLabels = useCallback(async () => {
-    setLoading(true);
-    try {
-      const rows = await listSubnetLabels();
-      setLabels(rows);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to load subnet labels.'));
-    } finally {
-      setLoading(false);
-    }
-  }, [toast]);
-
-  useEffect(() => {
-    if (open) {
-      fetchLabels();
-    }
-  }, [open, fetchLabels]);
-
-  const handleCreate = async () => {
-    const name = newName.trim();
-    if (!name) return;
-    setCreating(true);
-    try {
-      await createSubnetLabel(name, newColor);
+  const create = useMutation({
+    mutationFn: ({ name, color }: { name: string; color: string | null }) => createSubnetLabel(name, color),
+    onSuccess: async (_created, { name }) => {
       setNewName('');
       setNewColor(null);
-      await fetchLabels();
-      onCatalogueChange?.();
+      await catalogueChanged();
       toast.success(`Created label "${name}".`);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to create label.'));
-    } finally {
-      setCreating(false);
-    }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to create label.')),
+  });
+  const creating = create.isPending;
+  const handleCreate = () => {
+    const name = newName.trim();
+    if (!name) return;
+    create.mutate({ name, color: newColor });
   };
 
   const startEdit = (label: SubnetLabelWithCounts) => {
@@ -188,22 +188,31 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
     setEditName('');
     setEditColor(null);
   };
-  const saveEdit = async () => {
+  const update = useMutation({
+    mutationFn: ({ id, name, color }: { id: number; name: string; color: string | null }) =>
+      updateSubnetLabel(id, { name, color }),
+    onSuccess: () => {
+      cancelEdit();
+      return catalogueChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update label.')),
+  });
+  const savingEdit = update.isPending;
+  const saveEdit = () => {
     if (editingId == null) return;
     const name = editName.trim();
     if (!name) return;
-    setSavingEdit(true);
-    try {
-      await updateSubnetLabel(editingId, { name, color: editColor });
-      cancelEdit();
-      await fetchLabels();
-      onCatalogueChange?.();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update label.'));
-    } finally {
-      setSavingEdit(false);
-    }
+    update.mutate({ id: editingId, name, color: editColor });
   };
+
+  const remove = useMutation({
+    mutationFn: (label: SubnetLabelWithCounts) => deleteSubnetLabel(label.id),
+    onSuccess: async (_void, label) => {
+      await catalogueChanged();
+      toast.success(`Deleted "${label.name}".`);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to delete label.')),
+  });
 
   const handleDelete = async (label: SubnetLabelWithCounts) => {
     // Inline browser confirm — keeps the dialog footprint small.  The
@@ -220,14 +229,7 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
       confirmLabel: 'Delete',
     });
     if (!ok) return;
-    try {
-      await deleteSubnetLabel(label.id);
-      await fetchLabels();
-      onCatalogueChange?.();
-      toast.success(`Deleted "${label.name}".`);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to delete label.'));
-    }
+    remove.mutate(label);
   };
 
   return (
@@ -347,10 +349,11 @@ interface SubnetLabelEditorPopoverProps {
   subnetId: number;
   subnetCidr: string;
   currentLabels: SubnetLabelInfo[];
-  // Project label catalogue — owner-supplied so we don't re-fetch on
-  // every popover open.  Refresh by calling the manager dialog's
-  // `onCatalogueChange`.
+  // Project label catalogue — owner-supplied (the page's one read of it), so
+  // a table of subnets does not ask for it once per row.
   catalogue: SubnetLabelWithCounts[];
+  // The subnet's labels as the server now has them: the owner puts them on
+  // its row.  The catalogue's counts are re-read here.
   onSaved: (next: SubnetLabelInfo[]) => void;
   // Anchor element (the small "Edit labels" button rendered in the row).
   children: React.ReactNode;
@@ -360,8 +363,8 @@ export const SubnetLabelEditorPopover: React.FC<SubnetLabelEditorPopoverProps> =
   subnetId, subnetCidr, currentLabels, catalogue, onSaved, children,
 }) => {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [pending, setPending] = useState(false);
   const [selected, setSelected] = useState<string[]>(() => currentLabels.map((l) => String(l.id)));
 
   // Re-sync when the popover (re)opens or the upstream label set
@@ -378,18 +381,18 @@ export const SubnetLabelEditorPopover: React.FC<SubnetLabelEditorPopoverProps> =
     [catalogue],
   );
 
-  const handleSave = async () => {
-    setPending(true);
-    try {
-      const ids = selected.map((s) => Number(s)).filter((n) => Number.isFinite(n));
-      const next = await replaceSubnetLabels(subnetId, ids);
+  const save = useMutation({
+    mutationFn: (ids: number[]) => replaceSubnetLabels(subnetId, ids),
+    onSuccess: (next) => {
       onSaved(next);
+      void queryClient.invalidateQueries({ queryKey: ['listSubnetLabels'] });
       setOpen(false);
-    } catch (err) {
-      toast.error(formatApiError(err, `Failed to update labels for ${subnetCidr}.`));
-    } finally {
-      setPending(false);
-    }
+    },
+    onError: (err) => toast.error(formatApiError(err, `Failed to update labels for ${subnetCidr}.`)),
+  });
+  const pending = save.isPending;
+  const handleSave = () => {
+    save.mutate(selected.map((s) => Number(s)).filter((n) => Number.isFinite(n)));
   };
 
   return (

@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { GLOBAL } from '../lib/query';
 import { copyToClipboard as copyText } from '../utils/clipboard';
 import {
   Search,
@@ -40,53 +42,43 @@ interface CredentialEntry {
   password: string;
 }
 
+const NO_CREDENTIALS: CredentialEntry[] = [];
+
+/** The sheet shipped with the app (a file of the build, not an API route). */
+const loadDefaultCredentials = async (signal: AbortSignal): Promise<CredentialEntry[]> => {
+  const response = await fetch('/DefaultCreds-Cheat-Sheet.csv', { signal });
+  if (!response.ok) throw new Error('Failed to load credentials data');
+  const csvText = await response.text();
+  const lines = csvText.split('\n');
+  const parsed: CredentialEntry[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const values = line.split(',');
+    if (values.length >= 3) {
+      parsed.push({
+        vendor: values[0].trim(),
+        username: values[1].trim() || '<blank>',
+        password: values[2].trim() || '<blank>',
+      });
+    }
+  }
+  return parsed;
+};
+
 const DefaultCredentials: React.FC = () => {
   const toast = useToast();
-  const [credentials, setCredentials] = useState<CredentialEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const sheet = useQuery({
+    queryKey: [GLOBAL, 'defaultCredentialsSheet'],
+    queryFn: ({ signal }) => loadDefaultCredentials(signal),
+  });
+  const credentials = sheet.data ?? NO_CREDENTIALS;
+  const loading = sheet.isPending;
+  const error = sheet.error ? 'Failed to load default credentials data' : null;
   const [selectedVendor, setSelectedVendor] = useState<string>('');
   const [searchTerm, setSearchTerm] = useState('');
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        setLoading(true);
-        const response = await fetch('/DefaultCreds-Cheat-Sheet.csv');
-        if (!response.ok) throw new Error('Failed to load credentials data');
-        const csvText = await response.text();
-        const lines = csvText.split('\n');
-        const parsed: CredentialEntry[] = [];
-        for (let i = 1; i < lines.length; i++) {
-          const line = lines[i].trim();
-          if (!line) continue;
-          const values = line.split(',');
-          if (values.length >= 3) {
-            parsed.push({
-              vendor: values[0].trim(),
-              username: values[1].trim() || '<blank>',
-              password: values[2].trim() || '<blank>',
-            });
-          }
-        }
-        if (!cancelled) {
-          setCredentials(parsed);
-          setError(null);
-        }
-      } catch (err) {
-        if (!cancelled) setError('Failed to load default credentials data');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const vendors = useMemo(() => {
     const set = new Set<string>();

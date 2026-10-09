@@ -2,44 +2,33 @@
  * The current project's members — the ONE loader for every owner / assignee
  * picker and for @mention autocomplete and highlighting.
  *
- * One request per project, shared by everything on the page and refreshed
- * after a few minutes (a member added mid-session appears without a reload).
+ * One query per project (`['listProjectMembers']`, lib/query), shared by
+ * everything on the page and kept for a few minutes whether or not anything
+ * shows it; after that the next reader asks again (a member added mid-session
+ * appears without a reload).  A failure is not kept: the next reader, or
+ * Retry, asks again.
  * `useProjectRoster` gives the full rows with a status, so a picker whose
  * load failed says so (with `retry`) instead of "No members".
- * `useProjectMembers` is the mention shape of the same cache: a failure there
+ * `useProjectMembers` is the mention shape of the same query: a failure there
  * yields an empty list — mentions still work when typed in full, they just
  * are not suggested or highlighted.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { listProjectMembers, type ProjectMember } from '../services/api';
 import { useProject } from '../contexts/ProjectContext';
+import { queryClient, rememberFor } from '../lib/query';
 import type { MentionCandidate } from '../utils/mentions';
 
 const TTL_MS = 5 * 60 * 1000;
-const cache = new Map<number, { at: number; rows: Promise<ProjectMember[]> }>();
 const EMPTY: ProjectMember[] = [];
 const NO_CANDIDATES: MentionCandidate[] = [];
 
-function load(projectId: number): Promise<ProjectMember[]> {
-  const hit = cache.get(projectId);
-  if (hit && Date.now() - hit.at < TTL_MS) return hit.rows;
-  let rows: Promise<ProjectMember[]>;
-  try {
-    rows = Promise.resolve(listProjectMembers()).then((r) => (Array.isArray(r) ? r : EMPTY));
-  } catch (err) {
-    rows = Promise.reject(err);
-  }
-  const entry = { at: Date.now(), rows };
-  cache.set(projectId, entry);
-  // A failure is not remembered: the next reader (or Retry) asks again.
-  rows.catch(() => { if (cache.get(projectId) === entry) cache.delete(projectId); });
-  return rows;
-}
-
-/** Test hook: forget every cached roster. */
+/** Forget every roster the app's client holds.  Tests call it between cases;
+ *  each of their renders has a client of its own, so there it changes nothing. */
 export function resetProjectMembersCache(): void {
-  cache.clear();
+  queryClient.removeQueries({ queryKey: ['listProjectMembers'] });
 }
 
 export type ProjectMembersStatus = 'loading' | 'ready' | 'error';
@@ -51,44 +40,28 @@ export interface ProjectRoster {
   retry: () => void;
 }
 
-interface RosterState {
-  projectId: number | null;
-  members: ProjectMember[];
-  status: ProjectMembersStatus;
-}
-
 /** `enabled: false` asks for nothing yet (a menu not opened, a role that has
  *  no picker); the status stays `loading`. */
 export function useProjectRoster({ enabled = true }: { enabled?: boolean } = {}): ProjectRoster {
   const { currentProject } = useProject();
-  const projectId = currentProject?.id ?? null;
-  const [state, setState] = useState<RosterState>({ projectId, members: EMPTY, status: 'loading' });
-  const [attempt, setAttempt] = useState(0);
+  const on = enabled && currentProject?.id != null;
+  const query = useQuery({
+    queryKey: ['listProjectMembers'],
+    queryFn: async () => {
+      const rows = await listProjectMembers();
+      return Array.isArray(rows) ? rows : EMPTY;
+    },
+    enabled: on,
+    ...rememberFor(TTL_MS),
+  });
 
-  useEffect(() => {
-    if (!enabled || projectId == null) return undefined;
-    let live = true;
-    setState((prev) => (
-      prev.projectId === projectId && prev.status !== 'error' ? prev : { projectId, members: EMPTY, status: 'loading' }
-    ));
-    load(projectId).then(
-      (rows) => {
-        if (!live) return;
-        setState((prev) => (
-          prev.projectId === projectId && prev.status === 'ready' && prev.members === rows
-            ? prev
-            : { projectId, members: rows.length ? rows : EMPTY, status: 'ready' }
-        ));
-      },
-      () => { if (live) setState({ projectId, members: EMPTY, status: 'error' }); },
-    );
-    return () => { live = false; };
-  }, [projectId, enabled, attempt]);
-
-  const retry = useCallback(() => setAttempt((n) => n + 1), []);
-  const mine = state.projectId === projectId;
-  const members = mine ? state.members : EMPTY;
-  const status = mine ? state.status : 'loading';
+  const { refetch } = query;
+  const retry = useCallback(() => { void refetch(); }, [refetch]);
+  // A reader that has not asked yet is `loading`, whatever another has read.
+  const rows = on ? query.data : undefined;
+  const members = rows && rows.length > 0 ? rows : EMPTY;
+  // Rows that were read stay the roster while a later re-read fails.
+  const status: ProjectMembersStatus = rows ? 'ready' : on && query.isError ? 'error' : 'loading';
   return useMemo(() => ({ members, status, retry }), [members, status, retry]);
 }
 

@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -101,6 +101,27 @@ describe('Findings — bulk selection scope', () => {
     mocked.bulkSetFindingStatus.mockResolvedValue({ affected: 1, requested: 1, skipped_ids: [] });
     mocked.bulkAssignFindings.mockResolvedValue({ affected: 1, requested: 1, skipped_ids: [] });
     confirmMock.mockResolvedValue(true);
+  });
+
+  // Owner, 2026-10-09: a failed load read "0 findings" beside the server's bare
+  // message — "easily misinterpreted" as an empty project.
+  it('says a failed load — not "0 findings", not an empty list — and Retry reads again', async () => {
+    mocked.listFindings.mockRejectedValueOnce(Object.assign(new Error('boom'), {
+      isAxiosError: true, response: { status: 503, data: { detail: 'The database is busy.' } },
+    }));
+    renderFindings();
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The findings could not be loaded. This is not an empty list.');
+    expect(alert).toHaveTextContent('The database is busy.');
+    expect(screen.getByRole('status')).toHaveTextContent('Findings could not be loaded');
+    expect(screen.queryByText(/\b0 findings\b/)).toBeNull();
+    expect(screen.queryByText(/No findings/i)).toBeNull();
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Finding 1')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status')).not.toHaveTextContent('could not be loaded');
   });
 
   it('surfaces a bulk bar once a finding is selected', async () => {

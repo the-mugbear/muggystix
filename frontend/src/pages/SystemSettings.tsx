@@ -1,5 +1,6 @@
 import { formatDate } from '../utils/relativeTime';
 import React, { useState, useEffect } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import {
   ShieldCheck,
@@ -22,6 +23,7 @@ import { useAuth } from '../contexts/AuthContext';
 import apiClient from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
+import { GLOBAL } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import QueueHealthCard from '../components/QueueHealthCard';
 import RemediationSettingsSection from '../components/remediation/RemediationSettingsSection';
@@ -122,6 +124,9 @@ const DateTimeCell: React.FC<{ value: string | null }> = ({ value }) => {
   );
 };
 
+/** Every account on the installation (`GET /users/`) — not a project's. */
+const USERS_KEY = [GLOBAL, '/users/'];
+
 const TABS = ['users', 'remediation', 'report-writing'] as const;
 const DEFAULT_TAB = 'users';
 
@@ -132,12 +137,8 @@ const SystemSettings: React.FC = () => {
   const { user: currentUser, hasPermission } = useAuth();
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
-  const [users, setUsers] = useState<User[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [roleSavingUserId, setRoleSavingUserId] = useState<number | null>(null);
-  const [statusSavingUserId, setStatusSavingUserId] = useState<number | null>(null);
-  const [reset2faUserId, setReset2faUserId] = useState<number | null>(null);
+  const queryClient = useQueryClient();
+  const isAdmin = hasPermission('admin');
 
   // Dialogs
   const [newUserDialogOpen, setNewUserDialogOpen] = useState(false);
@@ -166,45 +167,39 @@ const SystemSettings: React.FC = () => {
   // Reset Password flows that share selectedUser.
   const [membershipsUser, setMembershipsUser] = useState<User | null>(null);
 
+  // Every account on the installation.  A failed read is a toast over an
+  // empty table, as it always was.
+  const usersQuery = useQuery({
+    queryKey: USERS_KEY,
+    queryFn: async () => (await apiClient.get<User[]>('/users/')).data,
+    enabled: isAdmin,
+  });
+  const users: User[] = usersQuery.data ?? [];
+  const loading = isAdmin && usersQuery.isPending;
+  const usersFailure = usersQuery.error;
   useEffect(() => {
-    if (!hasPermission('admin')) {
-      setLoading(false);
-      return;
-    }
-    let cancelled = false;
-    apiClient
-      .get('/users/')
-      .then((r) => {
-        if (!cancelled) setUsers(r.data);
-      })
-      .catch((err) => {
-        if (!cancelled) toast.error(formatApiError(err, 'Failed to load users.'));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasPermission]);
+    if (usersFailure) toast.error(formatApiError(usersFailure, 'Failed to load users.'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- said once per failure; the toast API is not part of it
+  }, [usersFailure]);
+  /** Put what a write returned (or is known to have done) into the table. */
+  const setUsers = (update: (prev: User[]) => User[]) => {
+    queryClient.setQueryData<User[]>(USERS_KEY, (prev) => update(prev ?? []));
+  };
+  const replaceUser = (updated: User) => setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
 
-  const handleCreateUser = async () => {
-    setSaving(true);
-    try {
-      // confirm_password is a client-only guard against typos — don't send it.
-      const { confirm_password: _confirm, ...payload } = newUserForm;
-      const response = await apiClient.post('/auth/register', payload);
-      setUsers((prev) => [...prev, response.data]);
+  const creation = useMutation({
+    // confirm_password is a client-only guard against typos — don't send it.
+    mutationFn: async ({ confirm_password: _confirm, ...payload }: NewUserForm) =>
+      (await apiClient.post<User>('/auth/register', payload)).data,
+    onSuccess: (created) => {
+      setUsers((prev) => [...prev, created]);
       setNewUserDialogOpen(false);
       setNewUserForm({ username: '', password: '', confirm_password: '', full_name: '', role: 'member' });
       toast.success('User created.');
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to create user.'));
-    } finally {
-      setSaving(false);
-    }
-  };
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to create user.')),
+  });
+  const handleCreateUser = () => creation.mutate(newUserForm);
 
   // Client-only typo guard for the create-user dialog (the password is set
   // once at creation, so a mistype would otherwise lock the new account out).
@@ -215,20 +210,86 @@ const SystemSettings: React.FC = () => {
   const resetPasswordMismatch =
     confirmNewPassword.length > 0 && newPassword !== confirmNewPassword;
 
-  const handleUpdateUser = async () => {
-    if (!selectedUser) return;
-    setSaving(true);
-    try {
-      const response = await apiClient.put(`/users/${selectedUser.id}`, editUserForm);
-      setUsers((prev) => prev.map((u) => (u.id === selectedUser.id ? response.data : u)));
+  /** `PUT /users/{id}` — the edit dialog, the role select and the status
+   *  select all send the whole account. */
+  const putUser = async (body: { userId: number } & EditUserForm): Promise<User> => {
+    const { userId, ...form } = body;
+    return (await apiClient.put<User>(`/users/${userId}`, form)).data;
+  };
+
+  const update = useMutation({
+    mutationFn: putUser,
+    onSuccess: (updated) => {
+      replaceUser(updated);
       setEditUserDialogOpen(false);
       toast.success('User updated.');
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to update user.'));
-    } finally {
-      setSaving(false);
-    }
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update user.')),
+  });
+  const handleUpdateUser = () => {
+    if (!selectedUser) return;
+    update.mutate({ userId: selectedUser.id, ...editUserForm });
   };
+
+  const roleChange = useMutation({
+    mutationFn: ({ user, role }: { user: User; role: string }) =>
+      putUser({ userId: user.id, full_name: user.full_name || '', role, is_active: user.is_active }),
+    onSuccess: (updated, { user, role }) => {
+      replaceUser(updated);
+      toast.success(`Updated ${user.username}'s role to ${role}.`);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update role.')),
+  });
+  const roleSavingUserId = roleChange.isPending ? roleChange.variables.user.id : null;
+
+  const statusChange = useMutation({
+    mutationFn: ({ user, isActive }: { user: User; isActive: boolean }) =>
+      putUser({ userId: user.id, full_name: user.full_name || '', role: user.role, is_active: isActive }),
+    onSuccess: (updated, { user, isActive }) => {
+      replaceUser(updated);
+      toast.success(`${user.username} is now ${isActive ? 'active' : 'inactive'}.`);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update status.')),
+  });
+  const statusSavingUserId = statusChange.isPending ? statusChange.variables.user.id : null;
+
+  const twoFactorReset = useMutation({
+    mutationFn: (user: User) => apiClient.post(`/users/${user.id}/reset-2fa`),
+    onSuccess: (_response, user) => {
+      setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, totp_enabled: false } : u)));
+      toast.success(`2FA reset for ${user.username}.`);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to reset 2FA.')),
+  });
+  const reset2faUserId = twoFactorReset.isPending ? twoFactorReset.variables.id : null;
+
+  const passwordReset = useMutation({
+    mutationFn: (body: { userId: number; new_password: string }) =>
+      apiClient.post(`/users/${body.userId}/reset-password`, { new_password: body.new_password }),
+    onSuccess: () => {
+      setResetPasswordDialogOpen(false);
+      setNewPassword('');
+      setConfirmNewPassword('');
+      toast.success('Password reset.');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to reset password.')),
+  });
+  const handleResetPassword = () => {
+    if (!selectedUser) return;
+    passwordReset.mutate({ userId: selectedUser.id, new_password: newPassword });
+  };
+
+  const deletion = useMutation({
+    mutationFn: (user: User) => apiClient.delete(`/users/${user.id}`),
+    onSuccess: (_response, user) => {
+      setUsers((prev) => prev.filter((u) => u.id !== user.id));
+      toast.success('User deleted.');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to delete user.')),
+  });
+
+  // The three dialogs share one busy state, as they share one user.
+  const saving = creation.isPending || update.isPending || passwordReset.isPending;
 
   const handleRoleChange = async (user: User, role: string) => {
     if (user.role === role) return;
@@ -248,20 +309,7 @@ const SystemSettings: React.FC = () => {
       });
       if (!ok) return;
     }
-    setRoleSavingUserId(user.id);
-    try {
-      const response = await apiClient.put(`/users/${user.id}`, {
-        full_name: user.full_name || '',
-        role,
-        is_active: user.is_active,
-      });
-      setUsers((prev) => prev.map((u) => (u.id === user.id ? response.data : u)));
-      toast.success(`Updated ${user.username}'s role to ${role}.`);
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to update role.'));
-    } finally {
-      setRoleSavingUserId(null);
-    }
+    roleChange.mutate({ user, role });
   };
 
   const handleStatusChange = async (user: User, isActive: boolean) => {
@@ -281,20 +329,7 @@ const SystemSettings: React.FC = () => {
       });
       if (!ok) return;
     }
-    setStatusSavingUserId(user.id);
-    try {
-      const response = await apiClient.put(`/users/${user.id}`, {
-        full_name: user.full_name || '',
-        role: user.role,
-        is_active: isActive,
-      });
-      setUsers((prev) => prev.map((u) => (u.id === user.id ? response.data : u)));
-      toast.success(`${user.username} is now ${isActive ? 'active' : 'inactive'}.`);
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to update status.'));
-    } finally {
-      setStatusSavingUserId(null);
-    }
+    statusChange.mutate({ user, isActive });
   };
 
   const handleReset2fa = async (user: User) => {
@@ -305,32 +340,7 @@ const SystemSettings: React.FC = () => {
       severity: 'danger',
     });
     if (!ok) return;
-    setReset2faUserId(user.id);
-    try {
-      await apiClient.post(`/users/${user.id}/reset-2fa`);
-      setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, totp_enabled: false } : u)));
-      toast.success(`2FA reset for ${user.username}.`);
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to reset 2FA.'));
-    } finally {
-      setReset2faUserId(null);
-    }
-  };
-
-  const handleResetPassword = async () => {
-    if (!selectedUser) return;
-    setSaving(true);
-    try {
-      await apiClient.post(`/users/${selectedUser.id}/reset-password`, { new_password: newPassword });
-      setResetPasswordDialogOpen(false);
-      setNewPassword('');
-    setConfirmNewPassword('');
-      toast.success('Password reset.');
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to reset password.'));
-    } finally {
-      setSaving(false);
-    }
+    twoFactorReset.mutate(user);
   };
 
   const handleDeleteUser = async (user: User) => {
@@ -343,13 +353,7 @@ const SystemSettings: React.FC = () => {
       confirmTypedName: true,
     });
     if (!ok) return;
-    try {
-      await apiClient.delete(`/users/${user.id}`);
-      setUsers((prev) => prev.filter((u) => u.id !== user.id));
-      toast.success('User deleted.');
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to delete user.'));
-    }
+    deletion.mutate(user);
   };
 
   const openEditDialog = (user: User) => {
@@ -369,7 +373,7 @@ const SystemSettings: React.FC = () => {
     setResetPasswordDialogOpen(true);
   };
 
-  if (!hasPermission('admin')) {
+  if (!isAdmin) {
     return (
       <div className="p-md md:p-lg">
         <Alert variant="destructive">

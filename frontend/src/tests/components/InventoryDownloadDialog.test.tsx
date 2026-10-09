@@ -1,10 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 import InventoryDownloadDialog from '../../components/InventoryDownloadDialog';
 import * as api from '../../services/api';
 
-vi.mock('../../hooks/useVisibilityPoll', () => ({ useVisibilityPoll: vi.fn() }));
 vi.mock('../../services/api', () => ({
   downloadInventoryCsv: vi.fn(),
   enqueueInventoryJson: vi.fn(),
@@ -30,6 +29,7 @@ describe('InventoryDownloadDialog', () => {
     vi.clearAllMocks();
     mocked.listReportJobs.mockResolvedValue([]);
   });
+  afterEach(() => { vi.useRealTimers(); });
 
   // The retirement of "Export hosts" (owner, 2026-10-07): two downloads, and
   // nothing that offers the HTML report, the Markdown bundle or the agent
@@ -138,6 +138,9 @@ describe('InventoryDownloadDialog', () => {
     mocked.listReportJobs.mockResolvedValue([queued]);
     mocked.downloadReportJob.mockResolvedValue(undefined);
     const onClose = vi.fn();
+    // The poll is the query's own interval now (it was a mocked hook whose
+    // callback the test called): the clock is what brings the next refresh.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
 
     render(<InventoryDownloadDialog open onClose={onClose} filters={{}} totalHosts={5} />);
     fireEvent.click(screen.getByRole('button', { name: 'Prepare JSON' }));
@@ -145,9 +148,7 @@ describe('InventoryDownloadDialog', () => {
 
     // The next refresh (what the poll does) reports completion.
     mocked.listReportJobs.mockResolvedValue([{ ...queued, status: 'completed' }]);
-    const poll = (await import('../../hooks/useVisibilityPoll')).useVisibilityPoll as unknown as ReturnType<typeof vi.fn>;
-    const lastCallback = poll.mock.calls[poll.mock.calls.length - 1][0] as () => Promise<void>;
-    await lastCallback();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
 
     const ready = await screen.findByTestId('tracked-job-ready');
     fireEvent.click(within(ready).getByRole('button', { name: 'Download JSON' }));
@@ -156,16 +157,23 @@ describe('InventoryDownloadDialog', () => {
   });
 
   it('polls only while a job is still running', async () => {
-    const poll = (await import('../../hooks/useVisibilityPoll')).useVisibilityPoll as unknown as ReturnType<typeof vi.fn>;
+    // Pinned by the requests made as the clock runs (it read the interval
+    // handed to the mocked polling hook).
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     mocked.listReportJobs.mockResolvedValue([job(1, 'completed'), job(2, 'failed')]);
-    render(<InventoryDownloadDialog open onClose={vi.fn()} filters={{}} totalHosts={5} />);
+    const finished = render(<InventoryDownloadDialog open onClose={vi.fn()} filters={{}} totalHosts={5} />);
     await screen.findByTestId('inventory-job-1');
-    expect(poll.mock.calls[poll.mock.calls.length - 1][1]).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(mocked.listReportJobs).toHaveBeenCalledTimes(1);
+    finished.unmount();
 
+    mocked.listReportJobs.mockClear();
     mocked.listReportJobs.mockResolvedValue([job(3, 'processing')]);
     render(<InventoryDownloadDialog open onClose={vi.fn()} filters={{}} totalHosts={5} />);
     await screen.findByTestId('inventory-job-3');
-    await waitFor(() => expect(poll.mock.calls[poll.mock.calls.length - 1][1]).toBe(2500));
+    expect(mocked.listReportJobs).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(mocked.listReportJobs).toHaveBeenCalledTimes(2);
   });
 
   it('says why the JSON failed', async () => {

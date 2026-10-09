@@ -18,7 +18,7 @@ import { Link } from 'react-router-dom';
 import { Check, Loader2, Pencil, X } from 'lucide-react';
 
 import type { Proposal } from '../../services/api';
-import { ProposalDecision, useProposalDecision } from '../../hooks/useProposalDecision';
+import { type OnProposalDecided, ProposalDecision, useProposalDecision } from '../../hooks/useProposalDecision';
 import { cn } from '../../utils/cn';
 import { formatRelativeTime, formatTimestamp } from '../../utils/relativeTime';
 import { Badge } from '../ui/badge';
@@ -153,7 +153,9 @@ interface Props {
   proposal: Proposal;
   /** Analyst+ — the server still decides each accept. */
   canDecide: boolean;
-  onDecided: (updated: Proposal) => void;
+  /** What the page does on its own screen once it is decided — the reads it
+   *  changed are asked again by the decision itself (`useProposalDecision`). */
+  onDecided?: OnProposalDecided;
   /** Show the target line (the Proposals page; the finding page knows it). */
   showTarget?: boolean;
   /** Link the target line to its finding — off on the finding's own page. */

@@ -7,12 +7,14 @@
  * "findings" for what are scanner observations. It lives here now; the upload
  * dialog states it in one line and links here.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
 
 import { updateProjectIngestSettings } from '../../services/api';
 import { useProject } from '../../contexts/ProjectContext';
 import { useToast } from '../../contexts/ToastContext';
+import { GLOBAL, invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import PostureSection from '../posture/PostureSection';
 import { Label } from '../ui/label';
@@ -22,10 +24,27 @@ import { Switch } from '../ui/switch';
 export const IMPORT_SETTINGS_ANCHOR = 'imports';
 
 export const ProjectIngestSettings: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
-  const { currentProject, refreshProjects } = useProject();
+  const { currentProject } = useProject();
+  const queryClient = useQueryClient();
   const toast = useToast();
-  const [saving, setSaving] = useState(false);
-  const [pending, setPending] = useState<boolean | null>(null);
+  const save = useMutation({
+    mutationFn: ({ projectId, next }: { projectId: number; next: boolean }) =>
+      updateProjectIngestSettings(projectId, { skip_informational_findings: next }),
+    // The setting is shown from the project (`skip_informational_effective`),
+    // so the project list is read again — in place, the page stays on screen
+    // — before the save is said to be done.
+    onSuccess: async (updated, { next }) => {
+      // The server's answer first: a failed re-read must not flip the switch back.
+      queryClient.setQueryData<Array<{ id: number }>>([GLOBAL, 'getProjects'], (list) => (
+        list?.map((p) => (p.id === updated.id ? { ...p, ...updated } : p))
+      ));
+      await invalidateReads(queryClient, 'getProjects');
+      toast.success(next
+        ? 'Informational Nessus observations will be skipped on later uploads.'
+        : 'Informational Nessus observations will be kept on later uploads.');
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not save the import setting.')),
+  });
   // The upload dialog's link lands here (`#imports`); the router does not
   // scroll to a hash by itself.
   const { hash } = useLocation();
@@ -35,24 +54,10 @@ export const ProjectIngestSettings: React.FC<{ canEdit: boolean }> = ({ canEdit 
     if (hasProject && hash === `#${IMPORT_SETTINGS_ANCHOR}`) anchorRef.current?.scrollIntoView?.({ block: 'start' });
   }, [hash, hasProject]);
   if (!currentProject) return null;
-  const effective = pending ?? currentProject.skip_informational_effective ?? false;
-
-  const change = async (next: boolean) => {
-    setPending(next);
-    setSaving(true);
-    try {
-      await updateProjectIngestSettings(currentProject.id, { skip_informational_findings: next });
-      await refreshProjects();
-      toast.success(next
-        ? 'Informational Nessus observations will be skipped on later uploads.'
-        : 'Informational Nessus observations will be kept on later uploads.');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not save the import setting.'));
-    } finally {
-      setPending(null);
-      setSaving(false);
-    }
-  };
+  const saving = save.isPending;
+  // While the save is in flight the switch shows what was asked for.
+  const effective = (saving ? save.variables?.next : undefined) ?? currentProject.skip_informational_effective ?? false;
+  const change = (next: boolean) => save.mutate({ projectId: currentProject.id, next });
 
   return (
     <div id={IMPORT_SETTINGS_ANCHOR} ref={anchorRef} className="scroll-mt-24">
@@ -70,7 +75,7 @@ export const ProjectIngestSettings: React.FC<{ canEdit: boolean }> = ({ canEdit 
           <Switch
             id="skip-informational"
             checked={effective}
-            onCheckedChange={(v) => void change(v === true)}
+            onCheckedChange={(v) => change(v === true)}
             disabled={!canEdit || saving}
             aria-label="Skip informational Nessus scanner observations"
           />

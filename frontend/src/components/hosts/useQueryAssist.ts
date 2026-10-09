@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback } from 'react';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   clearHostQueryHistory,
   deleteHostQuery,
@@ -7,11 +8,11 @@ import {
   recordHostQuery,
   validateHostQuery,
   type HostQueryHistoryEntry,
-  type HostQuerySchema,
-  type HostQueryValidation,
 } from '../../services/api';
+import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 
 const DEBOUNCE_MS = 350;
+const NO_HISTORY: HostQueryHistoryEntry[] = [];
 
 /**
  * Backs the Hosts command bar: loads the DSL schema once, debounce-validates
@@ -19,109 +20,74 @@ const DEBOUNCE_MS = 350;
  * recent-queries history (list / record / delete / clear).
  *
  * Validation runs server-side (single source of truth = the parser) but never
- * blocks typing — an in-flight request is aborted when the draft changes, and
- * an empty draft short-circuits to a valid no-op without a round-trip.
+ * blocks typing — the request is keyed by the draft once typing pauses, a
+ * request for an earlier draft is dropped, and an empty draft is a valid
+ * no-op without a round-trip.
  */
 export function useQueryAssist(draft: string) {
-  const [schema, setSchema] = useState<HostQuerySchema | null>(null);
-  const [validation, setValidation] = useState<HostQueryValidation | null>(null);
+  const queryClient = useQueryClient();
+  // Non-fatal when it fails: the command bar degrades to free typing.
+  const schema = useQuery({
+    queryKey: ['getHostQuerySchema'],
+    queryFn: ({ signal }) => getHostQuerySchema(signal),
+  }).data ?? null;
+  // Best-effort: a failed read is an empty history.
+  const history = useQuery({
+    queryKey: ['listHostQueryHistory'],
+    queryFn: () => listHostQueryHistory(),
+  }).data ?? NO_HISTORY;
+
+  const trimmed = draft.trim();
+  const settled = useDebouncedValue(trimmed, DEBOUNCE_MS);
+  // The answer carries the draft it describes, so the previous one — kept on
+  // screen while the next is asked for — is never taken for the current.
+  const check = useQuery({
+    queryKey: ['validateHostQuery', settled],
+    queryFn: async ({ signal }) => ({ query: settled, validation: await validateHostQuery(settled, signal) }),
+    enabled: settled !== '',
+    placeholderData: keepPreviousData,
+  });
+  // A failed check clears any prior result too, so a failed re-validation of
+  // an already-valid draft cannot show a stale success badge beside the
+  // validation-unavailable control.
+  const answered = trimmed !== '' && !check.isError ? check.data ?? null : null;
+  const validation = answered?.validation ?? null;
   // The exact trimmed draft `validation` describes. Callers compare it to the
   // current draft so they never act on a result for a previous draft (a fast
   // typist could otherwise commit `port:` while validation still reflects a
   // valid earlier draft).
-  const [validatedQuery, setValidatedQuery] = useState<string | null>(null);
-  const [validating, setValidating] = useState(false);
+  const validatedQuery = answered?.query ?? null;
+  const validating = trimmed !== '' && (settled !== trimmed || check.isFetching);
   // True when the validate request itself failed (offline / endpoint down) —
   // distinct from "validated and invalid". Callers degrade gracefully (allow
   // explicit submit + show a Retry) instead of dead-ending the input.
-  const [validationError, setValidationError] = useState(false);
-  // Bumped by retryValidation() to re-run validation for the same draft.
-  const [retryNonce, setRetryNonce] = useState(0);
-  const [history, setHistory] = useState<HostQueryHistoryEntry[]>([]);
-  const abortRef = useRef<AbortController | null>(null);
+  const validationError = trimmed !== '' && settled === trimmed && check.isError && !check.isFetching;
+  const { refetch } = check;
+  const retryValidation = useCallback(() => { void refetch(); }, [refetch]);
 
-  useEffect(() => {
-    let active = true;
-    getHostQuerySchema()
-      .then((s) => { if (active) setSchema(s); })
-      .catch(() => { /* non-fatal: command bar degrades to free typing */ });
-    return () => { active = false; };
-  }, []);
+  // The history's writes are best-effort: a failure is not said.
+  const { mutate: record } = useMutation({
+    mutationFn: ({ q, resultCount }: { q: string; resultCount?: number | null }) => recordHostQuery(q, resultCount),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['listHostQueryHistory'] }),
+  });
+  const recordQuery = useCallback((q: string, resultCount?: number | null) => {
+    const text = q.trim();
+    if (text) record({ q: text, resultCount });
+  }, [record]);
 
-  const refreshHistory = useCallback(() => {
-    listHostQueryHistory()
-      .then(setHistory)
-      .catch(() => { /* history is best-effort */ });
-  }, []);
+  const { mutate: removeHistory } = useMutation({
+    mutationFn: (id: number) => deleteHostQuery(id),
+    onSuccess: (_done, id) => {
+      queryClient.setQueryData<HostQueryHistoryEntry[]>(
+        ['listHostQueryHistory'], (entries) => entries?.filter((h) => h.id !== id),
+      );
+    },
+  });
 
-  useEffect(() => { refreshHistory(); }, [refreshHistory]);
-
-  // Debounced validation of the draft.
-  useEffect(() => {
-    abortRef.current?.abort();
-    const trimmed = draft.trim();
-    if (!trimmed) {
-      setValidation(null);
-      setValidatedQuery(null);
-      setValidating(false);
-      setValidationError(false);
-      return;
-    }
-    setValidating(true);
-    setValidationError(false);
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const timer = setTimeout(() => {
-      validateHostQuery(trimmed, controller.signal)
-        .then((v) => {
-          if (!controller.signal.aborted) {
-            setValidation(v);
-            setValidatedQuery(trimmed);
-            setValidationError(false);
-          }
-        })
-        .catch(() => {
-          // A real failure (not an abort) — surface it so the input can offer
-          // Retry and still allow an explicit submit, rather than silently
-          // blocking commit forever because validation never went "fresh".
-          // Clear any prior result too, so a failed re-validation of an
-          // already-valid draft can't show a stale success badge alongside
-          // the validation-unavailable control.
-          if (!controller.signal.aborted) {
-            setValidation(null);
-            setValidatedQuery(null);
-            setValidationError(true);
-          }
-        })
-        .finally(() => { if (!controller.signal.aborted) setValidating(false); });
-    }, DEBOUNCE_MS);
-    return () => { clearTimeout(timer); controller.abort(); };
-  }, [draft, retryNonce]);
-
-  const retryValidation = useCallback(() => setRetryNonce((n) => n + 1), []);
-
-  const recordQuery = useCallback(async (q: string, resultCount?: number | null) => {
-    const trimmed = q.trim();
-    if (!trimmed) return;
-    try {
-      await recordHostQuery(trimmed, resultCount);
-      refreshHistory();
-    } catch { /* best-effort */ }
-  }, [refreshHistory]);
-
-  const removeHistory = useCallback(async (id: number) => {
-    try {
-      await deleteHostQuery(id);
-      setHistory((prev) => prev.filter((h) => h.id !== id));
-    } catch { /* best-effort */ }
-  }, []);
-
-  const clearHistory = useCallback(async () => {
-    try {
-      await clearHostQueryHistory();
-      setHistory([]);
-    } catch { /* best-effort */ }
-  }, []);
+  const { mutate: clearHistory } = useMutation({
+    mutationFn: () => clearHostQueryHistory(),
+    onSuccess: () => { queryClient.setQueryData<HostQueryHistoryEntry[]>(['listHostQueryHistory'], []); },
+  });
 
   return { schema, validation, validatedQuery, validating, validationError, retryValidation, history, recordQuery, removeHistory, clearHistory };
 }

@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Loader2, Tag } from 'lucide-react';
 
-import { getHostNames, HostNameBinding, HostNamesResponse } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { getHostNames, HostNameBinding } from '../services/api';
+import { queryErrorText } from '../lib/query';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { InspectorSection } from './host-inspector/InspectorSection';
@@ -52,32 +53,13 @@ const BindingRow: React.FC<{ b: HostNameBinding }> = ({ b }) => (
 );
 
 const HostNamesCard: React.FC<HostNamesCardProps> = ({ hostId }) => {
-  const [data, setData] = useState<HostNamesResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  // Same cancellation discipline as HostDnsRecordsCard: the inspector stays
-  // mounted across prev/next, so a slow response for host A must not paint
-  // into host B.
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setData(null);
-    getHostNames(hostId)
-      .then((res) => {
-        if (!cancelled) setData(res);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(formatApiError(err, 'Names could not be loaded for this host.'));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [hostId]);
+  const query = useQuery({
+    queryKey: ['getHostNames', hostId],
+    queryFn: () => getHostNames(hostId),
+  });
+  const data = query.data ?? null;
+  const loading = query.isPending;
+  const error = queryErrorText(query.error, 'Names could not be loaded for this host.');
 
   const total = (data?.current.length ?? 0) + (data?.previous?.length ?? 0) + (data?.other.length ?? 0);
   // No name was ever observed here. DNS records can still exist (or the

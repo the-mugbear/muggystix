@@ -12,15 +12,13 @@
  * bar or a zero — which would read as a clean project.  Every number opens the
  * Hosts list it counted.
  */
-import React, { useEffect, useState } from 'react';
+import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 
-import {
-  getDashboardStats, getProjectCoverage,
-  type DashboardStats, type ProjectCoverageResponse,
-} from '../../services/api';
-import { formatApiError } from '../../utils/apiErrors';
+import { getDashboardStats, getProjectCoverage } from '../../services/api';
+import { queryErrorText } from '../../lib/query';
 import { buildHostsUrl } from '../../utils/drilldownLinks';
 import { InfoTip } from '../ui/info-tip';
 import SeverityBar from '../ui/SeverityBar';
@@ -39,44 +37,25 @@ const ScopeStateLink: React.FC<{ n: number | undefined; q: string; label: string
   );
 };
 
-const ExposureSection: React.FC<{
-  /** Bumped by the page's Refresh: both halves load again. */
-  refreshKey?: number;
-}> = ({ refreshKey = 0 }) => {
-  const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [statsLoading, setStatsLoading] = useState(true);
-  const [statsError, setStatsError] = useState<string | null>(null);
-  const [coverage, setCoverage] = useState<ProjectCoverageResponse | null>(null);
-  const [coverageLoading, setCoverageLoading] = useState(true);
-  const [coverageError, setCoverageError] = useState<string | null>(null);
-  const [nonce, setNonce] = useState(0);
+const ExposureSection: React.FC = () => {
+  // Two reads, each half on its own.  The page's Refresh reaches them by
+  // name (`getDashboardStats`, `getProjectCoverage`).
+  const statsQuery = useQuery({ queryKey: ['getDashboardStats'], queryFn: () => getDashboardStats() });
+  const coverageQuery = useQuery({ queryKey: ['getProjectCoverage'], queryFn: () => getProjectCoverage() });
+  // A failed count is said BEFORE anything else below (the error branch comes
+  // first), so an old bar is never shown under it: it would read as current.
+  const stats = statsQuery.data ?? null;
+  const statsLoading = statsQuery.isFetching;
+  const statsError = queryErrorText(statsQuery.error, 'Could not load project statistics.');
+  const coverage = coverageQuery.data ?? null;
+  const coverageLoading = coverageQuery.isFetching;
+  const coverageError = queryErrorText(coverageQuery.error, 'Could not load scope coverage.');
 
-  useEffect(() => {
-    // A slower earlier load must not land on top of a newer one.
-    let current = true;
-    setStatsLoading(true);
-    setCoverageLoading(true);
-    getDashboardStats()
-      .then((s) => { if (current) { setStats(s); setStatsError(null); } })
-      .catch((e) => {
-        if (!current) return;
-        // Never keep an old bar under a failed count: it would read as current.
-        setStats(null);
-        setStatsError(formatApiError(e, 'Could not load project statistics.'));
-      })
-      .finally(() => { if (current) setStatsLoading(false); });
-    getProjectCoverage()
-      .then((c) => { if (current) { setCoverage(c); setCoverageError(null); } })
-      .catch((e) => {
-        if (!current) return;
-        setCoverage(null);
-        setCoverageError(formatApiError(e, 'Could not load scope coverage.'));
-      })
-      .finally(() => { if (current) setCoverageLoading(false); });
-    return () => { current = false; };
-  }, [refreshKey, nonce]);
-
-  const retry = () => setNonce((v) => v + 1);
+  // Retry reads both halves again, as one.
+  const retry = () => {
+    void statsQuery.refetch();
+    void coverageQuery.refetch();
+  };
   const vuln = stats?.vulnerability_stats;
   // Informational is excluded from the bar (it dwarfs real severities); the
   // bar's denominator is the non-info total so its segments fill the rail.

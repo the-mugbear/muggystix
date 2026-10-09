@@ -10,14 +10,15 @@
  * demand and is not kept: its file expires like any export, and preparing it
  * is recorded on each of the contact's hosts' timelines.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { Download, Loader2 } from 'lucide-react';
 
 import {
   downloadContactReport, getContactReport, prepareContactReport, type ContactReportFormat, type ContactReportJob,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
-import { useVisibilityPoll } from '../../hooks/useVisibilityPoll';
+import { pollEvery } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { saveBlob } from '../../utils/download';
 import { Button } from '../ui/button';
@@ -34,6 +35,9 @@ const FORMATS: Array<{ value: ContactReportFormat; label: string }> = [
 // The worker's statuses, typed: this set once held 'running', which the server
 // never sends, so a poll that landed mid-render read as a failure (5.346.0).
 const WAITING = new Set<ContactReportJob['status']>(['queued', 'processing']);
+const isWaiting = (job: ContactReportJob | null | undefined): boolean => job != null && WAITING.has(job.status);
+/** How often a job still on the worker is asked about. */
+const POLL_MS = 2000;
 
 export const RemediationContactReportDialog: React.FC<{
   contactEmail: string;
@@ -42,54 +46,39 @@ export const RemediationContactReportDialog: React.FC<{
   projectId?: number;
   projectName?: string;
   onClose: () => void;
-  /** After a list was prepared (the hosts' timelines gained an entry). */
-  onPrepared?: () => void;
-}> = ({ contactEmail, contactName, projectId, projectName, onClose, onPrepared }) => {
+}> = ({ contactEmail, contactName, projectId, projectName, onClose }) => {
   const toast = useToast();
   const [format, setFormat] = useState<ContactReportFormat>('contact-docx');
-  const [job, setJob] = useState<ContactReportJob | null>(null);
-  const [starting, setStarting] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const live = useRef(true);
-  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  // The job this dialog follows, as the worker took it.
+  const [started, setStarted] = useState<ContactReportJob | null>(null);
 
-  const waiting = job != null && WAITING.has(job.status);
+  // Asked about every two seconds while it is queued or rendering, starting
+  // from what the request answered; a finished job is not asked about again.
+  // A missed poll is tried again; a job that is gone shows on the next one.
+  const followed = useQuery({
+    queryKey: ['getContactReport', started?.id, projectId],
+    queryFn: ({ signal }) => getContactReport((started as ContactReportJob).id, projectId, signal),
+    initialData: started ?? undefined,
+    staleTime: POLL_MS,
+    enabled: (query) => started != null && isWaiting(query.state.data),
+    ...pollEvery(POLL_MS),
+  });
+  const job = started ? followed.data ?? started : null;
+  const waiting = isWaiting(job);
 
-  useVisibilityPoll(async () => {
-    if (!job) return;
-    try {
-      const next = await getContactReport(job.id, projectId);
-      if (live.current) setJob(next);
-    } catch {
-      // A missed poll is tried again; a job that is gone shows on the next one.
-    }
-  }, 2000, waiting);
+  const preparing = useMutation({
+    mutationFn: () => prepareContactReport({ contact_email: contactEmail, format }, projectId),
+    onSuccess: (job) => setStarted(job),
+    onError: (err) => toast.error(formatApiError(err, 'The list could not be prepared.')),
+  });
+  const starting = preparing.isPending;
 
-  const prepare = async () => {
-    setStarting(true);
-    try {
-      const started = await prepareContactReport({ contact_email: contactEmail, format }, projectId);
-      if (!live.current) return;
-      setJob(started);
-      onPrepared?.();
-    } catch (err) {
-      toast.error(formatApiError(err, 'The list could not be prepared.'));
-    } finally {
-      if (live.current) setStarting(false);
-    }
-  };
-
-  const download = async () => {
-    if (!job) return;
-    setSaving(true);
-    try {
-      saveBlob(await downloadContactReport(job.id, projectId), job.filename ?? 'remediation-list');
-    } catch (err) {
-      toast.error(formatApiError(err, 'The document could not be downloaded.'));
-    } finally {
-      if (live.current) setSaving(false);
-    }
-  };
+  const downloading = useMutation({
+    mutationFn: async (ready: ContactReportJob) =>
+      saveBlob(await downloadContactReport(ready.id, projectId), ready.filename ?? 'remediation-list'),
+    onError: (err) => toast.error(formatApiError(err, 'The document could not be downloaded.')),
+  });
+  const saving = downloading.isPending;
 
   const who = contactName ? `${contactName} (${contactEmail})` : contactEmail;
   // Finished without a file to download: the render failed (the worker says
@@ -112,7 +101,7 @@ export const RemediationContactReportDialog: React.FC<{
           <div className="max-w-xs">
             <Label htmlFor="rem-report-format">Format</Label>
             <Select value={format} disabled={job != null && (waiting || starting)}
-              onValueChange={(v) => { setFormat(v as ContactReportFormat); setJob(null); }}>
+              onValueChange={(v) => { setFormat(v as ContactReportFormat); setStarted(null); }}>
               <SelectTrigger id="rem-report-format"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {FORMATS.map((f) => <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>)}
@@ -146,11 +135,11 @@ export const RemediationContactReportDialog: React.FC<{
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={starting}>Close</Button>
           {job?.ready ? (
-            <Button onClick={() => void download()} disabled={saving}>
+            <Button onClick={() => downloading.mutate(job)} disabled={saving}>
               {saving ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Download className="size-4" aria-hidden />} Download
             </Button>
           ) : (
-            <Button onClick={() => void prepare()} disabled={starting || waiting}>
+            <Button onClick={() => preparing.mutate()} disabled={starting || waiting}>
               {(starting || waiting) && <Loader2 className="size-4 animate-spin" aria-hidden />}
               {failed ? 'Try again' : 'Prepare'}
             </Button>

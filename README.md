@@ -8,7 +8,7 @@ BlueStick is a network visibility and review platform for aggregating host intel
 
 - Backend: Python 3.11, FastAPI, SQLAlchemy 2.0, Alembic migrations
 - Database: PostgreSQL 16
-- Frontend: React 18, Vite, TypeScript, **Radix UI primitives + Tailwind CSS 4** (shadcn-style; MUI-free since 4.0.0), TanStack Table, lucide-react icons, cmdk command palette, sonner toasts, **Observable Plot** for charts with axes, and three.js for the address terrain on Posture (loaded lazily); small inline visuals are hand-built SVG
+- Frontend: React 18, Vite, TypeScript, **Radix UI primitives + Tailwind CSS 4** (shadcn-style; MUI-free since 4.0.0), TanStack Query (all server state) and TanStack Table, lucide-react icons, cmdk command palette, sonner toasts, **Observable Plot** for charts with axes, and three.js for the address terrain on Posture (loaded lazily); small inline visuals are hand-built SVG
 - Authentication: JWT for humans — a binary global role (admin / member) plus a per-project role (admin > analyst > auditor > viewer), TOTP 2FA enforced by default — and a per-session, project-scoped X-API-Key for agents
 - Client reports: Quarto on a dedicated report-worker container (HTML, Word, and the `.qmd` source)
 - Deployment: Docker and Docker Compose

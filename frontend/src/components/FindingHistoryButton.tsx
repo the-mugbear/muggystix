@@ -5,14 +5,12 @@
  * changed status, when, and why (the summary captured on terminal moves).
  */
 import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { History, Loader2 } from 'lucide-react';
 import { STATUS_LABEL } from '../utils/findingStatus';
 
-import {
-  getFindingHistory,
-  type FindingStatusHistoryEntry,
-} from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { getFindingHistory } from '../services/api';
+import { queryErrorText } from '../lib/query';
 import { Button } from './ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
@@ -23,24 +21,21 @@ const label = (s: string | null) => (s ? (STATUS_LABEL as Record<string, string>
 
 export const FindingHistoryButton: React.FC<{ findingId: number }> = ({ findingId }) => {
   const [open, setOpen] = React.useState(false);
-  const [rows, setRows] = React.useState<FindingStatusHistoryEntry[] | null>(null);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-
-  // Lazy-load on first open; the trail only changes when status changes.
-  const load = React.useCallback(() => {
-    setLoading(true);
-    getFindingHistory(findingId)
-      .then((r) => { setRows(r); setError(null); })
-      .catch((e) => setError(formatApiError(e, 'Failed to load history.')))
-      .finally(() => setLoading(false));
-  }, [findingId]);
+  // Read on first open and kept while the button is there: the trail only
+  // changes when the status does, and that change invalidates this query, so
+  // the next open reads it again.
+  const query = useQuery({
+    queryKey: ['getFindingHistory', findingId],
+    queryFn: () => getFindingHistory(findingId),
+    enabled: open,
+    staleTime: Infinity,
+  });
+  const rows = query.data ?? null;
+  const loading = query.isFetching;
+  const error = queryErrorText(query.error, 'Failed to load history.');
 
   return (
-    <Popover
-      open={open}
-      onOpenChange={(v) => { setOpen(v); if (v && rows === null) load(); }}
-    >
+    <Popover open={open} onOpenChange={setOpen}>
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>

@@ -7,6 +7,8 @@
  * failed count says so — plus what the move added: it loads for itself, each
  * half fails on its own, and it no longer points at Posture.
  */
+import React from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -36,8 +38,23 @@ const coverage = {
   hosts_in_subnet_scope: 128, hosts_name_scope_only: 2, hosts_outside_scope: 12,
 };
 
-const renderIt = (refreshKey = 0) => render(
-  <MemoryRouter><TooltipProvider><ExposureSection refreshKey={refreshKey} /></TooltipProvider></MemoryRouter>,
+/** The page's Refresh, as the page does it (5.351.0): it names the reads that
+ *  are out of date — there is no `refreshKey` prop to bump. */
+const PageRefresh: React.FC = () => {
+  const queryClient = useQueryClient();
+  return (
+    <button type="button" onClick={() => {
+      for (const name of ['getDashboardStats', 'getProjectCoverage']) {
+        void queryClient.invalidateQueries({ queryKey: [name] });
+      }
+    }}>
+      Refresh the page
+    </button>
+  );
+};
+
+const renderIt = () => render(
+  <MemoryRouter><TooltipProvider><PageRefresh /><ExposureSection /></TooltipProvider></MemoryRouter>,
 );
 const q = (el: HTMLElement) => new URL(el.getAttribute('href') ?? '', 'https://x').searchParams.get('q');
 
@@ -112,9 +129,10 @@ describe('Posture — scanner observations and scope', () => {
   });
 
   it('reloads when the page refreshes', async () => {
-    const { rerender } = renderIt(0);
+    renderIt();
     await screen.findByText('Scope');
-    rerender(<MemoryRouter><TooltipProvider><ExposureSection refreshKey={1} /></TooltipProvider></MemoryRouter>);
+    await screen.findByText(/187 observations/);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh the page' }));
     await waitFor(() => expect(mocked.getDashboardStats).toHaveBeenCalledTimes(2));
     expect(mocked.getProjectCoverage).toHaveBeenCalledTimes(2);
   });

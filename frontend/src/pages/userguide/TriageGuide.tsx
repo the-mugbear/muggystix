@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { ServerCog, SearchCode, ShieldAlert, Gauge, MessagesSquare } from 'lucide-react';
 import {
   Table,
@@ -9,7 +10,7 @@ import {
   TableRow,
 } from '../../components/ui/table';
 import { Alert, AlertDescription } from '../../components/ui/alert';
-import { getHostQuerySchema, type HostQuerySchema } from '../../services/api';
+import { getHostQuerySchema } from '../../services/api';
 import {
   UserGuideShell,
   GuidePage,
@@ -26,16 +27,10 @@ import {
 // deployment with no project selected the fetch fails and we point the reader
 // at the in-page syntax help instead.
 const DslFieldReference: React.FC = () => {
-  const [schema, setSchema] = useState<HostQuerySchema | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    getHostQuerySchema()
-      .then((s) => { if (active) setSchema(s); })
-      .catch(() => { if (active) setFailed(true); });
-    return () => { active = false; };
-  }, []);
+  const { data: schema, isError: failed } = useQuery({
+    queryKey: ['getHostQuerySchema'],
+    queryFn: ({ signal }) => getHostQuerySchema(signal),
+  });
 
   if (failed) {
     return (

@@ -68,13 +68,13 @@ const AgentTaskDialog: React.FC<{ instruction: string; onClose: () => void }> = 
   instruction,
   onClose,
 }) => {
-  const { sessions, refresh } = useMyAssistSessions();
+  // (A session started or ended in the dialog invalidates this read itself.)
+  const { sessions } = useMyAssistSessions();
   return (
     <StartAssistDialog
       open
       onOpenChange={(next) => { if (!next) onClose(); }}
       mySessions={sessions}
-      onSessionsChanged={refresh}
       instruction={instruction}
     />
   );

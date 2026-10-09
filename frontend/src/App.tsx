@@ -1,6 +1,8 @@
 import React, { Suspense, lazy } from 'react';
 import { Routes, Route, Navigate, useLocation, matchPath } from 'react-router-dom';
 import { TooltipProvider } from '@radix-ui/react-tooltip';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { queryClient } from './lib/query';
 import { CustomThemeProvider } from './contexts/ThemeContext';
 import { AuthProvider } from './contexts/AuthContext';
 import { ProjectProvider } from './contexts/ProjectContext';
@@ -156,10 +158,10 @@ function RoutedErrorBoundary({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   // The pathname key also REMOUNTS the page on every navigation between
   // routes — /findings/3 → /findings/4 is a fresh FindingDetail, not the same
-  // instance with a new id.  Detail pages rely on that for stale-response
-  // safety (a late response for #3 has no mounted component to write into);
-  // if this key ever goes, each of them needs a latest-request guard
-  // (hooks/useLatestRequest, hooks/useListQuery) first.
+  // instance with a new id — so a page's LOCAL state (an open dialog, a
+  // draft) never follows the reader to another record.  Its data does not
+  // depend on this: a record's reads are keyed by the record (lib/query), so
+  // a late answer for #3 has no query to land in.
   return (
     <ErrorBoundary key={location.pathname} scope="route">
       {children}
@@ -169,6 +171,7 @@ function RoutedErrorBoundary({ children }: { children: React.ReactNode }) {
 
 function App() {
   return (
+    <QueryClientProvider client={queryClient}>
     <CustomThemeProvider>
       <ToastProvider>
         <AuthProvider>
@@ -754,6 +757,7 @@ function App() {
         </AuthProvider>
       </ToastProvider>
     </CustomThemeProvider>
+    </QueryClientProvider>
   );
 }
 

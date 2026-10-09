@@ -8,8 +8,6 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider, useSearchParams } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../hooks/useVisibilityPoll', () => ({ useVisibilityPoll: vi.fn() }));
-
 import type { ListPage, ListPageRequest } from '../../hooks/useListQuery';
 import { usePagedList } from '../../hooks/usePagedList';
 import { pageFromParams, useUrlPage } from '../../hooks/useUrlPage';
@@ -25,7 +23,7 @@ let list!: ReturnType<typeof usePagedList<Row>>;
 const Page: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   const [params] = useSearchParams();
   const filter = params.get('f') ?? 'a';
-  list = usePagedList<Row>((req) => fetchRows(filter, req), [filter, refreshKey], { page: useUrlPage() });
+  list = usePagedList<Row>('getRows', (req) => fetchRows(filter, req), [filter, refreshKey], { page: useUrlPage() });
   return <p data-testid="first">{list.rows ? `${list.rows[0]?.filter}:${list.rows[0]?.id}` : 'loading'}</p>;
 };
 
@@ -103,7 +101,7 @@ describe('usePagedList — the page in the address', () => {
       total: size,
     }));
     const Shrinking: React.FC = () => {
-      list = usePagedList<Row>(shrinking, ['s'], { page: useUrlPage() });
+      list = usePagedList<Row>('getShrinking', shrinking, ['s'], { page: useUrlPage() });
       return <p data-testid="first">{list.rows ? String(list.rows[0]?.id ?? 'none') : 'loading'}</p>;
     };
     const { router } = open('/list?page=3', <Shrinking />);

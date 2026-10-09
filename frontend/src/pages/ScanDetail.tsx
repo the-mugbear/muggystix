@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, Computer, Shield, Terminal, ExternalLink, RefreshCw, Upload, Globe } from 'lucide-react';
 import { getScan, getScans, getHostsByScan, getScanDnsRecords, getScanHostSnapshots } from '../services/api';
@@ -22,7 +23,7 @@ import {
   TableRow,
 } from '../components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
-import { formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
 import { formatHostForUrl } from '../utils/webLinks';
 import { ScanTimeSourceNote } from '../components/scans/ScanTimeCells';
 import ScannedPorts from '../components/scans/ScannedPorts';
@@ -74,58 +75,45 @@ const ScanDetail: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const fromHost = (location.state as { fromHost?: { id: number; ip: string } } | null)?.fromHost;
-  const [scan, setScan] = useState<any>(null);
-  const [hosts, setHosts] = useState<ScanHost[]>([]);
-  const [snapshots, setSnapshots] = useState<ScanHostSnapshot[]>([]);
   // Which record the Hosts tab shows. Defaults to the scan's own record —
   // this page is a scan artifact, and rendering current inventory under
   // "this scan recorded" is what made it unreliable as evidence (v5.184.0).
   const [hostView, setHostView] = useState<'as_scanned' | 'current'>('as_scanned');
-  const [dnsRecords, setDnsRecords] = useState<DNSRecord[]>([]);
-  const [dnsTotal, setDnsTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState('hosts');
-  // Audit FBK·H8 — reload nonce drives the fetch effect so the Retry
-  // button on the error path can re-run the same load without a full
-  // route re-mount.
-  const [reloadNonce, setReloadNonce] = useState(0);
-  const [summaryRow, setSummaryRow] = useState<ScanSummaryRow | null>(null);
 
-  useEffect(() => {
-    if (!scanId) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    Promise.all([
-      getScan(parseInt(scanId)),
-      getHostsByScan(parseInt(scanId)),
-      getScanDnsRecords(parseInt(scanId)),
-      getScanHostSnapshots(parseInt(scanId)),
-      // v5.222.0 — the inventory's per-scan summary (hosts added, conflicts,
-      // import quality) for the Import result card; not fatal if it fails.
-      getScans(0, 1, { ids: [parseInt(scanId)] }).catch(() => [] as ScanSummaryRow[]),
-    ])
-      .then(([s, h, dns, snaps, rows]) => {
-        if (!cancelled) {
-          setScan(s);
-          setHosts(h);
-          setDnsRecords(dns.items);
-          setDnsTotal(dns.total);
-          setSnapshots(snaps.items);
-          setSummaryRow(rows[0] ?? null);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) setError(formatApiError(err, 'Failed to load scan details.'));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [scanId, reloadNonce]);
+  // The page is four reads, shown together: the scan, its hosts as they are
+  // now, the names it resolved and what it recorded per host.
+  const id = scanId ? parseInt(scanId) : NaN;
+  const known = !Number.isNaN(id);
+  const scanQuery = useQuery({ queryKey: ['getScan', id], queryFn: () => getScan(id), enabled: known });
+  const hostsQuery = useQuery({ queryKey: ['getHostsByScan', id], queryFn: () => getHostsByScan(id), enabled: known });
+  const dnsQuery = useQuery({ queryKey: ['getScanDnsRecords', id], queryFn: () => getScanDnsRecords(id), enabled: known });
+  const snapshotsQuery = useQuery({
+    queryKey: ['getScanHostSnapshots', id], queryFn: () => getScanHostSnapshots(id), enabled: known,
+  });
+  // v5.222.0 — the inventory's per-scan summary (hosts added, conflicts,
+  // import quality) for the Import result card; not fatal if it fails.
+  const summaryQuery = useQuery({
+    queryKey: ['getScans', { ids: [id] }, { limit: 1 }],
+    queryFn: ({ signal }) => getScans(0, 1, { ids: [id], signal }),
+    enabled: known,
+  });
+  const required = [scanQuery, hostsQuery, dnsQuery, snapshotsQuery];
+  const failed = required.find((q) => q.isError);
+  const error = queryErrorText(failed?.error, 'Failed to load scan details.');
+  // The summary is waited for too, so the page appears whole.
+  const loading = !error && (required.some((q) => q.isPending) || summaryQuery.isPending);
+  const retry = () => {
+    for (const q of [...required, summaryQuery]) void q.refetch();
+  };
+
+  // `getScan` is untyped in the client.
+  const scan: any = scanQuery.data ?? null;
+  const hosts: ScanHost[] = hostsQuery.data ?? [];
+  const snapshots: ScanHostSnapshot[] = snapshotsQuery.data?.items ?? [];
+  const dnsRecords: DNSRecord[] = dnsQuery.data?.items ?? [];
+  const dnsTotal = dnsQuery.data?.total ?? 0;
+  const summaryRow: ScanSummaryRow | null = summaryQuery.data?.[0] ?? null;
 
   if (loading) {
     return <DetailSkeleton />;
@@ -137,9 +125,9 @@ const ScanDetail: React.FC = () => {
           <AlertDescription>{error}</AlertDescription>
         </Alert>
         <div className="flex flex-wrap gap-xs">
-          {/* Audit FBK·H8 — Retry re-runs the same fetch via the
-              reload-nonce dep without forcing a route remount. */}
-          <Button size="sm" variant="outline" onClick={() => setReloadNonce((n) => n + 1)}>
+          {/* Audit FBK·H8 — Retry re-runs the same reads without forcing a
+              route remount. */}
+          <Button size="sm" variant="outline" onClick={retry}>
             <RefreshCw className="size-4" aria-hidden /> Retry
           </Button>
           <Button onClick={() => navigate('/scans')}>Back to Scans</Button>

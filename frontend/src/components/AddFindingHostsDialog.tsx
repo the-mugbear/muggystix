@@ -6,11 +6,12 @@
  * across several queries before adding.
  */
 import React, { useEffect, useMemo, useState } from 'react';
+import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query';
 import { Loader2, RefreshCw, Search, X } from 'lucide-react';
 
 import { Finding, Host, addFindingHosts, getHosts } from '../services/api';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
-import { formatApiError } from '../utils/apiErrors';
+import { queryErrorText } from '../lib/query';
 import { Button } from './ui/button';
 import { Checkbox } from './ui/checkbox';
 import {
@@ -37,40 +38,40 @@ export interface AddFindingHostsDialogProps {
 const AddFindingHostsDialog: React.FC<AddFindingHostsDialogProps> = ({ open, onOpenChange, finding, onAdded }) => {
   const [query, setQuery] = useState('');
   const debounced = useDebouncedValue(query.trim(), 250);
-  const [results, setResults] = useState<Host[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [reload, setReload] = useState(0);
   const [picked, setPicked] = useState<Map<number, Picked>>(new Map());
-  const [saving, setSaving] = useState(false);
 
   const attached = useMemo(() => new Set(finding.hosts.map((h) => h.host_id)), [finding.hosts]);
+
+  // The rows of the previous search stay while the next one is read.
+  const search = useQuery({
+    queryKey: ['getHosts', { search: debounced || undefined, limit: PAGE, include_total: false }],
+    queryFn: ({ signal }) => getHosts({ search: debounced || undefined, limit: PAGE, include_total: false }, signal),
+    enabled: open,
+    placeholderData: keepPreviousData,
+  });
+  const results: Host[] = search.data?.items ?? [];
+  const loading = search.isFetching;
+
+  const add = useMutation({
+    mutationFn: (ids: number[]) => addFindingHosts(finding.id, ids),
+    onSuccess: (updated, ids) => {
+      onAdded(updated, ids);
+      onOpenChange(false);
+    },
+  });
+  const saving = add.isPending;
+  const resetAdd = add.reset;
+  // One line for what went wrong: the add that was refused, else the search.
+  const error = queryErrorText(add.error, 'The hosts could not be added.')
+    ?? queryErrorText(search.error, 'Hosts could not be searched.');
 
   // A fresh dialog each time it opens.
   useEffect(() => {
     if (!open) return;
     setQuery('');
     setPicked(new Map());
-    setError(null);
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const controller = new AbortController();
-    setLoading(true);
-    setError(null);
-    getHosts({ search: debounced || undefined, limit: PAGE, include_total: false }, controller.signal)
-      .then((r) => setResults(r.items ?? []))
-      .catch((err) => {
-        const e = err as { code?: string; name?: string };
-        if (e?.code === 'ERR_CANCELED' || e?.name === 'CanceledError') return;
-        setError(formatApiError(err, 'Hosts could not be searched.'));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
-      });
-    return () => controller.abort();
-  }, [open, debounced, reload]);
+    resetAdd();
+  }, [open, resetAdd]);
 
   const toggle = (h: Host) => {
     setPicked((prev) => {
@@ -81,19 +82,9 @@ const AddFindingHostsDialog: React.FC<AddFindingHostsDialogProps> = ({ open, onO
     });
   };
 
-  const submit = async () => {
+  const submit = () => {
     if (picked.size === 0 || saving) return;
-    const ids = [...picked.keys()];
-    setSaving(true);
-    try {
-      const updated = await addFindingHosts(finding.id, ids);
-      onAdded(updated, ids);
-      onOpenChange(false);
-    } catch (err) {
-      setError(formatApiError(err, 'The hosts could not be added.'));
-    } finally {
-      setSaving(false);
-    }
+    add.mutate([...picked.keys()]);
   };
 
   return (
@@ -113,7 +104,8 @@ const AddFindingHostsDialog: React.FC<AddFindingHostsDialogProps> = ({ open, onO
             className="pl-xl"
             placeholder="Search by IP address or hostname…"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            // A new search starts clean: a refused add is no longer what the list says.
+            onChange={(e) => { setQuery(e.target.value); resetAdd(); }}
             aria-label="Search hosts"
           />
         </div>
@@ -144,7 +136,7 @@ const AddFindingHostsDialog: React.FC<AddFindingHostsDialogProps> = ({ open, onO
           {error ? (
             <div className="flex flex-wrap items-center gap-sm py-md">
               <p className="min-w-0 break-words text-caption text-destructive">{error}</p>
-              <Button variant="outline" size="sm" onClick={() => setReload((n) => n + 1)}>
+              <Button variant="outline" size="sm" onClick={() => { resetAdd(); void search.refetch(); }}>
                 <RefreshCw className="size-4" aria-hidden /> Retry
               </Button>
             </div>
@@ -189,7 +181,7 @@ const AddFindingHostsDialog: React.FC<AddFindingHostsDialogProps> = ({ open, onO
 
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>Cancel</Button>
-          <Button onClick={() => void submit()} disabled={picked.size === 0 || saving}>
+          <Button onClick={submit} disabled={picked.size === 0 || saving}>
             {saving && <Loader2 className="size-4 animate-spin" aria-hidden />}
             {picked.size === 0 ? 'Add hosts' : `Add ${picked.size} host${picked.size === 1 ? '' : 's'}`}
           </Button>

@@ -6,11 +6,12 @@
  * out and they carry no client data the redaction knew about.
  */
 import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
-import { getUninterpretedLines, type UninterpretedLines as Receipt } from '../../services/api';
+import { getUninterpretedLines } from '../../services/api';
+import { queryErrorText } from '../../lib/query';
 import { copyToClipboard } from '../../utils/clipboard';
-import { asAxiosError, formatApiError } from '../../utils/apiErrors';
 import { Badge } from '../ui/badge';
 
 const KIND_LABEL: Record<string, { label: string; hint: string }> = {
@@ -32,20 +33,19 @@ interface Props {
 
 const UninterpretedLines: React.FC<Props> = ({ jobId, total, distinct, formatKey }) => {
   const [open, setOpen] = useState(false);
-  const [receipt, setReceipt] = useState<Receipt | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Read when first opened and once: a finished job's shapes do not change.
+  // Opening again after a failure asks again.
+  const lines = useQuery({
+    queryKey: ['getUninterpretedLines', jobId],
+    queryFn: () => getUninterpretedLines(jobId),
+    enabled: open,
+    staleTime: Infinity,
+  });
+  const receipt = lines.data ?? null;
+  const error = queryErrorText(lines.error, 'The lines could not be loaded');
 
-  const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    if (next && !receipt) {
-      setError(null);
-      getUninterpretedLines(jobId)
-        .then(setReceipt)
-        .catch((err) => setError(formatApiError(asAxiosError(err), 'The lines could not be loaded')));
-    }
-  };
+  const toggle = () => setOpen((was) => !was);
 
   const copyAll = async () => {
     if (!receipt) return;

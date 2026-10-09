@@ -118,9 +118,14 @@ def validate_password_strength(password: str) -> Dict[str, Any]:
 
 def create_access_token(
     data: Dict[str, Any],
-    expires_delta: Optional[timedelta] = None
+    expires_delta: Optional[timedelta] = None,
+    jti: Optional[str] = None,
 ) -> str:
-    """Create JWT access token"""
+    """Create JWT access token.
+
+    ``jti`` names the session row the token belongs to; a new one is made
+    unless a renewal passes the session's own (``renew_session``).
+    """
     to_encode = data.copy()
 
     if expires_delta:
@@ -131,7 +136,7 @@ def create_access_token(
     to_encode.update({
         "exp": expire,
         "iat": datetime.now(timezone.utc),
-        "jti": secrets.token_urlsafe(16)  # JWT ID for session tracking
+        "jti": jti or secrets.token_urlsafe(16)  # JWT ID for session tracking
     })
 
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=ALGORITHM)
@@ -421,6 +426,34 @@ def create_session(
     db.refresh(session)
 
     return session
+
+
+def renew_session(db: Session, user: User, token_jti: str) -> Optional[str]:
+    """Start the session's lifetime again from now; the new token, or None.
+
+    A session ends ``ACCESS_TOKEN_EXPIRE_MINUTES`` after it was last renewed,
+    and this is the one place that renews it.  The row keeps its ``jti``, so
+    the token returned here and the one it replaces are the same session:
+    revoking it ends both, and the list of sessions shows one row.  None when
+    the session is revoked or already over — a renewal never revives one.
+    """
+    now = datetime.now(timezone.utc)
+    session = db.query(UserSession).filter(
+        UserSession.token_jti == token_jti,
+        UserSession.user_id == user.id,
+        UserSession.revoked_at.is_(None),
+        UserSession.expires_at > now,
+    ).with_for_update().first()
+    if session is None:
+        return None
+
+    session.expires_at = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    session.last_activity = now
+    db.commit()
+    return create_access_token(
+        data={"sub": str(user.id), "username": user.username, "role": user.role},
+        jti=token_jti,
+    )
 
 
 def revoke_session(db: Session, token_jti: str, reason: str = "logout"):

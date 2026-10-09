@@ -5,18 +5,19 @@
  * remove) via the existing /projects/{id}/members endpoints.
  */
 import React from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, RefreshCw, Trash2, UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
 
 import {
   ProjectMember,
-  UserDirectoryEntry,
   getProjectMembers,
   getUserDirectory,
   addProjectMember,
   updateProjectMemberRole,
   removeProjectMember,
 } from '../services/api';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import {
   SideSheet,
@@ -44,80 +45,84 @@ export interface ProjectMembersSheetProps {
   canManage: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Called after the roster changes so the caller can refresh counts. */
-  onChanged?: () => void;
 }
 
 export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
-  projectId, projectName, canManage, open, onOpenChange, onChanged,
+  projectId, projectName, canManage, open, onOpenChange,
 }) => {
-  const [members, setMembers] = React.useState<ProjectMember[] | null>(null);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const [busyUserId, setBusyUserId] = React.useState<number | null>(null);
+  const queryClient = useQueryClient();
   const [confirmDialog, confirm] = useConfirm();
-
-  const [directory, setDirectory] = React.useState<UserDirectoryEntry[]>([]);
   const [addUserId, setAddUserId] = React.useState<string>('');
   const [addRole, setAddRole] = React.useState<string>('viewer');
-  const [adding, setAdding] = React.useState(false);
 
-  const load = React.useCallback(async () => {
-    if (projectId == null) return;
-    setLoading(true);
-    setError(null);
-    try {
-      setMembers(await getProjectMembers(projectId));
-      if (canManage) {
-        try { setDirectory(await getUserDirectory()); } catch { /* picker optional */ }
-      }
-    } catch (err) {
-      setError(formatApiError(err, 'Failed to load members.'));
-      setMembers(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [projectId, canManage]);
-
-  React.useEffect(() => {
-    if (open && projectId != null) load();
-  }, [open, projectId, load]);
+  // The project is this sheet's argument (any project on Portfolio), not the
+  // one the app is in — so it is in the key, and the key is GLOBAL.
+  const roster = useQuery({
+    queryKey: [GLOBAL, 'getProjectMembers', projectId],
+    queryFn: () => getProjectMembers(projectId as number),
+    enabled: open && projectId != null,
+  });
+  // The picker is optional: asked for once the roster is there, and a failure
+  // leaves it empty.
+  const users = useQuery({
+    queryKey: [GLOBAL, 'getUserDirectory'],
+    queryFn: () => getUserDirectory(),
+    enabled: open && projectId != null && canManage && roster.isSuccess,
+  });
+  const members = roster.data ?? null;
+  const loading = roster.isFetching || users.isFetching;
+  const error = queryErrorText(roster.error, 'Failed to load members.');
+  const load = () => { void roster.refetch(); };
 
   const memberIds = new Set((members ?? []).map((m) => m.user_id));
-  const available = directory.filter((u) => !memberIds.has(u.id));
+  const available = (users.data ?? []).filter((u) => !memberIds.has(u.id));
 
-  const handleAdd = async () => {
-    if (projectId == null || !addUserId) return;
-    setAdding(true);
-    try {
-      await addProjectMember(projectId, Number(addUserId), addRole);
+  // Who is on a project is shown here, in the pickers of that project
+  // (`listProjectMembers`, the roster hook's key) and as Portfolio's count.
+  const rosterChanged = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: [GLOBAL, 'getProjectMembers'] }),
+    queryClient.invalidateQueries({ queryKey: ['listProjectMembers'] }),
+    queryClient.invalidateQueries({ queryKey: [GLOBAL, 'getPortfolioDashboard'] }),
+  ]);
+
+  const adding = useMutation({
+    mutationFn: (body: { userId: number; role: string }) =>
+      addProjectMember(projectId as number, body.userId, body.role),
+    onSuccess: () => {
       setAddUserId('');
       setAddRole('viewer');
       toast.success('Member added.');
-      await load();
-      onChanged?.();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to add member.'));
-    } finally {
-      setAdding(false);
-    }
+      return rosterChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to add member.')),
+  });
+  const handleAdd = () => {
+    if (projectId == null || !addUserId) return;
+    adding.mutate({ userId: Number(addUserId), role: addRole });
   };
 
-  const handleRole = async (m: ProjectMember, role: string) => {
-    if (projectId == null || role === m.role) return;
-    setBusyUserId(m.user_id);
-    try {
-      await updateProjectMemberRole(projectId, m.user_id, role);
+  const changingRole = useMutation({
+    mutationFn: (body: { userId: number; role: string }) =>
+      updateProjectMemberRole(projectId as number, body.userId, body.role),
+    onSuccess: () => {
       toast.success('Role updated.');
-      await load();
-      onChanged?.();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update role.'));
-    } finally {
-      setBusyUserId(null);
-    }
+      return rosterChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to update role.')),
+  });
+  const handleRole = (m: ProjectMember, role: string) => {
+    if (projectId == null || role === m.role) return;
+    changingRole.mutate({ userId: m.user_id, role });
   };
 
+  const removing = useMutation({
+    mutationFn: (userId: number) => removeProjectMember(projectId as number, userId),
+    onSuccess: () => {
+      toast.success('Member removed.');
+      return rosterChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to remove member.')),
+  });
   const handleRemove = async (m: ProjectMember) => {
     if (projectId == null) return;
     const who = m.full_name || m.username || 'this member';
@@ -129,18 +134,11 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
       confirmLabel: 'Remove',
     });
     if (!ok) return;
-    setBusyUserId(m.user_id);
-    try {
-      await removeProjectMember(projectId, m.user_id);
-      toast.success('Member removed.');
-      await load();
-      onChanged?.();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to remove member.'));
-    } finally {
-      setBusyUserId(null);
-    }
+    removing.mutate(m.user_id);
   };
+  const busyUserId = changingRole.isPending
+    ? changingRole.variables.userId
+    : removing.isPending ? removing.variables : null;
 
   return (
     <>
@@ -197,7 +195,7 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
                         </SelectContent>
                       </Select>
                     </div>
-                    <Button size="sm" onClick={handleAdd} disabled={!addUserId || adding}>
+                    <Button size="sm" onClick={handleAdd} disabled={!addUserId || adding.isPending}>
                       <UserPlus className="size-4" aria-hidden /> Add
                     </Button>
                   </div>

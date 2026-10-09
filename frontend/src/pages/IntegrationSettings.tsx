@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Plus,
   Pencil,
@@ -23,6 +24,7 @@ import {
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
+import { GLOBAL, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
 import { Button } from '../components/ui/button';
@@ -112,15 +114,32 @@ const IntegrationSettings: React.FC = () => {
   const canManage = useAuth().user?.role === 'admin';
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
-  const [integrations, setIntegrations] = useState<IntegrationEntry[]>([]);
-  const [types, setTypes] = useState<Array<{ value: string; label: string }>>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  // Integrations are the installation's, not a project's (nothing here asks
+  // for one project's): the keys are GLOBAL.
+  const integrationsQuery = useQuery({
+    queryKey: [GLOBAL, 'listIntegrations'],
+    queryFn: () => listIntegrations(),
+  });
+  const typesQuery = useQuery({
+    queryKey: [GLOBAL, 'listIntegrationTypes'],
+    queryFn: () => listIntegrationTypes(),
+  });
+  const integrations: IntegrationEntry[] = integrationsQuery.data ?? [];
+  const types: Array<{ value: string; label: string }> = typesQuery.data ?? [];
+  const loading = integrationsQuery.isFetching || typesQuery.isFetching;
+  const error = loading
+    ? null
+    : queryErrorText(integrationsQuery.error ?? typesQuery.error, 'Failed to load integrations.');
+  // A failed load is said on the page and as a toast (once per attempt: the
+  // message is gone while the next one is in flight).
+  useEffect(() => {
+    if (error) toast.error(error);
+  }, [error, toast]);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<IntegrationEntry | null>(null);
   const [form, setForm] = useState<IntegrationCreatePayload>(emptyForm);
-  const [saving, setSaving] = useState(false);
   // Nessus-only: operator-supplied license cap (hosts per registered
   // Nessus scan).  Stored on save in `extra_config.max_hosts_per_scan`
   // so the agent prompt's Nessus block can steer the agent to chunk
@@ -134,27 +153,6 @@ const IntegrationSettings: React.FC = () => {
   // Cleared whenever the form changes so a stale "ok" doesn't outlast
   // the input it referred to.
   const [testResult, setTestResult] = useState<IntegrationTestResult | null>(null);
-  const [testing, setTesting] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [list, t] = await Promise.all([listIntegrations(), listIntegrationTypes()]);
-      setIntegrations(list);
-      setTypes(t);
-    } catch (err: unknown) {
-      const msg = formatApiError(err, 'Failed to load integrations.');
-      setError(msg);
-      toast.error(msg);
-    } finally {
-      setLoading(false);
-    }
-  }, [toast]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   // Invalidate any prior test result the moment the form changes —
   // an "ok" result that refers to a base_url the user has since
@@ -213,38 +211,34 @@ const IntegrationSettings: React.FC = () => {
    *  `POST /integrations/test`; result renders inline below the Test
    *  button regardless of outcome (the endpoint always returns 200
    *  with a tri-state `ok` field). */
-  const handleTestConnection = async () => {
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const payload: IntegrationCreatePayload = {
-        ...form,
-        base_url: form.base_url || undefined,
-        secret: form.secret || undefined,
-        secret2: form.secret2 || undefined,
-        extra_config: buildExtraConfig(),
-      };
-      const result = await testIntegrationConfig(payload);
-      setTestResult(result);
-    } catch (err: unknown) {
-      // Network-level failure (e.g. the test endpoint itself errored).
-      // Render as a failure so the user still sees something actionable.
-      setTestResult({
-        ok: false,
-        integration_type: form.integration_type,
-        message: formatApiError(err, 'Test request failed.'),
-        duration_ms: 0,
-      });
-    } finally {
-      setTesting(false);
-    }
-  };
+  const connectionTest = useMutation({
+    mutationFn: (payload: IntegrationCreatePayload) => testIntegrationConfig(payload),
+    onMutate: () => setTestResult(null),
+    onSuccess: (result) => setTestResult(result),
+    // Network-level failure (e.g. the test endpoint itself errored).
+    // Render as a failure so the user still sees something actionable.
+    onError: (err, payload) => setTestResult({
+      ok: false,
+      integration_type: payload.integration_type,
+      message: formatApiError(err, 'Test request failed.'),
+      duration_ms: 0,
+    }),
+  });
+  const testing = connectionTest.isPending;
+  const handleTestConnection = () => connectionTest.mutate({
+    ...form,
+    base_url: form.base_url || undefined,
+    secret: form.secret || undefined,
+    secret2: form.secret2 || undefined,
+    extra_config: buildExtraConfig(),
+  });
 
-  const handleSave = async () => {
-    setSaving(true);
-    try {
+  const integrationsChanged = () => queryClient.invalidateQueries({ queryKey: [GLOBAL, 'listIntegrations'] });
+
+  const save = useMutation({
+    mutationFn: async (target: IntegrationEntry | null): Promise<'updated' | 'added'> => {
       const extraConfig = buildExtraConfig();
-      if (editing) {
+      if (target) {
         const payload: any = {
           name: form.name,
           base_url: form.base_url || null,
@@ -253,26 +247,48 @@ const IntegrationSettings: React.FC = () => {
         if (form.secret) payload.secret = form.secret;
         if (form.secret2) payload.secret2 = form.secret2;
         if (extraConfig) payload.extra_config = extraConfig;
-        await updateIntegration(editing.id, payload);
-        toast.success('Integration updated.');
-      } else {
-        await createIntegration({
-          ...form,
-          base_url: form.base_url || undefined,
-          secret: form.secret || undefined,
-          secret2: form.secret2 || undefined,
-          extra_config: extraConfig,
-        });
-        toast.success('Integration added.');
+        await updateIntegration(target.id, payload);
+        return 'updated';
       }
+      await createIntegration({
+        ...form,
+        base_url: form.base_url || undefined,
+        secret: form.secret || undefined,
+        secret2: form.secret2 || undefined,
+        extra_config: extraConfig,
+      });
+      return 'added';
+    },
+    onSuccess: (outcome) => {
+      toast.success(outcome === 'updated' ? 'Integration updated.' : 'Integration added.');
       setDialogOpen(false);
-      await load();
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to save integration.'));
-    } finally {
-      setSaving(false);
-    }
-  };
+      return integrationsChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to save integration.')),
+  });
+  const saving = save.isPending;
+  const handleSave = () => save.mutate(editing);
+
+  // The edit dialog's "clear" beside a stored secret: removed at once, not on Save.
+  const clearSecret = useMutation({
+    mutationFn: ({ id, which }: { id: number; which: 'secret' | 'secret2' }) =>
+      updateIntegration(id, which === 'secret' ? { clear_secret: true } : { clear_secret2: true }),
+    onSuccess: (_updated, { which }) => {
+      toast.success(which === 'secret' ? 'Primary secret cleared.' : 'Secondary secret cleared.');
+      setForm((f) => ({ ...f, [which]: '' }));
+      return integrationsChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to clear secret.')),
+  });
+
+  const remove = useMutation({
+    mutationFn: (r: IntegrationEntry) => deleteIntegration(r.id),
+    onSuccess: () => {
+      toast.success('Integration deleted.');
+      return integrationsChanged();
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Failed to delete integration.')),
+  });
 
   const handleDelete = async (r: IntegrationEntry) => {
     const ok = await confirm({
@@ -283,13 +299,7 @@ const IntegrationSettings: React.FC = () => {
       confirmLabel: 'Delete',
     });
     if (!ok) return;
-    try {
-      await deleteIntegration(r.id);
-      toast.success('Integration deleted.');
-      await load();
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to delete integration.'));
-    }
+    remove.mutate(r);
   };
 
   const labels = SECRET_LABELS[form.integration_type] || SECRET_LABELS.generic_api;
@@ -467,16 +477,7 @@ const IntegrationSettings: React.FC = () => {
                 onChange={(e) => setForm((f) => ({ ...f, secret: e.target.value }))}
                 onClear={
                   editing && editing.has_secret
-                    ? async () => {
-                        try {
-                          await updateIntegration(editing.id, { clear_secret: true });
-                          toast.success('Primary secret cleared.');
-                          setForm((f) => ({ ...f, secret: '' }));
-                          await load();
-                        } catch (err: unknown) {
-                          toast.error(formatApiError(err, 'Failed to clear secret.'));
-                        }
-                      }
+                    ? () => clearSecret.mutate({ id: editing.id, which: 'secret' })
                     : undefined
                 }
                 clearTooltip="Remove the stored primary secret"
@@ -494,16 +495,7 @@ const IntegrationSettings: React.FC = () => {
                   onChange={(e) => setForm((f) => ({ ...f, secret2: e.target.value }))}
                   onClear={
                     editing && editing.has_secret2
-                      ? async () => {
-                          try {
-                            await updateIntegration(editing.id, { clear_secret2: true });
-                            toast.success('Secondary secret cleared.');
-                            setForm((f) => ({ ...f, secret2: '' }));
-                            await load();
-                          } catch (err: unknown) {
-                            toast.error(formatApiError(err, 'Failed to clear secret.'));
-                          }
-                        }
+                      ? () => clearSecret.mutate({ id: editing.id, which: 'secret2' })
                       : undefined
                   }
                   clearTooltip="Remove the stored secondary secret"
