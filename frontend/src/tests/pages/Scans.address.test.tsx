@@ -137,6 +137,18 @@ describe('Scans — the filters are the address (real router)', () => {
     expect(historyAsked()).toHaveLength(1);
   });
 
+  // Found walking the rebuild (2026-10-09): the list matches a tool whatever
+  // its case, but the select's options carry the server's spelling (`NMAP`),
+  // so a link written `?tool=nmap` filtered the list under a BLANK select.
+  it('a tool named in another case shows in the select, and the address is left as written', async () => {
+    const router = open('/scans?tool=nmap');
+    await screen.findByText('newest.xml');
+    expect(toolChooser()).toHaveTextContent('nmap (3)');
+    expect(lastOf(historyAsked())).toMatchObject({ tool: 'nmap' });
+    await settle();
+    expect(router.state.location.search).toBe('?tool=nmap');
+  });
+
   it('opens on the view and sort the address says, and on `since`', async () => {
     open(`/scans?batch_files=show&sort_by=filename&sort_order=asc&since=${encodeURIComponent(SINCE)}`);
     await screen.findByText('newest.xml');

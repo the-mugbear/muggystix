@@ -1520,7 +1520,15 @@ export default function Scans() {
               placeholder="Search filename, tool, scan type…"
               label="Search scan inventory"
             />
-            <Select value={toolFilter || '__all'} onValueChange={(v) => setToolFilter(v === '__all' ? '' : v)}>
+            {/* The list matches a tool whatever its case, so the select does too:
+                a link written `?tool=nmap` shows "nmap (9)", not a blank box
+                (the options' values are the server's spelling, `NMAP`). */}
+            <Select
+              value={toolFilter
+                ? toolChips.find(([g]) => g.toLowerCase() === toolFilter.toLowerCase())?.[0] ?? toolFilter
+                : '__all'}
+              onValueChange={(v) => setToolFilter(v === '__all' ? '' : v)}
+            >
               <SelectTrigger className="h-8 w-44 text-metadata" aria-label="Filter scans by tool">
                 <SelectValue />
               </SelectTrigger>
