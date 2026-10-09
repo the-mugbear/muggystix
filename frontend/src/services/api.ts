@@ -55,6 +55,7 @@ export * from './api/projects';
 export * from './api/proposals';
 export * from './api/references';
 export * from './api/remediation';
+export * from './api/report-writing-guidance';
 export * from './api/scans';
 export * from './api/scopes';
 export * from './api/shared';

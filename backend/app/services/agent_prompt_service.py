@@ -33,25 +33,18 @@ logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.18.0"
+PROMPT_VERSION = "4.19.0"
 
 # What PROMPT_VERSION changed (the current version only).
 PROMPT_CHANGES = (
-    "Remediation due dates. `status: deferred` in `remediation_apply` now "
-    "needs `deferred_review_on` (the day to look at it again, today or later) "
-    "and a note in the same row — ask the operator for both; a deferral "
-    "without them is a 422. A row's deadline can be set by hand with "
-    "`due_override_on` (null goes back to the installation's date), always "
-    "with a note; send it only when the operator's source gives that date. "
-    "Rows carry `policy_due_on`, `due_override_on`, `deadline_source`, "
-    "`deferred_review_on` and `deferral_review_due`; `due_on` stays the "
-    "deadline in force. `remediation_list` takes `q` (finding title, host "
-    "address or name) and `flag` (`deferral_review_due`, "
-    "`deadline_overridden`) and returns `flag_counts`. "
-    "`remediated_record_open` now needs a record to exist. New tool "
-    "`remediation_assign_from_report`: start the clock from an issued report "
-    "(dry run first). `remediation_follow_up` takes `upcoming_days` to list "
-    "deadlines that are coming up, and its message is grouped by project."
+    "Report writing guidance. `GET /agent/assist/findings/{id}` "
+    "(`assist_get_finding`) now carries `writing_guidance`: how this "
+    "installation's administrators want report text written — `general` for "
+    "every section, and `sections` with instructions per field (description, "
+    "impact, recommendation, steps_to_reproduce, references). Read it before "
+    "you propose report text and write each section to it. It never overrides "
+    "the report-text rules: a complete rewrite, nothing the data does not "
+    "support, no BlueStick record named."
 )
 
 
@@ -424,7 +417,9 @@ def build_session_instructions(
         f"write this\" is a valid answer. Its reader has never seen BlueStick: "
         f"no record numbers or ids (\"Finding #277\"), no mention of BlueStick "
         f"or of how the text was produced — name a finding by its title and a "
-        f"system by its address (a section that names a record is refused, 422).\n"
+        f"system by its address (a section that names a record is refused, 422). "
+        f"How this installation wants each section written is `writing_guidance` "
+        f"on `GET /agent/assist/findings/{{id}}`: read it before you draft.\n"
         f"- **Scan and upload.** Run scanners locally from the working directory "
         f"and `POST /agent/uploads` (multipart; poll `GET /agent/uploads/{{id}}`) — "
         f"nothing needs to be open first. `GET /agent/scopes` lists the declared scopes; "

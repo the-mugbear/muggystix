@@ -1,5 +1,6 @@
 import { formatDate } from '../utils/relativeTime';
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   ShieldCheck,
   ShieldOff,
@@ -23,8 +24,8 @@ import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import QueueHealthCard from '../components/QueueHealthCard';
-import AuditLogViewer from '../components/AuditLogViewer';
 import RemediationSettingsSection from '../components/remediation/RemediationSettingsSection';
+import ReportWritingGuidanceSection from '../components/reports/ReportWritingGuidanceSection';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import { personInitials } from '../utils/people';
 import { Button } from '../components/ui/button';
@@ -63,6 +64,7 @@ import {
   TableHeader,
   TableRow,
 } from '../components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import UserMembershipsDialog from '../components/UserMembershipsDialog';
 import { PasswordRulesChecklist, isPasswordValid } from '../components/PasswordRulesChecklist';
 
@@ -120,7 +122,13 @@ const DateTimeCell: React.FC<{ value: string | null }> = ({ value }) => {
   );
 };
 
+const TABS = ['users', 'remediation', 'report-writing'] as const;
+const DEFAULT_TAB = 'users';
+
 const SystemSettings: React.FC = () => {
+  const [params, setParams] = useSearchParams();
+  const asked = params.get('tab') ?? DEFAULT_TAB;
+  const tab = (TABS as readonly string[]).includes(asked) ? asked : DEFAULT_TAB;
   const { user: currentUser, hasPermission } = useAuth();
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
@@ -377,7 +385,7 @@ const SystemSettings: React.FC = () => {
         <div className="min-w-0">
           <h1 className="text-page-title">System Settings</h1>
           <p className="mt-xxs text-metadata text-muted-foreground">
-            Deployment-wide administration: worker health, accounts, and the audit trail.
+            Deployment-wide administration: worker health, accounts and installation settings.
           </p>
         </div>
         <Button onClick={() => setNewUserDialogOpen(true)}>
@@ -390,11 +398,27 @@ const SystemSettings: React.FC = () => {
           exports, and until now nothing in the UI surfaced it. */}
       <QueueHealthCard />
 
-      {/* The installation's one remediation switch and timelines.  Directly
-          under worker health (5.341.0): below the user table it took a long
-          scroll to find. */}
-      <RemediationSettingsSection />
+      {/* 5.350.0 — one job per tab, the tab in the address (`?tab=`): the
+          page had grown to five unrelated sections and each new setting
+          pushed the user table further down.  Worker health stays above the
+          tabs: it must be seen without being looked for. */}
+      <Tabs value={tab} onValueChange={(v) => setParams(v === DEFAULT_TAB ? {} : { tab: v }, { replace: true })}>
+        <TabsList>
+          <TabsTrigger value="users">Users</TabsTrigger>
+          <TabsTrigger value="remediation">Remediation</TabsTrigger>
+          <TabsTrigger value="report-writing">Report writing</TabsTrigger>
+        </TabsList>
 
+        {/* The two forms stay mounted while another tab shows, so text typed
+            and not yet saved is still there on the way back. */}
+        <TabsContent value="remediation" forceMount hidden={tab !== 'remediation'}>
+          <RemediationSettingsSection />
+        </TabsContent>
+        <TabsContent value="report-writing" forceMount hidden={tab !== 'report-writing'}>
+          <ReportWritingGuidanceSection />
+        </TabsContent>
+
+        <TabsContent value="users" className="space-y-lg">
       <PostureSection
         title={<>User management{!loading && <SectionCount>{users.length}</SectionCount>}</>}
         description="Account roles are global; what a user can do with project data is set per project."
@@ -565,9 +589,6 @@ const SystemSettings: React.FC = () => {
           )}
       </PostureSection>
 
-      {/* Audit log — deployment-wide, admin-only (v2.243.0). */}
-      <AuditLogViewer />
-
       {/* v5.288.0 — no section description: it restated the paragraph below. */}
       <PostureSection title="Role reference">
           <p className="mb-sm max-w-3xl text-metadata text-muted-foreground">
@@ -639,6 +660,8 @@ const SystemSettings: React.FC = () => {
             </Table>
           </div>
       </PostureSection>
+        </TabsContent>
+      </Tabs>
 
       {/* Create User Dialog */}
       <Dialog

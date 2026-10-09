@@ -83,7 +83,8 @@ const sections: GuideSection[] = [
           Besides the project role, an account is either a <strong>member</strong> or a{' '}
           <strong>global administrator</strong>. A global administrator passes every project check
           and alone sees the <strong>Administration</strong> hub: <strong>All projects</strong>{' '}
-          (create a project), <strong>System</strong> (accounts, worker health, the audit log) and{' '}
+          (create a project), <strong>System</strong> (worker health, accounts, remediation
+          tracking, report writing guidance), <strong>Audit log</strong> and{' '}
           <strong>Agent Feedback</strong>, plus <strong>Oversight</strong>. Deleting a project,
           changing scanner integrations and uploading report-template files are theirs too. Project
           members and roles are managed from <strong>Settings → Project</strong> by a project admin.

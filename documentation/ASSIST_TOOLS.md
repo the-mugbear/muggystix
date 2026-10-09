@@ -255,6 +255,13 @@ through the same download routes so role, scope and audit are unchanged. The
 token cost is real, which is why it is a separate call and never inlined into
 `assist_get_finding` or `assist_get_host`.
 
+**Writing guidance.** `assist_get_finding` also returns `writing_guidance`
+(v2.469.0): how this installation wants report text written — `general`, and
+`sections` with instructions per field. It is the record a global admin edits
+in System settings and the in-app draft's prompt is built from
+(`services/report_writing_guidance`), so an agent's proposal and an in-app
+draft are written to the same instructions. No separate tool.
+
 **Images in report text.** `assist_get_finding` also returns `images`: the
 finding's images as the client report sees them — `id`, `caption` (what the
 report prints under it), `in_report`, `printable` and `placed_in`, the

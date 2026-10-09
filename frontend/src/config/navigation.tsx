@@ -25,6 +25,7 @@ import {
   KeyRound,
   MessageSquareHeart,
   Plug,
+  ScrollText,
   Settings as SettingsIcon,
   ShieldCheck,
   Sparkles,
@@ -332,6 +333,11 @@ export const NAV_PAGES: NavPage[] = [
     palette: { label: 'System Settings', Icon: SettingsIcon, keywords: ['users', 'admin', 'administration'], order: 17 },
   },
   {
+    // v5.350.0 — its own page: it was the last section of System settings.
+    id: 'audit-log', path: '/audit-log', label: 'Audit log', requiredRole: 'admin', hub: 'administration',
+    palette: { label: 'Audit log', Icon: ScrollText, keywords: ['audit', 'logins', 'events', 'administration'], order: 17.5 },
+  },
+  {
     // v5.310.0 — moved from Workflows: the queue is every project's agent
     // feedback (a global-admin, instance-wide list), not this project's.
     id: 'feedback', path: '/feedback', label: 'Agent Feedback', requiredRole: 'admin', hub: 'administration',
@@ -451,7 +457,7 @@ export function resolveActiveHub(pathname: string): Hub | null {
  * reading material used from every project.
  */
 const CROSS_PROJECT_PREFIXES = [
-  '/portfolio', '/oversight', '/remediation-deadlines', '/administration', '/settings/projects', '/system-settings',
+  '/portfolio', '/oversight', '/remediation-deadlines', '/administration', '/settings/projects', '/system-settings', '/audit-log',
   '/profile', '/llm-settings', '/reference', '/tool-reference', '/default-credentials',
 ];
 

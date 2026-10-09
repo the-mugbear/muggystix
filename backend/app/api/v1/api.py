@@ -16,6 +16,8 @@ from app.api.v1.endpoints import (
     agent_proposals, proposals, host_tests,
     # v2.457.0 — remediation tracking (project admins).
     remediation,
+    # v2.469.0 — the installation's report writing guidance (global admin).
+    report_writing_guidance,
     # v2.64.0 — fourth agent surface: read-only interactive assist.
     # `agent_assist` = X-API-Key surface (agent calls these).
     # `assist` = JWT surface (operator starts/ends sessions, lists them).
@@ -84,6 +86,10 @@ api_router.include_router(portfolio.router, prefix="/portfolio", tags=["portfoli
 # v2.461.0 — the installation's remediation settings and the cross-project
 # follow-up reads (global admins: every project; others: the ones they admin).
 api_router.include_router(remediation.account_router, tags=["remediation"],
+                          dependencies=[Depends(require_password_changed)])
+# v2.469.0 — how report text is to be drafted here (read: every signed-in
+# user; write: global admins).
+api_router.include_router(report_writing_guidance.router, tags=["reports"],
                           dependencies=[Depends(require_password_changed)])
 # v2.377.0 — the administrators' programme dashboard.  The GLOBAL admin gate
 # is router-level so no endpoint added here later can forget it.

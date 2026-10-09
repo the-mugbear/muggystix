@@ -124,6 +124,7 @@ const McpReference = lazy(() => import('./pages/McpReference'));
 const AssistSessions = lazy(() => import('./pages/AssistSessions'));
 const AgentSessionDetail = lazy(() => import('./pages/AgentSessionDetail'));
 const Feedback = lazy(() => import('./pages/Feedback'));
+const AuditLog = lazy(() => import('./pages/AuditLog'));
 const LLMSettings = lazy(() => import('./pages/LLMSettings'));
 const IntegrationSettings = lazy(() => import('./pages/IntegrationSettings'));
 const ForceChangePassword = lazy(() => import('./pages/ForceChangePassword'));
@@ -569,6 +570,14 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="admin">
                             <SystemSettings />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/audit-log"
+                        element={
+                          <ProtectedRoute requiredRole="admin">
+                            <AuditLog />
                           </ProtectedRoute>
                         }
                       />

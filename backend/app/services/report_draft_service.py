@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.db.models_findings import Finding
 from app.db.models_vulnerability import Vulnerability
+from app.services import report_writing_guidance
 from app.services.report_generator import ReportGenerator
 from app.services.llm_provider_service import (
     LLMProviderService,
@@ -348,7 +349,9 @@ class ReportDraftService:
         )
         result = chat_completion(
             provider,
-            system=sanitize_for_llm(_FINDING_TEXT_PROMPT),
+            system=sanitize_for_llm(
+                report_writing_guidance.drafter_system_prompt(report_writing_guidance.load(self.db))
+            ),
             messages=[{"role": "user", "content": sanitize_for_llm(user_message)}],
             max_tokens=max_tokens,
             temperature=0.3,
@@ -376,32 +379,9 @@ class ReportDraftService:
 
 
 # The finding's report-text fields a draft may fill (cvss is a measurement,
-# never drafted).
-FINDING_TEXT_FIELDS = ("description", "impact", "recommendation", "steps_to_reproduce", "references")
-
-_FINDING_TEXT_PROMPT = (
-    "You are a senior penetration-test report writer drafting ONE finding's "
-    "write-up for a client report: description (what the issue is, in the "
-    "client's terms), impact (what an attacker gains on this network), "
-    "recommendation (what to change to fix it), steps to reproduce, and "
-    "references (advisories and vendor guidance, one per line).\n\n"
-    "Rules:\n"
-    "- Ground every statement in the supplied data. Do NOT invent hosts, CVEs, "
-    "versions or results that are not present.\n"
-    "- Declining a section is allowed and expected when the data is too thin: "
-    "set it to null and say under \"missing\" what is needed. A section's text "
-    "goes into the client report word for word, so it never holds a guess, a "
-    "placeholder (\"TBD\", \"[needs confirmation]\") or a note about what is "
-    "missing.\n"
-    "- The reader is the client, who has never seen the assessment tooling: "
-    "never mention it, a record number or id from it (\"Finding #277\", "
-    "\"evidence record 57\"), the analysts' notes, or how this text was "
-    "produced. Name another finding by its title and a system by its address "
-    "or hostname.\n"
-    "- Plain, factual Markdown; no headings (the report supplies them).\n"
-    "- This is a DRAFT a human reviews and edits before it is used.\n"
-    "- Answer with the JSON object requested and nothing else.\n"
-)
+# never drafted).  How each is to be written is the installation's
+# ``report_writing_guidance``, which also builds the system prompt.
+FINDING_TEXT_FIELDS = report_writing_guidance.SECTIONS
 
 
 #: The longest reason kept for a declined section (it is shown, never stored

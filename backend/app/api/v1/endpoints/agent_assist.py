@@ -68,7 +68,7 @@ from app.api.v1.endpoints.agent_common import (
     require_project_host,
     unknown_value_error,
 )
-from app.services import dns_name_service, host_detail_service
+from app.services import dns_name_service, host_detail_service, report_writing_guidance
 from app.services.attribution_correlation import attributions_for_host
 from app.services.host_assessment_service import host_assessment
 from app.services.host_query import (
@@ -2939,6 +2939,10 @@ class AssistFindingDetail(BaseModel):
     # What the client report says about the issue (Markdown), exactly as the
     # finding page's report-text editor holds it.
     report_text: Dict[str, Any] = {}
+    # v2.469.0 — how this installation wants each section written (System
+    # settings → Report writing guidance; the in-app drafter is told the
+    # same): ``general`` and ``sections`` {field: instructions}.
+    writing_guidance: Dict[str, Any] = {}
     # The finding's images as the client report sees them (the finding page's
     # list, from the same service): ``id``, ``caption``, ``filename``,
     # ``in_report`` (ticked for the report), ``printable`` (a format the
@@ -3190,6 +3194,7 @@ def get_assist_finding(
         updated_at=finding.updated_at,
         endpoint_status_counts=endpoint_status_counts,
         report_text=report_text_of(finding),
+        writing_guidance=report_writing_guidance.for_agents(report_writing_guidance.load(db)),
         images=images,
         status_history=status_history,
         id=finding.id,

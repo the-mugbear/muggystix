@@ -107,6 +107,7 @@ describe('navigation manifest', () => {
       ['/activity', 'collaboration'],
       ['/settings/projects', 'administration'],
       ['/system-settings', 'administration'],
+      ['/audit-log', 'administration'],
     ];
     for (const [path, hub] of owned) {
       expect(resolveActiveHub(path)?.id, path).toBe(hub);
@@ -135,7 +136,7 @@ describe('navigation manifest', () => {
     expect(HUBS.map((h) => h.label)).not.toContain('Workflows');
     expect(tabs('collaboration')).toEqual(['Collaboration']);
     expect(tabs('settings')).toEqual(['Project', 'Scanner Integrations']);
-    expect(tabs('administration')).toEqual(['All projects', 'System', 'Agent Feedback']);
+    expect(tabs('administration')).toEqual(['All projects', 'System', 'Audit log', 'Agent Feedback']);
     expect(HUBS.find((h) => h.id === 'administration')!.requiredRole).toBe('admin');
     // Findings sits right after Inventory in the sidebar.
     const order = HUBS.map((h) => h.id);

@@ -738,6 +738,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "impact, recommendation, references, steps to reproduce, CVSS vector "
             "and score), `endpoint_status_counts` (per-host state), and "
             "`status_history` (who changed the status, when, from → to, and why). "
+            "`writing_guidance` is how THIS installation wants report text "
+            "written — `general`, and `sections` {field: instructions}; read it "
+            "before propose_finding_text and write each section to it. "
             "`images` lists the finding's images as the report sees them: `id`, "
             "`caption`, `in_report` (ticked for the report) and `placed_in` — the "
             "report-text fields whose Markdown places the image with "
@@ -997,7 +1000,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "params": {
             "fields": (
                 "Field name → the section's complete new text, report-ready (it replaces "
-                "the section on accept) — not comments about the current text."
+                "the section on accept) — not comments about the current text. Write each "
+                "to the installation's `writing_guidance` (on assist_get_finding)."
             ),
             "rationale": (
                 "Why — what you changed and why, what the reviewer should check. Your critique goes here."

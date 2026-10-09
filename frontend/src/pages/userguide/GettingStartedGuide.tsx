@@ -65,7 +65,7 @@ const sections: GuideSection[] = [
         <Para>
           At the foot of the sidebar: <strong>Settings</strong> (<strong>Project</strong> — details,
           members, tags — and <strong>Scanner Integrations</strong>), <strong>Administration</strong>{' '}
-          (global administrators only: <strong>All projects</strong>, <strong>System</strong> and{' '}
+          (global administrators only: <strong>All projects</strong>, <strong>System</strong>, <strong>Audit log</strong> and{' '}
           <strong>Agent Feedback</strong>) and <strong>Reference</strong> (this guide, MCP setup, the
           tool reference, What BlueStick reads, default credentials, the API documentation).{' '}
           <strong>Profile</strong> and <strong>LLM Providers</strong> are about you, not the project:

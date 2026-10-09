@@ -1066,6 +1066,12 @@ def test_finding_detail_reaches_the_evidence_a_writeup_cites(
     body = resp.json()
 
     assert body["title"] == "LDAP allows anonymous bind"
+    # v2.469.0 — the installation's writing guidance, from the service the
+    # in-app drafter reads (nothing stored here: the shipped defaults).
+    from app.services import report_writing_guidance
+    assert body["writing_guidance"] == report_writing_guidance.for_agents(
+        report_writing_guidance.load(db_session))
+    assert list(body["writing_guidance"]["sections"]) == list(report_writing_guidance.SECTIONS)
     assert body["host_count"] == 1
     assert body["hosts"][0]["ip_address"] == "10.9.0.5"
 

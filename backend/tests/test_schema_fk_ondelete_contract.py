@@ -98,6 +98,7 @@ EXPECTED_ONDELETE = {
     ('finding_host_remediation', 'updated_by_id'): 'SET NULL',
     # v2.461.0 — the installation's remediation settings outlive whoever set them.
     ('remediation_policy', 'updated_by_id'): 'SET NULL',
+    ('report_writing_guidance', 'updated_by_id'): 'SET NULL',
     # v2.462.0 — a project's daily deadline counts go with the project.
     ('remediation_daily', 'project_id'): 'CASCADE',
     ('remediation_events', 'agent_session_id'): 'SET NULL',

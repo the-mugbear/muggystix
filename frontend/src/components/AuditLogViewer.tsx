@@ -7,7 +7,8 @@
  * auditor role.
  *
  * NOT project-scoped: the underlying endpoint spans the whole deployment,
- * which is why this lives in System Settings rather than Project Settings.
+ * which is why this is an Administration page (`/audit-log`, its own page
+ * since 5.350.0; a section of System Settings before) and not a project one.
  * Login attempts and user administration aren't project events.
  */
 import React, { useCallback, useEffect, useState } from 'react';
@@ -97,7 +98,7 @@ const AuditLogViewer: React.FC = () => {
     <PostureSection
       title={
         <>
-          Audit log
+          Events
           {stats && stats.failed_logs > 0 && (
             <Badge variant="outline" className="border-destructive/40 text-destructive">
               {stats.failed_logs} failed

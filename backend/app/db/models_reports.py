@@ -179,3 +179,18 @@ class ReportImage(Base):
     __table_args__ = (
         UniqueConstraint("report_id", "attachment_id", name="uq_report_image_attachment"),
     )
+
+
+class ReportWritingGuidance(Base):
+    """The installation's instructions for drafting a finding's report text:
+    one row per key (``general`` and each section), written by a global admin.
+    No row is the shipped default.  ``services/report_writing_guidance`` is the
+    one reader and writer, and names the keys."""
+    __tablename__ = "report_writing_guidance"
+
+    key = Column(String(40), primary_key=True)
+    text = Column(Text, nullable=False)
+    updated_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    updated_by = relationship("User")
