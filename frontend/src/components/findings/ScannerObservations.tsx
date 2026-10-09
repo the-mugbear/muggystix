@@ -10,7 +10,7 @@
  * recorded only where the operator means it (the host-scoped promotion rule).
  * An issue that already has a finding joins it, its status untouched.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
@@ -25,6 +25,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { useListCursor } from '../../hooks/useListCursor';
 import { useListQuery } from '../../hooks/useListQuery';
 import { useProjectId } from '../../hooks/useProjectId';
+import { useUrlSearchDraft } from '../../hooks/useUrlSearchDraft';
 import { formatApiError } from '../../utils/apiErrors';
 import { ENDPOINT_STATUS_LABEL, STATUS_LABEL } from '../../utils/findingStatus';
 import { selectAllState } from '../../utils/selection';
@@ -63,7 +64,12 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   // list's do: "critical issues on 5+ hosts" can be bookmarked and shared.
   // Own keys, so switching views never mixes the two lists' filters.
   const [params, setParams] = useSearchParams();
-  const search = params.get('obs_search') ?? '';
+  // The search box: `value` is the address's and what the list is asked for,
+  // `draft` what is being typed — committed a moment after the typing stops,
+  // and following the address when it changes from elsewhere (Back, a link).
+  // This list has no page, so a commit removes nothing else.
+  const searchBox = useUrlSearchDraft('obs_search', { also: [] });
+  const search = searchBox.value;
   const severity = params.get('obs_severity') ?? 'all';
   // Any number of hosts by default (v5.288.0): "2 or more" hid every
   // single-host issue, criticals included, with nothing saying so.
@@ -83,7 +89,6 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const setMinHosts = (v: number) => setParam('obs_min', String(v), '1');
   const setIncludeJudged = (v: boolean) => setParam('obs_judged', v ? '1' : '0', '0');
   const setKind = (v: string) => setParam('obs_kind', v, 'all');
-  const [searchInput, setSearchInput] = useState(search);
 
   // Selection spans loads: issue_key → the issue, and the hosts ticked under
   // it (absent = every host carrying it).
@@ -91,11 +96,6 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const [hostChoice, setHostChoice] = useState<Map<string, Set<number>>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
-
-  useEffect(() => {
-    const t = setTimeout(() => setParam('obs_search', searchInput.trim(), ''), 300);
-    return () => clearTimeout(t);
-  }, [searchInput, setParam]);
 
   const filters = useMemo(
     () => ({
@@ -243,8 +243,8 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
       {/* The shared filter row (v5.294.0), as on the Findings view. */}
       <ListFilterBar className="mb-md">
         <ListFilterSearch
-          value={searchInput}
-          onChange={setSearchInput}
+          value={searchBox.draft}
+          onChange={searchBox.setDraft}
           placeholder="Search titles or CVE…"
           label="Search scanner observations"
         />

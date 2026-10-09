@@ -36,6 +36,7 @@ import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import { invalidateReads, queryErrorText } from '../lib/query';
 import { useListCursor } from '../hooks/useListCursor';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { SeverityBadge } from '../components/ui/SeverityBadge';
 import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../components/ListFilterBar';
 import { formatTimestamp } from '../utils/relativeTime';
@@ -179,7 +180,12 @@ const FindingsList: React.FC = () => {
   const severityFilter = (searchParams.get('severity') as FindingSeverity | null) ?? 'all';
   const sourceFilter = (searchParams.get('source') as FindingSource | null) ?? 'all';
   const ownerFilter = (searchParams.get('owner') as OwnerFilterValue | null) ?? 'any';
-  const searchValue = searchParams.get('search') ?? '';
+  // The search is the address's too (`search.value`, what the list is asked
+  // for); the box shows `search.draft`, which is committed a moment after the
+  // typing stops — replacing the entry, from the first page — and follows the
+  // address when it changes from elsewhere (Back, a link).
+  const search = useUrlSearchDraft('search');
+  const searchValue = search.value;
 
   // One writer for every URL-backed param: a default value clears the key so
   // a clean URL stays clean. Filter keys (membership) also reset `page`, so
@@ -206,14 +212,6 @@ const FindingsList: React.FC = () => {
   const setSeverityFilter = (v: FindingSeverity | 'all') => setFilterParam('severity', v, 'all');
   const setSourceFilter = (v: FindingSource | 'all') => setFilterParam('source', v, 'all');
   const setOwnerFilter = (v: OwnerFilterValue) => setFilterParam('owner', v, 'any');
-
-  // Search is debounced into the URL so typing doesn't refetch per keystroke;
-  // the URL stays the source of truth (shareable).
-  const [searchInput, setSearchInput] = useState(searchValue);
-  useEffect(() => {
-    const t = setTimeout(() => setFilterParam('search', searchInput.trim(), ''), 300);
-    return () => clearTimeout(t);
-  }, [searchInput, setFilterParam]);
 
   // Page + sort live in the URL too (UX review M1): the detail page hands
   // this exact URL back on its "Findings" action, so an analyst working a
@@ -512,8 +510,8 @@ const FindingsList: React.FC = () => {
         }
       >
         <ListFilterSearch
-          value={searchInput}
-          onChange={setSearchInput}
+          value={search.draft}
+          onChange={search.setDraft}
           placeholder="Search finding titles…"
           label="Search findings"
         />

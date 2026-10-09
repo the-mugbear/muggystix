@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Download, Loader2, Trash2, Upload } from 'lucide-react';
@@ -24,10 +24,10 @@ import { useToast } from '../contexts/ToastContext';
 import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
-import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useListCursor } from '../hooks/useListCursor';
 import { usePagedList } from '../hooks/usePagedList';
 import { useUrlPage } from '../hooks/useUrlPage';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { TableSkeleton } from '../components/PageSkeleton';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -647,17 +647,31 @@ const Names: React.FC = () => {
   const projectId = useProjectId();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [state, setState] = useState<NameStateFilter>((searchParams.get('state') as NameStateFilter) || 'all');
-  const [search, setSearch] = useState(searchParams.get('search') ?? '');
-  const debouncedSearch = useDebouncedValue(search, 300);
+  // The filters are the address's (UI_STYLE_GUIDE §39): read from it on every
+  // render, so a link to this page with other filters, and Back, are what the
+  // chips show and what the list is asked for.  `all` is left out of it.
+  const state: NameStateFilter = (searchParams.get('state') as NameStateFilter) || 'all';
+  const setState = useCallback((next: NameStateFilter) => {
+    setSearchParams((prev) => {
+      const out = new URLSearchParams(prev);
+      if (next === 'all') out.delete('state');
+      else out.set('state', next);
+      out.delete('page');
+      return out;
+    }, { replace: true });
+  }, [setSearchParams]);
+  // The search box: `draft` is what is being typed, `value` what is in the
+  // address — and so what is asked for.
+  const search = useUrlSearchDraft('search');
+  const searchValue = search.value;
   const [importOpen, setImportOpen] = useState(false);
 
   // The page is in the address (`?page=`, left out for the first); under a
   // new filter it is the first page at once (usePagedList).
   const list = usePagedList<NameRow>(
     'listNames',
-    ({ offset, limit, signal }) => listNames(projectId, { skip: offset, limit, search: debouncedSearch, state }, signal),
-    [projectId, state, debouncedSearch],
+    ({ offset, limit, signal }) => listNames(projectId, { skip: offset, limit, search: searchValue, state }, signal),
+    [projectId, state, searchValue],
     { pageSize: PAGE_SIZE, errorMessage: 'Failed to load names.', page: useUrlPage() },
   );
   const { page, setPage, loading, error } = list;
@@ -698,17 +712,6 @@ const Names: React.FC = () => {
   const summary: NamesSummary | null = summaryError ? null : summaryQuery.data ?? null;
   const reloadSummary = () => { void summaryQuery.refetch(); };
 
-  // Persist filter + search in the URL so a shared link reproduces the view.
-  // (The page leaves the address with a changed filter: usePagedList.)
-  useEffect(() => {
-    const next = new URLSearchParams(searchParams);
-    if (state === 'all') next.delete('state');
-    else next.set('state', state);
-    if (debouncedSearch.trim()) next.set('search', debouncedSearch.trim());
-    else next.delete('search');
-    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
-  }, [state, debouncedSearch, searchParams, setSearchParams]);
-
   const refreshAll = () => {
     void list.reload();
     reloadSummary();
@@ -716,7 +719,7 @@ const Names: React.FC = () => {
 
   const exportList = useMutation({
     mutationFn: (format: 'txt' | 'csv') =>
-      exportNames(projectId, format, { search: debouncedSearch.trim() || undefined, state }),
+      exportNames(projectId, format, { search: searchValue || undefined, state }),
     onError: (err) => toast.error(formatApiError(err, 'Failed to export names.')),
   });
   const exporting = exportList.isPending ? exportList.variables : null;
@@ -753,7 +756,7 @@ const Names: React.FC = () => {
   const { cursorRowProps } = useListCursor(
     loading || error ? 0 : rows.length,
     (i) => setSelectedId(rows[i].id),
-    { resetKey: `${page}|${state}|${debouncedSearch}`, getId: (i) => rows[i]?.id },
+    { resetKey: `${page}|${state}|${searchValue}`, getId: (i) => rows[i]?.id },
   );
 
   return (
@@ -803,7 +806,7 @@ const Names: React.FC = () => {
           Ingestion Results (they were upper-case badges on a row of their own
           above the search). */}
       <ListFilterBar className="mb-md">
-        <ListFilterSearch value={search} onChange={setSearch} placeholder="Search names…" label="Search names" />
+        <ListFilterSearch value={search.draft} onChange={search.setDraft} placeholder="Search names…" label="Search names" />
         <div className="flex min-w-0 flex-wrap items-center gap-xs" role="group" aria-label="Name state filter">
           {STATE_OPTIONS.map((opt) => {
             const active = state === opt.value;
@@ -885,7 +888,7 @@ const Names: React.FC = () => {
             </div>
           ) : rows.length === 0 ? (
             <div className="py-md text-metadata text-muted-foreground">
-              {debouncedSearch.trim() || state !== 'all'
+              {searchValue || state !== 'all'
                 ? 'No names match the current filter.'
                 : 'No names yet. Import a list, or upload dnsx / amass / subfinder / httpx output.'}
             </div>

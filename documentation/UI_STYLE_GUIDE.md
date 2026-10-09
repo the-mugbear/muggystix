@@ -658,6 +658,31 @@ reader pages.  New deps — a filter, a tab — start from page 1, and a link to
 a tab or a filter never carries `page`.  Remediation, Remediation deadlines,
 the Operations tabs and Names do.
 
+**A filter has one owner: the address.**  A committed filter — a chip, a
+select, a sort, a tab, a search that was asked — is read from the URL on
+every render and changed by writing the URL (replace; `page` dropped).  It is
+never copied into `useState` and written back by an effect: that makes two
+owners, and Back, Forward or a link to the same page with other filters then
+changes the address while the stale state overwrites it.  Local state holds
+only what is NOT committed yet:
+
+- the text in a search box while it is typed — `hooks/useUrlSearchDraft(param,
+  { also })`: the input shows `draft`, the list is asked with `value` (the
+  address's, trimmed); typing commits after 300 ms, and the box follows the
+  address when it changes from elsewhere.  Never a hand-made `setTimeout`
+  into the address;
+- a form that composes a question before it is asked (Tool activity): the
+  draft is state, the ASKED question is the address, and the draft is refilled
+  from the address when it changes from elsewhere.
+
+One write per action: react-router gives a `setSearchParams(fn)` updater the
+address of the current render, so two writes in one tick lose the first — a
+"Clear filters" is ONE write.  A test of this uses the REAL router
+(`vi.importActual('react-router-dom')` + `createMemoryRouter`; setupTests
+replaces `useLocation`) and covers a same-page link and Back
+(`tests/pages/*.address.test.tsx`).  Names, Scans, Feedback, Tool activity,
+Findings, Scanner observations and Remediation follow this since 5.354.0.
+
 **The Hosts page derives its state from the address.**  Filters, sort and
 page are read from the URL on every render, never copied into component
 state and synced back; `sessionStorage` only seeds a bare `/hosts` (the

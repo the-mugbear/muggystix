@@ -9,7 +9,7 @@
  * measures whose counts open their rows, then one section with the shared
  * filter row (ListFilterBar).  Filters live in the URL so a measure is a link.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Loader2, MessageSquareText, Star } from 'lucide-react';
@@ -23,8 +23,8 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useProject } from '../contexts/ProjectContext';
-import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useListQuery } from '../hooks/useListQuery';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { invalidateReads, queryErrorText } from '../lib/query';
 import LastUpdated from '../components/LastUpdated';
 import TimeAgo from '../components/TimeAgo';
@@ -121,8 +121,11 @@ const Feedback: React.FC = () => {
   const content = (params.get('content') ?? '') as Content;
   const minRating = params.get('rating') ?? '';
   const projectFilter = params.get('project') ?? '';
-  const [search, setSearch] = useState(params.get('q') ?? '');
-  const debouncedSearch = useDebouncedValue(search.trim(), 300);
+  // The search too: `q` is what the list is asked for; the box holds only the
+  // text while it is being typed, and follows the address (Back, a link).
+  // This list has no `page` to drop.
+  const search = useUrlSearchDraft('q', { also: [] });
+  const committedSearch = search.value;
 
   const setParam = useCallback((key: string, value: string) => {
     setParams((prev) => {
@@ -131,8 +134,6 @@ const Feedback: React.FC = () => {
       return next;
     }, { replace: true });
   }, [setParams]);
-
-  useEffect(() => { setParam('q', debouncedSearch); }, [debouncedSearch, setParam]);
 
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
@@ -147,9 +148,9 @@ const Feedback: React.FC = () => {
     if (content === 'critiques') q.has_api_critiques = true;
     if (content === 'suggestions') q.has_tool_suggestions = true;
     if (projectFilter) q.project_id = Number(projectFilter);
-    if (debouncedSearch) q.search = debouncedSearch;
+    if (committedSearch) q.search = committedSearch;
     return q;
-  }, [status, source, minRating, content, projectFilter, debouncedSearch]);
+  }, [status, source, minRating, content, projectFilter, committedSearch]);
 
   // The queue is every project's: neither key names a project.
   const list = useListQuery<AgentFeedbackEntry>(
@@ -241,7 +242,7 @@ const Feedback: React.FC = () => {
   const critiqueCount = stats?.with_api_critiques ?? 0;
   const suggestionCount = stats?.with_tool_suggestions ?? 0;
   const topTool = stats?.top_tool_suggestions?.[0];
-  const filtered = Boolean(status || source || content || minRating || projectFilter || debouncedSearch);
+  const filtered = Boolean(status || source || content || minRating || projectFilter || committedSearch);
   const projectOptions = useMemo(
     () => [...projects].sort((a, b) => a.name.localeCompare(b.name)),
     [projects],
@@ -317,7 +318,7 @@ const Feedback: React.FC = () => {
         description="Newest first. Open a row for the full report; the session link lists every API call the agent made."
       >
         <ListFilterBar summary={`${rows.length.toLocaleString()} of ${total.toLocaleString()} shown`}>
-          <ListFilterSearch value={search} onChange={setSearch} placeholder="Search the notes…" label="Search feedback notes" />
+          <ListFilterSearch value={search.draft} onChange={search.setDraft}placeholder="Search the notes…" label="Search feedback notes" />
           <Select value={status || 'all'} onValueChange={(v) => setParam('status', v === 'all' ? '' : v)}>
             <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-40')} aria-label="Status"><SelectValue /></SelectTrigger>
             <SelectContent>

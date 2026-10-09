@@ -21,7 +21,7 @@ import {
   Upload,
   PauseCircle,
 } from 'lucide-react';
-import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { invalidateReads, pollEvery, queryErrorText, rememberFor } from '../lib/query';
 import { INGESTION_JOB_READS } from '../utils/ingestionReads';
 import {
@@ -313,31 +313,62 @@ export default function Scans() {
   type SortBy = 'created_at' | 'start_time' | 'filename' | 'tool_name' | 'total_hosts' | 'new_hosts';
   type SortOrder = 'asc' | 'desc';
 
+  // The filters, the sort and the view are the address's (UI_STYLE_GUIDE §39):
+  // read from it on every render — never copied into state — so a link to
+  // this page with other filters (Operations' `?since=`), and Back, are what
+  // the controls show and what the lists are asked for.  A value the address
+  // cannot mean is the default.
   const [urlParams, setUrlParams] = useSearchParams();
-  const [toolFilter, setToolFilter] = useState(() => urlParams.get('tool') || '');
-  const [searchText, setSearchText] = useState(() => urlParams.get('search') || '');
-  const [dateRangeDays, setDateRangeDays] = useState<number | null>(() => {
+  const toolFilter = urlParams.get('tool') || '';
+  const dateRangeDays: number | null = (() => {
     const raw = urlParams.get('days');
     if (!raw) return null;
     const parsed = parseInt(raw, 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  });
-  const [sortBy, setSortBy] = useState<SortBy>(() => {
+  })();
+  const sortBy: SortBy = (() => {
     const raw = urlParams.get('sort_by') as SortBy | null;
     return raw && ['created_at', 'start_time', 'filename', 'tool_name', 'total_hosts', 'new_hosts'].includes(raw)
       ? raw
       : 'created_at';
-  });
-  const [sortOrder, setSortOrder] = useState<SortOrder>(() => {
-    const raw = urlParams.get('sort_order');
-    return raw === 'asc' ? 'asc' : 'desc';
-  });
-  const [showBatchFiles, setShowBatchFiles] = useState(() => urlParams.get('batch_files') === 'show');
+  })();
+  const sortOrder: SortOrder = urlParams.get('sort_order') === 'asc' ? 'asc' : 'desc';
+  const showBatchFiles = urlParams.get('batch_files') === 'show';
   // v5.281.0 — who uploaded the file (an agent's uploads are its operator's).
-  const [uploaderFilter, setUploaderFilter] = useState<number | null>(() => {
+  const uploaderFilter: number | null = (() => {
     const parsed = parseInt(urlParams.get('uploaded_by') || '', 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  });
+  })();
+  // 5.304.0 — `?since=<ISO>`: the imports since a moment, so Operations'
+  // "8 new imports" opens those 8 (it opened the whole history).  Choosing a
+  // day range replaces it.
+  const sinceIso: string | null = (() => {
+    const raw = urlParams.get('since');
+    return raw && !Number.isNaN(Date.parse(raw)) ? raw : null;
+  })();
+  // The one writer: each named param is set, or left out of the address when
+  // its value is `null` (the default).  Replaced, not pushed — a filter is not
+  // a place Back should stop at.  One call per change: the router gives an
+  // updater the address of this render, so two calls in a row would lose the
+  // first.
+  const setUrlFilters = useCallback((changes: Record<string, string | null>) => {
+    setUrlParams((prev) => {
+      const next = new URLSearchParams(prev);
+      Object.entries(changes).forEach(([name, value]) => {
+        if (value === null) next.delete(name);
+        else next.set(name, value);
+      });
+      return next;
+    }, { replace: true });
+  }, [setUrlParams]);
+  const setToolFilter = (tool: string) => setUrlFilters({ tool: tool || null });
+  const setUploaderFilter = (userId: number | null) =>
+    setUrlFilters({ uploaded_by: userId == null ? null : String(userId) });
+  const setShowBatchFiles = (show: boolean) => setUrlFilters({ batch_files: show ? 'show' : null });
+  // The search box: `draft` is what is being typed, `value` what is in the
+  // address — and so what is asked for.
+  const search = useUrlSearchDraft('search');
+  const searchValue = search.value;
   // v5.215.0 — whether informational Nessus observations are skipped: the
   // project's effective setting (its own choice, else the deployment default),
   // sent with each upload. UX review 2026-09-24 — changed in Project settings →
@@ -349,20 +380,7 @@ export default function Scans() {
   // /scans/{id}`), so an analyst is not offered it either.
   const { canWrite, isProjectAdmin } = useProjectRole();
   const skipInformational = currentProject?.skip_informational_effective ?? false;
-  const debouncedSearchText = useDebouncedValue(searchText, 300);
-  // Avoid the URL-sync effect firing during the very first render before
-  // the user has touched anything — react-router would still write an
-  // empty query string, which churns the browser history.
-  const filtersInitialized = useRef(false);
-
-  // 5.304.0 — `?since=<ISO>`: the imports since a moment, so Operations'
-  // "8 new imports" opens those 8 (it opened the whole history).  Choosing a
-  // day range replaces it.
-  const [sinceIso, setSinceIso] = useState<string | null>(() => {
-    const raw = urlParams.get('since');
-    return raw && !Number.isNaN(Date.parse(raw)) ? raw : null;
-  });
-  const hasActiveFilters = toolFilter !== '' || debouncedSearchText.trim() !== ''
+  const hasActiveFilters = toolFilter !== '' || searchValue !== ''
     || dateRangeDays !== null || sinceIso !== null || uploaderFilter !== null;
   const createdAfterIso = useMemo(() => {
     if (sinceIso) return sinceIso;
@@ -373,12 +391,12 @@ export default function Scans() {
   // they can never disagree about what "the current filters" are.
   const listFilters = useMemo(
     () => ({
-      search: debouncedSearchText.trim() || undefined,
+      search: searchValue || undefined,
       tool: toolFilter || undefined,
       createdAfter: createdAfterIso,
       uploadedBy: uploaderFilter ?? undefined,
     }),
-    [debouncedSearchText, toolFilter, createdAfterIso, uploaderFilter],
+    [searchValue, toolFilter, createdAfterIso, uploaderFilter],
   );
   const [expandedJobIds, setExpandedJobIds] = useState<Set<number>>(new Set());
 
@@ -507,12 +525,12 @@ export default function Scans() {
   // Sortable column header — clicking the same column toggles asc/desc;
   // clicking a different column switches sort and resets to desc.
   const handleSort = (column: SortBy) => {
+    // In the address the defaults (`created_at`, `desc`) are left out.
     if (sortBy === column) {
-      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+      setUrlFilters({ sort_order: sortOrder === 'asc' ? null : 'asc' });
       return;
     }
-    setSortBy(column);
-    setSortOrder('desc');
+    setUrlFilters({ sort_by: column === 'created_at' ? null : column, sort_order: null });
   };
   const renderSortHeader = (column: SortBy, label: string, className?: string) => {
     const isSorted = sortBy === column;
@@ -554,36 +572,6 @@ export default function Scans() {
     showBatchFiles
       ? renderSortHeader(column, label, className)
       : <TableHead className={className}>{label}</TableHead>;
-
-  // URL sync — write the active filters/sort back to the URL whenever
-  // they change so the browser back/forward + bookmark/share use cases
-  // work.  Skipped on the very first render so we don't churn history
-  // with a no-op write.
-  useEffect(() => {
-    if (!filtersInitialized.current) {
-      filtersInitialized.current = true;
-      return;
-    }
-    const next = new URLSearchParams(urlParams);
-    if (debouncedSearchText.trim()) next.set('search', debouncedSearchText.trim());
-    else next.delete('search');
-    if (toolFilter) next.set('tool', toolFilter);
-    else next.delete('tool');
-    if (dateRangeDays != null) next.set('days', String(dateRangeDays));
-    else next.delete('days');
-    if (sinceIso) next.set('since', sinceIso);
-    else next.delete('since');
-    if (sortBy !== 'created_at') next.set('sort_by', sortBy);
-    else next.delete('sort_by');
-    if (sortOrder !== 'desc') next.set('sort_order', sortOrder);
-    else next.delete('sort_order');
-    if (showBatchFiles) next.set('batch_files', 'show');
-    else next.delete('batch_files');
-    if (uploaderFilter != null) next.set('uploaded_by', String(uploaderFilter));
-    else next.delete('uploaded_by');
-    setUrlParams(next, { replace: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearchText, toolFilter, dateRangeDays, sinceIso, sortBy, sortOrder, showBatchFiles, uploaderFilter]);
 
   // The command's explanation is read by the expanded row itself
   // (`ScanCommandDetail`), the first time it opens.
@@ -1602,8 +1590,8 @@ export default function Scans() {
             ) : undefined}
           >
             <ListFilterSearch
-              value={searchText}
-              onChange={setSearchText}
+              value={search.draft}
+              onChange={search.setDraft}
               placeholder="Search filename, tool, scan type…"
               label="Search scan inventory"
             />
@@ -1630,8 +1618,8 @@ export default function Scans() {
               value={sinceIso ? 'since' : dateRangeDays == null ? 'all' : String(dateRangeDays)}
               onValueChange={(v) => {
                 if (v === 'since') return;
-                setSinceIso(null);
-                setDateRangeDays(v === 'all' ? null : parseInt(v, 10));
+                // A day range replaces `since`.
+                setUrlFilters({ since: null, days: v === 'all' ? null : String(parseInt(v, 10)) });
               }}
             >
               <SelectTrigger className="h-8 w-44 text-metadata" aria-label="Filter scans by upload date"
@@ -1733,11 +1721,10 @@ export default function Scans() {
                   variant="outline"
                   size="sm"
                   onClick={() => {
-                    setSearchText('');
-                    setToolFilter('');
-                    setDateRangeDays(null);
-                    setSinceIso(null);
-                    setUploaderFilter(null);
+                    // One write for all of them; the box drops what was
+                    // being typed, so it is not committed a moment later.
+                    search.setDraft('');
+                    setUrlFilters({ search: null, tool: null, days: null, since: null, uploaded_by: null });
                   }}
                 >
                   Clear filters

@@ -28,6 +28,7 @@ import { saveBlob } from '../../utils/download';
 import { usePagedList } from '../../hooks/usePagedList';
 import { useProjectId } from '../../hooks/useProjectId';
 import { useUrlPage } from '../../hooks/useUrlPage';
+import { useUrlSearchDraft } from '../../hooks/useUrlSearchDraft';
 import { useListCursor } from '../../hooks/useListCursor';
 import { formatDate } from '../../utils/relativeTime';
 import {
@@ -117,7 +118,14 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   const state: RemediationState | null = isRemediationState(stateParam) ? stateParam : null;
   const groupParam = params.get('group');
   const group = isRemediationGroup(groupParam) ? groupParam : 'due';
-  const contact = params.get('contact') ?? '';
+  // The two text boxes (`hooks/useUrlSearchDraft`): `value` is the address's
+  // and what the list is asked for, `draft` what is being typed — committed a
+  // moment after the typing stops, replacing the entry, and following the
+  // address when it changes from elsewhere (Back, a link, a chip).  A commit
+  // removes nothing else: the list returns to its first page by itself when
+  // its filters change (`usePagedList`).
+  const contactBox = useUrlSearchDraft('contact', { also: [] });
+  const contact = contactBox.value;
   const unassigned = params.get('unassigned') === '1';
   const severityParam = params.get('severity');
   const severity = severityParam && SEVERITIES.includes(severityParam) ? severityParam : null;
@@ -134,8 +142,17 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   // Deferrals to review, or due dates set by hand (the server derives both).
   const flagParam = params.get('flag');
   const flag = isRemediationFlag(flagParam) ? flagParam : null;
-  // A finding's title, or a host's address or name.
-  const q = searchParam(params.get('q'));
+  // A finding's title, or a host's address or name.  One character searches
+  // nothing (`searchParam`), so the box's draft is given the text as the
+  // server would take it: the address only ever holds a search that is sent.
+  const searchBox = useUrlSearchDraft('q', { also: [] });
+  const q = searchParam(searchBox.value);
+  // What the box shows is the reader's own text — a first character, a space
+  // after a word — for as long as it says what the draft says; when the draft
+  // moves without it (the address changed from elsewhere) it follows.
+  const [sought, setSought] = useState(q);
+  if (searchParam(sought) !== searchParam(searchBox.draft)) setSought(searchParam(searchBox.draft));
+  const seek = (text: string) => { setSought(text); searchBox.setDraft(searchParam(text)); };
   // A link from a host or a finding narrows the list to it (`?host=`, `?finding=`).
   const hostId = across ? null : idParam(params.get('host'));
   const findingId = across ? null : idParam(params.get('finding'));
@@ -147,32 +164,8 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
       const next = new URLSearchParams(prev);
       if (value == null || value === '') next.delete(key); else next.set(key, value);
       return next;
-    }, { replace: key === 'contact' || key === 'q' });
+    });
   };
-
-  // The search box is typed into; the address (and the request) follow a
-  // moment later.
-  const [typed, setTyped] = useState(contact);
-  useEffect(() => { setTyped(contact); }, [contact]);
-  useEffect(() => {
-    if (typed.trim() === contact) return undefined;
-    const timer = window.setTimeout(() => setParam('contact', typed.trim() || undefined), 300);
-    return () => window.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [typed]);
-
-  // The same for "Finding or host": one character searches nothing, so the
-  // address only ever holds a search the server takes.
-  const [sought, setSought] = useState(q);
-  // Follows the address (Back, a cleared chip) without wiping a single
-  // character the reader has typed so far.
-  useEffect(() => { setSought((s) => (searchParam(s) === q ? s : q)); }, [q]);
-  useEffect(() => {
-    if (searchParam(sought) === q) return undefined;
-    const timer = window.setTimeout(() => setParam('q', searchParam(sought) || undefined), 300);
-    return () => window.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sought]);
 
   // The project chooser lists only projects with something still open (owner,
   // 2026-10-08), each with its count; the one in the address stays listed
@@ -595,24 +588,24 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                 className="h-8 w-64 max-w-full pl-8 pr-8 [&::-webkit-search-cancel-button]:hidden"
                 value={sought} maxLength={SEARCH_MAX} placeholder="Finding or host…"
                 title="A finding’s title, or a host’s address or name (two characters or more)"
-                onChange={(e) => setSought(e.target.value)} />
+                onChange={(e) => seek(e.target.value)} />
               {sought && (
                 <button type="button" aria-label="Clear the search"
                   className="absolute right-1 top-1 rounded p-1 text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  onClick={() => { setSought(''); setParam('q', undefined); }}>
+                  onClick={() => { setSought(''); searchBox.commit(''); }}>
                   <X className="size-4" aria-hidden />
                 </button>
               )}
             </div>
             <Label htmlFor="rem-contact" className="shrink-0">Contact</Label>
             <div className="relative min-w-0">
-              <Input id="rem-contact" className="h-8 w-64 max-w-full pr-8" value={typed} maxLength={254}
+              <Input id="rem-contact" className="h-8 w-64 max-w-full pr-8" value={contactBox.draft} maxLength={254}
                 placeholder="Name or address" disabled={unassigned}
-                onChange={(e) => setTyped(e.target.value)} />
-              {typed && (
+                onChange={(e) => contactBox.setDraft(e.target.value)} />
+              {contactBox.draft && (
                 <button type="button" aria-label="Clear the contact filter"
                   className="absolute right-1 top-1 rounded p-1 text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  onClick={() => { setTyped(''); setParam('contact', undefined); }}>
+                  onClick={() => contactBox.commit('')}>
                   <X className="size-4" aria-hidden />
                 </button>
               )}
@@ -620,7 +613,8 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
             <button type="button" aria-pressed={unassigned} className={filterChipClass(unassigned)}
               title="Findings on hosts that nobody has been named for"
               onClick={() => {
-                if (!unassigned) { setTyped(''); }
+                // Whatever was being typed goes with the contact filter.
+                if (!unassigned) { contactBox.setDraft(''); }
                 setParams((prev) => {
                   const next = new URLSearchParams(prev);
                   if (unassigned) next.delete('unassigned'); else { next.set('unassigned', '1'); next.delete('contact'); }

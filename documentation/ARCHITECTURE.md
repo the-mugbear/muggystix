@@ -561,6 +561,7 @@ frontend/src/
 │   ├── useListQuery.ts      # a "Show more" list (on useInfiniteQuery; error distinct from empty; options for the
 │   │                        # previous filter's rows staying dimmed, the last response, de-duplication by id)
 │   ├── usePagedList.ts, useUrlPage.ts  # one page of a list at a time (on useQuery); its page kept in the address (?page=)
+│   ├── useUrlSearchDraft.ts # a search box whose committed value is the address's; only the text being typed is state
 │   ├── useProjectId.ts      # the current project's id, read while rendering: the first argument of a
 │   │                        # project-scoped API function and of its query key
 │   ├── useJobPoll.ts        # follow a server-side job from its POST's answer until it is finished (useJobPolls: several)

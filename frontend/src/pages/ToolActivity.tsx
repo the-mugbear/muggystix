@@ -20,7 +20,7 @@
  * longer runs "now ± 5 minutes" on arrival — it waits for the analyst, or for
  * a click on a chart column.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Clock, RefreshCw, Search, ExternalLink, AlertTriangle, Info } from 'lucide-react';
@@ -207,8 +207,7 @@ export function readActivityQuery(params: URLSearchParams) {
   };
 }
 
-/** The window a query ran for — what the URL names. */
-type AskedWindow = { at: string; tolerance: number } | { from: string; to: string };
+type ActivityAddress = ReturnType<typeof readActivityQuery>;
 
 /** The tool / target a query is narrowed to (left out when not set). */
 interface AttributionFilters { tool?: string; target?: string }
@@ -218,6 +217,79 @@ interface AttributionFilters { tool?: string; target?: string }
 type FocusedQuestion =
   | { fn: 'getScansAt'; params: { ts: string; toleranceSeconds: number } & AttributionFilters }
   | { fn: 'getScansBetween'; params: { from: string; to: string } & AttributionFilters };
+
+const DEFAULT_TOLERANCE = 300;
+
+/** The focused question an address names — a range, else a moment (± the
+ *  default tolerance when it names none); none on an address without a window. */
+function questionOf(address: ActivityAddress): FocusedQuestion | null {
+  const filters = { tool: address.tool || undefined, target: address.target || undefined };
+  if (address.from && address.to) {
+    return {
+      fn: 'getScansBetween',
+      params: { from: address.from.toISOString(), to: address.to.toISOString(), ...filters },
+    };
+  }
+  if (address.at) {
+    return {
+      fn: 'getScansAt',
+      params: {
+        ts: address.at.toISOString(),
+        toleranceSeconds: address.tolerance ?? DEFAULT_TOLERANCE,
+        ...filters,
+      },
+    };
+  }
+  return null;
+}
+
+const sameQuestion = (a: FocusedQuestion | null, b: FocusedQuestion | null): boolean =>
+  JSON.stringify(a) === JSON.stringify(b);
+
+/** `prev` naming this window (none: no window), tool and target — the one
+ *  place the address's format is written: `at` + `tolerance`, or `from` +
+ *  `to`, then `tool` and `target`, each left out when empty. */
+function withQuestion(
+  prev: URLSearchParams, window: FocusedQuestion | null, tool: string, target: string,
+): URLSearchParams {
+  const next = new URLSearchParams(prev);
+  ['at', 'from', 'to', 'tolerance', 'tool', 'target'].forEach((k) => next.delete(k));
+  if (window?.fn === 'getScansAt') {
+    next.set('at', window.params.ts);
+    next.set('tolerance', String(window.params.toleranceSeconds));
+  } else if (window) {
+    next.set('from', window.params.from);
+    next.set('to', window.params.to);
+  }
+  if (tool) next.set('tool', tool);
+  if (target) next.set('target', target);
+  return next;
+}
+
+/** The address as this page writes it: what it can read of the one given, and
+ *  nothing else of the question. */
+const canonical = (params: URLSearchParams): URLSearchParams => {
+  const address = readActivityQuery(params);
+  return withQuestion(params, questionOf(address), address.tool, address.target);
+};
+
+/** What an address asks, as one comparable value: its window, tool and target. */
+const askedKey = (params: URLSearchParams): string => {
+  const address = readActivityQuery(params);
+  return withQuestion(new URLSearchParams(), questionOf(address), address.tool, address.target).toString();
+};
+
+/** The form as an address fills it: its window, tool and target, and the
+ *  form's own defaults ("now", ± 5 minutes, the last 24 hours) for the rest. */
+const draftFrom = (address: ActivityAddress) => ({
+  mode: (address.from && address.to ? 'between' : 'at') as QueryMode,
+  tsLocal: toLocalInput(address.at ?? new Date()),
+  tolerance: address.tolerance ?? DEFAULT_TOLERANCE,
+  fromLocal: toLocalInput(address.from ?? new Date(Date.now() - 24 * 3600 * 1000)),
+  toLocal: toLocalInput(address.to ?? new Date()),
+  tool: address.tool,
+  target: address.target,
+});
 
 const answerQuestion = (question: FocusedQuestion, signal?: AbortSignal): Promise<ActivityResponse> => (
   question.fn === 'getScansAt' ? getScansAt(question.params, signal) : getScansBetween(question.params, signal)
@@ -256,26 +328,32 @@ export const ToolActivity: React.FC = () => {
 
   // B15 — the query lives in the URL, so "what ran at 14:32" can be shared
   // and survives a reload: `at` + `tolerance`, or `from` + `to` (instants,
-  // UTC ISO), with `tool` and `target`.  Read once on arrival; written with
-  // replace (never a history entry per keystroke).
+  // UTC ISO), with `tool` and `target`.  The address is the ONE owner of the
+  // question that was asked (UI_STYLE_GUIDE §39): it is read on every render
+  // and written, with replace, by asking.  (It used to be read once on
+  // arrival and mirrored from state by an effect: Back, or a link to this
+  // page naming another window, changed the address — and the page kept its
+  // old fields and wrote its old question back over it.)
   const [searchParams, setSearchParams] = useSearchParams();
-  const fromUrl = useRef(readActivityQuery(searchParams)).current;
+  const address = useMemo(() => readActivityQuery(searchParams), [searchParams]);
 
+  // The form is a DRAFT — a question being composed, asked with a button —
+  // so its fields are state.  They start as the address fills them, and
+  // follow it when what it asks changes from elsewhere (below).
+  const [seed] = useState(() => draftFrom(address));
   // Default timestamp = "now, rounded to the minute"
-  const [tsLocal, setTsLocal] = useState<string>(() => toLocalInput(fromUrl.at ?? new Date()));
-  const [tolerance, setTolerance] = useState<number>(fromUrl.tolerance ?? 300);
+  const [tsLocal, setTsLocal] = useState<string>(seed.tsLocal);
+  const [tolerance, setTolerance] = useState<number>(seed.tolerance);
   // v5.213.0 — a second query shape: a from/to range (≤ 7 days) for
   // "when did this tool run?" rather than "what ran at this moment?".
-  const [mode, setMode] = useState<QueryMode>(fromUrl.from && fromUrl.to ? 'between' : 'at');
-  const [fromLocal, setFromLocal] = useState<string>(() =>
-    toLocalInput(fromUrl.from ?? new Date(Date.now() - 24 * 3600 * 1000)),
-  );
-  const [toLocal, setToLocal] = useState<string>(() => toLocalInput(fromUrl.to ?? new Date()));
+  const [mode, setMode] = useState<QueryMode>(seed.mode);
+  const [fromLocal, setFromLocal] = useState<string>(seed.fromLocal);
+  const [toLocal, setToLocal] = useState<string>(seed.toLocal);
   // v5.213.0 — attribution filters.  Applied server-side to the focused
   // query and to the week snapshot alike, so the snapshot answers "when
   // did <tool> touch <target> this week?" on its own.
-  const [tool, setTool] = useState(fromUrl.tool);
-  const [target, setTarget] = useState(fromUrl.target);
+  const [tool, setTool] = useState(seed.tool);
+  const [target, setTarget] = useState(seed.target);
   // The tool / target as a query carries them: trimmed, and left out when empty.
   const usedTool = tool.trim();
   const usedTarget = target.trim();
@@ -298,47 +376,29 @@ export const ToolActivity: React.FC = () => {
   // minutes" on mount, so it always opened on "0 activities matched … No
   // activity in this window" — an answer to a question nobody asked
   // (screenshot review 2026-09-23).
-  const [question, setQuestion] = useState<FocusedQuestion | null>(
-    () => (fromUrl.at || (fromUrl.from && fromUrl.to) ? formQuestion() : null),
-  );
-  // The window last asked for — what the URL names.  The form's default
-  // "now" is not a query, so it is not written until one is run.
   //
-  // The URL names what a query RAN with, never what is being typed (M10):
-  // the tolerance, the tool and the target used to be written on every
-  // change, so the address described a query nobody had asked — and a copied
-  // link ran one.  `asked` is the question's window (with ITS tolerance);
-  // `attribution` is the tool / target the last query — the focused one or
-  // the week snapshot — was filtered by.
-  const asked = useMemo<AskedWindow | null>(() => {
-    if (!question) return null;
-    return question.fn === 'getScansAt'
-      ? { at: question.params.ts, tolerance: question.params.toleranceSeconds }
-      : { from: question.params.from, to: question.params.to };
-  }, [question]);
-  // On arrival the snapshot is filtered by the link's tool and target.
-  const [attribution, setAttribution] = useState({ tool: usedTool, target: usedTarget });
-  const noteAttribution = useCallback((ranTool: string, ranTarget: string) => {
-    setAttribution((prev) => (
-      prev.tool === ranTool && prev.target === ranTarget ? prev : { tool: ranTool, target: ranTarget }
-    ));
-  }, []);
+  // It is DERIVED from the address, never kept beside it.  The address names
+  // what a query RAN with, never what is being typed (M10): the window (with
+  // ITS tolerance), and the tool / target the last query — the focused one
+  // or the week snapshot — was filtered by.  The form's default "now" is not
+  // a query, so nothing is written until one is run.
+  const addressQuestion = useMemo(() => questionOf(address), [address]);
+  // The one question the address cannot name: a range the form states that
+  // does not run forward (`to` at or before `from`).  The reader asked it, so
+  // it is asked — the server's answer or refusal is what they see — but
+  // `readActivityQuery` reads no such range, so it has no address and lasts
+  // only until the next question, asked here or arrived at.
+  const [unnamed, setUnnamed] = useState<FocusedQuestion | null>(null);
+  const question = unnamed ?? addressQuestion;
+
+  // An address is written as this page writes it: a link's `…T14:32:17Z`
+  // becomes the instant in full, a tolerance it left out is the one that ran,
+  // and what could not be read is dropped.  This rewrites the address FROM
+  // the address — it never puts the page's state over it.
   useEffect(() => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      ['at', 'from', 'to', 'tolerance', 'tool', 'target'].forEach((k) => next.delete(k));
-      if (asked && 'at' in asked) {
-        next.set('at', asked.at);
-        next.set('tolerance', String(asked.tolerance));
-      } else if (asked) {
-        next.set('from', asked.from);
-        next.set('to', asked.to);
-      }
-      if (attribution.tool) next.set('tool', attribution.tool);
-      if (attribution.target) next.set('target', attribution.target);
-      return next.toString() === prev.toString() ? prev : next;
-    }, { replace: true });
-  }, [asked, attribution, setSearchParams]);
+    const next = canonical(searchParams);
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
   // The focused query's answer.  The page is cross-project, so neither read
   // is one project's.  The answer on screen stays while the next question
   // loads; a question that failed has no answer (never the previous one's).
@@ -351,7 +411,9 @@ export const ToolActivity: React.FC = () => {
     enabled: question != null,
     placeholderData: keepPreviousData,
   });
-  const response: ActivityResponse | null = focusedQuery.isError ? null : focusedQuery.data ?? null;
+  // With no question (the reader went to an address that names none) there
+  // is no answer either: the one kept from the question left behind is not it.
+  const response: ActivityResponse | null = !question || focusedQuery.isError ? null : focusedQuery.data ?? null;
   const loading = focusedQuery.isFetching;
   const error = queryErrorText(focusedQuery.error, 'Failed to load activity');
   // Post-search client-side project filter.  Empty set = show all
@@ -359,27 +421,75 @@ export const ToolActivity: React.FC = () => {
   // without re-fetching).
   const [projectFilter, setProjectFilter] = useState<Set<number>>(new Set());
 
-  // `range` asks a range query for exactly those instants (a chart bin was
-  // chosen) without waiting for the form state it also sets to settle.
   const { refetch: askAgain } = focusedQuery;
-  const search = useCallback((range?: { from: string; to: string }) => {
-    noteAttribution(usedTool, usedTarget);
-    setProjectFilter(new Set()); // a new search starts with every project shown
-    const next: FocusedQuestion = range
-      ? { fn: 'getScansBetween', params: { from: range.from, to: range.to, ...filters } }
-      : formQuestion();
-    // The same question again (Correlate twice, Refresh) is asked again.
-    if (question && JSON.stringify(question) === JSON.stringify(next)) void askAgain();
-    else setQuestion(next);
-  }, [askAgain, filters, formQuestion, noteAttribution, question, usedTool, usedTarget]);
+
+  // What the address asks that this form last agreed with — written by it,
+  // or followed from it.  Anything else in the address came from elsewhere.
+  const addressKey = useMemo(() => askedKey(searchParams), [searchParams]);
+  const [agreed, setAgreed] = useState(addressKey);
+
+  // Asking WRITES the address: this window (none: only the tool / target a
+  // snapshot ran with), with the form's tool and target.  One write per
+  // action, with replace — a question is not a place Back should stop at.
+  const writeAsked = useCallback((window: FocusedQuestion | null) => {
+    const next = withQuestion(searchParams, window, usedTool, usedTarget);
+    setAgreed(askedKey(next));
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, usedTool, usedTarget]);
 
   // v4.21.0 — the week snapshot.  Independent of the form's timestamp /
   // tolerance; always the past 7 days, so the analyst can spot activity
   // clusters before drilling in with a focused query.  Asked on arrival, on
   // Correlate and on Refresh — each time for the 7 days ending THEN, so its
   // [start, end] is fixed when it is asked and the highlight band's
-  // positions don't drift while the user navigates.
+  // positions don't drift while the user navigates.  (Which is why it is
+  // state: "then" is not in the address.)
   const [weekAsked, setWeekAsked] = useState(() => pastWeek(filters));
+
+  // The address asks something this form did not write — Back / Forward, or
+  // a link to this page naming another window: the draft is dropped and the
+  // form is filled from the address, as on arrival.  The focused question
+  // follows by itself (it is read from the address); the snapshot is asked
+  // again only when the address narrows it to another tool / target.
+  if (addressKey !== agreed) {
+    setAgreed(addressKey);
+    const draft = draftFrom(address);
+    setMode(draft.mode);
+    setTsLocal(draft.tsLocal);
+    setTolerance(draft.tolerance);
+    setFromLocal(draft.fromLocal);
+    setToLocal(draft.toLocal);
+    setTool(draft.tool);
+    setTarget(draft.target);
+    setUnnamed(null);
+    setProjectFilter(new Set());
+    if ((weekAsked.tool ?? '') !== address.tool || (weekAsked.target ?? '') !== address.target) {
+      setWeekAsked(pastWeek({ tool: address.tool || undefined, target: address.target || undefined }));
+    }
+  }
+
+  // `range` asks a range query for exactly those instants (a chart bin was
+  // chosen) without waiting for the form state it also sets to settle.
+  // `withWeek` asks the snapshot again too (Correlate, Refresh).
+  const search = useCallback((range?: { from: string; to: string }, withWeek = false) => {
+    setProjectFilter(new Set()); // a new search starts with every project shown
+    if (withWeek) setWeekAsked(pastWeek(filters));
+    const next: FocusedQuestion = range
+      ? { fn: 'getScansBetween', params: { from: range.from, to: range.to, ...filters } }
+      : formQuestion();
+    // The same question again (Correlate twice, Refresh) is asked again.
+    if (sameQuestion(question, next)) {
+      void askAgain();
+      return;
+    }
+    // The address is given the question, and the question is then read from it.
+    const named = sameQuestion(
+      questionOf(readActivityQuery(withQuestion(searchParams, next, usedTool, usedTarget))), next,
+    );
+    setUnnamed(named ? null : next);
+    writeAsked(named ? next : null);
+  }, [askAgain, filters, formQuestion, question, searchParams, usedTool, usedTarget, writeAsked]);
+
   const weekQuery = useQuery({
     queryKey: ['getScansBetween', weekAsked],
     queryFn: ({ signal }) => getScansBetween(weekAsked, signal),
@@ -393,10 +503,12 @@ export const ToolActivity: React.FC = () => {
   const weekLoading = weekQuery.isFetching;
   const weekError = queryErrorText(weekQuery.error, 'Past-7-day snapshot unavailable.');
   const weekRange = useMemo(() => ({ start: weekAsked.from, end: weekAsked.to }), [weekAsked]);
+  // The snapshot alone (Refresh before any answer): the address keeps its
+  // window and takes the tool / target the snapshot is now narrowed to.
   const loadWeek = useCallback(() => {
-    noteAttribution(usedTool, usedTarget);
     setWeekAsked(pastWeek(filters));
-  }, [filters, noteAttribution, usedTool, usedTarget]);
+    writeAsked(addressQuestion);
+  }, [addressQuestion, filters, writeAsked]);
 
   // A chart bin was chosen: correlate exactly that range, and show it in
   // the form so the query on screen is the one that ran.
@@ -607,8 +719,7 @@ export const ToolActivity: React.FC = () => {
             className="flex flex-wrap items-end gap-md"
             onSubmit={(e) => {
               e.preventDefault();
-              search();
-              loadWeek();
+              search(undefined, true);
             }}
           >
             <div className="flex flex-col gap-xxs">
@@ -719,9 +830,9 @@ export const ToolActivity: React.FC = () => {
               type="button"
               variant="outline"
               onClick={() => {
-                loadWeek();
                 // Re-run the focused query only if one has been run.
-                if (response) search();
+                if (response) search(undefined, true);
+                else loadWeek();
               }}
               disabled={weekLoading || loading}
               aria-label="Refresh week snapshot"
