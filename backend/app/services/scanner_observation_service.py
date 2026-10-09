@@ -252,9 +252,15 @@ def list_issues(
     # no rows to carry it, so only then is it counted on its own.
     rows = (
         query.add_columns(func.count().over().label("total_groups"))
+        # The issue key is the LAST sort key (v2.474.1): the other keys are
+        # counts and a title, which tie — and with ties the database may hand
+        # the rows out in a different order for each page, so "Show more"
+        # could repeat an issue or skip one although nothing had changed.
+        # (Rows still move between pages when someone judges an issue; the
+        # page de-duplicates for that.)
         .order_by(*(
-            ((hosts - judged).desc(), hosts.desc(), rank.desc(), title) if sort == "hosts"
-            else (rank.desc(), (hosts - judged).desc(), hosts.desc(), title)
+            ((hosts - judged).desc(), hosts.desc(), rank.desc(), title, key) if sort == "hosts"
+            else (rank.desc(), (hosts - judged).desc(), hosts.desc(), title, key)
         ))
         .offset(skip)
         .limit(limit)

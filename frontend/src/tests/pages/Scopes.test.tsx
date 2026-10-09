@@ -404,6 +404,47 @@ describe('Scopes page — subnet search', () => {
     expect(mocked.getDefaultScope).toHaveBeenCalledWith(1, expect.objectContaining({ subnetsSearch: 'dmz' }), expect.any(AbortSignal));
   });
 
+  // 5.358.0 — the search was copied into state once and written back by an
+  // effect: a link to another search, or Back, changed the address and the
+  // old text was put back over it.
+  it('a link to another search, and Back, change the box and what is asked — and nothing writes the old search back', async () => {
+    // setupTests replaces `useNavigate` with a stub: this needs the real one.
+    const { useNavigate } = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+    const Go = () => {
+      const navigate = useNavigate();
+      return (
+        <>
+          <button type="button" onClick={() => navigate('/scopes?subnet_q=lab')}>to lab</button>
+          <button type="button" onClick={() => navigate(-1)}>back</button>
+        </>
+      );
+    };
+    render(
+      <MemoryRouter initialEntries={['/scopes?subnet_q=dmz']}>
+        <TooltipProvider><Scopes /><Where /><Go /></TooltipProvider>
+      </MemoryRouter>,
+    );
+    const box = () => screen.getByLabelText('Search subnets by CIDR or description');
+    const lastSearch = () => {
+      const calls = mocked.getDefaultScope.mock.calls;
+      return (calls[calls.length - 1][1] as { subnetsSearch?: string }).subnetsSearch;
+    };
+    await screen.findByText('10.77.1.0/24');
+    expect(box()).toHaveValue('dmz');
+
+    fireEvent.click(screen.getByRole('button', { name: 'to lab' }));
+    await waitFor(() => expect(box()).toHaveValue('lab'));
+    await waitFor(() => expect(lastSearch()).toBe('lab'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'back' }));
+    await waitFor(() => expect(box()).toHaveValue('dmz'));
+    await waitFor(() => expect(lastSearch()).toBe('dmz'));
+    // Past the debounce: the address is still the one the reader went back to.
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    expect(screen.getByTestId('where').textContent).toBe('subnet_q=dmz');
+    expect(lastSearch()).toBe('dmz');
+  });
+
   it('typing writes the search to the URL once it settles', async () => {
     renderAt('/scopes');
     await screen.findByText('10.77.1.0/24');

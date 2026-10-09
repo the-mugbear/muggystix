@@ -191,3 +191,31 @@ def test_the_issue_filter_lists_exactly_its_hosts(client, test_project, estate):
     body = r.json()
     items = body["items"] if isinstance(body, dict) else body
     assert sorted(h["ip_address"] for h in items) == ["10.9.0.1", "10.9.0.2"]
+
+
+def test_paging_through_issues_that_tie_lists_each_once(client, db_session, test_project):
+    """The list is ordered by severity, hosts and title — which TIE for issues
+    that differ only by CVE.  Without a last, unique sort key the database may
+    order tied rows differently for each page, so "Show more" could repeat an
+    issue or skip one although nothing changed (v2.474.1: the issue key is the
+    last key).  Thirty issues with one title, one severity and one host each,
+    read five at a time: every issue exactly once, in the same order as one
+    read of them all."""
+    scan = models.Scan(project_id=test_project.id, filename="t.nessus", scan_type="nessus", tool_name="nessus")
+    db_session.add(scan)
+    db_session.commit()
+    host = _host(db_session, test_project.id, "10.9.5.1")
+    for n in range(30):
+        _vuln(db_session, host, scan.id, "Kernel update available", cve_id=f"CVE-2024-{1000 + n}")
+
+    whole = client.get(_url(test_project), params={"limit": 100}).json()
+    assert whole["total"] == 30
+    in_one_read = [row["issue_key"] for row in whole["items"]]
+    assert len(set(in_one_read)) == 30
+
+    paged = []
+    for skip in range(0, 30, 5):
+        page = client.get(_url(test_project), params={"limit": 5, "skip": skip}).json()
+        assert page["total"] == 30
+        paged.extend(row["issue_key"] for row in page["items"])
+    assert paged == in_one_read

@@ -13,6 +13,8 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
 import apiInQueryOnly from './eslint-rules/api-in-query-only.mjs';
+// State seeded from the address (a second owner of a filter) is refused.
+import { STATE_FROM_ADDRESS } from './eslint-rules/state-from-address.mjs';
 
 // A file save goes through utils/download (`saveBlob`).
 const DOWNLOAD_NAME = {
@@ -49,7 +51,7 @@ export default [
       // question).  The official TanStack rule; it replaced a hidden partition
       // of the cache that nothing at the call site could show.
       '@tanstack/query/exhaustive-deps': 'error',
-      'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT],
+      'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT, STATE_FROM_ADDRESS],
     },
   },
   {

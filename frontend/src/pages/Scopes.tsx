@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
   ArrowDownToLine,
   Building2,
@@ -37,7 +37,7 @@ import OutOfScopeExport from '../components/OutOfScopeExport';
 import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
 import { agentInstruction } from '../utils/agentRuns';
 import { useConfirm } from '../hooks/useConfirm';
-import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { useListQuery, type ListPage } from '../hooks/useListQuery';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
@@ -158,7 +158,6 @@ const Scopes: React.FC = () => {
   // Changing the scope is a project analyst's (R32); the page reads the same
   // for a viewer or auditor, without the add row, the editors or the uploads.
   const { canWrite, canExport } = useProjectRole();
-  const [searchParams, setSearchParams] = useSearchParams();
   const [confirmEl, confirm] = useConfirm();
 
   const queryClient = useQueryClient();
@@ -190,17 +189,13 @@ const Scopes: React.FC = () => {
   // request per keystroke; the result resets the list to page 0.
   // In the URL (`?subnet_q=`, replace not push) so a filtered scope can be
   // shared and survives a reload (B15).
-  const [subnetSearch, setSubnetSearch] = useState(() => searchParams.get('subnet_q') ?? '');
-  const debouncedSubnetSearch = useDebouncedValue(subnetSearch, 300);
-  useEffect(() => {
-    setSearchParams((prev) => {
-      const term = debouncedSubnetSearch.trim();
-      if ((prev.get('subnet_q') ?? '') === term) return prev;
-      const next = new URLSearchParams(prev);
-      if (term) next.set('subnet_q', term); else next.delete('subnet_q');
-      return next;
-    }, { replace: true });
-  }, [debouncedSubnetSearch, setSearchParams]);
+  // The address owns the search (5.358.0): `subnetSearch` is what the list is
+  // asked for, read from it on every render; only the text being typed is
+  // state.  (It was copied into state once and written back by an effect, so
+  // Back or a link to another search was overwritten — the one page the lint
+  // rule against that pattern still found.)
+  const subnetBox = useUrlSearchDraft('subnet_q', { also: [] });
+  const subnetSearch = subnetBox.value;
 
   // v2.86.0 — subnet labels.  The project-wide catalogue is one read, shared
   // with the manager dialog (the same key): what the dialog changes is here
@@ -234,12 +229,12 @@ const Scopes: React.FC = () => {
       const page = await getDefaultScope(projectId, {
         subnetsSkip: offset,
         subnetsLimit: limit,
-        subnetsSearch: debouncedSubnetSearch,
+        subnetsSearch: subnetSearch,
       }, signal);
       // A server that does not count has sent everything it has.
       return { ...page, items: page.subnets, total: page.subnets_total ?? offset + page.subnets.length };
     },
-    [projectId, { subnetsSearch: debouncedSubnetSearch.trim() }],
+    [projectId, { subnetsSearch: subnetSearch }],
     { pageSize: SUBNET_PAGE_SIZE, keepPrevious: true, within: projectId },
   );
   const { response: scopePage, rows: subnetRows, total: subnetsTotal } = subnetList;
@@ -648,7 +643,7 @@ const Scopes: React.FC = () => {
             actions={<>
               <span className="tabular-nums text-muted-foreground">
                 {subnetCount.toLocaleString()} entr{subnetCount === 1 ? 'y' : 'ies'}
-                {debouncedSubnetSearch.trim() ? ' matching' : ''}
+                {subnetSearch ? ' matching' : ''}
               </span>
               {canExport && (
                 <Button
@@ -749,18 +744,18 @@ const Scopes: React.FC = () => {
                   aria-hidden
                 />
                 <Input
-                  value={subnetSearch}
-                  onChange={(e) => setSubnetSearch(e.target.value)}
+                  value={subnetBox.draft}
+                  onChange={(e) => subnetBox.setDraft(e.target.value)}
                   placeholder="Search subnets by CIDR or description…"
                   className="pl-8"
                   aria-label="Search subnets by CIDR or description"
                 />
               </div>
-              {subnetSearch && (
+              {subnetBox.draft && (
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => setSubnetSearch('')}
+                  onClick={() => subnetBox.commit('')}
                   aria-label="Clear subnet search"
                 >
                   <CloseIcon className="size-4" aria-hidden />
@@ -852,8 +847,8 @@ const Scopes: React.FC = () => {
                   {scope.subnets.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={canWrite ? 8 : 6} className="py-xl text-center text-muted-foreground">
-                        {debouncedSubnetSearch.trim()
-                          ? `No subnets match "${debouncedSubnetSearch.trim()}". Try a different search or clear it.`
+                        {subnetSearch
+                          ? `No subnets match "${subnetSearch}". Try a different search or clear it.`
                           : canWrite
                             ? "No entries in this project's scope yet. Add one above or upload a file."
                             : "No entries in this project's scope yet."}

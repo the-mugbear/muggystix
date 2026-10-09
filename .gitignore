@@ -253,8 +253,11 @@ report-templates/*/data-*.json
 # /agents-guide, so it must stay tracked.
 CHANGELOG.md
 
-# Progress files for interruptible work (CLAUDE.md "Progress file"):
-# scratch for resuming a task, deleted when it completes, never committed.
+# Planning documents (CLAUDE.md "Plans and progress files"): plans, backlogs,
+# the progress file of work in flight and the open owner questions all live
+# in planning/ — never committed.  A plan is deleted when it is finished.
+/planning/
+# (A progress file written outside it by mistake is still not committed.)
 PROGRESS_*.md
 
 # Session scratch / shared debug bundles — operator-local, never committed.
@@ -297,3 +300,4 @@ CODEREVIEW.txt
 documentation/MCP_*_RUN_*.md
 documentation/acceptance/
 bluestick_migration_failure_*.txt
+/planning
