@@ -18,7 +18,7 @@ const ProjectSelector: React.FC = () => {
   // Project settings/members live in the Settings hub (sidebar → Settings →
   // Project); the selector is for switching projects only, so it no longer
   // duplicates that link (FRX dedup — was two paths to /project-settings).
-  const { projects, currentProject, selectProject, isLoading } = useProject();
+  const { projects, currentProject, selectProject } = useProject();
 
   // The year filter (5.347.0): shown once the projects span more than one
   // year.  Until the reader picks one it follows the current project's year,
@@ -32,14 +32,6 @@ const ProjectSelector: React.FC = () => {
   // falls back, rather than listing nothing.
   const year = picked != null && (picked === ALL || years.some((y) => String(y.year) === picked)) ? picked : followed;
   const shown = filtered && year !== ALL ? projects.filter((p) => String(projectYear(p)) === year) : projects;
-
-  if (isLoading) {
-    return (
-      <div className="px-md py-sm">
-        <div className="h-9 w-full animate-pulse rounded-control bg-muted" />
-      </div>
-    );
-  }
 
   if (projects.length === 0) {
     return (

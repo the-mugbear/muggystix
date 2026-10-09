@@ -4,6 +4,7 @@
  * whole list with it.
  */
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ListPage, ListPageRequest } from '../../hooks/useListQuery';
@@ -25,6 +26,35 @@ const server = (filter: string, size: { n: number } = { n: 60 }) =>
   vi.fn(async ({ offset, limit }: ListPageRequest): Promise<ListPage<Row>> => ({
     items: rows(filter, offset + 1, Math.max(0, Math.min(limit, size.n - offset))), total: size.n,
   }));
+
+describe('usePagedList — its key', () => {
+  // It was `[name, JSON.stringify(deps), {page, pageSize}]`: the project and
+  // the filter could not be named by a write, and another reader of the same
+  // function (a total: `['getRows', 7, null, { limit: 1 }]`) could not be
+  // told from the list.
+  it('is the name, the deps one by one, then the page — so a write can address the list apart from another reader', async () => {
+    const fetch = server('a');
+    const { result } = renderHook(() => ({
+      list: usePagedList<Row>('getRows', fetch, [7, 'a']),
+      client: useQueryClient(),
+      total: useQuery({ queryKey: ['getRows', 7, 'a', { limit: 1 }], queryFn: () => Promise.resolve(60) }),
+    }));
+    await waitFor(() => expect(result.current.list.rows).toHaveLength(25));
+    await waitFor(() => expect(result.current.total.data).toBe(60));
+    const { client } = result.current;
+    expect(client.getQueryData(['getRows', 7, 'a', { page: 0, pageSize: 25 }])).toEqual(
+      expect.objectContaining({ total: 60 }),
+    );
+
+    // The list's pages only: the total is not asked again.
+    const isPage = (key: readonly unknown[]) => typeof key[key.length - 1] === 'object' && 'page' in (key[key.length - 1] as object);
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ['getRows', 7], predicate: (query) => isPage(query.queryKey) });
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(client.getQueryState(['getRows', 7, 'a', { limit: 1 }])?.dataUpdateCount).toBe(1);
+  });
+});
 
 describe('usePagedList', () => {
   it('loads the first page, and next asks the server for the next 25', async () => {

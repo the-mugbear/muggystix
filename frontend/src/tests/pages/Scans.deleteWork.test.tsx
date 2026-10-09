@@ -24,7 +24,7 @@ const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(
 vi.mock('../../services/api', () => api);
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 vi.mock('../../contexts/ProjectContext', () => ({
-  useProject: () => ({ currentProject: { id: 1, name: 'Demo' }, refreshProjects: vi.fn() }),
+  useProject: () => ({ currentProject: { id: 1, name: 'Demo' } }),
 }));
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 1, role: 'admin' }, hasPermission: () => true }),

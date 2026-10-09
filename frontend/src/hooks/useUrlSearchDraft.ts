@@ -46,9 +46,13 @@ export function useUrlSearchDraft(
 ): UrlSearchDraft {
   const [params, setParams] = useSearchParams();
   const value = (params.get(param) ?? '').trim();
+  // (This hook IS the sanctioned draft of an address value: both states are
+  // re-seeded below whenever the address changes from elsewhere.)
+  // eslint-disable-next-line bluestick/state-from-address
   const [draft, setDraftState] = useState(value);
   // The address's value this box last agreed with — written by it, or
   // followed from it.  Another value in the address came from elsewhere.
+  // eslint-disable-next-line bluestick/state-from-address
   const [agreed, setAgreed] = useState(value);
   if (value !== agreed) {
     setAgreed(value);

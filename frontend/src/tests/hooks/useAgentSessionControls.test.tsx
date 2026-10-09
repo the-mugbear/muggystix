@@ -58,12 +58,14 @@ describe('useAgentSessionControls', () => {
     await waitFor(() => expect(result.current.isEnding(2)).toBe(true));
     expect(result.current.isEnding(1)).toBe(true);
 
+    // (Read from the mutations themselves since 5.361.0: the component hears
+    // that one settled a tick after its promise does.)
     await act(async () => { a.resolve(); await pa; });
-    expect(result.current.isEnding(1)).toBe(false);
+    await waitFor(() => expect(result.current.isEnding(1)).toBe(false));
     expect(result.current.isEnding(2)).toBe(true);
 
     await act(async () => { b.resolve(); await pb; });
-    expect(result.current.isEnding(2)).toBe(false);
+    await waitFor(() => expect(result.current.isEnding(2)).toBe(false));
   });
 
   // 5.351.0 — the hook took an `onChanged` its callers used to re-read their

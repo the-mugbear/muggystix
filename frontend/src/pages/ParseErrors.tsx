@@ -12,7 +12,8 @@ import {
   Copy,
   Loader2,
 } from 'lucide-react';
-import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { pageFromParams } from '../hooks/useUrlPage';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { useConfirm } from '../hooks/useConfirm';
 import { ListPage, useListQuery } from '../hooks/useListQuery';
 import { useProjectRole } from '../hooks/useProjectRole';
@@ -213,15 +214,11 @@ const ParseErrors: React.FC = () => {
   // knobs were added alongside.  Pre-v2.86.2 the page only filtered the
   // partial slice it had loaded, which silently missed matches further down
   // the list when projects had >100 ingest jobs.
-  const urlSearch = searchParams.get('search') ?? '';
-  const [searchText, setSearchText] = useState(urlSearch);
-  const debouncedSearchText = useDebouncedValue(searchText, 300);
-  useEffect(() => {
-    // Only a term the operator typed moves the URL (and resets the page): on
-    // mount the two already agree, and a shared link's `page` must survive.
-    if (debouncedSearchText.trim() !== urlSearch) setParams({ search: debouncedSearchText.trim() });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearchText]);
+  // The address owns the search; only the text being typed is state
+  // (`useUrlSearchDraft`: Back and a link to this page change the box, a
+  // typed term drops `page`, a shared link's `page` survives).
+  const search = useUrlSearchDraft('search');
+  const urlSearch = search.value;
   const statusFilter = searchParams.get('status') ?? 'all';
   const setStatusFilter = useCallback((value: string) => {
     setParams({ status: value === 'all' ? null : value });
@@ -237,10 +234,9 @@ const ParseErrors: React.FC = () => {
   // discard the `total` the endpoint already returns, so anything past the
   // 100th upload was unreachable by browsing and the truncation was invisible.
   // 1-based in the URL (`?page=2`), 0-based here.
-  // Only a positive whole number is a page: `?page=1.5` used to send
-  // `skip=12.5`, and `-2`, `abc` or `1e3` are page 1 as well.
-  const pageParam = searchParams.get('page') ?? '';
-  const page = /^[1-9]\d{0,6}$/.test(pageParam) ? Number(pageParam) - 1 : 0;
+  // Only a positive whole number is a page (`pageFromParams`, the one parser):
+  // `?page=1.5` used to send `skip=12.5`.
+  const page = pageFromParams(searchParams);
   const setPage = (next: number) => setParams({ page: next > 0 ? String(next + 1) : null }, true);
   // Fixed: no control has ever changed it (it was state with an unused setter).
   // v5.288.0 — 25, like the other lists (was 50).
@@ -454,8 +450,8 @@ const ParseErrors: React.FC = () => {
               last_error.  Replaces the old client-side filename-only
               filter that silently missed matches outside the loaded slice. */}
           <ListFilterSearch
-            value={searchText}
-            onChange={setSearchText}
+            value={search.draft}
+            onChange={search.setDraft}
             placeholder="Search filename or error…"
             label="Search ingestion results by filename or error message"
           />

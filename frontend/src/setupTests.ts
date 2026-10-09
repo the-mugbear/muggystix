@@ -130,9 +130,6 @@ vi.mock('./contexts/ProjectContext', async () => {
       projects: [{ id: 1, name: 'Test Project', slug: 'test' }],
       currentProject: { id: 1, name: 'Test Project', slug: 'test' },
       selectProject: vi.fn(),
-      isLoading: false,
-      refreshProjects: vi.fn(),
-      loadError: null,
     }),
   };
 });

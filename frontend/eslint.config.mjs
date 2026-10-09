@@ -14,7 +14,10 @@ import tseslint from 'typescript-eslint';
 
 import apiInQueryOnly from './eslint-rules/api-in-query-only.mjs';
 // State seeded from the address (a second owner of a filter) is refused.
-import { STATE_FROM_ADDRESS } from './eslint-rules/state-from-address.mjs';
+import stateFromAddress from './eslint-rules/state-from-address.mjs';
+
+// This repository's own rules (one object: a plugin is defined once).
+const bluestick = { rules: { 'api-in-query-only': apiInQueryOnly, 'state-from-address': stateFromAddress } };
 
 // A file save goes through utils/download (`saveBlob`).
 const DOWNLOAD_NAME = {
@@ -51,8 +54,16 @@ export default [
       // question).  The official TanStack rule; it replaced a hidden partition
       // of the cache that nothing at the call site could show.
       '@tanstack/query/exhaustive-deps': 'error',
-      'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT, STATE_FROM_ADDRESS],
+      'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT],
     },
+  },
+  {
+    // A filter in the address has one owner, the address: no `useState`
+    // seeded from it, directly or through a `const` read from it.
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/tests/**'],
+    plugins: { bluestick },
+    rules: { 'bluestick/state-from-address': 'error' },
   },
   {
     // Tests mock the `services/api` barrel.  An import of one of its
@@ -78,7 +89,7 @@ export default [
     // `allow` names the barrel's exports that make no request.
     files: ['src/**/*.{ts,tsx}'],
     ignores: ['src/services/api/**', 'src/tests/**'],
-    plugins: { bluestick: { rules: { 'api-in-query-only': apiInQueryOnly } } },
+    plugins: { bluestick },
     rules: {
       'bluestick/api-in-query-only': ['error', {
         allow: [

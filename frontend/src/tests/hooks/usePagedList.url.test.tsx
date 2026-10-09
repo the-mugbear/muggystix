@@ -120,6 +120,11 @@ describe('usePagedList — the page in the address', () => {
     expect(page('page=-4')).toBe(0);
     expect(page('page=2.5')).toBe(0);
     expect(page('page=abc')).toBe(0);
+    // Not a number the reader wrote as a page (these were pages 2, 1000, 16 and 2).
+    expect(page('page=2%20')).toBe(0);
+    expect(page('page=1e3')).toBe(0);
+    expect(page('page=0x10')).toBe(0);
+    expect(page('page=2.0')).toBe(0);
     expect(page('page=4')).toBe(3);
   });
 });

@@ -7,7 +7,7 @@ const ctx = vi.hoisted(() => ({ projects: [] as P[], current: 0, selectProject: 
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({
     projects: ctx.projects, currentProject: ctx.projects[ctx.current] ?? null,
-    selectProject: ctx.selectProject, isLoading: false,
+    selectProject: ctx.selectProject,
   }),
 }));
 

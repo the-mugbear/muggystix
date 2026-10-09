@@ -21,9 +21,12 @@ export interface UrlPage {
   byHistory: boolean;
 }
 
+/** The ONE reading of a page in the address: digits only, so `2 `, `1e3`,
+ *  `0x10` and `2.0` are the first page like `abc` — a page is never a number
+ *  the reader did not write as one. */
 export const pageFromParams = (params: URLSearchParams, param = 'page'): number => {
-  const n = Number(params.get(param));
-  return Number.isInteger(n) && n > 1 ? n - 1 : 0;
+  const raw = params.get(param) ?? '';
+  return /^[1-9]\d{0,6}$/.test(raw) ? Number(raw) - 1 : 0;
 };
 
 export function useUrlPage(param = 'page'): UrlPage {

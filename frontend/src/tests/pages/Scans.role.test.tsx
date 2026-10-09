@@ -25,7 +25,7 @@ const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 const role = vi.hoisted(() => ({ value: 'viewer' as string }));
 vi.mock('../../contexts/ProjectContext', () => ({
-  useProject: () => ({ currentProject: { id: 1, name: 'Demo', my_role: role.value }, refreshProjects: vi.fn() }),
+  useProject: () => ({ currentProject: { id: 1, name: 'Demo', my_role: role.value } }),
 }));
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 5, role: 'member' }, hasPermission: (r: string) => r !== 'admin' }),

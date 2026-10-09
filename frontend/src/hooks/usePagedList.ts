@@ -107,8 +107,11 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
   );
 
   const query = useQuery<P>({
-    // `depsKey` is the deps, already as one plain value.
-    queryKey: [name, depsKey, { page, pageSize }],
+    // The same shape as every other key (`[apiFn, projectId, …args]`), so a
+    // write can address this list — or one page of it — apart from another
+    // reader of the same function.  (It was the deps as one JSON string.)
+    // eslint-disable-next-line @tanstack/query/exhaustive-deps -- the key is its parts; the fetcher's inputs are `deps`
+    queryKey: [name, ...deps, { page, pageSize }],
     queryFn: ({ signal }) => fetchPage({ offset: page * pageSize, limit: pageSize, signal }),
   });
   const response = query.data ?? null;

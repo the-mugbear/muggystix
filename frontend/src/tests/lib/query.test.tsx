@@ -13,7 +13,7 @@ import React from 'react';
 import { QueryClientProvider, QueryObserver, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createQueryClient, invalidateReads, pollEvery, useLastSettled } from '../../lib/query';
+import { createQueryClient, invalidateReads, pollEvery, useFailureStreak, useLastSettled } from '../../lib/query';
 
 const setVisibility = (state: 'visible' | 'hidden') => {
   Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
@@ -354,6 +354,38 @@ describe('useLastSettled — the last answer this component was given', () => {
     expect(result.current).toBe('entries of host 1');
     rerender({ data: undefined, host: 2 });
     expect(result.current).toBeUndefined();
+  });
+});
+
+describe('useFailureStreak — failures in a row since the last answer', () => {
+  it('counts each failed re-read, and starts again at the next answer', async () => {
+    let fail = false;
+    const read = vi.fn(() => (fail ? Promise.reject(new Error('down')) : Promise.resolve('3 unread')));
+    const { result } = renderHook(() => {
+      const query = useQuery({ queryKey: ['getCount'], queryFn: read });
+      return { streak: useFailureStreak(query), data: query.data, refetch: query.refetch };
+    });
+    await waitFor(() => expect(result.current.data).toBe('3 unread'));
+    expect(result.current.streak).toBe(0);
+
+    fail = true;
+    for (const expected of [1, 2, 3]) {
+      await act(async () => { await result.current.refetch(); });
+      // (The component hears of it a tick after the read settles.)
+      await waitFor(() => expect(result.current.streak).toBe(expected));
+      // The last answer stays: it is what "may be out of date".
+      expect(result.current.data).toBe('3 unread');
+    }
+
+    fail = false;
+    await act(async () => { await result.current.refetch(); });
+    await waitFor(() => expect(result.current.streak).toBe(0));
+
+    // One blip after an answer is one, not four.
+    fail = true;
+    await act(async () => { await result.current.refetch(); });
+    await waitFor(() => expect(result.current.streak).toBe(1));
+    expect(read).toHaveBeenCalledTimes(6);
   });
 });
 

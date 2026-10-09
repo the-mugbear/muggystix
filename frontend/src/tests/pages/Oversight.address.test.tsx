@@ -80,6 +80,43 @@ const range = (from: number, to: number) => {
 
 beforeEach(() => { dashboardMock.mockReset().mockResolvedValue(response); });
 
+// The custom dates were state seeded once from the address (through a
+// memoised `range`, so the lint entry of the time did not see it): after Back
+// or a link to another period the boxes showed the dates the reader had left,
+// over figures for the period in the address.
+describe('Oversight — the custom period boxes follow the address (real router)', () => {
+  const start = () => screen.getByLabelText('Start (UTC)') as HTMLInputElement;
+  const end = () => screen.getByLabelText('End (UTC)') as HTMLInputElement;
+
+  it('a link to another custom period, and Back, change the boxes and what is asked', async () => {
+    const router = await open('/oversight?tab=projects&range=custom&start=2026-01-01&end=2026-01-31');
+    expect(start().value).toBe('2026-01-01');
+    expect(end().value).toBe('2026-01-31');
+
+    await act(async () => { await router.navigate('/oversight?tab=projects&range=custom&start=2026-03-01&end=2026-03-31'); });
+    await waitFor(() => expect(start().value).toBe('2026-03-01'));
+    expect(end().value).toBe('2026-03-31');
+    await waitFor(() => expect(dashboardMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ start: '2026-03-01', end: '2026-03-31' }), expect.anything(),
+    ));
+
+    await act(async () => { await router.navigate(-1); });
+    await waitFor(() => expect(start().value).toBe('2026-01-01'));
+    expect(end().value).toBe('2026-01-31');
+  });
+
+  it('a date being composed is the reader’s until Apply, and Apply writes both', async () => {
+    const router = await open('/oversight?tab=projects&range=custom&start=2026-01-01&end=2026-01-31');
+    fireEvent.change(end(), { target: { value: '2026-02-15' } });
+    expect(end().value).toBe('2026-02-15');
+    expect(router.state.location.search).toContain('end=2026-01-31');
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await waitFor(() => expect(router.state.location.search).toContain('end=2026-02-15'));
+    expect(start().value).toBe('2026-01-01');
+    expect(end().value).toBe('2026-02-15');
+  });
+});
+
 describe('Oversight — the project table follows the address (real router)', () => {
   it('opens on what the address says: the search box, the sort and the page', async () => {
     await open('/oversight?tab=projects&q=project&sort=targets&page=2');

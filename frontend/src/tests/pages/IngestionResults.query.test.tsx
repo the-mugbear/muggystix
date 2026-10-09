@@ -6,7 +6,7 @@
  *   R32 — retry / discard / dismiss / re-process are a project analyst's.
  */
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom';
+import { Link, MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const api = vi.hoisted(() => {
@@ -26,7 +26,7 @@ const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 const role = vi.hoisted(() => ({ value: 'analyst' as string | undefined }));
 vi.mock('../../contexts/ProjectContext', () => ({
-  useProject: () => ({ currentProject: { id: 1, name: 'Demo', my_role: role.value }, refreshProjects: vi.fn() }),
+  useProject: () => ({ currentProject: { id: 1, name: 'Demo', my_role: role.value } }),
 }));
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 1, role: 'member' }, hasPermission: (r: string) => r !== 'admin' }),
@@ -56,7 +56,12 @@ const Where = () => <output data-testid="where">{useSearchParams()[0].toString()
 const renderPage = (url = '/parse-errors') => render(
   <MemoryRouter initialEntries={[url]}>
     <TooltipProvider>
-      <Routes><Route path="/parse-errors" element={<><IngestionResults /><Where /></>} /></Routes>
+      <Routes>
+        <Route
+          path="/parse-errors"
+          element={<><IngestionResults /><Where /><Link to="/parse-errors?search=masscan">elsewhere</Link></>}
+        />
+      </Routes>
     </TooltipProvider>
   </MemoryRouter>,
 );
@@ -95,6 +100,26 @@ describe('Ingestion Results — the view is in the URL (B15)', () => {
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
       1, expect.objectContaining({ skip: 0, search: 'nessus' }), expect.any(AbortSignal),
     ));
+  });
+
+  // The box was state seeded once from the address and written back by an
+  // effect (the two-owner defect fixed on the other lists in 5.354.0; the lint
+  // entry missed this page because the address was read on the line before).
+  it('a link to the page with another search changes the box and what is asked — nothing writes the old search back', async () => {
+    const box = () => screen.getByLabelText('Search ingestion results by filename or error message');
+    renderPage('/parse-errors?search=dmz');
+    await screen.findByText('scan.xml');
+    expect(box()).toHaveValue('dmz');
+
+    fireEvent.click(screen.getByRole('link', { name: 'elsewhere' }));
+    await waitFor(() => expect(box()).toHaveValue('masscan'));
+    await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
+      1, expect.objectContaining({ search: 'masscan' }), expect.any(AbortSignal),
+    ));
+    // Past the debounce: the address is still the link's.
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 450); }); });
+    expect(screen.getByTestId('where').textContent).toBe('search=masscan');
+    expect(box()).toHaveValue('masscan');
   });
 
   it('Next and the sort direction are written too', async () => {

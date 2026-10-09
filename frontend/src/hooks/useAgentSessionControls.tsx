@@ -12,7 +12,7 @@
  * (`AGENT_SESSION_READS`): a caller passes no re-read callback.
  */
 import React, { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useMutationState, useQueryClient } from '@tanstack/react-query';
 import ResumeAgentSessionDialog from '../components/ResumeAgentSessionDialog';
 import { CodeBlock } from '../components/ui/code-block';
 import { useToast } from '../contexts/ToastContext';
@@ -36,7 +36,9 @@ export interface AgentSessionControls {
   isEnding: (sessionId: number) => boolean;
 }
 
-export const canEndSession = (row: AgentSessionRow): boolean =>
+const END_SESSION = ['endAgentSession'] as const;
+
+export const canEndSession =(row: AgentSessionRow): boolean =>
   row.kind === 'project' && row.status === 'active' && row.can_end === true;
 
 export const canResumeSession = (row: AgentSessionRow): boolean =>
@@ -45,14 +47,19 @@ export const canResumeSession = (row: AgentSessionRow): boolean =>
 export function useAgentSessionControls(): AgentSessionControls {
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
-  const [endingIds, setEndingIds] = useState<ReadonlySet<number>>(() => new Set());
   const [resumeRow, setResumeRow] = useState<AgentSessionRow | null>(null);
   const queryClient = useQueryClient();
   const projectId = useProjectId();
   // Several Ends can be in flight (one per session), so which rows are busy
-  // is `endingIds`, not this mutation's one `isPending`.
+  // is every pending End, not this mutation's one `isPending` — read from
+  // the mutations themselves (it was a Set kept by hand beside them).
   const { mutateAsync: end } = useMutation({
+    mutationKey: END_SESSION,
     mutationFn: (sessionId: number) => endAgentSession(projectId, sessionId),
+  });
+  const endingIds = useMutationState({
+    filters: { mutationKey: END_SESSION, status: 'pending' },
+    select: (mutation) => mutation.state.variables as number,
   });
 
   const requestEnd = async (row: AgentSessionRow): Promise<boolean> => {
@@ -93,7 +100,6 @@ export function useAgentSessionControls(): AgentSessionControls {
       ),
     });
     if (!ok) return false;
-    setEndingIds((prev) => new Set(prev).add(row.id));
     try {
       await end(row.id);
       toast.success(`Agent session #${row.id} ended — its key is revoked.`);
@@ -104,13 +110,6 @@ export function useAgentSessionControls(): AgentSessionControls {
     } catch (err) {
       toast.error(formatApiError(err, 'Could not end the agent session.'));
       return false;
-    } finally {
-      // Only this session's flag: another End may still be in flight.
-      setEndingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(row.id);
-        return next;
-      });
     }
   };
 
@@ -128,6 +127,6 @@ export function useAgentSessionControls(): AgentSessionControls {
     dialogs,
     requestEnd,
     requestResume: setResumeRow,
-    isEnding: (sessionId) => endingIds.has(sessionId),
+    isEnding: (sessionId) => endingIds.includes(sessionId),
   };
 }

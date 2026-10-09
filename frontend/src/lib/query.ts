@@ -161,3 +161,23 @@ export function useLastSettled<T>(
   if (data != null) held.current = { value: data, resetKey };
   return held.current?.value;
 }
+
+/**
+ * How many times in a row a polled read has failed since this component last
+ * saw it answer — for "the figure shown may be out of date" after several
+ * failures, not after one blip.  0 again on the next answer.
+ *
+ *   const unread = useQuery({ …, ...pollEvery(60_000) });
+ *   const stale = useFailureStreak(unread) >= 3;
+ *
+ * (The library's own `failureCount` starts again at every attempt, and this
+ * app does not retry, so it never passes 1.)
+ */
+export function useFailureStreak(
+  query: { dataUpdatedAt: number; errorUpdateCount: number },
+): number {
+  const { dataUpdatedAt, errorUpdateCount } = query;
+  const answered = useRef({ dataUpdatedAt, errors: errorUpdateCount });
+  if (answered.current.dataUpdatedAt !== dataUpdatedAt) answered.current = { dataUpdatedAt, errors: errorUpdateCount };
+  return errorUpdateCount - answered.current.errors;
+}

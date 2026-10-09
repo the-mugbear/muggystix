@@ -42,7 +42,7 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
-import { pollEvery } from '../lib/query';
+import { pollEvery, useFailureStreak } from '../lib/query';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import logger from '../utils/logger';
 import { HUBS, documentTitleFor, isCrossProjectPath, resolveActiveHub } from '../config/navigation';
@@ -203,37 +203,29 @@ export default function Layout({ children }: LayoutProps) {
   // The bell's count: the reader's unread mentions across their projects,
   // re-read every minute while the tab is visible and half as often while
   // the server is failing (`pollEvery`).  A failed read keeps the last count.
-  const failureStreakRef = React.useRef(0);
-  // v4.58.0 (UX·7) — surface staleness when the poll has failed enough
-  // times that the displayed count is probably out of date.  Threshold
-  // is conservative (3 consecutive failures) so a transient blip doesn't
-  // visually alarm operators; back to false on the next successful read.
-  const [notificationsStale, setNotificationsStale] = React.useState(false);
   const notificationsOn = isAuthenticated && !!currentProject;
-  // eslint-disable-next-line @tanstack/query/exhaustive-deps -- the ref is the failure count, not an input of the read
   const unread = useQuery({
     queryKey: ['getUnreadNotificationCount'],
     queryFn: async () => {
       try {
-        const count = await getUnreadNotificationCount();
-        failureStreakRef.current = 0;
-        setNotificationsStale(false);
-        return count;
+        return await getUnreadNotificationCount();
       } catch (err) {
-        failureStreakRef.current += 1;
         // Silent visually (the badge stays at last-known) but logged
         // for triage — pre-fix this catch was completely swallowed.
         logger.warn('NOTIFICATIONS', 'unread-count poll failed', {
           message: (err as Error | undefined)?.message,
-          streak: failureStreakRef.current,
         });
-        if (failureStreakRef.current >= 3) setNotificationsStale(true);
         throw err;
       }
     },
     enabled: notificationsOn,
     ...pollEvery(60_000),
   });
+  // v4.58.0 (UX·7) — surface staleness when the poll has failed enough
+  // times that the displayed count is probably out of date.  Threshold
+  // is conservative (3 consecutive failures) so a transient blip doesn't
+  // visually alarm operators; back to false on the next successful read.
+  const notificationsStale = useFailureStreak(unread) >= 3;
   // (A page that marks notifications read invalidates this read, so the bell
   // drops at once instead of on the next minute's.)
   const unreadCount = notificationsOn ? unread.data ?? 0 : 0;

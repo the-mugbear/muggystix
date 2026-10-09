@@ -100,7 +100,6 @@ vi.mock('../../contexts/ProjectContext', async () => ({
     };
     return {
       projects: [project], currentProject: project, selectProject: vi.fn(),
-      isLoading: false, refreshProjects: vi.fn(), loadError: null,
     };
   },
 }));

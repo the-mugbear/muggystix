@@ -112,9 +112,30 @@ describe('ProjectProvider', () => {
     expect(screen.queryByText('No Projects Yet')).toBeNull();
     expect(api.getProjects).toHaveBeenCalledTimes(1);    // no automatic retry
 
+    // Retry reads behind the loader: there is no app to keep on screen.
+    let answer!: (rows: Project[]) => void;
+    api.getProjects.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+    expect(await screen.findByText('Loading projects…')).toBeInTheDocument();
+    await act(async () => { answer([ALPHA]); });
+    await waitFor(() => expect(current()).toBe('Alpha'));
+  });
+
+  it('the first project was created but the list could not be re-read: said, with Retry — not the empty form again', async () => {
+    api.getProjects.mockResolvedValueOnce([]);
+    mount();
+    await screen.findByText('No Projects Yet');
+    api.createProject.mockResolvedValue(ALPHA);
+    api.getProjects.mockRejectedValueOnce({ response: { status: 503 } });
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'Alpha' } });
+    fireEvent.click(screen.getByRole('button', { name: /create project/i }));
+    expect(await screen.findByText('Could not load projects')).toBeInTheDocument();
+    expect(screen.queryByText('No Projects Yet')).toBeNull();
+
     api.getProjects.mockResolvedValue([ALPHA]);
     fireEvent.click(screen.getByRole('button', { name: /retry/i }));
     await waitFor(() => expect(current()).toBe('Alpha'));
+    expect(api.createProject).toHaveBeenCalledTimes(1);
   });
 
   it('an empty list offers an administrator the first project, and opens it once created', async () => {
@@ -153,23 +174,21 @@ describe('ProjectProvider', () => {
     expect(JSON.parse(localStorage.getItem('nm.recentProjectIds') as string)[0]).toBe(2);
   });
 
-  it('refreshProjects re-reads the list behind the loader, keeps the choice, and shows a rename', async () => {
+  // (5.361.0 — `refreshProjects` left the context: a re-read with the app on
+  // screen is always the background one, asked for by invalidating the list.)
+  it('a re-read keeps the choice and shows a rename, in place', async () => {
     api.getProjects.mockResolvedValue([ALPHA, BRAVO]);
     mount();
     await waitFor(() => expect(current()).toBe('Alpha'));
     act(() => ctx.selectProject(BRAVO));
 
-    let answer!: (rows: Project[]) => void;
-    api.getProjects.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
-    let refreshed!: Promise<void>;
-    act(() => { refreshed = ctx.refreshProjects(); });
-    expect(await screen.findByText('Loading projects…')).toBeInTheDocument();
-    await act(async () => { answer([ALPHA, project(2, 'Bravo renamed')]); await refreshed; });
+    api.getProjects.mockResolvedValue([ALPHA, project(2, 'Bravo renamed')]);
+    fireEvent.click(screen.getByRole('button', { name: 'another reader re-reads' }));
     await waitFor(() => expect(current()).toBe('Bravo renamed'));
-    expect(mounts).toBe(2);    // the page was remounted by the loader, as before
+    expect(mounts).toBe(1);
   });
 
-  it('a project that a refresh no longer lists gives way to the next most recent', async () => {
+  it('a project that a re-read no longer lists gives way to the next most recent', async () => {
     api.getProjects.mockResolvedValue([ALPHA, BRAVO, CHARLIE]);
     mount();
     await waitFor(() => expect(current()).toBe('Alpha'));
@@ -177,22 +196,9 @@ describe('ProjectProvider', () => {
     act(() => ctx.selectProject(BRAVO));
 
     api.getProjects.mockResolvedValue([ALPHA, CHARLIE]);
-    await act(async () => { await ctx.refreshProjects(); });
+    fireEvent.click(screen.getByRole('button', { name: 'another reader re-reads' }));
     await waitFor(() => expect(current()).toBe('Charlie'));
     expect(api.state.stored).toBe(3);
-  });
-
-  it('a failed refresh is said on the full screen, and Retry brings the app back', async () => {
-    api.getProjects.mockResolvedValueOnce([ALPHA]);
-    mount();
-    await waitFor(() => expect(current()).toBe('Alpha'));
-    api.getProjects.mockRejectedValueOnce({ response: { status: 503 } });
-    await act(async () => { await ctx.refreshProjects(); });
-    expect(await screen.findByText('Could not load projects')).toBeInTheDocument();
-
-    api.getProjects.mockResolvedValue([ALPHA]);
-    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
-    await waitFor(() => expect(current()).toBe('Alpha'));
   });
 
   it('adoptProject lists and selects a project just created, without re-reading or unmounting the page', async () => {

@@ -22,8 +22,6 @@ vi.mock('../../contexts/ProjectContext', () => ({
     currentProject: current,
     selectProject,
     adoptProject,
-    refreshProjects: vi.fn(),
-    isLoading: false,
   }),
 }));
 

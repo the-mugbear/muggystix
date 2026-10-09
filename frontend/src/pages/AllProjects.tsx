@@ -33,7 +33,7 @@ const day = (s?: string | null) => (s ? formatDate(s.slice(0, 10)) : null);
 const statusLabel = (s: string) => PROJECT_STATUSES.find((x) => x.value === s)?.label ?? s;
 
 const AllProjects: React.FC = () => {
-  const { projects, currentProject, selectProject, adoptProject, isLoading } = useProject();
+  const { projects, currentProject, selectProject, adoptProject } = useProject();
   const navigate = useNavigate();
   const toast = useToast();
   const [open, setOpen] = useState(false);
@@ -82,11 +82,7 @@ const AllProjects: React.FC = () => {
       </header>
 
       <PostureSection title={`Projects (${projects.length})`}>
-        {isLoading && projects.length === 0 ? (
-          <p className="inline-flex items-center gap-xs text-caption text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden /> Loading projects…
-          </p>
-        ) : projects.length === 0 ? (
+        {projects.length === 0 ? (
           <p className="text-metadata text-muted-foreground">No projects yet.</p>
         ) : (
           <table className="w-full border-collapse text-metadata" style={{ tableLayout: 'fixed' }} aria-label="All projects">

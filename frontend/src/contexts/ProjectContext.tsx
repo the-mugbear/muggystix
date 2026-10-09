@@ -98,24 +98,20 @@ interface ProjectContextType {
   projects: Project[];
   currentProject: Project | null;
   selectProject: (project: Project) => void;
-  isLoading: boolean;
-  refreshProjects: () => Promise<void>;
   /** v5.290.0 — add a project the caller just created to the list and make
-   *  it the active one, without a refetch (a refresh shows the full-screen
-   *  loader, unmounting the page that created it). */
+   *  it the active one, at once.  (Any other change to the list: the writer
+   *  invalidates `getProjects`, which re-reads it behind the page.) */
   adoptProject: (project: Project) => void;
-  /** Present when the last project fetch failed; null on success (even if empty). */
-  loadError: string | null;
+  // No `isLoading` / `loadError` (5.361.0): the provider shows its own
+  // loading and error screens INSTEAD of the app, so nothing under it could
+  // ever read either as anything but false / null.
 }
 
 const ProjectContext = createContext<ProjectContextType>({
   projects: [],
   currentProject: null,
   selectProject: () => {},
-  isLoading: true,
-  refreshProjects: async () => {},
   adoptProject: () => {},
-  loadError: null,
 });
 
 export const useProject = () => useContext(ProjectContext);
@@ -180,21 +176,22 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
   // the project from `useProjectId()` and hands it to the API function.
   if (currentProject && getCurrentProjectId() !== currentProject.id) setCurrentProjectId(currentProject.id);
 
-  // The full-screen loader: the first read, and a refresh that was ASKED for
-  // (`refreshProjects`).  Not every read in flight — another reader of the
-  // list (a dialog that lists projects) re-reads it in the background, and a
-  // loader there would unmount the page that opened the dialog.
-  const [refreshing, setRefreshing] = useState(0);
-  const isLoading = list.isPending || refreshing > 0;
+  // The full-screen loader: a read while there is no project to show the app
+  // in (the first read; Retry on the error screen; the re-read after the
+  // first project is created).  Not every read in flight — with the app on
+  // screen, a reader of the list (a dialog that lists projects, a write that
+  // invalidates it) re-reads it in the background, and a loader there would
+  // unmount the page that asked.
+  const nothingToShow = !list.data?.length;
+  const isLoading = list.isPending || (list.isFetching && nothingToShow);
   // Fix for UX audit #2: distinguish "fetch failed" from "fetched
   // successfully but the user has no projects".  Previously any
   // failure was swallowed and users saw the misleading
   // "No Projects Available" dead end even when the backend was down.
-  // The same rule as the loader: the full-screen error is for a list that
-  // was never read, or a refresh that was asked for and failed — a failed
-  // background re-read keeps the app, and the list it had.
-  const [refreshFailed, setRefreshFailed] = useState(false);
-  const loadError = list.isError && (!list.data || refreshFailed)
+  // The same rule as the loader: the full-screen error is for a failed read
+  // with no project to show — a failed background re-read keeps the app, and
+  // the list it had.
+  const loadError = list.isError && nothingToShow
     ? formatApiError(list.error, 'Failed to load projects. Check backend connection.')
     : null;
   // Both the error and empty-project states below render *instead of*
@@ -206,15 +203,9 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
   const location = useLocation();
 
   const { refetch } = list;
-  const refreshProjects = useCallback(async () => {
-    setRefreshing((n) => n + 1);
-    try {
-      const result = await refetch();
-      setRefreshFailed(result.isError);
-    } finally {
-      setRefreshing((n) => n - 1);
-    }
-  }, [refetch]);
+  // The provider's own two screens only (Retry; the first project created):
+  // with the app on screen, a write invalidates `getProjects` instead.
+  const rereadProjects = useCallback(async () => { await refetch(); }, [refetch]);
 
   const selectProject = useCallback(
     (project: Project) => {
@@ -253,8 +244,8 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
   // Declared BEFORE early returns so the hook order is stable across
   // renders (rules of hooks).
   const contextValue = useMemo(
-    () => ({ projects, currentProject, selectProject, isLoading, refreshProjects, adoptProject, loadError }),
-    [projects, currentProject, selectProject, isLoading, refreshProjects, adoptProject, loadError],
+    () => ({ projects, currentProject, selectProject, adoptProject }),
+    [projects, currentProject, selectProject, adoptProject],
   );
 
   // Show loading state until projects are loaded and one is selected.
@@ -285,7 +276,7 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
             moment, or sign out and back in if the problem persists.
           </p>
           <div className="flex gap-xs">
-            <Button onClick={() => refreshProjects()}>
+            <Button onClick={() => void rereadProjects()}>
               <RefreshCw className="size-4" aria-hidden />
               Retry
             </Button>
@@ -310,7 +301,7 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
     return (
       <EmptyProjectStartScreen
         canCreate={hasPermission('admin')}
-        onCreated={refreshProjects}
+        onCreated={rereadProjects}
         onSignOut={logout}
       />
     );

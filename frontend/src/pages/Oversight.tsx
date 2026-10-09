@@ -408,8 +408,19 @@ const Oversight: React.FC = () => {
       : presetRange(preset)),
     [preset, params],
   );
-  const [draftStart, setDraftStart] = useState(range.start ?? '');
-  const [draftEnd, setDraftEnd] = useState(range.end ?? '');
+  // The custom dates being composed (asked for by Apply).  They are a draft
+  // OF the address's range: when that changes from elsewhere — Back, a link
+  // to another period — the boxes follow it instead of showing the dates of
+  // the period the reader left.
+  const addressRange = `${range.start ?? ''}|${range.end ?? ''}`;
+  // eslint-disable-next-line bluestick/state-from-address -- an uncommitted draft, refilled below whenever the address's range changes
+  const [draftRange, setDraftRange] = useState({ start: range.start ?? '', end: range.end ?? '', of: addressRange });
+  if (draftRange.of !== addressRange) {
+    setDraftRange({ start: range.start ?? '', end: range.end ?? '', of: addressRange });
+  }
+  const { start: draftStart, end: draftEnd } = draftRange;
+  const setDraftStart = (start: string) => setDraftRange((d) => ({ ...d, start }));
+  const setDraftEnd = (end: string) => setDraftRange((d) => ({ ...d, end }));
   const draftError = preset === 'custom' ? customRangeError(draftStart, draftEnd) : null;
 
   const query: OversightQuery = useMemo(() => ({
@@ -555,8 +566,8 @@ const Oversight: React.FC = () => {
           <ListFilterBar className="mb-0 border-b-0 pb-0">
             <Select value={preset} onValueChange={(v) => {
               if (v === 'custom') {
+                // (The boxes follow the address this writes.)
                 setParam({ range: 'custom', start: range.start ?? '', end: range.end ?? '' });
-                setDraftStart(range.start ?? ''); setDraftEnd(range.end ?? '');
               } else {
                 setParam({ range: v === DEFAULT_PRESET ? null : v, start: null, end: null });
               }
