@@ -11,7 +11,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Check, Copy, Loader2 } from 'lucide-react';
 
 import {
-  getRemediationFollowUp, recordRemediationFollowUp, type RemediationFollowUp,
+  getRemediationFollowUp, recordRemediationFollowUp, recordRemediationFollowUpOverview, type RemediationFollowUp,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
@@ -23,7 +23,15 @@ import {
 } from '../ui/dialog';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Textarea } from '../ui/textarea';
+
+/** How far ahead a reminder looks (`upcoming_days`). */
+export const HORIZONS: Array<{ days: number; label: string }> = [
+  { days: 0, label: 'Overdue and due soon' },
+  { days: 30, label: 'Overdue, due soon, and due in the next 30 days' },
+  { days: 90, label: 'Overdue, due soon, and due in the next 90 days' },
+];
 
 export const RemediationFollowUpDialog: React.FC<{
   contactEmail: string;
@@ -32,9 +40,12 @@ export const RemediationFollowUpDialog: React.FC<{
   /** With `all`: only this project. */
   projectId?: number;
   canWrite: boolean;
+  /** How far ahead the reminder looks when it opens (one of `HORIZONS`).  A
+   *  contact with nothing overdue or due soon is reminded of what is coming. */
+  initialAhead?: number;
   onClose: () => void;
   onRecorded: () => void;
-}> = ({ contactEmail, scope, projectId, canWrite, onClose, onRecorded }) => {
+}> = ({ contactEmail, scope, projectId, canWrite, initialAhead = 0, onClose, onRecorded }) => {
   const toast = useToast();
   const [data, setData] = useState<RemediationFollowUp | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,18 +54,31 @@ export const RemediationFollowUpDialog: React.FC<{
   const [on, setOn] = useState(localToday());
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
+  // How far ahead the reminder looks: 0 = overdue and due soon only.
+  const [ahead, setAhead] = useState<number>(initialAhead);
+  const [loading, setLoading] = useState(true);
   const live = useRef(true);
 
   useEffect(() => {
     live.current = true;
     const controller = new AbortController();
-    getRemediationFollowUp(contactEmail, scope === 'all' ? 'all' : undefined, projectId, controller.signal)
+    setLoading(true);
+    setError(null);
+    getRemediationFollowUp(contactEmail, scope === 'all' ? 'all' : undefined, projectId, controller.signal, ahead)
       // The day is the SERVER's (`as_of`): the message says "as of" it, and
       // the reader's own calendar may be a day behind or ahead.
-      .then((result) => { if (live.current) { setData(result); setText(result.text); setOn(result.as_of); } })
-      .catch((err) => { if (live.current && !controller.signal.aborted) setError(formatApiError(err, 'The follow-up could not be prepared.')); });
+      .then((result) => {
+        // An answer for another horizon (the choice changed meanwhile) is dropped.
+        if (!live.current || controller.signal.aborted) return;
+        setData(result); setText(result.text); setOn(result.as_of); setLoading(false);
+      })
+      .catch((err) => {
+        if (!live.current || controller.signal.aborted) return;
+        setLoading(false);
+        setError(formatApiError(err, 'The follow-up could not be prepared.'));
+      });
     return () => { live.current = false; controller.abort(); };
-  }, [contactEmail, scope, projectId]);
+  }, [contactEmail, scope, projectId, ahead]);
 
   const copy = async () => {
     const ok = await copyToClipboard(text);
@@ -66,18 +90,37 @@ export const RemediationFollowUpDialog: React.FC<{
   const record = async () => {
     if (!data || !on) return;
     setBusy(true);
-    const body = { contact_email: data.contact_email, followed_up_on: on, ...(note.trim() ? { note: note.trim() } : {}) };
+    const body = {
+      contact_email: data.contact_email, followed_up_on: on, ...(note.trim() ? { note: note.trim() } : {}),
+      // What the reminder listed is what is recorded.
+      ...(ahead > 0 ? { upcoming_days: ahead } : {}),
+    };
     let recorded = 0;
+    let projects: number | null = null;
     try {
-      if (scope === 'all') {
-        // One project at a time, through the mount that serves archived ones.
+      if (scope === 'all' && projectId == null) {
+        // Every project at once, all or nothing.  A server without that route
+        // (404 / 405) is asked one project at a time, as before.
+        try {
+          const result = await recordRemediationFollowUpOverview(body);
+          recorded = result.recorded;
+          projects = result.projects;
+        } catch (err) {
+          const status = (err as { response?: { status?: number } })?.response?.status;
+          if (status !== 404 && status !== 405) throw err;
+          for (const id of data.project_ids) recorded += (await recordRemediationFollowUp(body, id)).recorded;
+        }
+      } else if (scope === 'all') {
+        // One chosen project, through the mount that serves archived ones.
         for (const id of data.project_ids) recorded += (await recordRemediationFollowUp(body, id)).recorded;
       } else {
         recorded = (await recordRemediationFollowUp(body)).recorded;
       }
       toast.success(recorded === 0
         ? 'Already recorded for that day.'
-        : `Follow-up recorded on ${recorded.toLocaleString()} ${recorded === 1 ? 'finding on a host' : 'findings on hosts'}.`);
+        : projects != null
+          ? `Recorded for ${recorded.toLocaleString()} ${recorded === 1 ? 'finding' : 'findings'} in ${projects.toLocaleString()} ${projects === 1 ? 'project' : 'projects'}.`
+          : `Follow-up recorded on ${recorded.toLocaleString()} ${recorded === 1 ? 'finding on a host' : 'findings on hosts'}.`);
       onRecorded();
       onClose();
     } catch (err) {
@@ -100,13 +143,29 @@ export const RemediationFollowUpDialog: React.FC<{
             {data == null
               ? 'Preparing the message…'
               : nothing
-                ? 'Nothing assigned to this contact is overdue or due soon.'
-                : `${data.overdue.toLocaleString()} overdue and ${data.due_soon.toLocaleString()} due soon`
+                ? ahead > 0
+                  ? `Nothing assigned to this contact is overdue, due soon or due in the next ${ahead} days.`
+                  : 'Nothing assigned to this contact is overdue or due soon.'
+                : (ahead > 0 && data.upcoming != null
+                  ? `${data.overdue.toLocaleString()} overdue, ${data.due_soon.toLocaleString()} due soon and ${data.upcoming.toLocaleString()} due in the next ${ahead} days`
+                  : `${data.overdue.toLocaleString()} overdue and ${data.due_soon.toLocaleString()} due soon`)
                   + `${scope === 'all' && data.project_ids.length > 1 ? ` across ${data.project_ids.length} projects` : ''}.`
                   + ' Copy the message and send it your own way: BlueStick sends nothing.'}
           </DialogDescription>
         </DialogHeader>
         <DialogBody>
+          {data != null && (
+            <div className="mb-sm flex min-w-0 flex-wrap items-center gap-sm">
+              <Label htmlFor="rem-fu-ahead" className="shrink-0">Remind about</Label>
+              <Select value={String(ahead)} disabled={busy} onValueChange={(v) => setAhead(Number(v))}>
+                <SelectTrigger id="rem-fu-ahead" className="h-8 w-80 max-w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {HORIZONS.map((h) => <SelectItem key={h.days} value={String(h.days)}>{h.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              {loading && <span className="text-caption text-muted-foreground">Preparing…</span>}
+            </div>
+          )}
           {error && <p role="alert" className="break-words text-caption text-destructive">{error}</p>}
           {data == null && !error && <p className="text-caption text-muted-foreground">Loading…</p>}
           {data != null && !nothing && (
@@ -148,7 +207,7 @@ export const RemediationFollowUpDialog: React.FC<{
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={busy}>Close</Button>
           {canWrite && data != null && !nothing && (
-            <Button onClick={() => void record()} disabled={busy || !on}>
+            <Button onClick={() => void record()} disabled={busy || loading || !!error || !on}>
               {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Record follow-up
             </Button>
           )}

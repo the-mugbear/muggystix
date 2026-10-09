@@ -29,6 +29,19 @@ export const updateRemediationPolicy = async (
   body: Partial<Pick<RemediationPolicy, 'enabled' | 'days' | 'due_soon_days' | 'time_zone'>>,
 ): Promise<RemediationPolicy> => (await api.put<RemediationPolicy>('/remediation-policy', body)).data;
 
+/** What saving a changed timeline would do, across every project.  Nothing is written. */
+export interface RemediationPolicyPreview {
+  current: Partial<Record<RemediationState, number>>;
+  proposed: Partial<Record<RemediationState, number>>;
+  becomes_overdue: number;
+  no_longer_overdue: number;
+  becomes_due_soon: number;
+}
+export const previewRemediationPolicy = async (
+  body: Partial<Pick<RemediationPolicy, 'days' | 'due_soon_days' | 'time_zone'>>, signal?: AbortSignal,
+): Promise<RemediationPolicyPreview> =>
+  (await api.post<RemediationPolicyPreview>('/remediation-policy/preview', body, { signal })).data;
+
 /** The cross-project mount of one project's remediation routes: it also
  *  serves ARCHIVED projects, which the project routes refuse (410). */
 const base = (projectId?: number): string =>
@@ -67,7 +80,22 @@ export interface RemediationRow {
   last_follow_up_on: string | null;
   /** The gap between `status` and `endpoint_status`; null where they agree. */
   verification: RemediationVerification | null;
+  // --- due dates set by hand, and deferrals with a review date.  Optional:
+  // a server that predates them sends none, and the pages read as before.
+  /** What the policy alone gives (assigned date + the severity's days); null when it gives none. */
+  policy_due_on?: string | null;
+  /** A due date set by hand: when present it IS `due_on`. */
+  due_override_on?: string | null;
+  /** Where `due_on` comes from. */
+  deadline_source?: 'policy' | 'override' | null;
+  /** The day a deferral is to be looked at again. */
+  deferred_review_on?: string | null;
+  /** Deferred, and its review date has arrived or was never set (derived by the server). */
+  deferral_review_due?: boolean;
 }
+
+/** Rows a manager is asked to look at again (derived by the server). */
+export type RemediationFlag = 'deferral_review_due' | 'deadline_overridden';
 
 export interface RemediationPage {
   items: RemediationRow[];
@@ -81,6 +109,10 @@ export interface RemediationPage {
   /** Rows where the record and the assessment disagree, over the selection,
    *  before the state, status and verification filters. */
   verification_counts: Record<RemediationVerification, number>;
+  /** Deferrals to review and hand-set due dates, over the selection, before
+   *  the flag, state, status and verification filters.  Absent from a server
+   *  that predates them. */
+  flag_counts?: Partial<Record<RemediationFlag, number>>;
   /** Overdue and due soon per severity, over the selection BEFORE the severity filter. */
   severity_counts: Record<string, { overdue: number; due_soon: number }>;
   /** The overdue rows by days past their deadline; adds up to `state_counts.overdue`. */
@@ -100,6 +132,9 @@ export interface RemediationQuery {
   overdue_band?: OverdueBand;
   no_follow_up_days?: number;
   verification?: RemediationVerification;
+  flag?: RemediationFlag;
+  /** The finding's title, or the host's address or name (2–200 characters). */
+  q?: string;
   contact?: string;
   /** Exactly this contact. */
   contact_email?: string;
@@ -243,17 +278,27 @@ export interface RemediationFollowUp {
   as_of: string;
   overdue: number;
   due_soon: number;
+  /** On-track rows whose deadline falls within the `upcoming_days` asked for. */
+  upcoming?: number;
   items: RemediationRow[];
   has_more: boolean;
   project_ids: number[];
   text: string;
 }
+/** `upcomingDays` (0–365): also remind of on-track rows due within that many days. */
 export const getRemediationFollowUp = async (
-  contactEmail: string, scope?: 'all', projectId?: number, signal?: AbortSignal,
+  contactEmail: string, scope?: 'all', projectId?: number, signal?: AbortSignal, upcomingDays = 0,
 ): Promise<RemediationFollowUp> =>
   (await api.get<RemediationFollowUp>(
     scope === 'all' ? '/remediation-overview/follow-up' : `${p()}/remediation/follow-up`,
-    { params: { contact_email: contactEmail, ...(scope === 'all' && projectId != null ? { project_id: projectId } : {}) }, signal },
+    {
+      params: {
+        contact_email: contactEmail,
+        ...(scope === 'all' && projectId != null ? { project_id: projectId } : {}),
+        ...(upcomingDays > 0 ? { upcoming_days: upcomingDays } : {}),
+      },
+      signal,
+    },
   )).data;
 
 export interface RemediationFollowUpResult {
@@ -263,10 +308,43 @@ export interface RemediationFollowUpResult {
   finding_host_ids: number[];
 }
 export const recordRemediationFollowUp = async (
-  body: { contact_email: string; followed_up_on?: string; note?: string; finding_host_ids?: number[] },
+  body: {
+    contact_email: string; followed_up_on?: string; note?: string; finding_host_ids?: number[];
+    upcoming_days?: number;
+  },
   projectId?: number,
 ): Promise<RemediationFollowUpResult> =>
   (await api.post<RemediationFollowUpResult>(`${base(projectId)}/remediation/follow-up`, body)).data;
+
+/** One contact's follow-up recorded in every project the caller administers
+ *  where the reminder listed rows — all or nothing. */
+export interface RemediationOverviewFollowUpResult {
+  projects: number;
+  recorded: number;
+  already_today: number;
+}
+export const recordRemediationFollowUpOverview = async (
+  body: { contact_email: string; followed_up_on?: string; note?: string; upcoming_days?: number },
+): Promise<RemediationOverviewFollowUpResult> =>
+  (await api.post<RemediationOverviewFollowUpResult>('/remediation-overview/follow-up', body)).data;
+
+/** Start the clock from an issued report: the assigned date for every finding
+ *  on a host that report lists, is still open and has none.  `dry_run`
+ *  returns the same numbers and writes nothing. */
+export interface RemediationAssignFromReport {
+  report_id: number;
+  /** The day used — the report's issue day when none was sent. */
+  assigned_on: string;
+  assigned: number;
+  already_assigned: number;
+  not_open: number;
+  not_in_list: number;
+  dry_run: boolean;
+}
+export const assignRemediationFromReport = async (
+  body: { report_id: number; assigned_on?: string; dry_run?: boolean }, projectId?: number, signal?: AbortSignal,
+): Promise<RemediationAssignFromReport> =>
+  (await api.post<RemediationAssignFromReport>(`${base(projectId)}/remediation/assign-from-report`, body, { signal })).data;
 
 /** The tracked fields.  A field left out is not touched; `null` clears it. */
 export interface RemediationFields {
@@ -276,6 +354,10 @@ export interface RemediationFields {
   notified_on?: string | null;
   status?: RemediationStatus;
   closed_on?: string | null;
+  /** A due date set by hand; `null` goes back to the policy's date.  Needs a note. */
+  due_override_on?: string | null;
+  /** With the status `deferred`: the day to look at it again.  Needs a note. */
+  deferred_review_on?: string | null;
 }
 
 export interface RemediationNoteInput {

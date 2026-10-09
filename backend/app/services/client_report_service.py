@@ -221,6 +221,32 @@ def endpoint_key(fh: FindingHost) -> str:
     return f"{fh.host_id}:{fh.name_id if fh.name_id is not None else ''}"
 
 
+def told_by_report(db: Session, report: Report) -> set[tuple[int, str]]:
+    """What an issued report told the client about, from its frozen snapshot:
+    ``(finding id, endpoint key)`` pairs, the key as ``endpoint_key`` builds it.
+
+    A full report: every finding and system it reported.  An addendum: only
+    what it ADDED to its baseline — new findings and the new systems of
+    earlier ones — since the rest was told by the baseline.  (With the
+    baseline gone, everything the addendum's snapshot holds.)  Only the
+    ``reported`` map is read, never the dataset.
+    """
+    def reported(report_id: int) -> dict:
+        row = db.query(Report.snapshot["reported"]).filter(Report.id == report_id).first()
+        entries = row[0] if row is not None and isinstance(row[0], dict) else {}
+        return {fid: entry for fid, entry in entries.items()
+                if isinstance(entry, dict) and not entry.get("withdrawn")}
+
+    def pairs(entries: dict) -> set[tuple[int, str]]:
+        return {(int(fid), key) for fid, entry in entries.items() if str(fid).isdigit()
+                for key in (entry.get("endpoints") or {})}
+
+    told = pairs(reported(report.id))
+    if report.kind == ReportKind.ADDENDUM and report.baseline_report_id is not None:
+        told -= pairs(reported(report.baseline_report_id))
+    return told
+
+
 def _ref_number(ref: Optional[str]) -> int:
     m = _REF.match(ref or "")
     return int(m.group(1)) if m else 0

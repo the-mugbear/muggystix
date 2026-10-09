@@ -384,14 +384,14 @@ def test_a_finding_on_more_hosts_than_one_call_changes_is_refused_with_the_way_t
     hosts = [_host(db_session, test_project, f"10.34.1.{n}") for n in range(1, 5)]
     finding, links = _finding(db_session, test_project, hosts)
     refused = client.post(f"{remediation(test_project)}/apply", json={
-        "rows": [{"finding_id": finding.id, "status": "deferred"}], "dry_run": dry_run})
+        "rows": [{"finding_id": finding.id, "status": "closed"}], "dry_run": dry_run})
     assert refused.status_code == 422, refused.text
     problem = refused.json()["detail"]["problems"][0]
     assert "finding_id with host_id" in problem and "at most 3 a call" in problem
     assert db_session.query(FindingHostRemediation).count() == 0
     # Named by host, the same change goes through.
     named = client.post(f"{remediation(test_project)}/apply", json={
-        "rows": [{"finding_id": finding.id, "host_id": host.id, "status": "deferred"} for host in hosts[:3]],
+        "rows": [{"finding_id": finding.id, "host_id": host.id, "status": "closed"} for host in hosts[:3]],
         "dry_run": dry_run})
     assert named.status_code == 200, named.text
 

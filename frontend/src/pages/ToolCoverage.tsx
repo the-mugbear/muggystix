@@ -29,6 +29,7 @@ import {
   toolAnchor,
 } from '../utils/toolCoverage';
 import { CardListSkeleton } from '../components/PageSkeleton';
+import SectionJumpBar, { JumpEntry, jumpTargetStyle } from '../components/SectionJumpBar';
 import PostureLead from '../components/posture/PostureLead';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
@@ -110,8 +111,9 @@ const ToolSection: React.FC<{
   return (
     <div
       id={toolAnchor(tool.id)}
-      // Clears the sticky top bar, so a linked tool lands with its heading visible.
-      className={cn('scroll-mt-24 rounded-panel', focused && 'ring-2 ring-info/40 ring-offset-4 ring-offset-background')}
+      // Clears the chrome and the jump bar, so a linked tool lands with its heading visible.
+      style={jumpTargetStyle}
+      className={cn('rounded-panel', focused && 'ring-2 ring-info/40 ring-offset-4 ring-offset-background')}
     >
       <PostureSection
         title={
@@ -215,6 +217,13 @@ const ToolCoverage: React.FC = () => {
     [data],
   );
 
+  const narrowed = !!query.trim() || level !== 'all';
+  const jumpEntries = useMemo<JumpEntry[]>(() => visible.map(({ tool, signals }) => ({
+    id: toolAnchor(tool.id),
+    label: tool.name,
+    count: narrowed ? `${signals.length} of ${tool.signals.length}` : String(tool.signals.length),
+  })), [visible, narrowed]);
+
   // Land on the linked tool once it is rendered.
   useEffect(() => {
     if (!focus) return;
@@ -237,7 +246,7 @@ const ToolCoverage: React.FC = () => {
 
   const formatCount = tools.reduce((n, t) => n + t.formats.length, 0);
   const observationTools = tools.filter((t) => t.signals.some((s) => s.level === 'observation'));
-  const filtered = !!query.trim() || level !== 'all';
+  const filtered = narrowed;
 
   return (
     <div className="space-y-lg p-md md:p-lg">
@@ -317,13 +326,10 @@ const ToolCoverage: React.FC = () => {
         </div>
       </div>
 
-      <nav aria-label="Tools" className="flex flex-wrap gap-x-md gap-y-xxs text-metadata">
-        {visible.map(({ tool }) => (
-          <a key={tool.id} href={`#${toolAnchor(tool.id)}`} className="text-info underline-offset-2 hover:underline">
-            {tool.name}
-          </a>
-        ))}
-      </nav>
+      {/* One entry per tool the search and level filter leave: the search
+          narrows the page, the picker goes to a tool on it.  Always the
+          picker, so the control does not change shape as the reader types. */}
+      <SectionJumpBar entries={jumpEntries} label="Tools" presentation="picker" />
 
       {visible.length === 0 ? (
         <div className="flex flex-wrap items-center gap-sm text-metadata text-muted-foreground">

@@ -7,6 +7,13 @@ import type { NotificationItem } from '../services/api';
 
 type Linkable = Pick<NotificationItem, 'type' | 'source_type' | 'source_id' | 'host_id' | 'finding_id'>;
 
+/** The list filter each remediation alert opens. */
+const REMEDIATION_ALERT_FILTER: Record<string, string> = {
+  remediation_overdue: 'state=overdue',
+  remediation_due_soon: 'state=due_soon',
+  remediation_deferral_review: 'flag=deferral_review_due',
+};
+
 export const notificationHref = (n: Linkable): string | null => {
   if (n.type === 'proposal') {
     // v5.316.0 — one finding opens it; a review run over several opens its
@@ -32,12 +39,15 @@ export const notificationHref = (n: Linkable): string | null => {
     if (n.host_id) return `/hosts/${n.host_id}#host-detail-proposed-tests`;
     return '/operations';
   }
-  // A remediation deadline alert (5.340.0): the cross-project list, narrowed
-  // to the alert's project (`source_id`) and state — it opens whichever
-  // project the reader has selected, archived ones included.
-  if (n.source_type === 'remediation_overdue' || n.source_type === 'remediation_due_soon') {
-    const state = n.source_type === 'remediation_overdue' ? 'overdue' : 'due_soon';
-    return `/remediation-deadlines?state=${state}${n.source_id ? `&project=${n.source_id}` : ''}`;
+  // A remediation alert: the list its rows are in — overdue, due soon, or
+  // deferrals whose review date has come — in the alert's project
+  // (`source_id`).  It opens on the cross-project page narrowed to that
+  // project, because the alert also goes to global administrators who are
+  // not members of it, and to admins of a project since archived: the
+  // project's own page would show whichever project the reader has selected.
+  const remediation = REMEDIATION_ALERT_FILTER[n.source_type ?? ''];
+  if (remediation) {
+    return `/remediation-deadlines?${remediation}${n.source_id ? `&project=${n.source_id}` : ''}`;
   }
   if (n.source_type === 'scan' && n.source_id) return `/hosts?scan_ids=${n.source_id}`;
   if (n.source_type === 'report_job' && n.source_id) return `/hosts?reports=1&job=${n.source_id}`;

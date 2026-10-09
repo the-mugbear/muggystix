@@ -27,6 +27,10 @@ def day(n: int) -> str:
     return (TODAY - timedelta(days=n)).isoformat()
 
 
+# A deferral carries the day to look at it again, and why.
+DEFERRED = {"status": "deferred", "deferred_review_on": day(-30), "notes": [{"body": "Waiting for the vendor's fix."}]}
+
+
 def base(project) -> str:
     return f"/api/v1/projects/{project.id}/remediation"
 
@@ -101,7 +105,8 @@ TRUTH = [
     ("retest",          "open",     None,          True),
     ("retest",          "deferred", None,          True),
     ("retest",          "closed",   NOT_RETESTED,  True),
-    ("remediated",      None,       RECORD_OPEN,   True),
+    # Nobody ever tracked it: there is no record to be "still open".
+    ("remediated",      None,       None,          True),
     ("remediated",      "open",     RECORD_OPEN,   True),
     ("remediated",      "deferred", RECORD_OPEN,   True),
     ("remediated",      "closed",   None,          True),     # the two agree
@@ -120,6 +125,8 @@ def _truth_world(client, db, project):
     for fh_id, (_, record, _, _) in zip(ids, TRUTH):
         if record == "open":
             rows.append({"finding_host_id": fh_id, "contact_name": "Someone"})       # a record, still open
+        elif record == "deferred":
+            rows.append({"finding_host_id": fh_id, **DEFERRED})
         elif record is not None:
             rows.append({"finding_host_id": fh_id, "status": record})
     apply(client, project, rows)
@@ -138,7 +145,7 @@ def test_the_truth_table_of_the_gap(client, db_session, test_project, on):
         assert row["verification"] == verification, (endpoint, record, row["verification"])
         # Both facts are on the row, under their own stored values.
         assert row["endpoint_status"] == endpoint and row["status"] == (record or "open")
-    assert page["verification_counts"] == {NOT_RETESTED: 2, RECORD_OPEN: 3}
+    assert page["verification_counts"] == {NOT_RETESTED: 2, RECORD_OPEN: 2}
     # A record that was never written is exactly that: nothing was created to say so.
     stored = {r.finding_host_id for r in db_session.query(FindingHostRemediation)}
     assert stored == {fh_id for fh_id, (_, record, _, _) in zip(ids, TRUTH) if record is not None}
@@ -160,20 +167,21 @@ def test_the_expression_is_the_only_definition(db_session, test_project, on, cli
 def gaps(client, db_session, test_project, on):
     """More of each gap than a page of five holds, among rows with neither."""
     closed_open = _finding(db_session, test_project, ["open"] * 9 + ["retest"] * 3)        # 12 not retested
-    fixed = _finding(db_session, test_project, ["remediated"] * 9, severity="high")       # 7 record open, 2 agree
+    fixed = _finding(db_session, test_project, ["remediated"] * 12, severity="high")      # 7 record open, 2 agree, 3 untracked
     plain = _finding(db_session, test_project, ["open"] * 6)
     apply(client, test_project,
           [{"finding_host_id": i, "status": "closed", "closed_on": day(1), "notified_on": day(20)} for i in closed_open]
           + [{"finding_host_id": i, "notified_on": day(100)} for i in fixed[:2]]            # open, overdue
-          + [{"finding_host_id": i, "status": "deferred"} for i in fixed[2:4]]
-          + [{"finding_host_id": i, "status": "closed"} for i in fixed[7:]]                 # 4..6: no record
+          + [{"finding_host_id": i, **DEFERRED} for i in fixed[2:4]]
+          + [{"finding_host_id": i, "contact_name": "Someone"} for i in fixed[4:7]]         # a record, still open
+          + [{"finding_host_id": i, "status": "closed"} for i in fixed[7:9]]                # 9..11: no record
           + [{"finding_host_id": i, "notified_on": day(1)} for i in plain[:2]])
     return {NOT_RETESTED: set(closed_open), RECORD_OPEN: set(fixed[:7])}
 
 
 def test_each_gap_count_is_the_list_it_opens_across_pages(client, test_project, gaps):
     counts = listing(client, base(test_project))["verification_counts"]
-    assert counts == {NOT_RETESTED: 12, RECORD_OPEN: 7}
+    assert counts == {NOT_RETESTED: 12, RECORD_OPEN: 7}                # the three with no record are not a gap
     for verification, expected in gaps.items():
         rows, first = paged(client, base(test_project), verification=verification)
         ids = [row["finding_host_id"] for row in rows]
@@ -237,11 +245,15 @@ def test_a_remediated_endpoint_outside_the_list_stays_outside(client, db_session
     endpoint someone marked remediated, and no record, is not on it."""
     outside = _finding(db_session, test_project, ["remediated"], status="open")
     inside = _finding(db_session, test_project, ["remediated"])
+    # Listed by the list's own rule, and no gap: nobody ever tracked it, so
+    # there is no record to be "still open".
+    assert [row["finding_host_id"] for row in listing(client, base(test_project))["items"]] == inside
     page = listing(client, base(test_project), verification=RECORD_OPEN)
-    assert [row["finding_host_id"] for row in page["items"]] == inside
-    assert page["verification_counts"][RECORD_OPEN] == 1
-    # Once it is tracked it is listed, by the list's existing rule.
+    assert page["items"] == [] and page["verification_counts"][RECORD_OPEN] == 0
+    # Once it is tracked it is listed, by the list's existing rule — and a gap.
     apply(client, test_project, [{"finding_host_id": outside[0], "contact_name": "Someone"}])
+    assert listing(client, base(test_project))["verification_counts"][RECORD_OPEN] == 1
+    apply(client, test_project, [{"finding_host_id": inside[0], "contact_name": "Someone"}])
     assert listing(client, base(test_project))["verification_counts"][RECORD_OPEN] == 2
 
 

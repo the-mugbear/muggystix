@@ -19,6 +19,10 @@ Severity = Literal["critical", "high", "medium", "low", "info"]
 Grouping = Literal["host", "finding", "contact", "due", "team"]
 #: How long past its deadline an overdue row is (``remediation_policy.OVERDUE_BANDS``).
 OverdueBand = Literal["1-7", "8-30", "31-90", "90+"]
+#: What an admin is to look at beside the deadline states (``remediation_policy.FLAGS``).
+Flag = Literal["deferral_review_due", "deadline_overridden"]
+#: How far ahead a reminder may look for deadlines that are not yet due soon.
+UPCOMING_MAX_DAYS = 365
 #: The longest timeline an installation can set (ten years).
 TIMELINE_MAX_DAYS = 3650
 
@@ -66,6 +70,14 @@ class TrackedFields(_Base):
         "`remediated` is the team's own conclusion."))
     closed_on: Optional[date] = Field(None, description=(
         "The day the contact reported it fixed; goes only with status `closed`."))
+    due_override_on: Optional[date] = Field(None, description=(
+        "A deadline set by hand (an extension, or an earlier date): while set it IS the row's "
+        "deadline, in place of the assigned date plus the installation's days. Null goes back to "
+        "the policy's date. Setting, changing or clearing it needs a note in the same row."))
+    deferred_review_on: Optional[date] = Field(None, description=(
+        "The day a deferred row is looked at again: required, with a note, when a row becomes "
+        "`deferred` or its review date changes; today or later. Goes only with status `deferred` "
+        "and is cleared when the row leaves it."))
 
     @field_validator("contact_email")
     @classmethod
@@ -107,6 +119,8 @@ class ApplyRow(TrackedFields):
             raise ValueError("status cannot be cleared")
         if self.closed_on is not None and self.status in ("open", "deferred"):
             raise ValueError("closed_on goes with status closed")
+        if self.deferred_review_on is not None and self.status in ("open", "closed"):
+            raise ValueError("deferred_review_on goes with status deferred")
         return self
 
 
@@ -139,6 +153,9 @@ class FollowUpBody(_Base):
         None, min_length=1, max_length=500,
         description="Only these of the contact's at-risk rows; left out, all of them.",
     )
+    upcoming_days: int = Field(0, ge=0, le=UPCOMING_MAX_DAYS, description=(
+        "Also the on-track rows whose deadline falls within this many days — send what the "
+        "reminder was read with, so what is recorded is what it listed."))
 
     @field_validator("contact_email")
     @classmethod
@@ -149,6 +166,38 @@ class FollowUpBody(_Base):
     @classmethod
     def blank_is_none(cls, value):
         return value or None
+
+
+class OverviewFollowUpBody(_Base):
+    """Record that a contact was reminded about their findings on hosts in
+    every project the caller administers."""
+    contact_email: str = Field(..., min_length=3, max_length=254)
+    followed_up_on: Optional[date] = Field(None, description="The day it happened, if not today.")
+    note: Optional[str] = Field(None, max_length=NOTE_MAX_CHARS,
+                                description="What was said or agreed, kept on each host's timeline.")
+    upcoming_days: int = Field(0, ge=0, le=UPCOMING_MAX_DAYS, description=(
+        "Also the on-track rows whose deadline falls within this many days, as the reminder listed them."))
+
+    @field_validator("contact_email")
+    @classmethod
+    def lowered(cls, value):
+        return value.lower()
+
+    @field_validator("note")
+    @classmethod
+    def blank_is_none(cls, value):
+        return value or None
+
+
+class AssignFromReportBody(_Base):
+    """Start the clock for what an issued report listed."""
+    report_id: int = Field(..., gt=0, description="An ISSUED client report of this project.")
+    # Not after the installation's today — checked by the service.
+    assigned_on: Optional[date] = Field(None, description=(
+        "The assigned date to set; left out, the day the report was issued."))
+    dry_run: bool = Field(False, description="Report the numbers and write nothing.")
+    agent_model: Optional[str] = Field(None, max_length=100)
+
 
 class ContactReportBody(_Base):
     """Prepare one contact's remediation list as a document."""

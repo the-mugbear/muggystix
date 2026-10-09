@@ -7,7 +7,7 @@
  * registry name, `?format=` from Ingestion Results), gaps are stated, and
  * worst-case values stay inside the page.
  */
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -152,6 +152,22 @@ describe('ToolCoverage page', () => {
     await screen.findByText('Template match');
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
     expect(document.getElementById('tool-nuclei')?.className).toMatch(/ring-2/);
+  });
+
+  // The page runs to about thirty screens: a picker over the tools the
+  // filters leave, each a jump target that clears the chrome and the bar.
+  it('has a jump picker over the tools the filters leave', async () => {
+    renderAt();
+    await screen.findByText('Open ports');
+    const bar = await screen.findByRole('navigation', { name: 'Tools' });
+    expect(bar).toHaveAttribute('data-presentation', 'picker');
+    expect(within(bar).getByRole('combobox', { name: 'Jump to a section' })).toBeInTheDocument();
+    for (const id of ['tool-nmap', 'tool-nuclei', 'tool-dirbuster']) {
+      expect(document.getElementById(id)!.style.scrollMarginTop).toMatch(/var\(--topbar-h/);
+    }
+    // One tool left is nowhere to jump to.
+    fireEvent.click(within(screen.getByRole('group', { name: 'Filter by level' })).getByRole('button', { name: 'Discarded' }));
+    await waitFor(() => expect(screen.queryByRole('navigation', { name: 'Tools' })).toBeNull());
   });
 
   it('keeps worst-case values wrapped inside fixed-layout tables', async () => {

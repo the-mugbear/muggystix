@@ -33,20 +33,25 @@ logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.17.0"
+PROMPT_VERSION = "4.18.0"
 
 # What PROMPT_VERSION changed (the current version only).
 PROMPT_CHANGES = (
-    "Report text is written for a reader who has never seen BlueStick. A "
-    "proposed section (`propose_finding_text`, a new finding's `report_text`) "
-    "that names a BlueStick record by its number — 'Finding #277', 'evidence "
-    "record 57', 'host #12', 'proposal #9' — or names BlueStick is refused "
-    "with a 422 that quotes the phrase. Name another finding by its title and "
-    "a system by its address or hostname; say nothing about how the text was "
-    "produced; record ids belong in `rationale`. Text inside a code span or a "
-    "fenced block is not checked. A client report's `summary` now carries "
-    "`internal_references`: the reported findings whose written text still "
-    "names such a record, by section."
+    "Remediation due dates. `status: deferred` in `remediation_apply` now "
+    "needs `deferred_review_on` (the day to look at it again, today or later) "
+    "and a note in the same row — ask the operator for both; a deferral "
+    "without them is a 422. A row's deadline can be set by hand with "
+    "`due_override_on` (null goes back to the installation's date), always "
+    "with a note; send it only when the operator's source gives that date. "
+    "Rows carry `policy_due_on`, `due_override_on`, `deadline_source`, "
+    "`deferred_review_on` and `deferral_review_due`; `due_on` stays the "
+    "deadline in force. `remediation_list` takes `q` (finding title, host "
+    "address or name) and `flag` (`deferral_review_due`, "
+    "`deadline_overridden`) and returns `flag_counts`. "
+    "`remediated_record_open` now needs a record to exist. New tool "
+    "`remediation_assign_from_report`: start the clock from an issued report "
+    "(dry run first). `remediation_follow_up` takes `upcoming_days` to list "
+    "deadlines that are coming up, and its message is grouped by project."
 )
 
 

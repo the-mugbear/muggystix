@@ -32,12 +32,14 @@ const PAGE = 50;
 /** The route's `limit` ceiling. */
 const MAX = 200;
 
+const DATE_FIELDS = ['notified_on', 'closed_on', 'due_override_on', 'deferred_review_on'];
+
 /** A stored value as the page says it: a status by its label, a date as a
  *  date, nothing as "none". */
 const shown = (field: string | null, value: string | null): string => {
   if (value == null || value === '') return 'none';
   if (field === 'status' && isRemediationStatus(value)) return REMEDIATION_STATUS_LABEL[value];
-  if (field === 'notified_on' || field === 'closed_on') return formatDate(value);
+  if (field != null && DATE_FIELDS.includes(field)) return formatDate(value);
   return value;
 };
 
@@ -79,6 +81,10 @@ const Entry: React.FC<{
             <li key={change.id} className="break-words text-metadata">
               <span className="font-medium">{REMEDIATION_FIELD_LABEL[change.field ?? ''] ?? change.field}</span>
               {': '}{shown(change.field, change.from)} → {shown(change.field, change.to)}
+              {/* A severity change says what it did to the deadline. */}
+              {change.field === 'severity' && change.body && (
+                <span className="block whitespace-pre-wrap text-muted-foreground">{change.body}</span>
+              )}
             </li>
           ))}
         </ul>

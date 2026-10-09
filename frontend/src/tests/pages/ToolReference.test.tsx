@@ -78,6 +78,11 @@ describe('ToolReference', () => {
 
     await waitFor(() => expect(screen.getByText('nmap')).toBeInTheDocument());
     expect(screen.getByText('testssl')).toBeInTheDocument();
+    // Each category is a jump target of the page's picker.
+    const bar = await screen.findByRole('navigation', { name: 'Tool categories' });
+    expect(within(bar).getByRole('combobox', { name: 'Jump to a section' })).toBeInTheDocument();
+    expect(within(document.getElementById('category-port-scanning')!).getByText('nmap')).toBeInTheDocument();
+    expect(within(document.getElementById('category-web-analysis')!).getByText('testssl')).toBeInTheDocument();
   });
 
   // 5.313.0 — a catalogue, not agent policy: no row says an agent may (or may

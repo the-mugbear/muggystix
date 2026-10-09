@@ -1230,16 +1230,25 @@ _AUTHORED["remediation_list"] = {
         "disagree the row says so in `verification`: "
         "`reported_fixed_not_retested` (the record is closed, the endpoint is "
         "not remediated and not a false positive) or `remediated_record_open` "
-        "(the endpoint is remediated, the record is open, deferred or was "
-        "never written); null where they agree. `verification_counts` counts "
+        "(the endpoint is remediated and a record exists that is open or "
+        "deferred — an endpoint nobody tracked is not one); null where they "
+        "agree. `verification_counts` counts "
         "both over the selection and `verification=` lists exactly one. "
         "Each row also carries where it stands against its DEADLINE: `state` "
         "(overdue, due_soon, on_track, not_assigned — nobody was given a date, "
         "so no clock runs —, no_deadline — the severity has no timeline —, "
         "deferred, closed), `due_on`, `days_left` (negative once overdue), "
-        "`closed_days_late` and `last_follow_up_on`. The deadline is the "
-        "assigned date (`notified_on`) plus this installation's days for the "
-        "finding's severity; it is derived, never set. "
+        "`closed_days_late` and `last_follow_up_on`. `due_on` is the deadline "
+        "in force: the assigned date (`notified_on`) plus this installation's "
+        "days for the finding's severity (`policy_due_on`, derived), unless a "
+        "project admin set one by hand (`due_override_on`); `deadline_source` "
+        "says which (`policy`, `override`, null). A deferred row carries the "
+        "day it is to be looked at again (`deferred_review_on`) and "
+        "`deferral_review_due` (that day has come, or it never had one). "
+        "`flag_counts` counts, over the selection, the rows an admin is to "
+        "look at — `deferral_review_due`, `deadline_overridden` — and `flag=` "
+        "lists one. `q` searches the finding's title, the host's address and "
+        "its name. "
         "Filter by `state` (one or several), `status`, `severity`, `contact` "
         "(part of an address or a name), `unassigned` (no contact yet), "
         "`host_id` or `finding_id`; `state_counts` and `status_counts` cover "
@@ -1306,7 +1315,9 @@ _AUTHORED["remediation_follow_up"] = {
         "What to say to ONE remediation contact: their overdue and due-soon "
         "findings on hosts (`items`, the longest overdue first) and `text`, a "
         "plain-text message listing them, for the operator to send — the "
-        "server sends nothing. `total` is every overdue or due-soon row of the "
+        "server sends nothing. With `upcoming_days` it also lists the on-track "
+        "rows whose deadline falls within that many days (`upcoming` counts "
+        "them). `total` is every such row of the "
         "contact and `not_listed` how many of them `items` leaves out (the "
         "message says so too): quote `total`, never the length of `items`. "
         "Give the contact's address exactly "
@@ -1323,10 +1334,31 @@ _AUTHORED["remediation_record_follow_up"] = {
         "AFTER the operator says the message was sent. A row already followed "
         "up on that day is left alone, so a repeat records nothing twice. "
         "`finding_host_ids` narrows it to some of the contact's at-risk rows. "
+        "Send the `upcoming_days` the message was read with, so the upcoming "
+        "rows it listed are recorded too. "
         "Needs an operator who is a project admin."
     ),
     "method": "POST",
     "path": "/api/v1/agent/remediation/follow-up",
+    "idempotent": True,
+}
+_AUTHORED["remediation_assign_from_report"] = {
+    "description": (
+        "Start the remediation clock from an ISSUED client report: every "
+        "finding on a host that report listed (its frozen content, not "
+        "today's findings) that is still in the remediation list, has no "
+        "assigned date and is open gets the assigned date — `assigned_on`, "
+        "or the day the report was issued. Nothing else is touched and a row "
+        "that already has a date is left alone, so a repeat assigns nothing. "
+        "`report_id` is from assist_list_client_reports. ALWAYS call with "
+        "`dry_run: true` first and show the operator the numbers: `assigned`, "
+        "`already_assigned`, `not_open`, `not_in_list` (listed by the report "
+        "and no longer a finding on that host, or no longer tracked). A draft "
+        "or replaced report is a 409. Each row's timeline gets the change and "
+        "a note naming the report. Needs an operator who is a project admin."
+    ),
+    "method": "POST",
+    "path": "/api/v1/agent/remediation/assign-from-report",
     "idempotent": True,
 }
 _AUTHORED["remediation_timeline"] = {
@@ -1366,7 +1398,14 @@ _AUTHORED["remediation_apply"] = {
         "REPORTED it fixed (the pages say \"Reported fixed\"); it does not "
         "change the assessor's endpoint status, and you never set it because "
         "an endpoint is `remediated`. `closed_on` goes only with `status: "
-        "closed`, or on a row already closed. The whole call is planned before anything "
+        "closed`, or on a row already closed. `status: deferred` is a "
+        "decision with a date and a reason: the row must carry "
+        "`deferred_review_on` (the day to look at it again, today or later) "
+        "and a note, and so must a change of that date. `due_override_on` "
+        "sets ONE row's deadline by hand (an extension or an earlier date; "
+        "null goes back to the installation's date) and needs a note saying "
+        "why — set it only when the operator's source gives that date; the "
+        "ordinary deadline is derived and never sent. The whole call is planned before anything "
         "is written, and a dry run refuses what the real call would refuse; "
         "at most 500 findings on hosts per call."
     ),
@@ -1599,6 +1638,12 @@ class _Registry(Mapping):
                 name: derive_tool(name, entry, openapi) for name, entry in self._authored.items()
             }
         return self._built
+
+    def warm(self) -> int:
+        """Build the registry now and say how many tools it holds.  Deriving
+        it means generating the API's OpenAPI document — about a second —
+        which the first reader would otherwise pay inside a request."""
+        return len(self._tools())
 
     def __getitem__(self, name: str) -> Dict[str, Any]:
         return self._tools()[name]

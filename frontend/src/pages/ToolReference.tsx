@@ -28,6 +28,7 @@ import { Button } from '../components/ui/button';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import ToolVettingDialog from '../components/ToolVettingDialog';
+import SectionJumpBar, { jumpTargetStyle, sectionId } from '../components/SectionJumpBar';
 import {
   getToolRegistry,
   ToolRegistryEntry,
@@ -300,6 +301,18 @@ const ToolReference: React.FC = () => {
           {filter ? `No tools match "${filter}".` : 'No tools are registered.'}
         </p>
       ) : (
+        <>
+        {/* One entry per category the filter leaves.  Always the picker, so
+            the control does not change shape as the reader types. */}
+        <SectionJumpBar
+          label="Tool categories"
+          presentation="picker"
+          entries={groupedEntries.map(([category, items]) => ({
+            id: sectionId(category, 'category'),
+            label: category,
+            count: String(items.length),
+          }))}
+        />
         <Accordion
           type="multiple"
           defaultValue={groupedEntries.map(([cat]) => cat)}
@@ -309,6 +322,8 @@ const ToolReference: React.FC = () => {
             <AccordionItem
               key={category}
               value={category}
+              id={sectionId(category, 'category')}
+              style={jumpTargetStyle}
               className="rounded-panel border border-border bg-card px-md"
             >
               <AccordionTrigger>
@@ -470,6 +485,7 @@ const ToolReference: React.FC = () => {
             </AccordionItem>
           ))}
         </Accordion>
+        </>
       )}
 
       <ToolVettingDialog

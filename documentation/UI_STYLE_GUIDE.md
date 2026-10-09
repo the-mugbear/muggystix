@@ -246,6 +246,7 @@ Anything else gets cut.  A card whose first impression is a row of pastel chips 
 - Submit and destructive actions must retain stable placement.
 - Use the v4 form primitives: `<Input>`, `<Textarea>`, `<Label>`, `<Select>`, `<Checkbox>`, `<Switch>`, `<Combobox>`, `<PasswordInput>` from `src/components/ui/`.
 - Always pair an `<Input>` with a `<Label htmlFor=…>` — `<Input>` does not generate an id, so always pass `id` and a matching `htmlFor`.
+- A `<Switch>` or `<Checkbox>` has no text of its own: name it with a `<Label htmlFor>` for its `id`, a `<label>` wrapped around it, or `aria-label` (a row's tick). The wrappers warn in the development console when one is mounted with no name (`components/ui/accessible-name.ts`).
 
 ### 11. Dialogs and Drawers
 - Dialog content must not overflow horizontally due to long values.
@@ -401,7 +402,7 @@ A new field is not complete if it only renders correctly for short fixture value
 - Filter rows must wrap (`flex-wrap`). Do not add breakpoint-stacked variants (`flex-col sm:flex-row`) — that is the mobile pattern §3 retired. Give toolbar controls a fixed width: a bare `SelectTrigger` is `w-full` and will stack the row.
 - Search, dropdowns, toggles, and sort controls must remain usable under narrow layouts.
 - **A menu is never taller than the window** (v5.346.0): `DropdownMenuContent` is bounded by the room Radix measures beside its trigger (`--radix-dropdown-menu-content-available-height`) and scrolls inside itself. A menu fed by data (the project selector) is a list of any length — never give its content `overflow-hidden` without a scrolling list inside it.
-- **The project selector filters by year** (v5.347.0) once the projects span more than one: a row of years (newest first, then All) pinned above the scrolling list, as `menuitemradio`s so the arrow keys reach them, chosen without closing the menu. A project's year is the year it STARTS (`utils/projectYears.projectYear`: the stored start date's own year, else the year it was created — never a browser-time-zone conversion). The menu opens on the current project's year, so the project the reader is in is always listed; a pick lasts while the menu is open.
+- **The project selector filters by year** (v5.347.0) once the projects span more than one: a row of years (newest first, then All) pinned above the scrolling list, as `menuitemradio`s so the arrow keys reach them, chosen without closing the menu. A project's year is the year it STARTS (`utils/projectYears.projectYear`: the stored start date's own year, else the year it was created — never a browser-time-zone conversion). The menu opens on the current project's year, so the project the reader is in is always listed; a pick lasts while the menu is open. The menu is as wide as its longest name — from the trigger's width up to 28rem — and a name longer than that is cut with the whole of it on `title`, as is the trigger's.
 - Filter chips must not create unbounded horizontal growth.
 - For chip-style filter pickers, use `<button aria-pressed>` inside `role="group"` (matches the audit H5 fix pattern); for true selects use `<Select>`; for free-text + multi-select use `<Combobox>`.
 
@@ -866,6 +867,17 @@ From the codebase review of 2026-10-07 (5.339.0).
 - **Unsaved writing is guarded.** An editor holding text the reader typed uses
   `hooks/useDiscardGuard`; an expired session returns to where the reader was
   (`utils/loginReturn` — only a path inside the app is honoured).
+- **A session that is about to end says so.** A session has a fixed length
+  and is not renewed. Ten minutes before its end, and again one minute before,
+  ONE toast that stays until closed (`components/SessionExpiryNotice`, a single
+  toast id, so each stage replaces the last) says when it ends in the reader's
+  local time and that unsaved work should be saved, with "Sign in again", which
+  returns to the page the reader is on; after the end it says the session has
+  ended. It is a toast, never a dialog: it takes no focus and blocks no typing.
+  The end is read from the stored token's expiry and used for nothing else; a
+  token that does not give one shows no notice. The wait is one timeout for the
+  next moment something changes, worked out again when the tab is shown and
+  when another tab replaces the token — never a ticking interval.
 - **A startup check that fails for a reason other than "not signed in" does
   not sign the reader out.** Only a 401 ends a session.
 - **One helper each, enforced by lint:** a file save goes through `utils/download`
@@ -901,6 +913,23 @@ ONE name wherever a person reads it; the stored values do not change.
   which would be empty on most rows. The counts are buttons that set
   `?verification=` and show a clearable chip; their definitions are on an
   `InfoTip`.
+- The same line carries two more counts, each absent at 0, a button that sets
+  `?flag=` and shows a clearable chip, defined on an `InfoTip`: **Deferrals to
+  review** and **Due date set by hand**. The server derives both; opening one
+  drops the state, band, follow-up and gap filters, as a gap count does.
+- The Deadline cell says both in words, still in ONE column:
+
+  | Row | Deadline cell |
+  |---|---|
+  | Due date set by hand, clock running | the usual phrase and date, then "set by hand · policy *date*" ("set by hand · no policy date" when the policy gives none); the full sentence on `title` |
+  | Deferred, review date ahead | "Deferred · review *date*" |
+  | Deferred, review date reached | "Deferred · review due" in the warning tone, the date under it |
+  | Deferred, no review date | "Deferred · no review date" in the warning tone |
+
+  Whether a review is due is the server's answer (`deferral_review_due`); the
+  page never compares the date with today. A due date set by hand, a return to
+  the policy's date, and a deferral are saved only with a note for the timeline:
+  the editor says so inline and Save stays disabled until it is written.
 - These words belong to the remediation pages only. The finding page, Posture,
   Operations and the client report keep their own vocabulary
   (`utils/findingStatus.ts`).
@@ -909,21 +938,42 @@ ONE name wherever a person reads it; the stored values do not change.
 
 A detail page that holds a list which can run to thousands of rows (a finding's
 affected hosts) still has to show its other sections. Reference: the finding
-page — `components/findings/FindingEndpoints.tsx`, `FindingJumpBar.tsx`,
-`EndpointStateBar.tsx`, helpers in `utils/findingEndpoints.ts`. There is ONE
-layout: three rows get the same panel as three thousand, only shorter. No
-threshold, no second layout for "small" records.
+page — `components/findings/FindingEndpoints.tsx`, `EndpointStateBar.tsx`,
+helpers in `utils/findingEndpoints.ts`, and the shared
+`components/SectionJumpBar.tsx`. There is ONE layout: three rows get the same
+panel as three thousand, only shorter. No threshold, no second layout for
+"small" records.
 
-- **A jump bar, when the page has more than one section.** A sticky strip under
-  the title and its controls (`stickyBelowChrome`), one entry per section the
-  page actually renders, in page order: a label and, where the page knows one,
-  a count. It is navigation, not a second explanation (§44) — no descriptions.
+- **A jump bar, on any page longer than a few screens with more than one
+  section** — a detail page, and a long reference page alike (What BlueStick
+  reads, the MCP reference, the Tool reference). It is the ONE component,
+  `SectionJumpBar`: a sticky strip pinned flush under the chrome, one entry per
+  section the page actually renders, in page order: the section's own heading
+  as the label and, where the page already knows one, a count. It is
+  navigation, not a second explanation (§44) — no descriptions, no caption.
   A section that renders nothing has no entry: the bar asks the section's
   wrapper whether it has content, so a section that loads for itself needs no
-  wiring. A jump target carries `jumpTargetStyle`, which clears the chrome AND
-  the bar. The section in view is marked with an IntersectionObserver held
-  inside the bar — never a scroll listener, and never state on the page, or
-  reading the page re-renders it.
+  wiring. Each section wrapper has a stable `id` and carries `jumpTargetStyle`,
+  which clears the chrome AND the bar. The section in view is marked with an
+  IntersectionObserver held inside the bar — never a scroll listener, and
+  never state on the page, or reading the page re-renders it. A page never
+  builds its own list of in-page links.
+- **Buttons for a few sections, a picker for many.** Up to eight shown
+  sections are one button each. More than eight (`JUMP_PICKER_ABOVE`) would
+  wrap into a wall of buttons, so the same bar shows ONE "Jump to…" picker
+  (the searchable `Combobox`): it filters as the reader types, jumps on choose,
+  and shows the section in view. The bar chooses by the number of sections
+  shown; a page whose section count moves under its own search or filter, or
+  whose sections arrive after the page, fixes the form with `presentation`
+  so the control does not change shape while the reader types. The picker
+  lists what the page's filter leaves — the filter narrows the page, the
+  picker goes to a place on it; it is never a second search.
+- **A section can be linked.** A jump writes the section's id to the address
+  as `#id`, replacing the history entry (Back leaves the page, it does not
+  replay the jumps), and a page opened with `#id` lands on that section, below
+  the chrome and the bar, once the section has rendered. A page with its own
+  deep link to a row (the finding page's `?endpoint=`) passes `hash={false}`:
+  two things must not both scroll the page on load.
 - **The list is a bounded panel.** It scrolls INSIDE a panel about twelve rows
   tall (a max-height, so a short list is a short panel with no inner scrollbar
   and no empty space), with a sticky table header. The sections below it are
@@ -942,7 +992,10 @@ threshold, no second layout for "small" records.
   there is none), then the row's state control. Nothing else on the row.
 - **A destructive action lives in the row's "⋯" menu**, never as an icon beside
   the control the reader uses most: a slip of a few pixels must not remove a
-  record. It keeps its confirmation and its Undo.
+  record. It keeps its confirmation and its Undo. This holds for any table
+  whose rows carry a routine action (Scope's subnets: Edit is the icon, Delete
+  is in the menu): the trigger is named "Actions for <the row>", the item ends
+  in "…" because a confirmation follows.
 - **Rows are grouped by the server's segment, never by arithmetic in the
   browser.** The groups are the project's one segment rule (the Posture grid's
   and the Evidence matrix's columns), sent with each row; a /24 worked out from

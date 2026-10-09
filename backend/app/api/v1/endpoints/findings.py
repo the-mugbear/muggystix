@@ -25,7 +25,7 @@ from app.services.finding_service import FindingService, endpoint_segments, vali
 from app.services.finding_actions import (
     FindingActor, apply_report_text, finding_actor, promote_or_dismiss_vulnerability, require_modify,
 )
-from app.services import report_images
+from app.services import remediation_service, report_images
 from app.services.report_text import REPORT_TEXT_FIELDS, report_text_of
 from app.services.host_follow_service import HostFollowService, NoteHasRepliesError
 from app.services.host_serialization import _serialize_note, note_load_options
@@ -323,7 +323,12 @@ def update_finding(
             require_modify(viewer, finding, "rename it")
         finding.title = title[:500]
     if body.severity is not None:
+        previous = finding.severity
         finding.severity = validate_severity(body.severity)
+        # A severity change moves the remediation deadlines that come from
+        # the policy: it goes on those hosts' timelines, in this transaction
+        # (nothing on an installation that does not track remediation).
+        remediation_service.severity_changed(db, finding, previous, finding.severity, viewer.user_id)
     # Owner: distinguish "field omitted" from "explicitly set to null" so
     # selecting Unassigned (owner_id: null) actually clears ownership instead of
     # being silently ignored. A non-null owner must be a valid project assignee.

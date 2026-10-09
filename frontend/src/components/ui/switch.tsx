@@ -1,18 +1,27 @@
 import * as React from 'react';
 import * as SwitchPrimitive from '@radix-ui/react-switch';
 import { cn } from '../../utils/cn';
+import { useAccessibleNameCheck } from './accessible-name';
 
 /**
  * Switch — Radix wraps it as a button with `role="switch"` +
  * `aria-checked`.  Use for boolean preferences; for true on/off
  * affecting state immediately (auto-refresh, dark mode, etc.).
  *
+ * It has no text of its own: name it with `aria-label`, a
+ * `<Label htmlFor>` for its `id`, or a wrapping `<label>` (an unnamed
+ * one warns in development — see `accessible-name.ts`).
+ *
  * For boolean form fields submitted with a form, prefer Checkbox.
  */
 export const Switch = React.forwardRef<
   React.ElementRef<typeof SwitchPrimitive.Root>,
   React.ComponentPropsWithoutRef<typeof SwitchPrimitive.Root>
->(({ className, ...props }, ref) => (
+>(({ className, ...props }, forwarded) => {
+  const ref = React.useRef<React.ElementRef<typeof SwitchPrimitive.Root>>(null);
+  React.useImperativeHandle(forwarded, () => ref.current as React.ElementRef<typeof SwitchPrimitive.Root>);
+  useAccessibleNameCheck(ref, 'Switch');
+  return (
   <SwitchPrimitive.Root
     ref={ref}
     className={cn(
@@ -45,5 +54,6 @@ export const Switch = React.forwardRef<
       )}
     />
   </SwitchPrimitive.Root>
-));
+  );
+});
 Switch.displayName = SwitchPrimitive.Root.displayName;

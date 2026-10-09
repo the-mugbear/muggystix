@@ -9,6 +9,7 @@ import {
   applyRowsFor, draftCaution, draftChanges, draftFor, draftProblem, groupTimeline, hasChanges, idParam,
   csvCell, deadlineCell, dueDistance, previewDueOn, remediationCsv, remediationPageSize, remediationSummary,
   timelineSummary, heldRecordText, isRemediationVerification, verificationNote,
+  isRemediationFlag, noteRequirement, policyDueLine, searchParam, REMEDIATION_FLAG_LABEL,
   REMEDIATION_FIELD_LABEL, REMEDIATION_STATE_HELP, REMEDIATION_STATE_LABEL, REMEDIATION_STATUS_LABEL,
 } from '../utils/remediation';
 
@@ -302,5 +303,168 @@ describe('one name per fact: the contact reports it fixed, the assessment calls 
     expect(isRemediationVerification('remediated_record_open')).toBe(true);
     expect(isRemediationVerification('closed')).toBe(false);
     expect(isRemediationVerification(null)).toBe(false);
+  });
+});
+
+describe('managing due dates: a date set by hand, and a deferral with a review date', () => {
+  const byHand = { due_on: '2026-12-20', due_override_on: '2026-12-20', policy_due_on: '2026-12-01', deadline_source: 'override' as const };
+
+  it('opens on the date the rows agree on; rows that differ — or a server that sends none — open blank', () => {
+    expect(draftFor([row(byHand)]).due_override_on).toBe('2026-12-20');
+    expect(draftFor([row(byHand), row({ ...byHand, finding_host_id: 2 })]).due_override_on).toBe('2026-12-20');
+    expect(draftFor([row(byHand), row({ finding_host_id: 2 })]).due_override_on).toBe('');
+    // "Not sent" and null are the same nothing.
+    expect(draftFor([row(), row({ finding_host_id: 2, due_override_on: null })]).due_override_on).toBe('');
+    expect(draftFor([row()])).toMatchObject({ due_override_on: '', due_override_cleared: false, deferred_review_on: '' });
+  });
+
+  it('sends the due date only when it was set, changed or cleared', () => {
+    const mixed = draftFor([row(byHand), row({ finding_host_id: 2 })]);
+    expect(draftChanges(mixed, mixed)).toEqual({});
+    expect(draftChanges(mixed, { ...mixed, team: 'Web' })).toEqual({ team: 'Web' });
+    expect(draftChanges(mixed, { ...mixed, due_override_on: '2026-12-24' })).toEqual({ due_override_on: '2026-12-24' });
+    // Back to the policy's date on rows that differ: sent to every one.
+    expect(draftChanges(mixed, { ...mixed, due_override_cleared: true })).toEqual({ due_override_on: null });
+    const one = draftFor([row(byHand)]);
+    expect(draftChanges(one, { ...one, due_override_on: '' })).toEqual({ due_override_on: null });
+    expect(draftChanges(one, { ...one, due_override_on: '2026-12-20' })).toEqual({});
+  });
+
+  it('a row that becomes deferred carries its review date; the date goes with Deferred only', () => {
+    const open = draftFor([row({ status: 'open' })]);
+    expect(draftChanges(open, { ...open, status: 'deferred', deferred_review_on: '2026-12-01' }))
+      .toEqual({ status: 'deferred', deferred_review_on: '2026-12-01' });
+    // A review date typed and then a different status chosen is not sent.
+    expect(draftChanges(open, { ...open, status: 'closed', deferred_review_on: '2026-12-01' })).toEqual({ status: 'closed' });
+    const deferred = draftFor([row({ status: 'deferred', state: 'deferred', deferred_review_on: '2026-12-01' })]);
+    expect(draftChanges(deferred, { ...deferred, team: 'Web' })).toEqual({ team: 'Web' });
+    expect(draftChanges(deferred, { ...deferred, deferred_review_on: '2027-01-15' })).toEqual({ deferred_review_on: '2027-01-15' });
+    // A mixed selection made deferred with the date some of them already had: every row carries it.
+    const some = draftFor([
+      row({ status: 'deferred', deferred_review_on: '2026-12-01' }),
+      row({ finding_host_id: 2, status: 'deferred', deferred_review_on: '2026-12-01' }),
+    ]);
+    const mixedStatus = { ...some, status: '' as const };
+    expect(draftChanges(mixedStatus, { ...mixedStatus, status: 'deferred' }))
+      .toEqual({ status: 'deferred', deferred_review_on: '2026-12-01' });
+  });
+
+  it('a deferral needs its review date, today or later on the server’s day', () => {
+    const open = draftFor([row({ status: 'open' })]);
+    const today = '2026-11-10';
+    expect(draftProblem({ ...open, status: 'deferred' }, open, today)).toBe('A deferral needs a “Review on” date.');
+    expect(draftProblem({ ...open, status: 'deferred', deferred_review_on: '2026-11-09' }, open, today))
+      .toBe('The “Review on” date must be today or later.');
+    expect(draftProblem({ ...open, status: 'deferred', deferred_review_on: '2026-11-10' }, open, today)).toBeNull();
+    // Deferred before review dates existed: another field can still be edited…
+    const old = draftFor([row({ status: 'deferred', state: 'deferred' })]);
+    expect(draftProblem({ ...old, team: 'Web' }, old, today)).toBeNull();
+    // …and a review date that has since passed is not a reason to refuse it.
+    const past = draftFor([row({ status: 'deferred', state: 'deferred', deferred_review_on: '2026-10-01' })]);
+    expect(draftProblem({ ...past, team: 'Web' }, past, today)).toBeNull();
+    expect(draftProblem({ ...past, deferred_review_on: '' }, past, today)).toBe('A deferral needs a “Review on” date.');
+  });
+
+  it('a hand-set due date and a deferral need a note; nothing else does', () => {
+    expect(noteRequirement({})).toBeNull();
+    expect(noteRequirement({ contact_email: 'a@example.com', notified_on: '2026-10-01', status: 'closed', closed_on: '2026-10-02' })).toBeNull();
+    expect(noteRequirement({ due_override_on: '2026-12-20' })).toMatch(/due date set by hand needs a note/);
+    expect(noteRequirement({ due_override_on: null })).toMatch(/policy’s due date needs a note/);
+    expect(noteRequirement({ status: 'deferred', deferred_review_on: '2026-12-01' })).toMatch(/deferral needs a note/);
+    expect(noteRequirement({ deferred_review_on: '2027-01-15' })).toMatch(/deferral needs a note/);
+  });
+
+  it('a change that needs its reason carries the note in EVERY row, each under its own key', () => {
+    const rows = [row({ finding_host_id: 1 }), row({ finding_host_id: 2 }), row({ finding_host_id: 3, host_id: 6 })];
+    const sent = applyRowsFor(rows, { due_override_on: '2026-12-20' }, ' Agreed ', 'k');
+    expect(sent).toEqual([
+      { finding_host_id: 1, due_override_on: '2026-12-20', notes: [{ body: 'Agreed', request_key: 'k:1' }] },
+      { finding_host_id: 2, due_override_on: '2026-12-20', notes: [{ body: 'Agreed', request_key: 'k:2' }] },
+      { finding_host_id: 3, due_override_on: '2026-12-20', notes: [{ body: 'Agreed', request_key: 'k:3' }] },
+    ]);
+    // Any other change keeps one note per HOST, as before.
+    expect(applyRowsFor(rows, { team: 'Web' }, 'Agreed', 'k').map((r) => r.notes?.[0].request_key)).toEqual(['k', undefined, 'k']);
+  });
+
+  it('the Deadline cell says a hand-set date in a second phrase, only while the clock runs', () => {
+    const cell = deadlineCell({ ...row(byHand), state: 'on_track', days_left: 40 });
+    expect(cell).toMatchObject({ primary: 'Due in 40 days', date: '2026-12-20' });
+    expect(cell.source?.text).toMatch(/^set by hand · policy /);
+    expect(cell.source?.title).toMatch(/^This due date was set by hand\. The policy’s date is /);
+    expect(deadlineCell({ ...row(byHand), state: 'overdue', days_left: -2, policy_due_on: null }).source)
+      .toEqual({ text: 'set by hand · no policy date', title: 'This due date was set by hand. The policy gives this finding no due date.' });
+    expect(deadlineCell({ ...row({ deadline_source: 'policy' }), state: 'on_track', days_left: 40 }).source).toBeUndefined();
+    expect(deadlineCell({ ...row(byHand), state: 'closed', closed_on: '2026-12-01' }).source).toBeUndefined();
+    // A server that sends none of it: the cell is what it was.
+    expect(deadlineCell({ state: 'on_track', due_on: '2026-12-01', days_left: 40, closed_days_late: null, closed_on: null }))
+      .toEqual({ primary: 'Due in 40 days', date: '2026-12-01', after: null, tone: '' });
+  });
+
+  it('the Deadline cell says when a deferral is reviewed, that its review is due, or that it has none', () => {
+    const deferred = { state: 'deferred' as const, due_on: null, days_left: null, closed_days_late: null, closed_on: null };
+    expect(deadlineCell({ ...deferred, deferred_review_on: '2026-12-01', deferral_review_due: false }).primary)
+      .toMatch(/^Deferred · review .*1/);
+    expect(deadlineCell({ ...deferred, deferred_review_on: '2026-11-01', deferral_review_due: true }))
+      .toMatchObject({ primary: 'Deferred · review due', date: '2026-11-01', tone: 'font-medium text-warning' });
+    expect(deadlineCell({ ...deferred, deferred_review_on: null, deferral_review_due: true }))
+      .toMatchObject({ primary: 'Deferred · no review date', date: null, tone: 'font-medium text-warning' });
+    // The page never decides a review is due: a past date with no flag from the server is only a date.
+    expect(deadlineCell({ ...deferred, deferred_review_on: '2020-01-01' }).tone).toBe('text-muted-foreground');
+    // A server that sends neither field: "Deferred", as before.
+    expect(deadlineCell(deferred)).toEqual({ primary: 'Deferred', date: null, after: null, tone: 'text-muted-foreground' });
+  });
+
+  it('the dialog’s read-only line gives the policy’s date and where it comes from', () => {
+    const policy = { days: { critical: 30, high: 30, medium: 90, low: 120, info: null } };
+    expect(policyDueLine(policy, 'CRITICAL', '2026-10-05')).toMatch(/ — critical, 30 days from /);
+    expect(policyDueLine(policy, 'info', '2026-10-05')).toBe('No due date: informational findings have no remediation timeline.');
+    expect(policyDueLine(policy, 'high', '')).toBe('No due date yet: it counts from the assigned date.');
+  });
+
+  it('the CSV says where each due date comes from, the policy’s date when set by hand, and the review date', () => {
+    const csv = remediationCsv([
+      row({ ...byHand, state: 'on_track', days_left: 40 }),
+      row({ state: 'on_track', due_on: '2026-12-01', days_left: 21, deadline_source: 'policy', policy_due_on: '2026-12-01' }),
+      row({ status: 'deferred', state: 'deferred', deferred_review_on: '2026-12-15' }),
+      row(),
+    ]).split('\r\n');
+    expect(csv[0]).toContain('Due on,Days left,Due date from,Policy due date,Deferral review on,Reported fixed on');
+    expect(csv[1]).toContain(',2026-12-20,40,Set by hand,2026-12-01,,');
+    // The policy's date is the due date already: not printed twice.
+    expect(csv[2]).toContain(',2026-12-01,21,Policy,,,');
+    expect(csv[3]).toContain(',Deferred,,,,,,2026-12-15,');
+    // A server that sends none of it: three empty cells, nothing else moves.
+    expect(csv[4]).toContain(',Not assigned,,,,,,,,,Still present,');
+  });
+
+  it('the copied summary names the flags that have rows, and only those', () => {
+    const counts = {
+      as_of: '2026-11-10',
+      state_counts: { overdue: 0, due_soon: 0, on_track: 1, not_assigned: 0, no_deadline: 0, deferred: 2, closed: 5 },
+      severity_counts: {}, overdue_ages: { '1-7': 0, '8-30': 0, '31-90': 0, '90+': 0 },
+      not_followed_up: 0, not_followed_up_days: 7,
+    };
+    const text = remediationSummary(
+      { ...counts, flag_counts: { deferral_review_due: 2, deadline_overridden: 0 } },
+      { where: 'in this project', dueSoonDays: 7 });
+    expect(text).toContain('Deferrals to review: 2');
+    expect(text).not.toContain('Due date set by hand');
+    expect(remediationSummary({ ...counts, flag_counts: { deferral_review_due: 0, deadline_overridden: 4 } },
+      { where: 'in this project', dueSoonDays: 7 })).toContain('Due date set by hand: 4');
+    // No counts from the server: the summary is what it was.
+    expect(remediationSummary(counts, { where: 'in this project', dueSoonDays: 7 })).not.toMatch(/Deferrals to review|set by hand/);
+  });
+
+  it('checks a flag and a search from the address, and names the new timeline fields', () => {
+    expect(isRemediationFlag('deferral_review_due')).toBe(true);
+    expect(isRemediationFlag('deadline_overridden')).toBe(true);
+    expect(isRemediationFlag('overdue')).toBe(false);
+    expect(isRemediationFlag(null)).toBe(false);
+    expect(REMEDIATION_FLAG_LABEL).toEqual({ deferral_review_due: 'Deferrals to review', deadline_overridden: 'Due date set by hand' });
+    expect(searchParam(null)).toBe('');
+    expect(searchParam(' x ')).toBe('');
+    expect(searchParam('  smb ')).toBe('smb');
+    expect(searchParam('a'.repeat(300))).toHaveLength(200);
+    expect(REMEDIATION_FIELD_LABEL).toMatchObject({ due_override_on: 'Due date', deferred_review_on: 'Review on', severity: 'Severity' });
   });
 });

@@ -17,6 +17,7 @@ import { getMcpTools, type McpCatalog, type McpToolDoc } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { CardListSkeleton } from '../components/PageSkeleton';
 import McpConnectPanel from '../components/McpConnectPanel';
+import SectionJumpBar, { JumpEntry, jumpTargetStyle } from '../components/SectionJumpBar';
 import McpFlowDiagram from '../components/mcp/McpFlowDiagram';
 import { CodeBlock } from '../components/ui/code-block';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -60,6 +61,9 @@ const CAPABILITY_GROUPS: Array<{ key: string; label: string; blurb: string }> = 
       'Who am I, read the guide and the tool catalogue, suggest a tool the catalogue lacks, and end the session.',
   },
 ];
+
+/** Anchor id of a tool group's section. */
+const groupAnchor = (key: string): string => `section-tools-${key}`;
 
 const formatBytes = (bytes: number): string =>
   bytes >= 1024 * 1024 ? `${Math.round(bytes / (1024 * 1024))} MiB` : `${Math.round(bytes / 1024)} KiB`;
@@ -121,6 +125,19 @@ const McpReference: React.FC = () => {
   // The endpoint is server-resolved; fall back to a relative path so the
   // connect snippets still read correctly if the catalog call failed.
   const endpoint = catalog?.endpoint ?? '/api/v1/mcp';
+
+  // The page's sections in order, each under its own heading's words; the
+  // tool groups come after "Available tools", with the count their badge shows.
+  const jumpEntries = useMemo<JumpEntry[]>(() => [
+    { id: 'section-session', label: 'One session, one key' },
+    { id: 'section-connecting', label: 'Connecting a client' },
+    { id: 'section-tool-call', label: 'What happens on a tool call' },
+    { id: 'section-tools', label: 'Available tools' },
+    ...groups.map((g) => ({ id: groupAnchor(g.key), label: g.label, count: String(g.tools.length) })),
+    { id: 'section-authority', label: 'What a session may do' },
+    { id: 'section-writing-up', label: 'Writing the engagement up' },
+    { id: 'section-limits', label: 'What these tools do not answer' },
+  ], [groups]);
 
   const toolRows = (tools: McpToolDoc[]) => (
     <Table style={{ tableLayout: 'fixed' }}>
@@ -201,8 +218,13 @@ const McpReference: React.FC = () => {
         </AlertDescription>
       </Alert>
 
+      {/* Always the picker: the tool groups arrive after the page does, and
+          the bar must not change shape when they do. */}
+      <SectionJumpBar entries={jumpEntries} presentation="picker" />
+
       {/* 5.313.0 — no pipeline diagram: there is no fixed order and no
           per-workflow key. */}
+      <section id="section-session" style={jumpTargetStyle}>
       <h2 className="text-section-title">One session, one key</h2>
       <p className="mt-xxs mb-lg max-w-4xl text-caption text-muted-foreground">
         One project session and key do everything your project role allows: the agent reads the
@@ -237,8 +259,10 @@ const McpReference: React.FC = () => {
           </div>
         </div>
       </div>
+      </section>
 
       {/* --- Connect --- */}
+      <section id="section-connecting" style={jumpTargetStyle}>
       <h2 className="text-section-title">Connecting a client</h2>
       <p className="mt-xxs mb-sm max-w-4xl text-caption text-muted-foreground">
         Clients disagree on config shape — VS Code reads{' '}
@@ -308,8 +332,10 @@ const McpReference: React.FC = () => {
         <span className="font-mono">.mcp.json</span> or <span className="font-mono">-s user</span>{' '}
         for every project — neither with a live key in it.
       </p>
+      </section>
 
       {/* --- What a call actually does --- */}
+      <section id="section-tool-call" style={jumpTargetStyle}>
       <h2 className="text-section-title">What happens on a tool call</h2>
       <div className="mb-lg mt-xs">
         <div>
@@ -341,8 +367,10 @@ const McpReference: React.FC = () => {
           </ol>
         </div>
       </div>
+      </section>
 
       {/* --- Tools --- */}
+      <section id="section-tools" style={jumpTargetStyle}>
       <h2 className="text-section-title">Available tools</h2>
       <p className="mt-xxs mb-sm max-w-4xl text-caption text-muted-foreground">
         Read live from this deployment&rsquo;s server registry, so it always matches what your
@@ -370,10 +398,13 @@ const McpReference: React.FC = () => {
             tool list is the only part read from the server.
           </AlertDescription>
         </Alert>
-      ) : (
+      ) : null}
+      </section>
+
+      {!loading && !error && (
         <>
           {groups.map((group) => (
-            <div key={group.key} className="mb-lg">
+            <div key={group.key} id={groupAnchor(group.key)} style={jumpTargetStyle} className="mb-lg">
               <div className="mb-xxs flex flex-wrap items-center gap-xs">
                 {group.key === 'shared' ? (
                   <Radio className="size-4 text-info" aria-hidden />
@@ -391,6 +422,7 @@ const McpReference: React.FC = () => {
       )}
 
       {/* --- Authority --- */}
+      <section id="section-authority" style={jumpTargetStyle}>
       <h2 className="text-section-title">What a session may do</h2>
       <div className="mb-lg mt-xs">
         <div className="space-y-sm">
@@ -440,8 +472,10 @@ const McpReference: React.FC = () => {
           </div>
         </div>
       </div>
+      </section>
 
       {/* --- The deliberate omissions --- */}
+      <section id="section-writing-up" style={jumpTargetStyle}>
       <h2 className="text-section-title">Writing the engagement up</h2>
       <p className="mt-xxs mb-sm max-w-4xl text-caption text-muted-foreground">
         Most of a report comes through tools: <span className="font-mono">assist_get_posture</span>{' '}
@@ -483,8 +517,10 @@ const McpReference: React.FC = () => {
         <span className="font-mono">/projects/…</span>, but that path wants a login session an
         agent does not have.
       </p>
+      </section>
 
       {/* --- The limit worth stating plainly --- */}
+      <section id="section-limits" style={jumpTargetStyle}>
       <h2 className="mt-lg text-section-title">What these tools do not answer</h2>
       <Alert variant="info" className="mt-xs">
         <AlertDescription className="text-caption">
@@ -498,6 +534,7 @@ const McpReference: React.FC = () => {
           you read the output.
         </AlertDescription>
       </Alert>
+      </section>
     </div>
   );
 };

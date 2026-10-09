@@ -7,7 +7,7 @@
  * be presented as safe-to-always-allow), and a failed catalog fetch degrades to
  * the rest of the page instead of a blank screen.
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -168,6 +168,27 @@ describe('McpReference', () => {
     expect(screen.queryByText(/belongs to one workflow/)).toBeNull();
     expect(screen.queryByRole('img', { name: /pipeline/ })).toBeNull();
     expect(screen.queryByText(/approved plan|for approval|human approval/)).toBeNull();
+  });
+
+  // The page runs to about nine screens: every section and tool group is a
+  // jump target, under its own heading's words.
+  it('has a jump picker over its sections and tool groups', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('assist_list_hosts')).toBeInTheDocument());
+    const bar = await screen.findByRole('navigation', { name: 'Sections of this page' });
+    expect(within(bar).getByRole('combobox', { name: 'Jump to a section' })).toBeInTheDocument();
+    for (const [id, heading] of [
+      ['section-session', 'One session, one key'],
+      ['section-connecting', 'Connecting a client'],
+      ['section-tools', 'Available tools'],
+      ['section-tools-assist', 'Read the inventory and write notes'],
+      ['section-authority', 'What a session may do'],
+      ['section-limits', 'What these tools do not answer'],
+    ]) {
+      const section = document.getElementById(id)!;
+      expect(within(section).getByRole('heading', { name: heading })).toBeInTheDocument();
+      expect(section.style.scrollMarginTop).toMatch(/var\(--topbar-h/);
+    }
   });
 
   // 5.320.0 — "every kind" follows the catalog's kinds (it was a literal 4).

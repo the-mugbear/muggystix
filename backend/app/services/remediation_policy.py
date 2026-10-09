@@ -14,6 +14,10 @@ severity.  Changing the timeline or the severity therefore moves every open
 deadline at once, and there is no stored date to drift.  Closing a row freezes
 the deadline then in force (``closed_due_on``).
 
+A project admin may set one row's deadline by hand (``due_override_on``, with
+a reason on the timeline): that date then IS the deadline, whatever the
+policy, the severity or the assigned date say, until it is cleared.
+
 States, exclusive, decided in this order:
 
 "Today" is the day in the installation's time zone (``Policy.today``): the
@@ -24,6 +28,7 @@ day a row became overdue in the middle of the afternoon.
 * ``no_deadline`` — open, and the severity has no timeline (informational).
 * ``not_assigned`` — open, a timeline applies, no assigned date: the clock has
   not started, so the row can never read as overdue.
+  (A row with a hand-set deadline is neither: its clock runs.)
 * ``overdue`` — the deadline is before today.
 * ``due_soon`` — the deadline is today or within the "due soon" window.
 * ``on_track`` — the rest.
@@ -34,7 +39,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException
-from sqlalchemy import Date, Integer, and_, case, cast, func, literal, null
+from sqlalchemy import Date, Integer, and_, case, cast, func, literal, null, or_
 from sqlalchemy.orm import Session
 
 from app.db.models_findings import Finding, FindingHost, FindingHostStatus
@@ -123,6 +128,21 @@ def save(db: Session, body, user_id: Optional[int]) -> tuple[Policy, Policy]:
     return before, load(db)
 
 
+def proposed(policy: Policy, body) -> Policy:
+    """``policy`` with the timelines, the warning window and the time zone
+    the caller sent — what ``save`` would store, without storing it.  Whether
+    the feature is on is not part of a preview."""
+    sent = body.model_fields_set
+    days = dict(policy.days)
+    if "days" in sent and body.days is not None:
+        days.update(body.days)
+    return Policy(
+        policy.enabled, days,
+        body.due_soon_days if "due_soon_days" in sent and body.due_soon_days is not None else policy.due_soon_days,
+        body.time_zone if "time_zone" in sent and body.time_zone is not None else policy.time_zone,
+    )
+
+
 def require_enabled(db: Session) -> Policy:
     """404, not 403: on an installation that did not opt in there is no such
     feature, for anyone."""
@@ -146,9 +166,9 @@ def _days_case(policy: Policy):
     return case(whens, value=func.lower(Finding.severity), else_=None)
 
 
-def due_expr(db: Session, policy: Policy):
-    """An OPEN row's deadline: assigned date + the days for the finding's
-    severity.  NULL when either is missing."""
+def policy_due_expr(db: Session, policy: Policy):
+    """What the POLICY alone gives an open row: assigned date + the days for
+    the finding's severity.  NULL when either is missing."""
     if not any(days is not None for days in policy.days.values()):
         return cast(null(), Date)
     if _is_postgres(db):
@@ -156,6 +176,25 @@ def due_expr(db: Session, policy: Policy):
     modifier = case({severity: f"+{days} days" for severity, days in policy.days.items() if days is not None},
                     value=func.lower(Finding.severity), else_=None)
     return func.date(Remediation.notified_on, modifier)            # SQLite; NULL modifier gives NULL
+
+
+def due_for_severity_expr(db: Session, policy: Policy, severity: Optional[str]):
+    """The policy's date for a row as if its finding had ``severity`` — what a
+    severity change moves a deadline from and to.  NULL without a timeline for
+    that severity or without an assigned date."""
+    days = policy.days_for(severity)
+    if days is None:
+        return cast(null(), Date)
+    if _is_postgres(db):
+        return Remediation.notified_on + literal(days, Integer)
+    return func.date(Remediation.notified_on, f"+{days} days")
+
+
+def due_expr(db: Session, policy: Policy):
+    """An OPEN row's deadline in force: the date set by hand
+    (``due_override_on``) when there is one, the policy's otherwise.  NULL
+    when neither gives one."""
+    return func.coalesce(Remediation.due_override_on, policy_due_expr(db, policy))
 
 
 def _day(db: Session, value: date):
@@ -166,15 +205,42 @@ def _day(db: Session, value: date):
 def state_expr(db: Session, policy: Policy, today: date):
     status = func.coalesce(Remediation.status, "open")
     due = due_expr(db, policy)
+    # A date set by hand is a running clock by itself: such a row is never
+    # "no deadline" or "not assigned".
+    by_policy = Remediation.due_override_on.is_(None)
     return case(
         (status == "closed", "closed"),
         (status == "deferred", "deferred"),
-        (_days_case(policy).is_(None), "no_deadline"),
-        (Remediation.notified_on.is_(None), "not_assigned"),
+        (and_(by_policy, _days_case(policy).is_(None)), "no_deadline"),
+        (and_(by_policy, Remediation.notified_on.is_(None)), "not_assigned"),
         (due < _day(db, today), "overdue"),
         (due <= _day(db, today + timedelta(days=policy.due_soon_days)), "due_soon"),
         else_="on_track",
     )
+
+
+def within_days(db: Session, policy: Policy, today: date, days: int):
+    """An open row's deadline falls on or before ``today + days``."""
+    return due_expr(db, policy) <= _day(db, today + timedelta(days=days))
+
+
+#: What an admin is to look at beside the deadline states.
+FLAGS = ("deferral_review_due", "deadline_overridden")
+
+
+def flag_exprs(db: Session, today: date) -> dict:
+    """The ONE definition of each flag, as a SQL condition.
+
+    * ``deferral_review_due`` — the row is deferred and its review date is
+      today or past, or it has none (deferred before review dates existed).
+    * ``deadline_overridden`` — the row's deadline was set by hand.
+    """
+    review = Remediation.deferred_review_on
+    return {
+        "deferral_review_due": and_(Remediation.status == "deferred",
+                                    or_(review.is_(None), review <= _day(db, today))),
+        "deadline_overridden": Remediation.due_override_on.isnot(None),
+    }
 
 
 #: Where the contact's record and the assessor's conclusion about the same
@@ -192,9 +258,10 @@ def verification_expr():
     * ``reported_fixed_not_retested`` — the record is ``closed`` and the
       endpoint is neither ``remediated`` nor a false positive: the contact says
       fixed, the team has not concluded so.
-    * ``remediated_record_open`` — the endpoint is ``remediated`` and the
-      record is ``open`` or ``deferred``, or was never written: the team
-      concluded fixed, the record still reads as work.
+    * ``remediated_record_open`` — the endpoint is ``remediated`` and a
+      record EXISTS that is ``open`` or ``deferred``: the team concluded
+      fixed, the record still reads as work.  An endpoint nobody ever tracked
+      has no record to be "still open".
     """
     status = func.coalesce(Remediation.status, "open")
     endpoint = FindingHost.host_status
@@ -203,7 +270,8 @@ def verification_expr():
         (and_(status == "closed",
               endpoint.notin_((remediated, FindingHostStatus.FALSE_POSITIVE.value))),
          "reported_fixed_not_retested"),
-        (and_(endpoint == remediated, status != "closed"), "remediated_record_open"),
+        (and_(endpoint == remediated, Remediation.id.isnot(None), status != "closed"),
+         "remediated_record_open"),
         else_=None,
     )
 

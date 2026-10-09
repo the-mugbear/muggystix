@@ -164,7 +164,8 @@ def test_each_state_is_decided_from_the_assigned_date_and_the_severity(client, d
         {"finding_host_id": high[1], "notified_on": day(30)},                      # due today
         {"finding_host_id": high[2], "notified_on": day(23)},                      # due in 7 days: the window's edge
         {"finding_host_id": high[3], "notified_on": day(22)},                      # due in 8 days
-        {"finding_host_id": high[4], "notified_on": day(200), "status": "deferred"},
+        {"finding_host_id": high[4], "notified_on": day(200), "status": "deferred",
+         "deferred_review_on": day(-30), "notes": [{"body": "Waiting for the vendor's fix."}]},
         # high[5]: nothing recorded
         {"finding_host_id": info[0], "notified_on": day(500)},                     # informational: no deadline
     ])
@@ -374,7 +375,10 @@ def test_the_overview_covers_the_projects_the_caller_administers(client, db_sess
         assert (contact["overdue"], contact["projects"]) == (3, 2)
         message = client.get(f"{OVERVIEW}/follow-up", params={"contact_email": "roger@testdomain.com"}).json()
         assert len(message["items"]) == 3 and sorted(message["project_ids"]) == sorted([mine.id, done.id])
-        assert "[ov-mine]" in message["text"] and "[ov-theirs]" not in message["text"]
+        # Each project is a heading of the message; one they do not administer is not in it.
+        lines = message["text"].split("\n")
+        assert "ov-mine" in lines and "ov-theirs" not in message["text"]
+        assert "across 2 projects" in lines[2]
         # Reads and writes on an archived project they administer; not on one they do not.
         archived = f"{OVERVIEW}/projects/{done.id}/remediation"
         assert client.get(archived).json()["total"] == 1

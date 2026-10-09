@@ -13,7 +13,7 @@
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Copy, Download, History, X } from 'lucide-react';
+import { Copy, Download, History, Search, X } from 'lucide-react';
 
 import {
   listRemediation, listRemediationContacts, listRemediationOverview, listRemediationTeams,
@@ -29,10 +29,10 @@ import { useListCursor } from '../../hooks/useListCursor';
 import { formatDate } from '../../utils/relativeTime';
 import {
   REMEDIATION_GROUPS, REMEDIATION_GROUP_LABEL, REMEDIATION_PAGE_SIZE, REMEDIATION_PAGE_SIZES,
-  OVERDUE_BAND_LABEL, REMEDIATION_STATES, REMEDIATION_STATE_HELP, REMEDIATION_STATE_LABEL,
-  REMEDIATION_VERIFICATION_LABEL, REPORTED_FIXED, deadlineCell, idParam,
-  isOverdueBand, isRemediationGroup, isRemediationState, isRemediationVerification, remediationCsv,
-  remediationPageSize, remediationSummary, severityWord, timelineSummary, verificationNote,
+  OVERDUE_BAND_LABEL, REMEDIATION_FLAG_LABEL, REMEDIATION_STATES, REMEDIATION_STATE_HELP, REMEDIATION_STATE_LABEL,
+  REMEDIATION_VERIFICATION_LABEL, REPORTED_FIXED, SEARCH_MAX, deadlineCell, idParam,
+  isOverdueBand, isRemediationFlag, isRemediationGroup, isRemediationState, isRemediationVerification, remediationCsv,
+  remediationPageSize, remediationSummary, searchParam, severityWord, timelineSummary, verificationNote,
 } from '../../utils/remediation';
 import RemediationInsights, { RemediationVerificationCounts } from './RemediationInsights';
 import {
@@ -57,6 +57,9 @@ const NO_TEAMS: RemediationTeam[] = [];
 export const CSV_MAX_ROWS = 20000;
 const LINK = 'rounded text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 const ALL_PROJECTS = '__all__';
+// How far ahead "Remind" looks for a contact with nothing overdue or due soon
+// (one of the follow-up dialog's horizons).
+const UPCOMING_REMINDER_DAYS = 90;
 const ANY_SEVERITY = '__any__';
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'];
 
@@ -125,6 +128,11 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   // Where the contact's record and the assessment disagree (the server derives it).
   const verificationParam = params.get('verification');
   const verification = isRemediationVerification(verificationParam) ? verificationParam : null;
+  // Deferrals to review, or due dates set by hand (the server derives both).
+  const flagParam = params.get('flag');
+  const flag = isRemediationFlag(flagParam) ? flagParam : null;
+  // A finding's title, or a host's address or name.
+  const q = searchParam(params.get('q'));
   // A link from a host or a finding narrows the list to it (`?host=`, `?finding=`).
   const hostId = across ? null : idParam(params.get('host'));
   const findingId = across ? null : idParam(params.get('finding'));
@@ -136,7 +144,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
       const next = new URLSearchParams(prev);
       if (value == null || value === '') next.delete(key); else next.set(key, value);
       return next;
-    }, { replace: key === 'contact' });
+    }, { replace: key === 'contact' || key === 'q' });
   };
 
   // The search box is typed into; the address (and the request) follow a
@@ -150,6 +158,19 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typed]);
 
+  // The same for "Finding or host": one character searches nothing, so the
+  // address only ever holds a search the server takes.
+  const [sought, setSought] = useState(q);
+  // Follows the address (Back, a cleared chip) without wiping a single
+  // character the reader has typed so far.
+  useEffect(() => { setSought((s) => (searchParam(s) === q ? s : q)); }, [q]);
+  useEffect(() => {
+    if (searchParam(sought) === q) return undefined;
+    const timer = window.setTimeout(() => setParam('q', searchParam(sought) || undefined), 300);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sought]);
+
   // The project chooser lists only projects with something still open (owner,
   // 2026-10-08), each with its count; the one in the address stays listed
   // even at zero, so the control never shows a project it does not offer.
@@ -159,7 +180,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   );
 
   const filtered = !!contact || unassigned || hostId != null || findingId != null || projectId != null
-    || severity != null || !!team || band != null || stale || verification != null;
+    || severity != null || !!team || band != null || stale || verification != null || flag != null || !!q;
 
   // The filters of the list, as the API takes them — the list, the CSV and
   // nothing else read them, so the file holds exactly the rows on screen.
@@ -169,8 +190,11 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     team: team || undefined, overdue_band: band ?? undefined,
     no_follow_up_days: stale ? (policy?.due_soon_days || 7) : undefined,
     verification: verification ?? undefined,
+    // Left out entirely when unset, so the request reads as it always did.
+    ...(flag ? { flag } : {}),
+    ...(q ? { q } : {}),
     project_id: projectId ?? undefined,
-  }), [state, contact, unassigned, hostId, findingId, severity, team, band, stale, verification, projectId, policy]);
+  }), [state, contact, unassigned, hostId, findingId, severity, team, band, stale, verification, flag, q, projectId, policy]);
 
   // The rows' page is in the address (`?page=`): a reload, or Back from a
   // host or a finding, returns to the rows that were on screen.
@@ -227,8 +251,15 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   // opening it drops those and keeps the rest (contact, team, severity…).
   const openVerification = (value: string) => setParams((prev) => {
     const next = new URLSearchParams(prev);
-    ['view', 'state', 'band', 'stale'].forEach((k) => next.delete(k));
+    ['view', 'state', 'band', 'stale', 'flag'].forEach((k) => next.delete(k));
     next.set('verification', value);
+    return next;
+  });
+  // The flag counts follow the same rule, and are taken before the gap filter too.
+  const openFlag = (value: string) => setParams((prev) => {
+    const next = new URLSearchParams(prev);
+    ['view', 'state', 'band', 'stale', 'verification'].forEach((k) => next.delete(k));
+    next.set('flag', value);
     return next;
   });
 
@@ -285,6 +316,8 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   const [editing, setEditing] = useState<RemediationRow[] | null>(null);
   const [timeline, setTimeline] = useState<RemediationRow | null>(null);
   const [followUp, setFollowUp] = useState<string | null>(null);
+  // A contact with nothing overdue or due soon is reminded of what is coming.
+  const [followUpAhead, setFollowUpAhead] = useState(0);
   const [report, setReport] = useState<RemediationContact | null>(null);
   // A contact's list is ONE project's document: on the cross-project page it
   // needs the project chosen first.
@@ -317,6 +350,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   if (band) extra.push({ key: 'band', label: `Overdue by ${OVERDUE_BAND_LABEL[band].toLowerCase()}` });
   if (stale) extra.push({ key: 'stale', label: `Overdue or due soon, no follow-up in ${policy?.due_soon_days || 7} days` });
   if (verification) extra.push({ key: 'verification', label: REMEDIATION_VERIFICATION_LABEL[verification] });
+  if (flag) extra.push({ key: 'flag', label: REMEDIATION_FLAG_LABEL[flag] });
 
   // j / k move, Enter opens the row: the editor for an admin, the timeline otherwise.
   const { cursorRowProps } = useListCursor(
@@ -455,7 +489,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
             <div className="min-w-0 overflow-x-auto">
               {across && canWrite && reportProject == null && (
                 <p className="mb-xs text-caption text-muted-foreground">
-                  Choose a project above to prepare a contact’s list as a document: a list is one project’s.
+                  Follow up covers every project. A contact’s list as a document is one project’s: choose a project above to prepare one.
                 </p>
               )}
               <Table aria-label="Remediation contacts and their deadlines" className="min-w-[57rem] table-fixed">
@@ -509,9 +543,13 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                                 title="Prepare this contact’s remediation list as a Word or HTML document"
                                 onClick={() => setReport(c)}>Document</Button>
                             )}
-                            {atRisk > 0 && (
+                            {atRisk > 0 ? (
                               <Button size="sm" variant="outline" className="h-7"
-                                onClick={() => setFollowUp(c.contact_email)}>Follow up</Button>
+                                onClick={() => { setFollowUpAhead(0); setFollowUp(c.contact_email); }}>Follow up</Button>
+                            ) : c.on_track > 0 && (
+                              <Button size="sm" variant="ghost" className="h-7"
+                                title="Nothing is overdue or due soon: remind this contact of the deadlines coming up"
+                                onClick={() => { setFollowUpAhead(UPCOMING_REMINDER_DAYS); setFollowUp(c.contact_email); }}>Remind</Button>
                             )}
                           </div>
                         </TableCell>
@@ -534,7 +572,8 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
             />
           )}
           <RemediationVerificationCounts counts={list.lastResponse?.verification_counts}
-            selected={verification} onSelect={openVerification} />
+            selected={verification} onSelect={openVerification}
+            flagCounts={list.lastResponse?.flag_counts} selectedFlag={flag} onSelectFlag={openFlag} />
           <FilterChips<RemediationState>
             label="Filter by deadline state"
             allLabel="All"
@@ -548,6 +587,21 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
           />
 
           <div className="mb-sm flex min-w-0 flex-wrap items-center gap-sm">
+            <div className="relative min-w-0">
+              <Search className="pointer-events-none absolute left-2 top-2 size-4 text-muted-foreground" aria-hidden />
+              <Input id="rem-search" type="search" aria-label="Search by finding or host"
+                className="h-8 w-64 max-w-full pl-8 pr-8 [&::-webkit-search-cancel-button]:hidden"
+                value={sought} maxLength={SEARCH_MAX} placeholder="Finding or host…"
+                title="A finding’s title, or a host’s address or name (two characters or more)"
+                onChange={(e) => setSought(e.target.value)} />
+              {sought && (
+                <button type="button" aria-label="Clear the search"
+                  className="absolute right-1 top-1 rounded p-1 text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => { setSought(''); setParam('q', undefined); }}>
+                  <X className="size-4" aria-hidden />
+                </button>
+              )}
+            </div>
             <Label htmlFor="rem-contact" className="shrink-0">Contact</Label>
             <div className="relative min-w-0">
               <Input id="rem-contact" className="h-8 w-64 max-w-full pr-8" value={typed} maxLength={254}
@@ -635,7 +689,13 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
             rows={list.rows}
             state={{ loading: list.loading, error: list.error, onRetry: () => void list.reload() }}
             what="the remediation list"
-            empty={filtered || state
+            empty={q
+              ? (
+                <span className="break-words">
+                  No finding or host matches “{q}”{(state || contact || unassigned || severity || team || band || stale || verification || flag || projectId != null) ? ' with these filters' : ''}.
+                </span>
+              )
+              : filtered || state
               ? 'Nothing matches these filters.'
               : 'Nothing here — a finding shows once per host when it is confirmed, accepted as a risk or remediated.'}
           >
@@ -645,7 +705,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                   {/* The fixed columns leave Finding — the one column with no
                       width — at least 10rem at the table's minimum. */}
                   <Table aria-label="Findings on hosts and their remediation deadlines"
-                    className={`${across ? 'min-w-[70.5rem]' : 'min-w-[61.5rem]'} table-fixed`}>
+                    className={`${across ? 'min-w-[71.5rem]' : 'min-w-[62.5rem]'} table-fixed`}>
                     <TableHeader>
                       <TableRow className="hover:bg-transparent hover:shadow-none">
                         {canWrite && (
@@ -654,7 +714,8 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                               onCheckedChange={(v) => selection.toggleAll(v === true)} />
                           </TableHead>
                         )}
-                        <TableHead className="w-[13rem]">Deadline</TableHead>
+                        {/* Wide enough for "Deferred · review <date>" on one line. */}
+                        <TableHead className="w-[14rem]">Deadline</TableHead>
                         <TableHead className="w-[9rem]">Host</TableHead>
                         <TableHead>Finding</TableHead>
                         {across && <TableHead className="w-[9rem]">Project</TableHead>}
@@ -678,12 +739,21 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                               </TableCell>
                             )}
                             <TableCell className="min-w-0 align-middle tabular-nums">
-                              <span className={`block truncate ${deadline.tone}`} title={REMEDIATION_STATE_HELP[r.state]}>
+                              <span className={`block truncate ${deadline.tone}`}
+                                // A deferral's phrase carries its review date: it is on the tooltip too, should it be cut.
+                                title={r.state === 'deferred' && deadline.primary !== REMEDIATION_STATE_LABEL.deferred
+                                  ? `${deadline.primary}. ${REMEDIATION_STATE_HELP.deferred}` : REMEDIATION_STATE_HELP[r.state]}>
                                 {deadline.primary}
                               </span>
                               {deadline.date && (
                                 <span className="block truncate text-caption text-muted-foreground">
                                   {formatDate(deadline.date)}
+                                </span>
+                              )}
+                              {/* A due date somebody set by hand, with the policy's. */}
+                              {deadline.source && (
+                                <span className="block truncate text-caption text-muted-foreground" title={deadline.source.title}>
+                                  {deadline.source.text}
                                 </span>
                               )}
                               {/* The assessment's side of the same finding on this host. */}
@@ -798,6 +868,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
           scope={scope}
           projectId={projectId ?? undefined}
           canWrite={canWrite}
+          initialAhead={followUpAhead}
           onClose={() => setFollowUp(null)}
           onRecorded={changed}
         />

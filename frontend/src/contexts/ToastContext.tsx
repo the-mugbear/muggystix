@@ -63,6 +63,8 @@ interface ToastContextValue {
   info: (message: string, options?: ToastOptions) => void;
   warning: (message: string, options?: ToastOptions) => void;
   error: (message: string, options?: ToastOptions) => void;
+  /** Take away the toast shown under this `id` (a notice that no longer applies). */
+  dismiss: (id: string | number) => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
@@ -132,6 +134,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       info: (message, options) => dispatch('info', message, options),
       warning: (message, options) => dispatch('warning', message, options),
       error: (message, options) => dispatch('error', message, options),
+      dismiss: (id) => { sonnerToast.dismiss(id); },
     }),
     [],
   );
@@ -182,6 +185,7 @@ export function useToast(): ToastContextValue {
       info: (message, options) => dispatch('info', message, options),
       warning: (message, options) => dispatch('warning', message, options),
       error: (message, options) => dispatch('error', message, options),
+      dismiss: (id) => { sonnerToast.dismiss(id); },
     };
   }
   return ctx;

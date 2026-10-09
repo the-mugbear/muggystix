@@ -25,6 +25,8 @@ vi.mock('../../services/api', () => ({
   listRemediationContacts: vi.fn(),
   getRemediationFollowUp: vi.fn(),
   recordRemediationFollowUp: vi.fn(),
+  // Never answers: these tests are not about the effect of a timeline change.
+  previewRemediationPolicy: vi.fn(() => new Promise(() => undefined)),
   listRemediationEvents: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
   addRemediationNote: vi.fn(),
   deleteRemediationNote: vi.fn(),
@@ -218,6 +220,15 @@ describe('a deadline alert opens the cross-project list on its project and state
     expect(alert('remediation_overdue', 9)).toBe('/remediation-deadlines?state=overdue&project=9');
     expect(alert('remediation_due_soon', 4)).toBe('/remediation-deadlines?state=due_soon&project=4');
     expect(alert('remediation_overdue', null)).toBe('/remediation-deadlines?state=overdue');
+  });
+
+  it('deferrals whose review date has come open their flag, in the alert’s project', () => {
+    // The cross-project page, so a global administrator who is not a member
+    // of the project — and an admin of one since archived — lands on its rows.
+    expect(alert('remediation_deferral_review', 9)).toBe('/remediation-deadlines?flag=deferral_review_due&project=9');
+    expect(alert('remediation_deferral_review', null)).toBe('/remediation-deadlines?flag=deferral_review_due');
+    // A kind this page does not know is not a remediation link.
+    expect(alert('remediation_something_else', 9)).toBeNull();
   });
 });
 

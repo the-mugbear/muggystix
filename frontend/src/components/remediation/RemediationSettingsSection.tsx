@@ -15,7 +15,10 @@
 import React, { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 
-import { getRemediationPolicy, updateRemediationPolicy, type RemediationPolicy } from '../../services/api';
+import {
+  getRemediationPolicy, previewRemediationPolicy, updateRemediationPolicy,
+  type RemediationPolicy, type RemediationPolicyPreview, type RemediationState,
+} from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { setRemediationPolicy } from '../../hooks/useRemediationPolicy';
 import { formatApiError } from '../../utils/apiErrors';
@@ -70,6 +73,38 @@ export const daysProblem = (draft: Draft): string | null => {
   return null;
 };
 
+/** How long after the last keystroke the effect of a change is asked for. */
+export const PREVIEW_DELAY_MS = 400;
+
+const findings = (n: number): string => `${n.toLocaleString()} ${n === 1 ? 'finding' : 'findings'}`;
+
+/** What saving a changed timeline would do, in one line. */
+export const policyEffect = (preview: RemediationPolicyPreview): string => {
+  const parts: string[] = [];
+  if (preview.becomes_overdue > 0) {
+    parts.push(`makes ${findings(preview.becomes_overdue)} overdue that ${preview.becomes_overdue === 1 ? 'is' : 'are'} not now`);
+  }
+  if (preview.no_longer_overdue > 0) {
+    parts.push(parts.length === 0
+      ? `stops ${findings(preview.no_longer_overdue)} being overdue`
+      : `${preview.no_longer_overdue.toLocaleString()} ${preview.no_longer_overdue === 1 ? 'stops' : 'stop'} being overdue`);
+  }
+  if (preview.becomes_due_soon > 0) {
+    parts.push(parts.length === 0
+      ? `makes ${findings(preview.becomes_due_soon)} due soon`
+      : `${preview.becomes_due_soon.toLocaleString()} ${preview.becomes_due_soon === 1 ? 'becomes' : 'become'} due soon`);
+  }
+  if (parts.length > 0) {
+    const last = parts.pop();
+    return `Saving this ${parts.length > 0 ? `${parts.join(', ')}, and ${last}` : last}.`;
+  }
+  const states = new Set([...Object.keys(preview.current ?? {}), ...Object.keys(preview.proposed ?? {})]) as Set<RemediationState>;
+  const moved = [...states].some((s) => (preview.current?.[s] ?? 0) !== (preview.proposed?.[s] ?? 0));
+  return moved
+    ? 'Saving this makes no finding overdue or due soon; some move between the other states.'
+    : 'No finding changes state.';
+};
+
 export const RemediationSettingsSection: React.FC = () => {
   const toast = useToast();
   const [policy, setPolicy] = useState<RemediationPolicy | null>(null);
@@ -108,18 +143,46 @@ export const RemediationSettingsSection: React.FC = () => {
   const problem = draft ? (daysProblem(draft) ?? zoneProblem(draft.time_zone)) : null;
   const dirty = !!policy && !!draft && JSON.stringify(draft) !== JSON.stringify(draftOf(policy));
 
+  // What Save would send — and what the preview asks about.
+  const bodyOf = (from: Draft, stored: RemediationPolicy) => {
+    const zone = from.time_zone.trim();
+    return {
+      days: Object.fromEntries(SEVERITIES.map((s) => [s, from[s].trim() === '' ? null : Number(from[s])])),
+      due_soon_days: Number(from.due_soon),
+      // Sent only when it changed: the days are one form, the zone moves
+      // every state at once and should not ride along unnoticed.
+      ...(zone !== zoneOf(stored) ? { time_zone: zone } : {}),
+    };
+  };
+
+  // What the change would do, asked of the server a moment after the last
+  // keystroke and BEFORE saving.  The next keystroke cancels the question;
+  // an answer for fields that have since changed is never shown.
+  const [effect, setEffect] = useState<
+    { status: 'idle' | 'asking' | 'failed' } | { status: 'ready'; preview: RemediationPolicyPreview }
+  >({ status: 'idle' });
+  const draftKey = draft ? JSON.stringify(draft) : '';
+  const tracking = !!policy?.enabled;
+  useEffect(() => {
+    if (!policy || !draft || !dirty || problem || !tracking) { setEffect({ status: 'idle' }); return undefined; }
+    let live = true;
+    const controller = new AbortController();
+    setEffect({ status: 'asking' });
+    const timer = window.setTimeout(() => {
+      previewRemediationPolicy(bodyOf(draft, policy), controller.signal)
+        .then((preview) => { if (live) setEffect({ status: 'ready', preview }); })
+        .catch(() => { if (live && !controller.signal.aborted) setEffect({ status: 'failed' }); });
+    }, PREVIEW_DELAY_MS);
+    return () => { live = false; window.clearTimeout(timer); controller.abort(); };
+    // `draftKey` stands for the draft; `policy` changes only on a save.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey, dirty, problem, tracking, policy]);
+
   const saveDays = async () => {
     if (!draft || !policy || problem) return;
     setBusy('days');
     try {
-      const zone = draft.time_zone.trim();
-      saved(await updateRemediationPolicy({
-        days: Object.fromEntries(SEVERITIES.map((s) => [s, draft[s].trim() === '' ? null : Number(draft[s])])),
-        due_soon_days: Number(draft.due_soon),
-        // Sent only when it changed: the days are one form, the zone moves
-        // every state at once and should not ride along unnoticed.
-        ...(zone !== zoneOf(policy) ? { time_zone: zone } : {}),
-      }));
+      saved(await updateRemediationPolicy(bodyOf(draft, policy)));
       toast.success('Timelines saved. Open deadlines now follow them.');
     } catch (err) {
       toast.error(formatApiError(err, 'Could not save the timelines.'));
@@ -187,6 +250,14 @@ export const RemediationSettingsSection: React.FC = () => {
               </p>
             </div>
             {problem && dirty && <p role="alert" className="mt-xs text-caption text-destructive">{problem}</p>}
+            {effect.status !== 'idle' && (
+              <p role="status" data-testid="ss-remediation-effect"
+                className={`mt-xs text-caption ${effect.status === 'failed' ? 'text-warning' : 'text-muted-foreground'}`}>
+                {effect.status === 'ready' ? policyEffect(effect.preview)
+                  : effect.status === 'failed' ? 'Could not work out the effect of this change on open findings.'
+                    : 'Working out what this would change…'}
+              </p>
+            )}
             {dirty && (
               <div className="mt-sm flex items-center gap-xs">
                 <Button type="submit" size="sm" disabled={busy !== null || !!problem}>

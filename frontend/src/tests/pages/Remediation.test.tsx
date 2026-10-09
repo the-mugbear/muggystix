@@ -191,7 +191,8 @@ describe('Remediation', () => {
     fireEvent.change(within(dialog).getByLabelText('Contact email'), { target: { value: 'jane@example.com' } });
     expect(assigned.value).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     fireEvent.change(assigned, { target: { value: '2026-10-05' } });
-    expect(within(dialog).getByText(/Due .*\(high, 30 days\)\./)).toBeInTheDocument();
+    // The date in force and where it comes from, in the dialog's Due date part.
+    expect(within(dialog).getByTestId('rem-due-in-force')).toHaveTextContent(/ — high, 30 days from /);
   });
 
   it('by contact: the message is prepared, copied by hand, and the follow-up recorded', async () => {
@@ -210,8 +211,10 @@ describe('Remediation', () => {
     const table = await screen.findByRole('table', { name: /contacts/i });
     const [roger, jane] = within(table).getAllByRole('row').slice(1);
     expect(within(roger).getByText('Not yet')).toBeInTheDocument();
-    // Nothing at risk: no follow-up to offer.
+    // Nothing at risk: no follow-up to offer, but a reminder of what is coming.
     expect(within(jane).queryByRole('button', { name: 'Follow up' })).not.toBeInTheDocument();
+    expect(within(jane).getByRole('button', { name: 'Remind' })).toBeInTheDocument();
+    expect(within(roger).queryByRole('button', { name: 'Remind' })).not.toBeInTheDocument();
     fireEvent.click(within(roger).getByRole('button', { name: 'Follow up' }));
     const dialog = await screen.findByRole('dialog');
     await waitFor(() => expect(within(dialog).getByLabelText('Message')).toHaveValue('Hello Roger Smith,\n- 10.0.0.1: Finding 1'));

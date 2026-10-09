@@ -38,6 +38,21 @@ const countAxis = (values: number[]): { domain: [number, number]; ticks: number[
   return { domain: [0, top], ticks: top % 2 === 0 ? [0, top / 2, top] : [0, top] };
 };
 
+/** A day tick: the date, never an hour.  The days are UTC midnights of plain
+ *  dates, so they are printed in UTC and no zone moves the day. */
+export const dayTick = (date: Date): string =>
+  date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+
+/** The x ticks: one per RECORDED day.  When the days outnumber the labels
+ *  that fit, every k-th recorded day, counted back from the last so the
+ *  newest day always has its label — never a tick between two days. */
+export const dayTicks = (days: Date[], width: number): Date[] => {
+  const fit = Math.max(2, Math.floor((width - 100) / 64));
+  if (days.length <= fit) return days;
+  const step = Math.ceil(days.length / fit);
+  return days.filter((_, i) => (days.length - 1 - i) % step === 0);
+};
+
 const monthLabel = (month: string): string => {
   const [y, m] = month.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' });
@@ -95,7 +110,12 @@ export const RemediationTrend: React.FC<RemediationTrendProps> = ({ scope, proje
     const y = countAxis(daily.map((d) => d.value));
     return {
       width, height: 132, marginLeft: 44, marginRight: 56, marginTop: 8, marginBottom: 36, style: STYLE,
-      x: { type: 'utc', tickSize: 0, tickPadding: 6, label: null },
+      // The data is one count per day: the axis names days.  Left to itself
+      // a time scale over a few days labels hours ("12 AM", "3 AM"…).
+      x: {
+        type: 'utc', ticks: dayTicks(daily.map((d) => d.date), width), tickFormat: dayTick,
+        tickSize: 0, tickPadding: 6, label: null,
+      },
       y: { domain: y.domain, ticks: y.ticks, tickSize: 0, tickFormat: (v: number) => v.toLocaleString(), label: null },
       marks: [
         Plot.gridY(y.ticks, { stroke: 'currentColor', strokeOpacity: 0.12 }),

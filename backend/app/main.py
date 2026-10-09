@@ -568,6 +568,23 @@ async def _run_startup_sequence() -> None:
     # Set 0 to disable.  Same multi-worker idempotency as the session
     # reaper — DELETEs are naturally idempotent.
     asyncio.create_task(agent_api_call_retention_loop())
+    # The MCP tool registry is derived from the routes on first use, which
+    # costs about a second (the OpenAPI document).  Pay it here, off the
+    # request path, so neither an agent's first `tools/list` nor the MCP
+    # reference page waits for it.  Each uvicorn worker builds its own.
+    asyncio.create_task(_warm_mcp_registry())
+
+
+async def _warm_mcp_registry() -> None:
+    """Build the MCP tool registry in a worker thread.  A failure is logged
+    and left for the first reader to hit: startup must not depend on it."""
+    try:
+        from app.api.v1.endpoints.mcp_tools import TOOLS
+
+        count = await asyncio.to_thread(TOOLS.warm)
+        logger.info("[startup] MCP tool registry built: %d tools", count)
+    except Exception:
+        logger.exception("[startup] MCP tool registry could not be built ahead of use")
 
 
 def _warn_if_pool_undersized() -> None:

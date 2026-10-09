@@ -9,6 +9,7 @@ import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
 import ErrorBoundary from './components/ErrorBoundary';
 import HubRedirect from './components/HubRedirect';
+import SessionExpiryNotice from './components/SessionExpiryNotice';
 import { ListPageSkeleton, DetailSkeleton, CardListSkeleton } from './components/PageSkeleton';
 import Login from './pages/Login';
 import NotFound, { ProjectsRedirect } from './pages/NotFound';
@@ -170,6 +171,8 @@ function App() {
     <CustomThemeProvider>
       <ToastProvider>
         <AuthProvider>
+          {/* Says when the session is about to end; renders nothing. */}
+          <SessionExpiryNotice />
           {/*
             Single TooltipProvider mount.  Radix tooltips share one
             provider for delayDuration tracking + portal management;

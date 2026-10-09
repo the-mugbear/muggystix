@@ -66,6 +66,7 @@ GATED_PROJECT_WRITES = {
     ("DELETE", "/api/v1/agent/remediation/events/{event_id}"),
     ("PATCH", "/api/v1/agent/remediation/events/{event_id}"),
     ("POST", "/api/v1/agent/remediation/apply"),
+    ("POST", "/api/v1/agent/remediation/assign-from-report"),
     ("POST", "/api/v1/agent/remediation/events"),
     ("POST", "/api/v1/agent/remediation/contact-report"),
     ("POST", "/api/v1/agent/remediation/follow-up"),

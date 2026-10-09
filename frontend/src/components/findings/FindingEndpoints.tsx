@@ -45,7 +45,7 @@ import { runLimited } from '../../utils/runLimited';
 import { selectAllState } from '../../utils/selection';
 import { LIST_CURSOR_CLASS } from '../../hooks/useListCursor';
 import EndpointStateBar from './EndpointStateBar';
-import { jumpTargetStyle } from './FindingJumpBar';
+import { jumpTargetStyle } from '../SectionJumpBar';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';

@@ -1,5 +1,7 @@
 """Remediation tracking: per finding on a host, admins only, never synced
 with the assessor's statuses."""
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from app.db import models
@@ -20,6 +22,11 @@ def tracking_on(db_session):
 
 def base(project):
     return f"/api/v1/projects/{project.id}/remediation"
+
+
+# A deferral is a decision with a day to look at it again and a reason.
+REVIEW = (datetime.now(timezone.utc).date() + timedelta(days=30)).isoformat()
+DEFERRED = {"status": "deferred", "deferred_review_on": REVIEW, "notes": [{"body": "Waiting for the vendor's fix."}]}
 
 
 def _host(db, project, ip):
@@ -82,7 +89,7 @@ def test_the_same_finding_has_its_own_contact_and_status_on_each_host(client, te
         {"finding_host_id": world["smb_a"], "contact_email": "Roger.Smith@Testdomain.com",
          "contact_name": "Roger Smith", "notified_on": "2026-10-03", "status": "closed",
          "closed_on": "2026-10-06"},
-        {"finding_host_id": world["smb_b"], "contact_email": "jane@testdomain.com", "status": "deferred"},
+        {"finding_host_id": world["smb_b"], "contact_email": "jane@testdomain.com", **DEFERRED},
     ])
     assert response.status_code == 200, response.text
     rows = by_id(listing(client, test_project))
@@ -177,7 +184,7 @@ def test_a_dry_run_writes_nothing(client, db_session, test_project, world):
 
 
 def test_a_value_someone_set_is_kept_unless_overwrite_is_asked_for(client, test_project, world):
-    apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "deferred",
+    apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "closed",
                                   "contact_email": "roger@example.com"}])
     stale = [{"finding_host_id": world["smb_a"], "status": "open", "contact_email": "other@example.com",
               "notified_on": "2026-10-01"}]
@@ -185,7 +192,7 @@ def test_a_value_someone_set_is_kept_unless_overwrite_is_asked_for(client, test_
     assert result["summary"]["conflicts"] == 2 and result["summary"]["changed"] == 1
     assert {c["field"] for c in result["rows"][0]["conflicts"]} == {"status", "contact_email"}
     row = by_id(listing(client, test_project))[world["smb_a"]]
-    assert (row["status"], row["contact_email"], row["notified_on"]) == ("deferred", "roger@example.com", "2026-10-01")
+    assert (row["status"], row["contact_email"], row["notified_on"]) == ("closed", "roger@example.com", "2026-10-01")
 
     result = apply(client, test_project, stale, overwrite=True).json()
     assert result["summary"]["conflicts"] == 0 and result["summary"]["changed"] == 2
@@ -259,14 +266,14 @@ def events(client, project, host_id, **params):
 
 
 def test_every_field_change_is_an_entry_with_what_it_was(client, test_project, test_user, world):
-    apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "deferred",
+    apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "closed",
                                   "contact_email": "roger@example.com"}])
-    apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "closed"}], overwrite=True)
+    apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "open"}], overwrite=True)
     timeline = events(client, test_project, world["a"])
     assert timeline["total"] == 3
     changes = {(e["field"], e["from"], e["to"]) for e in timeline["items"]}
-    assert changes == {("status", "open", "deferred"), ("contact_email", None, "roger@example.com"),
-                       ("status", "deferred", "closed")}
+    assert changes == {("status", "open", "closed"), ("contact_email", None, "roger@example.com"),
+                       ("status", "closed", "open")}
     entry = timeline["items"][0]
     assert entry["kind"] == "change" and entry["finding_title"] == "SMB signing not required"
     assert entry["author"] == "Test Admin" and entry["can_modify"] is False
@@ -274,7 +281,7 @@ def test_every_field_change_is_an_entry_with_what_it_was(client, test_project, t
 
 
 def test_an_unchanged_value_writes_no_entry(client, test_project, world):
-    row = [{"finding_host_id": world["smb_a"], "status": "deferred"}]
+    row = [{"finding_host_id": world["smb_a"], "status": "closed"}]
     apply(client, test_project, row)
     assert apply(client, test_project, row).json()["summary"] == {
         "targets": 1, "changed": 0, "unchanged": 1, "conflicts": 0,
@@ -294,7 +301,7 @@ def test_a_note_has_when_it_happened_and_when_it_was_recorded(client, test_proje
     assert note["recorded_at"] > note["occurred_at"]
     assert note["finding_title"] == "SMB signing not required" and note["can_modify"] is True
 
-    apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "deferred"}])
+    apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "closed"}])
     ordered = [e["kind"] for e in events(client, test_project, world["a"])["items"]]
     assert ordered == ["change", "note"]   # by when it happened, newest first
 
@@ -337,7 +344,7 @@ def test_a_note_is_its_authors_and_a_change_is_nobodys(client, db_session, test_
     db_session.add(theirs)
     db_session.commit()
     mine = client.post(f"{base(test_project)}/events", json={"host_id": world["a"], "body": "Mine"}).json()
-    apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "deferred"}])
+    apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "closed"}])
     change = next(e for e in events(client, test_project, world["a"])["items"] if e["kind"] == "change")
 
     assert client.patch(f"{base(test_project)}/events/{theirs.id}", json={"body": "x"}).status_code == 403
@@ -421,7 +428,7 @@ def _operator_becomes(db_session, project, user, role):
 def test_an_agent_reads_and_writes_what_the_page_does_and_is_named(client, db_session, test_project, world):
     key = _agent(client, test_project)
     rows = [{"finding_id": world["smb"], "host_id": world["a"], "contact_email": "roger@example.com",
-             "status": "deferred", "notes": [{"body": "From the tracking sheet", "request_key": "r1"}]}]
+             "status": "closed", "notes": [{"body": "From the tracking sheet", "request_key": "r1"}]}]
     plan = client.post(f"{AGENT}/apply", json={"rows": rows, "dry_run": True}, headers=key)
     assert plan.status_code == 200, plan.text
     assert plan.json()["summary"]["changed"] == 2 and db_session.query(RemediationEvent).count() == 0
@@ -494,7 +501,7 @@ def test_a_closed_date_without_a_closed_status_is_refused(client, db_session, te
 
 @pytest.mark.parametrize("dry_run", [True, False])
 def test_a_status_that_conflicts_takes_its_closed_date_with_it(client, db_session, test_project, world, dry_run):
-    apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "deferred"}])
+    apply(client, test_project, [{"finding_host_id": world["smb_a"], **DEFERRED}])
     result = apply(client, test_project, [
         {"finding_host_id": world["smb_a"], "status": "closed", "closed_on": "2026-10-06"},
     ], dry_run=dry_run)
@@ -524,7 +531,8 @@ def test_the_database_refuses_the_contradiction_from_any_writer(db_session, test
 def test_the_same_keyed_note_twice_in_one_call_is_one_note(client, db_session, test_project, world, dry_run):
     note = {"body": "From the sheet", "request_key": "row-3"}
     result = apply(client, test_project, [
-        {"finding_host_id": world["smb_a"], "status": "deferred", "notes": [note, dict(note)]},
+        {"finding_host_id": world["smb_a"], "status": "deferred", "deferred_review_on": REVIEW,
+         "notes": [note, dict(note)]},
     ], dry_run=dry_run)
     assert result.status_code == 200, result.text
     assert result.json()["summary"]["notes_added"] == 1
@@ -535,7 +543,7 @@ def test_the_same_keyed_note_twice_in_one_call_is_one_note(client, db_session, t
 @pytest.mark.parametrize("dry_run", [True, False])
 def test_one_key_carrying_two_different_notes_refuses_the_call(client, db_session, test_project, world, dry_run):
     result = apply(client, test_project, [
-        {"finding_host_id": world["smb_a"], "status": "deferred", "notes": [
+        {"finding_host_id": world["smb_a"], "status": "deferred", "deferred_review_on": REVIEW, "notes": [
             {"body": "First", "request_key": "row-3"}, {"body": "Second", "request_key": "row-3"}]},
     ], dry_run=dry_run)
     assert result.status_code == 422, result.text
@@ -570,10 +578,10 @@ def test_five_hundred_findings_on_hosts_is_a_call_and_one_more_is_not(client, db
     everywhere, _ = _finding(db_session, test_project, "Everywhere", hosts)
     most, _ = _finding(db_session, test_project, "Almost everywhere", hosts[:500])
     db_session.commit()
-    over = apply(client, test_project, [{"finding_id": everywhere.id, "status": "deferred"}])
+    over = apply(client, test_project, [{"finding_id": everywhere.id, "status": "closed"}])
     assert over.status_code == 422 and "more than 500" in str(over.json())
     assert db_session.query(FindingHostRemediation).count() == 0
-    ok = apply(client, test_project, [{"finding_id": most.id, "status": "deferred"}])
+    ok = apply(client, test_project, [{"finding_id": most.id, "status": "closed"}])
     assert ok.status_code == 200 and ok.json()["summary"]["changed"] == 500
 
 
@@ -584,10 +592,10 @@ def test_naming_one_host_of_a_wide_finding_loads_only_that_host(client, db_sessi
     other, _ = _finding(db_session, test_project, "Other", hosts[:1])
     db_session.commit()
     rows = [
-        {"finding_id": wide.id, "host_id": hosts[3].id, "status": "deferred"},
+        {"finding_id": wide.id, "host_id": hosts[3].id, **DEFERRED},
         {"finding_id": wide.id, "host_id": hosts[7].id, "status": "closed"},      # the same finding, twice
         {"finding_id": other.id, "contact_email": "x@example.com"},                # a whole finding
-        {"finding_host_id": links[20].id, "status": "deferred"},                   # and by id
+        {"finding_host_id": links[20].id, **DEFERRED},                             # and by id
     ]
     loaded = []
     listen = lambda target, context: loaded.append(target) if isinstance(target, FindingHost) else None  # noqa: E731
@@ -632,7 +640,7 @@ def test_a_change_entry_happened_when_it_was_recorded(client, test_project, worl
     """Both timestamps from one clock: the database's default for
     ``created_at`` is the transaction's start, so a save that straddled a
     minute read as backdated on the timeline."""
-    apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "deferred"}])
+    apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "closed"}])
     client.post(f"{base(test_project)}/events", json={"host_id": world["a"], "body": "Just now"})
     for entry in events(client, test_project, world["a"])["items"]:
         assert entry["occurred_at"] == entry["recorded_at"], entry

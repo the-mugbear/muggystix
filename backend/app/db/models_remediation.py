@@ -17,7 +17,7 @@ the labels differ.  Where the two disagree the remediation pages say so, as
 its own countable state (``remediation_policy.verification_expr``):
 "Reported fixed, not retested" (closed here, the endpoint not remediated and
 not a false positive) and "Remediated, record still open" (the endpoint
-remediated, this record open, deferred or never written).
+remediated, this record open or deferred — a record must exist).
 
 The whole feature is per INSTALLATION (v2.461.0, ``RemediationPolicy``): an
 installation that has not turned it on shows nothing about remediation, and
@@ -31,7 +31,8 @@ from app.db.session import Base
 
 REMEDIATION_STATUSES = ("open", "closed", "deferred")
 # The fields a change entry can name, in the order the page shows them.
-TRACKED_FIELDS = ("contact_email", "contact_name", "team", "notified_on", "status", "closed_on")
+TRACKED_FIELDS = ("contact_email", "contact_name", "team", "notified_on", "status", "closed_on",
+                  "due_override_on", "deferred_review_on")
 # Severities a remediation timeline can be set for, and the days a new
 # installation starts with (None: no deadline).
 TIMELINE_SEVERITIES = ("critical", "high", "medium", "low", "info")
@@ -99,12 +100,24 @@ class FindingHostRemediation(Base):
     # changes afterwards.  NULL on a row that is not closed, and on a closed
     # row that had no deadline.
     closed_due_on = Column(Date)
+    # A deadline set by hand (an extension, or an earlier date).  When set it
+    # IS the row's deadline, in place of the assigned date plus the policy's
+    # days: the clock runs even with no assigned date and for a severity that
+    # has no timeline.  NULL: the policy's date.
+    due_override_on = Column(Date)
+    # The day a deferred row is to be looked at again.  NULL on a row that is
+    # not deferred, and on a row deferred before the column existed (which
+    # reads as due for review).
+    deferred_review_on = Column(Date)
     # The last day somebody recorded chasing the contact about this row.
     last_follow_up_on = Column(Date)
     # The deadline an alert was already raised for, so each deadline alerts
-    # once per kind; cleared when the status or the assigned date changes.
+    # once per kind; cleared when the status, the assigned date or the
+    # hand-set deadline changes.
     due_soon_alerted_for = Column(Date)
     overdue_alerted_for = Column(Date)
+    # The review date a "deferral is due for review" alert was raised for.
+    deferral_alerted_for = Column(Date)
     updated_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
@@ -117,6 +130,9 @@ class FindingHostRemediation(Base):
         # together; this is what stops any other writer).
         CheckConstraint("closed_on IS NULL OR status = 'closed'", name="ck_remediation_closed_date"),
         CheckConstraint("closed_due_on IS NULL OR status = 'closed'", name="ck_remediation_closed_due_date"),
+        # A review date belongs to a deferred row, as a closed date to a closed one.
+        CheckConstraint("deferred_review_on IS NULL OR status = 'deferred'",
+                        name="ck_remediation_deferred_review_date"),
         Index("ix_remediation_contact_status", "contact_email", "status"),
         Index("ix_remediation_project_status", "project_id", "status"),
     )

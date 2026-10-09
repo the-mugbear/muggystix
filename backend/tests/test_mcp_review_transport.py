@@ -133,6 +133,8 @@ _CONVERGES = {
     "session_renew", "end_session",
     # v2.461.0: a row already followed up on that day is left alone.
     "remediation_record_follow_up",
+    # A row that already has an assigned date is left alone.
+    "remediation_assign_from_report",
     "assist_set_follow", "assist_patch_host",
     # v2.442.0: guarded by ``expected_revision`` — a retry of an applied change
     # is refused (409) rather than applied twice.

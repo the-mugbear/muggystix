@@ -13,10 +13,9 @@ import {
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
-import { formatDate } from '../../utils/relativeTime';
 import {
-  applyRowsFor, draftCaution, draftChanges, draftFor, draftProblem, hasChanges, localToday, previewDueOn,
-  REMEDIATION_STATUSES, REMEDIATION_STATUS_LABEL, severityWord, type RemediationDraft,
+  applyRowsFor, draftCaution, draftChanges, draftFor, draftProblem, hasChanges, localToday, noteRequirement,
+  policyDueLine, REMEDIATION_STATUSES, REMEDIATION_STATUS_LABEL, type RemediationDraft,
 } from '../../utils/remediation';
 import { Button } from '../ui/button';
 import {
@@ -68,30 +67,40 @@ export const RemediationEditDialog: React.FC<{
       ? (today ?? localToday()) : d.notified_on,
   }));
 
-  // What the deadline will be, said before saving.  One row only: a
-  // selection may mix severities.
-  const dueOn = !several && draft.notified_on && (draft.status === 'open' || draft.status === '')
-    ? previewDueOn(policy, rows[0].severity, draft.notified_on) : null;
-  const noTimeline = !several && policy != null && policy.days[rows[0].severity.toLowerCase()] == null;
+  // The due date is the policy's unless somebody sets one by hand.  The
+  // policy's is a PREVIEW worked out here for one row (a selection may mix
+  // severities); with a date set by hand, that date is simply the due date.
+  const clockRuns = draft.status === 'open' || draft.status === '';
+  const policyLine = several ? null : policyDueLine(policy, rows[0].severity, draft.notified_on);
+  // One row: the date input shows once "Set a different date" is chosen (or a
+  // date was already set).  A selection always has it — blank = leave as it is.
+  const [byHand, setByHand] = useState(!!opened.due_override_on);
+  const someByHand = rows.some((r) => !!r.due_override_on);
 
-  const problem = draftProblem(draft);
+  const day = today ?? localToday();
+  const problem = draftProblem(draft, opened, day);
   const changes = draftChanges(opened, draft);
   const dirty = hasChanges(changes, draft.note);
+  // A due date set by hand and a deferral are saved with their reason.
+  const noteNeeded = noteRequirement(changes);
+  const noteMissing = noteNeeded != null && !draft.note.trim();
   const hosts = new Set(rows.map((r) => r.host_id)).size;
 
   // A date typed halfway ("10/03/") has no value: the browser reports '' and
   // would let it save as "no date".  Seen in the browser — say so instead.
   const notifiedRef = useRef<HTMLInputElement>(null);
   const closedRef = useRef<HTMLInputElement>(null);
+  const overrideRef = useRef<HTMLInputElement>(null);
+  const reviewRef = useRef<HTMLInputElement>(null);
   const [halfDate, setHalfDate] = useState(false);
   const checkDates = () => {
-    const bad = !!notifiedRef.current?.validity.badInput || !!closedRef.current?.validity.badInput;
+    const bad = [notifiedRef, closedRef, overrideRef, reviewRef].some((ref) => !!ref.current?.validity.badInput);
     setHalfDate(bad);
     return bad;
   };
 
   const save = async () => {
-    if (checkDates() || problem || !dirty) return;
+    if (checkDates() || problem || !dirty || noteMissing) return;
     setBusy(true);
     try {
       let changed = 0;
@@ -181,11 +190,7 @@ export const RemediationEditDialog: React.FC<{
               <p id="rem-due" className="mt-xxs text-caption text-muted-foreground">
                 {several
                   ? 'The day the contact was given the finding: each deadline counts from it.'
-                  : noTimeline
-                    ? `${severityWord(rows[0].severity.toLowerCase())} findings have no remediation deadline.`
-                    : dueOn
-                      ? `Due ${formatDate(dueOn)} (${severityWord(rows[0].severity.toLowerCase()).toLowerCase()}, ${policy?.days[rows[0].severity.toLowerCase()]} days).`
-                      : 'The deadline counts from this day.'}
+                  : 'The deadline counts from this day.'}
               </p>
             </div>
             <div className="min-w-0">
@@ -193,8 +198,12 @@ export const RemediationEditDialog: React.FC<{
               <Select value={draft.status || UNCHANGED}
                 onValueChange={(v) => {
                   const status = v === UNCHANGED ? '' : (v as RemediationStatus);
-                  // The date belongs to Reported fixed only.
-                  setDraft((d) => ({ ...d, status, closed_on: status === 'closed' ? d.closed_on : '' }));
+                  // The date belongs to Reported fixed only, the review date to Deferred.
+                  setDraft((d) => ({
+                    ...d, status,
+                    closed_on: status === 'closed' ? d.closed_on : '',
+                    deferred_review_on: status === 'deferred' ? d.deferred_review_on : opened.deferred_review_on,
+                  }));
                 }}>
                 <SelectTrigger id="rem-status"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -213,12 +222,82 @@ export const RemediationEditDialog: React.FC<{
                   onChange={(e) => set('closed_on', e.target.value)} />
               </div>
             )}
+            {draft.status === 'deferred' && (
+              <div className="min-w-0">
+                <Label htmlFor="rem-review">Review on</Label>
+                <Input id="rem-review" type="date" ref={reviewRef} value={draft.deferred_review_on} min={day}
+                  aria-required aria-describedby="rem-review-hint"
+                  onBlur={checkDates} onKeyUp={checkDates}
+                  onChange={(e) => set('deferred_review_on', e.target.value)} />
+                <p id="rem-review-hint" className="mt-xxs text-caption text-muted-foreground">
+                  The clock is stopped until then; the deferral is listed for review from that day.
+                </p>
+              </div>
+            )}
+            {clockRuns && (
+              <div className="min-w-0 sm:col-span-2">
+                {several || byHand ? (
+                  <>
+                    <Label htmlFor="rem-override">Due date</Label>
+                    <div className="flex min-w-0 flex-wrap items-center gap-sm">
+                      <Input id="rem-override" type="date" ref={overrideRef} className="w-48 max-w-full"
+                        value={draft.due_override_on} aria-describedby="rem-override-hint"
+                        onBlur={checkDates} onKeyUp={checkDates}
+                        onChange={(e) => setDraft((d) => ({ ...d, due_override_on: e.target.value, due_override_cleared: false }))} />
+                      {!several && (
+                        <Button type="button" size="sm" variant="ghost" className="h-8"
+                          onClick={() => { set('due_override_on', ''); setByHand(false); }}>
+                          Use the policy’s date
+                        </Button>
+                      )}
+                      {several && someByHand && !draft.due_override_cleared && (
+                        <Button type="button" size="sm" variant="ghost" className="h-8"
+                          onClick={() => setDraft((d) => ({ ...d, due_override_on: '', due_override_cleared: true }))}>
+                          Back to the policy’s date
+                        </Button>
+                      )}
+                      {several && draft.due_override_cleared && (
+                        <Button type="button" size="sm" variant="ghost" className="h-8"
+                          onClick={() => setDraft((d) => ({ ...d, due_override_on: opened.due_override_on, due_override_cleared: false }))}>
+                          Undo
+                        </Button>
+                      )}
+                    </div>
+                    <p id="rem-override-hint" className="mt-xxs break-words text-caption text-muted-foreground">
+                      {several
+                        ? draft.due_override_cleared
+                          ? 'Every selected row goes back to the policy’s date.'
+                          : draft.due_override_on
+                            ? 'Set by hand on every selected row, in place of the policy’s date.'
+                            : 'Left as it is on each row. A date here replaces the policy’s on every selected row.'
+                        : `Set by hand. The policy’s: ${policyLine}`}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-caption font-medium leading-none text-foreground">Due date</p>
+                    <div className="mt-xxs flex min-w-0 flex-wrap items-center gap-x-sm gap-y-xxs">
+                      <p className="min-w-0 break-words text-metadata" data-testid="rem-due-in-force">{policyLine}</p>
+                      <Button type="button" size="sm" variant="ghost" className="h-7" onClick={() => setByHand(true)}>
+                        Set a different date
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
           <div className="mt-sm">
-            <Label htmlFor="rem-note">Note for the timeline (optional)</Label>
+            <Label htmlFor="rem-note">
+              {noteNeeded ? 'Note for the timeline (required)' : 'Note for the timeline (optional)'}
+            </Label>
             <Textarea id="rem-note" rows={3} maxLength={10000} value={draft.note}
-              placeholder="Contacted the owner, will respond on Friday"
+              aria-required={noteNeeded != null} aria-describedby={noteMissing ? 'rem-note-needed' : undefined}
+              placeholder={noteNeeded ? 'Why, and who agreed' : 'Contacted the owner, will respond on Friday'}
               onChange={(e) => set('note', e.target.value)} />
+            {noteMissing && (
+              <p id="rem-note-needed" role="status" className="mt-xxs text-caption text-warning">{noteNeeded}</p>
+            )}
             {several && draft.note.trim() && (
               <p className="mt-xxs text-caption text-muted-foreground">
                 The note is added to each of the {hosts.toLocaleString()} host{hosts === 1 ? '' : 's'}’ timelines.
@@ -236,7 +315,7 @@ export const RemediationEditDialog: React.FC<{
         </DialogBody>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
-          <Button onClick={() => void save()} disabled={busy || halfDate || !dirty || !!problem}>
+          <Button onClick={() => void save()} disabled={busy || halfDate || !dirty || !!problem || noteMissing}>
             {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Save
           </Button>
         </DialogFooter>

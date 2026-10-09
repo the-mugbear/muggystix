@@ -319,7 +319,7 @@ describe('Scopes page — a project viewer reads the scope', () => {
     expect(screen.queryByRole('button', { name: /Manage project subnet labels/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Manage site criticality/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Edit subnet/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Delete subnet/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Actions for/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Edit labels/ })).toBeNull();
     expect(screen.queryByLabelText(/Select .* for bulk label apply/)).toBeNull();
     expect(screen.queryByLabelText(/Domain \(one or more/)).toBeNull();
@@ -365,7 +365,13 @@ describe('Scopes page — a project viewer reads the scope', () => {
     await screen.findByText('10.77.1.0/24');
     expect(screen.getByRole('button', { name: /Upload scope file/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Edit subnet 10.77.1.0/24' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Delete subnet 10.77.1.0/24' })).toBeInTheDocument();
+    // Delete is in the row's menu, not an icon beside Edit (style guide §47).
+    expect(screen.queryByRole('button', { name: /Delete subnet/ })).toBeNull();
+    const actions = screen.getByRole('button', { name: 'Actions for 10.77.1.0/24' });
+    // Radix opens a menu on pointer-down, or from the keyboard.
+    actions.focus();
+    fireEvent.keyDown(actions, { key: 'Enter' });
+    expect(await screen.findByRole('menuitem', { name: /Delete entry…/ })).toBeInTheDocument();
   });
 });
 

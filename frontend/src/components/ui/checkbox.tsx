@@ -2,6 +2,7 @@ import * as React from 'react';
 import * as CheckboxPrimitive from '@radix-ui/react-checkbox';
 import { Check, Minus } from 'lucide-react';
 import { cn } from '../../utils/cn';
+import { useAccessibleNameCheck } from './accessible-name';
 
 /**
  * Checkbox — Radix handles indeterminate state via `checked="indeterminate"`.
@@ -16,7 +17,11 @@ import { cn } from '../../utils/cn';
 export const Checkbox = React.forwardRef<
   React.ElementRef<typeof CheckboxPrimitive.Root>,
   React.ComponentPropsWithoutRef<typeof CheckboxPrimitive.Root>
->(({ className, checked, defaultChecked, onCheckedChange, ...props }, ref) => {
+>(({ className, checked, defaultChecked, onCheckedChange, ...props }, forwarded) => {
+  // An unnamed box warns in development (see `accessible-name.ts`).
+  const ref = React.useRef<React.ElementRef<typeof CheckboxPrimitive.Root>>(null);
+  React.useImperativeHandle(forwarded, () => ref.current as React.ElementRef<typeof CheckboxPrimitive.Root>);
+  useAccessibleNameCheck(ref, 'Checkbox');
   // Which mark to draw.  A controlled box is told; one that keeps its own
   // state is followed here (Radix does not expose it to its children).
   const [own, setOwn] = React.useState<CheckboxPrimitive.CheckedState>(defaultChecked ?? false);

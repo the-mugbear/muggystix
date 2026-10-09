@@ -65,6 +65,23 @@ describe('ProjectSelector', () => {
     expect(ctx.selectProject).toHaveBeenCalledWith(ctx.projects[59]);
   });
 
+  // The sidebar cut "Walkthrough 2026-09-30 […" with no way to read the rest.
+  it('a long name is readable: on the trigger’s title, and in a menu wider than the trigger up to a cap', async () => {
+    const long = 'Walkthrough 2026-09-30 '.repeat(9).trim();
+    ctx.projects = [project(1, long, null), project(2, 'Short', null)];
+    const user = userEvent.setup();
+    render(<ProjectSelector />);
+    const trigger = screen.getByRole('button', { name: /project/i });
+    expect(trigger).toHaveAttribute('title', long);
+    const menu = await open(user);
+    // At least the trigger's width, as wide as its content, never past the cap.
+    expect(menu.className).toContain('w-max');
+    expect(menu.className).toContain('min-w-[max(14rem,var(--radix-dropdown-menu-trigger-width))]');
+    expect(menu.className).toContain('max-w-[min(28rem,calc(100vw-1rem))]');
+    const item = within(screen.getByTestId('project-list')).getByTitle(long);
+    expect(item.className).toContain('truncate');
+  });
+
   // 5.347.0 — "all projects that start in 2026 are shown and then can select 2027".
   it('opens on the current project’s year, and another year or All is one click that keeps the menu open', async () => {
     ctx.projects = [

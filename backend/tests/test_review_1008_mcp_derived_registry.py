@@ -33,8 +33,15 @@ NO_DEFAULT = "the hand-typed default was not the endpoint's: it has none for thi
 
 NEW_ARGUMENT = "the endpoint gained this query parameter after the capture; its tool offers it unedited"
 
+NEW_FIELD = "the rows of the endpoint's body gained this optional field after the capture"
+
 #: {tool: {query argument}} — what a route gained since the fixture was taken.
-ADDED_SINCE_CAPTURE = {"remediation_list": {"verification"}}
+ADDED_SINCE_CAPTURE = {"remediation_list": {"verification", "flag", "q"},
+                       "remediation_follow_up": {"upcoming_days"}}
+#: {tool: {body argument}} — the same, for an argument sent in the JSON body.
+ADDED_TO_BODY_SINCE_CAPTURE = {"remediation_record_follow_up": {"upcoming_days"}}
+#: Tools for routes that did not exist when the fixture was taken.
+TOOLS_SINCE_CAPTURE = {"remediation_assign_from_report"}
 
 #: {tool: {"argument/key": reason}} — every difference, and nothing else.
 DIFFERENCES = {
@@ -67,6 +74,14 @@ DIFFERENCES = {
         "offset/default": ROUTE_DEFAULT,
         "unassigned/default": ROUTE_DEFAULT,
         "verification": NEW_ARGUMENT,
+        "flag": NEW_ARGUMENT,
+        "q": NEW_ARGUMENT,
+    },
+    "remediation_follow_up": {"upcoming_days": NEW_ARGUMENT},
+    "remediation_record_follow_up": {"upcoming_days": NEW_ARGUMENT},
+    "remediation_apply": {
+        "rows/items/properties/due_override_on": NEW_FIELD,
+        "rows/items/properties/deferred_review_on": NEW_FIELD,
     },
     "remediation_timeline": {"limit/default": ROUTE_DEFAULT, "offset/default": ROUTE_DEFAULT},
     "remediation_trend": {"days/default": ROUTE_DEFAULT},
@@ -120,7 +135,7 @@ def _differences(before, derived, path=""):
 
 
 def test_the_same_tools_are_listed():
-    assert sorted(TOOLS) == sorted(BEFORE)
+    assert sorted(TOOLS) == sorted(set(BEFORE) | TOOLS_SINCE_CAPTURE)
     assert [tool["name"] for tool in mcp_tools.tool_list_payload()] == list(TOOLS)
 
 
@@ -128,11 +143,13 @@ def test_the_same_tools_are_listed():
 def test_names_requiredness_and_placement_are_unchanged(name):
     before, spec = BEFORE[name], TOOLS[name]
     schema = advertised_schema(spec)
-    added = ADDED_SINCE_CAPTURE.get(name, set())
-    assert set(schema["properties"]) == set(before["inputSchema"]["properties"]) | added
+    added = {"query_params": ADDED_SINCE_CAPTURE.get(name, set()),
+             "body_params": ADDED_TO_BODY_SINCE_CAPTURE.get(name, set())}
+    assert set(schema["properties"]) == (set(before["inputSchema"]["properties"])
+                                         | added["query_params"] | added["body_params"])
     assert set(schema.get("required", ())) == set(before["inputSchema"].get("required", ()))
     for where in ("path_params", "query_params", "body_params"):
-        expected = set(before[where]) | (added if where == "query_params" else set())
+        expected = set(before[where]) | added.get(where, set())
         assert set(spec.get(where, ())) == expected, where
     assert (spec["method"], spec["path"]) == (before["method"], before["path"])
     assert (spec.get("path_alternatives") or {}) == before["path_alternatives"]
@@ -183,7 +200,11 @@ def test_no_listed_difference_widens_a_schema():
                 assert leaf == "default" and derived == "(absent)", (name, key)
             elif reason == NEW_ARGUMENT:
                 # A whole optional argument the endpoint gained, not a change to one.
-                assert key in ADDED_SINCE_CAPTURE[name] and before == "(absent)", (name, key)
+                gained = ADDED_SINCE_CAPTURE.get(name, set()) | ADDED_TO_BODY_SINCE_CAPTURE.get(name, set())
+                assert key in gained and before == "(absent)", (name, key)
+            elif reason == NEW_FIELD:
+                # A whole optional field of a body row, not a change to one.
+                assert "/properties/" in key and before == "(absent)", (name, key)
             else:
                 raise AssertionError(f"{name} {key}: unknown reason {reason!r}")
 

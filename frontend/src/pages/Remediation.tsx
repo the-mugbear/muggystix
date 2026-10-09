@@ -18,6 +18,7 @@ import { useProjectRole } from '../hooks/useProjectRole';
 import { useRemediationPolicy } from '../hooks/useRemediationPolicy';
 import { timelineSummary } from '../utils/remediation';
 import PostureSection from '../components/posture/PostureSection';
+import RemediationAssignFromReportDialog from '../components/remediation/RemediationAssignFromReportDialog';
 import RemediationTrend from '../components/remediation/RemediationTrend';
 import RemediationWorkList from '../components/remediation/RemediationWorkList';
 
@@ -62,6 +63,13 @@ const Remediation: React.FC = () => {
   const [page, setPage] = useState<RemediationPage | null>(null);
   const [filtered, setFiltered] = useState(false);
   const [changes, setChanges] = useState(0);
+  const [reloads, setReloads] = useState(0);
+  const [fromReport, setFromReport] = useState(false);
+  // Offered to a project admin while something has no assigned date — and
+  // only by a server that knows the route (it is the one that sends
+  // `flag_counts`), so an older one is never asked for it.
+  const canStartClock = canWrite && page != null && page.flag_counts !== undefined
+    && page.state_counts.not_assigned > 0;
 
   if (!enabled) {
     return (
@@ -80,6 +88,16 @@ const Remediation: React.FC = () => {
         <h1 className="text-page-title">Remediation</h1>
         <p className="mt-xxs max-w-4xl text-metadata text-muted-foreground">
           <RemediationLead page={page} filtered={filtered} dueSoonDays={policy?.due_soon_days ?? 7} where="in this project" />
+          {canStartClock && (
+            <>
+              {' '}
+              <button type="button" className="text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                title="Give the findings an issued report lists that report’s day as their assigned date"
+                onClick={() => setFromReport(true)}>
+                Start the clock from a report…
+              </button>
+            </>
+          )}
         </p>
       </div>
 
@@ -91,6 +109,7 @@ const Remediation: React.FC = () => {
           scope="project"
           canWrite={canWrite}
           policy={policy}
+          reloadKey={reloads}
           onLoaded={(next, isFiltered) => { setPage(next); setFiltered(isFiltered); }}
           onChanged={() => setChanges((n) => n + 1)}
         />
@@ -99,6 +118,15 @@ const Remediation: React.FC = () => {
       <PostureSection title="Over time">
         <RemediationTrend scope="project" reloadKey={changes} />
       </PostureSection>
+
+      {fromReport && (
+        <RemediationAssignFromReportDialog
+          today={page?.as_of}
+          onClose={() => setFromReport(false)}
+          // The list is re-read in place: the reader keeps their page.
+          onDone={() => { setReloads((n) => n + 1); setChanges((n) => n + 1); }}
+        />
+      )}
     </div>
   );
 };

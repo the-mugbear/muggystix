@@ -125,6 +125,17 @@ export function formatTimestamp<F = string>(
   return new Date(ms).toLocaleString(undefined, TIMESTAMP_FORMAT);
 }
 
+/** A local time of day ("10:20 PM") for a moment that is today, or a fallback. */
+export function formatClockTime<F = string>(
+  value: string | number | Date | null | undefined,
+  fallback: F = '—' as unknown as F,
+): string | F {
+  if (value === null || value === undefined || value === '') return fallback;
+  const ms = toMillis(value);
+  if (Number.isNaN(ms)) return fallback;
+  return new Date(ms).toLocaleTimeString(undefined, { timeStyle: 'short' });
+}
+
 /** Absolute local day ("Sep 18, 2026"), or a fallback. A bare `YYYY-MM-DD`
  *  (a date column, no time) is read as that calendar day, not UTC midnight —
  *  otherwise it prints as the previous day west of Greenwich. */

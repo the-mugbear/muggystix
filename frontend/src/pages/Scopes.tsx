@@ -5,6 +5,7 @@ import {
   ArrowDownToLine,
   Building2,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Plus,
   Save,
@@ -1097,20 +1098,29 @@ const Scopes: React.FC = () => {
                                   </TooltipTrigger>
                                   <TooltipContent>Edit</TooltipContent>
                                 </Tooltip>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
+                                {/* Delete is in the row's menu, never an icon
+                                    beside Edit (style guide §47). */}
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
                                     <Button
                                       variant="ghost"
                                       size="icon"
-                                      onClick={() => handleDeleteSubnet(subnet.id, subnet.cidr)}
-                                      aria-label={`Delete subnet ${subnet.cidr}`}
-                                      className="text-muted-foreground hover:text-destructive"
+                                      aria-label={`Actions for ${subnet.cidr}`}
                                     >
-                                      <Trash2 className="size-4" aria-hidden />
+                                      <MoreHorizontal className="size-4" aria-hidden />
                                     </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent>Delete</TooltipContent>
-                                </Tooltip>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuItem
+                                      className="text-destructive focus:text-destructive"
+                                      // A tick later: the confirmation must not open while
+                                      // the menu is still closing and handing focus back.
+                                      onSelect={() => { setTimeout(() => { void handleDeleteSubnet(subnet.id, subnet.cidr); }, 0); }}
+                                    >
+                                      <Trash2 className="size-4" aria-hidden /> Delete entry…
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
                               </div>
                             )}
                           </TableCell>

@@ -9,10 +9,12 @@
  */
 import React from 'react';
 
-import type { OverdueBand, RemediationPage, RemediationState, RemediationVerification } from '../../services/api';
+import type {
+  OverdueBand, RemediationFlag, RemediationPage, RemediationState, RemediationVerification,
+} from '../../services/api';
 import {
-  OVERDUE_BANDS, OVERDUE_BAND_LABEL, REMEDIATION_VERIFICATIONS, REMEDIATION_VERIFICATION_HELP,
-  REMEDIATION_VERIFICATION_LABEL, severityWord,
+  OVERDUE_BANDS, OVERDUE_BAND_LABEL, REMEDIATION_FLAGS, REMEDIATION_FLAG_HELP, REMEDIATION_FLAG_LABEL,
+  REMEDIATION_VERIFICATIONS, REMEDIATION_VERIFICATION_HELP, REMEDIATION_VERIFICATION_LABEL, severityWord,
 } from '../../utils/remediation';
 import { InfoTip } from '../ui/info-tip';
 import { SeverityBadge } from '../ui/SeverityBadge';
@@ -134,13 +136,20 @@ export const RemediationVerificationCounts: React.FC<{
   counts: Partial<Record<RemediationVerification, number>> | undefined;
   selected: RemediationVerification | null;
   onSelect: (verification: RemediationVerification) => void;
-}> = ({ counts, selected, onSelect }) => {
+  /** Deferrals to review and due dates set by hand, on the same line; each
+   *  is absent at 0, and all of them from a server that does not count them. */
+  flagCounts?: Partial<Record<RemediationFlag, number>>;
+  selectedFlag?: RemediationFlag | null;
+  onSelectFlag?: (flag: RemediationFlag) => void;
+}> = ({ counts, selected, onSelect, flagCounts, selectedFlag = null, onSelectFlag }) => {
   const value = (v: RemediationVerification) => counts?.[v] ?? 0;
-  if (REMEDIATION_VERIFICATIONS.every((v) => value(v) === 0)) return null;
+  const gaps = REMEDIATION_VERIFICATIONS.some((v) => value(v) > 0);
+  const flags = onSelectFlag ? REMEDIATION_FLAGS.filter((f) => (flagCounts?.[f] ?? 0) > 0) : [];
+  if (!gaps && flags.length === 0) return null;
   return (
     <p className="mb-sm flex min-w-0 flex-wrap items-center gap-x-md gap-y-xxs text-metadata text-muted-foreground"
-      aria-label="Where the remediation record and the assessment disagree">
-      {REMEDIATION_VERIFICATIONS.map((v) => (
+      aria-label={gaps ? 'Where the remediation record and the assessment disagree' : 'Deferrals to review and due dates set by hand'}>
+      {gaps && REMEDIATION_VERIFICATIONS.map((v) => (
         <span key={v} className="inline-flex min-w-0 items-center gap-xxs">
           <span className="min-w-0 truncate">{REMEDIATION_VERIFICATION_LABEL[v]}</span>
           {value(v) === 0 ? <span className="px-xxs">0</span> : (
@@ -154,6 +163,21 @@ export const RemediationVerificationCounts: React.FC<{
           <InfoTip text={REMEDIATION_VERIFICATION_HELP[v]} label={`About “${REMEDIATION_VERIFICATION_LABEL[v]}”`} />
         </span>
       ))}
+      {flags.map((f) => {
+        const n = flagCounts?.[f] ?? 0;
+        return (
+          <span key={f} className="inline-flex min-w-0 items-center gap-xxs">
+            <span className="min-w-0 truncate">{REMEDIATION_FLAG_LABEL[f]}</span>
+            <button type="button" aria-pressed={selectedFlag === f}
+              className={`${BUTTON} font-medium text-foreground`}
+              aria-label={`${n.toLocaleString()} ${REMEDIATION_FLAG_LABEL[f].toLowerCase()}: show them`}
+              onClick={() => onSelectFlag?.(f)}>
+              {n.toLocaleString()}
+            </button>
+            <InfoTip text={REMEDIATION_FLAG_HELP[f]} label={`About “${REMEDIATION_FLAG_LABEL[f]}”`} />
+          </span>
+        );
+      })}
     </p>
   );
 };

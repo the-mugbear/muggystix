@@ -28,7 +28,8 @@ from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.session import get_db
 from app.schemas.remediation_schemas import (
-    ApplyBody, ContactReportBody, FollowUpBody, Grouping, NoteCreate, NoteUpdate, OverdueBand, PolicyUpdate, RemediationState,
+    UPCOMING_MAX_DAYS, ApplyBody, AssignFromReportBody, ContactReportBody, Flag, FollowUpBody, Grouping,
+    NoteCreate, NoteUpdate, OverdueBand, OverviewFollowUpBody, PolicyUpdate, RemediationState,
     RemediationStatus, Severity, Verification,
 )
 from app.services import remediation_policy, remediation_report
@@ -73,10 +74,21 @@ _VERIFICATION = Query(None, description=(
     "Only rows where the contact's record and the assessor's `endpoint_status` disagree: "
     "`reported_fixed_not_retested` — the record is closed (reported fixed) and the endpoint is not "
     "`remediated` (nor a false positive); `remediated_record_open` — the endpoint is `remediated` "
-    "and the record is open, deferred or was never written. `verification_counts` in the answer "
-    "counts both over the selection, before this filter and the state / status filters; each row "
-    "carries its own `verification` (null where the two agree). Neither status is ever written "
-    "from the other."))
+    "and a record exists that is open or deferred (an endpoint nobody tracked is not one). "
+    "`verification_counts` in the answer counts both over the selection, before this filter and "
+    "the flag / state / status filters; each row carries its own `verification` (null where the "
+    "two agree). Neither status is ever written from the other."))
+_FLAG = Query(None, description=(
+    "Only rows an admin is to look at: `deferral_review_due` — deferred, and the review date "
+    "(`deferred_review_on`) is today or past, or was never given; `deadline_overridden` — the "
+    "deadline was set by hand (`due_override_on`). `flag_counts` in the answer counts both over "
+    "the selection, before this filter and the verification / state / status filters."))
+_SEARCH = Query(None, min_length=2, max_length=200, description=(
+    "Part of the finding's title, the host's address or the host's name (case does not matter). "
+    "Every count in the answer follows it."))
+_UPCOMING = Query(0, ge=0, le=UPCOMING_MAX_DAYS, description=(
+    "Besides the overdue and due-soon rows, also the on-track rows whose deadline falls within "
+    "this many days (`upcoming` counts them; the message lists them under their own heading)."))
 _CONTACT = Query(None, min_length=1, max_length=254, description="Part of a contact's address or name.")
 _TEAM = Query(None, min_length=1, max_length=100, description="Exactly this team (case does not matter).")
 _BAND = Query(None, description="Only OVERDUE rows this many days past their deadline.")
@@ -97,6 +109,7 @@ def make_router(reader, admin, *, dependencies=()):
                 severity: Optional[Severity] = None, team: Optional[str] = _TEAM,
                 overdue_band: Optional[OverdueBand] = _BAND, no_follow_up_days: Optional[int] = _STALE,
                 verification: Optional[Verification] = _VERIFICATION,
+                flag: Optional[Flag] = _FLAG, q: Optional[str] = _SEARCH,
                 group: Grouping = "host",
                 limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
                 actor: Actor = Depends(reader), db: Session = Depends(get_db)):
@@ -105,7 +118,7 @@ def make_router(reader, admin, *, dependencies=()):
             db, [actor.project_id], status=status, state=state, contact=contact, unassigned=unassigned,
             host_id=host_id, finding_id=finding_id, severity=severity, team=team,
             overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, verification=verification,
-            group=group, limit=limit, offset=offset)
+            flag=flag, q=q, group=group, limit=limit, offset=offset)
 
     @router.get("/remediation/contacts", summary="The contacts in use, with their counts")
     def contact_list(actor: Actor = Depends(reader), db: Session = Depends(get_db)):
@@ -122,13 +135,32 @@ def make_router(reader, admin, *, dependencies=()):
     @router.get("/remediation/follow-up",
                 summary="One contact's overdue and due-soon findings on hosts, and the message to send")
     def follow_up(contact_email: str = Query(..., min_length=3, max_length=254),
+                  upcoming_days: int = _UPCOMING,
                   actor: Actor = Depends(reader), db: Session = Depends(get_db)):
-        return remediation.follow_up(db, [actor.project_id], contact_email)
+        return remediation.follow_up(db, [actor.project_id], contact_email, upcoming_days=upcoming_days)
 
     @router.post("/remediation/follow-up", summary="Record that a contact was followed up with")
     def record_follow_up(body: FollowUpBody, actor: Actor = Depends(admin), db: Session = Depends(get_db)):
         result = remediation.record_follow_up(db, actor.project_id, body, actor.who)
         db.commit()
+        return result
+
+    @router.post("/remediation/assign-from-report",
+                 summary="Start the clock for what an issued report listed: set the assigned date")
+    def assign_from_report(body: AssignFromReportBody, actor: Actor = Depends(admin),
+                           db: Session = Depends(get_db)):
+        """Every finding on a host the issued report's frozen snapshot lists
+        that is still in the remediation list, has no assigned date and is
+        open gets ``assigned_on`` (default: the day the report was issued).
+        Nothing else is touched.  All or nothing; a dry run returns the same
+        numbers and writes nothing."""
+        if actor.who.session and body.agent_model:
+            note_agent_model(actor.who.session, body.agent_model)
+        result = remediation.assign_from_report(db, actor.project_id, body, actor.who)
+        if body.dry_run:
+            db.rollback()
+        else:
+            db.commit()
         return result
 
     # --- one contact's list as a document (rendered on the report worker) ---
@@ -261,6 +293,19 @@ def write_policy(body: PolicyUpdate, request: Request,
     return after.as_dict()
 
 
+@account_router.post("/remediation-policy/preview",
+                     summary="What a change to the timelines would do to every project's deadlines")
+def preview_policy(body: PolicyUpdate, _: User = Depends(require_role(UserRole.ADMIN)),
+                   db: Session = Depends(get_db)):
+    """The same body as the PUT; nothing is written.  Findings on hosts by
+    deadline state as they are (``current``) and as they would be
+    (``proposed``), across every project, and how many would become overdue,
+    stop being overdue or become due soon.  A row whose deadline was set by
+    hand keeps it.  It answers whether or not tracking is on, like the PUT:
+    it is the settings page's, and ``enabled`` in the body is not part of it."""
+    return remediation.preview_policy(db, body)
+
+
 def administered_projects(user: User = Depends(get_current_user), db: Session = Depends(get_db),
                           _: remediation_policy.Policy = Depends(enabled)) -> List[Project]:
     """The projects whose remediation the caller follows up across: every
@@ -318,6 +363,7 @@ def overview(project_id: Optional[int] = Query(None, gt=0),
              unassigned: bool = False, severity: Optional[Severity] = None, team: Optional[str] = _TEAM,
              overdue_band: Optional[OverdueBand] = _BAND, no_follow_up_days: Optional[int] = _STALE,
              verification: Optional[Verification] = _VERIFICATION,
+             flag: Optional[Flag] = _FLAG, q: Optional[str] = _SEARCH,
              group: Grouping = "due",
              limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
              projects: List[Project] = Depends(administered_projects), db: Session = Depends(get_db)):
@@ -325,7 +371,7 @@ def overview(project_id: Optional[int] = Query(None, gt=0),
         db, _selected(projects, project_id), status=status, state=state, contact=contact,
         contact_email=contact_email, unassigned=unassigned, severity=severity, team=team,
         overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, verification=verification,
-        group=group, limit=limit, offset=offset)
+        flag=flag, q=q, group=group, limit=limit, offset=offset)
 
 
 @account_router.get("/remediation-overview/projects",
@@ -368,6 +414,23 @@ def overview_trend(project_id: Optional[int] = Query(None, gt=0), days: int = _T
                     summary="One contact's at-risk findings on hosts across your projects, and the message")
 def overview_follow_up(contact_email: str = Query(..., min_length=3, max_length=254),
                        project_id: Optional[int] = Query(None, gt=0),
+                       upcoming_days: int = _UPCOMING,
                        projects: List[Project] = Depends(administered_projects),
                        db: Session = Depends(get_db)):
-    return remediation.follow_up(db, _selected(projects, project_id), contact_email)
+    return remediation.follow_up(db, _selected(projects, project_id), contact_email,
+                                 upcoming_days=upcoming_days)
+
+
+@account_router.post("/remediation-overview/follow-up",
+                     summary="Record that a contact was reminded, in every project you administer")
+def overview_record_follow_up(body: OverviewFollowUpBody, user: User = Depends(get_current_user),
+                              projects: List[Project] = Depends(administered_projects),
+                              db: Session = Depends(get_db)):
+    """One ``follow_up`` timeline entry per finding on a host the reminder
+    listed, and the day on each row, in every project the caller administers
+    where the contact has such rows — exactly what the project route records,
+    all of it or none.  The server sends nothing."""
+    result = remediation.record_follow_up_across(
+        db, [p.id for p in projects], body, Attribution(user_id=user.id))
+    db.commit()
+    return result

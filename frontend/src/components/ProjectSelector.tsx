@@ -61,6 +61,8 @@ const ProjectSelector: React.FC = () => {
           <button
             type="button"
             id="project-selector-trigger"
+            // The sidebar is narrow: a long name is cut, so it is readable here.
+            title={currentProject?.name}
             className={cn(
               'flex w-full min-w-0 items-center gap-sm rounded-control border border-border bg-card px-sm py-xs text-left shadow-raised',
               'transition-colors hover:bg-accent hover:border-primary/30',
@@ -84,8 +86,10 @@ const ProjectSelector: React.FC = () => {
           collisionPadding={8}
           // Any number of projects: the years stay put and the list scrolls
           // under them, in a menu never taller than the room under the
-          // trigger (5.346.0).
-          className="flex max-h-[min(28rem,var(--radix-dropdown-menu-content-available-height))] w-[var(--radix-dropdown-menu-trigger-width)] min-w-[14rem] flex-col overflow-hidden"
+          // trigger (5.346.0).  As wide as its longest name, from the
+          // trigger's width up to 28rem (and never wider than the window);
+          // a longer name is cut, with the whole of it on `title`.
+          className="flex max-h-[min(28rem,var(--radix-dropdown-menu-content-available-height))] w-max min-w-[max(14rem,var(--radix-dropdown-menu-trigger-width))] max-w-[min(28rem,calc(100vw-1rem))] flex-col overflow-hidden"
         >
           {filtered && (
             <DropdownMenuRadioGroup

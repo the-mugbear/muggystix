@@ -4,9 +4,10 @@
  * the API client.
  */
 import type {
-  OverdueBand, RemediationApplyRow, RemediationFields, RemediationGroup, RemediationPage, RemediationPolicy,
-  RemediationRow, RemediationState, RemediationStatus, RemediationVerification,
+  OverdueBand, RemediationApplyRow, RemediationFields, RemediationFlag, RemediationGroup, RemediationPage,
+  RemediationPolicy, RemediationRow, RemediationState, RemediationStatus, RemediationVerification,
 } from '../services/api';
+import { formatDate } from './relativeTime';
 
 export const REMEDIATION_PAGE_SIZE = 25;
 
@@ -38,6 +39,21 @@ export const REMEDIATION_VERIFICATION_HELP: Record<RemediationVerification, stri
 };
 export const isRemediationVerification = (v: string | null): v is RemediationVerification =>
   v != null && (REMEDIATION_VERIFICATIONS as string[]).includes(v);
+
+/** Rows a manager is asked to look at again: a deferral whose review date has
+ *  arrived (or that never had one), and a due date somebody set by hand.
+ *  Derived by the server (`flag_counts`, `?flag=`); the page only names them. */
+export const REMEDIATION_FLAGS: RemediationFlag[] = ['deferral_review_due', 'deadline_overridden'];
+export const REMEDIATION_FLAG_LABEL: Record<RemediationFlag, string> = {
+  deferral_review_due: 'Deferrals to review',
+  deadline_overridden: 'Due date set by hand',
+};
+export const REMEDIATION_FLAG_HELP: Record<RemediationFlag, string> = {
+  deferral_review_due: 'Deferred, and the review date has arrived or none was ever set.',
+  deadline_overridden: 'The due date was set by hand and replaces the one the policy gives.',
+};
+export const isRemediationFlag = (v: string | null): v is RemediationFlag =>
+  v != null && (REMEDIATION_FLAGS as string[]).includes(v);
 
 /** The line under a row's deadline that relates the two statuses: the gap
  *  when there is one, "Remediated" when the assessment concluded so and the
@@ -148,6 +164,28 @@ export const previewDueOn = (
   return at.toISOString().slice(0, 10);
 };
 
+/** The policy's due date in words, with where it comes from — the edit
+ *  dialog's read-only line: "Nov 4, 2026 — critical, 30 days from Oct 5, 2026". */
+export const policyDueLine = (
+  policy: Pick<RemediationPolicy, 'days'> | null, severity: string, assignedOn: string,
+): string => {
+  const word = severityWord(severity.toLowerCase());
+  if (policy != null && policy.days[severity.toLowerCase()] == null) {
+    return `No due date: ${word.toLowerCase()} findings have no remediation timeline.`;
+  }
+  const due = previewDueOn(policy, severity, assignedOn);
+  if (!due) return 'No due date yet: it counts from the assigned date.';
+  return `${formatDate(due)} — ${word.toLowerCase()}, ${days(policy?.days[severity.toLowerCase()] ?? 0)} from ${formatDate(assignedOn)}`;
+};
+
+/** The work list's search (`?q=`): at least two characters, at most 200. */
+export const SEARCH_MIN = 2;
+export const SEARCH_MAX = 200;
+export const searchParam = (raw: string | null): string => {
+  const text = (raw ?? '').trim().slice(0, SEARCH_MAX);
+  return text.length >= SEARCH_MIN ? text : '';
+};
+
 /** Today as the reader's calendar says it (the date inputs' own notion). */
 export const localToday = (now: Date = new Date()): string => {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -162,6 +200,9 @@ export const REMEDIATION_FIELD_LABEL: Record<string, string> = {
   notified_on: 'Assigned on',
   status: 'Status',
   closed_on: 'Reported fixed on',
+  due_override_on: 'Due date',
+  deferred_review_on: 'Review on',
+  severity: 'Severity',
   finding: 'Finding',
 };
 
@@ -179,12 +220,19 @@ export interface RemediationDraft {
   /** '' = leave as it is (several rows that differ). */
   status: RemediationStatus | '';
   closed_on: string;
+  /** A due date set by hand; '' = the policy's date (or, for several rows
+   *  that differ, leave each as it is). */
+  due_override_on: string;
+  /** Several rows: put every one back on the policy's date, whatever each holds. */
+  due_override_cleared: boolean;
+  /** With the status Deferred: the day to look at it again. */
+  deferred_review_on: string;
   note: string;
 }
 
 const shared = <K extends keyof RemediationRow>(rows: RemediationRow[], key: K): RemediationRow[K] | undefined => {
-  const first = rows[0]?.[key];
-  return rows.every((r) => r[key] === first) ? first : undefined;
+  const first = rows[0]?.[key] ?? null;
+  return rows.every((r) => (r[key] ?? null) === first) ? (first as RemediationRow[K]) : undefined;
 };
 
 /** The dialog opens on what the selected rows AGREE on; a field they differ
@@ -196,16 +244,47 @@ export const draftFor = (rows: RemediationRow[]): RemediationDraft => ({
   notified_on: shared(rows, 'notified_on') ?? '',
   status: shared(rows, 'status') ?? '',
   closed_on: shared(rows, 'closed_on') ?? '',
+  due_override_on: shared(rows, 'due_override_on') ?? '',
+  due_override_cleared: false,
+  deferred_review_on: shared(rows, 'deferred_review_on') ?? '',
   note: '',
 });
 
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
-/** Why the draft cannot be saved, or null. */
-export const draftProblem = (draft: RemediationDraft): string | null => {
+/** Is this draft making rows deferred, or changing a deferral's review date? */
+const writesDeferral = (opened: RemediationDraft, draft: RemediationDraft): boolean =>
+  draft.status === 'deferred'
+  && (opened.status !== 'deferred' || draft.deferred_review_on.trim() !== opened.deferred_review_on.trim());
+
+/** Why the draft cannot be saved, or null.  With `opened` (what the dialog
+ *  opened on) and `today` (the SERVER's day) it also checks a deferral. */
+export const draftProblem = (
+  draft: RemediationDraft, opened?: RemediationDraft, today?: string,
+): string | null => {
   const email = draft.contact_email.trim();
   if (email && !EMAIL.test(email)) return 'The contact must be an email address.';
   if (draft.closed_on && draft.status !== 'closed') return 'A “Reported fixed on” date goes with the status Reported fixed.';
+  if (opened && writesDeferral(opened, draft)) {
+    const review = draft.deferred_review_on.trim();
+    if (!review) return 'A deferral needs a “Review on” date.';
+    if (today && review < today) return 'The “Review on” date must be today or later.';
+  }
+  return null;
+};
+
+/** Why a note for the timeline is required for these changes, or null.  A
+ *  due date set by hand and a deferral are decisions somebody will be asked
+ *  about; the server refuses them without the reason. */
+export const noteRequirement = (changes: RemediationFields): string | null => {
+  if ('due_override_on' in changes) {
+    return changes.due_override_on == null
+      ? 'Going back to the policy’s due date needs a note for the timeline: say why.'
+      : 'A due date set by hand needs a note for the timeline: say why.';
+  }
+  if (changes.status === 'deferred' || 'deferred_review_on' in changes) {
+    return 'A deferral needs a note for the timeline: say why, and what the review will look at.';
+  }
   return null;
 };
 
@@ -236,6 +315,23 @@ export const draftChanges = (opened: RemediationDraft, draft: RemediationDraft):
   text('notified_on');
   text('closed_on');
   if (draft.status && draft.status !== opened.status) out.status = draft.status;
+  // The due date set by hand: a new date, or back to the policy's (null).
+  // "Back to the policy's date" on a selection is sent to every row, because
+  // the dialog opened blank on rows that differ.
+  if (draft.due_override_cleared) out.due_override_on = null;
+  else {
+    const before = opened.due_override_on.trim();
+    const now = draft.due_override_on.trim();
+    if (now !== before) out.due_override_on = now || null;
+  }
+  // The review date belongs to Deferred only (leaving Deferred clears it on
+  // the server), and a row that BECOMES deferred always carries it.
+  if (draft.status === 'deferred') {
+    const before = opened.deferred_review_on.trim();
+    const now = draft.deferred_review_on.trim();
+    if (now !== before) out.deferred_review_on = now || null;
+    else if (now && opened.status !== 'deferred') out.deferred_review_on = now;
+  }
   return out;
 };
 
@@ -248,17 +344,23 @@ export const applyRowsFor = (
   rows: RemediationRow[], changes: RemediationFields, note: string, requestKey: string,
 ): RemediationApplyRow[] => {
   const body = note.trim();
+  // A due date set by hand and a deferral must carry their reason IN THE SAME
+  // ROW (the server refuses the row otherwise), so then every row has the
+  // note, under its own key.
+  const everyRow = noteRequirement(changes) != null;
   const noted = new Set<number>();
   const out: RemediationApplyRow[] = [];
   for (const r of rows) {
-    const withNote = !!body && !noted.has(r.host_id);
+    const withNote = !!body && (everyRow || !noted.has(r.host_id));
     noted.add(r.host_id);
     // A row with nothing to change and no note of its own has nothing to send.
     if (!withNote && Object.keys(changes).length === 0) continue;
     out.push({
       finding_host_id: r.finding_host_id,
       ...changes,
-      ...(withNote ? { notes: [{ body, request_key: requestKey }] } : {}),
+      ...(withNote
+        ? { notes: [{ body, request_key: everyRow ? `${requestKey}:${r.finding_host_id}` : requestKey }] }
+        : {}),
     });
   }
   return out;
@@ -329,12 +431,53 @@ export interface DeadlineCell {
   date: string | null;
   after: string | null;
   tone: string;
+  /** A due date set by hand: a short second phrase with the policy's date,
+   *  and the whole sentence for `title`. */
+  source?: { text: string; title: string };
 }
+
+/** "set by hand · policy Nov 4" — only for a deadline that is still running. */
+const overrideSource = (
+  row: Pick<RemediationRow, 'state' | 'deadline_source' | 'policy_due_on'>,
+): DeadlineCell['source'] => {
+  if (row.deadline_source !== 'override' || !['overdue', 'due_soon', 'on_track'].includes(row.state)) return undefined;
+  return row.policy_due_on
+    ? {
+      text: `set by hand · policy ${formatDate(row.policy_due_on)}`,
+      title: `This due date was set by hand. The policy’s date is ${formatDate(row.policy_due_on)}.`,
+    }
+    : {
+      text: 'set by hand · no policy date',
+      title: 'This due date was set by hand. The policy gives this finding no due date.',
+    };
+};
+
 export const deadlineCell = (
-  row: Pick<RemediationRow, 'state' | 'due_on' | 'days_left' | 'closed_days_late' | 'closed_on'>,
+  row: Pick<RemediationRow, 'state' | 'due_on' | 'days_left' | 'closed_days_late' | 'closed_on'>
+    & Partial<Pick<RemediationRow, 'deadline_source' | 'policy_due_on' | 'deferred_review_on' | 'deferral_review_due'>>,
+): DeadlineCell => {
+  const cell = deadlineState(row);
+  const source = overrideSource(row);
+  return source ? { ...cell, source } : cell;
+};
+
+const deadlineState = (
+  row: Pick<RemediationRow, 'state' | 'due_on' | 'days_left' | 'closed_days_late' | 'closed_on'>
+    & Partial<Pick<RemediationRow, 'deferred_review_on' | 'deferral_review_due'>>,
 ): DeadlineCell => {
   const quiet = 'text-muted-foreground';
   switch (row.state) {
+    case 'deferred':
+      // The clock is stopped; what matters is when somebody looks again.  The
+      // server says when that day has come — this never compares dates.
+      if (row.deferral_review_due) {
+        return row.deferred_review_on
+          ? { primary: 'Deferred · review due', date: row.deferred_review_on, after: null, tone: 'font-medium text-warning' }
+          : { primary: 'Deferred · no review date', date: null, after: null, tone: 'font-medium text-warning' };
+      }
+      return row.deferred_review_on
+        ? { primary: `Deferred · review ${formatDate(row.deferred_review_on)}`, date: null, after: null, tone: quiet }
+        : { primary: REMEDIATION_STATE_LABEL.deferred, date: null, after: null, tone: quiet };
     case 'overdue':
       return { primary: `${days(-(row.days_left ?? 0))} overdue`, date: row.due_on, after: null, tone: 'font-medium text-destructive' };
     case 'due_soon':
@@ -391,6 +534,9 @@ const CSV_COLUMNS: Array<[string, (r: RemediationRow) => string | number | null]
   ['Assigned on', (r) => r.notified_on],
   ['Due on', (r) => r.due_on],
   ['Days left', (r) => r.days_left],
+  ['Due date from', (r) => (r.deadline_source === 'override' ? 'Set by hand' : r.deadline_source === 'policy' ? 'Policy' : null)],
+  ['Policy due date', (r) => (r.deadline_source === 'override' ? r.policy_due_on ?? null : null)],
+  ['Deferral review on', (r) => r.deferred_review_on ?? null],
   ['Reported fixed on', (r) => r.closed_on],
   ['Days late when reported fixed', (r) => r.closed_days_late],
   ['Assessment status on this host', (r) => endpointStatusWord(r.endpoint_status)],
@@ -408,7 +554,7 @@ export const remediationCsv = (rows: RemediationRow[]): string =>
 /** The page as plain text, for a status mail or a slide's notes. */
 export const remediationSummary = (
   page: Pick<RemediationPage, 'state_counts' | 'severity_counts' | 'overdue_ages' | 'not_followed_up' | 'not_followed_up_days' | 'as_of'>
-    & Partial<Pick<RemediationPage, 'verification_counts'>>,
+    & Partial<Pick<RemediationPage, 'verification_counts' | 'flag_counts'>>,
   options: { where: string; dueSoonDays: number; timeline?: string },
 ): string => {
   const c = page.state_counts;
@@ -436,8 +582,11 @@ export const remediationSummary = (
   }
   lines.push('', `Deferred: ${c.deferred.toLocaleString()}   ${REPORTED_FIXED}: ${c.closed.toLocaleString()}`);
   const gaps = REMEDIATION_VERIFICATIONS.filter((v) => (page.verification_counts?.[v] ?? 0) > 0);
-  if (gaps.length > 0) {
-    lines.push('', ...gaps.map((v) => `${REMEDIATION_VERIFICATION_LABEL[v]}: ${(page.verification_counts?.[v] ?? 0).toLocaleString()}`));
+  const flags = REMEDIATION_FLAGS.filter((f) => (page.flag_counts?.[f] ?? 0) > 0);
+  if (gaps.length + flags.length > 0) {
+    lines.push('',
+      ...gaps.map((v) => `${REMEDIATION_VERIFICATION_LABEL[v]}: ${(page.verification_counts?.[v] ?? 0).toLocaleString()}`),
+      ...flags.map((f) => `${REMEDIATION_FLAG_LABEL[f]}: ${(page.flag_counts?.[f] ?? 0).toLocaleString()}`));
   }
   if (options.timeline) lines.push('', `Timeline: ${options.timeline}, counted from the day a finding is assigned.`);
   return lines.join('\n');

@@ -54,7 +54,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import FindingEndpoints from '../components/findings/FindingEndpoints';
-import FindingJumpBar, { JumpEntry, jumpTargetStyle } from '../components/findings/FindingJumpBar';
+import SectionJumpBar, { JumpEntry, jumpTargetStyle } from '../components/SectionJumpBar';
 import { useFindingProposals } from '../hooks/useFindingProposals';
 import type { Proposal } from '../services/api';
 import { formatTimestamp } from '../utils/relativeTime';
@@ -622,8 +622,10 @@ const FindingDetail: React.FC = () => {
       </div>
 
       {/* Where the page's sections are, pinned under the chrome: the hosts
-          panel is bounded, so every section is one click away. */}
-      <FindingJumpBar entries={jumpEntries} />
+          panel is bounded, so every section is one click away.  No `#id` in
+          the address here: `?endpoint=` is this page's deep link, and two
+          things must not both scroll the page on load. */}
+      <SectionJumpBar entries={jumpEntries} label="Sections of this finding" hash={false} />
 
       {/* What is waiting for a decision comes first, as a summary that goes
           to each proposal where it applies. */}
