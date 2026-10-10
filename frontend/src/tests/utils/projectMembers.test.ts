@@ -6,7 +6,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  PROJECT_ROLES, allowMemberChange, countProjectAdmins, removalDecision, roleChangeDecision,
+  DEFAULT_MEMBER_ROLE, PROJECT_ROLES, allowMemberChange, countProjectAdmins, removalDecision, roleChangeDecision,
   type MemberChange,
 } from '../../utils/projectMembers';
 
@@ -18,6 +18,12 @@ describe('project roles', () => {
   it('is the four roles, highest first', () => {
     expect(PROJECT_ROLES.map((r) => r.value)).toEqual(['admin', 'analyst', 'auditor', 'viewer']);
     expect(PROJECT_ROLES.map((r) => r.label)).toEqual(['Admin', 'Analyst', 'Auditor', 'Viewer']);
+  });
+
+  // Owner decision 2026-10-10: one default for every add-member screen.
+  it('a new member starts as a viewer — the lowest role', () => {
+    expect(DEFAULT_MEMBER_ROLE).toBe('viewer');
+    expect(PROJECT_ROLES[PROJECT_ROLES.length - 1].value).toBe(DEFAULT_MEMBER_ROLE);
   });
 
   it('counts the admins of a roster', () => {

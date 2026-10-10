@@ -12,6 +12,7 @@ import {
 import { fromOperationsQueue, operationsBackPath } from '../utils/operationsQueue';
 
 const workbench = (over: Partial<WorkbenchResponse> = {}): WorkbenchResponse => ({
+  setup: { has_hosts: true, has_scopes: true, scope_rows: 1, only_scope_id: 10 },
   my_queue: { items: [], in_review_count: 37 },
   my_tasks: {
     items: [], total_open: 55,

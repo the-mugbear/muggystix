@@ -74,13 +74,17 @@ describe('System settings — creating an account', () => {
   };
 
   it('sends the account without the confirmation, lists it, and keeps the password nowhere', async () => {
-    api.registerUser.mockResolvedValue(account({ id: 9, username: 'linus', full_name: 'Linus T.' }));
+    // The server answers the users-list row (5.365.0 / v2.476.0): what it says
+    // is what the table holds — the page fills in nothing of its own.
+    const answered = account({ id: 9, username: 'linus', full_name: 'Linus T.', created_by_id: 4, totp_enabled: true });
+    api.registerUser.mockResolvedValue(answered);
     const client = show();
     await screen.findByText('@grace');
     const dialog = await openAndFill();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create User' }));
 
     expect(await screen.findByText('@linus')).toBeInTheDocument();
+    expect(client.getQueryData<unknown[]>(['listUsers'])?.slice(-1)).toEqual([answered]);
     expect(api.registerUser).toHaveBeenCalledTimes(1);
     expect(api.registerUser).toHaveBeenCalledWith({
       username: 'linus', password: PASSWORD, full_name: 'Linus T.', role: 'member',

@@ -197,14 +197,22 @@ def test_middleware_helpers_extract_host_ids_and_target_ips():
     assert "not-an-ip" not in _extract_target_ips({"x": "not-an-ip"})
 
     # Aggregated path + query + body extraction.
-    host_ids, entry_ids, ips = _collect_referenced_ids(
-        path_params={"entry_id": "7"},
-        query_params={"host_ids": "1,2,3"},
-        body_json={"target_ip": "10.0.0.5", "host_id": 4},
+    # Hosts and addresses only: `entry_id` named a test-plan entry, and test
+    # plans went in v2.442.0 — the log no longer parses or stores it.
+    host_ids, ips = _collect_referenced_ids(
+        path_params={"host_id": "9", "entry_id": "7"},
+        query_params={"host_ids": "1,2,3", "entry_ids": "5,6"},
+        body_json={"target_ip": "10.0.0.5", "host_id": 4, "entry_id": 8},
     )
-    assert sorted(host_ids) == [1, 2, 3, 4]
-    assert entry_ids == [7]
+    assert sorted(host_ids) == [1, 2, 3, 4, 9]
     assert ips == ["10.0.0.5"]
+
+    from app.api.v1.endpoints.agent_activity import AgentApiCallRow
+    from app.db.models_agent import AgentApiCall
+
+    assert "referenced_entry_ids" not in AgentApiCall.__table__.columns
+    assert "referenced_entry_ids" not in AgentApiCallRow.model_fields
+    assert {"referenced_host_ids", "referenced_target_ips"} <= set(AgentApiCallRow.model_fields)
 
     # Sensitive fields are stripped from captured bodies (defence in
     # depth — agents never put their key in the body, but we strip

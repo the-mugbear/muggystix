@@ -10,6 +10,7 @@ import {
 import { useProjectId } from '../../hooks/useProjectId';
 import type { FormatOption } from '../../services/api';
 import { cn } from '../../utils/cn';
+import { formatChoices } from '../../utils/formatChoices';
 import { IMPORT_SETTINGS_ANCHOR } from './ProjectIngestSettings';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../ui/accordion';
 import { Alert, AlertDescription } from '../ui/alert';
@@ -117,6 +118,13 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
   useEffect(() => {
     if (!open) clearStarted();
   }, [open, clearStarted]);
+  // "Show all formats" on any row: every chooser lists every format until the
+  // dialog is closed.  (Unresolved rows outlive a closing, so the dialog's
+  // body cannot simply be keyed by its opening.)
+  const [showAllFormats, setShowAllFormats] = useState(false);
+  useEffect(() => {
+    if (!open) setShowAllFormats(false);
+  }, [open]);
 
   return (
     <Dialog open={open} onOpenChange={(v) => !review.busy && onOpenChange(v)}>
@@ -208,6 +216,8 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
                       previewOpen={previewKey === row.key}
                       onTogglePreview={() => setPreviewKey((k) => (k === row.key ? null : row.key))}
                       formats={review.formats}
+                      showAllFormats={showAllFormats}
+                      onShowAllFormats={() => setShowAllFormats(true)}
                       onChoose={(ft) => review.setChoice(row.key, ft)}
                       onConfirmSuggestion={() => review.confirmSuggestion(row.key)}
                       onRetryDetection={() => review.retryDetection(row.key)}
@@ -308,6 +318,9 @@ const ReviewRowView: React.FC<{
   onTogglePreview: () => void;
   /** The chooser's list when this row has no detection of its own. */
   formats: FormatOption[];
+  /** The reader asked for every format (the dialog's, for all its rows). */
+  showAllFormats: boolean;
+  onShowAllFormats: () => void;
   onChoose: (fileType: string | null) => void;
   onConfirmSuggestion: () => void;
   onRetryDetection: () => void;
@@ -319,12 +332,18 @@ const ReviewRowView: React.FC<{
   onCancelUpload: () => void;
   onViewScan: (scanId: number) => void;
 }> = ({
-  row, previewOpen, onTogglePreview, formats, onChoose, onConfirmSuggestion, onRetryDetection,
-  onSourceTool, onImport, onImportAgain, onReviewWaitingCopy, onRemove, onCancelUpload, onViewScan,
+  row, previewOpen, onTogglePreview, formats, showAllFormats, onShowAllFormats, onChoose, onConfirmSuggestion,
+  onRetryDetection, onSourceTool, onImport, onImportAgain, onReviewWaitingCopy, onRemove, onCancelUpload, onViewScan,
 }) => {
   const d = row.detection;
   const primary = d?.candidates[0];
   const allFormats = d?.formats ?? formats;
+  // The formats a file with this extension can be come first; the rest are
+  // behind "Show all formats".  Detection's own candidates and the format
+  // selected now are always listed.
+  const others = formatChoices(otherFormats(allFormats, d?.candidates), row.filename, {
+    showAll: showAllFormats, keep: row.chosen,
+  });
   const labelOf = (ft: string) =>
     d?.candidates.find((c) => c.file_type === ft)?.label ?? allFormats.find((f) => f.file_type === ft)?.label ?? ft;
   const editable = row.phase === 'ready' || row.phase === 'choose';
@@ -408,11 +427,19 @@ const ReviewRowView: React.FC<{
                   </optgroup>
                 )}
                 <optgroup label={d && d.candidates.length > 0 ? 'Other formats' : 'All formats'}>
-                  {otherFormats(allFormats, d?.candidates).map((f) => (
+                  {others.shown.map((f) => (
                     <option key={f.file_type} value={f.file_type}>{f.label}</option>
                   ))}
                 </optgroup>
               </select>
+            )}
+            {editable && others.hidden > 0 && (
+              <p className="text-caption text-muted-foreground">
+                Formats for {others.extension} files.{' '}
+                <button type="button" className="text-info hover:underline" onClick={onShowAllFormats}>
+                  Show all formats
+                </button>
+              </p>
             )}
             {editable && (
               <Input

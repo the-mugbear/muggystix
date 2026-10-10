@@ -366,6 +366,10 @@ def _port_is_only_this_attempts(port_id, scan_id: int, *, before_release: bool =
     as ``vulnerabilities.last_seen_scan_id`` on a row the attempt first
     recorded.  Both protect the port.
 
+    "Refers to it" includes a scanner observation on the port that a finding
+    or a proposal refers to (``scan_sightings.work_refers_to_it``): the
+    observation is kept by ``release_scan``, so its port is kept too.
+
     ``before_release`` — see ``_none_reported_by_another_scan``."""
     from sqlalchemy import exists
     from sqlalchemy.orm import aliased
@@ -399,6 +403,13 @@ def _port_is_only_this_attempts(port_id, scan_id: int, *, before_release: bool =
         ~exists().where(models.Annotation.port_id == port_id),
         ~exists().where(FindingHost.port_id == port_id),
         ~exists().where(Vulnerability.port_id == port_id, _seen_by_another_scan(Vulnerability, scan_id)),
+        # A scanner observation on it that a finding or a proposal refers to:
+        # ``release_scan`` keeps that row whichever scan reported it, and a
+        # kept observation keeps its port (owner decision 2026-10-10 — the
+        # port's delete would otherwise SET NULL the row's ``port_id``).  The
+        # same answer before and after release: release never deletes such a
+        # row.
+        ~exists().where(Vulnerability.port_id == port_id, scan_sightings.work_refers_to_it()),
         ~exists().where(models.Script.port_id == port_id, another_scan(models.Script.scan_id)),
         ~exists().where(models.WebInterface.port_id == port_id, another_scan(models.WebInterface.scan_id)),
         ~exists().where(models.WebPath.port_id == port_id, another_scan(models.WebPath.scan_id)),

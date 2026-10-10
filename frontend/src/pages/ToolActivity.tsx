@@ -193,14 +193,20 @@ const urlText = (raw: string | null, max: number): string => (raw ?? '').trim().
 export function readActivityQuery(params: URLSearchParams) {
   const toleranceRaw = params.get('tolerance') ?? '';
   const tolerance = /^\d+$/.test(toleranceRaw) ? Number(toleranceRaw) : NaN;
+  const at = urlDate(params.get('at'));
   const from = urlDate(params.get('from'));
   const to = urlDate(params.get('to'));
-  // A range is both ends, in order; half of one, or one backwards, is none.
+  // A range is both ends, in order; half of one is none.
   const range = from && to && to.getTime() > from.getTime();
   return {
-    at: urlDate(params.get('at')),
+    at,
     from: range ? from : null,
     to: range ? to : null,
+    // Both ends, but not in order (`to` at or before `from`): no question —
+    // it is never asked — but it is READ, so the form shows the range and
+    // says what is wrong with it (owner decision 2026-10-10).  A moment named
+    // beside it is the question instead.
+    backwards: from && to && !range && !at ? { from, to } : null,
     tolerance: TOLERANCE_OPTIONS.some((o) => o.value === tolerance) ? tolerance : null,
     tool: urlText(params.get('tool'), TOOL_MAX),
     target: urlText(params.get('target'), TARGET_MAX),
@@ -248,9 +254,13 @@ const sameQuestion = (a: FocusedQuestion | null, b: FocusedQuestion | null): boo
 
 /** `prev` naming this window (none: no window), tool and target — the one
  *  place the address's format is written: `at` + `tolerance`, or `from` +
- *  `to`, then `tool` and `target`, each left out when empty. */
+ *  `to`, then `tool` and `target`, each left out when empty.  `notAsked` is a
+ *  range the address named that does not run forward: with no window it is
+ *  kept as it was linked (the form shows it), and it is gone once a question
+ *  is asked. */
 function withQuestion(
   prev: URLSearchParams, window: FocusedQuestion | null, tool: string, target: string,
+  notAsked: { from: Date; to: Date } | null = null,
 ): URLSearchParams {
   const next = new URLSearchParams(prev);
   ['at', 'from', 'to', 'tolerance', 'tool', 'target'].forEach((k) => next.delete(k));
@@ -260,6 +270,9 @@ function withQuestion(
   } else if (window) {
     next.set('from', window.params.from);
     next.set('to', window.params.to);
+  } else if (notAsked) {
+    next.set('from', notAsked.from.toISOString());
+    next.set('to', notAsked.to.toISOString());
   }
   if (tool) next.set('tool', tool);
   if (target) next.set('target', target);
@@ -270,26 +283,37 @@ function withQuestion(
  *  nothing else of the question. */
 const canonical = (params: URLSearchParams): URLSearchParams => {
   const address = readActivityQuery(params);
-  return withQuestion(params, questionOf(address), address.tool, address.target);
+  return withQuestion(params, questionOf(address), address.tool, address.target, address.backwards);
 };
 
-/** What an address asks, as one comparable value: its window, tool and target. */
+/** What an address names, as one comparable value: its window (or the range
+ *  it names that is not asked), tool and target. */
 const askedKey = (params: URLSearchParams): string => {
   const address = readActivityQuery(params);
-  return withQuestion(new URLSearchParams(), questionOf(address), address.tool, address.target).toString();
+  return withQuestion(
+    new URLSearchParams(), questionOf(address), address.tool, address.target, address.backwards,
+  ).toString();
 };
 
 /** The form as an address fills it: its window, tool and target, and the
- *  form's own defaults ("now", ± 5 minutes, the last 24 hours) for the rest. */
-const draftFrom = (address: ActivityAddress) => ({
-  mode: (address.from && address.to ? 'between' : 'at') as QueryMode,
-  tsLocal: toLocalInput(address.at ?? new Date()),
-  tolerance: address.tolerance ?? DEFAULT_TOLERANCE,
-  fromLocal: toLocalInput(address.from ?? new Date(Date.now() - 24 * 3600 * 1000)),
-  toLocal: toLocalInput(address.to ?? new Date()),
-  tool: address.tool,
-  target: address.target,
-});
+ *  form's own defaults ("now", ± 5 minutes, the last 24 hours) for the rest.
+ *  A range the address names backwards fills the range fields as given — the
+ *  form then says why it cannot be asked. */
+const draftFrom = (address: ActivityAddress) => {
+  const range = address.from && address.to ? { from: address.from, to: address.to } : address.backwards;
+  return {
+    mode: (range ? 'between' : 'at') as QueryMode,
+    tsLocal: toLocalInput(address.at ?? new Date()),
+    tolerance: address.tolerance ?? DEFAULT_TOLERANCE,
+    fromLocal: toLocalInput(range?.from ?? new Date(Date.now() - 24 * 3600 * 1000)),
+    toLocal: toLocalInput(range?.to ?? new Date()),
+    tool: address.tool,
+    target: address.target,
+  };
+};
+
+/** The one line for a range that does not run forward, in the form. */
+const RANGE_BACKWARDS = '“To” must be later than “From”.';
 
 const answerQuestion = (question: FocusedQuestion, signal?: AbortSignal): Promise<ActivityResponse> => (
   question.fn === 'getScansAt' ? getScansAt(question.params, signal) : getScansBetween(question.params, signal)
@@ -369,6 +393,15 @@ export const ToolActivity: React.FC = () => {
         params: { from: localInputToUtcIso(fromLocal), to: localInputToUtcIso(toLocal), ...filters },
       }
   ), [mode, tsLocal, tolerance, fromLocal, toLocal, filters]);
+  // The range the form states does not run forward (`to` at or before
+  // `from`): it is refused HERE — Correlate is unavailable and a line says
+  // why — never sent for the server to refuse (owner decision 2026-10-10).
+  const rangeBackwards = useMemo(() => {
+    if (mode !== 'between') return false;
+    const start = new Date(fromLocal).getTime();
+    const end = new Date(toLocal).getTime();
+    return !Number.isNaN(start) && !Number.isNaN(end) && end <= start;
+  }, [mode, fromLocal, toLocal]);
 
   // The focused query that was ASKED — by Correlate, a chart column, or a
   // link that names a window (a link IS a question: it runs on arrival).
@@ -382,14 +415,9 @@ export const ToolActivity: React.FC = () => {
   // ITS tolerance), and the tool / target the last query — the focused one
   // or the week snapshot — was filtered by.  The form's default "now" is not
   // a query, so nothing is written until one is run.
-  const addressQuestion = useMemo(() => questionOf(address), [address]);
-  // The one question the address cannot name: a range the form states that
-  // does not run forward (`to` at or before `from`).  The reader asked it, so
-  // it is asked — the server's answer or refusal is what they see — but
-  // `readActivityQuery` reads no such range, so it has no address and lasts
-  // only until the next question, asked here or arrived at.
-  const [unnamed, setUnnamed] = useState<FocusedQuestion | null>(null);
-  const question = unnamed ?? addressQuestion;
+  // (A range that does not run forward is not a question: the form refuses
+  // it and the address reads none, so every question asked has an address.)
+  const question = useMemo(() => questionOf(address), [address]);
 
   // An address is written as this page writes it: a link's `…T14:32:17Z`
   // becomes the instant in full, a tolerance it left out is the one that ran,
@@ -461,7 +489,6 @@ export const ToolActivity: React.FC = () => {
     setToLocal(draft.toLocal);
     setTool(draft.tool);
     setTarget(draft.target);
-    setUnnamed(null);
     setProjectFilter(new Set());
     if ((weekAsked.tool ?? '') !== address.tool || (weekAsked.target ?? '') !== address.target) {
       setWeekAsked(pastWeek({ tool: address.tool || undefined, target: address.target || undefined }));
@@ -472,6 +499,9 @@ export const ToolActivity: React.FC = () => {
   // chosen) without waiting for the form state it also sets to settle.
   // `withWeek` asks the snapshot again too (Correlate, Refresh).
   const search = useCallback((range?: { from: string; to: string }, withWeek = false) => {
+    // The form's own range, backwards: not a question (Enter in a field
+    // submits the form whatever the button's state).
+    if (!range && rangeBackwards) return;
     setProjectFilter(new Set()); // a new search starts with every project shown
     if (withWeek) setWeekAsked(pastWeek(filters));
     const next: FocusedQuestion = range
@@ -483,12 +513,8 @@ export const ToolActivity: React.FC = () => {
       return;
     }
     // The address is given the question, and the question is then read from it.
-    const named = sameQuestion(
-      questionOf(readActivityQuery(withQuestion(searchParams, next, usedTool, usedTarget))), next,
-    );
-    setUnnamed(named ? null : next);
-    writeAsked(named ? next : null);
-  }, [askAgain, filters, formQuestion, question, searchParams, usedTool, usedTarget, writeAsked]);
+    writeAsked(next);
+  }, [askAgain, filters, formQuestion, question, rangeBackwards, writeAsked]);
 
   const weekQuery = useQuery({
     queryKey: ['getScansBetween', weekAsked],
@@ -507,8 +533,8 @@ export const ToolActivity: React.FC = () => {
   // window and takes the tool / target the snapshot is now narrowed to.
   const loadWeek = useCallback(() => {
     setWeekAsked(pastWeek(filters));
-    writeAsked(addressQuestion);
-  }, [addressQuestion, filters, writeAsked]);
+    writeAsked(question);
+  }, [question, filters, writeAsked]);
 
   // A chart bin was chosen: correlate exactly that range, and show it in
   // the form so the query on screen is the one that ran.
@@ -562,28 +588,30 @@ export const ToolActivity: React.FC = () => {
     return weekResponse.items.filter((i) => projectFilter.has(i.project_id));
   }, [weekResponse, projectFilter]);
 
-  // The form's current query window — converted to UTC ISO so the
-  // week-snapshot timeline's highlight band knows where the focus is.
+  // What is on screen is labelled by the question that was ASKED, never by
+  // the form's current fields (owner decision 2026-10-10): a draft being
+  // typed must not rename an answer that was for something else.
+  //
+  // The window of the focused question, for the snapshot's highlight band;
+  // none until one is asked.
   const queryWindow = useMemo(() => {
-    try {
-      if (mode === 'between') {
-        const s = new Date(localInputToUtcIso(fromLocal)).getTime();
-        const e = new Date(localInputToUtcIso(toLocal)).getTime();
-        if (Number.isNaN(s) || Number.isNaN(e) || e < s) return null;
-        return { start: new Date(s).toISOString(), end: new Date(e).toISOString() };
-      }
-      const ts = new Date(localInputToUtcIso(tsLocal)).getTime();
-      if (Number.isNaN(ts)) return null;
-      return {
-        start: new Date(ts - tolerance * 1000).toISOString(),
-        end: new Date(ts + tolerance * 1000).toISOString(),
-      };
-    } catch {
-      return null;
-    }
-  }, [mode, tsLocal, tolerance, fromLocal, toLocal]);
+    if (!question) return null;
+    if (question.fn === 'getScansBetween') return { start: question.params.from, end: question.params.to };
+    const ts = new Date(question.params.ts).getTime();
+    return {
+      start: new Date(ts - question.params.toleranceSeconds * 1000).toISOString(),
+      end: new Date(ts + question.params.toleranceSeconds * 1000).toISOString(),
+    };
+  }, [question]);
 
-  const attributionActive = Boolean(tool.trim() || target.trim());
+  // The tool / target each answer was narrowed to: the focused question's
+  // own, and the snapshot's own (it is asked apart, by Refresh too).
+  const askedTool = question?.params.tool ?? '';
+  const askedTarget = question?.params.target ?? '';
+  const askedNarrowed = Boolean(askedTool || askedTarget);
+  const weekTool = weekAsked.tool ?? '';
+  const weekTarget = weekAsked.target ?? '';
+  const weekNarrowed = Boolean(weekTool || weekTarget);
 
   // Truthy when the queried window falls within the past 7 days
   // (i.e. the highlight band will actually render on the snapshot).
@@ -665,9 +693,9 @@ export const ToolActivity: React.FC = () => {
         title={
           <>
             Past 7 days
-            {attributionActive && (
+            {weekNarrowed && (
               <span className="min-w-0 break-all font-normal">
-                for {[tool.trim() && `“${tool.trim()}”`, target.trim()].filter(Boolean).join(' on ')}
+                for {[weekTool && `“${weekTool}”`, weekTarget].filter(Boolean).join(' on ')}
               </span>
             )}
             <SectionCount>
@@ -692,7 +720,7 @@ export const ToolActivity: React.FC = () => {
         description={
           <>
             What started when, across the projects you can see
-            {attributionActive ? ', narrowed to the tool / target below' : ''}.
+            {weekNarrowed ? ', narrowed to that tool / target' : ''}.
             The shaded band is the Correlate window; click a column to
             correlate that range.{' '}
             {queryWindow && !queryInsideWeek && (
@@ -815,11 +843,13 @@ export const ToolActivity: React.FC = () => {
                     step={1}
                     className="w-[240px]"
                     required
+                    aria-invalid={rangeBackwards || undefined}
+                    aria-describedby={rangeBackwards ? 'range-backwards' : undefined}
                   />
                 </div>
               </>
             )}
-            <Button type="submit" disabled={loading}>
+            <Button type="submit" disabled={loading || rangeBackwards}>
               {/* v4.22.0 — keep Search icon during loading so this
                   button reads distinctly from the standalone Refresh
                   next to it; disabled state already conveys "busy". */}
@@ -830,8 +860,9 @@ export const ToolActivity: React.FC = () => {
               type="button"
               variant="outline"
               onClick={() => {
-                // Re-run the focused query only if one has been run.
-                if (response) search(undefined, true);
+                // Re-run the focused query only if one has been run — and the
+                // form states one that can be asked; else the snapshot alone.
+                if (response && !rangeBackwards) search(undefined, true);
                 else loadWeek();
               }}
               disabled={weekLoading || loading}
@@ -843,6 +874,12 @@ export const ToolActivity: React.FC = () => {
               />
               Refresh
             </Button>
+            {/* Under the dates, across the form's width. */}
+            {rangeBackwards && (
+              <p id="range-backwards" role="alert" className="basis-full text-caption text-destructive">
+                {RANGE_BACKWARDS}
+              </p>
+            )}
           </form>
 
       {error && (
@@ -871,12 +908,12 @@ export const ToolActivity: React.FC = () => {
               {response.total} activit{response.total === 1 ? 'y' : 'ies'} matched
               across {response.accessible_project_ids.length} accessible
               project{response.accessible_project_ids.length === 1 ? '' : 's'}
-              {attributionActive && (
+              {askedNarrowed && (
                 <>
                   {' '}for{' '}
-                  {tool.trim() && <code className="font-mono">{tool.trim()}</code>}
-                  {tool.trim() && target.trim() && ' on '}
-                  {target.trim() && <code className="font-mono">{target.trim()}</code>}
+                  {askedTool && <code className="font-mono break-all">{askedTool}</code>}
+                  {askedTool && askedTarget && ' on '}
+                  {askedTarget && <code className="font-mono break-all">{askedTarget}</code>}
                 </>
               )}
               {response.truncated && (
@@ -935,7 +972,7 @@ export const ToolActivity: React.FC = () => {
           <div className="overflow-x-auto">
               {filteredItems.length === 0 ? (
                 <p className="text-caption text-muted-foreground">
-                  {attributionActive
+                  {askedNarrowed
                     ? 'Nothing recorded for that tool / target in this window: no scan observed the host, no agent recorded a command against it, and no run covered it. If a scan ran but was never uploaded, BlueStick cannot know about it.'
                     : 'No activity in this window. Widen the tolerance, pick a different time, or switch to a range.'}
                 </p>

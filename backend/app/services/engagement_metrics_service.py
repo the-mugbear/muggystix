@@ -445,7 +445,10 @@ def remediation_counts(db: Session, project_ids: Iterable[int]) -> Dict[int, Dic
     Beside them: ``closed_measured`` and ``days_to_close_total`` (how long
     closed rows took), ``closed_late`` / ``closed_with_deadline`` (closed
     after the deadline frozen at close, out of those that had one) — see
-    ``remediation_service.durations_by_project``.
+    ``remediation_service.durations_by_project``; and the two gaps between
+    the contact's record and the assessor's conclusion,
+    ``reported_fixed_not_retested`` / ``remediated_record_open``
+    (``remediation_service.verification_counts_by_project``).
     """
     from app.services import remediation_policy, remediation_service
 
@@ -458,8 +461,11 @@ def remediation_counts(db: Session, project_ids: Iterable[int]) -> Dict[int, Dic
     durations = remediation_service.durations_by_project(db, ids, today)
     # The overdue rows by severity and by how late they are (v2.462.0).
     overdue = remediation_service.overdue_breakdown_by_project(db, ids, policy, today)
+    # Where the contact's record and the assessor's conclusion disagree: the
+    # list's own ``verification_counts`` (each opens ``?verification=``).
+    gaps = remediation_service.verification_counts_by_project(db, ids)
     return {pid: {**remediation_service._status_counts(states[pid]), **states[pid], **durations[pid],
-                  **overdue[pid]}
+                  **overdue[pid], **gaps[pid]}
             for pid in ids}
 
 

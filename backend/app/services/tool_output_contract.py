@@ -5,20 +5,19 @@ output must carry to be ingested.  This is the HUB that the human/agent-facing
 copies of "how to run this tool for BlueStick" are checked against by
 ``tests/test_tool_command_consistency.py``:
 
-  * the frontend Tool Reference page — ``RUN_COMMANDS`` in
-    ``frontend/src/pages/ToolReference.tsx`` (the operator-facing commands),
-  * the agent guide's (``documentation/AGENT_GUIDE.md``) "Supported upload formats" table, and
+  * the tool registry's ``run_command`` (``app/data/tool_registry_seed.json``;
+    the operator-facing commands the Tool Reference page shows — until
+    v2.476.0 a table typed into that page), and
   * ``documentation/UPLOAD_FORMATS.md``.
 
-Those three exist independently because they serve different consumers (a
-static docs page shouldn't fetch at runtime); a fourth, the backend recon
-catalog, went with the recon planning service in v2.434.0.  They can't share
-code — but they
-must not disagree.  The contract is the referee: when any of them recommends a
+Two more are gone: the agent guide's "Supported upload formats" table left the
+guide in v2.433.1, and the backend recon catalog went with the recon planning
+service in v2.434.0.  The two that remain can't share code — but they
+must not disagree.  The contract is the referee: when either recommends a
 command whose output extension isn't accepted here (i.e. the parser can't ingest
 it), the consistency test fails instead of the drift shipping silently.
 
-Keyed by tool BINARY name (matches the ``RUN_COMMANDS`` keys).  ``exts`` is the set of accepted upload extensions
+Keyed by tool BINARY name (the registry's ``name``).  ``exts`` is the set of accepted upload extensions
 and is authoritative — it mirrors the parser registry / UPLOAD_FORMATS.md.  A
 tool may legitimately be recommended with different-but-valid output across
 sources (e.g. subfinder ``.txt`` in the agent catalog vs ``.json`` on the

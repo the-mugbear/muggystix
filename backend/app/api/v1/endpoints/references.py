@@ -208,6 +208,10 @@ def tool_registry(
                 "requires_privileges": t.requires_privileges,
                 "output_format": t.output_format,
                 "ingestible": t.ingestible,
+                # How to run it so the output is a file BlueStick ingests, and
+                # what to upload — null for a tool with no parser.
+                "run_command": t.run_command,
+                "run_note": t.run_note,
                 "suggested_rationale": t.suggested_rationale,
             }
             for t in tools

@@ -16,6 +16,8 @@
   },
   {
     "name": "amass",
+    "run_command": "amass enum -d <domain> -json amass.json",
+    "run_note": "Upload amass.json — best results include resolved IPs.",
     "description": "In-depth DNS / subdomain enumeration and attack-surface mapping by OWASP, combining passive sources, brute force, and name permutations. BlueStick ingests its JSON output as DNS records / hosts.",
     "category": "Network Services",
     "ports": "53",
@@ -31,6 +33,8 @@
   },
   {
     "name": "bloodhound-python",
+    "run_command": "bloodhound-python -d <domain> -u <user> -p <pass> -c All -ns <dc-ip>",
+    "run_note": "Upload the extracted JSON files, not the ZIP bundle.",
     "description": "Python ingestor for BloodHound that collects Active Directory relationship data over LDAP, SMB, and Kerberos. Useful when scan results indicate a domain-connected Windows environment.",
     "category": "Active Directory",
     "ports": "53, 88, 135, 389, 445, 636, 3268, 3269",
@@ -106,6 +110,8 @@
   },
   {
     "name": "dirb",
+    "run_command": "dirb http://<target> wordlist.txt -o dirb.txt",
+    "run_note": "Upload dirb.txt.",
     "description": "Classic URL brute-forcer that tests for the existence of web objects by dictionary attack. Simple and reliable, though slower than modern alternatives like gobuster or ffuf.",
     "category": "Web Content Discovery",
     "ports": "80, 443, 8080, 8443",
@@ -121,6 +127,8 @@
   },
   {
     "name": "dirsearch",
+    "run_command": "dirsearch -u http://<target> --format json -o dirsearch.json",
+    "run_note": "Upload dirsearch.json (--format json).",
     "description": "Web path brute-forcer written in Python. Ships with curated wordlists and supports recursive scanning, automatic calibration to ignore false positives, and multiple output formats (JSON, CSV, plain text).",
     "category": "Web Content Discovery",
     "ports": "80, 443, 8080, 8443",
@@ -166,6 +174,8 @@
   },
   {
     "name": "dnsx",
+    "run_command": "dnsx -j -resp -l ips.txt -r resolvers.txt -ptr -a -aaaa -cname -mx -ns -txt -o dnsx-output.json",
+    "run_note": "Upload dnsx-output.json (-j). PTR answers feed hostnames.",
     "description": "Fast multi-purpose DNS toolkit by ProjectDiscovery for resolving and probing records (A / AAAA / CNAME / MX / NS / TXT) at scale. BlueStick ingests its JSON (-json) output as DNS records.",
     "category": "Network Services",
     "ports": "53",
@@ -211,6 +221,8 @@
   },
   {
     "name": "eyewitness",
+    "run_command": "eyewitness --web -f urls.txt -d eyewitness_report --no-prompt",
+    "run_note": "Upload the JSON/CSV report (filename must contain \"eyewitness\" or \"report\").",
     "description": "Captures screenshots of web services and builds a browsable report, recording page titles, server headers, and default-credential hints. BlueStick ingests its CSV/JSON output (and the screenshots) into the per-host web-interface view. Run httpx first to cull dead targets, then eyewitness for visual triage.",
     "category": "Web Analysis",
     "ports": "80, 443, 8080, 8443",
@@ -228,6 +240,8 @@
   },
   {
     "name": "feroxbuster",
+    "run_command": "feroxbuster -u http://<target> --json -o feroxbuster.json",
+    "run_note": "Upload feroxbuster.json (--json).",
     "description": "Recursive content discovery tool written in Rust. Automatically discovers and recurses into directories, handles rate limiting gracefully, and supports response filtering by status code, word count, and line count.",
     "category": "Web Content Discovery",
     "ports": "80, 443, 8080, 8443",
@@ -243,6 +257,8 @@
   },
   {
     "name": "ffuf",
+    "run_command": "ffuf -u http://<target>/FUZZ -w wordlist.txt -of json -o ffuf.json",
+    "run_note": "Upload ffuf.json (-of json).",
     "description": "Fast web fuzzer written in Go. Extremely flexible \u2014 can fuzz any part of an HTTP request including URL paths, headers, POST data, and cookies. Output can be filtered by status code, response size, word count, or regex.",
     "category": "Web Content Discovery",
     "ports": "80, 443, 8080, 8443",
@@ -273,6 +289,8 @@
   },
   {
     "name": "gobuster",
+    "run_command": "gobuster dir -u http://<target> -w wordlist.txt -o gobuster.txt",
+    "run_note": "Upload gobuster.txt (.json/.csv/.txt all parse).",
     "description": "Directory and DNS brute-force tool written in Go. Fast and lightweight, supports dir, dns, vhost, fuzz, and s3 modes. Ideal for discovering hidden paths and virtual hosts on web servers.",
     "category": "Web Content Discovery",
     "ports": "80, 443, 8080, 8443",
@@ -288,6 +306,8 @@
   },
   {
     "name": "httpx",
+    "run_command": "httpx -l targets.txt -sc -title -tech-detect -favicon -json -o httpx.jsonl",
+    "run_note": "Upload httpx.jsonl. Call ProjectDiscovery's binary by path if the Python httpx CLI shadows it.",
     "description": "Fast multi-purpose HTTP toolkit by ProjectDiscovery \u2014 the canonical first pass over web services. Probes status code, page title, server header, technology stack (Wappalyzer), favicon hash, TLS/CDN signals, and redirect chains, one HTTP request per target. Run it before eyewitness: httpx culls dead targets in seconds where eyewitness spins a headless browser per host. JSONL output ingests directly into BlueStick. Note: in Python-heavy environments the `httpx` name often resolves to the Python httpx CLI (incompatible flags) \u2014 install ProjectDiscovery\u2019s binary and call it by explicit path.",
     "category": "Web Analysis",
     "ports": "80, 443, 8080, 8443, 8000, 3000",
@@ -395,6 +415,8 @@
   },
   {
     "name": "masscan",
+    "run_command": "sudo masscan -p1-65535 --rate=1000 -oX masscan.xml <target>",
+    "run_note": "Upload the XML (-oX), JSON (-oJ), or list (-oL).",
     "description": "Internet-scale port scanner. Can scan the entire Internet in under 6 minutes. Best for quickly finding open ports across large IP ranges before doing detailed service enumeration with nmap.",
     "category": "Port Scanning",
     "ports": "All",
@@ -442,6 +464,8 @@
   },
   {
     "name": "naabu",
+    "run_command": "naabu -host <target> -json -o naabu.json",
+    "run_note": "Upload naabu.json (-json). Include \"naabu\" in the filename.",
     "description": "Fast port scanner written in Go by ProjectDiscovery. Designed for reliability and speed in bug bounty and penetration testing workflows, with native integration into other ProjectDiscovery tools.",
     "category": "Port Scanning",
     "ports": "All",
@@ -472,6 +496,8 @@
   },
   {
     "name": "netexec",
+    "run_command": "netexec smb <target> -u '' -p '' --shares",
+    "run_note": "Upload the --json output or the standard text report.",
     "description": "Swiss army knife for network protocol enumeration (successor to CrackMapExec). Supports SMB, WinRM, LDAP, MSSQL, RDP, SSH, and more. Tests credentials, enumerates shares, and executes commands across multiple hosts.",
     "category": "SMB / NetBIOS",
     "ports": "139, 445, 389, 636, 5985, 5986, 1433, 3389, 22",
@@ -489,6 +515,8 @@
   },
   {
     "name": "nikto",
+    "run_command": "nikto -h <target> -Format json -o nikto.json",
+    "run_note": "Upload nikto.json (-Format json).",
     "description": "Open-source web server scanner that checks for dangerous files, outdated server software, version-specific problems, and server configuration issues. Good for a quick initial assessment of web services. BlueStick ingests its JSON output.",
     "category": "Web Analysis",
     "ports": "80, 443, 8080, 8443",
@@ -506,6 +534,8 @@
   },
   {
     "name": "nmap",
+    "run_command": "nmap -sV -sC -O -oX scan.xml <target>",
+    "run_note": "Upload scan.xml (-oX). Use -oG for a .gnmap instead.",
     "description": "The standard network exploration and security auditing tool. Discovers hosts and services, detects OS and service versions, and has a powerful scripting engine (NSE) with hundreds of scripts for vulnerability detection and enumeration.",
     "category": "Port Scanning",
     "ports": "All",
@@ -524,6 +554,8 @@
   },
   {
     "name": "nuclei",
+    "run_command": "nuclei -l targets.txt -je nuclei.json",
+    "run_note": "Upload nuclei.json (-je writes the JSON export).",
     "description": "Template-driven scanner used to validate known web exposures and common misconfigurations at scale. Helpful after service detection identifies a technology stack or likely vulnerability class.",
     "category": "Web Analysis",
     "ports": "80, 443, 8080, 8443",
@@ -616,6 +648,8 @@
   },
   {
     "name": "rustscan",
+    "run_command": "rustscan -a <target> -- -sV -oX scan.xml",
+    "run_note": "Pipes into nmap — upload the resulting nmap scan.xml.",
     "description": "Fast port scanner written in Rust that pipes results into nmap for service detection. Scans all 65,535 ports in seconds, then hands off to nmap for version/script scanning on discovered ports.",
     "category": "Port Scanning",
     "ports": "All",
@@ -663,6 +697,8 @@
   },
   {
     "name": "smbmap",
+    "run_command": "smbmap -H <target> | tee smbmap.txt",
+    "run_note": "Upload smbmap.txt — keep the \"[+] <ip>\" host lines.",
     "description": "SMB share enumerator that lists share permissions, finds files matching patterns, and tests access levels. Shows read/write/no-access for each share, making it easy to spot misconfigurations.",
     "category": "SMB / NetBIOS",
     "ports": "139, 445",
@@ -783,6 +819,8 @@
   },
   {
     "name": "subfinder",
+    "run_command": "subfinder -d <domain> -oJ -o subfinder.json",
+    "run_note": "Upload subfinder.json (-oJ) with resolved IPs.",
     "description": "Fast passive subdomain enumeration tool by ProjectDiscovery that aggregates results from many DNS sources. BlueStick ingests its JSON (-oJ) output as DNS records / hosts.",
     "category": "Network Services",
     "ports": "53",
@@ -877,6 +915,8 @@
   },
   {
     "name": "wfuzz",
+    "run_command": "wfuzz -w wordlist.txt -f wfuzz.json,json http://<target>/FUZZ",
+    "run_note": "Upload wfuzz.json (-f … ,json).",
     "description": "Flexible web fuzzer for brute-forcing directories, files, parameters, headers, cookies, and virtual hosts. Useful when a scan suggests hidden application surface beyond simple directory enumeration.",
     "category": "Web Content Discovery",
     "ports": "80, 443, 8080, 8443",
@@ -907,6 +947,8 @@
   },
   {
     "name": "whatweb",
+    "run_command": "whatweb -a 3 --input-file=targets.txt --log-json=whatweb.json --no-errors",
+    "run_note": "Upload whatweb.json (--log-json).",
     "description": "Web technology fingerprinter that identifies content management systems, blogging platforms, JavaScript libraries, web servers, and embedded devices. Can detect version numbers, email addresses, and error messages.",
     "category": "Web Analysis",
     "ports": "80, 443, 8080, 8443",

@@ -117,8 +117,17 @@ describe('ToolActivity', () => {
     expect(chart).toHaveTextContent('Scan uploads 60');
     expect(chart).toHaveTextContent(/Commands recorded\s*1/i);
     expect(screen.queryByText(/None in this window/)).not.toBeInTheDocument();
-    // The Correlate window (now ± 5 min) is inside the week: its band shows.
-    expect(chart.querySelector('.activity-focus-band')).not.toBeNull();
+    // Nothing has been asked, so there is no band: the form's default "now
+    // ± 5 minutes" is a draft, not a question (owner decision 2026-10-10 —
+    // the band used to follow the form's fields).
+    expect(chart.querySelector('.activity-focus-band')).toBeNull();
+    // Asked, its window (now ± 5 min) is inside the week: its band shows.
+    getScansAt.mockResolvedValue(week([]));
+    fireEvent.submit(screen.getByLabelText('Tool').closest('form')!);
+    await waitFor(() => expect(getScansAt).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(
+      screen.getByTestId('activity-histogram').querySelector('.activity-focus-band'),
+    ).not.toBeNull());
   });
 
   it('says which kind is absent when only scans are in the window', async () => {
@@ -306,7 +315,20 @@ describe('ToolActivity', () => {
       expect(getScansAt).not.toHaveBeenCalled();
       expect(getScansBetween).toHaveBeenCalledTimes(1);  // the week snapshot only
       expect(getScansBetween).toHaveBeenCalledWith(expect.objectContaining({ tool: 'nmap' }), expect.any(AbortSignal));
+      // The bare year and the unreadable tolerance go.  The backwards range
+      // was read (the form shows it and says why it is not asked — owner
+      // decision 2026-10-10), so it stays as linked until a question is asked.
+      await waitFor(() => expect(screen.getByTestId('where').textContent).toBe(
+        'from=2026-09-30T00%3A00%3A00.000Z&to=2026-09-29T00%3A00%3A00.000Z&tool=nmap',
+      ));
+      expect(screen.getByRole('alert')).toHaveTextContent('“To” must be later than “From”.');
+    });
+
+    it('half a range in the address is dropped', async () => {
+      renderAt('/tool-activity?from=2026-09-30T00:00:00Z&tool=nmap');
+      await screen.findByTestId('activity-histogram');
       await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('tool=nmap'));
+      expect(screen.queryByRole('alert')).toBeNull();
     });
 
     it('ignores an unreadable timestamp or a tolerance the form does not offer', async () => {

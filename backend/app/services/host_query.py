@@ -528,6 +528,20 @@ def build_filtered_host_query(
 
 
 # ---------------------------------------------------------------------------
+# Bulk selection
+# ---------------------------------------------------------------------------
+
+#: The most hosts "select all matching" resolves (``GET /hosts/ids``) and one
+#: bulk call touches (``/hosts/bulk/*`` answers 413 above it).  Deliberate:
+#: projects reach ~70,000 hosts, and the cap keeps the id list and the write
+#: behind it bounded.  THE one statement of the number — the Hosts list's
+#: answer (``bulk_select_cap``) and ``/hosts/ids`` (``cap``) carry it, so the
+#: page reads it from the server instead of keeping its own copy.  Read it as
+#: ``host_query.BULK_SELECT_CAP`` at the call, never bound to a second name.
+BULK_SELECT_CAP = 5000
+
+
+# ---------------------------------------------------------------------------
 # Sorting
 # ---------------------------------------------------------------------------
 

@@ -51,7 +51,7 @@ import PostureLead from '../components/posture/PostureLead';
 import GrowthCharts from '../components/oversight/GrowthCharts';
 import JudgmentBySeverity from '../components/oversight/JudgmentBySeverity';
 import ShareSummaryDialog from '../components/oversight/ShareSummaryDialog';
-import { timelineSummary } from '../utils/remediation';
+import { REMEDIATION_VERIFICATION_LABEL, timelineSummary } from '../utils/remediation';
 import ProjectMultiSelect from '../components/oversight/ProjectMultiSelect';
 import { Input } from '../components/ui/input';
 import {
@@ -762,6 +762,23 @@ const Oversight: React.FC = () => {
                     {(s.remediation.closed_measured ?? 0) > 0
                       ? `over ${n(s.remediation.closed_measured ?? 0)} reported fixed with both dates`
                       : 'none reported fixed has both dates'}
+                  </PostureMeasure>
+                  {/* Where the contact's record and the assessment disagree —
+                      the list's own two counts (the server's one definition),
+                      each opening the list filtered the same way. */}
+                  <PostureMeasure label={REMEDIATION_VERIFICATION_LABEL.reported_fixed_not_retested}
+                    value={n(s.remediation.reported_fixed_not_retested ?? 0)}
+                    to="/remediation-deadlines?verification=reported_fixed_not_retested"
+                    toLabel="Findings on hosts reported fixed and not retested — view"
+                    info="Findings on hosts their contact reported fixed, where the assessment has not concluded they are remediated.">
+                    {onHosts(s.remediation.reported_fixed_not_retested ?? 0)}
+                  </PostureMeasure>
+                  <PostureMeasure label={REMEDIATION_VERIFICATION_LABEL.remediated_record_open}
+                    value={n(s.remediation.remediated_record_open ?? 0)}
+                    to="/remediation-deadlines?verification=remediated_record_open"
+                    toLabel="Findings on hosts remediated with the record still open — view"
+                    info="Findings on hosts the assessment concluded are remediated, whose remediation record is still open or deferred.">
+                    {onHosts(s.remediation.remediated_record_open ?? 0)}
                   </PostureMeasure>
                 </div>
               </PostureSection>

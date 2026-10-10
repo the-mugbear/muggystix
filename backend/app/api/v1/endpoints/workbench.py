@@ -28,6 +28,7 @@ from app.db.models_auth import User
 from app.db.models_project import Project
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project
+from app.api.params import FindingNeedParam
 # CR4-2 — depend on services, not other routers' handlers.  The composition
 # (and "since last visit") lives in workbench_service (v2.428.0) so the agent
 # read GET /agent/assist/workbench is the same code.
@@ -57,7 +58,8 @@ router = APIRouter()
 
 class MarkSeenRequest(BaseModel):
     # ``SinceLastVisit.as_of`` of the snapshot being acknowledged.  Omitted
-    # (first-visit bootstrap, older clients) means "now".
+    # means "now".  (The first-visit bootstrap is ``GET /workbench``'s own
+    # since v2.476.0.)
     as_of: Optional[datetime] = None
 
 
@@ -110,11 +112,31 @@ def get_workbench(
     Reuses the read-service aggregations so the standalone widgets and the
     workbench cannot drift.  ``since_last_visit`` reflects the durable
     per-user cursor; advance it with ``POST /workbench/seen``.
+
+    The caller's FIRST read of a project starts that cursor (v2.476.0; the
+    page used to send ``POST /workbench/seen`` from an effect for it).  The
+    answer is the one computed against the cursor as it was — ``is_first_visit:
+    true``, no baseline — and the baseline becomes that answer's ``as_of``.
+    Only the first: once a baseline exists a read never moves it (a glance, or
+    the page's once-a-minute re-read of its counts, must not swallow changes
+    nobody acknowledged).  The agents' read (``GET /agent/assist/workbench``)
+    is the same service without this step: an agent never moves a person's
+    cursor.
     """
-    return compute_workbench(
+    answer = compute_workbench(
         db, current_user, project,
         include_investigate=include_investigate, include_rows=include_rows,
     )
+    since = answer.since_last_visit
+    if since.is_first_visit and since.as_of is not None:
+        # Last, after every read: the upsert commits (race-safe across tabs,
+        # and monotonic — a slower twin of this request cannot rewind it).
+        upsert_user_project_cursor(
+            db, OperationsCursor,
+            user_id=current_user.id, project_id=project.id,
+            ts_column="last_viewed_at", ts_value=since.as_of,
+        )
+    return answer
 
 
 # ---------------------------------------------------------------------------
@@ -136,14 +158,8 @@ _PAGE_OFFSET = Query(0, ge=0, description="Rows to skip, in the list's own order
 def get_my_findings(
     limit: int = _PAGE_LIMIT,
     offset: int = _PAGE_OFFSET,
-    need: Optional[Literal["decide", "write"]] = Query(
-        None,
-        description=(
-            "Only this kind of work: decide (under investigation, or a proposal waits "
-            "for a decision) or write (required report text missing, nothing to decide). "
-            "The two add up to the whole list."
-        ),
-    ),
+    # The one declaration, shared with the agents' read of this list.
+    need: FindingNeedParam = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),

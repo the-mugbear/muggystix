@@ -405,6 +405,26 @@ describe('Oversight — remediation deadlines, where the installation tracks the
     expect(screen.getByRole('link', { name: 'By project and by contact' })).toHaveAttribute('href', '/remediation-deadlines');
   });
 
+  it('shows the two gaps between the record and the assessment, each opening its list', async () => {
+    dashboardMock.mockReset().mockResolvedValue({
+      ...tracked,
+      summary: { ...tracked.summary, remediation: {
+        ...tracked.summary.remediation, reported_fixed_not_retested: 1312, remediated_record_open: 4,
+      } },
+    });
+    await renderPage();
+    const notRetested = screen.getByRole('link', { name: 'Findings on hosts reported fixed and not retested — view' });
+    expect(notRetested).toHaveTextContent((1312).toLocaleString());
+    expect(notRetested).toHaveAttribute('href', '/remediation-deadlines?verification=reported_fixed_not_retested');
+    const recordOpen = screen.getByRole('link', { name: 'Findings on hosts remediated with the record still open — view' });
+    expect(recordOpen).toHaveTextContent('4');
+    expect(recordOpen).toHaveAttribute('href', '/remediation-deadlines?verification=remediated_record_open');
+    // The list's own names for the two, and no figure beyond them.
+    expect(screen.getByText('Reported fixed, not retested')).toBeInTheDocument();
+    expect(screen.getByText('Remediated, record still open')).toBeInTheDocument();
+    expect(screen.queryByText(/median/i)).not.toBeInTheDocument();
+  });
+
   it('prints a dash, never a zero, where nothing can be measured', async () => {
     dashboardMock.mockReset().mockResolvedValue({
       ...tracked,

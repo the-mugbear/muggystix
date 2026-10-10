@@ -410,8 +410,15 @@ def test_the_light_call_has_the_full_calls_counts_and_fewer_statements(
         assert full[section]["items"], section
     # A regression guard, not a target: 13 measured for the light call at
     # v2.452.0 (the full one, without the queue, 23).  Bound = measured + 2.
+    # v2.476.0 — 15 measured: one more for ``setup`` (has hosts / has a scope
+    # entry), which replaced the page's whole scope-coverage request; and the
+    # light call here is now the caller's SECOND read (the full one above
+    # started the cursor — its upsert is counted in ``test_workbench.py``), so
+    # it is no longer answered as a first visit: the since-last-visit window
+    # counts changed hosts apart from new ones, and this fixture opens a
+    # SAVEPOINT after the first read's commit.
     assert len(light_statements) < len(full_statements)
-    assert len(light_statements) <= 15, "\n".join(light_statements)
+    assert len(light_statements) <= 17, "\n".join(light_statements)
 
 
 @pytest.mark.parametrize("suffix", ["/findings", "/hosts", "/tests", "/followups"])

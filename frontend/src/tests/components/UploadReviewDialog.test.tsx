@@ -248,4 +248,37 @@ describe('UploadReviewDialog format chooser', () => {
     expect(Array.from(other.querySelectorAll('option')).map((o) => o.textContent)).toEqual(['Nessus (.nessus)']);
     expect(screen.queryByRole('option', { name: 'Nmap XML' })).not.toBeInTheDocument();
   });
+
+  // Owner decision 39: the formats a file of this extension can be come
+  // first; "Show all formats" brings the rest, for the whole dialog.
+  it('offers the formats that match each file first, and all of them after "Show all formats"', async () => {
+    const MIXED = [
+      { file_type: 'nmap_xml', label: 'Nmap XML', family: 'port' },
+      { file_type: 'nessus_xml', label: 'Nessus (.nessus)', family: 'vuln' },
+      { file_type: 'masscan_json', label: 'Masscan JSON', family: 'port' },
+      { file_type: 'nikto_csv', label: 'Nikto CSV', family: 'vuln' },
+    ];
+    api.getJobDetection.mockResolvedValue({
+      ...detectionFor(1, 'x'), candidates: [], primary: null, needs_choice: true, formats: MIXED,
+    });
+    const offered = (name: string) => Array.from(screen.getByLabelText(`Format for ${name}`).querySelectorAll('option'))
+      .map((o) => o.value).filter(Boolean);
+    const { container } = renderDialog();
+    drop(container, ['a.xml', 'b.json', 'c']);
+    await screen.findByLabelText('Format for a.xml');
+    await screen.findByLabelText('Format for b.json');
+    await screen.findByLabelText('Format for c');
+
+    expect(offered('a.xml')).toEqual(['nmap_xml', 'nessus_xml']);
+    expect(offered('b.json')).toEqual(['masscan_json']);
+    // No extension: nothing to put first.
+    expect(offered('c')).toEqual(MIXED.map((f) => f.file_type));
+    // One control per narrowed row; none on the row that shows everything.
+    expect(screen.getAllByRole('button', { name: 'Show all formats' })).toHaveLength(2);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Show all formats' })[0]);
+    expect(offered('a.xml')).toEqual(MIXED.map((f) => f.file_type));
+    expect(offered('b.json')).toEqual(MIXED.map((f) => f.file_type));
+    expect(screen.queryByRole('button', { name: 'Show all formats' })).toBeNull();
+  });
 });

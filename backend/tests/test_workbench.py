@@ -130,7 +130,13 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
     # v2.452.0 — still 24 measured (bound = measured + 2): paging the lists
     # added no statement to this call.  The page's own light call
     # (``include_rows=false``) is bounded in ``test_operations_tabs.py``.
-    assert counter["n"] <= 26, (
+    # v2.476.0 — 27 measured here, 25 on every read after a person's first:
+    # one statement for ``setup`` (has hosts / has a scope entry — it replaced
+    # the page's whole scope-coverage request), and, on the FIRST read only
+    # (this one: the project has no cursor yet), the cursor's upsert and this
+    # fixture's RELEASE SAVEPOINT for its commit — the write the page used to
+    # send as a second request.  Bound = measured + 2.
+    assert counter["n"] <= 29, (
         f"workbench issued {counter['n']} SQL statements:\n" + "\n".join(statements)
     )
 
@@ -356,6 +362,112 @@ def test_seen_is_idempotent_one_row(client, db_session, test_project):
         .all()
     )
     assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# v2.476.0 — the first read by a PERSON starts the cursor (it was a second
+# request the page fired from an effect).  Only the first: after that the
+# cursor moves when they acknowledge, so a glance — or the page's once-a-minute
+# re-read of its counts — never swallows changes nobody looked at.
+# ---------------------------------------------------------------------------
+
+def _cursor(db_session, project_id):
+    db_session.expire_all()
+    return db_session.query(models.OperationsCursor).filter(
+        models.OperationsCursor.project_id == project_id).first()
+
+
+def test_the_first_read_starts_the_cursor_and_is_still_answered_as_a_first_visit(
+    client, db_session, test_project,
+):
+    _make_scan(db_session, test_project.id, "before.xml")
+    _make_host(db_session, test_project.id, "10.9.7.1")
+    assert _cursor(db_session, test_project.id) is None
+
+    first = client.get(_url(test_project.id), params={"include_rows": "false"})
+    assert first.status_code == 200, first.text
+    since = first.json()["since_last_visit"]
+    # Answered against the cursor as it WAS: no baseline, everything is new.
+    assert since["is_first_visit"] is True and since["last_viewed_at"] is None
+    assert since["new_scan_count"] == 1 and since["new_host_count"] == 1
+
+    # …and the baseline is the moment those counts were taken, with no POST.
+    cursor = _cursor(db_session, test_project.id)
+    assert cursor is not None, "the first read left no cursor"
+    assert cursor.last_viewed_at == datetime.fromisoformat(since["as_of"])
+
+    # What arrives afterwards is new against that baseline.
+    _make_scan(db_session, test_project.id, "after.xml",
+               created_at=cursor.last_viewed_at + timedelta(seconds=1))
+    again = client.get(_url(test_project.id)).json()["since_last_visit"]
+    assert again["is_first_visit"] is False
+    assert again["new_scan_count"] == 1 and again["latest_scan_filename"] == "after.xml"
+    assert again["new_host_count"] == 0
+
+
+def test_a_later_read_never_moves_the_cursor(client, db_session, test_project):
+    """Reading is not acknowledging: once there is a baseline, the same change
+    is reported on every read until ``POST /workbench/seen``."""
+    client.get(_url(test_project.id))
+    rewound = _rewind_cursor(db_session, test_project.id)
+    _make_scan(db_session, test_project.id, "unseen.xml", created_at=rewound + timedelta(hours=1))
+
+    for _ in range(3):
+        since = client.get(_url(test_project.id), params={"include_rows": "false"}).json()["since_last_visit"]
+        assert since["is_first_visit"] is False
+        assert since["new_scan_count"] == 1
+    assert _cursor(db_session, test_project.id).last_viewed_at == rewound
+
+    # Acknowledging is still what moves it.
+    client.post(_url(test_project.id, "/seen"), json={"as_of": since["as_of"]})
+    assert client.get(_url(test_project.id)).json()["since_last_visit"]["new_scan_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# v2.476.0 — what the page needs to choose between its setup blocks and the
+# work: whether the project has a host, and a scope entry.  (It read the whole
+# scope-coverage answer for that.)
+# ---------------------------------------------------------------------------
+
+def test_the_workbench_says_whether_the_project_has_hosts_and_scope_entries(client, db_session, test_project):
+    from app.db.models_project import Project
+
+    pid = test_project.id
+    # Another project's host and subnet are not this project's.
+    other = Project(name="Other", slug="other-setup")
+    db_session.add(other)
+    db_session.flush()
+    _make_host(db_session, other.id, "10.9.8.1")
+    other_scope = models.Scope(project_id=other.id, name="theirs")
+    db_session.add(other_scope)
+    db_session.flush()
+    db_session.add(models.Subnet(scope_id=other_scope.id, cidr="10.9.8.0/24"))
+    db_session.commit()
+
+    def setup(**params):
+        r = client.get(_url(pid), params=params)
+        assert r.status_code == 200, r.text
+        return r.json()["setup"]
+
+    assert setup() == {"has_hosts": False, "has_scopes": False, "scope_rows": 0, "only_scope_id": None}
+
+    # The scope ROW every project gets says nothing: an entry does.
+    scope = models.Scope(project_id=pid, name="ours")
+    db_session.add(scope)
+    db_session.commit()
+    assert setup() == {"has_hosts": False, "has_scopes": False, "scope_rows": 1, "only_scope_id": scope.id}
+
+    db_session.add(models.Subnet(scope_id=scope.id, cidr="10.9.9.0/24"))
+    db_session.commit()
+    assert setup() == {"has_hosts": False, "has_scopes": True, "scope_rows": 1, "only_scope_id": scope.id}
+
+    _make_host(db_session, pid, "10.9.9.1")
+    db_session.add(models.Scope(project_id=pid, name="second"))
+    db_session.commit()
+    light = setup(include_rows="false", include_investigate="false")
+    # Two scopes: none is "the" scope.
+    assert light == {"has_hosts": True, "has_scopes": True, "scope_rows": 2, "only_scope_id": None}
+    assert setup() == light
 
 
 def test_workbench_returns_my_recent_authored_notes(client, db_session, test_project, test_user):

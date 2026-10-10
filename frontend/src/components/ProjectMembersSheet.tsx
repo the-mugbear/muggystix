@@ -35,7 +35,7 @@ import {
 import { useConfirm } from '../hooks/useConfirm';
 import { useAuth } from '../contexts/AuthContext';
 import {
-  PROJECT_ROLES, allowMemberChange, countProjectAdmins, memberName, projectRoleLabel,
+  DEFAULT_MEMBER_ROLE, PROJECT_ROLES, allowMemberChange, countProjectAdmins, memberName, projectRoleLabel,
   removalDecision, roleChangeDecision, type MemberChange,
 } from '../utils/projectMembers';
 
@@ -58,7 +58,7 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
   const { user } = useAuth();
   const [confirmDialog, confirm] = useConfirm();
   const [addUserId, setAddUserId] = React.useState<string>('');
-  const [addRole, setAddRole] = React.useState<string>('viewer');
+  const [addRole, setAddRole] = React.useState<string>(DEFAULT_MEMBER_ROLE);
 
   // The project is this sheet's argument (any project on Portfolio), not the
   // one the app is in: the key names the project it was given.
@@ -94,7 +94,7 @@ export const ProjectMembersSheet: React.FC<ProjectMembersSheetProps> = ({
       addProjectMember(projectId as number, body.userId, body.role),
     onSuccess: () => {
       setAddUserId('');
-      setAddRole('viewer');
+      setAddRole(DEFAULT_MEMBER_ROLE);
       toast.success('Member added.');
       return rosterChanged();
     },

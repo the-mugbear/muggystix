@@ -84,7 +84,7 @@ describe('ToolVettingDialog — what it opens on', () => {
     expect(screen.getByLabelText('Ports')).toHaveValue('11601');
     expect(screen.getByLabelText('Install command')).toHaveValue('apt install ligolo-ng');
     expect(screen.getByLabelText('Project URL')).toHaveValue('https://github.com/nicocha30/ligolo-ng');
-    expect(screen.getByText(/rewrite it as documentation/)).toBeInTheDocument();
+    expect(screen.getByText(/Rewrite it as documentation/)).toBeInTheDocument();
     expect(api.updateToolRegistryEntry).not.toHaveBeenCalled();
   });
 
@@ -98,10 +98,28 @@ describe('ToolVettingDialog — what it opens on', () => {
     show(LISTED);
     expect(screen.getByRole('combobox', { name: 'Status' })).toHaveTextContent('In the catalogue');
     expect(screen.queryByText('Why an agent asked for this:')).toBeNull();
-    expect(screen.queryByText(/rewrite it as documentation/)).toBeNull();
+    expect(screen.queryByText(/as documentation/)).toBeNull();
     expect(screen.getByLabelText('Ports')).toHaveValue('');
     expect(screen.getByLabelText('Install command')).toHaveValue('');
     expect(screen.getByLabelText('Project URL')).toHaveValue('');
+  });
+
+  // Owner decision 53: the hint said the field was "prefilled with the agent's
+  // rationale".  It is filled from the row's DESCRIPTION — the fixture's
+  // differs from its rationale, which is shown in the box above.
+  it('the hint under Description says where the text came from: the suggestion’s description, not the rationale', () => {
+    show();
+    expect(screen.getByLabelText('Description')).toHaveValue(SUGGESTED.description);
+    expect(screen.getByLabelText('Description')).not.toHaveValue(SUGGESTED.suggested_rationale);
+    expect(screen.queryByText(/Prefilled with the agent.s rationale/)).toBeNull();
+    expect(screen.getByText(/the description recorded with the agent.s suggestion/)).toBeInTheDocument();
+  });
+
+  it('a suggestion with no description is not said to have been filled in', () => {
+    show(tool({ description: '' }));
+    expect(screen.getByLabelText('Description')).toHaveValue('');
+    expect(screen.queryByText(/recorded with the agent.s suggestion|Prefilled/)).toBeNull();
+    expect(screen.getByText(/this is what the catalogue shows/)).toBeInTheDocument();
   });
 
   it('with no tool, or closed, there is no dialog and nothing is sent', () => {

@@ -237,7 +237,22 @@ export interface InvestigationQueueResponse {
   tier_counts?: number[];
 }
 
+/** Whether the project has anything in it yet (v2.476.0) — what Operations
+ *  chooses between its setup blocks and the work by. */
+export interface ProjectSetup {
+  has_hosts: boolean;
+  /** A scope of the project has at least one subnet ENTRY (the scope row a
+   *  project gets at creation says nothing; a domain alone does not count). */
+  has_scopes: boolean;
+  /** The project's scope rows, with or without entries. */
+  scope_rows: number;
+  /** The scope's id when the project has exactly one; null with none or several. */
+  only_scope_id: number | null;
+}
+
 export interface WorkbenchResponse {
+  /** Project-wide; in the light call too. */
+  setup: ProjectSetup;
   my_queue: MyAttentionResponse;
   my_tasks: MyTasksResponse;
   recent_notes: MyRecentNotesResponse;

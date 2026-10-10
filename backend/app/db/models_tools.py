@@ -77,6 +77,14 @@ class ToolRegistryEntry(Base):
     intrusive = Column(Boolean, nullable=True)
     requires_privileges = Column(Boolean, nullable=True)
     output_format = Column(String(16), nullable=True)
+    # For a tool whose output BlueStick parses: the invocation that writes a
+    # file it can ingest (`<target>` and list files are placeholders), and one
+    # line about what to upload.  Reference text the page offers to copy —
+    # like every column here, never a permission or an instruction to run.
+    # `tests/test_tool_command_consistency.py` pins the seed's commands to the
+    # extensions the parsers accept.
+    run_command = Column(Text, nullable=True)
+    run_note = Column(Text, nullable=True)
 
     # --- engineering ---
     ingestible = Column(Boolean, nullable=False, server_default="false")

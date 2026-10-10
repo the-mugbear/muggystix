@@ -100,6 +100,11 @@ class RemediationCounts(BaseModel):
     # had a deadline.
     closed_late: int = 0
     closed_with_deadline: int = 0
+    # Where the contact's record and the assessor's conclusion disagree
+    # (`remediation_policy.verification_expr`, the list's own
+    # `verification_counts`); each opens the list's `verification=<name>`.
+    reported_fixed_not_retested: int = 0
+    remediated_record_open: int = 0
 
 
 class RemediationSummary(RemediationCounts):
@@ -115,7 +120,8 @@ class RemediationSummary(RemediationCounts):
 _REMEDIATION_SUMS = (*REMEDIATION_STATES, "overdue", "due_soon", "on_track", "not_assigned", "no_deadline",
                      "overdue_critical", "overdue_high", "overdue_medium", "overdue_low", "overdue_info",
                      "overdue_age_1_7", "overdue_age_8_30", "overdue_age_31_90", "overdue_age_90_plus",
-                     "closed_measured", "closed_late", "closed_with_deadline")
+                     "closed_measured", "closed_late", "closed_with_deadline",
+                     *remediation_policy.VERIFICATIONS)
 
 
 def _remediation(c: Dict[str, Any]) -> Dict[str, Any]:

@@ -14,6 +14,7 @@ import { useProjectId } from '../../hooks/useProjectId';
 import { BASIS_LABEL, otherFormats, suggestionOf } from '../../hooks/useUploadReview';
 import { invalidateReads, queryErrorText } from '../../lib/query';
 import { asAxiosError } from '../../utils/apiErrors';
+import { formatChoices } from '../../utils/formatChoices';
 import { INGESTION_JOB_READS } from '../../utils/ingestionReads';
 import { Alert, AlertDescription } from '../ui/alert';
 import { Button } from '../ui/button';
@@ -57,6 +58,8 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
   const projectId = useProjectId();
   const [chosen, setChosen] = useState<string>('');
   const [sourceTool, setSourceTool] = useState('');
+  // "Show all formats": pressed once, it stays for this opening.
+  const [showAllFormats, setShowAllFormats] = useState(false);
 
   // The retained file's detection, read each time the dialog opens.
   const inspection = useQuery({
@@ -115,6 +118,7 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
     if (!open) return;
     setChosen('');
     setSourceTool('');
+    setShowAllFormats(false);
     resetStart();
   }, [open, jobId, resetStart]);
 
@@ -141,6 +145,12 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
   const recognised = !!detection && !detection.needs_choice;
   const suggested = detection ? suggestionOf(detection) : null;
   const formats = detection?.formats ?? fallbackFormats;
+  // The formats a file with this extension can be come first; the rest are
+  // behind "Show all formats".  What detection listed is always shown (its
+  // own group), and so is the format selected now.
+  const others = formatChoices(otherFormats(formats, detection?.candidates), filename, {
+    showAll: showAllFormats, keep: chosen || null,
+  });
   // Without a confident detection there is nothing to "let decide": the
   // operator names the format (or confirms the suggestion) first.
   const canSubmit = !loading && (recognised || chosen !== '') && (!!detection || formats.length > 0);
@@ -230,11 +240,19 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
                     </optgroup>
                   )}
                   <optgroup label={detection && detection.candidates.length > 0 ? 'Other formats' : 'All formats'}>
-                    {otherFormats(formats, detection?.candidates).map((f) => (
+                    {others.shown.map((f) => (
                       <option key={f.file_type} value={f.file_type}>{f.label}</option>
                     ))}
                   </optgroup>
                 </select>
+                {others.hidden > 0 && (
+                  <p className="mt-xxs text-caption text-muted-foreground">
+                    Formats for {others.extension} files.{' '}
+                    <button type="button" className="text-info hover:underline" onClick={() => setShowAllFormats(true)}>
+                      Show all formats
+                    </button>
+                  </p>
+                )}
                 <p className="mt-xxs text-caption text-muted-foreground">
                   A chosen format runs exactly that parser; a wrong choice fails visibly rather than falling back.
                 </p>

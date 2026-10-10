@@ -207,9 +207,8 @@ const SystemSettings: React.FC = () => {
     // confirm_password is a client-only guard against typos — don't send it.
     mutationFn: ({ confirm_password: _confirm, ...payload }: NewUserForm) => registerUser(payload),
     onSuccess: (created) => {
-      // The answer is the account without its 2FA state (`RegisteredUser`):
-      // the row is shown as not enrolled, which a new account is.
-      setUsers((prev) => [...prev, { ...created, created_by_id: currentUser?.id ?? null, totp_enabled: false }]);
+      // The answer is the row the users list returns: it goes in as it is.
+      setUsers((prev) => [...prev, created]);
       setNewUserDialogOpen(false);
       setNewUserForm({ username: '', password: '', confirm_password: '', full_name: '', role: 'member' });
       toast.success('User created.');

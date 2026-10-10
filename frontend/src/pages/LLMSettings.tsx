@@ -99,10 +99,12 @@ const LLMSettings: React.FC = () => {
   });
   const providers: LLMProviderEntry[] = providersQuery.data ?? [];
   const types: LLMProviderTypeOption[] = typesQuery.data ?? [];
-  const loading = providersQuery.isFetching || typesQuery.isFetching;
-  const error = loading
-    ? null
-    : queryErrorText(providersQuery.error ?? typesQuery.error, 'Failed to load LLM providers.');
+  // The skeleton is for the FIRST load only (no providers read yet).  A later
+  // read — after a save, or Retry — keeps the rows on screen; if it fails they
+  // stay, with the failure said above them.
+  const loading = providersQuery.data === undefined && providersQuery.isFetching;
+  const failed = [providersQuery, typesQuery].find((q) => q.isError && !q.isFetching);
+  const error = queryErrorText(failed?.error, 'Failed to load LLM providers.');
   // A failed load is said on the page, where the providers would be, with
   // Retry — never as a toast over "No LLM providers configured yet."  Retry
   // asks again for what failed; providers already read stay beside it.

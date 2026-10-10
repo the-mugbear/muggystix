@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Trash2 } from 'lucide-react';
+import { Loader2, MoreHorizontal, Plus, Trash2 } from 'lucide-react';
 
 import {
   addScopeDomains,
@@ -30,7 +30,7 @@ import {
   TableHeader,
   TableRow,
 } from './ui/table';
-import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
 import { InfoTip } from './ui/info-tip';
 
 /**
@@ -281,21 +281,32 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = 
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{row.name_count.toLocaleString()}</TableCell>
                     <TableCell className="text-right">
+                      {/* Removal is in the row's menu, never an icon on the
+                          row — as the subnet table on the same page (style
+                          guide §47). */}
                       {canEdit && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
                           <Button
                             variant="ghost"
                             size="icon"
-                            aria-label={`Remove ${row.domain} from scope`}
+                            aria-label={`Actions for ${row.domain}`}
                             disabled={deletingId === row.id}
-                            onClick={() => handleDelete(row)}
                           >
-                            <Trash2 className="size-4" aria-hidden />
+                            <MoreHorizontal className="size-4" aria-hidden />
                           </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Remove from scope</TooltipContent>
-                      </Tooltip>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            className="text-destructive focus:text-destructive"
+                            // A tick later: the confirmation must not open while
+                            // the menu is still closing and handing focus back.
+                            onSelect={() => { setTimeout(() => { void handleDelete(row); }, 0); }}
+                          >
+                            <Trash2 className="size-4" aria-hidden /> Remove from scope…
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                       )}
                     </TableCell>
                   </TableRow>

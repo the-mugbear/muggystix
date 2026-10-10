@@ -1333,14 +1333,14 @@ class ReportGenerator:
                 "accuracy": host.os_accuracy,
             },
             "ports": [
-                self._serialize_port_for_export(host.id, port, context)
+                self._serialize_port_for_export(port, context)
                 for port in sorted(
                     list(host.ports or []),
                     key=lambda item: (item.port_number, item.protocol),
                 )
             ],
             "host_scripts": [
-                self._serialize_host_script_for_export(host.id, script)
+                self._serialize_script_for_export(script)
                 for script in sorted(
                     list(host.host_scripts or []),
                     key=lambda item: (item.script_id, item.id),
@@ -1395,12 +1395,11 @@ class ReportGenerator:
 
     def _serialize_port_for_export(
         self,
-        host_id: int,
         port: models.Port,
         context: Dict[str, Any],
     ) -> Dict[str, Any]:
         scripts = [
-            self._serialize_port_script_for_export(host_id, port.port_number, port.protocol, script)
+            self._serialize_script_for_export(script)
             for script in sorted(list(port.scripts or []), key=lambda item: (item.script_id, item.id))
         ]
         return {
@@ -1429,43 +1428,17 @@ class ReportGenerator:
             ],
         }
 
-    def _serialize_port_script_for_export(
-        self,
-        host_id: int,
-        port_number: int,
-        protocol: str,
-        script: models.Script,
-    ) -> Dict[str, Any]:
-        payload = {
+    def _serialize_script_for_export(self, script: Any) -> Dict[str, Any]:
+        """A port's or a host's script: which one, first recorded by which
+        scan, and when.  The record never carried the output, and no longer
+        an ``output_ref`` — a path into the zip bundles retired with "Export
+        hosts", which pointed at nothing (owner decision 2026-10-10)."""
+        return {
             "script_id": script.script_id,
             "scan_id": script.scan_id,
             "first_seen": self._iso(script.first_seen),
             "last_seen": self._iso(script.last_seen),
         }
-        if script.output:
-            # ``output_ref`` named the script's output FILE inside the zip
-            # bundles, which were retired with "Export hosts".  The record
-            # never carried the output itself; the key is kept so the JSON and
-            # ``report-context.ndjson`` are unchanged — it says "this script
-            # had output", it no longer points at anything.
-            payload["output_ref"] = f"artifacts/hosts/{host_id}/ports/{port_number}-{protocol}/{script.script_id}.txt"
-        return payload
-
-    def _serialize_host_script_for_export(
-        self,
-        host_id: int,
-        script: models.HostScript,
-    ) -> Dict[str, Any]:
-        payload = {
-            "script_id": script.script_id,
-            "scan_id": script.scan_id,
-            "first_seen": self._iso(script.first_seen),
-            "last_seen": self._iso(script.last_seen),
-        }
-        if script.output:
-            # See ``_serialize_port_script_for_export``.
-            payload["output_ref"] = f"artifacts/hosts/{host_id}/host_scripts/{script.script_id}.txt"
-        return payload
 
     def _serialize_vulnerability_for_export(self, vuln: Vulnerability) -> Dict[str, Any]:
         references = self._parse_json_list(vuln.references)

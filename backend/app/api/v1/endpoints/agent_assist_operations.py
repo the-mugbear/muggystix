@@ -11,6 +11,7 @@ it).
 
 * ``GET /assist/workbench``            → ``workbench_service.compute_workbench``
 * ``GET /assist/workbench/investigate`` → ``operations_read_service.compute_investigation_queue``
+* ``GET /assist/workbench/findings``   → ``operations_read_service.compute_my_findings``
 * ``GET /assist/workbench/terrain``    → ``address_terrain_service.compute_address_terrain``
 * ``GET /assist/evidence/gaps?domain=`` → ``evidence_service.evidence_gap_hosts``
 * ``GET /assist/scans/compare``        → ``scan_diff_service.compute_scan_diff``
@@ -33,17 +34,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from app.api.deps import check_agent_rate_limit
+from app.api.deps import agent_read_floor, check_agent_rate_limit
+from app.api.params import FindingNeedParam
 from app.api.v1.endpoints.agent_common import load_operator
 from app.db.models_agent import Agent
-from app.db.models_project import Project
+from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
 from app.schemas.pagination import Paginated
 from app.services.address_terrain_service import TerrainBlock, compute_address_terrain
 from app.services.evidence_service import DOMAIN_LABELS, evidence_gap_hosts, evidence_segments
 from app.services.operations_read_service import (
     InvestigationQueueResponse,
+    MyFindingsResponse,
     compute_investigation_queue,
+    compute_my_findings,
 )
 from app.services.scan_diff_service import ScanDiffResponse, ScanNotInProject, compute_scan_diff
 from app.services.scan_snapshot_service import ScanHostSnapshot, scan_host_snapshots
@@ -69,6 +73,18 @@ class AgentTerrainResponse(BaseModel):
     truncated: bool = False
     limited: bool = False
     sort: str = "address"
+
+
+class AgentMyFindingsResponse(MyFindingsResponse):
+    """``GET /workbench/findings`` as the agent receives it: the page's own
+    answer (``items``, ``total_open``, ``need_counts``) plus the paging words
+    every countable agent list carries.  ``total`` is the size of the list
+    THIS call pages — the service's own figure for it (``need_counts[need]``,
+    or ``total_open`` with no ``need``), never a second count."""
+    total: int = 0
+    limit: int = 25
+    offset: int = 0
+    has_more: bool = False
 
 
 class AgentEvidenceGapsResponse(BaseModel):
@@ -181,6 +197,51 @@ def get_assist_investigation_queue(
         logger.exception("investigation queue failed for project %s", project.id)
         db.rollback()
         raise HTTPException(status_code=503, detail="The untouched-hosts queue could not be computed.")
+
+
+@router.get(
+    "/assist/workbench/findings",
+    response_model=AgentMyFindingsResponse,
+    summary="Findings that need the operator, the whole list paged — the Operations 'Findings' tab",
+    # The page (GET /projects/{id}/workbench/findings) asks for membership of
+    # the project and nothing more; so does this.
+    dependencies=[Depends(agent_read_floor(ProjectRole.VIEWER))],
+)
+def get_assist_my_findings(
+    request: Request,
+    need: FindingNeedParam = None,
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0, description="Rows to skip, in the list's own order."),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """Findings the session's OPERATOR owns that need something from them —
+    under investigation, required report text missing, a proposal to decide —
+    each row's ``needs`` saying which, severity first.  The same function, in
+    the same order, as the Operations "Findings" tab; the workbench carries
+    only its first 15 rows.
+
+    ``total`` is the size of the list this call pages (with ``need``, that
+    kind only); ``total_open`` is the whole list and ``need_counts`` its two
+    parts, whatever ``need`` and the page say.  A finding the operator owns
+    that needs nothing from them (confirmed and written up) is not listed.
+    """
+    project = _project(db, request)
+    operator = load_operator(db, request)
+    if operator is None:
+        raise HTTPException(
+            status_code=400,
+            detail="This session has no operator bound; this list is personal to one.",
+        )
+    page = compute_my_findings(db, operator, project, limit=limit, offset=offset, need=need)
+    total = page.need_counts[need] if need else page.total_open
+    return AgentMyFindingsResponse(
+        **page.model_dump(),
+        total=total,
+        limit=limit,
+        offset=offset,
+        has_more=offset + len(page.items) < total,
+    )
 
 
 @router.get(

@@ -60,6 +60,10 @@ class DisableRequest(BaseModel):
     password: str
 
 
+class DisableResponse(BaseModel):
+    disabled: bool
+
+
 def _unused_recovery_count(db: Session, user_id: int) -> int:
     return (
         db.query(UserRecoveryCode)
@@ -182,7 +186,7 @@ def regenerate_recovery_codes(
     return RecoveryCodesResponse(recovery_codes=codes)
 
 
-@router.post("/2fa/disable")
+@router.post("/2fa/disable", response_model=DisableResponse)
 def two_factor_disable(
     body: DisableRequest,
     request: Request,

@@ -563,69 +563,26 @@ def test_small_estate_runs_no_plugin_query_at_all(db_session, test_project):
     assert not [s for s in seen if "vulnerabilities.plugin_id" in s]
 
 
-def _old_top_technologies(db, project_id):
-    """The coverage endpoint's Python bucketing as it stood before R22."""
-    tech_rows = (
-        db.query(models.WebInterface.host_id, models.WebInterface.technologies)
-        .filter(models.WebInterface.project_id == project_id, models.WebInterface.technologies.isnot(None))
-        .all()
-    )
-    sets: dict = {}
-    for host_id, tech_list in tech_rows:
-        if not tech_list:
-            continue
-        for t in tech_list:
-            if not t:
-                continue
-            sets.setdefault(str(t), set()).add(host_id)
-    return sorted(
-        ({"name": name, "host_count": len(hosts)} for name, hosts in sets.items()),
-        key=lambda x: (-x["host_count"], x["name"].lower()),
-    )[:10]
-
-
-def test_coverage_technologies_in_sql_equal_the_python_bucketing(client, db_session, test_project):
+def test_coverage_no_longer_reads_or_returns_technologies(client, db_session, test_project):
+    """R22 grouped the coverage read's "top technologies" in SQL; nothing has
+    read the field since the Scope page dropped "Technologies observed", so
+    the read no longer computes or returns it (owner decision 2026-10-10).
+    The technologies a project runs are the Hosts filter's facet."""
     pid = test_project.id
-    other = _project(db_session, "r22-other")
     scan = _scan(db_session, pid, "httpx")
-    other_scan = _scan(db_session, other.id, "httpx")
-    hosts = [_host(db_session, pid, f"10.22.0.{i}") for i in range(1, 6)]
-
-    def web(host_id, technologies, project_id=pid, scan_id=None, port=80):
-        db_session.add(models.WebInterface(
-            project_id=project_id, host_id=host_id, scan_id=scan_id or scan.id, port=port,
-            url=f"http://{host_id}.example:{port}/", technologies=technologies,
-        ))
-
-    web(hosts[0].id, ["Nginx", "React", "nginx"])
-    web(hosts[0].id, ["Nginx"], port=443)                  # same host twice: one host
-    web(hosts[1].id, ["Nginx", "Bootstrap", "", "Bootstrap"])
-    web(hosts[2].id, ["React", "Zebra", "apache", "Apache"])
-    web(hosts[3].id, [])                                   # empty array
-    web(hosts[4].id, None)                                 # JSON null
-    web(None, ["Nginx", "Orphan"])                         # an interface with no host counts as one
-    for i in range(12):                                    # more than ten names: the cut is exercised
-        web(hosts[i % 3].id, [f"Lib{i:02d}"], port=9000 + i)
-    foreign = _host(db_session, other.id, "10.22.0.1")
-    web(foreign.id, ["Nginx", "OnlyElsewhere"], project_id=other.id, scan_id=other_scan.id)
+    host = _host(db_session, pid, "10.22.0.1")
+    db_session.add(models.WebInterface(
+        project_id=pid, host_id=host.id, scan_id=scan.id, port=80,
+        url="http://10.22.0.1/", technologies=["Nginx", "React"],
+    ))
     db_session.flush()
-
-    expected = _old_top_technologies(db_session, pid)
-    assert expected[0] == {"name": "Nginx", "host_count": 3}
-
-    counts = scopes_endpoint._technology_host_counts(db_session, pid)
-    assert "OnlyElsewhere" not in counts and "" not in counts
-    assert counts["Orphan"] == 1 and counts["Bootstrap"] == 1 and counts["React"] == 2
 
     with statements(db_session) as seen:
         response = client.get(f"/api/v1/projects/{pid}/scopes/coverage")
     assert response.status_code == 200, response.text
-    assert response.json()["top_technologies"] == expected
-    if _is_postgres(db_session):
-        # One grouped statement; the arrays themselves never leave Postgres.
-        tech = [s for s in seen if "web_interfaces" in s and "technologies" in s]
-        assert len(tech) == 1 and "json_array_elements" in tech[0] and "GROUP BY" in tech[0]
-        assert "web_interfaces.technologies" not in tech[0].split("FROM")[0]
+    assert "top_technologies" not in response.json()
+    assert not [s for s in seen if "web_interfaces" in s and "technologies" in s]
+    assert not hasattr(scopes_endpoint, "_technology_host_counts")
 
 
 # ---------------------------------------------------------------------------

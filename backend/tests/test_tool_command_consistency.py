@@ -3,12 +3,15 @@
 `app.services.tool_output_contract.TOOL_OUTPUT_CONTRACT` is the single source of
 truth for which file extensions each recon tool's output must carry to be
 parseable.  Two independent, human-facing copies describe "how to run a tool
-for BlueStick", and they can't share code (a static operator-facing page and a
+for BlueStick", and they can't share code (rows of the tool registry and a
 markdown table).  The backend recon catalog was another until v2.434.0, when
 BlueStick stopped handing agents commands to run, and the agent guide's
 "Supported upload formats" table (source 3) left the guide in v2.433.1:
 
-  2. frontend Tool Reference — ``RUN_COMMANDS`` in ``frontend/src/pages/ToolReference.tsx``
+  2. the tool registry's ``run_command`` — ``app/data/tool_registry_seed.json``
+     (v2.476.0; until then ``RUN_COMMANDS``, a table typed into
+     ``frontend/src/pages/ToolReference.tsx``, which the page now reads from
+     ``GET /references/tools``)
   4. ``documentation/UPLOAD_FORMATS.md`` parser-coverage table
 
 The invariant this test pins: **every output extension any source recommends or
@@ -17,14 +20,14 @@ contract is the permissive superset of valid formats; a source that drifts to an
 extension outside it (i.e. one the parser can't ingest) fails here instead of
 shipping a command whose output silently won't upload.
 
-Both sources live outside the backend image (only ``backend/`` is copied in), so
-run this with the repo root mounted to exercise every check::
+The markdown table lives outside the backend image (only ``backend/`` is copied
+in), so run this with the repo root mounted to exercise every check::
 
     docker compose run --rm --no-deps -v "$PWD:/repo" -w /repo/backend backend \\
         python -m pytest tests/test_tool_command_consistency.py -v
 
-Under the default backend-only mount those files aren't visible and their checks
-skip (never false-fail); the backend-catalog and contract-shape checks always run.
+Under the default backend-only mount that file isn't visible and its check
+skips (never false-fails); the registry and contract-shape checks always run.
 """
 from __future__ import annotations
 
@@ -118,53 +121,44 @@ def test_contract_extensions_are_all_routable():
 # service in v2.434.0 — BlueStick no longer hands agents commands to run.)
 
 
-# --- Source 2: frontend Tool Reference RUN_COMMANDS ------------------------
-_RUN_BLOCK_RE = re.compile(r"RUN_COMMANDS[^=]*=\s*\{(?P<body>.*?)\n\};", re.S)
-# key (optionally quoted) : { run: <'...' | "..."> ...
-_RUN_ENTRY_RE = re.compile(
-    r"""(?P<key>'[\w.\-]+'|"[\w.\-]+"|[\w.\-]+)\s*:\s*\{\s*"""
-    r"""run:\s*(?P<q>['"])(?P<run>(?:\\.|(?!(?P=q)).)*)(?P=q)""",
-    re.S,
-)
+# --- Source 2: the tool registry's run commands -----------------------------
+def _registry_run_commands() -> dict:
+    from app.services.tool_registry_service import load_seed
+
+    return {row["name"]: row["run_command"] for row in load_seed() if row.get("run_command")}
 
 
-def _parse_run_commands(tsx: str) -> dict:
-    block = _RUN_BLOCK_RE.search(tsx)
-    assert block, "Could not locate the RUN_COMMANDS object in ToolReference.tsx"
-    out = {}
-    for m in _RUN_ENTRY_RE.finditer(block.group("body")):
-        key = m.group("key").strip("'\"")
-        run = m.group("run").replace("\\'", "'").replace('\\"', '"').replace("\\\\", "\\")
-        out[key] = run
-    return out
-
-
-def test_frontend_run_commands_match_contract():
-    tsx = _read("frontend/src/pages/ToolReference.tsx")
-    if tsx is None:
-        pytest.skip("frontend source not mounted — run with the repo root mounted")
-    run_commands = _parse_run_commands(tsx)
-    assert run_commands, "parsed zero RUN_COMMANDS entries — regex drifted?"
+def test_registry_run_commands_match_contract():
+    run_commands = _registry_run_commands()
+    assert len(run_commands) >= 20, "the seed carries almost no run commands — was a key renamed?"
     for tool, run in run_commands.items():
         assert tool in TOOL_OUTPUT_CONTRACT, (
-            f"ToolReference RUN_COMMANDS['{tool}'] has no contract entry"
+            f"the registry's run command for '{tool}' has no contract entry"
         )
         exts = accepted_extensions(tool)
         cmd_ext = output_extension(run)
         if writes_output_file(tool):
             assert cmd_ext is not None, (
-                f"RUN_COMMANDS['{tool}']: no recognised output-file flag in the run "
+                f"run_command of '{tool}': no recognised output-file flag in the run "
                 f"command — an unparseable output form would ship undetected.\n  run: {run}"
             )
             assert cmd_ext in exts, (
-                f"RUN_COMMANDS['{tool}'] writes .{cmd_ext}, not in contract {exts}\n"
+                f"run_command of '{tool}' writes .{cmd_ext}, not in contract {exts}\n"
                 f"  run: {run}"
             )
         elif cmd_ext is not None:
             assert cmd_ext in exts, (
-                f"RUN_COMMANDS['{tool}'] writes .{cmd_ext}, not in contract {exts}\n"
+                f"run_command of '{tool}' writes .{cmd_ext}, not in contract {exts}\n"
                 f"  run: {run}"
             )
+
+
+def test_the_reference_page_keeps_no_run_commands_of_its_own():
+    """One owner: the page renders the registry row's `run_command`."""
+    tsx = _read("frontend/src/pages/ToolReference.tsx")
+    if tsx is None:
+        pytest.skip("frontend source not mounted — run with the repo root mounted")
+    assert "RUN_COMMANDS" not in tsx
 
 
 # --- (Source 3 was the agent guide's "Supported upload formats" table.  The

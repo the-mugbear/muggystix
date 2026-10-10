@@ -158,6 +158,7 @@ Largely done. This is the stage the surface was originally built for.
 | Who was told about a finding on a host, and where the fix stands | `remediation_list` (one row per finding on a host: contact, date notified, `status` open / closed / deferred and the date it was reported fixed — the client's progress, not the assessor's status: `closed` is said "reported fixed", the endpoint's `remediated` "remediated", and where the two disagree the row's `verification` says so (`reported_fixed_not_retested` / `remediated_record_open`; `verification_counts`, `verification=` lists one — the page's "Reported fixed, not retested" and "Remediated, record still open") — and, since 2.461.0, where it stands against its deadline: `state`, `due_on`, `days_left`, `closed_days_late`, `last_follow_up_on`; `state=` / `severity=` filter, `group=due` orders by deadline; since 2.462.0 each row's `team` (`team=` filters, `group=team` orders by it) and, over the selection, `severity_counts` (overdue and due soon per severity), `overdue_ages` (overdue rows 1-7 / 8-30 / 31-90 / 90+ days past the deadline; `overdue_band=` lists one band) and `not_followed_up` (at-risk rows with no follow-up recorded in `not_followed_up_days`; `no_follow_up_days=` lists them) — the numbers above the list on the Remediation page), `remediation_contacts` (each contact's counts by state, the most overdue first), `remediation_teams` (the same per team — the page's "By team" view; `team: null` is the rows with a contact and no team), `remediation_trend` (`days=` 7–730 — the page's "Over time" section: counts by deadline state per recorded day, an unrecorded day absent rather than zero, and closed on time / late / with no deadline per month), `remediation_follow_up` (`contact_email=` — that contact's overdue and due-soon rows and a plain-text message for the operator to send; the server sends nothing), `remediation_timeline` (`host_id=`). Auditor floor, as on the Remediation page. Since 2.468.0 the list also takes `q` (finding title, host address or name) and `flag` (`deferral_review_due` / `deadline_overridden`, counted in `flag_counts`), each row carries `policy_due_on`, `due_override_on`, `deadline_source`, `deferred_review_on` and `deferral_review_due` (`due_on` stays the deadline in force), `remediated_record_open` needs a record to exist, and `remediation_follow_up` takes `upcoming_days` (deadlines coming up; the message is grouped by project). Writes (`remediation_apply` — a deferral needs `deferred_review_on` and a note, a hand-set `due_override_on` a note —, `remediation_assign_from_report` — start the clock from an issued report, dry run first —, `remediation_add_note`, `remediation_record_follow_up` — only after the operator says the message was sent) need an operator who is a project admin. The feature is per installation: where it is off, every one of these answers 404 "not enabled on this installation". The deadline is the server's (assigned date + the installation's days for the severity); the cross-project "Remediation deadlines" page has no agent read. | **have** (2.457.0; deadlines and follow-up 2.461.0; teams, breakdowns and trend 2.462.0) |
 | What values this project uses | `assist_get_vocabulary` | **have** |
 | How this installation wants report text written | `assist_get_writing_guidance` (also `writing_guidance` on `assist_get_finding`) | **have** (2.470.0) |
+| Which findings are waiting on my operator — all of them, by kind | `assist_list_my_findings` (`need=decide\|write`; `total`) | **have** (2.476.0) |
 | Named assets (FQDNs), whether they are in scope, and what they resolve to | `assist_list_names` | **have** |
 | Which uploads failed to parse | `assist_list_ingestion_issues` | **have** (2.297.0) |
 | What a host is actually serving on the web | `assist_get_host` → `web_interfaces` | **have** (2.297.0) |
@@ -411,6 +412,21 @@ up to `findings_needing_me`; a finding with a decision AND missing text is a
 is still returned; an agent asked "what is waiting on me?" answers by kind.
 The page's `GET /workbench/findings?need=decide|write` has no agent twin — the
 gap above stands.
+
+**The gap closed (v2.476.0, prompt 4.21.0): `assist_list_my_findings`** — `GET
+/agent/assist/workbench/findings`, the Operations "Findings" tab as a whole
+list. By rule 3 it is the page's own function
+(`operations_read_service.compute_my_findings`), keyed to the session's
+operator, at the page's role (any member; declared on the route), paged with
+`limit` / `offset` in the page's order. It answers the page's body (`items`,
+`total_open`, `need_counts`) plus `total` — the size of the list THIS call
+pages, i.e. `need_counts[need]`, or `total_open` with no `need` — and `limit`,
+`offset`, `has_more`. `need=decide|write` is the page's parameter, and a value
+neither understands is a 422 on both doors.
+`tests/test_agent_assist_operations.py` pins rows, order and totals to the
+page's for each `need`, with fixtures larger than a page and than the
+workbench's preview. `assist_get_workbench` still carries the 15-row preview;
+its description now names this tool for the whole list.
 
 **Payload follow-ups from acceptance feedback #23/#24 (v2.433.0, prompt 3.0.0)**
 — fields, not tools: a finding comment in `assist_get_finding` carries

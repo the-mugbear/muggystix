@@ -38,6 +38,7 @@ from app.db.models_host_tests import HostTest, ACTIVE_TEST_STATUSES, TESTED_OUTC
 from app.db.models_proposals import EvidenceRecord
 from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options  # CR4-2
 from app.services.note_attachment_service import require_readable_file
+from app.services import host_query
 from app.services import host_query_predicates as P
 from app.services.scan_time import scan_time_for_api
 from app.schemas.schemas import (
@@ -724,6 +725,9 @@ def get_hosts_v2(
         "items": serialized_hosts,
         "total": total,
         "project_total": project_total,
+        # What "select all matching" would reach, stated with the count it
+        # is compared against (the bulk bar reads both from this answer).
+        "bulk_select_cap": host_query.BULK_SELECT_CAP,
         "skip": skip,
         "limit": limit,
         "sort_by": sort_by,
@@ -736,12 +740,9 @@ class HostIdsResponse(BaseModel):
     ids: List[int]
     total: int
     capped: bool = False
-
-
-# Upper bound on ids returned for a bulk "select all matching" — keeps the
-# response (and any follow-up bulk mutation) bounded.  Mirrored as the
-# per-call cap in the bulk endpoints.
-_BULK_SELECT_CAP = 5000
+    #: The most ids this route returns (``host_query.BULK_SELECT_CAP``) — the
+    #: cap that was applied, whether or not it cut this answer.
+    cap: int
 
 
 @router.get(
@@ -761,8 +762,11 @@ def get_matching_host_ids(
     client sends the same filter params it uses for the list, gets back
     the full id set (up to the cap), then hands those ids to a bulk
     endpoint.  Returns only ids — no per-host payload — so it stays cheap
-    even for large result sets.
+    even for large result sets.  ``cap`` is the bound that was applied
+    (v2.476.0; the list's answer states the same number as
+    ``bulk_select_cap``, so the page can say "the first N of M" up front).
     """
+    cap = host_query.BULK_SELECT_CAP
     query = _build_filtered_host_query(
         db, current_user,
         **filters.as_builder_kwargs(),
@@ -774,11 +778,11 @@ def get_matching_host_ids(
     rows = (
         query.with_entities(models.Host.id)
         .order_by(models.Host.id)
-        .limit(_BULK_SELECT_CAP)
+        .limit(cap)
         .all()
     )
     ids = [r[0] for r in rows]
-    return HostIdsResponse(ids=ids, total=total, capped=total > len(ids))
+    return HostIdsResponse(ids=ids, total=total, capped=total > len(ids), cap=cap)
 
 
 # The state boxes in the Hosts endpoint editor (open / closed / filtered, or

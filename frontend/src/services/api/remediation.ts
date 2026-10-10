@@ -480,6 +480,12 @@ export const addRemediationNote = async (
 ): Promise<RemediationEvent> =>
   (await api.post<RemediationEvent>(`${base(projectId, mount)}/remediation/events`, body)).data;
 
+/** Edit a note you wrote (its author only, as for removing it). */
+export const updateRemediationNote = async (
+  projectId: number, eventId: number, body: { body: string }, mount?: RemediationMount,
+): Promise<RemediationEvent> =>
+  (await api.patch<RemediationEvent>(`${base(projectId, mount)}/remediation/events/${eventId}`, body)).data;
+
 export const deleteRemediationNote = async (
   projectId: number, eventId: number, mount?: RemediationMount,
 ): Promise<void> => {

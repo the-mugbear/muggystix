@@ -138,4 +138,88 @@ describe('FormatRetryDialog format chooser', () => {
     const other = select.querySelector('optgroup[label="Other formats"]') as HTMLElement;
     expect(Array.from(other.querySelectorAll('option')).map((o) => o.value)).toEqual(['amass_output']);
   });
+
+  // Owner decision 39: the formats a file of this extension can be come
+  // first; the rest are one click away, and stay for this opening.
+  describe('offers the formats that match the file first', () => {
+    const MIXED = [
+      { file_type: 'nmap_xml', label: 'Nmap XML', family: 'port' },
+      { file_type: 'nessus_xml', label: 'Nessus (.nessus)', family: 'vuln' },
+      { file_type: 'masscan_json', label: 'Masscan JSON', family: 'port' },
+      { file_type: 'nikto_csv', label: 'Nikto CSV', family: 'vuln' },
+      { file_type: 'naabu_output', label: 'Naabu host:port text', family: 'port' },
+    ];
+    const unrecognised = { ...detection, filename: 'sweep.xml', candidates: [], primary: null, reason: null, formats: MIXED };
+    const offered = () => Array.from(screen.getByLabelText('Parse as').querySelectorAll('option'))
+      .map((o) => o.value).filter(Boolean);
+    const showAll = () => screen.queryByRole('button', { name: 'Show all formats' });
+    const show = (filename: string) =>
+      render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename={filename} mode="retry" />);
+
+    it('an .xml file is offered the XML formats; "Show all formats" brings the rest, once', async () => {
+      api.getJobDetection.mockResolvedValue(unrecognised);
+      show('sweep.xml');
+      await screen.findByLabelText('Parse as');
+      expect(offered()).toEqual(['nmap_xml', 'nessus_xml']);
+      expect(screen.getByText(/Formats for \.xml files/)).toBeInTheDocument();
+
+      fireEvent.click(showAll() as HTMLElement);
+      expect(offered()).toEqual(MIXED.map((f) => f.file_type));
+      expect(showAll()).toBeNull();
+      // It stays open while the dialog is used.
+      fireEvent.change(screen.getByLabelText('Parse as'), { target: { value: 'nikto_csv' } });
+      fireEvent.change(screen.getByLabelText('Parse as'), { target: { value: '' } });
+      expect(offered()).toEqual(MIXED.map((f) => f.file_type));
+    });
+
+    it('a file with no extension, or an unknown one, is offered every format and no "Show all"', async () => {
+      api.getJobDetection.mockResolvedValue(unrecognised);
+      const first = show('sweep');
+      await screen.findByLabelText('Parse as');
+      expect(offered()).toEqual(MIXED.map((f) => f.file_type));
+      expect(showAll()).toBeNull();
+      first.unmount();
+
+      show('sweep.log');
+      await screen.findByLabelText('Parse as');
+      expect(offered()).toEqual(MIXED.map((f) => f.file_type));
+      expect(showAll()).toBeNull();
+    });
+
+    it('a detected candidate of another kind is still listed, and the selected format is never held back', async () => {
+      api.getJobDetection.mockResolvedValue({
+        ...unrecognised,
+        candidates: [{ file_type: 'masscan_json', label: 'Masscan JSON', basis: 'filename', rank: 0 }],
+        primary: 'masscan_json',
+      });
+      show('sweep.xml');
+      await screen.findByLabelText('Parse as');
+      expect(offered()).toEqual(['masscan_json', 'nmap_xml', 'nessus_xml']);
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm suggested format' }));
+      expect(screen.getByLabelText('Parse as')).toHaveValue('masscan_json');
+    });
+
+    it('the list used when inspection failed is narrowed the same way', async () => {
+      api.getJobDetection.mockRejectedValue({ response: { status: 500, data: { detail: 'inspection failed' } } });
+      api.getUploadFormats.mockResolvedValue(MIXED);
+      show('sweep.xml');
+      await screen.findByLabelText('Parse as');
+      expect(offered()).toEqual(['nmap_xml', 'nessus_xml']);
+      fireEvent.click(showAll() as HTMLElement);
+      expect(offered()).toEqual(MIXED.map((f) => f.file_type));
+    });
+
+    it('each opening starts narrowed again', async () => {
+      api.getJobDetection.mockResolvedValue(unrecognised);
+      const view = show('sweep.xml');
+      await screen.findByLabelText('Parse as');
+      fireEvent.click(showAll() as HTMLElement);
+      expect(offered()).toHaveLength(MIXED.length);
+
+      view.rerender(<FormatRetryDialog open={false} onOpenChange={() => {}} jobId={9} filename="sweep.xml" mode="retry" />);
+      view.rerender(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="sweep.xml" mode="retry" />);
+      await screen.findByLabelText('Parse as');
+      await waitFor(() => expect(offered()).toEqual(['nmap_xml', 'nessus_xml']));
+    });
+  });
 });

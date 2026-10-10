@@ -386,7 +386,9 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
 
   // §9 review-completion dialog (opened by "Mark reviewed").
   const [reviewCompletionOpen, setReviewCompletionOpen] = useState(false);
-  const [reviewConclusion, setReviewConclusion] = useState<ReviewConclusion>('no_issue');
+  // No conclusion until the reviewer chooses one (owner decision 2026-10-10):
+  // a preselected "No actionable issue" was recorded by one unthinking click.
+  const [reviewConclusion, setReviewConclusion] = useState<ReviewConclusion | null>(null);
   const [reviewSummaryText, setReviewSummaryText] = useState('');
   // v2.43.0 — MONO-2: thread grouping for <NoteThread>.  MUST live above
   // the conditional early returns (loading / !host) so the hook count is
@@ -733,7 +735,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   };
 
   const openReviewCompletion = () => {
-    setReviewConclusion('no_issue');
+    setReviewConclusion(null);
     setReviewSummaryText('');
     setReviewCompletionOpen(true);
   };
@@ -742,6 +744,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   // chrome.  Only after the save succeeded: a failed save must not carry the
   // operator away from the host whose conclusion was lost.
   const submitReviewCompletion = (advance = false) => {
+    if (reviewConclusion == null) return;
     setReviewCompletionOpen(false);
     updateFollow('reviewed', {
       review_conclusion: reviewConclusion,
@@ -1872,8 +1875,8 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
           <div className="space-y-sm">
             <div>
               <Label htmlFor="review-conclusion" className="text-caption">Conclusion</Label>
-              <Select value={reviewConclusion} onValueChange={(v) => setReviewConclusion(v as ReviewConclusion)}>
-                <SelectTrigger id="review-conclusion"><SelectValue /></SelectTrigger>
+              <Select value={reviewConclusion ?? ''} onValueChange={(v) => setReviewConclusion(v as ReviewConclusion)}>
+                <SelectTrigger id="review-conclusion"><SelectValue placeholder="Choose a conclusion" /></SelectTrigger>
                 <SelectContent>
                   {REVIEW_CONCLUSION_ORDER.map((c) => (
                     <SelectItem key={c} value={c}>{REVIEW_CONCLUSION_LABEL[c]}</SelectItem>
@@ -1896,14 +1899,14 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
             <Button variant="outline" onClick={() => setReviewCompletionOpen(false)}>Cancel</Button>
             <Button
               variant={onNextUnreviewed ? 'outline' : 'default'}
-              disabled={followLoading}
+              disabled={followLoading || reviewConclusion == null}
               onClick={() => submitReviewCompletion(false)}
             >
               <CheckCircle2 className="size-3.5" aria-hidden /> Mark reviewed
             </Button>
             {/* Only inside a queue (the Hosts side sheet passes the step). */}
             {onNextUnreviewed && (
-              <Button disabled={followLoading} onClick={() => submitReviewCompletion(true)}>
+              <Button disabled={followLoading || reviewConclusion == null} onClick={() => submitReviewCompletion(true)}>
                 <CheckCircle2 className="size-3.5" aria-hidden /> Save and next unreviewed
               </Button>
             )}

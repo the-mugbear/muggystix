@@ -55,15 +55,22 @@ const WebhookSettings: React.FC = () => {
   });
   const webhooks: WebhookConfig[] = hooksQuery.data ?? [];
   const eventTypes: WebhookEventType[] = typesQuery.data ?? [];
-  const loading = hooksQuery.isFetching || typesQuery.isFetching;
-  const error = loading ? null : queryErrorText(hooksQuery.error ?? typesQuery.error, 'Failed to load webhooks.');
   // A list that could not be read is not an empty one: "No webhooks
   // configured." is said only of a list that was read.
   const listUnread = hooksQuery.data === undefined;
-  const retry = () => {
-    if (hooksQuery.isError) void hooksQuery.refetch();
-    if (typesQuery.isError) void typesQuery.refetch();
-  };
+  // The loading line is for the FIRST load only.  A later read (after a
+  // webhook is created, or Retry) keeps the rows; if it fails they stay, with
+  // the failure said above them.
+  const loading = listUnread && hooksQuery.isFetching;
+  // Two reads, two failures, each named for what it is: the event types
+  // failing is not "the webhooks could not be loaded" over a list that was.
+  const listError = hooksQuery.isFetching
+    ? null
+    : queryErrorText(hooksQuery.error, 'The webhooks could not be loaded.');
+  const typesReason = typesQuery.error && !typesQuery.isFetching ? formatApiError(typesQuery.error, '') : null;
+  const typesError = typesReason == null
+    ? null
+    : `The event types could not be loaded${typesReason ? `: ${typesReason}` : '.'}`;
   /** Patch the list in place with what a write is known to have done. */
   const setWebhooks = (update: (prev: WebhookConfig[]) => WebhookConfig[]) => {
     queryClient.setQueryData<WebhookConfig[]>(['listWebhooks', projectId], (prev) => (prev ? update(prev) : prev));
@@ -182,10 +189,16 @@ const WebhookSettings: React.FC = () => {
           (<code className="text-caption">X-BlueStick-Signature</code>, HMAC-SHA256).
         </p>
 
-        {error && (
+        {listError && (
           <p role="alert" className="mb-sm break-words text-metadata text-destructive">
-            {error}{' '}
-            <button type="button" className="text-info hover:underline" onClick={retry}>Retry</button>
+            {listError}{' '}
+            <button type="button" className="text-info hover:underline" onClick={() => void hooksQuery.refetch()}>Retry</button>
+          </p>
+        )}
+        {typesError && (
+          <p role="alert" className="mb-sm break-words text-metadata text-destructive">
+            {typesError}{' '}
+            <button type="button" className="text-info hover:underline" onClick={() => void typesQuery.refetch()}>Retry</button>
           </p>
         )}
 

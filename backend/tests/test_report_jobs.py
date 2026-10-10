@@ -141,9 +141,9 @@ def test_the_json_covers_every_host_across_chunks(db_session, test_project, test
         assert done.status == "completed", done.error_message
         return done
 
-    host_id = host.id
     done = run("json")
-    payload = json.loads(Path(done.result_path).read_bytes())
+    done_text = Path(done.result_path).read_text()
+    payload = json.loads(done_text)
     assert [h["identity"]["ip_address"] for h in payload["hosts"]] == [f"10.0.1.{i}" for i in range(1, 6)]
     assert payload["summary"]["total_hosts"] == 5
     assert payload["summary"]["total_open_ports"] == 5
@@ -158,11 +158,13 @@ def test_the_json_covers_every_host_across_chunks(db_session, test_project, test
     ))
     roundtrip = lambda v: json.loads(json.dumps(v, default=str))  # noqa: E731
     assert payload["hosts"] == roundtrip(whole)
-    # A script's output is not in the record; ``output_ref`` says it had one.
+    # A script's record is which script, from which scan, and when: neither
+    # its output nor ``output_ref``, a path into a zip bundle that is no
+    # longer written (owner decision 2026-10-10).
     (script,) = payload["hosts"][-1]["host_scripts"]
+    assert set(script) == {"script_id", "scan_id", "first_seen", "last_seen"}
     assert script["script_id"] == "smb-os-discovery"
-    assert script["output_ref"] == f"artifacts/hosts/{host_id}/host_scripts/smb-os-discovery.txt"
-    assert "output" not in script
+    assert "output_ref" not in done_text and "artifacts/hosts" not in done_text
     service._remove_artifact(done)
 
     # ``inventory`` is the hosts alone: no project-wide roll-ups.

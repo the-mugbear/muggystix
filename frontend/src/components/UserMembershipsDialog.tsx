@@ -67,7 +67,7 @@ import {
 } from './ui/tooltip';
 import { useConfirm } from '../hooks/useConfirm';
 import {
-  PROJECT_ROLES, allowMemberChange, countProjectAdmins, memberName, projectRoleLabel,
+  DEFAULT_MEMBER_ROLE, PROJECT_ROLES, allowMemberChange, countProjectAdmins, memberName, projectRoleLabel,
   removalDecision, roleChangeDecision, type MemberChange,
 } from '../utils/projectMembers';
 
@@ -110,7 +110,7 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
   const [confirmEl, confirm] = useConfirm();
   const queryClient = useQueryClient();
   const [addPickerProjectId, setAddPickerProjectId] = useState<string>('');
-  const [addPickerRole, setAddPickerRole] = useState<string>('viewer');
+  const [addPickerRole, setAddPickerRole] = useState<string>(DEFAULT_MEMBER_ROLE);
   const userId = user?.id ?? null;
 
   // Both lists belong to the open dialog: asked for when it opens on a user,
@@ -141,7 +141,7 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
   useEffect(() => {
     if (userId == null) {
       setAddPickerProjectId('');
-      setAddPickerRole('viewer');
+      setAddPickerRole(DEFAULT_MEMBER_ROLE);
     }
   }, [userId]);
 
@@ -239,7 +239,7 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
         `Added ${user?.username} to ${project?.name ?? `project ${projectId}`} as ${role}.`,
       );
       setAddPickerProjectId('');
-      setAddPickerRole('viewer');
+      setAddPickerRole(DEFAULT_MEMBER_ROLE);
       return membershipsChanged();
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to add user to project.')),

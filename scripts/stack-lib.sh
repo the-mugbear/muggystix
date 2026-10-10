@@ -266,6 +266,7 @@ TUNABLE_SETTINGS=(
     "BACKEND_MEM_LIMIT|API container memory limit"
     "WORKER_MEM_LIMIT|import worker memory limit (raise for Nessus files over 2 GB)"
     "REPORT_WORKER_MEM_LIMIT|report worker memory limit"
+    "FRONTEND_MEM_LIMIT|web server (nginx) memory limit"
     "Database (PostgreSQL)"
     "PG_SHARED_BUFFERS|Postgres cache; about a quarter of the host's RAM on a dedicated host"
     "PG_EFFECTIVE_CACHE_SIZE|what the planner assumes the OS caches"

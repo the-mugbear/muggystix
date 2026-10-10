@@ -26,10 +26,6 @@ export interface UserAccount {
   totp_enabled: boolean;
 }
 
-/** What `POST /auth/register` answers (the server's `UserProfile`): the new
- *  account WITHOUT `created_by_id`, `totp_enabled` or `email`. */
-export type RegisteredUser = Omit<UserAccount, 'email' | 'created_by_id' | 'totp_enabled'>;
-
 export interface RegisterUserPayload {
   username: string;
   password: string;
@@ -66,8 +62,9 @@ export const listUsers = async (signal?: AbortSignal): Promise<UserAccount[]> =>
   return response.data;
 };
 
-export const registerUser = async (payload: RegisterUserPayload): Promise<RegisteredUser> => {
-  const response = await api.post<RegisteredUser>('/auth/register', payload);
+/** Answers the new account as a row of `listUsers` (the same `UserListItem`). */
+export const registerUser = async (payload: RegisterUserPayload): Promise<UserAccount> => {
+  const response = await api.post<UserAccount>('/auth/register', payload);
   return response.data;
 };
 

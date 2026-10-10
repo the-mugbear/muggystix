@@ -603,9 +603,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "mine=true active_only=true; tests on hosts in review = host_tests_list "
             "q='follow:mine' active_only=true (every test to do on those hosts — "
             "group_counts.in_review leaves out the ones assigned to the operator, "
-            "which it counts under assigned). Findings that need the operator have "
-            "no whole-list read beyond this preview (assist_list_findings owner=me "
-            "lists every finding they own, needing them or not). Each my_tasks row "
+            "which it counts under assigned); findings that need the operator = "
+            "assist_list_my_findings (assist_list_findings owner=me lists every "
+            "finding they own, needing them or not). Each my_tasks row "
             "carries its tool. "
             "blockers.failed_import_count counts failed imports nobody has "
             "dismissed and no later clean import superseded, so it is smaller "
@@ -634,6 +634,27 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/workbench/investigate",
+    },
+    # v2.476.0 — the Operations "Findings" tab as a whole list
+    # (operations_read_service.compute_my_findings, the page's own function).
+    "assist_list_my_findings": {
+        "description": (
+            "Every finding your OPERATOR owns that needs something from them — the "
+            "Operations 'Findings' tab, whole and paged; assist_get_workbench "
+            "carries only its first 15 rows. Each row's needs says why it is "
+            "listed (under investigation, required report text missing, a "
+            "proposal to decide), severity first. need=decide is under "
+            "investigation or a proposal waiting; need=write is only report text "
+            "missing; the two never overlap and add up to the list. total is the "
+            "size of the list this call pages — answer 'how many' with it (or "
+            "need_counts / total_open, which describe the whole list whatever "
+            "need says), never with the number of rows on a page. A finding they "
+            "own that needs nothing (confirmed and written up) is not here: "
+            "assist_list_findings owner=me lists those too. Personal to the "
+            "operator — a teammate's findings are not in it."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/workbench/findings",
     },
     "assist_get_terrain": {
         "description": (

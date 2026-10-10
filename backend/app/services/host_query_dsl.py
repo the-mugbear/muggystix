@@ -372,13 +372,14 @@ _HAS_KEYWORDS = {
     "notes": (lambda ctx: P.has_notes_predicate(),
               "Has an analyst note (on the host or one of its ports)."),
     "exploit": (lambda ctx: P.has_exploit_predicate(),
-                "Has a finding flagged exploitable by a vulnerability scanner (currently Nessus)."),
+                "Has a scanner observation flagged exploitable by a vulnerability scanner "
+                "(currently Nessus)."),
     # v2.429.1 — severity and exploit on the SAME row ("has:critical AND
     # has:exploit" pairs them anywhere on the host).
     "critical_exploit": (lambda ctx: P.critical_exploit_predicate(),
-                         "Has a CRITICAL finding that is itself flagged exploitable — the "
-                         "Hosts page's \"critical · exploit\". has:critical AND has:exploit is "
-                         "wider: the exploit may be on a lower-severity finding."),
+                         "Has a CRITICAL scanner observation that is itself flagged exploitable — "
+                         "the Hosts page's \"critical · exploit\". has:critical AND has:exploit is "
+                         "wider: the exploit may be on a lower-severity observation."),
     "tested": (lambda ctx: P.has_test_execution_predicate(ctx.project_id),
                "Tested: has an evidence record with outcome finding, no_finding or inconclusive."),
     "planned": (lambda ctx: P.has_plan_entry_predicate(ctx.project_id),
@@ -389,13 +390,13 @@ _HAS_KEYWORDS = {
     "open_ports": (lambda ctx: P.has_open_ports_predicate(ctx.db),
                    "Has at least one open port."),
     "critical": (lambda ctx: P.severity_predicate(["CRITICAL"]),
-                 "Has a critical-severity finding."),
+                 "Has a critical-severity scanner observation."),
     "high": (lambda ctx: P.severity_predicate(["HIGH"]),
-             "Has a high-severity finding."),
+             "Has a high-severity scanner observation."),
     "medium": (lambda ctx: P.severity_predicate(["MEDIUM"]),
-               "Has a medium-severity finding."),
+               "Has a medium-severity scanner observation."),
     "low": (lambda ctx: P.severity_predicate(["LOW"]),
-            "Has a low-severity finding."),
+            "Has a low-severity scanner observation."),
     # Systemic-weakness family — the drill-down targets for Systemic / Subnet
     # Insights (these resolve the same hosts those views count).
     "eol": (lambda ctx: P.eol_os_predicate(ctx.db, ctx.project_id, ctx.only_host_ids),
@@ -790,9 +791,9 @@ _FIELD_SPECS: List[FieldSpec] = [
               description="Derived boolean flag — takes one of the values below.",
               enum_descriptions={k: _HAS_KEYWORDS[k][1] for k in _HAS_KEYWORDS}),
     FieldSpec("cve", lambda c, v: P.cve_predicate(v), trgm=True, value_source="cve",
-              description="A finding’s CVE id (substring) — Nessus, OpenVAS, Nikto."),
+              description="A scanner observation’s CVE id (substring) — Nessus, OpenVAS, Nikto."),
     FieldSpec("vuln", lambda c, v: P.vuln_predicate(v), trgm=True, value_source="vuln",
-              description="A finding’s title / plugin name — Nessus, OpenVAS, Nikto."),
+              description="A scanner observation’s title / plugin name — Nessus, OpenVAS, Nikto."),
     FieldSpec("issue", lambda c, v: P.issue_predicate(v), value_source="issue",
               description="Exactly one scanner-observation issue, by the key the Findings page "
                           "groups observations by (quote it: "
@@ -814,7 +815,7 @@ _FIELD_SPECS: List[FieldSpec] = [
               description="One misconfiguration check, whichever tool reported it (nmap, NetExec, SMBMap, "
                           "Nessus, Nuclei, Nikto, testssl, dnsx)."),
     FieldSpec("exploitport", _b_exploitport, value_source="port",
-              description="A port carrying a finding flagged exploitable by a vulnerability "
+              description="A port carrying a scanner observation flagged exploitable by a vulnerability "
                           "scanner (currently Nessus) — the exploit is on THIS port (same-row)."),
     FieldSpec("header", lambda c, v: P.header_predicate(c.db, v), trgm=True, value_source="header",
               description="HTTP Server response header — httpx."),

@@ -48,6 +48,22 @@ export const hostTestStatusVariant = (status: string): 'info' | 'warning' | 'suc
   }
 };
 
+/**
+ * How a test's PRIORITY is shown, wherever it is shown (the host page's Tests
+ * section, Operations' "my tests"): the neutral outline badge, the word as
+ * the server sent it, and "<word> priority" as its title.  A priority is not
+ * a severity — the severity colours are for severity only (owner decision
+ * 2026-10-10) — so no variant is looked up from the word.
+ *
+ *   const p = testPriorityBadge(test.priority);
+ *   <Badge variant={p.variant} title={p.title}>{p.label}</Badge>
+ */
+export const testPriorityBadge = (priority: string): { variant: 'outline'; label: string; title: string } => ({
+  variant: 'outline',
+  label: priority,
+  title: `${priority} priority`,
+});
+
 /** Statuses that still need someone — the ones that make a host "planned". */
 export const ACTIVE_HOST_TEST_STATUSES: HostTestStatus[] = ['proposed', 'in_progress'];
 

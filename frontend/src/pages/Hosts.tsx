@@ -1993,6 +1993,8 @@ export default function Hosts() {
                     selectedIds={selectedIds}
                     selectedIps={selectedIps}
                     totalMatching={totalHosts}
+                    // The server's cap, from the same answer as the total.
+                    bulkCap={shown?.response.bulk_select_cap ?? null}
                     queryContext={queryContext}
                     onClear={() => setRowSelection({})}
                     // The bar re-reads the rows and the facets it changed.

@@ -127,10 +127,12 @@ const IntegrationSettings: React.FC = () => {
   });
   const integrations: IntegrationEntry[] = integrationsQuery.data ?? [];
   const types: Array<{ value: string; label: string }> = typesQuery.data ?? [];
-  const loading = integrationsQuery.isFetching || typesQuery.isFetching;
-  const error = loading
-    ? null
-    : queryErrorText(integrationsQuery.error ?? typesQuery.error, 'Failed to load integrations.');
+  // The skeleton is for the FIRST load only (no integrations read yet).  A
+  // later read — after a save, or Retry — keeps the rows on screen; if it
+  // fails they stay, with the failure said above them.
+  const loading = integrationsQuery.data === undefined && integrationsQuery.isFetching;
+  const failed = [integrationsQuery, typesQuery].find((q) => q.isError && !q.isFetching);
+  const error = queryErrorText(failed?.error, 'Failed to load integrations.');
   // A failed load is said on the page, where the integrations would be, with
   // Retry — never as a toast over "No integrations configured yet."  Retry
   // asks again for what failed; integrations already read stay beside it.

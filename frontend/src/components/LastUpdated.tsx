@@ -103,10 +103,14 @@ export const LastUpdated: React.FC<LastUpdatedProps> = ({
         <Tooltip>
           <TooltipTrigger asChild>
             <div className="flex items-center gap-xxs">
+              {/* Named for what it switches ("Auto-refresh ingestion jobs"):
+                  the visible "Auto" alone said nothing out of context.  The
+                  name starts with the visible word, so speech input finds it. */}
               <Switch
                 id={switchId}
                 checked={autoRefresh}
                 onCheckedChange={onAutoRefreshChange}
+                aria-label={`Auto-refresh ${label}`}
               />
               <Label htmlFor={switchId} className="text-caption text-muted-foreground">
                 Auto

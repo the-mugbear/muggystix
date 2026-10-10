@@ -151,9 +151,13 @@ const VettingForm: React.FC<Props & { tool: ToolRegistryEntry }> = ({ tool, open
               placeholder="What the tool does and when an operator would reach for it."
             />
             {tool.status === 'suggested' ? (
+              // The field starts as the row's `description`: what the agent
+              // sent as one, or the server's stand-in built from its
+              // rationale — not the rationale itself (that is the box above).
               <p className="mt-xxs text-caption text-muted-foreground">
-                Prefilled with the agent&rsquo;s rationale — rewrite it as documentation
-                before adding it; this is what the catalogue shows.
+                {tool.description
+                  ? 'This starts as the description recorded with the agent’s suggestion. Rewrite it as documentation before adding it; this is what the catalogue shows.'
+                  : 'Write it as documentation before adding the tool; this is what the catalogue shows.'}
               </p>
             ) : null}
           </div>

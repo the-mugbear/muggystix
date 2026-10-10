@@ -2,7 +2,7 @@
  * Project settings (5.265.0) — one project (the current one), sections not
  * cards, and only what the caller's role allows.
  */
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -91,6 +91,19 @@ describe('Project settings', () => {
     await waitFor(() => expect(updateProjectMock).toHaveBeenCalledWith(3, expect.objectContaining({
       start_date: new Date('2026-09-01').toISOString(), end_date: new Date('2026-09-19').toISOString(),
     })));
+  });
+
+  // Owner decision 47 (2026-10-10): a new member starts as a VIEWER on every
+  // add-member screen (`utils/projectMembers.DEFAULT_MEMBER_ROLE`).  This page
+  // alone offered Analyst — the least privilege is the default, a higher role
+  // is a choice.
+  it('the add-member dialog starts on Viewer', async () => {
+    renderPage();
+    await screen.findByText('Ana');
+    fireEvent.click(screen.getByRole('button', { name: /Add member/ }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('combobox', { name: 'Role' })).toHaveTextContent('Viewer');
+    expect(within(dialog).getByText('read the inventory')).toBeInTheDocument();
   });
 
   it('asks before you change your own role', async () => {

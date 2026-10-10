@@ -147,6 +147,138 @@ def test_agent_investigate_equals_the_page_and_pages(client, db_session, test_pr
     assert past["tier_counts"] == agent.json()["tier_counts"]
 
 
+# ---------------------------------------------------------------------------
+# Findings that need the operator — the WHOLE list (v2.476.0; the workbench
+# carries a 15-row preview)
+# ---------------------------------------------------------------------------
+
+AGENT_MY_FINDINGS = "/api/v1/agent/assist/workbench/findings"
+
+
+def _seed_findings_needing_the_operator(db, pid, owner_id=1):
+    """27 to decide and 29 to write — each more than a page of 25 and more than
+    the workbench's preview of 15 — plus one that needs nothing."""
+    from app.db.models_findings import Finding
+
+    def finding(title, status, **text):
+        db.add(Finding(
+            project_id=pid, title=title, severity="high", status=status, source="manual",
+            owner_id=owner_id, created_by_id=owner_id, **text,
+        ))
+
+    for i in range(27):
+        finding(f"Investigating {i}", "open")
+    for i in range(29):
+        finding(f"Unwritten {i}", "confirmed")
+    finding("Done", "confirmed", description="d", impact="i", recommendation="r")
+    db.commit()
+
+
+def _every_page(get, need):
+    """(ids in order, every page's body) of a door's list, 25 rows at a time."""
+    ids, bodies, offset = [], [], 0
+    while True:
+        params = {"limit": 25, "offset": offset, **({"need": need} if need else {})}
+        r = get(params)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        bodies.append(body)
+        if not body["items"]:
+            return ids, bodies
+        ids.extend(i["finding_id"] for i in body["items"])
+        offset += 25
+        assert offset < 500, "the list never ended"
+
+
+def test_agent_findings_needing_the_operator_equal_the_page(client, db_session, test_project):
+    """The Operations "Findings" tab, for a key: the same rows in the same
+    order, and a `total` that is the size of the list the call pages."""
+    pid = test_project.id
+    _seed_findings_needing_the_operator(db_session, pid)
+    headers = _start(client, pid)
+
+    def agent_get(params):
+        return client.get(AGENT_MY_FINDINGS, params=params, headers=headers)
+
+    def page_get(params):
+        return client.get(_ui(pid, "/workbench/findings"), params=params)
+
+    for need, expected in ((None, 56), ("decide", 27), ("write", 29)):
+        agent_ids, agent_pages = _every_page(agent_get, need)
+        page_ids, page_pages = _every_page(page_get, need)
+        assert agent_ids == page_ids, need
+        assert len(agent_ids) == len(set(agent_ids)) == expected, need
+        for mine, theirs in zip(agent_pages, page_pages):
+            # The page's own answer, whole — rows, total_open, need_counts …
+            assert {k: mine[k] for k in theirs} == theirs, need
+            # … and the size of the list this call pages, on every page of it.
+            assert mine["total"] == expected, need
+            assert mine["total"] == (
+                theirs["need_counts"][need] if need else theirs["total_open"]
+            ), need
+        # More to come exactly while the next page has rows.
+        assert [p["has_more"] for p in agent_pages] == (
+            [bool(following["items"]) for following in agent_pages[1:]] + [False]
+        ), need
+        assert agent_pages[0]["has_more"] is True, need
+        assert [(p["limit"], p["offset"]) for p in agent_pages] == [
+            (25, 25 * n) for n in range(len(agent_pages))
+        ], need
+
+    # The preview the workbench carries is the head of this list, not all of it.
+    preview = client.get("/api/v1/agent/assist/workbench", headers=headers).json()["my_findings"]
+    whole, _ = _every_page(agent_get, None)
+    assert len(preview["items"]) < preview["total_open"] == len(whole)
+    assert [i["finding_id"] for i in preview["items"]] == whole[:len(preview["items"])]
+
+
+def test_an_unknown_need_is_refused_on_both_doors(client, db_session, test_project):
+    """One parser: a value neither door understands is a 422 naming it, never
+    the whole list under a filter that was dropped."""
+    pid = test_project.id
+    headers = _start(client, pid)
+    agent = client.get(AGENT_MY_FINDINGS, params={"need": "other"}, headers=headers)
+    page = client.get(_ui(pid, "/workbench/findings"), params={"need": "other"})
+    assert agent.status_code == page.status_code == 422
+    assert agent.json()["detail"][0]["loc"] == page.json()["detail"][0]["loc"] == ["query", "need"]
+    assert agent.json()["detail"][0]["msg"] == page.json()["detail"][0]["msg"]
+
+    # The two doors advertise the same parameter — the same words, the same
+    # description — and they are the service's words.
+    from typing import get_args
+
+    from app.api.params import FindingNeedParam
+    from app.main import app
+    from app.services.operations_read_service import FINDING_NEEDS
+
+    def need_param(path):
+        (param,) = [
+            p for p in app.openapi()["paths"][path]["get"]["parameters"] if p["name"] == "need"
+        ]
+        return param
+
+    assert need_param("/api/v1/agent/assist/workbench/findings") == need_param(
+        "/api/v1/projects/{project_id}/workbench/findings"
+    )
+    literal = get_args(get_args(FindingNeedParam)[0])[0]
+    assert get_args(literal) == FINDING_NEEDS
+
+
+def test_the_agents_list_is_the_operators_not_a_teammates(client, db_session, test_project):
+    """Personal to the session's operator, as the tab is to its reader."""
+    from app.db.models_project import ProjectRole
+    from tests.test_agent_role_route_matrix import _key_for, _member
+
+    pid = test_project.id
+    _seed_findings_needing_the_operator(db_session, pid)          # test_user's
+    teammate = _member(db_session, test_project, ProjectRole.ANALYST)
+    headers = {"X-API-Key": _key_for(db_session, test_project, teammate)}
+    body = client.get(AGENT_MY_FINDINGS, headers=headers)
+    assert body.status_code == 200, body.text
+    assert body.json()["items"] == [] and body.json()["total"] == 0
+    assert body.json()["has_more"] is False
+
+
 def test_agent_terrain_equals_the_page_and_sorts(client, db_session, test_project):
     pid = test_project.id
     _seed(db_session, pid)
@@ -333,6 +465,7 @@ def test_a_viewers_agent_can_read_them(client, db_session, test_project):
     for path in (
         "/api/v1/agent/assist/workbench",
         "/api/v1/agent/assist/workbench/investigate",
+        "/api/v1/agent/assist/workbench/findings",
         "/api/v1/agent/assist/workbench/terrain",
         "/api/v1/agent/assist/evidence/gaps?domain=web_tls",
     ):
@@ -361,6 +494,20 @@ def test_the_mcp_tools_round_trip(client, db_session, test_project):
     q = call("assist_list_worth_a_look", {"tier": 1, "limit": 5}, rid=2)
     assert q["isError"] is False, q
     assert all(r["tier"] == 1 for r in q["structuredContent"]["items"])
+
+    # The whole "findings that need me" list: `need` and the paging reach the
+    # route, and an unknown `need` is refused by the advertised enum.
+    _seed_findings_needing_the_operator(db_session, pid)
+    mine = call("assist_list_my_findings", {"need": "write", "limit": 5, "offset": 25}, rid=20)
+    assert mine["isError"] is False, mine
+    body = mine["structuredContent"]
+    assert (body["total"], len(body["items"]), body["offset"], body["has_more"]) == (29, 4, 25, False)
+    assert all([n["kind"] for n in i["needs"]] == ["missing_text"] for i in body["items"])
+    bad_need = client.post("/api/v1/mcp", json={
+        "jsonrpc": "2.0", "id": 21, "method": "tools/call",
+        "params": {"name": "assist_list_my_findings", "arguments": {"need": "other"}},
+    }, headers=headers).json()
+    assert "error" in bad_need or bad_need["result"]["isError"] is True, bad_need
 
     # The domain must reach the endpoint: a known one answers; an unknown one
     # is refused by the advertised enum before any call is made.

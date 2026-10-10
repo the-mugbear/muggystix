@@ -61,6 +61,11 @@ export interface OversightRemediation {
   /** Closed after the deadline frozen at close, of those that had one. */
   closed_late?: number;
   closed_with_deadline?: number;
+  /** Where the contact's record and the assessor's conclusion disagree — the
+   *  remediation list's own `verification_counts`; each opens
+   *  `?verification=<name>` there. */
+  reported_fixed_not_retested?: number;
+  remediated_record_open?: number;
 }
 
 export interface OversightProjectRow {

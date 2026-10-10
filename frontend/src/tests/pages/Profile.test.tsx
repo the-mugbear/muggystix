@@ -245,6 +245,38 @@ describe('Profile', () => {
       expect(screen.getByLabelText('Current Password')).toHaveValue('old-Passw0rd!');
     });
 
+    // Owner decision 48 (2026-10-10): the refusal outlived the dialog — on
+    // reopening, "Invalid current password" stood above three empty fields.
+    it('a refusal’s message goes when the dialog is closed: reopening shows empty fields and no error', async () => {
+      apiMock.changeOwnPassword.mockRejectedValue({ response: { status: 400, data: { detail: 'Invalid current password' } } });
+      await fillAndSubmit();
+      expect(await screen.findByText('Invalid current password')).toBeInTheDocument();
+      // (The Cancel button waits for the request to settle.)
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled());
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+      fireEvent.click(screen.getByRole('button', { name: /Change Password/ }));
+      const dialog = await screen.findByRole('dialog');
+      expectEmptyFields();
+      expect(within(dialog).queryByRole('alert')).toBeNull();
+      expect(screen.queryByText('Invalid current password')).toBeNull();
+    });
+
+    it('so does "New passwords do not match" said at a submit', async () => {
+      renderPage();
+      const dialog = await fill();
+      fireEvent.change(screen.getByLabelText('Confirm New Password'), { target: { value: 'something-else' } });
+      fireEvent.submit(dialog.querySelector('form')!);
+      expect(await screen.findByText('New passwords do not match.')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+      fireEvent.click(screen.getByRole('button', { name: /Change Password/ }));
+      await screen.findByRole('dialog');
+      expect(screen.queryByText('New passwords do not match.')).toBeNull();
+    });
+
     it('empties the form when the dialog is left without changing anything', async () => {
       renderPage();
       await fill();

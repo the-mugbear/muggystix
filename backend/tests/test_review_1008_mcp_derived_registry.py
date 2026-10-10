@@ -41,7 +41,9 @@ ADDED_SINCE_CAPTURE = {"remediation_list": {"verification", "flag", "q"},
 #: {tool: {body argument}} — the same, for an argument sent in the JSON body.
 ADDED_TO_BODY_SINCE_CAPTURE = {"remediation_record_follow_up": {"upcoming_days"}}
 #: Tools for routes that did not exist when the fixture was taken.
-TOOLS_SINCE_CAPTURE = {"remediation_assign_from_report", "assist_get_writing_guidance"}
+TOOLS_SINCE_CAPTURE = {
+    "remediation_assign_from_report", "assist_get_writing_guidance", "assist_list_my_findings",
+}
 
 #: {tool: {"argument/key": reason}} — every difference, and nothing else.
 DIFFERENCES = {

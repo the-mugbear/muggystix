@@ -65,11 +65,6 @@ export interface ScopeCoverageHost {
   last_scan_filename: string | null;
 }
 
-export interface TopTechnology {
-  name: string;
-  host_count: number;
-}
-
 export interface ScopeCoverageSummary {
   total_scopes: number;
   total_subnets: number;
@@ -85,8 +80,6 @@ export interface ScopeCoverageSummary {
   coverage_percentage: number;
   has_scope_configuration: boolean;
   recent_out_of_scope_hosts: ScopeCoverageHost[];
-  // v2.12.1: top technologies observed across scoped hosts
-  top_technologies?: TopTechnology[];
 }
 
 export interface OutOfScopeHost {

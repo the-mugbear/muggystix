@@ -45,7 +45,12 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
+/** What the workbench says the project holds: hosts, and a scope with entries. */
+const SETUP: { has_hosts: boolean; has_scopes: boolean; scope_rows: number; only_scope_id: number | null } =
+  { has_hosts: true, has_scopes: true, scope_rows: 1, only_scope_id: 10 };
+
 const emptyWorkbench = {
+  setup: SETUP,
   my_queue: { items: [], in_review_count: 0 },
   my_tasks: {
     items: [], total_open: 0,
@@ -74,9 +79,11 @@ const TIERS = ['Exploitable critical', 'Critical vulnerability', 'Exploit availa
 const emptyQueue = { items: [], queue_total: 0, untouched_total: 0, tiers: TIERS, tier_counts: [0, 0, 0, 0, 0] };
 
 vi.mock('../../services/api', () => ({
-  getProjectCoverage: vi.fn(),
   listAgentSessions: vi.fn(),
-  // Posture's reads: mocked only so the page can be shown NOT to make them.
+  // Posture's reads — and, since 5.365.0, the scope coverage (the workbench
+  // says whether the project has hosts and scope entries): mocked only so
+  // the page can be shown NOT to make them.
+  getProjectCoverage: vi.fn(),
   getDashboardStats: vi.fn(),
   getAddressTerrain: vi.fn(),
   getWorkbench: vi.fn(),
@@ -137,29 +144,6 @@ function renderRouted(entry = '/operations') {
   render(<RouterProvider router={router} />);
   return router;
 }
-
-const baseCoverage = {
-  project_id: 1,
-  total_hosts: 142,
-  hosts_with_plan_entry: 87,
-  hosts_with_execution_result: 23,
-  hosts_no_plan: 55,
-  hosts_no_execution: 119,
-  total_scopes: 1,
-  scopes: [
-    {
-      scope_id: 10,
-      scope_name: 'Internal /24',
-      subnet_count: 1,
-      total_scoped_ips: 256,
-      discovered_in_scope: 42,
-      coverage_percent: 16.4,
-    },
-  ],
-  hosts_outside_scope: 12,
-  hosts_in_subnet_scope: 128,
-  hosts_name_scope_only: 2,
-};
 
 const session = (over: Record<string, unknown> = {}) => ({
   kind: 'project' as const,
@@ -263,7 +247,6 @@ beforeEach(() => {
   navigateSpy.mockReset();
   projectRole.value = undefined;
   accountRole.value = 'admin';
-  mockedApi.getProjectCoverage.mockResolvedValue(baseCoverage);
   mockedApi.getWorkbench.mockResolvedValue(emptyWorkbench);
   mockedApi.getInvestigationQueue.mockResolvedValue(emptyQueue);
   mockedApi.getMyFindingsPage.mockResolvedValue({ items: [], total_open: 0, need_counts: { decide: 0, write: 0 } });
@@ -289,13 +272,106 @@ describe('Operations page', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('shows an error alert when the API fails', async () => {
-    mockedApi.getProjectCoverage.mockRejectedValue(
-      new Error('coverage unavailable'),
-    );
+  // 5.365.0 — whether the project has hosts and scope entries comes with the
+  // counts; the page made a whole scope-coverage request for it.
+  it('makes no scope-coverage request', async () => {
+    withWork();
     renderPage();
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toBeInTheDocument();
+    await screen.findByRole('table');
+    expect(mockedApi.getProjectCoverage).not.toHaveBeenCalled();
+  });
+
+  it('a first read that fails says so with Retry — no setup block is guessed, and the lists still answer', async () => {
+    withWork();
+    mockedApi.getWorkbench.mockRejectedValue(new Error('workbench unavailable'));
+    renderPage();
+    expect(await screen.findByText('Couldn\'t load your work\'s counts')).toBeInTheDocument();
+    expect(screen.getByText(/a count shown as “—” could not be checked/)).toBeInTheDocument();
+    expect(screen.queryByText(/Welcome — let's set up this project/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Scope is registered/)).not.toBeInTheDocument();
+    expect(await screen.findByRole('table', { name: 'Findings that need me' })).toBeInTheDocument();
+    // Retry reads the counts again, and the page follows the answer.
+    mockedApi.getWorkbench.mockResolvedValue(busy());
+    fireEvent.click(screen.getByRole('button', { name: /Retry/ }));
+    await waitFor(() => expect(tab(/^Findings/)).toHaveTextContent('Findings24'));
+    expect(screen.queryByText('Couldn\'t load your work\'s counts')).not.toBeInTheDocument();
+  });
+
+  // 5.365.0 — the server starts the "since last visit" cursor itself on the
+  // reader's first read; the page sent a POST from an effect for it.
+  it('a first visit writes nothing: the read itself starts the cursor', async () => {
+    withWork();   // `is_first_visit: true`
+    renderPage();
+    await screen.findByRole('table');
+    await screen.findByText('Your agent sessions');
+    expect(mockedApi.markWorkbenchSeen).not.toHaveBeenCalled();
+    expect(screen.queryByText('Since your last visit')).not.toBeInTheDocument();
+  });
+
+  // 5.365.0 (owner, 2026-10-10) — the counts are read again once a minute;
+  // the list on screen is not (its re-read is the reader's: Refresh, a page,
+  // an action).
+  describe('once a minute', () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    const countReads = () => ({
+      workbench: mockedApi.getWorkbench.mock.calls.length,
+      // The queue's SIZE: the one-row request.
+      queueTotal: mockedApi.getInvestigationQueue.mock.calls.filter((c) => c[2]?.limit === 1).length,
+    });
+
+    it('the counts are asked again and the tab’s list is not', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      withWork();
+      renderPage('/operations?tab=hosts');
+      await screen.findByRole('link', { name: '10.9.0.1' });
+      expect(tab(/^Hosts/)).toHaveTextContent('Hosts37');
+      expect(countReads()).toEqual({ workbench: 1, queueTotal: 1 });
+      expect(listCalls()).toEqual({ findings: 0, hosts: 1, tests: 0, changed: 0, pickup: 0 });
+
+      // Not before the minute is up.
+      await act(async () => { await vi.advanceTimersByTimeAsync(59_000); });
+      expect(countReads()).toEqual({ workbench: 1, queueTotal: 1 });
+
+      mockedApi.getWorkbench.mockResolvedValue(busy({
+        my_queue: { items: [], in_review_count: 41 },
+        my_work: { ...busy().my_work, hosts_in_review: 41 },
+      }));
+      mockedApi.getInvestigationQueue.mockResolvedValue({ ...busyQueue, queue_total: 118 });
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+      // The light counts — not the queue's total: that is the queue's ranking
+      // statement, the page's costliest read on a large project.
+      expect(countReads()).toEqual({ workbench: 2, queueTotal: 1 });
+      expect(mockedApi.getWorkbench).toHaveBeenLastCalledWith(
+        1, { includeInvestigate: false, includeRows: false }, expect.any(AbortSignal),
+      );
+      // The badges follow; the list was not asked for again, and nothing was written.
+      await waitFor(() => expect(tab(/^Hosts/)).toHaveTextContent('Hosts41'));
+      expect(tab(/^Pick up/)).not.toHaveTextContent('Pick up118');
+      expect(listCalls()).toEqual({ findings: 0, hosts: 1, tests: 0, changed: 0, pickup: 0 });
+      expect(screen.getByRole('link', { name: '10.9.0.1' })).toBeInTheDocument();
+      expect(mockedApi.markWorkbenchSeen).not.toHaveBeenCalled();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(countReads()).toEqual({ workbench: 3, queueTotal: 1 });
+      expect(listCalls()).toMatchObject({ hosts: 1 });
+    });
+
+    it('a failed re-read keeps the list on screen; its counts read "—", never the old numbers or 0', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      withWork();
+      renderPage('/operations?tab=hosts');
+      await screen.findByRole('link', { name: '10.9.0.1' });
+      mockedApi.getWorkbench.mockRejectedValue(new Error('offline'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+      expect(await screen.findByText('Couldn\'t load your work\'s counts')).toBeInTheDocument();
+      expect(tab(/^Hosts/)).toHaveTextContent('Hosts—');
+      // The queue's total answered: it is still its number.
+      expect(tab(/^Pick up/)).toHaveTextContent('Pick up112');
+      // Still the work, not a setup block; the rows stayed and were not re-read.
+      expect(screen.getByRole('link', { name: '10.9.0.1' })).toBeInTheDocument();
+      expect(screen.queryByText(/Welcome — let's set up this project/)).not.toBeInTheDocument();
+      expect(listCalls()).toMatchObject({ hosts: 1 });
     });
   });
 
@@ -748,18 +824,33 @@ describe('Operations page', () => {
       expect(screen.queryByText(/Nothing is waiting/)).not.toBeInTheDocument();
     });
 
-    it('while the counts load the bar is there, with no number invented', async () => {
+    // 5.365.0 — the counts' answer also says whether the project has anything
+    // in it, so until it arrives neither the bar nor a setup block is shown
+    // (the bar with "…" used to wait on the scope-coverage read instead).
+    it('while the counts load nothing is invented: no bar, no setup block, no list', async () => {
       let release: (v: unknown) => void = () => undefined;
       mockedApi.getWorkbench.mockReturnValue(new Promise((resolve) => { release = resolve; }));
-      renderPage();
-      await screen.findByRole('tablist');
-      expect(tab(/^Findings/)).toHaveTextContent('Findings…');
-      expect(tab(/^Findings/)).toHaveAccessibleName('Findings: loading');
-      // No list is chosen — or fetched — before the counts say which.
-      expect(screen.queryByRole('tabpanel')).not.toBeInTheDocument();
+      renderPage('/operations?tab=hosts');
+      await waitFor(() => expect(mockedApi.getWorkbench).toHaveBeenCalledTimes(1));
+      expect(screen.getByRole('status', { name: 'Loading your work…' })).toBeInTheDocument();
+      expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Welcome — let's set up this project|Scope is registered/)).not.toBeInTheDocument();
       expect(listCalls()).toEqual({ findings: 0, hosts: 0, tests: 0, changed: 0, pickup: 0 });
       await act(async () => { release(busy()); });
       await waitFor(() => expect(tab(/^Findings/)).toHaveTextContent('Findings24'));
+      expect(screen.queryByRole('status', { name: 'Loading your work…' })).not.toBeInTheDocument();
+    });
+
+    it('a queue total that is still loading is "…" on its tab, with no number invented', async () => {
+      withWork();
+      let release: (v: unknown) => void = () => undefined;
+      mockedApi.getInvestigationQueue.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+      renderPage();
+      await waitFor(() => expect(tab(/^Findings/)).toHaveTextContent('Findings24'));
+      expect(tab(/^Pick up/)).toHaveTextContent('Pick up…');
+      expect(tab(/^Pick up/)).toHaveAccessibleName('Pick up: loading');
+      await act(async () => { release(busyQueue); });
+      await waitFor(() => expect(tab(/^Pick up/)).toHaveTextContent('Pick up112'));
     });
   });
 
@@ -827,8 +918,7 @@ describe('Operations page', () => {
       await waitFor(() => expect(mockedApi.getReviewFollowupsPage).toHaveBeenCalledTimes(2));
       // The queue's count too: taking a host into review changes it.
       await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenCalledTimes(2));
-      // Coverage — the structural fetch — was not repeated, and no other tab's list was read.
-      expect(mockedApi.getProjectCoverage).toHaveBeenCalledTimes(1);
+      // No other tab's list was read.
       expect(listCalls()).toMatchObject({ findings: 0, hosts: 0, tests: 0, pickup: 0 });
       // The rows stayed on screen while it re-read.
       expect(screen.getByRole('link', { name: '10.8.0.2' })).toBeInTheDocument();
@@ -934,35 +1024,28 @@ describe('Operations page', () => {
   // session a task naming the registered scope, in place. 5.313.1 — the task
   // is a scan uploaded to the session, not a recon run.
   describe('a project with nothing in it yet', () => {
-    const noHosts = {
-      ...baseCoverage,
-      total_hosts: 0, hosts_with_plan_entry: 0, hosts_with_execution_result: 0,
-      hosts_no_plan: 0, hosts_no_execution: 0, hosts_outside_scope: 0,
-      hosts_in_subnet_scope: 0, hosts_name_scope_only: 0,
-    };
+    /** The workbench of a project in this state (5.365.0: `setup` — the page
+     *  read the scope coverage for it). */
+    const projectWith = (setup: Partial<typeof SETUP>) =>
+      mockedApi.getWorkbench.mockResolvedValue({ ...emptyWorkbench, setup: { ...SETUP, ...setup } });
+    /** A scope with entries, nothing discovered yet. */
+    const noHosts = { has_hosts: false };
 
     it('setup card: Scan with your agent hands the task for the single scope to the agent session', async () => {
-      mockedApi.getProjectCoverage.mockResolvedValue(noHosts);
+      projectWith(noHosts);
       renderPage();
       fireEvent.click(await screen.findByRole('button', { name: /Scan with your agent/ }));
       expect(await screen.findByRole('dialog', { name: /Start Agent Session/ })).toBeInTheDocument();
       expect(
         screen.getByText(
-          `Read this project’s scope in BlueStick (scope id ${baseCoverage.scopes[0].scope_id}), run your scanners on what is in scope, and upload the output to this session.`,
+          `Read this project’s scope in BlueStick (scope id ${SETUP.only_scope_id}), run your scanners on what is in scope, and upload the output to this session.`,
         ),
       ).toBeInTheDocument();
       expect(navigateSpy).not.toHaveBeenCalled();
     });
 
     it('setup card: with several scopes, the task names none and lets the agent choose', async () => {
-      mockedApi.getProjectCoverage.mockResolvedValue({
-        ...noHosts,
-        total_scopes: 2,
-        scopes: [
-          ...baseCoverage.scopes,
-          { ...baseCoverage.scopes[0], scope_id: 11, scope_name: 'DMZ' },
-        ],
-      });
+      projectWith({ ...noHosts, scope_rows: 2, only_scope_id: null });
       renderPage();
       fireEvent.click(await screen.findByRole('button', { name: /Scan with your agent/ }));
       expect(
@@ -974,7 +1057,7 @@ describe('Operations page', () => {
     });
 
     it('shows the setup block alone: no tab bar, no list', async () => {
-      mockedApi.getProjectCoverage.mockResolvedValue(noHosts);
+      projectWith(noHosts);
       renderPage();
       await screen.findByText(/Scope is registered — time to discover hosts/);
       expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
@@ -986,16 +1069,33 @@ describe('Operations page', () => {
     // 5.332.2 — every project has its one scope row from creation; with no
     // subnet in it, nothing is "registered" yet.
     it('a project whose scope has no entries gets the welcome block, not "Scope is registered"', async () => {
-      mockedApi.getProjectCoverage.mockResolvedValue({
-        ...noHosts, scopes: [{ ...noHosts.scopes[0], subnet_count: 0, total_scoped_ips: 0 }],
-      });
+      projectWith({ ...noHosts, has_scopes: false });
       renderPage();
       expect(await screen.findByText(/Welcome — let's set up this project/)).toBeInTheDocument();
       expect(screen.queryByText(/Scope is registered/)).not.toBeInTheDocument();
+      // The scope row exists, so the page keeps its chrome (an agent session
+      // can still be started from here).
+      expect(screen.getByRole('button', { name: 'Refresh Operations' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Start Agent Session/ })).toBeInTheDocument();
+    });
+
+    it('a setup block gives way to the work when the counts’ re-read finds hosts', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        projectWith(noHosts);
+        renderPage();
+        await screen.findByText(/Scope is registered — time to discover hosts/);
+        withWork();
+        await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+        expect(await screen.findByRole('tablist')).toBeInTheDocument();
+        expect(screen.queryByText(/Scope is registered/)).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('a brand-new project gets the welcome block and no refresh chrome', async () => {
-      mockedApi.getProjectCoverage.mockResolvedValue({ ...noHosts, total_scopes: 0, scopes: [] });
+      projectWith({ has_hosts: false, has_scopes: false, scope_rows: 0, only_scope_id: null });
       renderPage();
       expect(await screen.findByText(/Welcome — let's set up this project/)).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Refresh Operations' })).not.toBeInTheDocument();

@@ -80,6 +80,11 @@ export interface ToolRegistryEntry {
   /** Engineering: does BlueStick have a parser for its output. Independent of
    *  `status` — a catalogued tool may have no parser at all. */
   ingestible: boolean;
+  /** For a tool BlueStick parses: the invocation that writes a file it can
+   *  ingest, and one line about what to upload. Reference text, as every
+   *  field here — null (or absent on a row the PATCH answered) otherwise. */
+  run_command?: string | null;
+  run_note?: string | null;
   suggested_rationale: string | null;
 }
 

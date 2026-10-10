@@ -144,6 +144,34 @@ describe('Scanner Integrations — the edit dialog shows the integration as it i
     expect(mocked.createIntegration).not.toHaveBeenCalled();
   });
 
+  // Owner decision 52: the skeleton is for the first load only.
+  it('the integrations stay on screen while the list is read again', async () => {
+    await openEdit();
+    let answer: (value: unknown) => void = () => {};
+    mocked.listIntegrations.mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
+    fireEvent.click(screen.getByRole('button', { name: CLEAR }));
+    await waitFor(() => expect(mocked.listIntegrations).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByText('https://nessus.example:8834')).toBeInTheDocument();
+    expect(screen.getByText('Secret set')).toBeInTheDocument();
+
+    answer([{ ...entry, has_secret: false }]);
+    expect(await screen.findByText('No secret')).toBeInTheDocument();
+  });
+
+  it('a re-read that fails keeps the integrations and says so, with Retry', async () => {
+    await openEdit();
+    mocked.listIntegrations.mockRejectedValueOnce({
+      response: { status: 503, data: { detail: 'The integration store is not answering.' } },
+    });
+    fireEvent.click(screen.getByRole('button', { name: CLEAR }));
+
+    const alert = await screen.findByRole('alert', { hidden: true });
+    expect(alert).toHaveTextContent('The integration store is not answering.');
+    expect(within(alert).getByRole('button', { name: 'Retry', hidden: true })).toBeInTheDocument();
+    expect(screen.getByText('https://nessus.example:8834')).toBeInTheDocument();
+  });
+
   // The row can go while its dialog is open: Save must not become "add".
   it('an edit never becomes an add when the integration has gone from the list', async () => {
     await openEdit();

@@ -238,6 +238,8 @@ const buildHostResponse = (params: Record<string, any> = {}) => {
   return {
     items: items.slice(skip, skip + limit),
     total: items.length,
+    // The server states its bulk-select cap in every list answer.
+    bulk_select_cap: 5000,
     skip,
     limit,
     sort_by: sortBy,
@@ -987,6 +989,25 @@ describe('Hosts', () => {
         expect.anything(),
       ),
     );
+  });
+
+  // 5.365.0 — how many hosts "all matching" reaches is the server's number,
+  // read from the list's own answer (the bar kept a 5000 of its own).
+  it('the bulk bar names the cap the list’s answer states, before any action', async () => {
+    mockedApi.getHosts.mockImplementation(async (_projectId: number, params?: Record<string, any>) => (
+      { ...buildHostResponse(params), total: 900, bulk_select_cap: 300 }
+    ));
+    renderHosts();
+    await waitFor(() => {
+      const box = screen.getByRole('checkbox', { name: 'Select 10.0.0.3' });
+      if (box.getAttribute('aria-checked') !== 'true') fireEvent.click(box);
+      expect(screen.getByText('1 selected')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Select the first 300 of 900 matching' }));
+    expect(await screen.findByText('300 selected')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Select all 900/ })).not.toBeInTheDocument();
+    // Nothing was asked of the server to know it.
+    expect(mockedApi.getMatchingHostIds).not.toHaveBeenCalled();
   });
 
   // v5.290.0 — seen in a live browser test: the bulk bar was inserted above

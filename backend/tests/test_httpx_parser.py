@@ -501,68 +501,6 @@ class TestFilterDataTechnologies:
         assert resp.json()["technologies"] == []
 
 
-class TestScopeCoverageTopTechnologies:
-    """v2.12.1 — ScopeCoverageSummary.top_technologies rollup."""
-
-    def test_rollup_counts_distinct_hosts(
-        self, client, db_session, test_project
-    ):
-        """A technology seen on two distinct hosts counts as host_count=2;
-        seen on the same host through two interfaces still counts as 1."""
-        from app.db import models
-        host1 = models.Host(
-            ip_address="10.99.12.1", state="up", project_id=test_project.id,
-        )
-        host2 = models.Host(
-            ip_address="10.99.12.2", state="up", project_id=test_project.id,
-        )
-        db_session.add_all([host1, host2])
-        db_session.flush()
-        scan = models.Scan(
-            filename="web.jsonl", scan_type="web_fingerprint",
-            tool_name="httpx", project_id=test_project.id,
-        )
-        db_session.add(scan)
-        db_session.flush()
-        db_session.add_all([
-            # host1 — two interfaces, both nginx (dedupe to count=1)
-            models.WebInterface(
-                host_id=host1.id, scan_id=scan.id, project_id=test_project.id,
-                source="httpx", url="https://10.99.12.1/", technologies=["nginx"],
-                ip_address="10.99.12.1",
-            ),
-            models.WebInterface(
-                host_id=host1.id, scan_id=scan.id, project_id=test_project.id,
-                source="httpx", url="https://10.99.12.1:8443/", technologies=["nginx"],
-                ip_address="10.99.12.1",
-            ),
-            # host2 — nginx again (count=2 total), and jenkins (count=1)
-            models.WebInterface(
-                host_id=host2.id, scan_id=scan.id, project_id=test_project.id,
-                source="httpx", url="http://10.99.12.2/", technologies=["nginx", "jenkins"],
-                ip_address="10.99.12.2",
-            ),
-        ])
-        db_session.commit()
-
-        resp = client.get(
-            f"/api/v1/projects/{test_project.id}/scopes/coverage"
-        )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert "top_technologies" in body
-        by_name = {t["name"]: t["host_count"] for t in body["top_technologies"]}
-        assert by_name.get("nginx") == 2   # host1 + host2, deduped
-        assert by_name.get("jenkins") == 1  # host2 only
-
-    def test_empty_rollup_when_no_web_interfaces(self, client, test_project):
-        resp = client.get(
-            f"/api/v1/projects/{test_project.id}/scopes/coverage"
-        )
-        assert resp.status_code == 200
-        assert resp.json()["top_technologies"] == []
-
-
 class TestParserRegistration:
     """v2.12.2 — every parser class returned by ``_build_parsing_attempts``
     must be registered in the dispatcher's ``parser_map``, or the

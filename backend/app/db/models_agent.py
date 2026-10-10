@@ -317,7 +317,7 @@ class AgentFeedback(Base):
 # latency to the agent's request loop.
 #
 # Captured: method, resolved path, query, status, duration, the
-# referenced host_ids / entry_ids / target_ips parsed out of the path
+# referenced host_ids / target_ips parsed out of the path
 # + query + body.  Bodies are captured for mutations only (GET/HEAD
 # skip), capped to keep storage bounded, and never include the raw API
 # key (we strip Authorization + X-API-Key before storing).
@@ -413,8 +413,9 @@ class AgentApiCall(Base):
     # the middleware.  Arrays so a single multi-host call (e.g. /context
     # with ?host_ids=1,2,3) tags all of them.  ARRAY(Integer) only works
     # on Postgres; on SQLite we use JSON for the test suite.
+    # (``referenced_entry_ids`` — test-plan entry ids — was dropped by
+    # f5c2a0d7b4e6: test plans went in v2.442.0.)
     referenced_host_ids = Column(JSON, nullable=True)
-    referenced_entry_ids = Column(JSON, nullable=True)
     referenced_target_ips = Column(JSON, nullable=True)
 
     created_at = Column(

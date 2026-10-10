@@ -24,6 +24,7 @@ from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, Notification, ProjectRole
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
+from app.services import host_query
 from app.services.webhook_dispatcher import stage_dispatch
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -32,9 +33,6 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # thousands of hosts; the receiver needs to know what happened, not to
 # receive a megabyte of ids. `host_count` is always exact.
 _WEBHOOK_HOST_ID_CAP = 100
-
-# Mirror of hosts._BULK_SELECT_CAP — the most hosts one bulk call touches.
-_BULK_CAP = 5000
 
 
 class BulkResult(BaseModel):
@@ -47,8 +45,10 @@ def _valid_host_ids(db: Session, project_id: int, host_ids: List[int]) -> List[i
     project.  Rejects oversized batches outright."""
     if not host_ids:
         return []
-    if len(host_ids) > _BULK_CAP:
-        raise HTTPException(status_code=413, detail=f"Too many hosts in one bulk operation (max {_BULK_CAP})")
+    # The one cap: what ``GET /hosts/ids`` resolves is what one call accepts.
+    cap = host_query.BULK_SELECT_CAP
+    if len(host_ids) > cap:
+        raise HTTPException(status_code=413, detail=f"Too many hosts in one bulk operation (max {cap})")
     rows = (
         db.query(models.Host.id)
         .filter(models.Host.project_id == project_id, models.Host.id.in_(host_ids))

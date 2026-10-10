@@ -30,7 +30,6 @@ export interface AgentApiCallRow {
   duration_ms: number;
   scope_id?: number | null;
   referenced_host_ids?: number[] | null;
-  referenced_entry_ids?: number[] | null;
   referenced_target_ips?: string[] | null;
 }
 

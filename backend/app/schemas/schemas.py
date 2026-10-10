@@ -629,6 +629,10 @@ class HostListResponse(BaseModel):
     total: Optional[int] = 0
     #: Every host in the project, filters ignored (None without include_total).
     project_total: Optional[int] = None
+    #: The most hosts "select all matching" resolves and one bulk call touches
+    #: (``host_query.BULK_SELECT_CAP``, set by the route): ``total`` above it
+    #: means a bulk action reaches only the first that many, by id.
+    bulk_select_cap: int
     skip: int = 0
     limit: int = 100
     sort_by: str = "critical_vulns"
@@ -1081,11 +1085,6 @@ class ScopeCoverageHost(BaseModel):
     last_scan_filename: Optional[str] = None
 
 
-class TopTechnology(BaseModel):
-    name: str
-    host_count: int
-
-
 class ScopeCoverageSummary(BaseModel):
     total_scopes: int
     total_subnets: int
@@ -1101,11 +1100,6 @@ class ScopeCoverageSummary(BaseModel):
     coverage_percentage: float
     has_scope_configuration: bool
     recent_out_of_scope_hosts: List[ScopeCoverageHost]
-    # v2.12.1: top N technologies observed across scoped hosts (by
-    # distinct host count).  Empty when no web_interfaces rows exist
-    # yet.  Used by the Scopes page to give a quick read on what the
-    # network is running at a glance.
-    top_technologies: List[TopTechnology] = []
 
 class HostSubnetMapping(BaseModel):
     id: int

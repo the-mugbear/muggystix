@@ -214,27 +214,22 @@ describe('Tool Activity — the asked question is the address (real router)', ()
     expect(betweenCalls().some((p) => p.tool === 'half-typed')).toBe(false);
   });
 
-  // The address reads no range that does not run forward, so such a question
-  // cannot live in it — but the reader asked it, and still gets the server's
-  // word on it (as before), not silence.
-  it('a backwards range from the form is still asked, and is not written as a window', async () => {
+  // Owner decision 50 (2026-10-10): a range that does not run forward was
+  // sent, and the server's refusal shown.  The form refuses it — nothing is
+  // sent, the address keeps the question that was asked, and the form keeps
+  // what was typed, to put right.  (More in ToolActivity.asked.test.tsx.)
+  it('a backwards range from the form is not asked, and the address is left alone', async () => {
     const router = open(RANGE);
     await waitFor(() => expect(ranges()).toHaveLength(1));
-    getScansBetween.mockImplementation(async (p: Asked) => {
-      if (isWeek(p)) return answer([]);
-      throw new Error('refused');
-    });
     fireEvent.change(field('To (local)'), { target: { value: '2026-09-01T00:00' } });
+    expect(screen.getByRole('button', { name: 'Correlate' })).toBeDisabled();
     fireEvent.submit(field('Tool').closest('form')!);
-    await waitFor(() => expect(ranges()).toHaveLength(2));
-    expect(stated(ranges()[1])).toEqual({
-      from: '2026-09-29T00:00:00.000Z', to: new Date('2026-09-01T00:00').toISOString(), tool: 'masscan',
-    });
-    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('“To” must be later than “From”.');
     await settle();
-    expect(router.state.location.search).toBe('?tool=masscan');
+    expect(router.state.location.search).toBe(search(RANGE));
     expect(field('To (local)').value).toBe('2026-09-01T00:00');
-    expect(ranges()).toHaveLength(2);
+    expect(ranges()).toHaveLength(1);
+    expect(weeks()).toHaveLength(1);
   });
 
   it('a link to the bare page asks nothing and shows no answer to the question left behind', async () => {

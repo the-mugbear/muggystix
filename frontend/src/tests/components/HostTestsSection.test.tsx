@@ -110,6 +110,18 @@ describe('HostTestsSection — the list', () => {
     expect(api.listEvidenceRecords).not.toHaveBeenCalled();
   });
 
+  // Owner decision 25: severity colours are for severity only.  The priority
+  // is the neutral badge Operations' "my tests" uses (OperationsTables.test).
+  it('a test’s priority is a neutral badge, not a severity colour', async () => {
+    api.listHostTests.mockResolvedValue(page([test({ priority: 'critical' })]));
+    renderSection();
+    await screen.findByText('Check response headers');
+    const badge = within(rowOf(11)).getByText('critical').closest('.rounded-chip') as HTMLElement;
+    expect(badge.className).not.toMatch(/sev-|destructive|warning/);
+    expect(badge.className).toMatch(/border-border/);
+    expect(badge).toHaveAttribute('title', 'critical priority');
+  });
+
   it('opens to why, what is expected and who proposed it', async () => {
     api.listHostTests.mockResolvedValue(page([test({
       rationale: '🤖 **Agent-generated** (claude)\n\nThe portal sets **no** frame header.',

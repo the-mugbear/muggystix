@@ -707,6 +707,79 @@ def test_a_finished_scans_ports_on_a_host_that_stays_go_unless_another_scan_saw_
     assert _port_numbers(db_session, host_id) == [22, 8003, 8004, 8005]
 
 
+def _ports_under_observations(db, pid):
+    """A host that stays, with ports only ``target`` created: three carry an
+    observation someone's work refers to (a finding's link, a finding's own
+    pointer, a proposal), one an observation nobody refers to, one nothing.
+    Returns ``(target, host id, {port number: observation id})``."""
+    other, target = _scan(db, pid, "other.nessus"), _scan(db, pid, "target.nessus")
+    host = _shared_host(db, pid, target, other, "10.67.2.1")
+    _port_seen(db, _port(db, host, 22, stamp=other), other, created=True)
+    on_port = {}
+
+    def observed(number, *, by_history=False):
+        port = _port(db, host, number, stamp=None if by_history else target)
+        if by_history:
+            _port_seen(db, port, target, created=True)
+        vuln = _vuln(db, host, target, f"on {number}", port_id=port.id)
+        _reported(db, vuln, target)
+        on_port[number] = vuln.id
+        return vuln
+
+    linked = observed(8443)
+    db.add(FindingVulnerability(finding_id=_finding(db, pid).id, vuln_id=linked.id))
+    promoted = observed(8444, by_history=True)                   # the port is found by its history
+    db.add(Finding(project_id=pid, title="Promoted", severity="high", status="open", source="scanner",
+                   vuln_id=promoted.id))
+    proposed = observed(8445)
+    db.add(AgentProposal(project_id=pid, kind="promote_observation", status="pending", source="agent",
+                         vulnerability_id=proposed.id, payload={}))
+    observed(8446)                                               # nobody refers to it: both go
+    _port(db, host, 8447, stamp=target)                          # nothing on it
+    db.commit()
+    return target, host.id, on_port
+
+
+def _observation_ports(db, host_id):
+    db.expire_all()
+    numbers = dict(db.query(models.Port.id, models.Port.port_number).filter_by(host_id=host_id))
+    return {v.id: numbers.get(v.port_id) for v in db.query(Vulnerability).filter_by(host_id=host_id)}
+
+
+def test_a_kept_observation_keeps_its_port_and_a_port_with_none_still_goes(client, db_session, test_project):
+    """Owner decision 2026-10-10: an observation kept because a finding or a
+    proposal refers to it keeps the port it sits on, even when only the
+    deleted scan created that port.  The preview says the same."""
+    pid = test_project.id
+    target, host_id, on_port = _ports_under_observations(db_session, pid)
+    target_id = target.id
+
+    preview = client.get(_url(pid, target_id, "/deletion-impact")).json()
+    response = client.delete(_url(pid, target_id))
+
+    assert response.status_code == 200, response.text
+    assert _port_numbers(db_session, host_id) == [22, 8443, 8444, 8445]
+    # Each kept observation still names its port; the one nobody referred to is gone.
+    assert _observation_ports(db_session, host_id) == {
+        on_port[8443]: 8443, on_port[8444]: 8444, on_port[8445]: 8445}
+    assert preview["ports_removed_on_kept_hosts"] == response.json()["ports_removed_on_kept_hosts"] == 2
+    assert (preview["vulnerabilities_removed"], preview["vulnerabilities_kept"]) == (1, 3)
+    assert response.json()["vulnerabilities_removed"] == 1
+
+
+def test_the_cleanup_of_an_unfinished_import_keeps_the_same_ports(db_session, test_project):
+    """The port step is shared: the automatic cleanup follows the same rule."""
+    target, host_id, on_port = _ports_under_observations(db_session, test_project.id)
+
+    removed = delete_partial_scan(db_session, target.id)
+    db_session.commit()
+
+    assert _port_numbers(db_session, host_id) == [22, 8443, 8444, 8445]
+    assert _observation_ports(db_session, host_id) == {
+        on_port[8443]: 8443, on_port[8444]: 8444, on_port[8445]: 8445}
+    assert (removed["ports"], removed["observations"]) == (2, 1)
+
+
 def _attach_update_pointer(db, host, target, other):
     host.last_updated_scan_id = other.id
 
@@ -945,6 +1018,8 @@ def test_the_preview_says_exactly_what_the_delete_then_does(client, db_session, 
     promoted = _vuln(db_session, shared, target, "promoted")
     _reported(db_session, promoted, target)
     db_session.add(FindingVulnerability(finding_id=_finding(db_session, pid).id, vuln_id=promoted.id))
+    # The kept observation sits on a port only the target created: the port stays with it.
+    promoted.port_id = _port(db_session, shared, 8004, stamp=target).id
     db_session.add(models.WebInterface(
         scan_id=target.id, host_id=shared.id, source="httpx", url="http://10.68.1.1/"))
 

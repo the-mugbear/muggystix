@@ -30,7 +30,7 @@
  * list, the recent-activity column and the Project state section went
  * (Agent Sessions, Collaboration and Posture hold them).
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, Loader2, MessageCircleQuestion, RefreshCw, Sparkles } from 'lucide-react';
@@ -39,7 +39,6 @@ import {
   OperationsBlockers,
   SinceLastVisit,
   WorkbenchResponse,
-  getProjectCoverage,
   getWorkbench,
   getInvestigationQueue,
   markWorkbenchSeen,
@@ -50,7 +49,7 @@ import { projectRoleAtLeast } from '../utils/projectRole';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useCanStartAgentSession } from '../hooks/useCanStartAgentSession';
-import { invalidateReads, queryErrorText } from '../lib/query';
+import { invalidateReads, pollEvery, queryErrorText } from '../lib/query';
 import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
 import AgentSessionsLine from '../components/operations/AgentSessionsLine';
 import OperationsTabs from '../components/operations/OperationsTabs';
@@ -84,6 +83,10 @@ const oldestLoad = (...loadedAt: number[]): Date | null => {
 const LIGHT_WORKBENCH = { includeInvestigate: false, includeRows: false } as const;
 /** The queue's size: one row is asked for, the totals are whole-queue. */
 const QUEUE_TOTAL_ONLY = { limit: 1 } as const;
+/** How often the page's COUNTS are read again while it is open (owner,
+ *  2026-10-10).  The two count reads only — never the list on screen: that
+ *  re-read is the reader's (Refresh, a page, an action). */
+const COUNTS_POLL_MS = 60_000;
 
 const IMPORT_ERRORS_PATH = '/parse-errors?status=needs_attention';
 
@@ -254,32 +257,39 @@ const Operations: React.FC = () => {
     || projectRoleAtLeast(currentProject.my_role, 'analyst');
 
   const queryClient = useQueryClient();
-  // Three independent reads, in parallel; each isolates its own failure, so
+  // Two independent reads, in parallel; each isolates its own failure, so
   // an outage shows as counts that "could not be checked" instead of
-  // blanking the page.
+  // blanking the page.  The light workbench read is asked again once a
+  // minute while the page is open (5.365.0, `COUNTS_POLL_MS`): the tab badges
+  // and the lead follow what teammates and imports changed.  The queue's
+  // total and the selected tab's list are NOT polled.
   //
-  // Coverage is structural: it says whether the project has scopes and hosts
-  // at all, which decides between the setup blocks and the page — so its
-  // failure raises the page-level error.  (Its scope states and the
-  // scanner-observation counts are shown on Posture since 5.330.0.)
-  const coverageQuery = useQuery({
-    queryKey: ['getProjectCoverage', projectId],
-    queryFn: ({ signal }) => getProjectCoverage(projectId, signal),
-  });
-  const coverage = coverageQuery.data ?? null;
-  const error = queryErrorText(coverageQuery.error, 'Failed to load Operations data.');
   // Operations owns ONE light /workbench read: every tab's count, the
-  // blockers and the since-last-visit diff — no rows (5.331.0).  A tab's rows
-  // are its panel's own request, made when the tab is opened.
+  // blockers, the since-last-visit diff and whether the project has anything
+  // in it — no rows (5.331.0).  A tab's rows are its panel's own request, made
+  // when the tab is opened.
   const workbenchQuery = useQuery({
     queryKey: ['getWorkbench', projectId, LIGHT_WORKBENCH],
     queryFn: ({ signal }) => getWorkbench(projectId, LIGHT_WORKBENCH, signal),
+    ...pollEvery(COUNTS_POLL_MS),
   });
   // Counts that could not be read again are not known: never the previous
   // ones under a failure.
   const workbench: WorkbenchResponse | null = workbenchQuery.isError ? null : workbenchQuery.data ?? null;
-  const workbenchLoading = workbenchQuery.isFetching;
+  // The first load only: a re-read (the minute's, or after an action) keeps
+  // what is on screen until it answers.
+  const workbenchLoading = workbenchQuery.isPending;
   const workbenchError = queryErrorText(workbenchQuery.error, 'Could not load your workbench.');
+  // Structural — whether the project has hosts and scope entries decides
+  // between the setup blocks and the work (5.365.0: it comes with the counts;
+  // the page made a whole scope-coverage request for it).  Unlike a count, it
+  // is kept from the last answer when a re-read fails: a failed minute must
+  // not swap the reader's list for a setup block.  null = never answered.
+  const setup = workbenchQuery.data?.setup ?? null;
+  // The work is shown when the project has hosts — and when the first read
+  // failed: nothing says the project is empty, the counts say they could not
+  // be loaded (with Retry), and each list still answers for itself.
+  const showWork = setup ? setup.has_hosts : workbenchQuery.isError;
 
   // The untouched queue's SIZE, on its own request (v5.304.1: on a large
   // project the queue was most of the workbench's time).  null = not known —
@@ -287,9 +297,12 @@ const Operations: React.FC = () => {
   const pickupQuery = useQuery({
     queryKey: ['getInvestigationQueue', projectId, null, QUEUE_TOTAL_ONLY],
     queryFn: ({ signal }) => getInvestigationQueue(projectId, null, { ...QUEUE_TOTAL_ONLY, signal }),
+    // NOT polled: this runs the queue's ranking statement, the costliest read
+    // of the page on a large project.  Its badge follows Refresh and the
+    // reader's own actions, as before.
   });
   const pickupTotal: number | null = pickupQuery.isError ? null : pickupQuery.data?.queue_total ?? null;
-  const pickupLoading = pickupQuery.isFetching;
+  const pickupLoading = pickupQuery.isPending;
 
   // The tab, the Pick up tier, the Tests kind and the Findings need live in
   // the URL, so a link to "the exploitable criticals", "what is free to
@@ -316,20 +329,13 @@ const Operations: React.FC = () => {
   const setTestKind = useCallback((next: MyTaskReason | null) => setTabFilter('kind', next), [setTabFilter]);
   const setFindingNeed = useCallback((next: FindingNeed | null) => setTabFilter('need', next), [setTabFilter]);
 
-  // §27: do NOT advance the "since last visit" cursor merely because the page
-  // loaded — that silently discarded changes the user never actually reviewed.
-  // It is bootstrapped once, on the genuine first visit (no prior baseline,
-  // so nothing to lose); thereafter it advances only when the user
-  // acknowledges the banner, so a glance doesn't discard unreviewed changes.
-  const { mutate: bootstrapSeen } = useMutation({ mutationFn: () => markWorkbenchSeen(projectId) });
-  const seenBootstrappedRef = useRef(false);
-  const isFirstVisit = workbench?.since_last_visit.is_first_visit === true;
-  useEffect(() => {
-    if (!isFirstVisit || seenBootstrappedRef.current) return;
-    seenBootstrappedRef.current = true;
-    bootstrapSeen();
-  }, [isFirstVisit, bootstrapSeen]);
-
+  // §27: the "since last visit" cursor does NOT advance merely because the
+  // page loaded (or re-read its counts) — that silently discarded changes the
+  // user never actually reviewed.  The SERVER starts it on the reader's first
+  // read of the project (no prior baseline, so nothing to lose; 5.365.0 — the
+  // page sent a write from an effect for it); thereafter it advances only
+  // when the reader acknowledges the banner.
+  //
   // Acknowledge the snapshot that was DISPLAYED (its `as_of`), not "now": a
   // scan that landed after the page loaded must resurface.  The banner only
   // goes once the cursor is saved — a silent failure brought the same changes
@@ -349,17 +355,16 @@ const Operations: React.FC = () => {
   const dismissSince = () => acknowledge.mutate({ asOf: sinceAsOf, snapshot: snapshotAt });
   const sinceError = queryErrorText(acknowledge.error, 'Could not save the acknowledgement. Try again.');
 
-  // Retry on the counts' failure: the page's three reads again.
+  // Retry on the counts' failure: the page's two reads again.
   const reload = () => {
-    void coverageQuery.refetch();
     void workbenchQuery.refetch();
     void pickupQuery.refetch();
   };
 
-  // The page Refresh reaches everything on it: the three reads above, the
+  // The page Refresh reaches everything on it: the two reads above, the
   // selected tab's list — from its first page — and the agent-sessions line.
-  // (After an action in a list the same reads are repeated without the
-  // structural one: `useOperationsChanged`.)
+  // (After an action in a list the Operations reads are repeated:
+  // `useOperationsChanged`.)
   const { reset: resetAcknowledge } = acknowledge;
   const refreshAll = useCallback(() => {
     resetAcknowledge();
@@ -368,13 +373,12 @@ const Operations: React.FC = () => {
       params.delete('page');
       setPageParams(params, { replace: true });
     }
-    void invalidateReads(queryClient, 'getProjectCoverage', ...OPERATIONS_READS, 'listAgentSessions');
+    void invalidateReads(queryClient, ...OPERATIONS_READS, 'listAgentSessions');
   }, [pageParams, queryClient, resetAcknowledge, setPageParams]);
 
-  // FRX·CRIT-2: brand-new projects (no scopes AND no hosts) see the welcome
+  // FRX·CRIT-2: brand-new projects (no scope ROW and no hosts) see the welcome
   // block alone — Refresh chrome just adds noise before anything exists.
-  const isBrandNewProject =
-    !!coverage && coverage.total_hosts === 0 && coverage.total_scopes === 0;
+  const isBrandNewProject = !!setup && !setup.has_hosts && setup.scope_rows === 0;
 
   // v4.29.0 — the agent-session entry.  Lives on Operations because it's the
   // project-level coordination hub.  Since 5.313.0 it is the ONLY way an agent
@@ -415,11 +419,11 @@ const Operations: React.FC = () => {
   const tab = urlTab ?? defaultTab;
   // A link that opens a tab of this page, keeping the page's parameters.
   const toTab = (target: OperationsTab, filter?: TabFilter | null) => tabSearch(pageParams, target, filter);
-  // One freshness for the page: the OLDEST of its loads (a read that failed
-  // again keeps the time it last succeeded).
+  // One freshness for the page: the OLDEST of its counts' loads (a read that
+  // failed again keeps the time it last succeeded).
   const lastFetched = useMemo(
-    () => oldestLoad(workbenchQuery.dataUpdatedAt, coverageQuery.dataUpdatedAt),
-    [workbenchQuery.dataUpdatedAt, coverageQuery.dataUpdatedAt],
+    () => oldestLoad(workbenchQuery.dataUpdatedAt, pickupQuery.dataUpdatedAt),
+    [workbenchQuery.dataUpdatedAt, pickupQuery.dataUpdatedAt],
   );
 
   return (
@@ -456,7 +460,7 @@ const Operations: React.FC = () => {
               compact
               lastFetched={lastFetched}
               onRefresh={refreshAll}
-              isLoading={coverageQuery.isFetching}
+              isLoading={workbenchQuery.isFetching}
               label="Operations"
             />
           </>
@@ -469,16 +473,21 @@ const Operations: React.FC = () => {
         mySessions={myAssistSessions}
       />
 
-      {error && (
-        <Alert variant="destructive" className="mb-md">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+      {/* Until the counts' first answer nothing says what the project holds:
+          neither a setup block nor the tab bar is guessed. */}
+      {workbenchLoading && (
+        <div role="status" aria-label="Loading your work…" className="flex max-w-3xl flex-col gap-xs">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="h-6 animate-pulse rounded-control bg-muted" aria-hidden />
+          ))}
+        </div>
       )}
 
       {/* 5.332.2 — "declared" is a subnet entry, not the scope row: every
           project has its one (empty) scope from creation, and a new project
-          was told "Scope is registered — scan your registered scope". */}
-      {coverage && coverage.total_hosts === 0 && !coverage.scopes.some((s) => s.subnet_count > 0) && (
+          was told "Scope is registered — scan your registered scope".
+          (`setup.has_scopes` is exactly that: a scope with an entry.) */}
+      {setup && !setup.has_hosts && !setup.has_scopes && (
         <SetupBlock title="Welcome — let's set up this project">
           This project has no scope entries or scans yet. Start by registering the network ranges
           you're authorized to assess — everything else (coverage, triage, tests, agent
@@ -492,7 +501,7 @@ const Operations: React.FC = () => {
         </SetupBlock>
       )}
 
-      {coverage && coverage.scopes.some((s) => s.subnet_count > 0) && coverage.total_hosts === 0 && (
+      {setup && setup.has_scopes && !setup.has_hosts && (
         <SetupBlock title="Scope is registered — time to discover hosts">
           No hosts have been discovered yet. The fastest way to get started is to have your
           agent <strong className="text-foreground">scan</strong> your registered scope and
@@ -502,9 +511,8 @@ const Operations: React.FC = () => {
               <AgentTaskButton
                 variant="default"
                 label="Scan with your agent"
-                instruction={agentInstruction.scanScope(
-                  coverage.scopes.length === 1 ? coverage.scopes[0].scope_id : undefined,
-                )}
+                // The scope is named when the project has exactly one.
+                instruction={agentInstruction.scanScope(setup.only_scope_id ?? undefined)}
               />
             )}
             <Button size="sm" variant="outline" onClick={() => navigate('/scans')}>
@@ -514,7 +522,7 @@ const Operations: React.FC = () => {
         </SetupBlock>
       )}
 
-      {coverage && coverage.total_hosts > 0 && (
+      {showWork && (
         // One column (UI_STYLE_GUIDE §7, §42): a lead sentence, the callouts,
         // the tab bar, the ONE selected list.  No measures strip (5.330.0):
         // the page's counts are in the lead and on the tabs, and project
@@ -523,16 +531,18 @@ const Operations: React.FC = () => {
           {workbench && !workbenchError && (
             <OperationsLead workbench={workbench} counts={counts} toTab={toTab} />
           )}
-          {workbenchError && !workbenchLoading && (
+          {workbenchError && (
             // The counts could not be read: the tabs say "—", and each list
-            // still answers for itself.
+            // still answers for itself.  It stays while the counts are asked
+            // again (the minute's re-read, or Retry — which then spins), so a
+            // failing server does not make it blink.
             <Alert variant="destructive">
               <AlertTitle>Couldn't load your work's counts</AlertTitle>
               <AlertDescription>
                 <p className="break-words">{workbenchError}</p>
                 <p className="mt-xxs">The tabs below still load their own lists; a count shown as “—” could not be checked.</p>
-                <Button size="sm" variant="outline" className="mt-xs" onClick={reload}>
-                  <RefreshCw className="size-3.5" aria-hidden /> Retry
+                <Button size="sm" variant="outline" className="mt-xs" onClick={reload} disabled={workbenchQuery.isFetching}>
+                  <RefreshCw className={cn('size-3.5', workbenchQuery.isFetching && 'animate-spin')} aria-hidden /> Retry
                 </Button>
               </AlertDescription>
             </Alert>

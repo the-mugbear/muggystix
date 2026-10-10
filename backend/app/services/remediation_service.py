@@ -418,6 +418,25 @@ def overdue_breakdown_by_project(db, project_ids: Sequence[int], policy: deadlin
     return out
 
 
+def verification_counts_by_project(db, project_ids: Sequence[int]) -> dict[int, dict[str, int]]:
+    """Each project's rows where the contact's record and the assessor's
+    conclusion disagree — the list's ``verification_counts``, with the same
+    rows (``_rows``) and the same expression
+    (``remediation_policy.verification_expr``), for a cross-project reader.
+    Keyed by the verification's own name, so a count opens
+    ``?verification=<key>``.  Every id is present."""
+    out = {pid: {name: 0 for name in deadlines.VERIFICATIONS} for pid in project_ids}
+    if not out:
+        return out
+    verification_of = deadlines.verification_expr()
+    for pid, gap, n in (_rows(db, list(out)).filter(verification_of.isnot(None))
+                        .with_entities(Finding.project_id, verification_of, func.count())
+                        .group_by(Finding.project_id, verification_of)):
+        if gap in out[pid]:
+            out[pid][gap] = n
+    return out
+
+
 def _iso(value):
     return value.isoformat() if value is not None else None
 

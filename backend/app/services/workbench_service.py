@@ -6,15 +6,18 @@ code, relative to the key's operator.  The section aggregations themselves
 live in ``operations_read_service``; this module composes them and computes
 the durable per-user "since your last visit" diff (``operations_cursors``).
 
-Reading never moves the cursor: only ``POST /workbench/seen`` (a person
-acknowledging what they were shown) does.
+Nothing in this module moves the cursor, so an agent's read never does.  A
+person's does twice, both in the ``/workbench`` router: their FIRST read of a
+project starts it (``GET /workbench``, v2.476.0 — there is nothing to compare
+against yet, so nothing is swallowed), and after that only ``POST
+/workbench/seen`` (acknowledging what they were shown) advances it.
 """
 import logging
 from datetime import datetime, timezone
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from sqlalchemy import func, String
+from sqlalchemy import func, select, String
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -95,7 +98,28 @@ class MyWorkTotals(BaseModel):
     to_claim: int = 0
 
 
+class ProjectSetup(BaseModel):
+    """Whether the project has anything in it yet (v2.476.0) — what Operations
+    needs to choose between its setup blocks and the work.  (The page read the
+    whole scope-coverage answer for these.)  One statement of ``EXISTS`` and
+    two scalars over the project's few scope rows."""
+    #: The project has at least one host.
+    has_hosts: bool = False
+    #: A scope of the project has at least one subnet ENTRY.  The scope row
+    #: every project gets at creation says nothing, and a domain alone does
+    #: not count (owner, 2026-10-10: a domain-only project is still set up).
+    has_scopes: bool = False
+    #: The project's scope ROWS, entries or not (0 only where the one from
+    #: creation was deleted).
+    scope_rows: int = 0
+    #: The scope's id when the project has exactly one — what a "scan the
+    #: scope" task names; null with none or several.
+    only_scope_id: Optional[int] = None
+
+
 class WorkbenchResponse(BaseModel):
+    # Project-wide and structural; in the light call too.
+    setup: ProjectSetup = Field(default_factory=ProjectSetup)
     my_queue: MyAttentionResponse = Field(default_factory=MyAttentionResponse)
     my_tasks: MyTasksResponse = Field(default_factory=MyTasksResponse)
     # "What was I just doing?" — the caller's latest authored notes.  (Notes
@@ -134,6 +158,32 @@ class WorkbenchResponse(BaseModel):
     # block — hosts, tested, untouched with a critical observation — went in
     # v2.451.0: project status is Posture's and the coverage read's.)
     my_work: MyWorkTotals = Field(default_factory=MyWorkTotals)
+
+
+def compute_project_setup(db: Session, project: Project) -> ProjectSetup:
+    """``ProjectSetup`` in ONE statement: two ``EXISTS`` (each stops at its
+    first row) and a count / min over the project's scope rows."""
+    scope_of_project = models.Scope.project_id == project.id
+    has_hosts = select(models.Host.id).where(models.Host.project_id == project.id).exists()
+    has_scopes = (
+        select(models.Subnet.id)
+        .join(models.Scope, models.Subnet.scope_id == models.Scope.id)
+        .where(scope_of_project)
+        .exists()
+    )
+    row = db.execute(select(
+        has_hosts,
+        has_scopes,
+        select(func.count(models.Scope.id)).where(scope_of_project).scalar_subquery(),
+        select(func.min(models.Scope.id)).where(scope_of_project).scalar_subquery(),
+    )).one()
+    scope_rows = int(row[2] or 0)
+    return ProjectSetup(
+        has_hosts=bool(row[0]),
+        has_scopes=bool(row[1]),
+        scope_rows=scope_rows,
+        only_scope_id=row[3] if scope_rows == 1 else None,
+    )
 
 
 def get_cursor(db: Session, user_id: int, project_id: int) -> Optional[OperationsCursor]:
@@ -238,6 +288,9 @@ def compute_workbench(
     same function called here, so a tab's count is the size of its list.  The
     agents' read keeps the previews."""
     preview = (lambda n: n) if include_rows else (lambda n: 0)
+    # Structural, and not caught: without it the page cannot tell a project
+    # with nothing in it from one with work, so its failure is the read's.
+    setup = compute_project_setup(db, project)
     my_queue = compute_my_attention_queue(db, current_user, project, limit=preview(10))
     # Per group (assigned / on hosts in review / to claim), so no group's
     # rows are cut by another's.
@@ -292,6 +345,7 @@ def compute_workbench(
         blockers = OperationsBlockers()
         blockers_unavailable = True
     return WorkbenchResponse(
+        setup=setup,
         my_work=my_work,
         my_queue=my_queue,
         my_tasks=my_tasks,

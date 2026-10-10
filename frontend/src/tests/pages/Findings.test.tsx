@@ -364,6 +364,70 @@ describe('Findings — a change is followed by the list as the server has it', (
     expect(cursorRow()).toHaveTextContent('Finding 2');
   });
 
+  // Owner decision 44 (2026-10-10): the change was saved, the re-read then
+  // failed, and the page swapped the rows for "could not be loaded" — the
+  // reader could not see what they had just changed.  The rows stay; the
+  // failed refresh is said above them, with Retry, and not as a toast.
+  it('a re-read that FAILS after a saved change keeps the rows and says the refresh failed, with Retry', async () => {
+    const down = Object.assign(new Error('boom'), {
+      isAxiosError: true, response: { status: 503, data: { detail: 'The database is busy.' } },
+    });
+    mocked.listFindings
+      .mockResolvedValueOnce(three())
+      .mockRejectedValueOnce(down);
+    mocked.setFindingStatus.mockResolvedValue(makeFinding(1, { status: 'confirmed' }));
+    renderFindings('/findings?status=all');
+    await screen.findByText('Finding 1');
+    await chooseStatus('Finding 1', 'Confirmed');
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The list could not be refreshed');
+    expect(alert).toHaveTextContent('The database is busy.');
+    expect(alert).not.toHaveTextContent('This is not an empty list');
+    // The rows are still there — the changed one as the server answered it.
+    expect(screen.getByText('Finding 1')).toBeInTheDocument();
+    expect(screen.getByText('Finding 2')).toBeInTheDocument();
+    expect(screen.getByText('Finding 3')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Change status for Finding 1' })).toHaveTextContent('Confirmed');
+    expect(screen.getByRole('status')).toHaveTextContent('3 findings');
+    expect(screen.getByRole('status')).not.toHaveTextContent('could not be loaded');
+    // They are this filter's rows: still usable.
+    expect(screen.getByLabelText('Select Finding 2')).toBeEnabled();
+    // A failed READ is said in place, not as a toast.
+    expect(toastMock.error).not.toHaveBeenCalled();
+
+    // Retry: the rows stay while it asks, and the line goes when it answers.
+    let answer!: (r: ReturnType<typeof two>) => void;
+    mocked.listFindings.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(mocked.listFindings).toHaveBeenCalledTimes(3));
+    expect(screen.getByText('Finding 2')).toBeInTheDocument();
+    expect(screen.getByRole('status')).not.toHaveTextContent('Loading');
+    answer(two());
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('2 findings'));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('Finding 1')).toBeNull();
+  });
+
+  it('a bulk change whose re-read fails keeps the rows too', async () => {
+    mocked.listFindings
+      .mockResolvedValueOnce(three())
+      .mockRejectedValueOnce(new Error('boom'));
+    mocked.bulkAssignFindings.mockResolvedValue({ affected: 1, requested: 1, skipped_ids: [] });
+    renderFindings('/findings?status=all');
+    await selectFinding(1);
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Assign selected findings to a user' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('option', { name: 'Unassigned' }));
+    await waitFor(() => expect(mocked.bulkAssignFindings).toHaveBeenCalledWith(1, [1], null));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The list could not be refreshed');
+    expect(screen.getByText('Finding 1')).toBeInTheDocument();
+    expect(screen.getByText('Finding 3')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('3 findings');
+  });
+
   it('a refused change reads nothing again', async () => {
     mocked.listFindings.mockResolvedValue(three());
     mocked.setFindingStatus.mockRejectedValue(new Error('refused'));

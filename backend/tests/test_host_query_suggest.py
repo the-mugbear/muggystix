@@ -198,3 +198,22 @@ def test_every_value_source_is_enumerable_or_deliberately_not():
             assert spec.enum_values, spec.name
     # "free" is for text there is nothing to enumerate from — keep it that way.
     assert {s.name for s in _FIELD_SPECS if s.value_source == "free"} == {"note"}
+
+
+def test_predicates_over_scanner_rows_say_scanner_observation_not_finding():
+    """A scanner row is a scanner observation until someone promotes it; a
+    finding is what the team concluded.  The query bar's help is rendered from
+    these descriptions, so a predicate that reads `vulnerabilities` must not
+    call its rows findings."""
+    by_name = {s.name: s for s in _FIELD_SPECS}
+    texts = {name: by_name[name].description for name in ("cve", "vuln", "exploitport")}
+    has = by_name["has"].enum_descriptions
+    texts.update({
+        f"has:{k}": has[k]
+        for k in ("exploit", "critical_exploit", "critical", "high", "medium", "low")
+    })
+    for name, text in texts.items():
+        assert "scanner observation" in text, name
+        assert "finding" not in text.lower(), name
+    # A promoted or written finding IS work on a host: that word stays.
+    assert "finding" in has["untouched"]

@@ -111,9 +111,11 @@ def only_this_scan_saw(scan_id: int):
     )
 
 
-def _work_refers_to_it():
+def work_refers_to_it():
     """Condition on ``Vulnerability``: a finding or a proposal refers to the
-    row — a person's or an agent's work, which a scan delete never removes."""
+    row — a person's or an agent's work, which a scan delete never removes.
+    The port such a row sits on stays with it: the port step's guard
+    (``ingestion_service._port_is_only_this_attempts``) asks this too."""
     return or_(
         exists().where(Finding.vuln_id == Vulnerability.id),
         exists().where(FindingVulnerability.vuln_id == Vulnerability.id),
@@ -125,13 +127,13 @@ def removed_with_scan(scan_id: int):
     """Condition on ``Vulnerability``: the rows ``release_scan`` deletes —
     only this scan reported them and no finding or proposal refers to them.
     The deletion preview counts with it."""
-    return and_(only_this_scan_saw(scan_id), ~_work_refers_to_it())
+    return and_(only_this_scan_saw(scan_id), ~work_refers_to_it())
 
 
 def kept_without_scan(scan_id: int):
     """Condition on ``Vulnerability``: only this scan reported the row, and a
     finding or a proposal refers to it — it stays, with no scan behind it."""
-    return and_(only_this_scan_saw(scan_id), _work_refers_to_it())
+    return and_(only_this_scan_saw(scan_id), work_refers_to_it())
 
 
 def another_scan_reported(kind: str, scan_id: int, thing: Any = None):

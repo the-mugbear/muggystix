@@ -271,3 +271,47 @@ def test_endpoint_serves_the_registry_and_filters_by_status(client, db_session):
     assert all(t["status"] == "reference" for t in reference["tools"])
     nmap = next(t for t in reference["tools"] if t["name"] == "nmap")
     assert nmap["phases"] and nmap["intrusive"] is not None
+
+
+def test_the_registry_row_carries_its_run_command(client, db_session):
+    """The invocation that writes a file BlueStick can ingest is the row's own
+    (v2.476.0) — it was a table typed into the Tool reference page.  Only a
+    tool with a parser has one, and it is reference text, never a permission."""
+    _seed(db_session)
+    tools = {t["name"]: t for t in client.get("/api/v1/references/tools").json()["tools"]}
+
+    assert tools["nmap"]["run_command"] == "nmap -sV -sC -O -oX scan.xml <target>"
+    assert tools["nmap"]["run_note"].startswith("Upload scan.xml")
+    # Every row answers both keys; a tool nobody wrote a command for says null.
+    assert all({"run_command", "run_note"} <= set(t) for t in tools.values())
+    assert tools["amap"]["run_command"] is None and tools["amap"]["run_note"] is None
+
+    with_command = {name for name, t in tools.items() if t["run_command"]}
+    assert len(with_command) >= 20
+    assert all(tools[name]["ingestible"] for name in with_command), (
+        "a run command says how to make a file BlueStick reads: "
+        f"{sorted(n for n in with_command if not tools[n]['ingestible'])}"
+    )
+
+
+def test_an_upgraded_install_holds_the_seeds_run_commands():
+    """Seeding never overwrites, so an existing deployment's rows were filled by
+    revision f5c2a0d7b4e6 and a fresh one's by the seed file: the two must say
+    the same thing.  A later correction of a shipped command is a NEW revision
+    (plus the seed); compare the seed with that revision's word then."""
+    import importlib.util
+    from pathlib import Path
+
+    path = next(
+        (Path(__file__).resolve().parent.parent / "alembic" / "versions").glob("f5c2a0d7b4e6_*.py")
+    )
+    spec = importlib.util.spec_from_file_location("rev_f5c2a0d7b4e6", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    seeded = {
+        row["name"]: (row["run_command"], row.get("run_note"))
+        for row in registry.load_seed()
+        if row.get("run_command")
+    }
+    assert seeded == module._RUN_COMMANDS

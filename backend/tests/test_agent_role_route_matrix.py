@@ -40,6 +40,10 @@ MATRIX = [
     # signed-in user's, so the agent's is every member's.
     ("writing guidance", "GET", "/api/v1/agent/assist/writing-guidance",
      {"analyst": True, "auditor": True, "viewer": True}),
+    # v2.476.0 — the Operations "Findings" tab (GET /workbench/findings) is
+    # every member's own page, so the agent's whole-list read is too.
+    ("findings that need me", "GET", "/api/v1/agent/assist/workbench/findings",
+     {"analyst": True, "auditor": True, "viewer": True}),
     ("bulk export", "GET", "/api/v1/agent/assist/report-context.ndjson",
      {"analyst": True, "auditor": True, "viewer": False}),
     ("project write", "POST", "/api/v1/agent/hosts/{host_id}/notes",
@@ -189,6 +193,14 @@ def test_every_agent_read_declares_its_pages_floor_and_no_other():
     declared = _declared_read_floors()
     above_default = {path: role for path, role in declared.items() if role != "viewer"}
     assert above_default == READ_FLOORS
+
+
+def test_findings_that_need_me_is_a_members_read_like_its_page():
+    """``GET /projects/{id}/workbench/findings`` asks for membership only
+    (``get_current_project``); the agent read declares the same floor on its
+    route."""
+    declared = _declared_read_floors()
+    assert declared[f"{_A}/assist/workbench/findings"] == "viewer"
 
 
 def test_bulk_export_routes_are_not_left_on_the_default():

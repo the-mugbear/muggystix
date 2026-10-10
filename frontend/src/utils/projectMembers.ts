@@ -35,6 +35,11 @@ export const PROJECT_ROLES: ProjectRoleOption[] = [
   { value: 'viewer', label: 'Viewer', can: 'read the inventory' },
 ];
 
+/** The role an add-member form starts on, on every screen that has one
+ *  (owner decision 2026-10-10): the lowest.  A higher role is a choice the
+ *  person adding makes, never what an unread form sends. */
+export const DEFAULT_MEMBER_ROLE = 'viewer';
+
 export const projectRoleLabel = (role: string): string =>
   PROJECT_ROLES.find((r) => r.value === role)?.label ?? role;
 

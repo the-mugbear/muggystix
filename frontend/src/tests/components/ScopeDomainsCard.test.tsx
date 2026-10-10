@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 
 import * as api from '../../services/api';
 import ScopeDomainsCard from '../../components/ScopeDomainsCard';
@@ -7,8 +7,9 @@ import { TooltipProvider } from '../../components/ui/tooltip';
 
 const toastMock = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() };
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
+const confirmMock = vi.hoisted(() => vi.fn());
 vi.mock('../../hooks/useConfirm', () => ({
-  useConfirm: () => [null, vi.fn().mockResolvedValue(false)],
+  useConfirm: () => [null, confirmMock],
 }));
 vi.mock('../../services/api', () => ({
   listScopeDomains: vi.fn().mockResolvedValue({
@@ -25,12 +26,65 @@ vi.mock('../../services/api', () => ({
   deleteScopeDomain: vi.fn(),
 }));
 
-const renderCard = () =>
+const renderCard = (canEdit = true) =>
   render(
     <TooltipProvider>
-      <ScopeDomainsCard scopeId={1} />
+      <ScopeDomainsCard scopeId={1} canEdit={canEdit} />
     </TooltipProvider>,
   );
+
+beforeEach(() => {
+  confirmMock.mockReset();
+  confirmMock.mockResolvedValue(false);
+});
+
+// Owner decision 42: removal is in the row's "⋯" menu, as the subnet table's
+// delete on the same page — never an icon on the row (style guide §47).
+describe('ScopeDomainsCard removing', () => {
+  const deleteMock = () => (api as unknown as { deleteScopeDomain: ReturnType<typeof vi.fn> }).deleteScopeDomain;
+  const openMenu = (domain: string) => {
+    const actions = screen.getByRole('button', { name: `Actions for ${domain}` });
+    // Radix opens a menu on pointer-down, or from the keyboard.
+    actions.focus();
+    fireEvent.keyDown(actions, { key: 'Enter' });
+    return screen.findByRole('menuitem', { name: /Remove from scope…/ });
+  };
+
+  it('a row has no remove icon; its menu holds "Remove from scope…", which asks first', async () => {
+    deleteMock().mockClear();
+    renderCard();
+    await waitFor(() => expect(screen.getByText('*.acme.com')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /Remove .* from scope/ })).toBeNull();
+
+    fireEvent.click(await openMenu('acme.com'));
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledTimes(1));
+    expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Remove domain from scope',
+      body: expect.stringContaining('acme.com and all subdomains will no longer be in scope'),
+      confirmLabel: 'Remove',
+    }));
+    // Not confirmed: nothing is sent.
+    expect(deleteMock()).not.toHaveBeenCalled();
+  });
+
+  it('confirmed: that entry is removed and it is said', async () => {
+    deleteMock().mockClear();
+    deleteMock().mockResolvedValue(undefined);
+    confirmMock.mockResolvedValue(true);
+    renderCard();
+    await waitFor(() => expect(screen.getByText('portal.acme.com')).toBeInTheDocument());
+    fireEvent.click(await openMenu('portal.acme.com'));
+    await waitFor(() => expect(deleteMock()).toHaveBeenCalledWith(1, 1, 2));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Removed portal.acme.com from scope'));
+  });
+
+  it('a reader gets no row menu', async () => {
+    renderCard(false);
+    await waitFor(() => expect(screen.getByText('*.acme.com')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /Actions for/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Remove/ })).toBeNull();
+  });
+});
 
 describe('ScopeDomainsCard tooltips', () => {
   it('explains every derived presentation with its own (i)', async () => {

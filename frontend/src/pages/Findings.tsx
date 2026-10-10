@@ -372,8 +372,17 @@ const FindingsList: React.FC = () => {
   // This filter's answer is not here yet (the first load, a new filter), or a
   // failed load is being asked for again.  A re-read after a change is
   // neither: the rows on screen are this filter's and stay as they are.
-  const loading = listQuery.isPending || previousRows || (listQuery.isError && listQuery.isFetching);
-  const error = queryErrorText(listQuery.error, LOAD_FAILED);
+  // A failed read is one of two things (owner decision 2026-10-10).  With no
+  // rows of THIS filter (the first load, a new filter) it is a failed LOAD:
+  // the table says so and shows nothing — "a failed Findings load must not
+  // read 0 findings".  With this filter's rows already on screen (the re-read
+  // after a change, which keeps `data` beside `error`) it is a failed REFRESH:
+  // the rows stay, usable, and a line above them says they may be out of date.
+  const ownRows = listQuery.data !== undefined && !previousRows;
+  const readFailure = queryErrorText(listQuery.error, LOAD_FAILED);
+  const loading = listQuery.isPending || previousRows || (listQuery.isError && !ownRows && listQuery.isFetching);
+  const error = ownRows ? null : readFailure;
+  const refreshError = ownRows && !listQuery.isFetching ? readFailure : null;
   // A failed load is said in the table and as a toast.
   useEffect(() => { if (error) toast.error(error); }, [error, toast]);
 
@@ -671,6 +680,17 @@ const FindingsList: React.FC = () => {
           §7). overflow-x-auto per the Table primitive's documented usage —
           keeps the fixed-width columns from forcing page-level overflow. */}
       <section aria-label="Findings" aria-busy={previousRows || undefined}>
+          {/* The re-read after a change failed: the rows below are as last
+              read (with the change's own answer), not replaced by an error. */}
+          {refreshError && (
+            <p role="alert" className="mb-xs break-words text-metadata text-destructive">
+              The list could not be refreshed, so it may be out of date.
+              {refreshError !== LOAD_FAILED && ` ${refreshError}`}{' '}
+              <button type="button" className="text-info hover:underline" onClick={() => void listQuery.refetch()}>
+                Retry
+              </button>
+            </p>
+          )}
           <div className="overflow-x-auto">
           <Table className="table-fixed">
             <TableHeader>

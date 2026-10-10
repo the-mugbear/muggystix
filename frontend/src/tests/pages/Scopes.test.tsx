@@ -67,7 +67,6 @@ const coverage = {
   recent_out_of_scope_hosts: [
     { host_id: 9, ip_address: '198.51.100.9', hostname: 's09-out-of-scope.eval.test', last_seen: '2026-09-21T20:49:37Z', last_scan_id: 3, last_scan_filename: null },
   ],
-  top_technologies: [],
 };
 
 const scope = {
@@ -149,17 +148,13 @@ describe('Scopes page — screenshot review (v5.288.0)', () => {
   });
 
   // 5.332.1 (owner, 2026-10-02) — the page is about what is authorised;
-  // "Technologies observed" was removed from it.
+  // "Technologies observed" was removed from it, and the coverage read no
+  // longer carries `top_technologies` (backend, owner decision 2026-10-10).
   it('lists no technologies: the page is about scope', async () => {
-    mocked.getScopeCoverage.mockResolvedValue({
-      ...coverage,
-      top_technologies: [{ name: 'Nginx 1.24.0', host_count: 1 }, { name: 'React', host_count: 3 }],
-    });
     renderPage();
     await screen.findByText('Subnets and addresses');
     await waitFor(() => expect(mocked.getScopeCoverage).toHaveBeenCalled());
     expect(screen.queryByText('Technologies observed')).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /Nginx 1\.24\.0/ })).not.toBeInTheDocument();
   });
 
   // v5.289.0 — the edit inputs sat in the ~75px Description column and a

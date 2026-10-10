@@ -34,9 +34,14 @@ describe('LastUpdated', () => {
   it('shows the Auto switch where the page says it is, and tells the page when it is moved', () => {
     const onAutoRefreshChange = vi.fn();
     const { rerender } = show(
-      <LastUpdated lastFetched={new Date()} onRefresh={vi.fn()} autoRefresh={false} onAutoRefreshChange={onAutoRefreshChange} />,
+      <LastUpdated lastFetched={new Date()} onRefresh={vi.fn()} autoRefresh={false} onAutoRefreshChange={onAutoRefreshChange}
+        label="ingestion jobs" />,
     );
-    const auto = screen.getByRole('switch', { name: 'Auto' });
+    // Owner decision 42: the switch's name says what it switches (it was the
+    // bare "Auto"); the visible label is unchanged, and is part of the name.
+    expect(screen.getByText('Auto')).toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: 'Auto' })).toBeNull();
+    const auto = screen.getByRole('switch', { name: 'Auto-refresh ingestion jobs' });
     expect(auto).not.toBeChecked();
     fireEvent.click(auto);
     expect(onAutoRefreshChange).toHaveBeenCalledWith(true);
@@ -44,10 +49,11 @@ describe('LastUpdated', () => {
     expect(auto).not.toBeChecked();
     rerender(
       <TooltipProvider>
-        <LastUpdated lastFetched={new Date()} onRefresh={vi.fn()} autoRefresh onAutoRefreshChange={onAutoRefreshChange} />
+        <LastUpdated lastFetched={new Date()} onRefresh={vi.fn()} autoRefresh onAutoRefreshChange={onAutoRefreshChange}
+          label="ingestion jobs" />
       </TooltipProvider>,
     );
-    expect(screen.getByRole('switch', { name: 'Auto' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: 'Auto-refresh ingestion jobs' })).toBeChecked();
   });
 
   it('runs no timer of its own: with Auto on it never calls the refresh', async () => {

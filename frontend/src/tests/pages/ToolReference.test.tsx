@@ -85,6 +85,31 @@ describe('ToolReference', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
+  // 5.365.0 — the run command is the registry row's own (`run_command` /
+  // `run_note`), no longer a table typed into this page beside the registry.
+  it('shows the run command the registry row carries, and none of its own', async () => {
+    getToolRegistry.mockResolvedValue({
+      count: 2,
+      tools: [
+        tool(), // a row the server gave no command: the page has none to add
+        tool({
+          name: 'newscan',
+          run_command: 'newscan --json -o newscan.json <target>',
+          run_note: 'Upload newscan.json.',
+        }),
+      ],
+    });
+    renderPage();
+
+    expect(
+      await screen.findByRole('button', { name: 'newscan --json -o newscan.json <target>' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Upload newscan.json.')).toBeInTheDocument();
+    // One labelled command on the page (the intro names the label too).
+    expect(screen.getAllByText('Run for BlueStick', { selector: 'span.block' })).toHaveLength(1);
+    expect(screen.queryByText(/nmap -sV/)).not.toBeInTheDocument();
+  });
+
   it('keeps its own sentence when the failure carries no reason', async () => {
     getToolRegistry.mockRejectedValueOnce({});
     renderPage();

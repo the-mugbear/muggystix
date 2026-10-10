@@ -2,7 +2,7 @@ import logging
 from typing import List, Optional
 from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
-from sqlalchemy import case, func, or_, text, true
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, aliased
 from pydantic import BaseModel
 from app.db import models
@@ -507,63 +507,6 @@ def get_scopes(
     ]
 
 
-def _technology_host_counts(db: Session, project_id: int) -> dict:
-    """{technology: hosts reporting it} over the project's web interfaces.
-
-    Distinct hosts, not interfaces; an interface with no host counts as one
-    more (the Python bucketing put ``None`` in the set).  On SQLite (the test
-    fallback, which has no ``json_array_elements_text``) the rows are bucketed
-    in Python as they always were.
-    """
-    WebInterface = models.WebInterface
-    dialect = db.get_bind().dialect.name
-    if dialect != "postgresql":
-        sets: dict = {}
-        for host_id, tech_list in (
-            db.query(WebInterface.host_id, WebInterface.technologies)
-            .filter(WebInterface.project_id == project_id, WebInterface.technologies.isnot(None))
-            .all()
-        ):
-            if not isinstance(tech_list, list):
-                continue
-            for t in tech_list:
-                if isinstance(t, str) and t:
-                    sets.setdefault(t, set()).add(host_id)
-        return {name: len(hosts) for name, hosts in sets.items()}
-
-    # A JSON ``null`` / object / string in the column is not an array:
-    # ``json_array_elements`` raises on it, and Postgres does not promise the
-    # WHERE runs before the set-returning function — so the non-arrays are
-    # replaced by an empty array IN the function's argument.
-    arrays = case(
-        (func.json_typeof(WebInterface.technologies) == "array", WebInterface.technologies),
-        else_=text("'[]'::json"),
-    )
-    element = func.json_array_elements(arrays).table_valued("value")
-    # ``#>> '{}'`` is the element as text; only string elements are names.
-    name = element.c.value.op("#>>")(text("'{}'"))
-    rows = (
-        db.query(
-            name.label("name"),
-            (
-                func.count(func.distinct(WebInterface.host_id))
-                + func.max(case((WebInterface.host_id.is_(None), 1), else_=0))
-            ).label("host_count"),
-        )
-        .select_from(WebInterface)
-        .join(element, true())
-        .filter(
-            WebInterface.project_id == project_id,
-            WebInterface.technologies.isnot(None),
-            func.json_typeof(element.c.value) == "string",
-            name != "",
-        )
-        .group_by(name)
-        .all()
-    )
-    return {row.name: int(row.host_count or 0) for row in rows}
-
-
 @router.get("/coverage", response_model=ScopeCoverageSummary)
 def get_scope_coverage(
     limit: int = Query(25, ge=1, le=200),
@@ -648,26 +591,6 @@ def get_scope_coverage(
         for row in recent_out_of_scope
     ]
 
-    # v2.12.1: top technologies observed on project hosts via the
-    # web_interfaces table.  Counts distinct hosts per tech (not
-    # distinct interfaces) so a single host running both "Nginx" and
-    # "React" adds 1 to each rather than skewing the list.  Null
-    # technologies arrays are skipped.
-    #
-    # review 2026-10-01 R22 — grouped in Postgres, the way ``/hosts/filters/data``
-    # has done since v2.86.5.  This loaded every web interface's technologies
-    # array and bucketed it in Python on each coverage read.  The ORDER and the
-    # cut to ten stay in Python on purpose: one row per distinct technology
-    # comes back (hundreds, not one per interface) and ``name.lower()`` sorts
-    # exactly as before, which the database's collation would not promise.
-    from app.schemas.schemas import TopTechnology
-    tech_counts = _technology_host_counts(db, project.id)
-    top_techs = sorted(
-        ({'name': name, 'host_count': count} for name, count in tech_counts.items()),
-        key=lambda x: (-x['host_count'], x['name'].lower()),
-    )[:10]
-    top_technologies = [TopTechnology(**t) for t in top_techs]
-
     return ScopeCoverageSummary(
         total_scopes=total_scopes,
         total_subnets=total_subnets,
@@ -679,7 +602,6 @@ def get_scope_coverage(
         coverage_percentage=coverage_percentage,
         has_scope_configuration=(total_subnets > 0 or total_domains > 0),
         recent_out_of_scope_hosts=recent_entries,
-        top_technologies=top_technologies,
     )
 
 

@@ -229,13 +229,6 @@ const ExpandableRow: React.FC<{ row: AgentApiCallRow }> = ({ row }) => {
               {refHosts.length > 0 && (
                 <DetailLine label="Host IDs referenced" value={refHosts.join(', ')} mono />
               )}
-              {row.referenced_entry_ids && row.referenced_entry_ids.length > 0 && (
-                <DetailLine
-                  label="Entry IDs referenced"
-                  value={row.referenced_entry_ids.join(', ')}
-                  mono
-                />
-              )}
             </div>
           </TableCell>
         </TableRow>

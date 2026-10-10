@@ -61,6 +61,10 @@ interface HostBulkBarProps {
   selectedIps: string[];
   /** Total hosts matching the active filters (for "select all"). */
   totalMatching: number;
+  /** The most hosts "all matching" reaches — the server's cap, from the same
+   *  list answer as `totalMatching` (`bulk_select_cap`).  null = not stated:
+   *  "all matching" is then not offered (the bar could not say how many). */
+  bulkCap: number | null;
   /** Filter params for the current view — feeds GET /hosts/ids. */
   queryContext: Record<string, string | boolean | number | string[] | undefined>;
   /** Clear the selection (and exit select-all-matching). */
@@ -80,11 +84,6 @@ const STATUS_OPTIONS: Array<{ value: FollowStatus; label: string }> = [
 // Selections at/above this size (or any "all-matching" selection) require a
 // confirmation before the bulk mutation runs.
 const CONFIRM_THRESHOLD = 25;
-
-// Mirrors `_BULK_SELECT_CAP` in backend/app/api/v1/endpoints/hosts.py — the
-// most ids `GET /hosts/ids` returns.  The response still reports `capped`, so
-// a drifted constant is caught at action time rather than silently wrong.
-export const BULK_SELECT_CAP = 5000;
 
 interface PendingAction {
   summary: string;
@@ -114,6 +113,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   selectedIds,
   selectedIps,
   totalMatching,
+  bulkCap,
   queryContext,
   onClear,
   onApplied,
@@ -165,14 +165,18 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
     setAllMatching(false);
   }, [selectedIds.length]);
 
-  // The server resolves at most BULK_SELECT_CAP ids.  Above it, "all matching"
-  // is not what would be acted on, so nothing here may say "all": the button,
-  // the count and the confirmation all name the capped number BEFORE the action
-  // (the post-hoc toast in resolveIds stays as a backstop if the cap changes).
-  const matchingIsCapped = totalMatching > BULK_SELECT_CAP;
-  const reachableMatching = Math.min(totalMatching, BULK_SELECT_CAP);
+  // The server resolves at most `bulkCap` ids — its own number, stated in the
+  // list's answer beside the total (5.365.0: the bar kept a copy of it).  Above
+  // it, "all matching" is not what would be acted on, so nothing here may say
+  // "all": the button, the count and the confirmation all name the capped
+  // number BEFORE the action (the post-hoc toast in resolveIds stays as a
+  // backstop: the filters' matches can grow between the list and the click).
+  const matchingIsCapped = bulkCap != null && totalMatching > bulkCap;
+  const reachableMatching = bulkCap != null ? Math.min(totalMatching, bulkCap) : totalMatching;
+  const capWords = (bulkCap ?? 0).toLocaleString();
   const effectiveCount = allMatching ? reachableMatching : selectedIds.length;
-  const canSelectAll = !allMatching && totalMatching > selectedIds.length && selectedIds.length > 0;
+  const canSelectAll = bulkCap != null && !allMatching
+    && totalMatching > selectedIds.length && selectedIds.length > 0;
 
   // "Every matching host" as ids: asked of the server when an action (or the
   // hand-off to an agent) needs them, under the filters of that moment.
@@ -237,7 +241,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
           `${actionLabel} — ${effectiveCount.toLocaleString()} host${effectiveCount === 1 ? '' : 's'}` +
           (allMatching
             ? matchingIsCapped
-              ? ` — the first ${BULK_SELECT_CAP.toLocaleString()} of the ${totalMatching.toLocaleString()} matching the current filters; the rest are NOT included`
+              ? ` — the first ${capWords} of the ${totalMatching.toLocaleString()} matching the current filters; the rest are NOT included`
               : ' matching the current filters'
             : '') +
           '.',
@@ -282,13 +286,13 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
       {canSelectAll && (
         <Button size="sm" variant="ghost" className="shrink-0" onClick={() => setAllMatching(true)} disabled={working}>
           {matchingIsCapped
-            ? `Select the first ${BULK_SELECT_CAP.toLocaleString()} of ${totalMatching.toLocaleString()} matching`
+            ? `Select the first ${capWords} of ${totalMatching.toLocaleString()} matching`
             : `Select all ${totalMatching.toLocaleString()} matching`}
         </Button>
       )}
       {allMatching && (() => {
         const note = matchingIsCapped
-          ? `The first ${BULK_SELECT_CAP.toLocaleString()} of ${totalMatching.toLocaleString()} matching hosts — bulk actions stop there. Narrow the filters to reach the rest.`
+          ? `The first ${capWords} of ${totalMatching.toLocaleString()} matching hosts — bulk actions stop there. Narrow the filters to reach the rest.`
           : 'Every host matching the current filters, on every page.';
         return (
           <span

@@ -25,6 +25,11 @@ services:
     # and round-trip scripts take the image from here, never a hardcoded tag.
     image: ${POSTGRES_IMAGE:-postgres:16.13}
     logging: *default-logging
+    # No process in the container can gain privileges it did not start with
+    # (a setuid binary, file capabilities).  The entrypoints only DROP them
+    # (root → the service user, via gosu), which this allows.
+    security_opt:
+      - no-new-privileges:true
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255
     # went unnoticed for 24h (the worker silently stopped processing
     # the ingestion queue; restart: no meant Docker never recovered
@@ -110,6 +115,11 @@ services:
         PYTHON_IMAGE:
         INSTALL_DEV:
     logging: *default-logging
+    # No process in the container can gain privileges it did not start with
+    # (a setuid binary, file capabilities).  The entrypoints only DROP them
+    # (root → the service user, via gosu), which this allows.
+    security_opt:
+      - no-new-privileges:true
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255
     # went unnoticed for 24h (the worker silently stopped processing
     # the ingestion queue; restart: no meant Docker never recovered
@@ -151,8 +161,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
-      APP_VERSION: ${APP_VERSION:-2.475.0}
-      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.364.0}
+      APP_VERSION: ${APP_VERSION:-2.476.0}
+      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.365.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -204,6 +214,11 @@ services:
         PYTHON_IMAGE:
         INSTALL_DEV:
     logging: *default-logging
+    # No process in the container can gain privileges it did not start with
+    # (a setuid binary, file capabilities).  The entrypoints only DROP them
+    # (root → the service user, via gosu), which this allows.
+    security_opt:
+      - no-new-privileges:true
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255
     # went unnoticed for 24h (the worker silently stopped processing
     # the ingestion queue; restart: no meant Docker never recovered
@@ -245,7 +260,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.475.0}
+      APP_VERSION: ${APP_VERSION:-2.476.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -274,6 +289,11 @@ services:
         DEBIAN_IMAGE:
         INSTALL_DEV:
     logging: *default-logging
+    # No process in the container can gain privileges it did not start with
+    # (a setuid binary, file capabilities).  The entrypoints only DROP them
+    # (root → the service user, via gosu), which this allows.
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     # Sized for a Quarto render (pandoc + deno) beside the streamed inventory
     # JSON; raise REPORT_WORKER_MEM_LIMIT in .env if client reports with many
@@ -301,7 +321,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.475.0}
+      APP_VERSION: ${APP_VERSION:-2.476.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
       # One sequential loop — a small pool protects the Postgres
       # max_connections budget (4 API workers + ingestion worker + this).
@@ -324,18 +344,23 @@ services:
         REACT_APP_API_URL: ${REACT_APP_API_URL:-https://localhost}
         # Keep this fallback in sync with the APP_VERSION defaults above
         # (lines 49 + 87) and with platform_version.json's "backend".
-        BACKEND_VERSION: ${APP_VERSION:-2.475.0}
+        BACKEND_VERSION: ${APP_VERSION:-2.476.0}
         # CR4-8 — the build context is just frontend/, so platform_version.json
         # isn't visible during the Docker build; pass the frontend version in
         # so generate-build-info.js stamps the right version (shown under About BlueStick).  Keep in
         # sync with platform_version.json's "frontend".
-        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.364.0}
+        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.365.0}
         # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         # Passed only when set; the Dockerfile holds the pinned defaults.
         NODE_IMAGE:
         NGINX_IMAGE:
     logging: *default-logging
+    # No process in the container can gain privileges it did not start with
+    # (a setuid binary, file capabilities).  The entrypoints only DROP them
+    # (root → the service user, via gosu), which this allows.
+    security_opt:
+      - no-new-privileges:true
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255
     # went unnoticed for 24h (the worker silently stopped processing
     # the ingestion queue; restart: no meant Docker never recovered
@@ -343,6 +368,11 @@ services:
     # honors an explicit `docker compose stop` — so a deliberate
     # dev shutdown isn't fought by the daemon.
     restart: unless-stopped
+    # nginx serving static files and proxying the API: a cap so a runaway
+    # cannot take the host's memory.  (The database has NO limit on purpose:
+    # a database killed for memory is worse than one that is slow; it is
+    # sized by PG_SHARED_BUFFERS and friends.)
+    mem_limit: ${FRONTEND_MEM_LIMIT:-512m}
     ports:
       - "${FRONTEND_PORT:-3000}:${FRONTEND_INTERNAL_PORT:-3000}"
       - "${HTTPS_PORT:-443}:443"

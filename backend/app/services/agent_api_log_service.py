@@ -22,7 +22,7 @@ Design constraints:
   are recorded.
 * **Make 'which hosts did the agent touch?' a one-query answer.**  Path
   params, query strings, and request bodies are scanned for
-  ``host_id``, ``host_ids``, ``entry_id``, and IP-shaped values; the
+  ``host_id``, ``host_ids`` and IP-shaped values; the
   parsed lists go into ``referenced_*`` columns indexed for filtering.
 """
 from __future__ import annotations
@@ -264,8 +264,8 @@ def _collect_referenced_ids(
     path_params: Dict[str, Any],
     query_params: Dict[str, Any],
     body_json: Any,
-) -> Tuple[List[int], List[int], List[str]]:
-    """Pull (host_ids, entry_ids, target_ips) from path + query + body.
+) -> Tuple[List[int], List[str]]:
+    """Pull (host_ids, target_ips) from path + query + body.
 
     Path params take precedence — they're the explicit "this call is
     about host N" signal.  Query strings (e.g. ``?host_ids=1,2,3``)
@@ -273,46 +273,31 @@ def _collect_referenced_ids(
     are merged + deduped.
     """
     host_ids: List[int] = []
-    entry_ids: List[int] = []
 
     # Path params
-    for k in ("host_id", "entry_id"):
-        v = path_params.get(k)
-        if v is not None:
-            try:
-                (host_ids if k == "host_id" else entry_ids).append(int(v))
-            except (TypeError, ValueError):
-                pass
+    v = path_params.get("host_id")
+    if v is not None:
+        try:
+            host_ids.append(int(v))
+        except (TypeError, ValueError):
+            pass
 
-    # Query params — supports ``host_id`` (singular) + ``host_ids``
-    # (comma-separated) since both occur in /agent/test-plans/{id}/context.
+    # Query params — ``host_id`` (singular) and ``host_ids`` (comma-separated).
     for k in ("host_id", "host_ids"):
         if k in query_params:
             host_ids.extend(_coerce_int_list(query_params[k]))
-    for k in ("entry_id", "entry_ids"):
-        if k in query_params:
-            entry_ids.extend(_coerce_int_list(query_params[k]))
 
     # Request body — common field names across our mutation endpoints.
     if isinstance(body_json, dict):
-        for k, target in (
-            ("host_id", host_ids),
-            ("host_ids", host_ids),
-            ("entry_id", entry_ids),
-            ("entry_ids", entry_ids),
-        ):
+        for k in ("host_id", "host_ids"):
             if k in body_json:
-                target.extend(_coerce_int_list(body_json[k]))
+                host_ids.extend(_coerce_int_list(body_json[k]))
 
     target_ips = _extract_target_ips({
         "path": path_params, "query": query_params, "body": body_json,
     })
 
-    return (
-        list(dict.fromkeys(host_ids)),
-        list(dict.fromkeys(entry_ids)),
-        target_ips,
-    )
+    return list(dict.fromkeys(host_ids)), target_ips
 
 
 def _summarise_body(raw: bytes, content_type: str | None) -> Optional[Any]:
@@ -665,7 +650,7 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 body_summary if isinstance(body_summary, (dict, list)) else None
             )
 
-            host_ids, entry_ids, target_ips = _collect_referenced_ids(
+            host_ids, target_ips = _collect_referenced_ids(
                 path_params, query_params, body_for_id_scan,
             )
 
@@ -725,7 +710,6 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 response_bytes=response_bytes,
                 duration_ms=duration_ms,
                 referenced_host_ids=host_ids or None,
-                referenced_entry_ids=entry_ids or None,
                 referenced_target_ips=target_ips or None,
                 error_class=error_class,
                 via_mcp=bool(getattr(request.state, "_agent_audit_via_mcp", False)),

@@ -27,6 +27,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { useListCursor } from '../../hooks/useListCursor';
 import { useProjectId } from '../../hooks/useProjectId';
 import { formatApiError } from '../../utils/apiErrors';
+import { testPriorityBadge } from '../../utils/hostTests';
 import { TEST_KINDS, TEST_KIND_LABEL } from '../../utils/operationsTabs';
 import { formatRelativeTime } from '../../utils/relativeTime';
 import { Badge } from '../ui/badge';
@@ -182,13 +183,14 @@ export const MyTestsTable: React.FC<MyTestsTableProps> = ({
                   {rows.map((t, i) => {
                     const why = testKind(t);
                     const line = testLine(t);
+                    const priority = testPriorityBadge(t.priority);
                     return (
                       <TableRow key={t.test_id} data-kind={why} {...cursorRowProps(i)}>
                         <TableCell className="truncate align-middle">
                           {/* A priority, not a severity: an outline badge. */}
-                          <Badge variant="outline" className="max-w-full whitespace-nowrap"
-                            title={`${t.priority} priority`}>
-                            <span className="truncate">{t.priority}</span>
+                          <Badge variant={priority.variant} className="max-w-full whitespace-nowrap"
+                            title={priority.title}>
+                            <span className="truncate">{priority.label}</span>
                           </Badge>
                         </TableCell>
                         <TableCell className="truncate align-middle font-mono"

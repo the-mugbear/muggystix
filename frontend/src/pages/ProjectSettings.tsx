@@ -31,7 +31,7 @@ import { invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
 import {
-  PROJECT_ROLES, allowMemberChange, countProjectAdmins, memberName, projectRoleLabel,
+  DEFAULT_MEMBER_ROLE, PROJECT_ROLES, allowMemberChange, countProjectAdmins, memberName, projectRoleLabel,
   removalDecision, roleChangeDecision, type MemberChange,
 } from '../utils/projectMembers';
 import { safeFallback } from '../utils/uiStyles';
@@ -173,7 +173,7 @@ const ProjectSettings: React.FC = () => {
 
   const [addOpen, setAddOpen] = useState(false);
   const [newUser, setNewUser] = useState<string | null>(null);
-  const [newRole, setNewRole] = useState('analyst');
+  const [newRole, setNewRole] = useState<string>(DEFAULT_MEMBER_ROLE);
   // The people who could be added: asked for each time the dialog opens.
   const directoryQuery = useQuery({
     queryKey: ['getUserDirectory'],
@@ -190,7 +190,7 @@ const ProjectSettings: React.FC = () => {
   }, [directoryQuery.data, directoryQuery.isError, directoryQuery.isFetching]);
   const openAdd = () => {
     setNewUser(null);
-    setNewRole('analyst');
+    setNewRole(DEFAULT_MEMBER_ROLE);
     setAddOpen(true);
   };
   const candidates = useMemo(

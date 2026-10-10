@@ -1,7 +1,8 @@
 /**
  * A host's remediation timeline (5.335.0): every change to a tracked field
  * and every note, newest first by when it happened.  A project admin adds a
- * note here; a note is its author's to remove, a recorded change is nobody's.
+ * note here; a note is its author's to edit and to remove, a recorded change
+ * is nobody's.
  *
  * The sheet stays mounted while the reader moves between hosts; what it shows
  * (`TimelineBody`) is keyed by the host, so a read or a save that completes
@@ -12,7 +13,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
 import {
-  addRemediationNote, deleteRemediationNote, listRemediationEvents, type RemediationEvent, type RemediationMount,
+  addRemediationNote, deleteRemediationNote, listRemediationEvents, updateRemediationNote,
+  type RemediationEvent, type RemediationMount,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useConfirm } from '../../hooks/useConfirm';
@@ -51,7 +53,10 @@ const Entry: React.FC<{
   group: TimelineGroup<RemediationEvent>;
   canWrite: boolean;
   onDelete: (event: RemediationEvent) => void;
-}> = ({ group, canWrite, onDelete }) => {
+  onEdit: (event: RemediationEvent) => void;
+  /** The editor, when this note is the one being edited: it replaces the text. */
+  editor?: React.ReactNode;
+}> = ({ group, canWrite, onDelete, onEdit, editor }) => {
   const event = group.first;
   const backdated = event.occurred_at.slice(0, 16) !== event.recorded_at.slice(0, 16);
   return (
@@ -101,11 +106,15 @@ const Entry: React.FC<{
           <p className="break-words"><span className="font-medium">Followed up</span> with {event.to ?? 'the contact'}</p>
           {event.body && <p className="whitespace-pre-wrap break-words">{event.body}</p>}
         </div>
-      ) : (
+      ) : editor ? editor : (
         <div className="flex min-w-0 items-start gap-sm">
           <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-metadata">{event.body}</p>
+          {/* A note is its author's to edit and to remove (`can_modify`). */}
           {canWrite && event.can_modify && (
-            <Button size="sm" variant="ghost" className="h-7 shrink-0" onClick={() => onDelete(event)}>Remove</Button>
+            <span className="flex shrink-0 gap-xxs">
+              <Button size="sm" variant="ghost" className="h-7" onClick={() => onEdit(event)}>Edit</Button>
+              <Button size="sm" variant="ghost" className="h-7" onClick={() => onDelete(event)}>Remove</Button>
+            </span>
           )}
         </div>
       )}
@@ -187,6 +196,45 @@ const TimelineBody: React.FC<{
     mutationFn: (event: RemediationEvent) => deleteRemediationNote(projectId, event.id, mount),
     onSuccess: () => reread(Math.max(PAGE, events?.length ?? 0)),
   });
+  // Editing a note (5.365.0; the route was there, the page only removed).
+  // One note at a time, in place; what is typed is kept when a save is
+  // refused, and the reason is said beside it.
+  const [editing, setEditing] = useState<{ id: number; text: string } | null>(null);
+  const editingNote = useMutation({
+    mutationFn: ({ id, text }: { id: number; text: string }) => updateRemediationNote(projectId, id, { body: text }, mount),
+    // The editor stays busy until the list shows the new text.
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['listRemediationEvents'] });
+      setEditing(null);
+    },
+  });
+  const editError = queryErrorText(editingNote.error, 'The note was not saved.');
+  const startEdit = (event: RemediationEvent) => {
+    editingNote.reset();
+    setEditing({ id: event.id, text: event.body ?? '' });
+  };
+  const saveEdit = () => {
+    if (!editing || !editing.text.trim()) return;
+    editingNote.mutate({ id: editing.id, text: editing.text.trim() });
+  };
+  const editorFor = (event: RemediationEvent) => (editing?.id !== event.id ? undefined : (
+    <div className="flex min-w-0 flex-col gap-xs">
+      <Textarea rows={3} maxLength={10000} value={editing.text} autoFocus
+        aria-label="Edit note"
+        onChange={(e) => setEditing({ id: event.id, text: e.target.value })} />
+      <div className="flex flex-wrap items-center gap-xs">
+        <Button size="sm" onClick={saveEdit} disabled={editingNote.isPending || !editing.text.trim()}>
+          {editingNote.isPending && <Loader2 className="size-4 animate-spin" aria-hidden />} Save
+        </Button>
+        <Button size="sm" variant="ghost" disabled={editingNote.isPending}
+          onClick={() => { editingNote.reset(); setEditing(null); }}>
+          Cancel
+        </Button>
+      </div>
+      {editError && <p role="alert" className="break-words text-caption text-destructive">{editError}</p>}
+    </div>
+  ));
+
   const remove = async (event: RemediationEvent) => {
     const ok = await confirm({
       title: 'Remove this note?',
@@ -240,7 +288,8 @@ const TimelineBody: React.FC<{
         <>
           <ul className="min-w-0">
             {groupTimeline(events).map((g) => (
-              <Entry key={g.first.id} group={g} canWrite={canWrite} onDelete={(ev) => void remove(ev)} />
+              <Entry key={g.first.id} group={g} canWrite={canWrite} onDelete={(ev) => void remove(ev)}
+                onEdit={startEdit} editor={editorFor(g.first)} />
             ))}
           </ul>
           {events.length < total && (events.length < MAX ? (

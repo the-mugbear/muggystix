@@ -62,7 +62,6 @@ class AgentApiCallRow(BaseModel):
     scope_id: Optional[int] = None
 
     referenced_host_ids: Optional[List[int]] = None
-    referenced_entry_ids: Optional[List[int]] = None
     referenced_target_ips: Optional[List[str]] = None
 
 

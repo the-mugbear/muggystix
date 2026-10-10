@@ -67,54 +67,9 @@ const STATUS_BADGE: Record<string, { tone: CategoryTone; label: string; title: s
   },
 };
 
-/**
- * BlueStick-ingestible run commands, keyed by tool name.  Only tools with a
- * parser get an entry — the exact invocation (with the machine-readable output
- * flag) that produces a file BlueStick can upload.  `note` explains what to
- * upload / any gotcha.  Kept as a sibling map (not inlined on every TOOLS row)
- * so the ~200-char catalogue lines stay readable; grounded in the agent guide's
- * "Supported upload formats" table and documentation/UPLOAD_FORMATS.md.
- * `<target>` / list files are placeholders the operator fills.
- *
- * SOURCE OF TRUTH for the output-extension contract:
- *   backend/app/services/tool_output_contract.py
- * A backend test (backend/tests/test_tool_command_consistency.py) fails if any
- * run command here writes an extension that tool's parser can't ingest — so
- * this map, the backend tool catalog, and the two docs can't silently drift.
- */
-interface RunCommand {
-  run: string;
-  note?: string;
-}
-
-const RUN_COMMANDS: Record<string, RunCommand> = {
-  // Port scanning
-  nmap: { run: 'nmap -sV -sC -O -oX scan.xml <target>', note: 'Upload scan.xml (-oX). Use -oG for a .gnmap instead.' },
-  masscan: { run: 'sudo masscan -p1-65535 --rate=1000 -oX masscan.xml <target>', note: 'Upload the XML (-oX), JSON (-oJ), or list (-oL).' },
-  rustscan: { run: 'rustscan -a <target> -- -sV -oX scan.xml', note: 'Pipes into nmap — upload the resulting nmap scan.xml.' },
-  naabu: { run: 'naabu -host <target> -json -o naabu.json', note: 'Upload naabu.json (-json). Include "naabu" in the filename.' },
-  // Web analysis
-  httpx: { run: 'httpx -l targets.txt -sc -title -tech-detect -favicon -json -o httpx.jsonl', note: 'Upload httpx.jsonl. Call ProjectDiscovery\'s binary by path if the Python httpx CLI shadows it.' },
-  whatweb: { run: 'whatweb -a 3 --input-file=targets.txt --log-json=whatweb.json --no-errors', note: 'Upload whatweb.json (--log-json).' },
-  eyewitness: { run: 'eyewitness --web -f urls.txt -d eyewitness_report --no-prompt', note: 'Upload the JSON/CSV report (filename must contain "eyewitness" or "report").' },
-  nikto: { run: 'nikto -h <target> -Format json -o nikto.json', note: 'Upload nikto.json (-Format json).' },
-  nuclei: { run: 'nuclei -l targets.txt -je nuclei.json', note: 'Upload nuclei.json (-je writes the JSON export).' },
-  // SMB / AD
-  smbmap: { run: 'smbmap -H <target> | tee smbmap.txt', note: 'Upload smbmap.txt — keep the "[+] <ip>" host lines.' },
-  netexec: { run: "netexec smb <target> -u '' -p '' --shares", note: 'Upload the --json output or the standard text report.' },
-  'bloodhound-python': { run: 'bloodhound-python -d <domain> -u <user> -p <pass> -c All -ns <dc-ip>', note: 'Upload the extracted JSON files, not the ZIP bundle.' },
-  // DNS / subdomains
-  amass: { run: 'amass enum -d <domain> -json amass.json', note: 'Upload amass.json — best results include resolved IPs.' },
-  subfinder: { run: 'subfinder -d <domain> -oJ -o subfinder.json', note: 'Upload subfinder.json (-oJ) with resolved IPs.' },
-  dnsx: { run: 'dnsx -j -resp -l ips.txt -r resolvers.txt -ptr -a -aaaa -cname -mx -ns -txt -o dnsx-output.json', note: 'Upload dnsx-output.json (-j). PTR answers feed hostnames.' },
-  // Content discovery (unified dirbuster parser — put the tool name in the filename)
-  gobuster: { run: 'gobuster dir -u http://<target> -w wordlist.txt -o gobuster.txt', note: 'Upload gobuster.txt (.json/.csv/.txt all parse).' },
-  feroxbuster: { run: 'feroxbuster -u http://<target> --json -o feroxbuster.json', note: 'Upload feroxbuster.json (--json).' },
-  ffuf: { run: 'ffuf -u http://<target>/FUZZ -w wordlist.txt -of json -o ffuf.json', note: 'Upload ffuf.json (-of json).' },
-  dirsearch: { run: 'dirsearch -u http://<target> --format json -o dirsearch.json', note: 'Upload dirsearch.json (--format json).' },
-  dirb: { run: 'dirb http://<target> wordlist.txt -o dirb.txt', note: 'Upload dirb.txt.' },
-  wfuzz: { run: 'wfuzz -w wordlist.txt -f wfuzz.json,json http://<target>/FUZZ', note: 'Upload wfuzz.json (-f … ,json).' },
-};
+// The "Run for BlueStick" command — the invocation that writes a file BlueStick
+// can ingest — is the registry row's own `run_command` / `run_note` (5.365.0).
+// It was a table typed into this page beside the registry the server owns.
 
 const CATEGORIES = [
   'Web Content Discovery',
@@ -429,7 +384,7 @@ const ToolReference: React.FC = () => {
                                   No install command recorded
                                 </span>
                               )}
-                              {RUN_COMMANDS[tool.name] && (
+                              {tool.run_command && (
                                 <div className="space-y-xxs">
                                   <span className="block text-caption font-medium uppercase tracking-wider text-muted-foreground">
                                     Run for BlueStick
@@ -438,20 +393,20 @@ const ToolReference: React.FC = () => {
                                     <TooltipTrigger asChild>
                                       <button
                                         type="button"
-                                        onClick={() => copyRun(RUN_COMMANDS[tool.name].run, tool.name)}
+                                        onClick={() => copyRun(tool.run_command as string, tool.name)}
                                         className={cn(
                                           'block w-full rounded-control border border-info/40 bg-info/10 px-xs py-xxs text-left font-mono text-caption text-foreground break-words',
                                           'transition-colors hover:bg-info/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                                         )}
                                       >
-                                        {RUN_COMMANDS[tool.name].run}
+                                        {tool.run_command}
                                       </button>
                                     </TooltipTrigger>
                                     <TooltipContent>Click to copy — produces BlueStick-ingestible output</TooltipContent>
                                   </Tooltip>
-                                  {RUN_COMMANDS[tool.name].note && (
+                                  {tool.run_note && (
                                     <span className="block text-caption text-muted-foreground break-words">
-                                      {RUN_COMMANDS[tool.name].note}
+                                      {tool.run_note}
                                     </span>
                                   )}
                                 </div>

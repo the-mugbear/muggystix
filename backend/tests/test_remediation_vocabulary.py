@@ -271,6 +271,38 @@ def test_neither_status_is_written_from_the_other(client, db_session, test_proje
     assert listing(client, base(test_project), status="closed")["total"] == 1
 
 
+def test_oversight_counts_each_gap_as_the_list_it_opens(client, db_session, test_project, gaps):
+    """Oversight's two gap counts are the cross-project list's own: each equals
+    the total of ``/remediation-overview?verification=`` — the list its link
+    opens — per project and added up."""
+    from app.db.models_project import Project
+
+    other = Project(name="gap-other", slug="gap-other", status="active")
+    db_session.add(other)
+    db_session.flush()
+    more = _finding(db_session, other, ["open", "open", "remediated", "remediated"])
+    apply(client, other, [
+        {"finding_host_id": more[0], "status": "closed"},                 # reported fixed, not retested
+        {"finding_host_id": more[2], "contact_name": "Someone"},          # remediated, record still open
+    ])                                                                    # more[3]: remediated, never tracked
+    body = client.get("/api/v1/oversight/dashboard").json()
+    rows = {row["id"]: row["remediation"] for row in body["projects"]}
+    assert {k: rows[test_project.id][k] for k in (NOT_RETESTED, RECORD_OPEN)} == {NOT_RETESTED: 12, RECORD_OPEN: 7}
+    assert {k: rows[other.id][k] for k in (NOT_RETESTED, RECORD_OPEN)} == {NOT_RETESTED: 1, RECORD_OPEN: 1}
+    summary = body["summary"]["remediation"]
+    for verification in (NOT_RETESTED, RECORD_OPEN):
+        # The list the summary's number opens, read across pages.
+        listed, first = paged(client, OVERVIEW, verification=verification)
+        assert summary[verification] == first["total"] == len(listed) == first["verification_counts"][verification]
+        for project in (test_project, other):
+            one = listing(client, OVERVIEW, verification=verification, project_id=project.id)
+            assert rows[project.id][verification] == one["total"]
+    # The current state, like the rest of the block: the dates do not apply.
+    old = client.get("/api/v1/oversight/dashboard", params={"start": "2020-01-01", "end": "2020-01-31"}).json()
+    assert {k: old["summary"]["remediation"][k] for k in (NOT_RETESTED, RECORD_OPEN)} == {
+        NOT_RETESTED: 13, RECORD_OPEN: 8}
+
+
 def test_off_means_no_gap_anywhere(client, db_session, test_project):
     ids = _finding(db_session, test_project, ["remediated", "open"])
     for url in (base(test_project), OVERVIEW, f"{OVERVIEW}/projects/{test_project.id}/remediation"):

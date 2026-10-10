@@ -292,6 +292,9 @@ export interface HostListResponse {
   total: number | null;
   /** Every host in the project, filters ignored (null when `include_total` is off). */
   project_total?: number | null;
+  /** The most hosts "select all matching" resolves and one bulk call touches —
+   *  the server's cap (v2.476.0), stated with the total it is compared against. */
+  bulk_select_cap: number;
   skip: number;
   limit: number;
   sort_by: string;
@@ -980,6 +983,8 @@ export interface MatchingHostIds {
   ids: number[];
   total: number;
   capped: boolean;
+  /** The most ids the route returns — the cap it applied, cut or not. */
+  cap: number;
 }
 
 export const getMatchingHostIds = async (

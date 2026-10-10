@@ -613,7 +613,9 @@ class MyToolParser:
   a scan by hand from the Scans page — finished or not — runs the same port
   step in its transaction (`delete_ports_scan_created`, the one function both
   paths call, same guards): the ports that scan created on hosts that stay,
-  that no other scan saw and nothing refers to, go with it. The delete clears
+  that no other scan saw and nothing refers to, go with it. A port that
+  carries a scanner observation kept because a finding or a proposal refers
+  to it stays, on both paths: a kept observation keeps its port. The delete clears
   the stamp (`ON DELETE SET NULL`), so it is the only moment they can be
   found.
   **A scan deleted by hand takes everything it brought** (owner decision: a

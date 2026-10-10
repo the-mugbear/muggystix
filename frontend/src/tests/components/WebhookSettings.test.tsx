@@ -161,7 +161,7 @@ describe('WebhookSettings — reading', () => {
   it('a failure with no reason from the server still says the load failed', async () => {
     api.listWebhooks.mockRejectedValue(new Error('boom'));
     await shown();
-    expect(screen.getByText('Failed to load webhooks.')).toBeInTheDocument();
+    expect(screen.getByText('The webhooks could not be loaded.')).toBeInTheDocument();
   });
 
   // DEFECT (WebhookSettings.tsx:56 and :223-224): a list that could not be
@@ -188,9 +188,69 @@ describe('WebhookSettings — reading', () => {
   it('when only the event types could not be read, the webhooks are still listed and the failure is said', async () => {
     api.listWebhookEventTypes.mockRejectedValue(refused(500, 'event types unavailable'));
     await shown();
-    expect(screen.getByText('event types unavailable')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('event types unavailable');
     expect(rows()).toHaveLength(2);
     expect(screen.queryByText('No webhooks configured.')).toBeNull();
+  });
+
+  // Owner decision 53: it said "Failed to load webhooks." over a list of
+  // webhooks that HAD loaded.  Each failure names what could not be loaded.
+  it('says WHICH read failed: the event types, not the webhooks listed under it', async () => {
+    api.listWebhookEventTypes.mockRejectedValue(new Error('boom'));
+    await shown();
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('The event types could not be loaded');
+    expect(alert).not.toHaveTextContent(/Failed to load webhooks|webhooks could not/i);
+    expect(rows()).toHaveLength(2);
+
+    // Retry asks for the event types only.
+    api.listWebhookEventTypes.mockResolvedValue(EVENT_TYPES);
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(api.listWebhookEventTypes).toHaveBeenCalledTimes(2);
+    expect(api.listWebhooks).toHaveBeenCalledTimes(1);
+  });
+
+  it('a server reason for the event types is said after what it is about', async () => {
+    api.listWebhookEventTypes.mockRejectedValue(refused(500, 'event types unavailable'));
+    await shown();
+    expect(screen.getByRole('alert')).toHaveTextContent(/The event types could not be loaded.*event types unavailable/);
+  });
+
+  it('when both reads fail, both are said', async () => {
+    api.listWebhooks.mockRejectedValue(new Error('boom'));
+    api.listWebhookEventTypes.mockRejectedValue(new Error('boom'));
+    await shown();
+    const alerts = screen.getAllByRole('alert');
+    expect(alerts).toHaveLength(2);
+    expect(alerts[0]).toHaveTextContent('The webhooks could not be loaded.');
+    expect(alerts[1]).toHaveTextContent('The event types could not be loaded');
+  });
+
+  // Owner decision 52: the loading line is for the first load only.
+  it('the rows stay on screen while the list is read again, and when that read fails', async () => {
+    await shown();
+    let fail: (reason: unknown) => void = () => {};
+    api.listWebhooks.mockReturnValueOnce(new Promise<WebhookConfig[]>((_resolve, reject) => { fail = reject; }));
+    openForm();
+    type('Name', 'Ops channel');
+    type('URL', 'https://hooks.example.test/ops');
+    fireEvent.click(createButton());
+    await waitFor(() => expect(api.listWebhooks).toHaveBeenCalledTimes(2));
+
+    expect(screen.queryByText('Loading webhooks…')).toBeNull();
+    expect(rows()).toHaveLength(2);
+
+    fail(refused(500, 'database unavailable'));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('database unavailable');
+    expect(rows()).toHaveLength(2);
+    expect(screen.getByText('Team Slack')).toBeInTheDocument();
+
+    // Retry: the rows stay while it asks, and the new webhook then shows.
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Ops channel')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });
 

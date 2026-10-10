@@ -553,6 +553,37 @@ def test_a_finding_without_systems_keeps_its_results(client, db_session, test_pr
     assert entry["host"] == "10.66.0.1" and entry["by"] is None
 
 
+def test_who_confirmed_it_is_a_persons_name_and_never_a_session(client, db_session, test_project, test_user):
+    """Owner decisions 2026-10-02 and 2026-10-10: "how it was confirmed" keeps
+    the person's name — the one who ran the test, or the operator whose agent
+    did — and says nothing a reader who has never seen BlueStick cannot read:
+    no "agent session N", with or without an operator to name."""
+    from app.services import report_text
+
+    a = _host(db_session, test_project, "10.66.1.1")
+    f = _finding(db_session, test_project, "SMB RCE", "critical", hosts=[a])
+    theirs = AgentSession(workflow="project", project_id=test_project.id, started_by_id=test_user.id)
+    nobodys = AgentSession(workflow="project", project_id=test_project.id, started_by_id=None)   # the account is gone
+    db_session.add_all([theirs, nobodys])
+    db_session.flush()
+    _record(db_session, test_project, f, a, recorded_by_user_id=test_user.id,
+            executed_at=datetime(2026, 9, 18, tzinfo=timezone.utc))
+    _record(db_session, test_project, f, a, agent_session_id=theirs.id,
+            executed_at=datetime(2026, 9, 19, tzinfo=timezone.utc))
+    _record(db_session, test_project, f, a, agent_session_id=nobodys.id,
+            executed_at=datetime(2026, 9, 20, tzinfo=timezone.utc))
+
+    entries = _build(db_session, _create(client, test_project)["id"])[0]["findings"][0]["confirmations"]
+
+    assert [(e["by"], e["by_agent"]) for e in entries] == [
+        ("Test Admin", False), ("Test Admin", True), (None, True)]
+    for entry in entries:
+        line = f"**{entry['tool']}** against {entry['host']}, {entry['date']}" + (
+            f", by {entry['by']}" if entry["by"] else "")
+        assert report_text.internal_references(line) == [], line
+        assert "session" not in line.lower()
+
+
 def test_issuing_freezes_the_test_results(client, db_session, test_project, test_user):
     a = _host(db_session, test_project, "10.67.0.1")
     f = _finding(db_session, test_project, "SMB RCE", hosts=[a])

@@ -11,9 +11,28 @@ No ``from __future__ import annotations`` here: FastAPI resolves a dependency
 CLASS's ``__init__`` annotations without the module's globals, so stringified
 annotations would not evaluate.
 """
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from fastapi import Query
+
+
+#: ``need=`` on "findings that need me" — the Operations tab's list
+#: (``GET /projects/{id}/workbench/findings``) and the agents' read of it
+#: (``GET /agent/assist/workbench/findings``): a value neither understands is
+#: a 422 on both doors, and the two advertise the same words
+#: (``operations_read_service.FINDING_NEEDS``).  The agents' route takes this
+#: declaration; ``test_agent_assist_operations.py`` pins that the page's route
+#: advertises exactly the same parameter.
+FindingNeedParam = Annotated[
+    Optional[Literal["decide", "write"]],
+    Query(
+        description=(
+            "Only this kind of work: decide (under investigation, or a proposal waits "
+            "for a decision) or write (required report text missing, nothing to decide). "
+            "The two add up to the whole list."
+        ),
+    ),
+]
 
 
 class HostFilterParams:

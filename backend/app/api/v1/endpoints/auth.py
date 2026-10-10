@@ -5,7 +5,7 @@ Endpoints for user login, logout, registration, and session management.
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
@@ -48,6 +48,9 @@ from app.api.deps import (
     require_role,
     security,
 )
+# The administrators' row of an account: creating one answers the same shape
+# the users list returns.
+from app.api.v1.endpoints.users import UserListItem, user_list_item
 
 __all__ = [
     "router",
@@ -122,6 +125,23 @@ class UserProfile(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
+
+
+class MessageResponse(BaseModel):
+    """A sentence for the reader; nothing a client branches on."""
+    message: str
+
+
+class SessionRow(BaseModel):
+    """One of the caller's own sign-in sessions.  Never the token or its id."""
+    id: int
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    created_at: Optional[datetime] = None
+    last_activity: Optional[datetime] = None
+    expires_at: datetime
+    # True for the session the calling token belongs to.
+    current: bool
 
 
 @router.post("/login", response_model=Union[LoginResponse, TwoFactorChallengeResponse])
@@ -387,14 +407,17 @@ def logout(
     return {"message": "Successfully logged out"}
 
 
-@router.post("/register", response_model=UserProfile)
+@router.post("/register", response_model=UserListItem)
 def register(
     registration_data: RegisterRequest,
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(UserRole.ADMIN))
 ):
-    """Register new user (admin only)"""
+    """Register new user (admin only).
+
+    Answers the account as the users list shows it (``UserListItem``), so the
+    page that created it can put the answer into its table as it is."""
     client_info = get_client_info(request)
 
     # Check if username already exists
@@ -448,15 +471,7 @@ def register(
         **client_info
     )
 
-    return UserProfile(
-        id=new_user.id,
-        username=new_user.username,
-        full_name=new_user.full_name,
-        role=new_user.role,
-        is_active=new_user.is_active,
-        last_login=new_user.last_login,
-        created_at=new_user.created_at
-    )
+    return user_list_item(new_user)
 
 
 @router.get("/profile", response_model=UserProfile)
@@ -473,7 +488,7 @@ def get_profile(current_user: User = Depends(get_current_user)):
     )
 
 
-@router.post("/change-password")
+@router.post("/change-password", response_model=MessageResponse)
 def change_password(
     password_data: ChangePasswordRequest,
     request: Request,
@@ -575,7 +590,7 @@ def _request_token_jti(credentials: Optional[HTTPAuthorizationCredentials]) -> O
         return None
 
 
-@router.get("/sessions")
+@router.get("/sessions", response_model=List[SessionRow])
 def get_active_sessions(
     current_user: User = Depends(get_current_user),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_optional_bearer),

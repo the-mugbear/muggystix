@@ -70,7 +70,7 @@ describe('Scans — the ingestion queue re-reads itself', () => {
     const queue = await screen.findByTestId('ingestion-queue');
     expect(queue).toHaveTextContent('Updated just now');
     expect(within(queue).getByRole('button', { name: 'Refresh ingestion jobs' })).toBeInTheDocument();
-    expect(within(queue).getByRole('switch', { name: 'Auto' })).not.toBeChecked();
+    expect(within(queue).getByRole('switch', { name: 'Auto-refresh ingestion jobs' })).not.toBeChecked();
   });
 
   it('reads the queue every 15 s only while Auto is on; turning it off stops the re-reads', async () => {
@@ -85,7 +85,7 @@ describe('Scans — the ingestion queue re-reads itself', () => {
     expect(api.getRecentIngestionJobs).toHaveBeenCalledTimes(1);
     expect(api.getStagedIngestionJobs).toHaveBeenCalledTimes(1);
 
-    const auto = within(queue).getByRole('switch', { name: 'Auto' });
+    const auto = within(queue).getByRole('switch', { name: 'Auto-refresh ingestion jobs' });
     fireEvent.click(auto);
     expect(auto).toBeChecked();
     await pass(14_000);

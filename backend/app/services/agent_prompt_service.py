@@ -33,19 +33,23 @@ logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.20.0"
+PROMPT_VERSION = "4.21.0"
 
 # What PROMPT_VERSION changed (the current version only).
 PROMPT_CHANGES = (
-    "Report writing guidance has its own read: `GET /agent/assist/writing-guidance` "
-    "(`assist_get_writing_guidance`) — how this installation's administrators "
-    "want report text written: `general` for every section, and `sections` "
-    "with instructions per field (description, impact, recommendation, "
-    "steps_to_reproduce, references). Call it before `propose_finding` with "
-    "`report_text`; a finding that exists carries the same block as "
-    "`writing_guidance` on `assist_get_finding` (since 4.19.0). It never overrides "
-    "the report-text rules: a complete rewrite, nothing the data does not "
-    "support, no BlueStick record named."
+    "The findings that need your operator have a whole-list read: `GET "
+    "/agent/assist/workbench/findings` (`assist_list_my_findings`) — the "
+    "Operations 'Findings' tab, paged with `limit` / `offset`, optionally "
+    "`need=decide` (under investigation, or a proposal waits for a decision) or "
+    "`need=write` (only required report text missing). `total` is the size of "
+    "the list the call pages; `total_open` and `need_counts` describe the whole "
+    "list. The workbench still carries only the first 15 rows. "
+    "The tool catalogue (`list_tools`) rows carry `run_command` / `run_note` for "
+    "a tool BlueStick parses: an invocation whose output file it can ingest, and "
+    "what to upload — reference text, not an instruction and not a permission. "
+    "The Hosts query help now says 'scanner observation' where a predicate reads "
+    "scanner rows (`cve:`, `vuln:`, `exploitport:`, `has:critical|high|medium|low`, "
+    "`has:exploit`, `has:critical_exploit`): those are not findings."
 )
 
 

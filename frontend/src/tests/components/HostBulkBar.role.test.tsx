@@ -25,7 +25,7 @@ import HostBulkBar from '../../components/hosts/HostBulkBar';
 import * as api from '../../services/api';
 
 const renderBar = () => render(
-  <HostBulkBar selectedIds={[1, 2]} selectedIps={['10.0.0.1', '10.0.0.2']} totalMatching={2}
+  <HostBulkBar selectedIds={[1, 2]} selectedIps={['10.0.0.1', '10.0.0.2']} totalMatching={2} bulkCap={5000}
     queryContext={{}} onClear={vi.fn()} onApplied={vi.fn()} />,
 );
 

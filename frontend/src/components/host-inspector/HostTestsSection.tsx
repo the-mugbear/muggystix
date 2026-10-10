@@ -41,6 +41,7 @@ import {
   resolveCommand,
   stripAgentMark,
   testNeedsWork,
+  testPriorityBadge,
   testResultState,
   type ResultTone,
 } from '../../utils/hostTests';
@@ -76,14 +77,6 @@ const FILTERS: Array<{ value: Filter; label: string; empty: string }> = [
   { value: 'dismissed', label: 'Dismissed', empty: 'No dismissed tests on this host.' },
   { value: 'all', label: 'All', empty: 'No tests on this host yet.' },
 ];
-
-const PRIORITY_VARIANT: Record<string, React.ComponentProps<typeof Badge>['variant']> = {
-  critical: 'severity-critical',
-  high: 'severity-high',
-  medium: 'severity-medium',
-  low: 'severity-low',
-  info: 'severity-info',
-};
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 type FindingSeverity = (typeof SEVERITIES)[number];
@@ -319,6 +312,7 @@ export const HostTestRow: React.FC<{
   const active = isActive(test.status);
   const canClaim = ctl.userId != null && active && test.assigned_to_id !== ctl.userId;
   const Chevron = open ? ChevronDown : ChevronRight;
+  const priority = testPriorityBadge(test.priority);
   const state = testResultState(test);
   const command = test.command ? resolveCommand(test.command, test.host_ip, test.target_fqdn) : null;
   const rationale = stripAgentMark(test.rationale);
@@ -359,8 +353,9 @@ export const HostTestRow: React.FC<{
           <Badge variant={hostTestStatusVariant(test.status)} className="shrink-0 whitespace-nowrap">
             {hostTestStatusLabel(test.status)}
           </Badge>
-          <Badge variant={PRIORITY_VARIANT[test.priority] ?? 'muted'} className="shrink-0 whitespace-nowrap">
-            {test.priority}
+          {/* A priority, not a severity: the neutral badge, as on Operations. */}
+          <Badge variant={priority.variant} className="shrink-0 whitespace-nowrap" title={priority.title}>
+            {priority.label}
           </Badge>
           <span className="min-w-0 flex-1 truncate text-metadata" title={test.description}>
             {test.tool && <span className="font-semibold">{test.tool} · </span>}

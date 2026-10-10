@@ -135,9 +135,12 @@ const Profile: React.FC = () => {
     profileSave.mutate(profileForm);
   };
 
-  // Leaving the dialog ends the attempt: the passwords typed into it go too.
+  // Leaving the dialog ends the attempt: the passwords typed into it go too,
+  // and so does why the last one was refused (it stood above empty fields at
+  // the next opening).
   const closePasswordDialog = () => {
     setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
+    setPasswordError('');
     setPasswordDialogOpen(false);
   };
 

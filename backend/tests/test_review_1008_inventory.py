@@ -232,15 +232,45 @@ def test_the_parsers_name_what_they_refuse():
 def test_select_all_matching_returns_the_same_ids_every_time(client, db_session, test_project, monkeypatch):
     """A capped answer is the first ids in id order, not whichever the planner
     produced first."""
-    from app.api.v1.endpoints import hosts as hosts_endpoint
+    from app.services import host_query
 
     pid = test_project.id
     hosts = [_host(db_session, pid, f"10.62.0.{n}") for n in range(1, 9)]
     db_session.commit()
-    monkeypatch.setattr(hosts_endpoint, "_BULK_SELECT_CAP", 5)
+    monkeypatch.setattr(host_query, "BULK_SELECT_CAP", 5)
     body = client.get(f"{_base(pid)}/hosts/ids", params={"sort_by": "ip_address"}).json()
     assert body["capped"] is True and body["total"] == 8
     assert body["ids"] == sorted(h.id for h in hosts)[:5]
+
+
+def test_the_server_states_the_bulk_select_cap_it_applies(client, db_session, test_project, monkeypatch):
+    """The Hosts page says "the first N of M" BEFORE the action, so the cap is
+    in the answers it already reads — the list's and ``/hosts/ids``' — and is
+    the one the bulk routes refuse above.  (The page carried its own 5000.)"""
+    from app.services import host_query
+
+    pid = test_project.id
+    hosts = [_host(db_session, pid, f"10.62.1.{n}") for n in range(1, 5)]
+    db_session.commit()
+
+    listed = client.get(f"{_base(pid)}/hosts/", params={"limit": 2}).json()
+    assert listed["bulk_select_cap"] == host_query.BULK_SELECT_CAP == 5000
+    whole = client.get(f"{_base(pid)}/hosts/ids").json()
+    assert whole["cap"] == 5000 and whole["capped"] is False and len(whole["ids"]) == 4
+
+    # One number, three places: the list, the ids and the bulk refusal.
+    monkeypatch.setattr(host_query, "BULK_SELECT_CAP", 3)
+    assert client.get(f"{_base(pid)}/hosts/", params={"limit": 2}).json()["bulk_select_cap"] == 3
+    capped = client.get(f"{_base(pid)}/hosts/ids").json()
+    assert capped["cap"] == 3 and capped["capped"] is True and capped["total"] == 4
+    assert capped["ids"] == sorted(h.id for h in hosts)[:3]
+    refused = client.post(f"{_base(pid)}/hosts/bulk/follow",
+                          json={"host_ids": [h.id for h in hosts], "status": "in_review"})
+    assert refused.status_code == 413, refused.text
+    assert "max 3" in refused.json()["detail"]
+    accepted = client.post(f"{_base(pid)}/hosts/bulk/follow",
+                           json={"host_ids": capped["ids"], "status": "in_review"})
+    assert accepted.status_code == 200, accepted.text
 
 
 # ---------------------------------------------------------------------------

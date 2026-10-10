@@ -49,6 +49,24 @@ class UserListItem(BaseModel):
     totp_enabled: bool = False
 
 
+def user_list_item(user: User) -> UserListItem:
+    """An account as the administrators' table shows it — the ONE row shape of
+    ``GET /users/``, ``GET`` / ``PUT /users/{id}`` and ``POST /auth/register``.
+    It never carries the password hash or the 2FA secret."""
+    return UserListItem(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        role=user.role,
+        is_active=user.is_active,
+        last_login=user.last_login,
+        created_at=user.created_at,
+        created_by_id=user.created_by_id,
+        totp_enabled=bool(user.totp_enabled),
+    )
+
+
 class UserDirectoryEntry(BaseModel):
     """Minimal user row for member-picker dropdowns.
 
@@ -276,21 +294,7 @@ def list_users(
     """List all users. Requires admin role."""
     users = db.query(User).offset(skip).limit(limit).all()
 
-    return [
-        UserListItem(
-            id=user.id,
-            username=user.username,
-            email=user.email,
-            full_name=user.full_name,
-            role=user.role,
-            is_active=user.is_active,
-            last_login=user.last_login,
-            created_at=user.created_at,
-            created_by_id=user.created_by_id,
-            totp_enabled=bool(user.totp_enabled),
-        )
-        for user in users
-    ]
+    return [user_list_item(user) for user in users]
 
 
 @router.get(
@@ -313,18 +317,7 @@ def get_user(
             detail="User not found"
         )
 
-    return UserListItem(
-        id=user.id,
-        username=user.username,
-        email=user.email,
-        full_name=user.full_name,
-        role=user.role,
-        is_active=user.is_active,
-        last_login=user.last_login,
-        created_at=user.created_at,
-        created_by_id=user.created_by_id,
-        totp_enabled=bool(user.totp_enabled),
-    )
+    return user_list_item(user)
 
 
 @router.get(
@@ -473,18 +466,7 @@ def update_user(
         **client_info
     )
 
-    return UserListItem(
-        id=user.id,
-        username=user.username,
-        email=user.email,
-        full_name=user.full_name,
-        role=user.role,
-        is_active=user.is_active,
-        last_login=user.last_login,
-        created_at=user.created_at,
-        created_by_id=user.created_by_id,
-        totp_enabled=bool(user.totp_enabled),
-    )
+    return user_list_item(user)
 
 
 @router.post(
