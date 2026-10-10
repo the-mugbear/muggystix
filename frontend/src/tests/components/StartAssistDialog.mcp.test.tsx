@@ -178,17 +178,15 @@ describe('StartAssistDialog', () => {
       </MemoryRouter>,
     );
     expect(screen.queryByRole('button', { name: /^start session$/i })).toBeNull();
-    expect(screen.queryByLabelText(/What is it for/)).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Copy task' }));
     expect(copyToClipboard).toHaveBeenCalledWith(task);
     expect(await screen.findByRole('button', { name: /Copied — paste it to your agent/ })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: 'Start another session' }));
     expect(screen.getByRole('button', { name: /^start session$/i })).toBeInTheDocument();
-    expect(screen.getByLabelText(/What is it for/)).toBeInTheDocument();
   });
 
-  it('starts from one sentence and one field — no promised TTL before the server says', () => {
+  it('starts from one sentence and one button — no promised TTL before the server says', () => {
     render(
       <MemoryRouter>
         <TooltipProvider>
@@ -197,9 +195,28 @@ describe('StartAssistDialog', () => {
       </MemoryRouter>,
     );
     expect(screen.getByText(/Connect Claude Code, Codex or VS Code Copilot to this project/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/What is it for\?/)).toBeInTheDocument();
     // It said "4 h TTL" here while the server issued 24.
     expect(screen.queryByText(/TTL|\b4 h\b/)).not.toBeInTheDocument();
+  });
+
+  // The optional "what is it for?" box is gone: starting asks nothing and
+  // sends no purpose.
+  it('asks for nothing before starting, and the start call carries no purpose', async () => {
+    render(
+      <MemoryRouter>
+        <TooltipProvider>
+          <StartAssistDialog open onOpenChange={onOpenChange} />
+        </TooltipProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByText(/What is it for/)).toBeNull();
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: /start session/i }));
+    });
+    expect(startAssistSession).toHaveBeenCalledTimes(1);
+    const [, body] = startAssistSession.mock.calls[0];
+    expect(body).toEqual({});
   });
 
   it('offers one choice per client plus any other agent, and shows only the chosen recipe', async () => {

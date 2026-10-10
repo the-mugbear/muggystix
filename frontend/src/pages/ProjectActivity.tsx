@@ -610,7 +610,7 @@ const ProjectActivity: React.FC = () => {
                         className="min-w-0 truncate font-medium text-foreground underline-offset-4 hover:underline"
                         title={row.purpose ?? undefined}
                       >
-                        #{row.id} · {safeFallback(row.purpose, 'No stated purpose')}
+                        #{row.id}{row.purpose?.trim() ? ` · ${row.purpose}` : ''}
                       </Link>
                       <AuthorityBadge role={row.operator_role} operator={operator} />
                     </div>
@@ -732,7 +732,8 @@ const ProjectActivity: React.FC = () => {
               const path = sessionRowPath(r);
               const stalled = isStalledRun(r);
               const operator = rowOperatorName(r);
-              const purpose = safeFallback(r.purpose, r.kind === 'project' ? 'No stated purpose' : 'Project-wide');
+              // A session is no longer asked its purpose: one without is named as what it is.
+              const purpose = safeFallback(r.purpose, r.kind === 'project' ? 'Agent session' : 'Project-wide');
               const label = r.kind === 'project'
                 ? `Open agent session ${r.id}`
                 : `Open ${runKindLabel(r.kind)} ${r.id}`;

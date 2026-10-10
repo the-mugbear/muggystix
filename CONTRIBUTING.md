@@ -250,12 +250,11 @@ text, a new finding, promoting or dismissing a scanner observation, an endpoint'
 agent's change of that kind is a **proposal** a person accepts (`/proposals`); everything else
 is written directly and attributed to the session.
 
-- **`documentation/AGENT_GUIDE.md`** is the contract every agent reads at startup, served sliced by
-  workflow at `GET /api/v1/agents-guide?workflow=…` via the `<!-- agents:section -->` markers.
-- **Bump `PROMPT_VERSION`** whenever the agent's instructions change materially, and rewrite
-  `PROMPT_CHANGES` beside it to say what this version changed — both in
-  `app/services/agent_prompt_service.py`. There is no history list; earlier versions are in the
-  changelog.
+- **`documentation/AGENT_GUIDE.md`** is the contract every agent reads at startup, served whole or
+  as one part at `GET /api/v1/agents-guide?part=…` via the `<!-- agents:section -->` markers.
+- **Bump `PROMPT_VERSION`** (`app/services/agent_prompt_service.py`) whenever the agent's
+  instructions change materially. What a version changed goes in the changelog; there is no
+  note beside the number and no history list.
 - **A new agent read declares its role floor on the route** — `dependencies=[Depends(agent_read_floor(ProjectRole.AUDITOR))]`
   on the route or in its `APIRouter(...)` constructor (never on `include_router`, which the gate
   cannot see) — equal to the role its page asks of a person; `tests/test_agent_role_route_matrix.py`
@@ -263,7 +262,7 @@ is written directly and attributed to the session.
   per-argument description or a hidden parameter; its arguments, types, enums and bounds are
   derived from the route's OpenAPI operation.
 - **`tests/test_docs_contract.py`** guards both surfaces: the guide's section markers stay balanced
-  and every workflow slice keeps its body; every described OpenAPI tag is used by a route; and
+  and every part of the guide keeps its body; every described OpenAPI tag is used by a route; and
   every agent endpoint documented in the guide's API-reference tables exists. If you rename or
   remove an agent route, update the agent guide (and the OpenAPI tags in `app/main.py`) in the same
   commit or this test fails. The same file requires every `scripts/*.py` and `scripts/*.sh` to be

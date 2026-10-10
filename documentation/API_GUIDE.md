@@ -104,7 +104,7 @@ X-API-Key: nm_agent_<plaintext>
 ├── /integrations             # scanner credentials (global admin writes; list/types any user)
 ├── /feedback                 # admin triage of agent feedback rows
 ├── /references               # SBOM, tool registry, parser coverage, MCP catalog, TLS trust (public reads)
-├── /agents-guide             # the agent guide (documentation/AGENT_GUIDE.md), optionally sliced by ?workflow=
+├── /agents-guide             # the agent guide (documentation/AGENT_GUIDE.md), optionally one part of it: ?part=
 ├── /mcp                      # MCP transport (JSON-RPC 2.0) — see §5.9
 ├── /mcp-telemetry/summary    # admin: per-tool MCP call outcomes
 └── /agent                    # AGENT API — see §5
@@ -242,9 +242,9 @@ The agent-facing `/agent/integrations` endpoint was **removed** in v2.9.5 (audit
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| GET | `/feedback/` | admin | List all agent feedback rows. Supports `?status=new\|reviewed\|actioned\|dismissed`, `?source=assist\|reconnaissance\|testing` (older rows may carry `plan_generation`, `in_session_execution` or `exported_execution`), plus `min_rating`, `has_tool_suggestions`, `has_api_critiques`, `search`, `project_id`, `skip`, `limit`. Returns the standard `Paginated` envelope (`{items, total, skip, limit, has_more}`; v2.428.2 — it was a bare array). Each row carries who and where: `project_name`, `agent_name`, `client_name` (the MCP client the session connected with), `agent_session_id` (the session; its page, with its API calls, is `/agent-sessions/{agent_session_id}`), `session_has_page` (false for a pre-v2.337.0 session that no page lists) and `session_api_calls`. (`session_page_id` and `assist_session_id` went in v2.449.0: a session has one id.) |
+| GET | `/feedback/` | admin | List all agent feedback rows. Supports `?status=new\|reviewed\|actioned\|dismissed`, plus `min_rating`, `has_tool_suggestions`, `has_api_critiques`, `search`, `project_id`, `skip`, `limit`. Returns the standard `Paginated` envelope (`{items, total, skip, limit, has_more}`; v2.428.2 — it was a bare array). Each row carries who and where: `project_name`, `agent_name`, `client_name` (the MCP client the session connected with), `agent_session_id` (the session; its page, with its API calls, is `/agent-sessions/{agent_session_id}`), `session_has_page` (false for a pre-v2.337.0 session that no page lists) and `session_api_calls`. (`session_page_id` and `assist_session_id` went in v2.449.0: a session has one id. The `?source=` filter and each row's `source` went in v2.480.0, with the label itself.) |
 | GET | `/feedback/{id}` | admin | Feedback detail with `api_critiques`, `tool_suggestions`, `friction_notes`, `agent_metrics`, and the same who-and-where fields as the list. |
-| GET | `/feedback/stats` | admin | Aggregate counts by source, status and prompt version, average `overall_rating`, top tool suggestions, and `with_api_critiques` / `with_tool_suggestions`. |
+| GET | `/feedback/stats` | admin | Aggregate counts by status and prompt version, average `overall_rating`, top tool suggestions, and `with_api_critiques` / `with_tool_suggestions` (`by_source` went in v2.480.0). |
 | PATCH | `/feedback/{id}` | admin | Update status + `reviewer_notes`. |
 
 Feedback **ingest** (the agent-facing path) lives under `/agent/feedback` — see §5.
@@ -334,8 +334,8 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/hosts/{host_id}/follow` | Set status: `in_review`, `reviewed`. Per-user. (`watching` is a retired state: still accepted for old clients, offered nowhere.) |
-| DELETE | `/hosts/{host_id}/follow` | Unfollow. |
+| POST | `/hosts/{host_id}/follow` | Set status: `in_review` or `reviewed` (an enum in the route's schema). Per-user. Anything else — the retired `watching` included — is a `422` naming the two; `POST /hosts/bulk/follow` takes the same two. A row that already holds `watching` is still shown, and cleared like any other. |
+| DELETE | `/hosts/{host_id}/follow` | Unfollow (clears the review status, whatever it holds). |
 | POST | `/hosts/{host_id}/view` | Update `last_viewed_at` (only if a follow record exists). |
 
 #### Host notes
@@ -601,7 +601,7 @@ The contract agents follow is the [agent guide](AGENT_GUIDE.md), served at `GET 
 | GET | `/agent/scans` | Scan list. `tool`, `created_after` (an ISO-8601 date or timestamp; a value that is not one is a **422** naming it, never an empty list). |
 | GET | `/agent/scopes` | Scope list with every subnet CIDR and every declared domain (uncapped); `subnet_total` / `domain_total` are the lists' lengths and `names_in_scope_total` is the distinct inventory names any entry covers (domains were missing here until v2.464.0 — only `/agent/assist/scopes` carried them). |
 | GET · POST | `/agent/hosts/{host_id}/notes` | Read a host's notes; create one from the agent's identity. An `@username` in an agent's note notifies nobody. |
-| POST | `/agent/hosts/{host_id}/follow` | Follow a host. |
+| POST | `/agent/hosts/{host_id}/follow` | Set the operator's review status on a host: `{"status": "in_review" \| "reviewed" \| "none"}` (`none` clears it; 204). The values are an enum in the route's schema: the two states the people's `POST /hosts/{host_id}/follow` sets, from the same type, plus `none` (this door has no DELETE); anything else, the retired `watching` included, is a `422` naming them. |
 
 ### 5.2 Host tests
 
@@ -651,7 +651,7 @@ There is nothing to open: an agent reads a scope by id and uploads what its tool
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/agent/feedback` | Record structured feedback, at the moment of friction. Body includes `source`, `prompt_version`, `overall_rating` (1–5), `api_critiques[]`, `tool_suggestions[]`, `friction_notes`, `agent_metrics{}`. `source` is required: `assist`, `reconnaissance` or `testing` (`plan_generation` and `in_session_execution` are still accepted from older clients; `exported_execution` is refused). The project and the session come from the key, never the body (the optional `assist_session_id` body field went in v2.449.0; a direct HTTP caller that still sends it is ignored, the MCP tool no longer lists it). **The 201 is an acknowledgement, not the row (v2.464.0):** `id`, `status`, `source`, `agent_session_id`, `created_at` and the sizes stored (`friction_notes_chars`, `api_critique_count`, `tool_suggestion_count`) — the submission is not echoed back. |
+| POST | `/agent/feedback` | Record structured feedback, at the moment of friction. Body includes `prompt_version`, `overall_rating` (1–5), `api_critiques[]`, `tool_suggestions[]`, `friction_notes`, `agent_metrics{}`; no field is required. The project and the session come from the key, never the body. There is no `source` (the label for the kind of work an entry was about went in v2.480.0, column included) and no `assist_session_id` (v2.449.0). Over HTTP the body ignores a key it does not know, those two like any other; the MCP tool `submit_feedback` refuses an argument it does not have (`-32602`), like every tool. **The 201 is an acknowledgement, not the row (v2.464.0):** `id`, `status`, `agent_session_id`, `created_at` and the sizes stored (`friction_notes_chars`, `api_critique_count`, `tool_suggestion_count`) — the submission is not echoed back. |
 
 ### 5.6a Evidence and proposals (v2.436.0)
 
@@ -836,7 +836,6 @@ Status **201**. `agent_session_id` is the session's id; `assist_session_id` repe
 
 ```json
 {
-  "source": "testing",
   "prompt_version": "4.0.0",
   "overall_rating": 4,
   "api_critiques": [
@@ -865,7 +864,7 @@ Status **201**. `agent_session_id` is the session's id; `assist_session_id` repe
 }
 ```
 
-Null metrics are acceptable — the guide explicitly notes that agents running in restricted sandboxes may not see their own token/cost/wall-clock numbers. `project_id` and the session come from the API key; `source` is required in the body (`assist` \| `reconnaissance` \| `testing`). The body never names the session.
+Null metrics are acceptable — the guide explicitly notes that agents running in restricted sandboxes may not see their own token/cost/wall-clock numbers. `project_id` and the session come from the API key; no body field is required, and the body never names the session.
 
 ### 6.7 `GET /api/v1/projects/{project_id}/agent-sessions/{session_id}/api-activity`
 
@@ -978,7 +977,7 @@ Callers should be aware of these enforced constraints — they're documented her
 - **Upload flow is async.** `POST /upload/` returns a queued `IngestionJob` — poll `GET /upload/jobs/{id}` for status. Don't expect a parsed scan in the upload response.
 - **API keys are shown once.** The `/assist/start` (and `/agent-sessions/{sid}/resume`) response includes the plaintext key exactly once. Store it or discard it immediately; recovery is not possible. The hash lives in `api_keys`.
 - **Orphan jobs get reaped.** Jobs stuck in `processing` with a heartbeat older than `INGESTION_JOB_TIMEOUT` × `INGESTION_ORPHAN_CUTOFF_MULTIPLIER` (default 1.5) are re-queued automatically by the worker's reaper, up to `INGESTION_MAX_RETRIES` while the file still exists; after that they are failed ("worker likely crashed") and admins are notified.
-- **The agent guide, whole or one part** (`documentation/AGENT_GUIDE.md`). `GET /api/v1/agents-guide` returns the whole guide; `?workflow=testing`, `reconnaissance`, `assist` or `remediation` returns that part plus the shared sections. The values are parts of one document — reading aids, not kinds of session and not permissions. Any other value (the retired `plan`, `plan_generation`, `exec`, `execution`, `recon` included) is a `422` naming the four. The server parses HTML-comment section markers so one source file emits each part.
+- **The agent guide, whole or one part** (`documentation/AGENT_GUIDE.md`). `GET /api/v1/agents-guide` returns the whole guide; `?part=testing`, `reconnaissance`, `assist` or `remediation` returns that part plus the shared sections. The values are parts of one document — reading aids, not kinds of session and not permissions. Any other value (the retired `plan`, `plan_generation`, `exec`, `execution`, `recon` included) is a `422` naming the four. `part` is the only name, on the route and on the MCP tool `read_agent_guide`. The server parses HTML-comment section markers so one source file emits each part.
 - **`GET /.well-known/networkmapper.json`** → `safety_properties`: what the server enforces (`server_executes_commands: false`, `agent_authority: operator_project_role`, `agent_key_binding: project_session`, `agent_keys_time_limited`, `agent_keys_renewable`, `audit_trail_recorded: true` with `audit_trail_retention_days` — the installation's `AGENT_API_CALL_RETENTION_DAYS`, 0 = kept) and what it cannot (`command_approval: operator_driven`, `command_approval_enforced_by: agent_and_client_sandbox`). `audit_trail_persistent` is no longer published: rows are purged after the retention period.
 - **Health probes.** nginx serves `/live` (liveness, static) and proxies `/health` and `/ready` to the backend's `/health` (5 s timeouts on purpose); the frontend container's Docker HEALTHCHECK requests `https://localhost/`.
 - **Version visibility.** `GET /` returns `{message, version, frontend_version, instance_id, cors_origins}`. The UI shows both versions in the user menu under **About BlueStick**. Backend and frontend stay in lockstep per-release; always update both.

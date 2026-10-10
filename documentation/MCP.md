@@ -245,10 +245,11 @@ marked idempotent.
   (`id`, `caption`, `in_report`, `placed_in`), and an id that is not on that
   list is a 422.
 
-`submit_feedback` is likewise acknowledged: it answers the row's id, status and
-source with `friction_notes_chars`, `api_critique_count` and
+`submit_feedback` is likewise acknowledged: it answers the row's id and status
+with `friction_notes_chars`, `api_critique_count` and
 `tool_suggestion_count`, not the entry. An administrator reads the entry on the
-Feedback page.
+Feedback page. The tool takes only the arguments it lists; like every tool, it
+refuses one it does not have (`-32602`).
 
 ### What decides a call
 
@@ -361,8 +362,9 @@ error (`-32001`) whose message is the endpoint's detail. One of its reasons is
 password was last changed or reset. It is not recoverable by renewing; the
 operator starts a new session.
 
-`read_agent_guide` called without `workflow` returns the whole guide; with it,
-one part (`assist`, `reconnaissance`, `testing` or `remediation`).
+`read_agent_guide` called without `part` returns the whole guide; with it,
+one part (`assist`, `reconnaissance`, `testing` or `remediation`). `part` is
+the argument's only name.
 
 The challenge is deliberately bare. MCP's authorization spec uses 401 plus
 `resource_metadata` to bootstrap OAuth 2.1 discovery; this server is not an
@@ -391,9 +393,10 @@ registry.
 the endpoint cannot say: `description`, `method`, `path`, `params` (an
 argument's description, or something that NARROWS it), `hidden` (endpoint
 parameters the tool does not offer), `defaults` (MCP-side defaults, e.g. a
-smaller page), the write flags (`additive` / `idempotent` / `metadata_write`),
-`retired_params` (arguments a tool used to take: accepted and dropped) and
-`path_alternatives`. Which arguments exist, whether each goes in the path, the
+smaller page), the write flags (`additive` / `idempotent` / `metadata_write`)
+and `path_alternatives`. An argument a tool no longer takes is simply removed:
+there is no list of retired arguments, and a call that sends one is refused
+like any unknown argument. Which arguments exist, whether each goes in the path, the
 query or the body, and their types, enums, bounds, defaults and required-ness
 are read from the endpoint's OpenAPI operation (`derive_tool`) when the registry
 is built: once per backend worker, just after startup
@@ -521,7 +524,7 @@ makes the agent's own words part of the audit trail.
 | `GET /api/v1/references/tls-certificate` | none | the deployment certificate (PEM), for inspection and the fingerprint check |
 | `GET /api/v1/references/tools` | none | the tool catalogue (`?status=reference\|suggested\|rejected`) |
 | `PATCH /api/v1/references/tools/{name}` | admin | curate a suggested tool (`reference` / `rejected`) |
-| `GET /api/v1/agents-guide?workflow=…` | none | the agent guide, whole or one part |
+| `GET /api/v1/agents-guide?part=…` | none | the agent guide, whole or one part |
 | `GET /api/v1/agent/identity` | agent key | what this key is |
 | `POST /api/v1/agent/session/renew` | agent key (an expired one too) | the same key, a later deadline |
 | `POST /api/v1/agent/session/end` | agent key | end the session and revoke the key |

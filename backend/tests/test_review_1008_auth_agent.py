@@ -480,11 +480,13 @@ def test_password_guessing_does_not_use_up_the_second_factors_budget(client, db_
 # G / H. the prompt version; an oversized image
 # ---------------------------------------------------------------------------
 
-def test_the_prompt_version_is_a_dotted_number_with_a_note():
+def test_the_prompt_version_is_a_dotted_number_and_nothing_beside_it():
     from app.services import agent_prompt_service
 
     assert re.fullmatch(r"\d+\.\d+\.\d+", agent_prompt_service.PROMPT_VERSION)
-    assert agent_prompt_service.PROMPT_CHANGES.strip()
+    # What a version changed is the changelog's; a second copy beside the
+    # number was served to nobody.
+    assert not hasattr(agent_prompt_service, "PROMPT_CHANGES")
     assert sessions.PROMPT_VERSION == agent_prompt_service.PROMPT_VERSION
 
 

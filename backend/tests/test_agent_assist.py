@@ -154,9 +154,72 @@ def test_an_assist_key_writes_exactly_what_its_operator_may(
     follow = client.post(
         f"/api/v1/agent/hosts/{host.id}/follow",
         headers=headers,
-        json={"status": "watching"},
+        json={"status": "in_review"},
     )
     assert follow.status_code in (200, 204), follow.text
+
+
+def test_the_agents_review_status_takes_the_offered_states_and_refuses_watching(
+    client, test_project, test_user, db_session,
+):
+    """The agents' "set review status" took any string the stored enum knew,
+    so the retired ``watching`` was still accepted there.  The accepted values
+    are the review states the pages offer plus ``none``, they are an enum in
+    the route's schema (so the MCP tool carries them without a copy), and
+    anything else is a 422 naming them.  An old ``watching`` row is untouched
+    by a refused write and can still be cleared."""
+    from app.api.v1.endpoints.mcp_tools import _AUTHORED, TOOLS
+    from app.db.models import FollowStatus, Host, HostFollow
+    from app.main import app
+    from app.services.engagement_metrics_service import REVIEW_STATES
+
+    host = Host(
+        project_id=test_project.id, ip_address="10.99.0.7", state="up",
+        first_seen=datetime.now(timezone.utc), last_seen=datetime.now(timezone.utc),
+    )
+    db_session.add(host)
+    db_session.commit()
+    headers = _auth_headers(_start_session(client, test_project.id)["api_key"])
+    url = f"/api/v1/agent/hosts/{host.id}/follow"
+    accepted = [s.value for s in REVIEW_STATES] + ["none"]
+    assert accepted == ["in_review", "reviewed", "none"]
+
+    def stored():
+        db_session.expire_all()
+        return [f.status for f in db_session.query(HostFollow).filter(HostFollow.host_id == host.id)]
+
+    for value in ("in_review", "reviewed"):
+        assert client.post(url, headers=headers, json={"status": value}).status_code == 204
+        assert stored() == [FollowStatus(value)]
+
+    for refused in ("watching", "bogus", ""):
+        r = client.post(url, headers=headers, json={"status": refused})
+        assert r.status_code == 422, (refused, r.status_code, r.text)
+        for value in accepted:
+            assert f"'{value}'" in r.text, (refused, r.text)
+        assert stored() == [FollowStatus.REVIEWED]
+
+    # Clearing works by both of its words.
+    assert client.post(url, headers=headers, json={"status": "none"}).status_code == 204
+    assert stored() == []
+    assert client.post(url, headers=headers, json={"status": "in_review"}).status_code == 204
+    assert client.post(url, headers=headers, json={"status": "clear"}).status_code == 204
+    assert stored() == []
+
+    # A row from before the state was retired: not writable, still clearable.
+    db_session.add(HostFollow(host_id=host.id, user_id=test_user.id, status=FollowStatus.WATCHING))
+    db_session.commit()
+    assert client.post(url, headers=headers, json={"status": "watching"}).status_code == 422
+    assert stored() == [FollowStatus.WATCHING]
+    assert client.post(url, headers=headers, json={"status": "none"}).status_code == 204
+    assert stored() == []
+
+    # The values are the route's: OpenAPI carries them, and the MCP tool
+    # reads them from there rather than keeping a list of its own.
+    schema = app.openapi()["components"]["schemas"]["AgentFollowRequest"]["properties"]["status"]
+    assert schema["enum"] == accepted
+    assert TOOLS["assist_set_follow"]["input_schema"]["properties"]["status"]["enum"] == accepted
+    assert not isinstance(_AUTHORED["assist_set_follow"]["params"]["status"], dict)
 
 
 def test_end_session_revokes_key(client, test_project):

@@ -510,7 +510,7 @@ if $DB_UP; then
         q "MCP handshakes by client (last 7 days; the client names itself only in initialize)" "SELECT coalesce(client_name, '(unnamed)') AS client, coalesce(client_version, '-') AS version, coalesce(protocol_version, '-') AS protocol, count(*) AS handshakes FROM mcp_tool_calls WHERE rpc_method = 'initialize' AND created_at > now() - interval '7 days' GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 20;"
         q "Proposals by kind and status (an accept refused by the target keeps its reason in error)" "SELECT kind, status, source, count(*), count(error) AS with_accept_error FROM agent_proposals GROUP BY 1, 2, 3 ORDER BY 1, 2;"
         q "Evidence records by outcome" "SELECT outcome, count(*), count(raw_output_bytes) AS with_raw_output, pg_size_pretty(coalesce(sum(raw_output_bytes), 0)) AS raw_bytes FROM evidence_records GROUP BY 1 ORDER BY 2 DESC;"
-        q "Agent feedback by source" "SELECT source, count(*), round(avg(overall_rating), 1) AS avg_rating, max(created_at) AS last FROM agent_feedback GROUP BY 1 ORDER BY 2 DESC;"
+        q "Agent feedback by prompt version" "SELECT coalesce(prompt_version, '(unset)') AS prompt_version, count(*), round(avg(overall_rating), 1) AS avg_rating, max(created_at) AS last FROM agent_feedback GROUP BY 1 ORDER BY 2 DESC;"
     } > "$LOG_DIR/agent_surface.txt" 2>&1
 fi
 
@@ -582,7 +582,7 @@ if $DB_UP && $WITH_FEEDBACK; then
         # One "field: value" per line, a blank line between entries (psql's
         # aligned expanded form padded every separator to the widest value —
         # lines thousands of characters long).  JSON pretty-printed to read.
-        psql_q -x -A -F ': ' -c "SELECT f.id, f.created_at, f.source, f.status, f.prompt_version,
+        psql_q -x -A -F ': ' -c "SELECT f.id, f.created_at, f.status, f.prompt_version,
                 f.overall_rating AS rating, s.generated_by_tool AS client,
                 coalesce(f.agent_metrics->>'model', s.generated_by_model) AS model,
                 f.friction_notes,

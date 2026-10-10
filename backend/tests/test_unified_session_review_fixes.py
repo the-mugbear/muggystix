@@ -69,9 +69,8 @@ def test_identity_carries_the_session_and_no_phase_ids(client, test_project, db_
 
     ident = client.get("/api/v1/agent/identity", headers=_hdr(key)).json()
     assert ident["session_id"] == session_id
-    assert ident["workflow"] == "project"
     assert ident["project_id"] == test_project.id
-    for retired in ("plan_id", "execution_session_id", "open_phases", "workflow_session_id"):
+    for retired in ("plan_id", "execution_session_id", "open_phases", "workflow_session_id", "workflow"):
         assert retired not in ident, retired
 
 

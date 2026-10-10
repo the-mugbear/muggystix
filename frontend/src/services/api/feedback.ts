@@ -17,7 +17,6 @@ export interface AgentFeedbackEntry {
   id: number;
   project_id: number | null;
   agent_id: number | null;
-  source: string;
   prompt_version: string | null;
   overall_rating: number | null;
   api_critiques: Array<Record<string, any>> | null;
@@ -44,7 +43,6 @@ export interface AgentFeedbackEntry {
 
 export interface AgentFeedbackListParams {
   status?: string;
-  source?: string;
   min_rating?: number;
   has_tool_suggestions?: boolean;
   has_api_critiques?: boolean;
@@ -57,7 +55,6 @@ export interface AgentFeedbackListParams {
 export interface FeedbackStats {
   total: number;
   by_status: Record<string, number>;
-  by_source: Record<string, number>;
   by_prompt_version: Record<string, number>;
   avg_rating: number | null;
   top_tool_suggestions: Array<{ name: string; count: number; categories: string[] }>;

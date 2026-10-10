@@ -380,7 +380,7 @@ correct server does; anything else is a finding.
 |---|---|---|
 | H1.1 | `agent_identity` | Session id, project, the operator and their project role, `can_write_project_data`, `key_expires_at`, `renewable_until`. One id for the session everywhere it appears afterwards |
 | H1.2 | `assist_session_info`, `assist_get_context` | The same project and operator; engagement dates, members and roles, inventory totals, name counts, scopes, the latest scans |
-| H1.3 | `read_agent_guide` with no argument, then `workflow: "assist"`, then `workflow: "remediation"`; by curl, `GET $URL/api/v1/agents-guide?workflow=bogus` | The whole guide, then a shorter part each time; each carries the "say the rules back" section and the prompt version. The values are parts of the guide, not kinds of session. `bogus` through MCP is the transport's `-32602`; by curl it is the endpoint's 422 naming the accepted values |
+| H1.3 | `read_agent_guide` with no argument, then `part: "assist"`, then `part: "remediation"`; by curl, `GET $URL/api/v1/agents-guide?part=bogus` | The whole guide, then a shorter part each time; each carries the "say the rules back" section and the prompt version. The values are parts of the guide, not kinds of session. `part: "bogus"` through MCP is the transport's `-32602`; by curl it is the endpoint's 422 naming the accepted values |
 | H1.4 | `assist_get_vocabulary` | The project's `tags`, `labels`, `sites`, `scopes`, `usernames` (who `assigned:` can name), `finding_statuses` and `severities` |
 | H1.5 | `list_tools` (optionally `status`, `category`) | The catalogue with `ingestible` per tool; a tool BlueStick parses carries `run_command` / `run_note`, any other has them null. Statuses are `reference` / `suggested` / `rejected`; none is a permission, and nothing in the answer or the tool's description tells you which tool to use or asks you to cite the catalogue |
 | H1.6 | `GET $URL/.well-known/networkmapper.json` | `safety_properties` separates what the server enforces (it runs no commands; the key is bound to one project session and the operator's role) from what it cannot (`command_approval: operator_driven`, enforced by the agent and the client sandbox) |
@@ -490,9 +490,8 @@ record the 403.
 | Step | Do | Expect |
 |---|---|---|
 | H8.1 | `suggest_tool` for a tool you used that the catalogue does not list | Recorded for a curator (`status: suggested`, or `already_catalogued: true`); it neither grants nor blocks anything |
-| H8.2 | `submit_feedback` (`source`, `prompt_version`, `overall_rating`, `friction_notes`, `api_critiques`) for a real friction from this run; then with `source: "bogus"` through MCP and by curl | 201 with an ACKNOWLEDGEMENT — `id`, `status`, `source`, `agent_session_id`, `friction_notes_chars`, `api_critique_count`, `tool_suggestion_count` — not the entry; it waits on no person. Ask the operator to confirm it on the Feedback page. The unknown source is the transport's `-32602` through MCP and the endpoint's 400 by curl: record it, since feedback is otherwise never refused |
+| H8.2 | `submit_feedback` (`prompt_version`, `overall_rating`, `friction_notes`, `api_critiques`) for a real friction from this run; then once more with only `friction_notes` | 201 with an ACKNOWLEDGEMENT both times — `id`, `status`, `agent_session_id`, `friction_notes_chars`, `api_critique_count`, `tool_suggestion_count`, and no `source` — not the entry; it waits on no person, and no field is required. Ask the operator to confirm it on the Feedback page |
 | H8.3 | `curl` a route that does not exist, e.g. `GET $URL/api/v1/agent/does-not-exist` | 404 with `hint`, `guide` and `feedback` in the body; the call is recorded on the session's activity feed |
-| H8.4 | `submit_feedback` again with the retired argument `assist_session_id: 1` | Accepted and ignored: the same acknowledgement, with the session taken from the key |
 
 ### H9. Refusals and isolation
 

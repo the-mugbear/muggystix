@@ -29,7 +29,7 @@ from app.services.agent_key_ttl import session_renewal_deadline  # noqa: F401
 # the audit middleware (v2.337.0 — a key binds to one project session, never to
 # a plan or scope):
 #   agent_id, agent_project_id, api_key_id, api_key_prefix, key_expires_at,
-#   agent_session_id, agent_session_workflow, key_operator_id (+ key_operator_role
+#   agent_session_id, key_operator_id (+ key_operator_role
 #   and key_operator_is_admin once ``enforce_agent_operator_access`` has run).
 # ``key_operator_id`` is THE operator (who the key acts for, who its writes are
 # attributed to) and ``agent_project_id`` THE project; a handler reads these
@@ -477,12 +477,9 @@ def authenticate_for_renewal(
     request.state.api_key_id = api_key_obj.id
     request.state.api_key_prefix = api_key_obj.key_prefix
     session = ctx.session
-    request.state.agent_session_id = session.id if session is not None else None
     # Same attribution the normal chain stamps (see get_current_agent), so a
     # renewal lands on the session's timeline rather than as an orphan row.
-    request.state.agent_session_workflow = (
-        session.workflow if session is not None else None
-    )
+    request.state.agent_session_id = session.id if session is not None else None
     return api_key_obj
 
 
@@ -630,10 +627,8 @@ def get_current_agent(
         raise HTTPException(status_code=401, detail=_CREDENTIALS_CHANGED_DETAIL)
 
     # v2.337.0 — a key no longer binds a workflow, a plan or a scope; what it
-    # writes carries the session's id.  The label is stashed only so the audit
-    # middleware can attach legacy detail rows.
+    # writes carries the session's id.
     request.state.agent_session_id = agent_session.id
-    request.state.agent_session_workflow = agent_session.workflow
 
     # The ONE operator: the human this key acts for — the session's starter,
     # else the agent's owner (the same person; ``Agent.owner_id`` is NOT NULL

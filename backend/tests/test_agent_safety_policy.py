@@ -24,8 +24,23 @@ from app.services.agent_prompt_service import build_session_instructions
 def _session() -> str:
     return build_session_instructions(
         request=None, session_id=2, project_id=1, project_name="P",
-        purpose="everything", raw_api_key="k", user_label="u", user_id=1,
+        raw_api_key="k", user_label="u", user_id=1,
     )
+
+
+def test_the_session_prompt_carries_no_stated_purpose(client, test_project):
+    """The start dialog asks for no purpose, and one a script still sends
+    labels the session row only: it is never put in the agent's prompt."""
+    import inspect
+
+    assert "purpose" not in inspect.signature(build_session_instructions).parameters
+    assert "purpose" not in _session().lower()
+    r = client.post(
+        f"/api/v1/projects/{test_project.id}/assist/start",
+        json={"purpose": "zebra-label-9431"},
+    )
+    assert r.status_code in (200, 201), r.text
+    assert "zebra-label-9431" not in r.json()["instructions"]
 
 
 def test_the_session_prompt_renders_the_canonical_block():
@@ -173,7 +188,7 @@ def test_read_back_asks_for_restatement_not_recital():
     assert "not a recital" in block
 
 
-def test_agents_md_carries_the_read_back_for_every_workflow_slice():
+def test_agents_md_carries_the_read_back_in_every_part():
     import pytest
     from app.services.agents_guide_service import read_agent_guide, slice_agents_md
 
@@ -181,10 +196,10 @@ def test_agents_md_carries_the_read_back_for_every_workflow_slice():
     if text is None:
         pytest.skip("the agent guide is not mounted in this environment")
 
-    for workflow in ("testing", "reconnaissance", "assist", "remediation"):
-        sliced = slice_agents_md(text, workflow=workflow)
+    for part in ("testing", "reconnaissance", "assist", "remediation"):
+        sliced = slice_agents_md(text, part=part)
         assert "Say the rules back before you start" in sliced, (
-            f"the {workflow} slice lost the read-back section"
+            f"the {part} part lost the read-back section"
         )
 
 

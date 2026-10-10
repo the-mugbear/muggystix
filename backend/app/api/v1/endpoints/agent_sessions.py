@@ -433,7 +433,6 @@ def resume_project_agent_session(
         session_id=session.id,
         project_id=project.id,
         project_name=project.name,
-        purpose=session.purpose,
         raw_api_key=raw_key,
         user_label=current_user.full_name or current_user.username,
         user_id=current_user.id,

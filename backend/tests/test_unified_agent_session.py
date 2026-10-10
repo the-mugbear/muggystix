@@ -65,7 +65,7 @@ def test_one_key_reaches_identity_scope_and_host_tests(client, test_project, db_
     r = client.get("/api/v1/agent/identity", headers=_hdr(key))
     assert r.status_code == 200, r.text
     ident = r.json()
-    assert ident["workflow"] == "project"
+    assert "workflow" not in ident
     assert ident["project_id"] == test_project.id
     assert ident["session_id"] == session_id
     assert ident["can_write_project_data"] is True  # admin operator

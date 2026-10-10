@@ -16,7 +16,6 @@ Each authored entry (``_AUTHORED``):
     defaults     : MCP-side argument defaults (smaller pages than the endpoints')
     additive / idempotent / metadata_write : what a write does (drive the
                    destructive / idempotent annotations)
-    retired_params : arguments the tool used to take; accepted and dropped
     path_alternatives : {arg: path} — other endpoints the tool may reach, chosen
                    by which one id the caller passes (exactly one of the path's
                    own id and these); for assist_get_image, assist_get_host
@@ -142,12 +141,12 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "description": (
             "The agent guide: endpoint body shapes, upload formats, recipes, and "
             "the scope and working-directory rules in full. Read the part you need "
-            "when a tool leaves you guessing. Omit `workflow` for the whole guide."
+            "when a tool leaves you guessing. Omit `part` for the whole guide."
         ),
         "method": "GET",
         "path": "/api/v1/agents-guide",
         "params": {
-            "workflow": {
+            "part": {
                 "enum": ["testing", "reconnaissance", "assist", "remediation"],
                 "description": (
                     "One PART of the guide, not a kind of session: assist (reading "
@@ -196,9 +195,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "File feedback about BlueStick AT THE MOMENT you hit friction — a "
             "retry, a guessed field or route, a workaround — one short entry each. "
             "A developer working on BlueStick reads it: name the tool or endpoint, "
-            "expected vs actual and the exact error text. `source` is the kind of "
-            "work the entry is about. Answers an acknowledgement (id and counts), "
-            "not the entry."
+            "expected vs actual and the exact error text. One line of "
+            "`friction_notes` is a complete entry. Answers an acknowledgement (id "
+            "and counts), not the entry."
         ),
         "method": "POST",
         "metadata_write": True,
@@ -206,14 +205,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/feedback",
         # Session bookkeeping, but an APPEND: a retry files a second row.
         "idempotent": False,
-        # Accepted from a client holding an older tool list, and dropped
-        # (`mcp_assist._validate_arguments`): the session comes from the key.
-        "retired_params": ["assist_session_id"],
         "params": {
-            "source": {
-                "enum": ["assist", "reconnaissance", "testing"],
-                "description": "The kind of work this feedback is about.",
-            },
             "prompt_version": "The prompt_version from your instructions block.",
             # The endpoint takes free-form objects; these name the keys a
             # reviewer reads.
@@ -979,10 +971,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/hosts/{host_id}/follow",
         "params": {
             "host_id": HOST_ID,
-            "status": {
-                "enum": ["in_review", "reviewed", "none"],
-                "description": "in_review / reviewed, or `none` to clear the follow.",
-            },
+            "status": "in_review / reviewed, or `none` to clear the follow.",
         },
     },
     "assist_patch_host": {

@@ -163,9 +163,13 @@ const AgentSessionDetail: React.FC = () => {
         <div className="flex items-start justify-between gap-sm">
           <div className="min-w-0 flex-1">
             <h1 className="text-page-title">Agent session #{row.id}</h1>
-            <p className="mt-xxs break-words text-metadata text-foreground">
-              {safeFallback(row.purpose, 'No stated purpose')}
-            </p>
+            {/* A purpose is no longer asked for when a session starts (owner,
+                2026-10-10): shown when an older session or a script gave one,
+                and nothing in its place otherwise — "No stated purpose" on
+                every session read as a step somebody skipped. */}
+            {row.purpose?.trim() && (
+              <p className="mt-xxs break-words text-metadata text-foreground">{row.purpose}</p>
+            )}
           </div>
           <LastUpdated compact lastFetched={lastFetched} onRefresh={refresh} isLoading={loading} label="agent session" />
         </div>

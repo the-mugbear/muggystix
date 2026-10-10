@@ -67,19 +67,6 @@ const STATUSES = [
   { value: 'dismissed', label: 'Dismissed' },
 ] as const;
 
-// Must stay in step with AgentFeedbackSource in app/db/models_agent.py. Since
-// unified sessions (v2.337.0) the agent picks this value itself, so it is a
-// hint about what the agent was doing, not a record of the session's phases.
-const SOURCE_LABELS: Record<string, string> = {
-  testing: 'Testing',
-  reconnaissance: 'Reconnaissance',
-  assist: 'Assist',
-  // Labels on rows filed before 5.320.0, when tests lived on plans.
-  plan_generation: 'Plan generation',
-  in_session_execution: 'Execution',
-  exported_execution: 'Exported execution',
-};
-
 type Content = '' | 'critiques' | 'suggestions';
 
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
@@ -117,7 +104,6 @@ const Feedback: React.FC = () => {
 
   // Filters live in the URL, so the measures above the list are links to it.
   const status = params.get('status') ?? '';
-  const source = params.get('source') ?? '';
   const content = (params.get('content') ?? '') as Content;
   const minRating = params.get('rating') ?? '';
   const projectFilter = params.get('project') ?? '';
@@ -143,14 +129,13 @@ const Feedback: React.FC = () => {
   const query = useMemo<AgentFeedbackListParams>(() => {
     const q: AgentFeedbackListParams = { limit: PAGE };
     if (status) q.status = status;
-    if (source) q.source = source;
     if (minRating) q.min_rating = Number(minRating);
     if (content === 'critiques') q.has_api_critiques = true;
     if (content === 'suggestions') q.has_tool_suggestions = true;
     if (projectFilter) q.project_id = Number(projectFilter);
     if (committedSearch) q.search = committedSearch;
     return q;
-  }, [status, source, minRating, content, projectFilter, committedSearch]);
+  }, [status, minRating, content, projectFilter, committedSearch]);
 
   // The queue is every project's: neither key names a project.
   const list = useListQuery<AgentFeedbackEntry>(
@@ -242,7 +227,7 @@ const Feedback: React.FC = () => {
   const critiqueCount = stats?.with_api_critiques ?? 0;
   const suggestionCount = stats?.with_tool_suggestions ?? 0;
   const topTool = stats?.top_tool_suggestions?.[0];
-  const filtered = Boolean(status || source || content || minRating || projectFilter || committedSearch);
+  const filtered = Boolean(status || content || minRating || projectFilter || committedSearch);
   const projectOptions = useMemo(
     () => [...projects].sort((a, b) => a.name.localeCompare(b.name)),
     [projects],
@@ -339,13 +324,6 @@ const Feedback: React.FC = () => {
             <SelectContent>
               <SelectItem value="all">All projects</SelectItem>
               {projectOptions.map((p) => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Select value={source || 'all'} onValueChange={(v) => setParam('source', v === 'all' ? '' : v)}>
-            <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-44')} aria-label="What the agent was doing"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Any activity</SelectItem>
-              {Object.entries(SOURCE_LABELS).map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
             </SelectContent>
           </Select>
           <Select value={minRating || 'any'} onValueChange={(v) => setParam('rating', v === 'any' ? '' : v)}>
@@ -569,12 +547,12 @@ const FeedbackDetails: React.FC<{ r: AgentFeedbackEntry }> = ({ r }) => {
           </ul>
         ) : <p className="text-caption text-muted-foreground">None.</p>}
       </div>
-      <dl className="grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] gap-x-md gap-y-xxs text-caption lg:col-span-2">
-        <dt className="text-muted-foreground">What it was doing</dt>
-        <dd className="min-w-0 truncate">{SOURCE_LABELS[r.source] ?? r.source} <span className="text-muted-foreground">(the agent's own label)</span></dd>
-        {r.reviewed_at && (<><dt className="text-muted-foreground">Last triaged</dt><dd><TimeAgo value={r.reviewed_at} /></dd></>)}
-        {r.reviewer_notes && (<><dt className="text-muted-foreground">Reviewer note</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{r.reviewer_notes}</dd></>)}
-      </dl>
+      {(r.reviewed_at || r.reviewer_notes) && (
+        <dl className="grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] gap-x-md gap-y-xxs text-caption lg:col-span-2">
+          {r.reviewed_at && (<><dt className="text-muted-foreground">Last triaged</dt><dd><TimeAgo value={r.reviewed_at} /></dd></>)}
+          {r.reviewer_notes && (<><dt className="text-muted-foreground">Reviewer note</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{r.reviewer_notes}</dd></>)}
+        </dl>
+      )}
       {metrics && (
         <div className="min-w-0 lg:col-span-2">
           <h3 className="mb-xs text-caption font-semibold text-foreground">What the agent said about itself</h3>

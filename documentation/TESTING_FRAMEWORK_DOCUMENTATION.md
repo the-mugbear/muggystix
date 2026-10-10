@@ -182,7 +182,7 @@ The contract is UI_STYLE_GUIDE §48; this is how a test meets it.
 
 `backend/tests/test_docs_contract.py` keeps the documentation tied to the code so it can't drift
 silently (it has before — the guide, then named `AGENTS.md`, once ran ~120 releases stale). It asserts: the guide's
-`<!-- agents:section -->` markers stay balanced and every workflow slice keeps its body; every
+`<!-- agents:section -->` markers stay balanced and every part of the guide keeps its body; every
 OpenAPI tag described in `app/main.py` is used by a real route (and the agent-workflow tags are
 all described); and every agent endpoint documented in the guide's API-reference tables exists as
 a route. **If you rename or remove an agent route or an OpenAPI tag, update `documentation/AGENT_GUIDE.md` / `main.py`

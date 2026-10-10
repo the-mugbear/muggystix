@@ -41,7 +41,7 @@ def follow_host(
 
     follow_service = HostFollowService(db)
     follow = follow_service.set_follow_status(
-        host_id, current_user.id, payload.status,
+        host_id, current_user.id, models.FollowStatus(payload.status),
         review_conclusion=payload.review_conclusion,
         review_summary=payload.review_summary,
     )

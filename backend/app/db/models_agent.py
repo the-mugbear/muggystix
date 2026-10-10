@@ -208,23 +208,6 @@ class AgentSession(Base):
 # Agent Feedback
 # ---------------------------------------------------------------------------
 
-class AgentFeedbackSource(str, enum.Enum):
-    PLAN_GENERATION = "plan_generation"
-    RECONNAISSANCE = "reconnaissance"
-    IN_SESSION_EXECUTION = "in_session_execution"
-    EXPORTED_EXECUTION = "exported_execution"
-    # v2.85.0 — assist sessions now invite feedback.  Pre-v2.85.0 the
-    # assist prompt deliberately omitted the feedback block because the
-    # enum lacked an ASSIST value and the read-only "ask a question"
-    # shape didn't fit the plan/recon/execution lifecycle.  The assist
-    # prompt now closes the same way the others do.
-    ASSIST = "assist"
-    # v2.442.0 — proposing tests on hosts and recording their evidence.  It
-    # replaces PLAN_GENERATION / IN_SESSION_EXECUTION for new feedback; those
-    # (and EXPORTED_EXECUTION) stay so earlier rows keep their label.
-    TESTING = "testing"
-
-
 class AgentFeedbackStatus(str, enum.Enum):
     NEW = "new"
     REVIEWED = "reviewed"
@@ -233,13 +216,13 @@ class AgentFeedbackStatus(str, enum.Enum):
 
 
 class AgentFeedback(Base):
-    """Structured feedback submitted by an agent at the end of a prompt.
+    """Feedback an agent files at the moment something gets in its way.
 
-    Every agent-facing prompt ends with a feedback-request block asking
-    the agent to POST one of these.  The record stamps the prompt_version
-    so we can compare feedback across prompt revisions.  (Rows with
-    ``source = exported_execution`` were extracted from offline result
-    bundles, which went with test plans in v2.442.0.)
+    The session prompt and the MCP opening both ask for it.  The record
+    stamps the prompt_version so feedback can be compared across prompt
+    revisions.  A row carries no label for the kind of work it is about:
+    sessions have no kinds, and the ``source`` column that held one was
+    dropped by revision ``a6d3b1e8c5f7``.
     """
     __tablename__ = "agent_feedback"
 
@@ -266,7 +249,6 @@ class AgentFeedback(Base):
         index=True,
     )
 
-    source = Column(String(40), nullable=False)
     prompt_version = Column(String(20))
     overall_rating = Column(Integer)   # 1..5, nullable
 
@@ -294,7 +276,6 @@ class AgentFeedback(Base):
 
     __table_args__ = (
         Index("idx_agent_feedback_status", "status"),
-        Index("idx_agent_feedback_source", "source"),
         Index("idx_agent_feedback_created_desc", "created_at"),
     )
 

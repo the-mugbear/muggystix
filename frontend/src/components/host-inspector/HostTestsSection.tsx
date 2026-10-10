@@ -570,6 +570,17 @@ const SectionBody: React.FC<{ ctl: HostTestsController; onDirtyChange?: (dirty: 
     return c;
   }, [tests]);
   const shown = (tests ?? []).filter((t) => inFilter(t, filter));
+
+  // A host with tests to do opens this section by itself, whatever the reader
+  // last did with it (owner, 2026-10-10: the collapsed heading's count was
+  // easy to miss).  Opened, not un-collapsed: the stored preference is left
+  // alone, so a host with nothing to do still follows it.  Once per arrival
+  // of work — on a new host (the section is keyed by host) and when a host
+  // that had none gets some — so closing it by hand stays closed.
+  const hasWork = loaded && counts.active > 0;
+  useEffect(() => {
+    if (hasWork) openInspectorSection('host-detail-proposed-tests');
+  }, [hasWork]);
   const runnable = (tests ?? []).filter((t) => isActive(t.status)).length;
   const current = FILTERS.find((f) => f.value === filter)!;
 

@@ -11,9 +11,10 @@ These pin:
 
 * ``end_reason`` is set by each of the three end paths — agent, operator, sweep;
 * the timeline row carries ``end_reason`` and ``feedback_count``;
-* feedback names the kind of work it is about — ``assist``, ``reconnaissance``
-  or ``testing`` (v2.442.0; the plan-era names still file, the offline-bundle
-  one is refused) — and is attributed to the session from the key alone;
+* feedback is attributed to the session from the key alone, and carries no
+  label for the kind of work it is about: no field is required, and ``source``
+  is not a field (v2.480.0) — over HTTP an unknown key is ignored, over MCP an
+  argument the tool does not have is refused;
 * the activity summary's ``session_hygiene`` counts starts, exits by kind, and
   sessions that filed feedback;
 * the prompt and the MCP tool descriptions carry the trigger rule.
@@ -54,7 +55,7 @@ def _hdr(key):
 def _file_feedback(client, key, note="assist_list_hosts has no total"):
     r = client.post(
         "/api/v1/agent/feedback", headers=_hdr(key),
-        json={"source": "assist", "overall_rating": 3, "friction_notes": note},
+        json={"overall_rating": 3, "friction_notes": note},
     )
     assert r.status_code in (200, 201), r.text
 
@@ -171,36 +172,91 @@ def test_testing_feedback_is_accepted_and_attributed_from_the_key(client, test_p
     key, assist_id = _start_session(client, test_project)
     sid = _agent_session_id(db_session, assist_id)
     r = client.post("/api/v1/agent/feedback", headers=_hdr(key), json={
-        "source": "testing", "overall_rating": 2,
+        "overall_rating": 2,
         "friction_notes": "host_tests_propose 409 did not say which request_key",
     })
     assert r.status_code in (200, 201), r.text
     body = r.json()
-    assert body["source"] == "testing"
-    for retired in ("test_plan_id", "execution_session_id"):
+    for retired in ("test_plan_id", "execution_session_id", "source"):
         assert retired not in body
     # An acknowledgement, not an echo: the agent just wrote the text.
     assert "friction_notes" not in body and "api_critiques" not in body
     assert body["friction_notes_chars"] == len("host_tests_propose 409 did not say which request_key")
     assert body["status"] == "new" and body["agent_session_id"] == sid
     row = db_session.get(AgentFeedback, body["id"])
-    assert (row.agent_session_id, row.project_id, row.source) == (sid, test_project.id, "testing")
+    assert (row.agent_session_id, row.project_id) == (sid, test_project.id)
     assert _row(client, test_project, sid)["feedback_count"] == 1
 
 
-def test_plan_era_sources_still_file_and_the_bundle_one_is_refused(client, test_project, db_session):
-    key, _assist_id = _start_session(client, test_project)
-    for legacy in ("plan_generation", "in_session_execution"):
+def _mcp_call(client, key, arguments, rpc_id=1):
+    return client.post("/api/v1/mcp", headers=_hdr(key), json={
+        "jsonrpc": "2.0", "id": rpc_id, "method": "tools/call",
+        "params": {"name": "submit_feedback", "arguments": arguments},
+    }).json()
+
+
+def test_feedback_takes_no_source(client, test_project, db_session):
+    """v2.480.0 — the label for the kind of work an entry was about is gone.
+
+    Before, ``source`` was required (a body without it was a 422) and had to be
+    one of a fixed list.  Now nothing reads it and nothing stores it: a body
+    without it files.  Over plain HTTP the body model ignores a key it does
+    not know, ``source`` like any other; the MCP tool does not have the
+    argument, so a call carrying it is refused as an unknown argument."""
+    from app.api.v1.endpoints.mcp_tools import TOOLS
+    from app.db.models_agent import AgentFeedback
+
+    key, sid = _start_session(client, test_project)
+
+    # Over HTTP: with none, and with a key the body model does not know.
+    r = client.post("/api/v1/agent/feedback", headers=_hdr(key),
+                    json={"friction_notes": "no label at all"})
+    assert r.status_code == 201, r.text
+    assert "source" not in r.json()
+    for unknown in ("source", "never_a_field"):
         r = client.post("/api/v1/agent/feedback", headers=_hdr(key),
-                        json={"source": legacy, "friction_notes": "old client"})
-        assert r.status_code in (200, 201), (legacy, r.text)
-    r = client.post("/api/v1/agent/feedback", headers=_hdr(key),
-                    json={"source": "exported_execution", "friction_notes": "x"})
-    assert r.status_code == 400, r.text
-    assert "offline result bundles" in r.json()["detail"]
-    r = client.post("/api/v1/agent/feedback", headers=_hdr(key),
-                    json={"source": "made_up", "friction_notes": "x"})
-    assert r.status_code == 400, r.text
+                        json={unknown: "made_up", "friction_notes": f"sent {unknown}"})
+        assert r.status_code == 201, (unknown, r.text)
+        assert unknown not in r.json(), unknown
+    # Nothing at all is a complete submission too: no field is required.
+    assert client.post("/api/v1/agent/feedback", headers=_hdr(key), json={}).status_code == 201
+
+    # Over MCP: the tool does not have the argument …
+    spec = TOOLS["submit_feedback"]
+    schema = spec["input_schema"]
+    assert "source" not in schema["properties"]
+    assert "source" not in schema.get("required", ())
+    assert "retired_params" not in spec
+    assert "`source`" not in spec["description"]
+    body = _mcp_call(client, key, {"friction_notes": "mcp, no label"}, 1)
+    assert "error" not in body and body["result"]["isError"] is False, body
+    # … so one that carries it is refused like any unknown argument.
+    refused = _mcp_call(client, key, {"source": "made_up", "friction_notes": "mcp, a label"}, 2)
+    assert refused.get("error", {}).get("code") == -32602, refused
+
+    # Every accepted one is a row on the key's session, and no row has a label.
+    db_session.expire_all()
+    rows = db_session.query(AgentFeedback).filter(AgentFeedback.agent_session_id == sid).all()
+    assert len(rows) == 5
+    assert not hasattr(AgentFeedback, "source")
+    assert "source" not in AgentFeedback.__table__.columns
+    assert "idx_agent_feedback_source" not in {i.name for i in AgentFeedback.__table__.indexes}
+
+
+def test_the_admin_feedback_reads_carry_no_source(client, test_project, db_session):
+    """The triage queue's list, detail and summary lost the label with the
+    column: no ``source`` on a row, no ``by_source`` in the summary, and no
+    ``source`` query parameter on the list."""
+    from app.main import app
+
+    key, _sid = _start_session(client, test_project)
+    _file_feedback(client, key)
+    page = client.get(f"/api/v1/feedback/?project_id={test_project.id}").json()
+    assert page["total"] == 1 and "source" not in page["items"][0]
+    assert "source" not in client.get(f"/api/v1/feedback/{page['items'][0]['id']}").json()
+    assert "by_source" not in client.get("/api/v1/feedback/stats").json()
+    listed = app.openapi()["paths"]["/api/v1/feedback/"]["get"].get("parameters", [])
+    assert "source" not in {p["name"] for p in listed}
 
 
 # ---------------------------------------------------------------------------
@@ -216,13 +272,13 @@ def test_session_prompt_asks_for_feedback_at_the_moment_of_friction(client, test
     # No checkpoint is advertised that no longer exists.
     assert "feedback_recorded" not in prompt
     assert "execution-sessions" not in prompt
-    # `source` is required by the endpoint: one clause, and a body that is
-    # valid JSON and files as it stands.
-    assert "whichever of `assist`, `reconnaissance`, `testing` is closest" in prompt
+    # The body is valid JSON and files as it stands; it names no kind of work.
+    assert "`source`" not in prompt and "reconnaissance" not in prompt.split(
+        "### Feedback", 1)[1].split("###", 1)[0]
     import json
     body = prompt.split("```json\n", 1)[1].split("\n```", 1)[0]
     sent = json.loads(body)
-    assert sent["source"] == "testing" and set(sent) == {"source", "prompt_version", "friction_notes"}
+    assert set(sent) == {"prompt_version", "friction_notes"}
     assert client.post(
         "/api/v1/agent/feedback", headers={"X-API-Key": r.json()["api_key"]}, json=sent,
     ).status_code == 201
@@ -239,9 +295,7 @@ def test_mcp_tool_descriptions_carry_the_trigger_rule():
     fb = TOOLS["submit_feedback"]["description"]
     assert "AT THE MOMENT you hit friction" in fb
     assert "execution_complete_session" not in fb and "feedback_recorded" not in fb
-    assert TOOLS["submit_feedback"]["input_schema"]["properties"]["source"]["enum"] == [
-        "assist", "reconnaissance", "testing",
-    ]
+    assert "source" not in TOOLS["submit_feedback"]["input_schema"]["properties"]
     assert "file any feedback you have not filed yet first" in TOOLS["end_session"]["description"]
 
 

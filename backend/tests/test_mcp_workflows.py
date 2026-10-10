@@ -13,7 +13,7 @@ v2.442.0 — test plans and execution runs are gone, and with them the
 ``plan_*`` / ``execution_*`` tools and the ``plan_id`` the server filled in
 from the key (``test_plan_id_is_filled_from_the_key``,
 ``test_an_explicit_argument_beats_the_auto_filled_one``: no tool has a plan to
-address).  The one auto-filled argument left is the guide's ``workflow``.
+address).  No argument is filled in from the key any more.
 """
 from __future__ import annotations
 
@@ -103,17 +103,14 @@ def test_identity_classifies_each_workflow_key(client, test_project, scope_with_
     # v2.337.0 — every start mints one project session.  v2.442.0 — and a
     # session has no phases: identity names the session, nothing it "opened".
     plan_id = identity(plan["api_key"])
-    assert plan_id["workflow"] == "project"
     assert plan_id["session_id"] == plan["agent_session_id"]
-    for retired in ("open_phases", "plan_id", "execution_session_id"):
+    for retired in ("open_phases", "plan_id", "execution_session_id", "workflow"):
         assert retired not in plan_id
 
     recon_id = identity(recon["api_key"])
-    assert recon_id["workflow"] == "project"
     assert recon_id["session_id"] == recon["agent_session_id"] != plan_id["session_id"]
 
     assist_id = identity(assist["api_key"])
-    assert assist_id["workflow"] == "project"
     assert assist_id["project_id"] == test_project.id
 
 
@@ -327,9 +324,13 @@ def test_the_guide_is_reachable_over_mcp_and_sliced_to_the_caller(
     assert recon_text == plan_text
 
 
-def test_an_explicit_guide_slice_beats_the_auto_filled_one(client, test_project):
-    """Auto-fill is a default, not an override: the session's ``project``
-    workflow means "the whole guide", and naming a slice gets that slice."""
+def test_the_guide_part_argument_is_part_and_nothing_else(client, test_project):
+    """The guide's "which part" argument is ``part``, the only name on both
+    doors.  ``workflow`` is not an argument: over MCP it is refused like any
+    unknown argument; over HTTP it is a query parameter the route does not
+    declare, which selects nothing."""
+    from app.api.v1.endpoints.mcp_tools import TOOLS
+    from app.main import app
     from app.services.agents_guide_service import read_agent_guide, slice_agents_md
 
     full_text = read_agent_guide()
@@ -338,19 +339,59 @@ def test_an_explicit_guide_slice_beats_the_auto_filled_one(client, test_project)
     session = _assist_key(client, test_project)
     headers = {"X-API-Key": session["api_key"]}
 
-    sliced = _call(client, headers, "read_agent_guide", {"workflow": "assist"})
-    assert sliced["isError"] is False, sliced
-    # The served text stamps the prompt version into the header, so compare
-    # the slice by size rather than byte for byte.
-    expected = slice_agents_md(full_text, "assist")
-    assert abs(len(sliced["content"][0]["text"]) - len(expected)) < 40
-    assert len(expected) < len(full_text)
+    def near(text, expected):
+        # The served text stamps the prompt version into the header, so
+        # compare by size rather than byte for byte.
+        return abs(len(text) - len(expected)) < 40
+
+    assist = slice_agents_md(full_text, "assist")
+    remediation = slice_agents_md(full_text, "remediation")
+    assert len(assist) < len(full_text) and not near(assist, remediation)
+
+    # --- MCP: only `part` is offered, and it selects.
+    offered = TOOLS["read_agent_guide"]["input_schema"]["properties"]
+    assert set(offered) == {"part"}
+    assert offered["part"]["enum"] == ["testing", "reconnaissance", "assist", "remediation"]
     whole = _call(client, headers, "read_agent_guide")["content"][0]["text"]
-    assert len(whole) > len(sliced["content"][0]["text"])
-    # A retired slice name is not an advertised value any more.
+    sliced = _call(client, headers, "read_agent_guide", {"part": "assist"})
+    assert sliced["isError"] is False, sliced
+    assert near(sliced["content"][0]["text"], assist) and len(whole) > len(assist) + 40
+    # A value that names no part is refused by name.
     refused = _rpc(client, {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {
-        "name": "read_agent_guide", "arguments": {"workflow": "plan_generation"}}}, headers=headers)
-    assert "error" in refused.json() or refused.json()["result"]["isError"] is True
+        "name": "read_agent_guide", "arguments": {"part": "plan_generation"}}}, headers=headers).json()
+    assert "error" in refused or refused["result"]["isError"] is True
+    # `workflow` is not an argument: refused, with or without `part`.
+    for arguments in ({"workflow": "assist"}, {"workflow": "assist", "part": "assist"}):
+        unknown = _rpc(client, {"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {
+            "name": "read_agent_guide", "arguments": arguments}}, headers=headers).json()
+        assert unknown.get("error", {}).get("code") == -32602, unknown
+        assert "unknown argument(s) workflow" in unknown["error"]["message"], unknown
+
+    # --- HTTP: `part` selects, and is the only parameter the route declares.
+    url = "/api/v1/agents-guide"
+    whole_http = client.get(url).text
+    assert near(client.get(url, params={"part": "assist"}).text, assist)
+    assert client.get(url, params={"part": "project"}).text == whole_http
+    bad = client.get(url, params={"part": "bogus"})
+    assert bad.status_code == 422, bad.text
+    assert bad.json()["detail"].startswith("part must be one of testing, reconnaissance, assist, remediation")
+    assert [p["name"] for p in app.openapi()["paths"][url]["get"]["parameters"]] == ["part"]
+    # An undeclared query parameter selects nothing, whatever it holds.
+    for value in ("assist", "bogus"):
+        ignored = client.get(url, params={"workflow": value})
+        assert ignored.status_code == 200 and ignored.text == whole_http, value
+
+
+def test_agent_identity_names_no_workflow(client, test_project):
+    """Sessions have no kinds: what a key is told about itself carries no
+    ``workflow``, over HTTP or over MCP."""
+    from app.main import app
+
+    session = _assist_key(client, test_project)
+    headers = {"X-API-Key": session["api_key"]}
+    assert "workflow" not in client.get("/api/v1/agent/identity", headers=headers).json()
+    assert "workflow" not in _call(client, headers, "agent_identity")["structuredContent"]
+    assert "workflow" not in app.openapi()["components"]["schemas"]["AgentIdentity"]["properties"]
 
 
 def test_the_tool_catalogue_is_readable_over_mcp(
@@ -548,4 +589,4 @@ def test_a_registry_entry_can_omit_the_params_it_has_none_of(client, test_projec
     assist = _assist_key(client, test_project)
     result = _call(client, {"X-API-Key": assist["api_key"]}, "agent_identity")
     assert result["isError"] is False, result
-    assert result["structuredContent"]["workflow"] == "project"
+    assert result["structuredContent"]["project_id"] == test_project.id

@@ -147,7 +147,7 @@ describe('AgentActivityRail — what it asks', () => {
     server.live = 2;
     server.recent = [row()];
     const page = await show();
-    expect(trigger()).toHaveAccessibleName('Agent activity — 2 active sessions');
+    expect(trigger()).toHaveAccessibleName('Agent activity — 2 active sessions in this project');
 
     // Project 2 has not answered yet.
     api.listAgentSessions.mockImplementation(() => new Promise(() => {}));
@@ -194,7 +194,7 @@ describe('AgentActivityRail — how often', () => {
     server.recent = [row()];
     await pass(5 * MINUTE + 5 * SECOND);
     expect(asked()).toEqual({ active: 2, recent: 2 });
-    expect(trigger()).toHaveAccessibleName('Agent activity — 1 active session');
+    expect(trigger()).toHaveAccessibleName('Agent activity — 1 active session in this project');
   });
 
   it('a session that went live is noticed at the next slow poll, and polling then tightens to a minute', async () => {
@@ -202,7 +202,7 @@ describe('AgentActivityRail — how often', () => {
     await show();
     server.live = 1;
     await pass(5 * MINUTE + 5 * SECOND);
-    expect(trigger()).toHaveAccessibleName('Agent activity — 1 active session');
+    expect(trigger()).toHaveAccessibleName('Agent activity — 1 active session in this project');
     const before = asked();
 
     await pass(MINUTE + 5 * SECOND);
@@ -270,13 +270,13 @@ describe('AgentActivityRail — what the reader sees', () => {
     server.live = 1;
     server.recent = [row()];
     await show();
-    expect(trigger()).toHaveAccessibleName('Agent activity — 1 active session');
+    expect(trigger()).toHaveAccessibleName('Agent activity — 1 active session in this project');
 
     // Twelve live, of which the list shows its eight.
     server.live = 12;
     server.recent = Array.from({ length: 8 }, (_, i) => row({ id: 100 + i }));
     await pass(MINUTE + 5 * SECOND);
-    expect(trigger()).toHaveAccessibleName('Agent activity — 12 active sessions');
+    expect(trigger()).toHaveAccessibleName('Agent activity — 12 active sessions in this project');
     const popover = await openPopover();
     expect(within(popover).getByText('12 active')).toBeInTheDocument();
     expect(rowTexts(popover)).toHaveLength(8);
@@ -347,7 +347,7 @@ describe('AgentActivityRail — what the reader sees', () => {
     server.live = 1;
     server.recent = [];
     await show();
-    expect(trigger()).toHaveAccessibleName('Agent activity — 1 active session');
+    expect(trigger()).toHaveAccessibleName('Agent activity — 1 active session in this project');
     const popover = await openPopover();
     expect(within(popover).getByText('No recent agent sessions.')).toBeInTheDocument();
     expect(within(popover).getByText('1 active')).toBeInTheDocument();
@@ -366,7 +366,7 @@ describe('AgentActivityRail — when a read fails', () => {
     server.fail = true;
     await pass(MINUTE + 5 * SECOND);
     expect(asked()).toEqual({ active: before.active + 1, recent: before.recent + 1 });
-    expect(trigger()).toHaveAccessibleName('Agent activity — 2 active sessions');
+    expect(trigger()).toHaveAccessibleName('Agent activity — 2 active sessions in this project');
     expect(within(popover).getByText('2 active')).toBeInTheDocument();
     expect(rowTexts(popover)).toHaveLength(2);
     expect(within(popover).queryByText('No recent agent sessions.')).toBeNull();
@@ -375,7 +375,7 @@ describe('AgentActivityRail — when a read fails', () => {
     server.live = 3;
     server.recent = [row(), row({ id: 8 }), row({ id: 9 })];
     await pass(2 * MINUTE + 5 * SECOND);
-    expect(trigger()).toHaveAccessibleName('Agent activity — 3 active sessions');
+    expect(trigger()).toHaveAccessibleName('Agent activity — 3 active sessions in this project');
     expect(rowTexts(popover)).toHaveLength(3);
   });
 
@@ -403,7 +403,7 @@ describe('AgentActivityRail — when a read fails', () => {
     server.live = 1;
     server.recent = [row()];
     const popover = await openPopover();
-    expect(trigger()).toHaveAccessibleName('Agent activity — 1 active session');
+    expect(trigger()).toHaveAccessibleName('Agent activity — 1 active session in this project');
     expect(rowTexts(popover)).toEqual(['Session #7· activeSweep the DMZclaude-opus · by ana · 5m ago']);
   });
 

@@ -157,7 +157,10 @@ const AgentActivityRail: React.FC = () => {
               type="button"
               aria-label={
                 activeCount > 0
-                  ? `Agent activity — ${activeCount} active session${activeCount === 1 ? '' : 's'}`
+                  // "in this project": Operations' own line counts the READER's
+                  // sessions, and the two numbers can differ (owner, 2026-10-10:
+                  // keep both, say which this one is).
+                  ? `Agent activity — ${activeCount} active session${activeCount === 1 ? '' : 's'} in this project`
                   : 'Agent activity'
               }
               className={cn(
@@ -183,7 +186,7 @@ const AgentActivityRail: React.FC = () => {
         </TooltipTrigger>
         <TooltipContent>
           {activeCount > 0
-            ? `${activeCount} active agent session${activeCount === 1 ? '' : 's'}`
+            ? `${activeCount} active agent session${activeCount === 1 ? '' : 's'} in this project`
             : 'Agent activity'}
         </TooltipContent>
       </Tooltip>

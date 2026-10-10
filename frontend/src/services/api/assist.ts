@@ -55,7 +55,8 @@ export interface StartAssistResponse {
 }
 
 export interface StartAssistRequest {
-  purpose?: string;
+  // The route still takes an optional `purpose` (scripts label their
+  // sessions with it); the app's dialog does not ask for one.
   ttl_hours?: number;
   // `can_write_assigned` removed in v5.189.0 with the capability system — the
   // session's authority is the operator's project role, decided per request.

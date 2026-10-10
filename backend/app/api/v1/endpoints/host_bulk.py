@@ -24,6 +24,7 @@ from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, Notification, ProjectRole
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
+from app.schemas.schemas import ReviewStateToSet
 from app.services import host_query
 from app.services.webhook_dispatcher import stage_dispatch
 
@@ -280,7 +281,8 @@ def bulk_unassign(
 
 class BulkFollowRequest(BaseModel):
     host_ids: List[int]
-    status: FollowStatus
+    # The same states the single-host route sets; anything else is a 422.
+    status: ReviewStateToSet
 
 
 @router.post("/bulk/follow", response_model=BulkResult, summary="Set follow status on many hosts (for the caller)")
@@ -300,12 +302,13 @@ def bulk_follow(
         .filter(HostFollow.user_id == current_user.id, HostFollow.host_id.in_(host_ids))
         .all()
     }
+    status = FollowStatus(payload.status)
     for h in host_ids:
         follow = existing.get(h)
         if follow:
-            follow.status = payload.status
+            follow.status = status
         else:
-            db.add(HostFollow(host_id=h, user_id=current_user.id, status=payload.status))
+            db.add(HostFollow(host_id=h, user_id=current_user.id, status=status))
 
     db.commit()
     return BulkResult(affected=len(host_ids), requested=len(payload.host_ids))

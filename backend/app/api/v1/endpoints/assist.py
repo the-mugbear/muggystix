@@ -58,10 +58,10 @@ class StartAssistRequest(BaseModel):
         default=None,
         max_length=400,
         description=(
-            "Short free-text description of what the operator is doing. "
-            "Surfaced on the audit timeline so a reviewer can see why "
-            "the session was opened (e.g. 'Looking for FTP exposure', "
-            "'Writing critical-findings summary')."
+            "A short label for the session, shown wherever sessions are "
+            "listed. The app's own dialog does not ask for one; a script "
+            "that starts sessions may label them with it. It is not put "
+            "in the agent's prompt."
         ),
     )
     ttl_hours: Optional[int] = Field(
@@ -203,7 +203,6 @@ def start_assist_session(
         session_id=session.id,
         project_id=project.id,
         project_name=project.name,
-        purpose=body.purpose,
         raw_api_key=raw_key,
         user_label=current_user.full_name or current_user.username,
         user_id=current_user.id,

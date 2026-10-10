@@ -44,7 +44,6 @@ const entry = (over: Partial<AgentFeedbackEntry> = {}): AgentFeedbackEntry => ({
   session_api_calls: 89,
   project_name: 'Demo — Insights Eval',
   agent_name: 'session-agent',
-  source: 'testing',
   prompt_version: '2.11.0',
   overall_rating: null,
   api_critiques: [
@@ -65,7 +64,6 @@ const entry = (over: Partial<AgentFeedbackEntry> = {}): AgentFeedbackEntry => ({
 const stats: FeedbackStats = {
   total: 9,
   by_status: { new: 5, reviewed: 3, actioned: 1 },
-  by_source: {},
   by_prompt_version: {},
   avg_rating: 3.6,
   top_tool_suggestions: [{ name: 'nuclei', count: 2, categories: [] }],
@@ -147,6 +145,23 @@ describe('Agent Feedback', () => {
       status: 'new', has_api_critiques: true, project_id: 3,
     }), expect.any(AbortSignal));
     expect(await screen.findByText('No feedback matches these filters.')).toBeInTheDocument();
+  });
+
+  it('has no label for the kind of work: no filter, no line on a report, and an old ?source= asks for nothing', async () => {
+    // 5.373.0 — the label went with the server's column. A bookmark that still
+    // carries `source` is not a filter: it is not sent, and the list is "All".
+    listAgentFeedback.mockResolvedValue(page([entry({ reviewer_notes: 'checked against the call log' })]));
+    renderPage('/feedback?source=testing');
+    await screen.findByTestId('feedback-row-9');
+    expect(listAgentFeedback.mock.calls.every(([q]) => !('source' in q))).toBe(true);
+    expect(screen.getByText('All feedback')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'What the agent was doing' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Show report #9' }));
+    // The open report still shows what a reviewer wrote (in its details).
+    expect(await screen.findByRole('button', { name: 'Hide report #9' })).toBeInTheDocument();
+    expect(screen.getAllByText('checked against the call log').length).toBeGreaterThan(0);
+    expect(screen.queryByText('What it was doing')).toBeNull();
+    expect(screen.queryByText(/the agent's own label/)).toBeNull();
   });
 
   it('searches once the typing stops, not on every keystroke', async () => {

@@ -20,7 +20,7 @@ def test_rows_link_to_the_session_and_its_calls(client, db_session, test_project
     # A couple of calls on the session, then feedback from it.
     assert client.get("/api/v1/agent/identity", headers=headers).status_code == 200
     r = client.post("/api/v1/agent/feedback", headers=headers, json={
-        "source": "assist", "overall_rating": 4,
+        "overall_rating": 4,
         "friction_notes": "context test",
         "api_critiques": [{"endpoint": "x", "issue": "y", "suggestion": "z"}],
     })
@@ -71,7 +71,7 @@ def test_rows_name_the_mcp_client_the_session_connected_with(client, db_session,
                                api_key_prefix=(key.key_prefix + "zz")[:16]))
     db_session.commit()
     assert client.post("/api/v1/agent/feedback", headers=headers, json={
-        "source": "assist", "friction_notes": "client test"}).status_code == 201
+        "friction_notes": "client test"}).status_code == 201
     fb = db_session.query(AgentFeedback).filter(AgentFeedback.friction_notes == "client test").one()
     row = client.get(f"/api/v1/feedback/{fb.id}").json()
     assert row["client_name"] == "claude-code"
@@ -86,9 +86,9 @@ def test_a_session_no_page_lists_is_not_offered_as_a_link(client, db_session, te
     db_session.add(old)
     db_session.flush()
     db_session.add_all([
-        AgentFeedback(project_id=test_project.id, source="in_session_execution", status="new",
+        AgentFeedback(project_id=test_project.id, status="new",
                       friction_notes="old run", agent_session_id=old.id),
-        AgentFeedback(project_id=test_project.id, source="assist", status="new",
+        AgentFeedback(project_id=test_project.id, status="new",
                       friction_notes="no session"),
     ])
     db_session.commit()
@@ -106,7 +106,7 @@ def test_a_session_no_page_lists_is_not_offered_as_a_link(client, db_session, te
 
 def test_project_filter_and_paging(client, db_session, test_project):
     for i in range(3):
-        db_session.add(AgentFeedback(project_id=test_project.id, source="assist",
+        db_session.add(AgentFeedback(project_id=test_project.id,
                                      status="new", friction_notes=f"p{i}"))
     db_session.commit()
     first = client.get(f"/api/v1/feedback/?project_id={test_project.id}&limit=2").json()
@@ -118,9 +118,9 @@ def test_project_filter_and_paging(client, db_session, test_project):
 def test_has_critiques_and_suggestions_filters_answer(client, db_session, test_project):
     """``json != json`` has no PostgreSQL operator: these filters used to 500."""
     db_session.add_all([
-        AgentFeedback(project_id=test_project.id, source="assist", status="new",
+        AgentFeedback(project_id=test_project.id, status="new",
                       api_critiques=[{"endpoint": "a", "issue": "b"}], tool_suggestions=[]),
-        AgentFeedback(project_id=test_project.id, source="assist", status="new",
+        AgentFeedback(project_id=test_project.id, status="new",
                       api_critiques=[], tool_suggestions=[{"name": "nuclei"}]),
     ])
     db_session.commit()

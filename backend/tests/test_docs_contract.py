@@ -32,7 +32,7 @@ from app.services.agents_guide_service import (
     GUIDE_PARTS, UnknownGuidePart, read_agent_guide, slice_agents_md,
 )
 
-# The parts of the guide a caller may ask for (``?workflow=<part>``): reading
+# The parts of the guide a caller may ask for (``?part=<part>``): reading
 # aids, not kinds of session.
 WORKFLOWS = ["testing", "reconnaissance", "assist", "remediation"]
 
@@ -115,15 +115,16 @@ def test_workflow_slice_is_nonempty_with_anchors(wf):
 
 
 @pytest.mark.parametrize("value", ["bogus_workflow_xyz", "plan", "plan_generation", "exec", "execution", "recon", ""])
-def test_unknown_workflow_is_refused_by_name(value, client):
+def test_unknown_part_is_refused_by_name(value, client):
     """A value that names no part is a 422 naming the accepted ones — never
-    the shared sections passed off as an answer.  The names of the workflows
-    that no longer exist are unknown values like any other."""
+    the shared sections passed off as an answer.  The names of the session
+    kinds that no longer exist are unknown values like any other."""
     with pytest.raises(UnknownGuidePart):
         slice_agents_md(_load_agents_md(), value)
-    resp = client.get("/api/v1/agents-guide", params={"workflow": value})
+    resp = client.get("/api/v1/agents-guide", params={"part": value})
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"]
+    assert detail.startswith("part must be one of")
     for part in GUIDE_PARTS:
         assert part in detail
 
@@ -246,7 +247,7 @@ def test_served_guide_is_stamped_with_live_prompt_version(client):
     while the prompt carried PROMPT_VERSION — two unrelated schemes)."""
     from app.services.agent_prompt_service import PROMPT_VERSION
 
-    resp = client.get("/api/v1/agents-guide?workflow=reconnaissance")
+    resp = client.get("/api/v1/agents-guide?part=reconnaissance")
     assert resp.status_code == 200, resp.text
     assert f"**Prompt version:** {PROMPT_VERSION}" in resp.text, (
         "served guide must carry the live PROMPT_VERSION in its header"

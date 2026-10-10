@@ -6,11 +6,11 @@ ON the repository).  Compose mounts it at ``/app/AGENT_GUIDE.md``; a local
 checkout reads it from ``documentation/``.  ``read_agent_guide`` is the one
 resolver.
 
-The guide is served whole or as one PART (``?workflow=<part>``): the sections
+The guide is served whole or as one PART (``?part=<part>``): the sections
 tagged for that part plus every ``shared`` section, so an agent reads the
 reference for what it is doing and not the rest.  A part is a reading aid, not
 a kind of session and not a permission — one project session does every kind
-of work.  The query argument is still named ``workflow`` (a wire name).
+of work.
 """
 from __future__ import annotations
 
@@ -25,17 +25,16 @@ AGENT_GUIDE_FILENAME = "AGENT_GUIDE.md"
 GUIDE_PARTS = ("testing", "reconnaissance", "assist", "remediation")
 
 #: Values that mean "the whole guide", like leaving the argument out.
-#: ``project`` is a session's own workflow, which the MCP layer fills in.
 _FULL_GUIDE_VALUES = {"project"}
 
 
 class UnknownGuidePart(ValueError):
-    """``workflow`` named something that is not a part of the guide."""
+    """``part`` named something that is not a part of the guide."""
 
     def __init__(self, value: str):
         self.value = value
         super().__init__(
-            f"workflow must be one of {', '.join(GUIDE_PARTS)} "
+            f"part must be one of {', '.join(GUIDE_PARTS)} "
             f"(or omitted for the whole guide); not understood: {value!r}."
         )
 
@@ -63,7 +62,7 @@ _SECTION_START = re.compile(
 _SECTION_END = re.compile(r'<!--\s*agents:end\s*-->', re.IGNORECASE)
 
 
-def slice_agents_md(content: str, workflow: Optional[str]) -> str:
+def slice_agents_md(content: str, part: Optional[str]) -> str:
     """Return the sections of the agent guide tagged for the requested part.
 
     Sections are delimited by HTML comment markers that render invisible
@@ -78,7 +77,7 @@ def slice_agents_md(content: str, workflow: Optional[str]) -> str:
         OR the literal tag ``shared``.
       * Untagged content between sections (the title, horizontal rules) is
         always included.
-      * ``workflow=None`` (or ``project``) returns the full file unchanged.
+      * ``part=None`` (or ``project``) returns the full file unchanged.
       * Any other value that is not in ``GUIDE_PARTS`` raises
         ``UnknownGuidePart``, which the route answers with a 422 naming the
         accepted values: a value that cannot be understood is refused, never
@@ -86,13 +85,13 @@ def slice_agents_md(content: str, workflow: Optional[str]) -> str:
 
     Matching is case-insensitive and ignores surrounding whitespace.
     """
-    if workflow is None:
+    if part is None:
         return content
-    requested = workflow.strip().lower()
+    requested = part.strip().lower()
     if requested in _FULL_GUIDE_VALUES:
         return content
     if requested not in GUIDE_PARTS:
-        raise UnknownGuidePart(workflow)
+        raise UnknownGuidePart(part)
 
     out_lines: list[str] = []
     in_section = False

@@ -21,8 +21,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.services.host_query_common import escape_like
 from app.db.models_agent import (
-    Agent, AgentApiCall, AgentFeedback, AgentFeedbackSource, AgentFeedbackStatus,
-    McpToolCall,
+    Agent, AgentApiCall, AgentFeedback, AgentFeedbackStatus, McpToolCall,
 )
 from app.db.models_auth import APIKey
 from app.db.models_project import Project
@@ -41,19 +40,12 @@ class AgentFeedbackCreate(BaseModel):
     """What an agent POSTs to ``/agent/feedback`` when something got in its
     way — one line of ``friction_notes`` is a complete submission.
 
-    All fields are optional *except* ``source`` — we still want a row
-    even if the agent only has a frustration message to leave behind.
+    Every field is optional: a row is wanted even when the agent has only a
+    frustration message to leave behind.  Over plain HTTP the model ignores a
+    key it does not know (pydantic's default, which this model keeps); the
+    MCP tool refuses an argument it does not have, like every other tool
+    (``test_feedback_takes_no_source``).
     """
-    source: str = Field(
-        ...,
-        description=(
-            "What the feedback is about — whichever is closest: assist "
-            "(queries and notes) | reconnaissance (scanning and uploading) | "
-            "testing (host tests and evidence). The older values "
-            "plan_generation and in_session_execution are still accepted and "
-            "read as testing."
-        ),
-    )
     prompt_version: Optional[str] = None
     # The session is never named in the body: it is the key's
     # (``agent_session_id`` on the row).  ``assist_session_id`` (v2.85.0) went
@@ -86,7 +78,6 @@ class AgentFeedbackResponse(BaseModel):
     # record's name is reused across sessions (a seeded "planner"), so it
     # says nothing about who tested.
     client_name: Optional[str] = None
-    source: str
     prompt_version: Optional[str]
     overall_rating: Optional[int]
     api_critiques: Optional[List[Dict[str, Any]]] = None
@@ -113,7 +104,6 @@ class AgentFeedbackUpdate(BaseModel):
 class FeedbackStatsResponse(BaseModel):
     total: int
     by_status: Dict[str, int]
-    by_source: Dict[str, int]
     by_prompt_version: Dict[str, int]
     avg_rating: Optional[float]
     top_tool_suggestions: List[Dict[str, Any]]
@@ -136,7 +126,6 @@ class AgentFeedbackAck(BaseModel):
     ``GET /feedback/{id}``."""
     id: int
     status: str
-    source: str
     agent_session_id: Optional[int] = None
     created_at: Optional[datetime] = None
     friction_notes_chars: int = 0
@@ -167,23 +156,6 @@ def submit_agent_feedback(
     the submission.  The row is stamped with ``agent_id`` and ``project_id`` from the
     authenticated API key — the payload itself cannot override those.
     """
-    if body.source not in {s.value for s in AgentFeedbackSource}:
-        allowed = sorted(
-            s.value for s in AgentFeedbackSource
-            if s is not AgentFeedbackSource.EXPORTED_EXECUTION
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown source {body.source!r}. Allowed: {allowed}",
-        )
-    # ``exported_execution`` rows came from offline result bundles (retired
-    # with test plans in v2.442.0); the value stays only so old rows read.
-    if body.source == AgentFeedbackSource.EXPORTED_EXECUTION.value:
-        raise HTTPException(
-            status_code=400,
-            detail="source=exported_execution was for offline result bundles, which no longer exist",
-        )
-
     # The row is stamped with the session id from the key: that is the whole
     # attribution.  (Until v2.442.0 the body could also name a test plan or an
     # execution run, validated here; both are gone.)
@@ -193,7 +165,6 @@ def submit_agent_feedback(
         project_id=agent.project_id,
         agent_id=agent.id,
         agent_session_id=agent_session_id,
-        source=body.source,
         prompt_version=body.prompt_version,
         overall_rating=body.overall_rating,
         api_critiques=body.api_critiques or [],
@@ -208,7 +179,6 @@ def submit_agent_feedback(
     return AgentFeedbackAck(
         id=row.id,
         status=row.status,
-        source=row.source,
         agent_session_id=row.agent_session_id,
         created_at=row.created_at,
         friction_notes_chars=len(row.friction_notes or ""),
@@ -284,7 +254,6 @@ def _with_context(db: Session, rows: List[AgentFeedback]) -> List[AgentFeedbackR
 )
 def list_feedback(
     status: Optional[str] = Query(None),
-    source: Optional[str] = Query(None),
     min_rating: Optional[int] = Query(None, ge=1, le=5),
     has_tool_suggestions: Optional[bool] = Query(None),
     has_api_critiques: Optional[bool] = Query(None),
@@ -299,8 +268,6 @@ def list_feedback(
         q = q.filter(AgentFeedback.project_id == project_id)
     if status:
         q = q.filter(AgentFeedback.status == status)
-    if source:
-        q = q.filter(AgentFeedback.source == source)
     if min_rating is not None:
         q = q.filter(AgentFeedback.overall_rating >= min_rating)
     if search:
@@ -382,10 +349,6 @@ def feedback_stats(db: Session = Depends(get_db)):
     for row in db.query(AgentFeedback.status, func.count(AgentFeedback.id)).group_by(AgentFeedback.status).all():
         by_status[row[0]] = int(row[1])
 
-    by_source: Dict[str, int] = {}
-    for row in db.query(AgentFeedback.source, func.count(AgentFeedback.id)).group_by(AgentFeedback.source).all():
-        by_source[row[0]] = int(row[1])
-
     by_version: Dict[str, int] = {}
     for row in db.query(AgentFeedback.prompt_version, func.count(AgentFeedback.id)).group_by(AgentFeedback.prompt_version).all():
         by_version[row[0] or "(unset)"] = int(row[1])
@@ -449,7 +412,6 @@ def feedback_stats(db: Session = Depends(get_db)):
         with_tool_suggestions=int(with_tool_suggestions),
         total=total,
         by_status=by_status,
-        by_source=by_source,
         by_prompt_version=by_version,
         avg_rating=avg_rating,
         top_tool_suggestions=top_payload,

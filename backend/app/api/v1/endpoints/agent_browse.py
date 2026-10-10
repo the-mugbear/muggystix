@@ -47,7 +47,7 @@ from app.api.v1.endpoints.agent_schemas import (
     PortBrief, VulnCounts, HostBrief, HostDetail,
     ScanBrief, ScopeBrief, ScopeDomainBrief, ProjectInfo, AgentDashboard,
     AgentIdentity, AgentIdentityOperator,
-    AgentNoteCreate, AgentNoteResponse, AgentFollowRequest,
+    AgentNoteCreate, AgentNoteResponse, AgentFollowRequest, FOLLOW_CLEAR,
     AgentHostUpdate, AgentHostUpdateResponse,
     AgentToolSuggestionRequest, AgentToolSuggestionResponse,
 )
@@ -292,7 +292,6 @@ def get_agent_identity(
     )
 
     return AgentIdentity(
-        workflow=(session.workflow if session is not None else None),
         session_id=session_id,
         project_id=agent.project_id,
         project_name=(
@@ -703,9 +702,11 @@ def set_agent_follow(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """Set review status on a host.
+    """Set the operator's review status on a host, or remove it (``none``).
 
-    v2.309.0 — gated by the operator's project role; see ``create_agent_note``.
+    Gated by the operator's project role; see ``create_agent_note``.  The
+    accepted values are the request model's (``AgentFollowStatus``): anything
+    else — the retired ``watching`` included — is a 422 naming them.
     """
     q = (
         db.query(models.Host)
@@ -717,19 +718,15 @@ def set_agent_follow(
 
     svc = HostFollowService(db)
 
-    # "none"/"clear" removes the operator's follow entirely — the inverse the
-    # enum otherwise lacks, so an agent that set a status can undo it rather
-    # than being stuck at watching/in_review/reviewed forever (v2.315.0).
-    if body.status in ("none", "clear"):
+    # ``none`` removes the operator's review status entirely, so an agent
+    # that set one can undo it.
+    if body.status == FOLLOW_CLEAR:
         svc.unfollow(host_id, request.state.key_operator_id)
         return
 
-    try:
-        follow_status = FollowStatus(body.status)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid follow status: {body.status}")
-
-    svc.set_follow_status(host_id, request.state.key_operator_id, follow_status)
+    svc.set_follow_status(
+        host_id, request.state.key_operator_id, FollowStatus(body.status),
+    )
 
 
 @router.patch(

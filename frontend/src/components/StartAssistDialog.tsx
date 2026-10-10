@@ -25,8 +25,10 @@
  * dialog does not close by accident while it is on screen. Since 5.309.0
  * that is the Done footer (KeyHandoffFooter) rather than an "I copied the
  * key" checkbox: copying anything that holds the key clears it; otherwise
- * Done warns once. 5.309.0 also cut the dialog from ~770 words that
- * scrolled to one sentence, one field, and one copy for the chosen client.
+ * Done warns once. Before the session starts the dialog is one sentence and
+ * one button — it asks nothing (the optional "what is it for?" box was one
+ * more thing to click past; owner decision 2026-10-10); after, one copy for
+ * the chosen client.
  */
 import React, { useCallback, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -43,8 +45,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from './ui/dialog';
-import { Input } from './ui/input';
-import { Label } from './ui/label';
 import { startAssistSession, type AgentSessionRow } from '../services/api';
 import { useProjectId } from '../hooks/useProjectId';
 import { SECRET_MUTATION, invalidateReads, queryErrorText } from '../lib/query';
@@ -83,13 +83,12 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   instruction,
 }) => {
   const liveSession = instruction ? mySessions.find((s) => hasLiveKey(s, Date.now())) : undefined;
-  const [purpose, setPurpose] = useState('');
   const queryClient = useQueryClient();
   const projectId = useProjectId();
   // The key is shown once: it is this dialog's mutation result and nothing
   // else's — never a query, and dropped with the dialog (`reset`, `gcTime: 0`).
   const start = useMutation({
-    mutationFn: (stated: string | undefined) => startAssistSession(projectId, { purpose: stated }),
+    mutationFn: () => startAssistSession(projectId, {}),
     ...SECRET_MUTATION,
     onSuccess: () => {
       // The new key is live the moment this returns — reflect it wherever the
@@ -111,14 +110,13 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   const continuing = liveSession != null && !startAnother;
 
   const reset = useCallback(() => {
-    setPurpose('');
     resetStart();
     setKeyCopied(false);
     setStartAnother(false);
     setTaskCopied(false);
   }, [resetStart]);
 
-  const handleStart = () => start.mutate(purpose.trim() || undefined);
+  const handleStart = () => start.mutate();
 
   const handleClose = () => {
     const sid = result?.agent_session_id;
@@ -216,21 +214,6 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                   </Link>{' '}
                   instead of starting a new one.
                 </p>
-              )}
-              {!continuing && (
-              <div className="flex flex-col gap-xxs">
-                <Label htmlFor="assist-purpose">
-                  What is it for? <span className="text-muted-foreground">(optional — shown in the audit log)</span>
-                </Label>
-                <Input
-                  id="assist-purpose"
-                  placeholder="e.g. Looking for FTP exposure across all scopes"
-                  value={purpose}
-                  onChange={(e) => setPurpose(e.target.value)}
-                  maxLength={400}
-                  disabled={loading}
-                />
-              </div>
               )}
               {error && (
                 <Alert variant="destructive">

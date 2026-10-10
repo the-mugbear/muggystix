@@ -909,10 +909,9 @@ def test_granted_writes_land_through_mcp(client, test_project, test_user, db_ses
 
 
 def test_the_guide_tool_returns_the_whole_guide_with_no_identity_lookup(client, test_project, db_session):
-    """No tool fills an argument from the caller's key: the last one was the
-    guide's ``workflow``, whose filled value ("project") meant "the whole
-    guide", the same as leaving it out.  A live session still gets the whole
-    guide, and the transport makes no identity call of its own to serve it."""
+    """No tool fills an argument from the caller's key.  A live session gets
+    the whole guide, and the transport makes no identity call of its own to
+    serve it."""
     from app.api.v1.endpoints.mcp_tools import TOOLS
     from app.db.models_agent import AgentApiCall
 
@@ -936,7 +935,7 @@ def test_the_guide_tool_returns_the_whole_guide_with_no_identity_lookup(client, 
         "params": {"name": "read_agent_guide", "arguments": {}},
     }, headers=headers).json()["result"]
     assert not got.get("isError"), got
-    # The whole guide, as the direct route serves it with no ``workflow``.
+    # The whole guide, as the direct route serves it with no ``part``.
     whole = client.get("/api/v1/agents-guide").text
     assert "/agent/uploads" in whole
     assert got["content"][0]["text"] == whole
@@ -960,7 +959,7 @@ def test_submit_feedback_over_mcp_lands_on_the_session(client, test_project, db_
     res = _rpc(client, {
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": {"name": "submit_feedback", "arguments": {
-            "source": "assist", "overall_rating": 4,
+            "overall_rating": 4,
             "friction_notes": "count vs page confusion",
             "api_critiques": [{"endpoint": "/agent/assist/hosts", "issue": "no total"}],
         }},
@@ -968,34 +967,49 @@ def test_submit_feedback_over_mcp_lands_on_the_session(client, test_project, db_
     assert not res.get("isError"), res
     session_id = body["agent_session_id"]
     row = db_session.query(AgentFeedback).filter(AgentFeedback.agent_session_id == session_id).one()
-    assert row.source == "assist" and row.overall_rating == 4
+    assert row.friction_notes == "count vs page confusion" and row.overall_rating == 4
 
-    # Missing the one required field is a protocol error, not a 422 tool error.
-    bad = _rpc(client, {
+    # No field is required (v2.480.0: `source` was the one that was, and its
+    # absence a -32602) — a rating alone files.
+    alone = _rpc(client, {
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
         "params": {"name": "submit_feedback", "arguments": {"overall_rating": 3}},
+    }, headers=headers).json()
+    assert "error" not in alone and not alone["result"].get("isError"), alone
+    # An argument the tool never took is still a protocol error, not a tool error.
+    bad = _rpc(client, {
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "submit_feedback", "arguments": {"never_an_argument": 3}},
     }, headers=headers).json()
     assert bad.get("error", {}).get("code") == -32602, bad
 
 
-def test_feedback_from_a_client_holding_the_older_tool_list_is_still_filed(client, test_project, db_session):
-    """v2.449.0 — `assist_session_id` went with the `assist_sessions` table.
-    The tool's schema refuses unknown arguments, so a client that still sends
-    the retired one would have had its feedback refused; it is accepted and
-    ignored instead — the session comes from the key."""
+def test_no_tool_keeps_an_argument_it_used_to_take(client, test_project, db_session):
+    """No old MCP client is supported (owner, 2026-10-10), so a removed
+    argument is simply removed: the registry has no list of retired
+    arguments, and one a tool used to take is refused like any other unknown
+    argument — `submit_feedback`'s `source` and `assist_session_id`, the
+    guide's `workflow` — with nothing written."""
+    from app.api.v1.endpoints.mcp_tools import _AUTHORED
     from app.db.models_agent import AgentFeedback
 
+    assert not [name for name, entry in _AUTHORED.items() if "retired_params" in entry]
+
     body = _start_session(client, test_project.id)
-    res = _rpc(client, {
-        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {"name": "submit_feedback", "arguments": {
-            "source": "assist", "friction_notes": "sent the retired field", "assist_session_id": 999999,
-        }},
-    }, headers={"X-API-Key": body["api_key"]}).json()
-    assert "error" not in res and not res["result"].get("isError"), res
-    row = db_session.query(AgentFeedback).filter(
-        AgentFeedback.agent_session_id == body["agent_session_id"]).one()
-    assert row.friction_notes == "sent the retired field"
+    headers = {"X-API-Key": body["api_key"]}
+    for rpc_id, (tool, arguments) in enumerate((
+        ("submit_feedback", {"source": "made_up", "friction_notes": "x"}),
+        ("submit_feedback", {"assist_session_id": 999999, "friction_notes": "x"}),
+        ("read_agent_guide", {"workflow": "assist"}),
+    ), start=2):
+        res = _rpc(client, {
+            "jsonrpc": "2.0", "id": rpc_id, "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        }, headers=headers).json()
+        assert res.get("error", {}).get("code") == -32602, (tool, res)
+        assert "unknown argument" in res["error"]["message"], res
+    assert db_session.query(AgentFeedback).filter(
+        AgentFeedback.agent_session_id == body["agent_session_id"]).count() == 0
 
 
 def test_repeated_tools_list_does_not_spam_the_activity_log(client, test_project, db_session):

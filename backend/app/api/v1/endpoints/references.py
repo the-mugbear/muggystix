@@ -24,7 +24,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -356,7 +356,7 @@ async def references_index():
         "agents_guide": {
             "url": "/api/v1/agents-guide",
             "description": (
-                "The agent guide. ?workflow=testing|reconnaissance|assist|remediation "
+                "The agent guide. ?part=testing|reconnaissance|assist|remediation "
                 "returns one part of it; omit it for the whole guide."
             ),
         },
@@ -409,13 +409,19 @@ async def references_index():
 @router.get("/agents-guide")
 async def agents_guide(
     request: Request,
-    workflow: Optional[str] = None,
+    part: Optional[str] = Query(
+        None,
+        description=(
+            "One part of the guide: testing, reconnaissance, assist or "
+            "remediation. Omit it (or send `project`) for the whole guide."
+        ),
+    ),
     # See tool_registry above — attribution only, never a requirement.
     _agent=Depends(identify_agent_if_present),
 ):
     """Serve the agent guide (documentation/AGENT_GUIDE.md) with the base URL replaced to match the current deployment.
 
-    ``workflow`` names one PART of the guide (``testing``, ``reconnaissance``,
+    ``part`` names one PART of the guide (``testing``, ``reconnaissance``,
     ``assist`` or ``remediation``): the answer is then the sections tagged for
     that part plus every ``shared`` section.  Without it (or with ``project``)
     the whole guide is returned.  A part is a reading aid, not a kind of
@@ -427,7 +433,7 @@ async def agents_guide(
         raise HTTPException(status_code=404, detail="Agent guide not found")
 
     try:
-        content = slice_agents_md(content, workflow)
+        content = slice_agents_md(content, part)
     except UnknownGuidePart as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

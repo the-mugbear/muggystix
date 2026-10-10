@@ -3,6 +3,8 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from enum import Enum
 
+from app.services.engagement_metrics_service import REVIEW_STATES
+
 class ScriptBase(BaseModel):
     script_id: str
     output: Optional[str] = None
@@ -197,8 +199,17 @@ REVIEW_CONCLUSIONS = {
 }
 
 
+#: What a host's review status can be SET to, on every door — the page's
+#: control, the bulk bar, an agent: the review states the pages offer
+#: (``engagement_metrics_service.REVIEW_STATES``, the one list).  The retired
+#: ``watching`` is not in it; ``FollowStatus`` above keeps it only so rows
+#: that already hold it can be read.  Typed, so each route's OpenAPI carries
+#: the values and anything else is a 422 naming them.
+ReviewStateToSet = Literal[tuple(s.value for s in REVIEW_STATES)]  # type: ignore[valid-type]
+
+
 class HostFollowUpdate(BaseModel):
-    status: FollowStatus
+    status: ReviewStateToSet
     # §9 review completion — recorded when status=reviewed (ignored otherwise).
     review_conclusion: Optional[str] = None
     review_summary: Optional[str] = Field(None, max_length=4000)

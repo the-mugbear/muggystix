@@ -171,8 +171,6 @@ def test_every_report_writing_surface_says_who_the_reader_is():
     from app.api.v1.endpoints.mcp_tools import TOOLS
     from app.services.agents_guide_service import read_agent_guide
 
-    # (``PROMPT_CHANGES`` describes the current prompt version only, so it
-    # said this for one version; the tools and the guide keep saying it.)
     assert "THE READER HAS NEVER SEEN BLUESTICK" in TOOLS["propose_finding_text"]["description"]
     assert "has never seen BlueStick" in TOOLS["propose_finding"]["description"]
     guide = read_agent_guide()

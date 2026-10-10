@@ -10,8 +10,8 @@ An agent connected over MCP never sees this prompt — its client is handed a
 config, and what it reads at start is ``mcp_assist._server_instructions``.
 
 ``PROMPT_VERSION`` MUST be bumped whenever the instruction content changes in a
-way that affects agent behavior, and ``PROMPT_CHANGES`` rewritten to say what
-this version changed.  Earlier versions are in CHANGELOG.md.
+way that affects agent behavior.  What each version changed is in
+CHANGELOG.md, and nowhere else.
 """
 
 import logging
@@ -30,18 +30,7 @@ logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.24.0"
-
-# What PROMPT_VERSION changed (the current version only).  Read by people
-# working on BlueStick; it is not sent to agents.
-PROMPT_CHANGES = (
-    "The scanner-observation reads say more: the issue list takes "
-    "`exploitable=true` and each issue says whether a scanner reports an "
-    "exploit for it; each host of an issue carries `tests_to_do` and "
-    "`tests_recorded` for the tests naming that issue there. The guide's row "
-    "and the two tool descriptions say so. Nothing else an agent is told "
-    "changed. (4.23.0 added the host query word `gap:<kind of evidence>`.)"
-)
+PROMPT_VERSION = "4.25.0"
 
 
 _INSTANCE_ID_CACHE: Optional[str] = None
@@ -126,8 +115,7 @@ def _feedback_section(base_url: str) -> str:
     """When to file feedback, and the smallest body that files it.
 
     The full payload, who reads it and what makes an entry useful are the
-    guide's.  ``source`` is required by the endpoint, so the one clause about
-    it stays here.
+    guide's.  No field is required.
     """
     return (
         f"### Feedback — file it when the friction happens\n"
@@ -136,11 +124,10 @@ def _feedback_section(base_url: str) -> str:
         f"expected counts) or work around something, "
         f"`POST {base_url}/agent/feedback`:\n\n"
         f"```json\n"
-        f'{{"source": "testing", "prompt_version": "{PROMPT_VERSION}", '
+        f'{{"prompt_version": "{PROMPT_VERSION}", '
         f'"friction_notes": "<endpoint>: expected X, got Y"}}\n'
         f"```\n\n"
-        f"`source`: whichever of `assist`, `reconnaissance`, `testing` is "
-        f"closest. One line is enough, and several submissions in a session "
+        f"One line is enough, and several submissions in a session "
         f"are normal; the guide has the full shape.\n\n"
     )
 
@@ -211,7 +198,6 @@ def build_session_instructions(
     session_id: int,
     project_id: int,
     project_name: str,
-    purpose: Optional[str],
     raw_api_key: str,
     user_label: str,
     user_id: Optional[int],
@@ -220,8 +206,9 @@ def build_session_instructions(
 ) -> str:
     """The session-start prompt for a project agent session.
 
-    Conditional parts: the resumed-session notice (``resumed``), the
-    operator's stated purpose, and the configured scanner credentials.
+    Conditional parts: the resumed-session notice (``resumed``) and the
+    configured scanner credentials.  What the session is for is whatever the
+    operator asks of the agent; the prompt carries no stated purpose.
     """
     from datetime import datetime, timezone
     base_url = resolve_base_url(request)
@@ -247,11 +234,6 @@ def build_session_instructions(
             "continue rather than repeat.\n\n"
         )
 
-    purpose_line = (
-        f"**The operator stated this purpose:** {purpose.strip()}\n\n"
-        if purpose and purpose.strip() else ""
-    )
-
     return (
         provenance +
         resume_notice +
@@ -262,7 +244,6 @@ def build_session_instructions(
         f"commands. Everything you run, runs on {user_label}'s machine, and "
         f"BlueStick knows only what you report to it; every call you make is "
         f"recorded and shown to them.\n\n"
-        + purpose_line
         + render_read_back() + "\n"
         + render_safety_rules() + "\n"
         f"### Connection\n"

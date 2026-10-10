@@ -87,7 +87,7 @@ def test_an_entry_authors_nothing_the_endpoint_already_says():
     derived_keys = {"path_params", "query_params", "body_params", "input_schema"}
     known = derived_keys | {
         "description", "method", "path", "params", "hidden", "defaults", "additive",
-        "idempotent", "metadata_write", "retired_params", "path_alternatives", "result",
+        "idempotent", "metadata_write", "path_alternatives", "result",
     }
     for name, entry in _AUTHORED.items():
         assert not derived_keys & set(entry), name
@@ -96,8 +96,6 @@ def test_an_entry_authors_nothing_the_endpoint_already_says():
             assert isinstance(overlay, str) or "type" not in overlay, name
         # A default the tool injects is for an argument it offers.
         assert set(entry.get("defaults", ())) <= set(TOOLS[name]["input_schema"]["properties"]), name
-        # A retired argument is not also a live one.
-        assert not set(entry.get("retired_params", ())) & set(TOOLS[name]["input_schema"]["properties"]), name
 
 
 def test_no_tool_declares_an_argument_filled_from_the_key():

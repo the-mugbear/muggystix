@@ -214,6 +214,35 @@ describe('HostTestsSection — the list', () => {
     expect(await screen.findByText('The portal is exposed.')).toBeInTheDocument();
   });
 
+  // Owner, 2026-10-10 (plan A12a): tests to do open the section by itself,
+  // over the reader's stored collapse; a host with nothing to do still follows
+  // it, the stored preference is not rewritten, and closing by hand holds.
+  it('opens by itself when the host has tests to do, and only then', async () => {
+    const collapse = () => window.localStorage.getItem('bluestick.inspector.collapsed');
+    window.localStorage.setItem('bluestick.inspector.collapsed', JSON.stringify(['host-detail-proposed-tests']));
+    try {
+      api.listHostTests.mockResolvedValue(page([test({ status: 'done', evidence_count: 1, last_outcome: 'no_finding' })]));
+      const idle = renderSection();
+      await waitFor(() => expect(api.listHostTests).toHaveBeenCalled());
+      await waitFor(() => expect(screen.getByRole('button', { name: /^Tests/ })).toHaveAttribute('aria-expanded', 'false'));
+      idle.unmount();
+
+      api.listHostTests.mockResolvedValue(page([test()]));
+      renderSection();
+      expect(await screen.findByText('Check response headers')).toBeInTheDocument();
+      const heading = screen.getByRole('button', { name: /^Tests/ });
+      expect(heading).toHaveAttribute('aria-expanded', 'true');
+      // The preference itself is untouched…
+      expect(collapse()).toBe(JSON.stringify(['host-detail-proposed-tests']));
+      // …and closing it by hand stays closed.
+      fireEvent.click(heading);
+      expect(heading).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.queryByText('Check response headers')).not.toBeInTheDocument();
+    } finally {
+      window.localStorage.removeItem('bluestick.inspector.collapsed');
+    }
+  });
+
   it('a linked test is shown and marked even when the reader keeps the section collapsed', async () => {
     // Owner, 2026-10-02: a row opened from Operations landed on the host page
     // with nothing saying which test it was for; with the Tests section

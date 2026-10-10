@@ -8,11 +8,11 @@ agent_assist…) can share a single schema definition.  A test is a host test
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.schemas.schemas import ScanInfoBase
+from app.schemas.schemas import ReviewStateToSet, ScanInfoBase
 from app.services.scan_time import scan_time_for_api
 
 
@@ -292,16 +292,6 @@ class AgentIdentity(BaseModel):
     for and their project role, whether it may write project data, and when
     the key expires and where to renew it.
     """
-    # The session's stored kind.  Kept on the wire for clients that read it;
-    # it selects nothing.
-    workflow: Optional[str] = Field(
-        None,
-        description=(
-            "`project` for every session started now: one session does every "
-            "kind of work, and this value selects nothing (an older session "
-            "may carry a retired label). Kept for clients that read it."
-        ),
-    )
     session_id: Optional[int] = None
     project_id: int
     project_name: Optional[str] = None
@@ -383,8 +373,26 @@ class AgentNoteResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+#: Removes the operator's review status from the host (what the page does
+#: with its "not started" choice).
+FOLLOW_CLEAR = "none"
+
+#: What an agent may send: the states the people's route sets
+#: (``schemas.ReviewStateToSet``, the one type — the retired ``watching`` is
+#: not in it), plus the word that clears, since this door has no DELETE.
+#: Typed, so the route's OpenAPI operation — and the MCP tool derived from
+#: it — carries the values, and anything else is a 422 naming them.
+AgentFollowStatus = Literal[get_args(ReviewStateToSet) + (FOLLOW_CLEAR,)]  # type: ignore[valid-type]
+
+
 class AgentFollowRequest(BaseModel):
-    status: str  # watching | in_review | reviewed
+    status: AgentFollowStatus
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _clear_is_none(cls, value):
+        # ``clear`` has always been accepted for ``none``; it is not advertised.
+        return FOLLOW_CLEAR if value == "clear" else value
 
 
 class AgentHostUpdate(BaseModel):

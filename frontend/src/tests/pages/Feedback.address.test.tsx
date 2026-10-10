@@ -53,7 +53,7 @@ const settle = () => act(async () => { await new Promise((resolve) => setTimeout
 beforeEach(() => {
   listAgentFeedback.mockReset().mockResolvedValue({ items: [], total: 0, skip: 0, limit: 50, has_more: false });
   getAgentFeedbackStats.mockReset().mockResolvedValue({
-    total: 0, by_status: {}, by_source: {}, by_prompt_version: {}, avg_rating: null,
+    total: 0, by_status: {}, by_prompt_version: {}, avg_rating: null,
     top_tool_suggestions: [], with_api_critiques: 0, with_tool_suggestions: 0,
   });
 });
