@@ -51,7 +51,6 @@ def _member(db, project, *, user_id=91001, role=ProjectRole.ANALYST.value, passw
         hashed_password=get_password_hash(password) if password else "$2b$12$abcdefghijklmnopqrstuv",
         role=UserRole.MEMBER,
         is_active=True,
-        is_verified=True,
     )
     db.add(user)
     db.flush()
@@ -462,7 +461,7 @@ def test_guessing_spread_over_many_addresses_still_meets_a_ceiling(client, db_se
 def test_password_guessing_does_not_use_up_the_second_factors_budget(client, db_session):
     user = User(id=91050, username="totp-owner", email="totp-owner@example.com",
                 hashed_password="x", role=UserRole.MEMBER, is_active=True,
-                is_verified=True, totp_enabled=True)
+                totp_enabled=True)
     db_session.add(user)
     for i in range(LOGIN_2FA_THROTTLE_PER_USERNAME + 2):
         db_session.add(AuditLog(action="login_failed", details={"username": user.username},

@@ -33,9 +33,8 @@ endpoint parameter is offered by its tool without an edit here.
 and every dispatch loops back through the real endpoint, where the router-level
 ``enforce_agent_operator_access`` and the operator's project role make the
 actual decision.  The MCP layer makes no security decision anywhere, and this
-file must not become the place it starts.  The kind of work a tool belongs to
-(``tool_workflows``) is derived from its name and only groups the reference
-page.
+file must not become the place it starts.  ``tool_groups`` — derived from a
+tool's name — only says under which heading the MCP reference page files it.
 
 Writes are **not** filtered by whether the caller may perform them: a write
 tool is listed for every session, and whether it succeeds is the operator's
@@ -53,6 +52,12 @@ carries, not history, not a rule the session prompt or the guide owns.  It
 never names a security tool or flags to use, and never tells the agent to
 source or cite the tool catalogue.
 
+**Paged lists.**  Every list a caller can page takes ``limit`` and ``offset``
+and answers ``{items, total, limit, offset, returned, has_more}``
+(``agent_schemas.AgentPage``, pinned by ``tests/test_agent_list_paging.py``).
+Its description says "paged" and, where it is not obvious, what ``total``
+counts — never the envelope again.
+
 What is deliberately NOT a tool
 -------------------------------
 The bulk, file-shaped endpoints: ``report-context.ndjson``, the scope's
@@ -69,23 +74,6 @@ import re
 import sys
 from collections.abc import Mapping
 from typing import Any, Dict, Iterator, List, Optional
-
-# The kinds of work, used only as catalogue tags on the tool reference page
-# (`tool_workflows`): a key belongs to one project session and `tools/list` is
-# not filtered by them.  Kept as plain strings rather than importing the enum:
-# this module is pure data with no DB dependency.
-WORKFLOW_ASSIST = "assist"
-# Proposing tests on hosts and recording what they produced.
-WORKFLOW_TESTING = "testing"
-# Reading a scope (its subnets, domains, target lists) and uploading scan
-# output.
-WORKFLOW_SCOPE = "scope"
-
-ALL_WORKFLOWS = frozenset({WORKFLOW_ASSIST, WORKFLOW_TESTING, WORKFLOW_SCOPE})
-
-_ASSIST = frozenset({WORKFLOW_ASSIST})
-_TESTING = frozenset({WORKFLOW_TESTING})
-_SCOPE = frozenset({WORKFLOW_SCOPE})
 
 # What an entry says about a parameter (``params``) is laid over what the
 # endpoint declares — see ``derive_tool``.  An id is never below 1, whether or
@@ -296,18 +284,15 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "HOSTS (unowned findings are assist_list_findings unowned=true). "
             "has:critical_exploit is a critical that itself has an exploit — "
             "'has:critical AND has:exploit' also matches a critical beside an "
-            "exploitable low. Returns {items, total, has_more, limit, offset}: "
-            "quote `total`, never the length of a page. A malformed q is a 400; a "
-            "discrete filter value that cannot be read is a 422 naming it."
+            "exploitable low. Paged: quote `total`, never the length of a page. "
+            "A malformed q is a 400; a discrete filter value that cannot be read "
+            "is a 422 naming it."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts",
         # The endpoint's own default is 500 — right for a file download, a lot
         # of tokens for a model that usually wants the first handful.
         "defaults": {"limit": 100},
-        # The route's own text for `q` calls follow:in_review "hosts you have
-        # in review"; it is any teammate's.  Laid over until the route says so.
-        "params": {"q": "The Hosts page's query language (see the tool description)."},
     },
     "assist_count_hosts": {
         "description": (
@@ -342,9 +327,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     "assist_get_host_vulnerabilities": {
         "description": (
             "One host's raw scanner rows, worst first: severity, CVE / plugin id, "
-            "title, port, CVSS, description, solution, scanner evidence. Returns "
-            "{host_id, items, total, has_more, limit, offset}. These are scanner "
-            "observations: each `id` is a vulnerability id (what "
+            "title, port, CVSS, description, solution, scanner evidence. Paged. "
+            "These are scanner observations: each `id` is a vulnerability id (what "
             "propose_observation and a host test's `vulnerability_id` take), NOT a "
             "finding id. `finding_id` / `finding_status` name the finding that "
             "covers the issue; `finding_on_this_host` false means it covers other "
@@ -361,11 +345,10 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "description": (
             "The project's findings — what the team has judged, a different set "
             "from scanner rows (ids do not cross with "
-            "assist_get_host_vulnerabilities). Returns {total, severity_counts, "
-            "findings}: `total` covers the whole filter and `severity_counts` the "
-            "same filter without `severity`, so 'how many criticals are open?' is "
-            "one call with limit=1; there is no has_more — page with offset until "
-            "you hold `total` rows. `host_count` is distinct addresses and "
+            "assist_get_host_vulnerabilities). Paged, with `severity_counts`: "
+            "`total` covers the whole filter and `severity_counts` the same "
+            "filter without `severity`, so 'how many criticals are open?' is one "
+            "call with limit=1. `host_count` is distinct addresses and "
             "`endpoint_count` affected rows; `hosts` is a sample of at most 10 "
             "addresses (`hosts_truncated`). owner takes `me` or a username; an "
             "unknown one is a 400."
@@ -374,19 +357,14 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/assist/findings",
         "defaults": {"limit": 25},
         "params": {
+            # The endpoint takes status, severity and source as free text and
+            # refuses what it does not know (422); the tool names the values.
             "status": {
                 "enum": [
                     "open", "confirmed", "false_positive", "accepted_risk",
                     "remediated", "retest", "active", "resolved", "all",
                 ],
-                "description": (
-                    "A status, or a group: active (still being worked) / resolved "
-                    "(every terminal status). 'all' or omitted for every status. "
-                    "Any other value is a 422."
-                ),
             },
-            # The endpoint compares severity and source as given, so an unknown
-            # one would read as "no such findings": the tool names the values.
             "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
             "source": {"enum": ["note", "scanner", "execution", "manual", "all"]},
             "host_id": {"minimum": 1},
@@ -394,8 +372,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "assist_list_host_web_interfaces": {
         "description": (
-            "Every web interface observed on one host, paged ({items, total, "
-            "has_more}); assist_get_host lists only the first 10. Each: URL, FQDN, "
+            "Every web interface observed on one host, paged; assist_get_host "
+            "lists only the first 10. Each: URL, FQDN, "
             "title, server header, technologies, the tool that observed it, "
             "`screenshot_download_path` when one was captured, and the TLS facts "
             "the tool reported (cert_not_after, cert_self_signed, cert "
@@ -426,7 +404,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "with those lines as REDACTED shapes and counts. kind: `dropped` (not "
             "in the inventory), `text_only` (kept as the tool's line, nothing read "
             "from it), `module_as_login` / `module_as_text` (an nxc module's "
-            "result). Not an ingestion issue — what was read is in the project. "
+            "result). Paged, one item per import. Not an ingestion issue — what "
+            "was read is in the project. "
             "`job_id` is an import's id (`ingestion_job_id` on assist_list_scans), "
             "not a scan id; an unknown one is a 404. Needs an analyst operator."
         ),
@@ -435,8 +414,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "assist_get_host_notes": {
         "description": (
-            "The team's notes on one host, newest first, paged ({items, total, "
-            "has_more}). Read it before adding a note and before answering 'what "
+            "The team's notes on one host, newest first, paged. Read it before "
+            "adding a note and before answering 'what "
             "do we know about X'. Each note: author, whether an agent wrote it "
             "(`actor_type`), its thread (parent_id / thread_root_id), note_type, "
             "pinned, and attachments as download references."
@@ -492,8 +471,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "OS, certificate problems, weak auth, risky services) and a "
             "recommended action. `no_coverage` marks a scoped range where nothing "
             "was discovered — a gap, NOT a clean subnet. `adopted=false` means the "
-            "project has no scoped subnets: not assessable. `total` is every "
-            "subnet; page with offset."
+            "project has no scoped subnets: not assessable. Paged: `total` is "
+            "every subnet, `totals` the project-wide sums."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/segments",
@@ -573,8 +552,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "with its reasons and next action, in stated tier order (1 exploitable "
             "critical, 2 critical vulnerability, 3 exploit available, 4 high-value "
             "service new or changed, 5 scans disagree). `queue_total` and "
-            "`tier_counts` cover the whole queue whatever tier or offset you pass. "
-            "A 503 means it could not be computed — not that the queue is empty."
+            "`tier_counts` cover the whole queue whatever tier or offset you pass; "
+            "paged, `total` being the size of the list this call pages (one tier's "
+            "with `tier`). A 503 means it could not be computed — not that the queue is empty."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/workbench/investigate",
@@ -617,21 +597,14 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "segment (optional) is matrix.segments[].key from the same call — a "
             "site id, a subnet key, 'unassigned' (hosts in subnets no site "
             "holds) or 'unmapped' (hosts in no declared subnet), NOT a CIDR (a wrong one answers "
-            "404 listing the accepted keys). total "
-            "is exact. Respect scope_caution: hosts outside the declared scope "
-            "must be confirmed in scope first."
+            "404 listing the accepted keys). `total` "
+            "is exact and `items` is cut at `limit` — there is no offset: raise "
+            "`limit` or narrow by `segment`. Respect scope_caution: hosts outside "
+            "the declared scope must be confirmed in scope first."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/evidence/gaps",
         "defaults": {"limit": 50},
-        "params": {
-            "domain": {
-                "enum": [
-                    "port_discovery", "service_detection", "os_detection",
-                    "vuln_assessment", "web_tls", "auth_smb_ad", "validation",
-                ],
-            },
-        },
     },
     "assist_compare_scans": {
         "description": (
@@ -653,7 +626,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "ports it saw (at most 50 listed per host; the counts are exact) and "
             "credentialed — whether the scan authenticated to the host: true / "
             "false when the scanner said so (Nessus), null when it did not say. "
-            "Null is 'not stated', never 'no'. Read total and has_more; page with skip."
+            "Null is 'not stated', never 'no'. Paged."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scans/{scan_id}/hosts",
@@ -724,8 +697,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "sort=hosts puts the most widespread first ('which issues are on the "
             "most hosts?'). An issue is listed until EVERY host carrying it is "
             "judged — a row with judged_host_count > 0 is partly judged; "
-            "include_judged adds the fully judged ones. total counts all matching "
-            "issues; read has_more and page with offset. severity narrows to one "
+            "include_judged adds the fully judged ones. Paged: `total` counts all "
+            "matching issues. severity narrows to one "
             "severity; exploitable=true keeps issues a scanner reports an exploit "
             "for (each row says `exploitable` — a report, not proof it was "
             "exploited). assist_list_observation_hosts lists one issue's hosts."
@@ -733,8 +706,6 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "method": "GET",
         "path": "/api/v1/agent/assist/scanner-observations",
         "defaults": {"limit": 25},
-        # The page route's name for `offset`; one argument for one thing.
-        "hidden": ["skip"],
         "params": {
             "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
             "kind": {"enum": ["misconfiguration", "vulnerability", "informational"]},
@@ -746,7 +717,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "assist_list_scanner_observations), by address: ports, severity, and "
             "whether a finding covers it on that host (judged, endpoint_status), "
             "and the tests naming this issue there (tests_to_do, tests_recorded). "
-            "total is every host carrying the issue; read has_more and page with offset."
+            "Paged: `total` is every host carrying the issue."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scanner-observations/hosts",
@@ -786,6 +757,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/client-reports/{report_id}",
+        "params": {"report_id": "A report's id (from assist_list_client_reports)."},
     },
     "assist_get_image": {
         "description": (
@@ -800,13 +772,18 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "path_alternatives": {
             "interface_id": "/api/v1/agent/assist/web-interfaces/{interface_id}/screenshot",
         },
+        "params": {
+            "attachment_id": "An attachment's `id` (on a note, a finding's `images`, or a report's `images`).",
+            "interface_id": "A web interface's `id` whose row carries a `screenshot_download_path`.",
+        },
         "result": "image",
     },
     "assist_list_recent_notes": {
         "description": (
             "Recent notes across the whole project, newest first — what the "
             "team has been discussing, as opposed to what a scanner found. "
-            "Filter by author ('me' or a username). Each "
+            "Paged; filter by author ('me' or a username; an unknown one is a "
+            "400). Each "
             "note names its `target` ({kind: host/port/finding/scan/scope/"
             "project, id, label}) and carries the same thread, "
             "label and attachment fields as assist_get_host_notes. Notes are "
@@ -840,7 +817,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "name that shares its address with other names must be tested by "
             "name, not by IP. host_id lists the names CURRENTLY resolving to that "
             "host; assist_get_host's `names` is wider — every name ever seen "
-            "there, PTR and certificate included."
+            "there, PTR and certificate included. Paged."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/names",
@@ -851,15 +828,14 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "carries ingestion_job_id, the import that produced it — the job_id "
             "assist_list_uninterpreted_lines takes (a scan id is not a job id). "
             "tool narrows to one tool's scans, as the Scans page's chips do — "
-            "'the last two nmap scans' is tool=nmap, limit=2. Returns {items, "
-            "total, has_more, limit, offset}: `total` is the whole count for the "
-            "filter, so 'how many nmap scans?' is one call with limit=1."
+            "'the last two nmap scans' is tool=nmap, limit=2. Paged: `total` is "
+            "the whole count for the filter, so 'how many nmap scans?' is one "
+            "call with limit=1."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scans",
         "defaults": {"limit": 50},
         "params": {
-            "offset": "Skip this many (newest first). Page while has_more is true.",
             "tool": "A tool name (nmap, nessus, netexec…) or scan type.",
         },
     },
@@ -904,7 +880,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "list_evidence": {
         "description": (
-            "Evidence records, newest first, with a 2 KB preview of each raw output. "
+            "Evidence records, newest first, paged, with a 2 KB preview of each raw output. "
             "The full output is a file: curl GET /agent/evidence/{id}/raw with your key."
         ),
         "method": "GET",
@@ -995,7 +971,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "params": {"agent_model": AGENT_MODEL},
     },
     "list_proposals": {
-        "description": "Proposals in this project and what happened to them (pending / accepted / rejected / superseded).",
+        "description": "Proposals in this project and what happened to them (pending / accepted / rejected / superseded), paged.",
         "method": "GET",
         "path": "/api/v1/agent/proposals",
     },
@@ -1051,8 +1027,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     # -----------------------------------------------------------------------
     "scope_list_subnets": {
         "description": (
-            "The paginated list of in-scope CIDRs. Page until `subnets` comes back "
-            "empty. The full host download is a curl, not a tool."
+            "The in-scope CIDRs, paged (each item a CIDR string). The full host "
+            "download is a curl, not a tool."
         ),
         "method": "GET",
         "path": "/api/v1/agent/scope/subnets",
@@ -1060,7 +1036,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "scope_list_domains": {
         "description": (
-            "The paginated list of domains declared in scope ({domain, "
+            "The domains declared in scope, paged (each item {domain, "
             "include_subdomains}) — the names you may resolve or probe without "
             "asking. A name in scope does not put the address it resolves to in "
             "subnet scope."
@@ -1117,7 +1093,7 @@ _AUTHORED["host_tests_list"] = {
         "done, dismissed), revision and how many evidence records answer it. "
         "Filter by host_id, status, label, assignee or the session that "
         "proposed them; `mine` is tests assigned to your operator; "
-        "`active_only` keeps proposed and in_progress. Read this before "
+        "`active_only` keeps proposed and in_progress. Paged. Read this before "
         "proposing, so you do not duplicate a test that is already there."
     ),
     "method": "GET",
@@ -1167,12 +1143,11 @@ _AUTHORED["remediation_list"] = {
         "closed), `due_on` (the deadline in force; `deadline_source` policy or "
         "override), `days_left`, `closed_days_late`, `last_follow_up_on`, and "
         "for a deferred row `deferred_review_on` / `deferral_review_due`. "
-        "Counts over the selection, whatever page you read: `total`, "
+        "Paged, with counts over the selection whatever page you read: `total`, "
         "`state_counts`, `status_counts`, `verification_counts`, `flag_counts`, "
         "`severity_counts`, `overdue_ages`, `not_followed_up`. Each row's "
         "`finding_host_id` is what remediation_apply takes. Needs an auditor "
-        "operator. Answers 404 where the installation has not turned "
-        "remediation tracking on — say so, do not retry."
+        "operator."
     ),
     "method": "GET",
     "path": "/api/v1/agent/remediation",
@@ -1275,7 +1250,7 @@ _AUTHORED["remediation_timeline"] = {
         "(`kind: follow_up`) and every note, with who "
         "recorded it, when it happened (`occurred_at`) and when it was "
         "recorded (`recorded_at`). `finding_host_id` narrows it to one finding "
-        "on the host."
+        "on the host. Paged."
     ),
     "method": "GET",
     "path": "/api/v1/agent/remediation/hosts/{host_id}/events",
@@ -1327,19 +1302,29 @@ _AUTHORED["remediation_add_note"] = {
     "additive": True,
 }
 
-# v2.337.0 — a single project session sees every tool, so nothing gates
-# ``tools/list`` any more.  What remains is a PRESENTATION grouping for the MCP
-# reference page (which kind of work a tool belongs to), and v2.338.0 derives
-# it from the tool's name in this one function instead of carrying a
-# ``workflows`` field on every entry that a loop then rewrote.  Universal tools
-# (identity, the guide/catalogue readers, the session bookkeeping) report
-# every kind and the page shows them as
-# shared.
-_KIND_BY_PREFIX = (
-    ("assist_", _ASSIST),
-    ("scope_", _SCOPE),
-    ("host_tests_", _TESTING),
-    ("remediation_", _ASSIST),
+# Every remediation route answers 404 until a global admin turns tracking on
+# (the router factory's own dependency).  Each tool says so, from this one
+# sentence: an agent may read one tool and nothing else.
+_REMEDIATION_OFF = (
+    " Answers 404 where the installation has not turned remediation tracking "
+    "on — say so, do not retry."
+)
+for _name, _entry in _AUTHORED.items():
+    if _name.startswith("remediation_"):
+        _entry["description"] += _REMEDIATION_OFF
+
+# The headings the MCP reference page files tools under — presentation only: a
+# session has no kind, every session lists every tool, and nothing is filtered
+# by a group.  A tool's group is read from its name; one that matches no
+# prefix (identity, the guide and catalogue readers, session bookkeeping,
+# evidence, proposals, the upload poll) is in every group, which the page
+# shows once, as shared.
+TOOL_GROUPS = ("assist", "testing", "scope")
+_GROUP_BY_PREFIX = (
+    ("assist_", "assist"),
+    ("scope_", "scope"),
+    ("host_tests_", "testing"),
+    ("remediation_", "assist"),
 )
 
 
@@ -1566,12 +1551,13 @@ class _Registry(Mapping):
 TOOLS: Mapping = _Registry(_AUTHORED)
 
 
-def tool_workflows(name: str) -> frozenset:
-    """The kinds of work ``name`` belongs to, for grouping on the reference page."""
-    for prefix, kinds in _KIND_BY_PREFIX:
+def tool_groups(name: str) -> List[str]:
+    """The reference page's headings ``name`` is filed under (sorted): its own
+    group, or every group for a tool that belongs to none."""
+    for prefix, group in _GROUP_BY_PREFIX:
         if name.startswith(prefix):
-            return kinds
-    return ALL_WORKFLOWS
+            return [group]
+    return sorted(TOOL_GROUPS)
 
 
 def advertised_schema(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -1653,8 +1639,8 @@ def tool_list_payload() -> List[Dict[str, Any]]:
     the previous filter implied the listed set was the *permitted* set, when
     the row-level constraint meant a listed write could still be refused.
 
-    v2.337.0 — the per-workflow filter is gone too: one project session does
-    every kind of work.  The endpoint behind each tool re-decides on every call.
+    Nothing filters the list by a kind of session either: there is one kind.
+    The endpoint behind each tool re-decides on every call.
     """
     return [
         {

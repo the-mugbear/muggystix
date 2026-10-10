@@ -34,7 +34,6 @@ from sqlalchemy import (
     DateTime,
     Index,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -69,9 +68,6 @@ class ToolRegistryEntry(Base):
 
     # --- catalogue state ---
     status = Column(String(16), nullable=False, server_default=TOOL_REFERENCE, index=True)
-    # Recon phases this tool belongs to (discovery/service_probe/web/dns/smb/
-    # credentialed).  Empty for tools with no agent role.
-    phases = Column(JSON, nullable=True)
     # Whether running it can disturb a target (exploit checks, brute force,
     # heavy crawling) — advice an operator reads, not a gate.
     intrusive = Column(Boolean, nullable=True)

@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import check_agent_rate_limit
 from app.api.v1.endpoints.agent_common import load_agent_session, require_project_host
+from app.api.v1.endpoints.agent_schemas import AgentRowsPage, agent_page
 from app.db.models_agent import Agent
 from app.db.session import get_db
 from app.services import agent_evidence_service as evidence
@@ -97,7 +98,7 @@ def record_evidence(
     return payload
 
 
-@router.get("/evidence", summary="List evidence records (newest first)")
+@router.get("/evidence", response_model=AgentRowsPage, summary="List evidence records (newest first)")
 def list_evidence(
     request: Request,
     host_test_id: Optional[int] = Query(None, gt=0),
@@ -117,8 +118,7 @@ def list_evidence(
         host_test_id=host_test_id, agent_session_id=agent_session_id,
         limit=limit, offset=offset,
     )
-    return {"total": total, "items": [evidence.serialize_evidence(r) for r in rows],
-            "has_more": offset + len(rows) < total}
+    return agent_page([evidence.serialize_evidence(r) for r in rows], total=total, limit=limit, offset=offset)
 
 
 @router.get("/evidence/{evidence_id}/raw", response_class=PlainTextResponse, summary="An evidence record's full raw output")
@@ -248,7 +248,7 @@ def propose_endpoint_status(
     return data
 
 
-@router.get("/proposals", summary="Proposals in this project and what happened to them")
+@router.get("/proposals", response_model=AgentRowsPage, summary="Proposals in this project and what happened to them")
 def list_proposals(
     request: Request,
     status: Optional[Literal["pending", "accepted", "rejected", "superseded"]] = Query(None),
@@ -267,4 +267,4 @@ def list_proposals(
         db, agent.project_id, status=status, kind=kind, finding_id=finding_id,
         agent_session_id=session_id, limit=limit, offset=offset,
     )
-    return {"total": total, "items": proposals.serialize_many(db,rows), "has_more": offset + len(rows) < total}
+    return agent_page(proposals.serialize_many(db, rows), total=total, limit=limit, offset=offset)

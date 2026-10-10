@@ -42,7 +42,7 @@ describe('Profile', () => {
     vi.clearAllMocks();
     apiMock.getOwnProjectMemberships.mockResolvedValue([{
       project_id: 5, project_name: 'Acme', project_slug: 'acme', project_status: 'active',
-      project_is_default: false, project_is_archived: false, role: 'analyst', joined_at: null,
+      project_is_default: false, role: 'analyst', joined_at: null,
     }]);
     apiMock.listOwnSessions.mockResolvedValue([]);
     apiMock.updateOwnProfile.mockResolvedValue(undefined);

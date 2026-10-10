@@ -6,8 +6,11 @@ import ScopeMembershipCard from '../../components/host-inspector/ScopeMembership
 import type { HostScopeMembership, HostScopeSubnetEntry } from '../../services/api';
 
 const subnet = (over: Partial<HostScopeSubnetEntry> = {}): HostScopeSubnetEntry => ({
-  id: 1, scope_id: 7, cidr: '10.1.2.0/24', description: null, site: null, labels: [], ...over,
+  id: 1, cidr: '10.1.2.0/24', description: null, site: null, labels: [], ...over,
 });
+// An entry opens the Scope page searched for it: there is no scope id to
+// link to (the `/scopes/:scopeId` it once named only redirected to /scopes).
+const ENTRY_LINK = '/scopes?subnet_q=10.1.2.0%2F24';
 
 const renderCard = (membership?: HostScopeMembership | null) =>
   render(<MemoryRouter><ScopeMembershipCard membership={membership} /></MemoryRouter>);
@@ -30,7 +33,7 @@ describe('ScopeMembershipCard', () => {
       names: [],
     });
     expect(screen.getByText('In scope')).toBeInTheDocument();
-    expect(screen.getByText('10.1.2.0/24')).toHaveAttribute('href', '/scopes/7');
+    expect(screen.getByText('10.1.2.0/24')).toHaveAttribute('href', ENTRY_LINK);
     expect(screen.queryByText('10.0.0.0/8')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'show entries' })).toHaveAttribute('aria-expanded', 'false');
   });
@@ -49,7 +52,7 @@ describe('ScopeMembershipCard', () => {
     expect(screen.getByText('In scope')).toBeInTheDocument();
     expect(screen.getByText('2 subnet entries')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'show entries' }));
-    expect(screen.getByText('10.1.2.0/24')).toHaveAttribute('href', '/scopes/7');
+    expect(screen.getByText('10.1.2.0/24')).toHaveAttribute('href', ENTRY_LINK);
     expect(screen.getByText('10.0.0.0/8')).toBeInTheDocument();
     expect(screen.getByText('London DC')).toBeInTheDocument();
     expect(screen.getByText('dmz')).toBeInTheDocument();

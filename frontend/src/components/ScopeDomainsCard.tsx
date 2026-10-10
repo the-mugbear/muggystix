@@ -49,7 +49,6 @@ import { InfoTip } from './ui/info-tip';
 const PAGE = 100;
 
 interface ScopeDomainsCardProps {
-  scopeId: number;
   /** Whether the caller may change the scope (project analyst+).  A reader
    *  sees the list without the add row or the remove buttons. */
   canEdit?: boolean;
@@ -84,7 +83,7 @@ const TIPS = {
     'exact descendants both count the same name), so they can add up to more than this.',
 } as const;
 
-const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = true }) => {
+const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ canEdit = true }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
   const projectId = useProjectId();
@@ -97,8 +96,8 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = 
   // entries, so the list loads a page at a time with a load-more affordance.
   const list = useListQuery<ScopeDomainRow, ScopeDomainPage>(
     'listScopeDomains',
-    ({ offset, limit, signal }) => listScopeDomains(projectId, scopeId, { skip: offset, limit }, signal),
-    [projectId, scopeId],
+    ({ offset, limit, signal }) => listScopeDomains(projectId, { skip: offset, limit }, signal),
+    [projectId],
     { pageSize: PAGE, errorMessage: 'Failed to load scope domains.' },
   );
   const { rows, total, error, loadingMore } = list;
@@ -124,7 +123,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = 
   // (A read of the list on its way when the answer lands may be older than
   // it: then, too, the list is read again rather than written over.)
   const showAnswer = (res: ScopeDomainBatchResponse) => {
-    const listKey = ['listScopeDomains', projectId, scopeId];
+    const listKey = ['listScopeDomains', projectId];
     if (queryClient.isFetching({ queryKey: listKey }) > 0) return scopeChanged();
     let shown = false;
     queryClient.setQueriesData<InfiniteData<ScopeDomainPage, number>>(
@@ -149,7 +148,6 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = 
   const add = useMutation({
     mutationFn: (entries: string[]) => addScopeDomains(
       projectId,
-      scopeId,
       entries.map((domain) => ({ domain, include_subdomains: includeSub })),
     ),
     onMutate: () => setDomainError(null),
@@ -187,9 +185,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = 
   };
 
   const remove = useMutation({
-    // The list is the project's entries: a row is removed from the scope it
-    // is in, which the row states.
-    mutationFn: (row: ScopeDomainRow) => deleteScopeDomain(projectId, row.scope_id, row.id),
+    mutationFn: (row: ScopeDomainRow) => deleteScopeDomain(projectId, row.id),
     onSuccess: (_void, row) => {
       toast.success(`Removed ${row.domain} from scope`);
       return scopeChanged();

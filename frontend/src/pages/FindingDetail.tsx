@@ -73,7 +73,7 @@ import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
 import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
-import { STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
+import { SOURCE_LABEL, STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
 import { RETURN_PARAM, safeFindingsReturn } from '../utils/findingsReturn';
 
 const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
@@ -576,7 +576,10 @@ const FindingDetail: React.FC = () => {
             <span>{safeFallback(finding.owner_name, 'Unassigned')}</span>
           )}
         </div>
-        <span><span className="text-muted-foreground">Source</span> {finding.source}</span>
+        <span>
+          <span className="text-muted-foreground">Source</span>{' '}
+          {SOURCE_LABEL[finding.source] ?? finding.source}
+        </span>
         {finding.created_by_name && (
           <span className="min-w-0 max-w-[16rem] truncate" title={finding.created_by_name}>
             <span className="text-muted-foreground">Recorded by</span> {finding.created_by_name}

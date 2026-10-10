@@ -38,7 +38,7 @@ import ScopeExport from '../../components/ScopeExport';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
 const show = () => render(
-  <TooltipProvider><ScopeExport open onClose={vi.fn()} scopeId={3} /></TooltipProvider>,
+  <TooltipProvider><ScopeExport open onClose={vi.fn()} /></TooltipProvider>,
 );
 const pick = (format: string) =>
   fireEvent.change(screen.getByRole('combobox', { name: 'Output format' }), { target: { value: format } });
@@ -57,8 +57,8 @@ describe('ScopeExport — the output keeps the format that produced it', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Generate list' }));
     expect(await screen.findByRole('heading', { name: /^2 hosts/ })).toBeInTheDocument();
     // The export is the project's one scope: the hosts in the subnets the
-    // page's table lists.
-    expect(api.getScopeHostList).toHaveBeenCalledWith(1, 3, 'csv');
+    // page's table lists.  The request names the project and no scope.
+    expect(api.getScopeHostList).toHaveBeenCalledWith(1, 'csv');
 
     pick('txt');
     // Still the CSV: not recounted as an IP list (3), not saved as .txt.
@@ -79,7 +79,7 @@ describe('ScopeExport — the output keeps the format that produced it', () => {
     pick('web');
     fireEvent.click(screen.getByRole('button', { name: 'Generate list' }));
     expect(await screen.findByRole('heading', { name: '2 URLs · Web URLs' })).toBeInTheDocument();
-    expect(api.getScopeHostList).toHaveBeenCalledWith(1, 3, 'web');
+    expect(api.getScopeHostList).toHaveBeenCalledWith(1, 'web');
     fireEvent.click(screen.getByRole('button', { name: 'Download scope export as file' }));
     expect(download.downloadTextFile).toHaveBeenCalledWith('project-scope_web-targets.txt', urls);
   });

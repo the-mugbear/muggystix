@@ -42,7 +42,7 @@ def on(db_session):
 
 
 def _project(db, name, status="active"):
-    project = Project(name=name, slug=name, status=status, is_archived=(status == "archived"))
+    project = Project(name=name, slug=name, status=status)
     db.add(project)
     db.flush()
     return project
@@ -55,7 +55,7 @@ def _user(db, name, role=UserRole.MEMBER):
     _UID[0] += 1
     user = User(id=_UID[0], username=name, email=f"{name}@example.com", full_name=name.title(),
                 hashed_password="$2b$12$abcdefghijklmnopqrstuv", role=role, is_active=True,
-                is_verified=True, created_at=datetime.now(timezone.utc))
+                created_at=datetime.now(timezone.utc))
     db.add(user)
     db.flush()
     return user

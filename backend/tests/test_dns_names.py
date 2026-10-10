@@ -421,10 +421,10 @@ class TestDomainScope:
         assert [b["fqdn"] for b in by_host["current"]] == ["portal.example.com"]
 
     def test_scope_domain_endpoints(self, client, db_session, test_project):
-        scope = _scope(db_session, test_project)
+        _scope(db_session, test_project)
         db_session.commit()
         r = client.post(
-            f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/domains",
+            f"/api/v1/projects/{test_project.id}/scopes/domains",
             json={"domains": [{"domain": "Example.com.", "include_subdomains": True}, {"domain": "10.1.1.1"}]},
         )
         assert r.status_code == 200, r.text
@@ -432,12 +432,12 @@ class TestDomainScope:
         assert body["added"] == 1 and len(body["invalid"]) == 1
         assert body["domains"][0]["domain"] == "example.com"
         # Idempotent re-add.
-        r = client.post(f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/domains",
+        r = client.post(f"/api/v1/projects/{test_project.id}/scopes/domains",
                         json={"domains": [{"domain": "example.com"}]})
         assert r.json()["added"] == 0
         dom_id = body["domains"][0]["id"]
-        assert client.delete(f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/domains/{dom_id}").status_code == 200
-        listing = client.get(f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/domains").json()
+        assert client.delete(f"/api/v1/projects/{test_project.id}/scopes/domains/{dom_id}").status_code == 200
+        listing = client.get(f"/api/v1/projects/{test_project.id}/scopes/domains").json()
         assert listing["items"] == [] and listing["total"] == 0
 
 
@@ -563,7 +563,7 @@ class TestReviewFixes:
 
         event.listen(test_engine, "before_cursor_execute", _before)
         try:
-            body = client.get(f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/domains?limit=10").json()
+            body = client.get(f"/api/v1/projects/{test_project.id}/scopes/domains?limit=10").json()
         finally:
             event.remove(test_engine, "before_cursor_execute", _before)
         assert body["total"] == 30 and len(body["items"]) == 10 and body["has_more"] is True

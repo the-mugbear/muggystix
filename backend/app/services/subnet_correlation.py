@@ -43,7 +43,7 @@ class SubnetCorrelationService:
         """Correlate the project's hosts against SEVERAL subnets in one pass,
         replacing only those subnets' mappings (review 2026-10-01 R24).
 
-        ``POST /scopes/{id}/subnets`` used to call ``correlate_subnet`` once
+        ``POST /scopes/subnets`` used to call ``correlate_subnet`` once
         per new subnet — up to 500 — and each call read every host of the
         project and committed: a 100-subnet paste on an 80k-host project was
         100 × an 80k-row fetch.  Here the hosts are read ONCE per project,

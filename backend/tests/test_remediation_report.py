@@ -235,7 +235,7 @@ def test_who_may_prepare_it_and_what_is_refused(client, db_session, test_project
                        json={"contact_email": "roger@testdomain.com", "format": "contact-pdf"}).status_code == 422
     auditor = User(id=8801, username="rep-auditor", email="rep-auditor@example.com", full_name="A",
                    hashed_password="$2b$12$abcdefghijklmnopqrstuv", role=UserRole.MEMBER, is_active=True,
-                   is_verified=True, created_at=datetime.now(timezone.utc))
+                   created_at=datetime.now(timezone.utc))
     db_session.add(auditor)
     db_session.flush()
     db_session.add(ProjectMembership(project_id=test_project.id, user_id=auditor.id, role="auditor"))

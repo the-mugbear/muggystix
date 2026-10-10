@@ -42,7 +42,6 @@ def _member(db, project, role):
         hashed_password="$2b$12$abcdefghijklmnopqrstuv",
         role=UserRole.MEMBER,
         is_active=True,
-        is_verified=True,
     )
     db.add(user)
     db.flush()
@@ -108,7 +107,7 @@ def test_an_archived_project_is_closed_to_its_agents(client, db_session, test_pr
     headers = {"X-API-Key": raw}
     assert client.get("/api/v1/agent/identity", headers=headers).status_code == 200
 
-    test_project.is_archived = True
+    test_project.status = "archived"
     db_session.commit()
     assert client.get("/api/v1/agent/identity", headers=headers).status_code == 410
     wrote = client.post(f"/api/v1/agent/hosts/{host.id}/notes", headers=headers, json={"body": "x"})
@@ -306,7 +305,7 @@ def test_a_global_admin_operator_bypasses_membership(
         id=_SEQ[0], username=f"gadmin-{_SEQ[0]}",
         email=f"gadmin-{_SEQ[0]}@example.com",
         hashed_password="$2b$12$abcdefghijklmnopqrstuv",
-        role=UserRole.ADMIN, is_active=True, is_verified=True,
+        role=UserRole.ADMIN, is_active=True,
     )
     db_session.add(admin)
     db_session.commit()

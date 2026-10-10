@@ -120,8 +120,12 @@ class AgentSession(Base):
     here through ``agent_session_id``: an upload is an ``IngestionJob``, a
     proposed test a ``HostTest``, what it ran an ``EvidenceRecord``, a change
     it suggests an ``AgentProposal``, a note an ``Annotation``.  ``workflow``
-    is ``project`` for every session minted since the consolidation; the
-    legacy per-workflow values survive on older rows as labels.
+    is ``project`` on every session minted since the consolidation and is
+    written as nothing else; older rows keep the value they were stored with.
+    No answer carries it and no page shows it (2.489.0: every session reads
+    as a session).  It is read in two places only: which rows the session
+    list has (``agent_session_service.LISTED_WORKFLOWS``) and the Resume
+    route's refusal of a row that is not ``project``.
 
     Shared lifecycle state (status, timestamps, the agent/model attribution,
     the operator's stated purpose, notes) lives here.  A host test and an
@@ -131,10 +135,9 @@ class AgentSession(Base):
 
     **This id is the session's only id** (v2.449.0).  Until then every start
     also wrote an ``assist_sessions`` row whose id the review routes were keyed
-    by; migration ``b8e2a5c7d1f3`` folded that table in and dropped it.
-    ``legacy_assist_session_id`` keeps the old row's id for the sessions that
-    had one, read only to send an old ``/assist-sessions/{id}`` link to its
-    session — nothing is written to it and nothing else is keyed by it.
+    by; migration ``b8e2a5c7d1f3`` folded that table in and dropped it, and
+    ``c2a7e5f1d9b3`` dropped the column that still remembered the old id
+    (``legacy_assist_session_id``) with the routes that resolved it.
     """
     __tablename__ = "agent_sessions"
 
@@ -188,10 +191,6 @@ class AgentSession(Base):
 
     notes = Column(Text, nullable=True)
 
-    # The id this session's ``assist_sessions`` row had (dropped in
-    # b8e2a5c7d1f3).  NULL on every session started since.
-    legacy_assist_session_id = Column(Integer, nullable=True)
-
     # Relationships
     project = relationship("Project")
     agent = relationship("Agent")
@@ -200,7 +199,6 @@ class AgentSession(Base):
     __table_args__ = (
         Index("idx_agent_session_project", "project_id"),
         Index("idx_agent_session_workflow_status", "workflow", "status"),
-        Index("uq_agent_session_legacy_assist", "legacy_assist_session_id", unique=True),
     )
 
 
@@ -283,7 +281,7 @@ class AgentFeedback(Base):
 # ---------------------------------------------------------------------------
 # (The ``assist_sessions`` table and its ``AssistSession`` model lived here
 # from v2.64.0.  Migration b8e2a5c7d1f3 folded each row into its
-# ``AgentSession`` and dropped the table — see ``legacy_assist_session_id``.)
+# ``AgentSession`` and dropped the table.)
 # ---------------------------------------------------------------------------
 
 

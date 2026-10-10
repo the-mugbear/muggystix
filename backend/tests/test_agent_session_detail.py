@@ -11,8 +11,11 @@ and the evidence records it wrote, counted for THAT session only.
 v2.449.0 — a session has ONE id.  Until then a second row
 (``assist_sessions``) had its own id sequence — session #72's notes lived under
 assist #52 — and the page read notes and API calls by that id.  Notes, calls
-and activity counts are now read by the session id, and an old id only finds
-its session (``legacy_assist_session_id``).
+and activity counts are now read by the session id.
+
+2.489.0 — and nothing remembers the second id: ``legacy_assist_session_id``
+and the deprecated routes that resolved it are gone.  A session has no KIND
+either: a row stored before the consolidation reads exactly like any other.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -35,15 +38,6 @@ def _start(client, project, purpose="map the DMZ"):
 def _session_id(db, started_id):
     """The session id IS the id the start returned (v2.449.0)."""
     return started_id
-
-
-def _give_legacy_id(db, session_id, legacy_id):
-    """Make ``session_id`` a session from before v2.449.0, whose
-    ``assist_sessions`` row had ``legacy_id``."""
-    db.query(AgentSession).filter(AgentSession.id == session_id).update(
-        {"legacy_assist_session_id": legacy_id}
-    )
-    db.commit()
 
 
 def _do_work(db, project, user, session_id, *, tests=2, evidence=3, ip="10.71.0.1"):
@@ -78,11 +72,15 @@ def test_the_detail_read_returns_the_sessions_work_and_detail_row(
     r = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions/{sid}")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["kind"] == "project" and body["id"] == sid
+    assert body["id"] == sid
     assert body["purpose"] == "map the DMZ"
     assert (body["host_test_count"], body["evidence_count"]) == (2, 3)
-    # ``assist_session_id`` / ``agent_session_id`` named a second id (v2.449.0).
-    for retired in ("phases", "test_plan_id", "target_label", "assist_session_id", "agent_session_id"):
+    # ``assist_session_id`` / ``agent_session_id`` named a second id (v2.449.0);
+    # ``kind`` / ``session_live`` told kinds of session apart (2.489.0).
+    for retired in (
+        "phases", "test_plan_id", "target_label", "assist_session_id", "agent_session_id",
+        "kind", "session_live", "workflow",
+    ):
         assert retired not in body
 
 
@@ -93,16 +91,17 @@ def test_the_list_row_carries_the_same_counts(client, db_session, test_project, 
     _do_work(db_session, test_project, test_user, sid, tests=4, evidence=1)
 
     rows = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions").json()["sessions"]
-    by_id = {r["id"]: r for r in rows if r["kind"] == "project"}
+    by_id = {r["id"]: r for r in rows}
     detail = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions/{sid}").json()
     assert (by_id[sid]["host_test_count"], by_id[sid]["evidence_count"]) == (4, 1)
     assert (detail["host_test_count"], detail["evidence_count"]) == (4, 1)
     assert (by_id[idle]["host_test_count"], by_id[idle]["evidence_count"]) == (0, 0)
-    # The retired run kinds are not timeline rows, and cannot be asked for.
-    assert {r["kind"] for r in rows} <= {"project", "assist"}
-    assert client.get(
-        f"/api/v1/projects/{test_project.id}/agent-sessions", params={"kind": "execution"},
-    ).status_code == 422
+    # The list has no filter by kind: the route declares no such parameter.
+    declared = {
+        p["name"] for p in
+        app.openapi()["paths"]["/api/v1/projects/{project_id}/agent-sessions"]["get"]["parameters"]
+    }
+    assert "kind" not in declared and {"model", "tool", "status", "user_id"} <= declared
 
 
 def test_the_owner_may_end_and_resume_their_active_session(client, db_session, test_project):
@@ -172,12 +171,12 @@ def _other_project(db):
 def test_another_projects_session_is_not_read_through_this_one(
     client, db_session, test_project, test_agent, test_user
 ):
-    """The path's project scopes every by-id read, the old ids included: a
-    session id from another project must not give up its purpose, notes or calls."""
+    """The path's project scopes every by-id read: a session id from another
+    project must not give up its purpose, notes or calls."""
     other = _other_project(db_session)
     theirs = AgentSession(
         workflow="project", project_id=other.id, started_by_id=test_user.id,
-        status="active", purpose="their purpose", legacy_assist_session_id=4242,
+        status="active", purpose="their purpose",
     )
     db_session.add(theirs)
     db_session.commit()
@@ -186,28 +185,26 @@ def test_another_projects_session_is_not_read_through_this_one(
         f"/agent-sessions/{theirs.id}",
         f"/agent-sessions/{theirs.id}/notes",
         f"/agent-sessions/{theirs.id}/api-activity",
-        "/assist-sessions/4242",
-        "/assist-sessions/4242/api-activity",
-        "/assist/sessions/4242",
     ):
         r = client.get(base + path)
         assert r.status_code == 404, (path, r.text)
         assert "their purpose" not in r.text
     assert client.post(f"{base}/agent-sessions/{theirs.id}/end").status_code == 404
-    assert client.post(f"{base}/assist/sessions/4242/end").status_code == 404
     db_session.expire_all()
     assert db_session.get(AgentSession, theirs.id).status == "active"
 
 
-def test_a_legacy_assist_session_has_the_same_page(
+def test_a_session_from_before_the_consolidation_reads_like_any_other(
     client, db_session, test_project, test_agent, test_user
 ):
-    """A session from before v2.337.0 is the same kind of row, so it has the
-    page too — it used to resolve to "no session page"."""
+    """A session stored before v2.337.0 (``workflow`` ``assist``) has the same
+    page and the same fields as one started today: no answer says which it is
+    (2.489.0), and what it did is counted the same way — its tests and
+    evidence included, which were computed for ``project`` rows only."""
     legacy = AgentSession(
         workflow="assist", project_id=test_project.id, agent_id=test_agent.id,
         started_by_id=test_user.id, status="ended", purpose="find FTP",
-        generated_by_model="model-x", legacy_assist_session_id=31,
+        generated_by_model="model-x",
     )
     db_session.add(legacy)
     db_session.flush()
@@ -216,16 +213,46 @@ def test_a_legacy_assist_session_has_the_same_page(
         method="GET", path="/api/v1/agent/assist/hosts", status_code=200, duration_ms=3,
     ))
     db_session.commit()
+    _do_work(db_session, test_project, test_user, legacy.id, tests=2, evidence=1, ip="10.71.3.1")
+    today = _start(client, test_project, purpose="started today")
     base = f"/api/v1/projects/{test_project.id}"
 
     body = client.get(f"{base}/agent-sessions/{legacy.id}").json()
-    assert body["kind"] == "assist" and body["id"] == legacy.id
+    assert body["id"] == legacy.id
+    assert set(body) == set(client.get(f"{base}/agent-sessions/{today}").json())
+    assert "kind" not in body and "session_live" not in body
     assert body["purpose"] == "find FTP" and body["generated_by_model"] == "model-x"
     assert body["call_count"] == 1 and body["connection"] == "curl"
+    assert (body["host_test_count"], body["evidence_count"]) == (2, 1)
     # It is over: nothing to end or resume.
     assert body["can_end"] is False and body["can_resume"] is False
     assert client.get(f"{base}/agent-sessions/{legacy.id}/api-activity").json()["total"] == 1
     assert client.get(f"{base}/agent-sessions/{legacy.id}/notes").json() == {"total": 0, "items": []}
+
+
+def test_the_offered_buttons_mirror_the_routes_for_an_old_active_session(
+    client, db_session, test_project, test_agent, test_user
+):
+    """``can_end`` / ``can_resume`` say what the routes will do.  End takes any
+    active session; Resume refuses a row not stored as ``project``.  Until
+    2.489.0 a still-active session from before the consolidation was offered
+    NEITHER, although its owner could end it (the route said 204)."""
+    old = AgentSession(
+        workflow="assist", project_id=test_project.id, agent_id=test_agent.id,
+        started_by_id=test_user.id, status="active", purpose="left open",
+    )
+    db_session.add(old)
+    db_session.commit()
+    base = f"/api/v1/projects/{test_project.id}/agent-sessions"
+
+    body = client.get(f"{base}/{old.id}").json()
+    assert body["can_end"] is True
+    assert body["can_resume"] is False
+    refused = client.post(f"{base}/{old.id}/resume", json={})
+    assert refused.status_code == 409
+    assert "assist" not in refused.json()["detail"]   # no kind is named to the reader
+    assert client.post(f"{base}/{old.id}/end").status_code == 204
+    assert client.get(f"{base}/{old.id}").json()["can_end"] is False
 
 
 # --- activity and notes, by the session id -----------------------------------
@@ -318,7 +345,7 @@ def test_the_api_call_feed_is_read_by_the_session_id(
     assert [i["path"] for i in feed["items"]] == ["/api/v1/agent/b", "/api/v1/agent/a"]
 
 
-# --- one id; old ids only find their session ---------------------------------
+# --- one id, and nothing answers for an old one --------------------------------
 
 def test_start_writes_one_row_and_returns_its_id(client, db_session, test_project):
     before = db_session.query(AgentSession).count()
@@ -328,41 +355,30 @@ def test_start_writes_one_row_and_returns_its_id(client, db_session, test_projec
     assert db_session.query(AgentSession).count() == before + 1
     row = db_session.get(AgentSession, body["agent_session_id"])
     assert row.workflow == "project" and row.purpose == "ids"
-    # Nothing new is given a second id …
-    assert row.legacy_assist_session_id is None
-    # … and the field older clients read carries the same one.
-    assert body["assist_session_id"] == body["agent_session_id"]
+    # There is no second id: not on the row, not in the answer.
+    assert not hasattr(row, "legacy_assist_session_id")
+    assert "assist_session_id" not in body
     # The prompt and the MCP setup name that id too.
     assert f"#{row.id}" in body["instructions"] or str(row.id) in body["instructions"]
 
 
-def test_an_old_assist_session_id_finds_its_session(client, db_session, test_project, test_agent):
-    sid = _start(client, test_project)
-    _give_legacy_id(db_session, sid, 52)
-    _call(db_session, test_project, test_agent, sid, via_mcp=True, minutes_ago=1)
-    db_session.commit()
-    base = f"/api/v1/projects/{test_project.id}"
-
-    for path in ("/assist-sessions/52", "/assist/sessions/52"):
-        body = client.get(base + path)
-        assert body.status_code == 200, body.text
-        assert body.json()["id"] == sid and body.json()["purpose"] == "map the DMZ"
-    assert client.get(f"{base}/assist-sessions/52/api-activity").json()["total"] == 1
-    # An id nothing had: not found.  (The session's own id on these paths is
-    # covered in test_review_2026_10_01_branch_findings.py.)
-    assert client.get(f"{base}/assist-sessions/999953").status_code == 404
-
-
-def test_the_old_paths_are_marked_deprecated_and_the_old_list_is_gone(client, test_project):
+def test_the_old_paths_are_gone_and_nothing_left_is_deprecated(client, test_project):
+    """The four by-old-id routes ended with the column that resolved the ids
+    (2.489.0; they were ``deprecated`` from v2.449.0).  This replaces
+    ``test_an_old_assist_session_id_finds_its_session`` and the "marked
+    deprecated" half of this test, which guarded those routes."""
     paths = app.openapi()["paths"]
     root = "/api/v1/projects/{project_id}"
-    for path, method in (
-        ("/assist-sessions/{assist_session_id}", "get"),
-        ("/assist-sessions/{assist_session_id}/api-activity", "get"),
-        ("/assist/sessions/{assist_session_id}", "get"),
-        ("/assist/sessions/{assist_session_id}/end", "post"),
+    assert not [p for p in paths if "/assist-sessions" in p or "/assist/sessions" in p]
+    sid = _start(client, test_project)
+    base = f"/api/v1/projects/{test_project.id}"
+    for method, path in (
+        ("get", f"/assist-sessions/{sid}"),
+        ("get", f"/assist-sessions/{sid}/api-activity"),
+        ("get", f"/assist/sessions/{sid}"),
+        ("post", f"/assist/sessions/{sid}/end"),
     ):
-        assert paths[root + path][method].get("deprecated") is True, path
+        assert getattr(client, method)(base + path).status_code == 404, path
     for path in (
         "/agent-sessions/{session_id}",
         "/agent-sessions/{session_id}/notes",

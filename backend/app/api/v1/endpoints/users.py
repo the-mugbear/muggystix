@@ -116,9 +116,10 @@ class MyProjectMembership(BaseModel):
     project_id: int
     project_name: str
     project_slug: str
+    #: ``archived`` = the project is archived (the one fact; there is no
+    #: separate flag).
     project_status: str
     project_is_default: bool = False
-    project_is_archived: bool = False
     role: str
     joined_at: Optional[datetime] = None
 
@@ -202,7 +203,6 @@ def my_project_memberships(
             project_slug=p.slug,
             project_status=p.status,
             project_is_default=p.is_default,
-            project_is_archived=p.is_archived,
             role=m.role,
             joined_at=m.created_at,
         )
@@ -226,7 +226,6 @@ def my_project_memberships(
                     project_slug=p.slug,
                     project_status=p.status,
                     project_is_default=p.is_default,
-                    project_is_archived=p.is_archived,
                     # Global admin role surfaces as "admin" per project
                     # so the Profile UI can render a consistent badge.
                     role="admin",
@@ -362,7 +361,6 @@ def get_user_memberships(
             project_slug=p.slug,
             project_status=p.status,
             project_is_default=p.is_default,
-            project_is_archived=p.is_archived,
             role=m.role,
             joined_at=m.created_at,
         )
@@ -384,7 +382,6 @@ def get_user_memberships(
                     project_slug=p.slug,
                     project_status=p.status,
                     project_is_default=p.is_default,
-                    project_is_archived=p.is_archived,
                     role="admin",
                     joined_at=None,
                 )

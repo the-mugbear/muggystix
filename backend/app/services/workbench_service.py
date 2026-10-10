@@ -94,19 +94,13 @@ class MyWorkTotals(BaseModel):
 class ProjectSetup(BaseModel):
     """Whether the project has anything in it yet (v2.476.0) — what Operations
     needs to choose between its setup blocks and the work.  (The page read the
-    whole scope-coverage answer for these.)  One statement of ``EXISTS`` and
-    two scalars over the project's few scope rows."""
+    whole scope-coverage answer for these.)  One statement of two ``EXISTS``."""
     #: The project has at least one host.
     has_hosts: bool = False
-    #: A scope of the project has at least one subnet ENTRY.  The scope row
-    #: every project gets at creation says nothing, and a domain alone does
-    #: not count (owner, 2026-10-10: a domain-only project is still set up).
+    #: The project's scope has at least one subnet ENTRY.  The scope row
+    #: itself says nothing, and a domain alone does not count (owner,
+    #: 2026-10-10: a domain-only project is still set up).
     has_scopes: bool = False
-    #: The project's scope ROWS, entries or not: 0 until the scope is first
-    #: read or written, then 1 (a project has exactly one).
-    scope_rows: int = 0
-    #: The scope's id once it exists; null before.
-    only_scope_id: Optional[int] = None
 
 
 class WorkbenchResponse(BaseModel):
@@ -154,28 +148,16 @@ class WorkbenchResponse(BaseModel):
 
 def compute_project_setup(db: Session, project: Project) -> ProjectSetup:
     """``ProjectSetup`` in ONE statement: two ``EXISTS`` (each stops at its
-    first row) and a count / min over the project's scope rows."""
-    scope_of_project = models.Scope.project_id == project.id
+    first row)."""
     has_hosts = select(models.Host.id).where(models.Host.project_id == project.id).exists()
     has_scopes = (
         select(models.Subnet.id)
         .join(models.Scope, models.Subnet.scope_id == models.Scope.id)
-        .where(scope_of_project)
+        .where(models.Scope.project_id == project.id)
         .exists()
     )
-    row = db.execute(select(
-        has_hosts,
-        has_scopes,
-        select(func.count(models.Scope.id)).where(scope_of_project).scalar_subquery(),
-        select(func.min(models.Scope.id)).where(scope_of_project).scalar_subquery(),
-    )).one()
-    scope_rows = int(row[2] or 0)
-    return ProjectSetup(
-        has_hosts=bool(row[0]),
-        has_scopes=bool(row[1]),
-        scope_rows=scope_rows,
-        only_scope_id=row[3] if scope_rows == 1 else None,
-    )
+    row = db.execute(select(has_hosts, has_scopes)).one()
+    return ProjectSetup(has_hosts=bool(row[0]), has_scopes=bool(row[1]))
 
 
 def get_cursor(db: Session, user_id: int, project_id: int) -> Optional[OperationsCursor]:

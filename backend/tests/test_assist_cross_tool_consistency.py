@@ -79,7 +79,7 @@ def test_a_note_written_through_the_agent_appears_in_recent_notes(
 
     recent = client.get("/api/v1/agent/assist/notes", headers=headers)
     assert recent.status_code == 200, recent.text
-    assert note_id in [n["id"] for n in recent.json()], (
+    assert note_id in [n["id"] for n in recent.json()["items"]], (
         "a note readable on its host was missing from the project's recent "
         "notes — the two tools disagree about whether the note exists"
     )
@@ -102,7 +102,7 @@ def test_a_note_typed_by_a_person_is_in_recent_notes_too(
         headers={"X-API-Key": started["api_key"]},
     )
     assert recent.status_code == 200, recent.text
-    assert note.id in [n["id"] for n in recent.json()]
+    assert note.id in [n["id"] for n in recent.json()["items"]]
 
 
 def test_a_finding_comment_reaches_recent_notes(
@@ -133,7 +133,7 @@ def test_a_finding_comment_reaches_recent_notes(
         headers={"X-API-Key": started["api_key"]},
     )
     assert recent.status_code == 200, recent.text
-    assert note.id in [n["id"] for n in recent.json()]
+    assert note.id in [n["id"] for n in recent.json()["items"]]
 
 
 def test_recent_notes_stays_inside_the_project(client, db_session, test_project):
@@ -164,8 +164,9 @@ def test_recent_notes_stays_inside_the_project(client, db_session, test_project)
         headers={"X-API-Key": started["api_key"]},
     )
     assert recent.status_code == 200, recent.text
-    ids = [n["id"] for n in recent.json()]
+    ids = [n["id"] for n in recent.json()["items"]]
     assert mine.id in ids
+    assert recent.json()["total"] == len(ids), "the count reaches no further than the list"
     assert foreign.id not in ids, "recent notes leaked another project's note"
 
 

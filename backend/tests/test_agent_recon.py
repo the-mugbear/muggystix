@@ -72,7 +72,7 @@ def test_scope_subnets_read(client, recon_key, recon_scope):
     body = r.json()
     # A project has one scope, so the answer does not name one.
     assert "scope_id" not in body
-    assert body["subnets"] == ["10.99.0.0/24"]
+    assert body["items"] == ["10.99.0.0/24"]
     assert (body["total"], body["returned"], body["has_more"]) == (1, 1, False)
 
 
@@ -100,10 +100,10 @@ def test_scope_reads_of_a_project_with_no_scope_are_empty(client, db_session, te
     headers = {"X-API-Key": recon_key}
     r = _subnets(client, recon_key)
     assert r.status_code == 200, r.text
-    assert (r.json()["total"], r.json()["subnets"], r.json()["has_more"]) == (0, [], False)
+    assert (r.json()["total"], r.json()["items"], r.json()["has_more"]) == (0, [], False)
     d = client.get("/api/v1/agent/scope/domains", headers=headers)
     assert d.status_code == 200, d.text
-    assert (d.json()["total"], d.json()["domains"], d.json()["has_more"]) == (0, [], False)
+    assert (d.json()["total"], d.json()["items"], d.json()["has_more"]) == (0, [], False)
     for name in ("hosts.ndjson", "live-hosts.txt", "web-targets.txt", "named-targets.ndjson"):
         f = client.get(f"/api/v1/agent/scope/{name}", headers=headers)
         assert f.status_code == 200, (name, f.text)

@@ -60,7 +60,7 @@ def test_scope_host_mappings_envelope_has_more_boundary(
     db_session.flush()
 
     r = client.get(
-        f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/host-mappings",
+        f"/api/v1/projects/{test_project.id}/scopes/host-mappings",
         params={"skip": 0, "limit": 3},
     )
     body = r.json()

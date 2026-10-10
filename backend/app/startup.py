@@ -203,7 +203,9 @@ async def agent_api_call_retention_loop() -> None:
     DELETE-WHERE-older-than-cutoff is naturally idempotent (a row only
     matches once).
     """
-    retention_days = int(os.getenv("AGENT_API_CALL_RETENTION_DAYS", "90"))
+    from app.services.agent_api_log_service import retention_days as _agent_api_call_retention_days
+
+    retention_days = _agent_api_call_retention_days()
     # Audit rows are kept forever unless an operator sets a window: deleting
     # security audit data is a policy decision, not a default.
     audit_days = int(os.getenv("AUDIT_LOG_RETENTION_DAYS", "0"))
@@ -412,7 +414,6 @@ def seed_default_admin() -> None:
             hashed_password=get_password_hash(admin_password),
             role=UserRole.ADMIN,
             is_active=True,
-            is_verified=True,
             must_change_password=True,
         )
         db.add(admin_user)

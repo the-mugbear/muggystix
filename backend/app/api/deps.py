@@ -6,7 +6,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from fastapi import Depends, Header, HTTPException, Path, Request, UploadFile, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -1164,27 +1164,37 @@ async def read_upload_capped(
     return bytes(buf)
 
 
-def resolve_project_assignee(
-    db: Session, project_id: int, assignee_user_id: Optional[int]
-) -> Optional[int]:
-    """Validate that ``assignee_user_id`` may own/be-assigned work in this project.
+#: What the two bulk-assign routes answer for an assignee that does not exist
+#: or is inactive.  They said 404 "Assignee not found" before they shared
+#: ``load_project_assignee`` and the finding routes said 400; each keeps its
+#: own answer (pinned by ``test_assignee_rule_one_implementation.py``).
+BULK_ASSIGNEE_UNKNOWN = (404, "Assignee not found")
 
-    Returns the id unchanged when it's ``None`` (an explicit unassignment) or a
-    valid target: an ACTIVE user who is a member of the project (global admins
-    bypass the membership check, mirroring bulk_assign). Raises 400 for an
-    inactive user, a non-existent user, or a user who isn't in the project — so
-    every owner-write path (manual create, promotion, single update, bulk) shares
-    one rule instead of accepting any global user id.
+
+def load_project_assignee(
+    db: Session,
+    project_id: int,
+    assignee_user_id: int,
+    *,
+    unknown: Tuple[int, str] = (400, "Assignee is not an active user"),
+) -> User:
+    """The user ``assignee_user_id`` names, if work in this project may be
+    handed to them — the ONE rule for every route that assigns (a finding's
+    owner on create / promote / update, the findings' and the hosts' bulk
+    assign).
+
+    A valid target is an ACTIVE user who is a member of the project; a global
+    admin needs no membership (they can open every project).  A user who does
+    not exist or is inactive is refused with ``unknown`` (status, detail); one
+    who is not a member with 400.
     """
-    if assignee_user_id is None:
-        return None
     assignee = (
         db.query(User)
         .filter(User.id == assignee_user_id, User.is_active.is_(True))
         .first()
     )
     if not assignee:
-        raise HTTPException(status_code=400, detail="Assignee is not an active user")
+        raise HTTPException(status_code=unknown[0], detail=unknown[1])
     if assignee.role != UserRole.ADMIN:
         is_member = (
             db.query(ProjectMembership)
@@ -1198,4 +1208,14 @@ def resolve_project_assignee(
             raise HTTPException(
                 status_code=400, detail="Assignee is not a member of this project"
             )
-    return assignee_user_id
+    return assignee
+
+
+def resolve_project_assignee(
+    db: Session, project_id: int, assignee_user_id: Optional[int]
+) -> Optional[int]:
+    """``assignee_user_id`` unchanged when it is ``None`` (an explicit
+    unassignment) or passes ``load_project_assignee``; 400 otherwise."""
+    if assignee_user_id is None:
+        return None
+    return load_project_assignee(db, project_id, assignee_user_id).id

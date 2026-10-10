@@ -14,9 +14,9 @@ export interface Project {
   name: string;
   slug: string;
   description: string | null;
+  /** `'archived'` = the project is archived (the one fact; no separate flag). */
   status: string;
   is_default: boolean;
-  is_archived: boolean;
   start_date: string | null;
   end_date: string | null;
   created_by_id: number | null;

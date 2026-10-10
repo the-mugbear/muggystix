@@ -59,8 +59,10 @@ def _role_headers(db_session, project, role):
 ])
 def test_observations_are_the_pages_own_numbers(client, test_project, estate, params):
     page = client.get(f"/api/v1/projects/{test_project.id}/scanner-observations", params=params)
+    # The agents' argument is `offset` on every list; the page calls it `skip`.
+    asked = {("offset" if k == "skip" else k): v for k, v in params.items()}
     agent = client.get(
-        "/api/v1/agent/assist/scanner-observations", params=params,
+        "/api/v1/agent/assist/scanner-observations", params=asked,
         headers=_assist_headers(client, test_project.id),
     )
     assert page.status_code == agent.status_code == 200, agent.text
@@ -85,9 +87,9 @@ def test_observations_say_when_the_page_is_cut(client, test_project, estate):
     whole = client.get(url, headers=headers).json()
     assert seen == [r["issue_key"] for r in whole["items"]] and len(seen) == 3
     assert whole["has_more"] is False
-    # ``skip`` (the page route's name) still pages; ``offset`` wins when both are sent.
-    assert client.get(url, params={"limit": 2, "skip": 2}, headers=headers).json()["items"] == \
-        client.get(url, params={"limit": 2, "offset": 2, "skip": 0}, headers=headers).json()["items"]
+    # ``skip`` is the page route's word and not an argument here: over plain
+    # HTTP an undeclared query parameter selects nothing (the first page).
+    assert client.get(url, params={"limit": 2, "skip": 2}, headers=headers).json()["offset"] == 0
 
 
 def test_sort_by_hosts_puts_the_most_widespread_first(client, test_project, estate):

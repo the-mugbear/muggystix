@@ -46,7 +46,7 @@ def _user(db, uid, name):
     u = User(
         id=uid, username=name, email=f"{name}@example.com", full_name=name,
         hashed_password="$2b$12$abcdefghijklmnopqrstuv", role=UserRole.MEMBER,
-        is_active=True, is_verified=True, created_at=datetime.now(timezone.utc),
+        is_active=True, created_at=datetime.now(timezone.utc),
     )
     db.add(u)
     db.flush()

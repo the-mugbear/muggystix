@@ -342,7 +342,7 @@ const Profile: React.FC = () => {
                           <p className="truncate text-metadata font-medium text-foreground">
                             {m.project_name}
                           </p>
-                          {m.project_is_archived && (
+                          {m.project_status === 'archived' && (
                             <Badge variant="muted">Archived</Badge>
                           )}
                         </div>

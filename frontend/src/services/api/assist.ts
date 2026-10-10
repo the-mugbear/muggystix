@@ -33,8 +33,7 @@ export interface McpClientSetup {
 
 export interface StartAssistResponse {
   /** The session's id — its only one: the id the agent reports, Agent
-   *  Sessions lists and `/agent-sessions/:id` opens. (The response also
-   *  repeats it as a deprecated `assist_session_id`; do not read that.) */
+   *  Sessions lists and `/agent-sessions/:id` opens. */
   agent_session_id: number;
   project_id: number;
   project_name: string;
@@ -58,8 +57,8 @@ export interface StartAssistRequest {
   // The route still takes an optional `purpose` (scripts label their
   // sessions with it); the app's dialog does not ask for one.
   ttl_hours?: number;
-  // `can_write_assigned` removed in v5.189.0 with the capability system — the
-  // session's authority is the operator's project role, decided per request.
+  // Nothing else: the session's authority is the operator's project role,
+  // decided per request, and the route refuses (422) a key it does not take.
 }
 
 export const startAssistSession = async (

@@ -27,7 +27,7 @@ vi.mock('../../services/api', () => ({
   markAllNotificationsRead: vi.fn().mockResolvedValue(0),
 }));
 
-import Activity, { excerpt } from '../../pages/Activity';
+import Activity, { excerpt } from '../../pages/Collaboration';
 
 describe('Activity page smoke', () => {
   it('renders without crashing', async () => {

@@ -1,28 +1,21 @@
 import type { AgentSessionRow } from '../services/api';
 import { formatTimestamp } from './relativeTime';
 
-/** v5.288.0 — an in-progress legacy row whose session can no longer act: it
- *  will not move on its own.  Workflow state, not evidence age.  Only
- *  pre-consolidation assist rows can be in this state now (execution runs
- *  went in 5.320.0). */
-export const isStalledRun = (row: AgentSessionRow): boolean =>
-  row.kind !== 'project'
-  && row.session_live === false
-  && ['active', 'in_progress'].includes(row.status.toLowerCase());
-
 export type StateTone = 'ok' | 'warn' | 'muted';
 export interface StateLine { text: string; tone: StateTone }
 
-/** v5.214.0 — one line about an active project session's key: live,
+/** v5.214.0 — one line about an active session's key: live,
  *  lapsed-but-renewable, or gone.  "active" alone cannot tell a live agent from
- *  one that died a day ago; the key's state can.  Null for anything else, or a
- *  legacy row that carries neither date.  (Moved here from Agent Runs in
- *  5.312.0 so the session page says exactly what the list says.)
+ *  one that died a day ago; the key's state can.  Null for a session that is
+ *  not active, or one that carries neither date.  The one reading for EVERY
+ *  session (5.383.0): a session has no kind, and an active row that nothing
+ *  can act on any more is "key expired · past its lifetime" here — it had a
+ *  flag and a "stalled" mark of its own while rows were told apart by kind.
  *  `now` is the BROWSER's clock, compared with the server's dates: a skewed
  *  clock can call a key live or lapsed a little early or late here, but the
  *  server remains the authority — a call it refuses is what the user sees. */
 export const keyState = (row: AgentSessionRow, now: number = Date.now()): StateLine | null => {
-  if (row.kind !== 'project' || row.status !== 'active') return null;
+  if (row.status !== 'active') return null;
   const exp = row.key_expires_at ? new Date(row.key_expires_at).getTime() : null;
   const cap = row.renewable_until ? new Date(row.renewable_until).getTime() : null;
   if (exp != null && exp > now) {
@@ -42,7 +35,7 @@ export const keyState = (row: AgentSessionRow, now: number = Date.now()): StateL
 
 /** The filters for "the project's active sessions" — what the sentence below
  *  is built from, on Agent Sessions and on Operations alike. */
-export const LIVE_SESSION_FILTERS = { kind: 'project', status: 'active', limit: 100 } as const;
+export const LIVE_SESSION_FILTERS = { status: 'active', limit: 100 } as const;
 
 export interface LiveSessionsSummary {
   /** An agent can use the session's key right now. */
@@ -95,11 +88,11 @@ export const liveSessionsSummary = (
 export const agentConnected = (row: AgentSessionRow, now: number = Date.now()): boolean =>
   keyState(row, now)?.tone === 'ok';
 
-/** v5.219.0 — how an ended project session ended and whether it said anything
+/** v5.219.0 — how an ended session ended and whether it said anything
  *  on the way out.  'agent' is the clean exit; the other two mean the agent
  *  never called end. */
 export const endedState = (row: AgentSessionRow): StateLine | null => {
-  if (row.kind !== 'project' || row.status === 'active') return null;
+  if (row.status === 'active') return null;
   const fb = row.feedback_count ?? 0;
   const fbText = fb > 0 ? `${fb} feedback` : 'no feedback';
   switch (row.end_reason) {
@@ -130,11 +123,8 @@ export const agentSessionPath = (sessionId: number): string => `/agent-sessions/
 /** The Agent Sessions list. */
 export const SESSIONS_LIST_PATH = '/agent-activity';
 
-/** Where a row of the sessions timeline opens. The one rule for Agent
- *  Sessions, Operations and the agent rail.
- *  5.328.0 — every row has the page: a legacy assist session is the same kind
- *  of record as a project session now (one table, one id), so its calls and
- *  notes are readable too. It returned null for those rows before. */
+/** Where a row of the session list opens. The one rule for Agent
+ *  Sessions, Operations and the agent rail: every row has the page. */
 export const sessionRowPath = (row: AgentSessionRow): string | null =>
   agentSessionPath(row.id);
 
@@ -155,7 +145,7 @@ export const hasLiveKey = (
  *  the caller keeps the rows `hasLiveKey` accepts. One definition for
  *  `useMyAssistSessions` and `useAgentTask`. */
 export const myActiveSessionFilters = (userId: number) =>
-  ({ kind: 'project', status: 'active', user_id: userId }) as const;
+  ({ status: 'active', user_id: userId }) as const;
 
 /** What ending or resuming a session puts out of date, by API function: the
  *  lists of sessions (Agent Sessions, the top bar's rail, Operations' line,
@@ -171,16 +161,13 @@ export const AGENT_SESSION_READS = [
  *  or its flags: which tool and parameters is the agent's judgment and the
  *  operator's call. */
 export const agentInstruction = {
-  /** `covers` says what the scope holds ("8 subnets, 3 domains"): "scope 2"
-   *  alone is an id the operator never sees anywhere else. The id stays —
-   *  it is what the agent's scope reads take. */
-  scanScope: (scopeId?: number, covers?: { subnets: number; domains: number }): string => {
-    if (scopeId == null) {
-      return 'Read this project’s scopes in BlueStick, run your scanners on what is in scope, and upload the output to this session.';
-    }
+  /** Names no scope: a project has one, and no agent read takes an id (the
+   *  session's project is the key's).  `covers` says what the scope holds
+   *  ("8 subnets, 3 domains"), so the operator sees what they are handing over. */
+  scanScope: (covers?: { subnets: number; domains: number }): string => {
     const n = (count: number, word: string) => `${count.toLocaleString()} ${word}${count === 1 ? '' : 's'}`;
-    const what = covers ? ` — ${n(covers.subnets, 'subnet')}, ${n(covers.domains, 'domain')}` : '';
-    return `Read this project’s scope in BlueStick (scope id ${scopeId}${what}), run your scanners on what is in scope, and upload the output to this session.`;
+    const what = covers ? ` (${n(covers.subnets, 'subnet')}, ${n(covers.domains, 'domain')})` : '';
+    return `Read this project’s scope in BlueStick${what}, run your scanners on what is in scope, and upload the output to this session.`;
   },
   /** Propose tests on a FIXED host list (or one host): the text always names
    *  the ids, never "the project's hosts" — a caller with no host has no task

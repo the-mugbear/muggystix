@@ -93,7 +93,7 @@ def test_out_of_scope_csv_neutralizes_malicious_hostname(
 def test_scope_hosts_csv_neutralizes_malicious_hostname(
     client, db_session, test_project,
 ):
-    """v2.91.4 — /export/scope/{id}/hosts CSV branch flows hostnames
+    """v2.91.4 — the /export/scope CSV branch flows hostnames
     through safe_csv_row."""
     from app.db import models
 
@@ -117,7 +117,7 @@ def test_scope_hosts_csv_neutralizes_malicious_hostname(
     db_session.commit()
 
     resp = client.get(
-        f"/api/v1/projects/{test_project.id}/export/scope/{scope.id}?format_type=csv"
+        f"/api/v1/projects/{test_project.id}/export/scope?format_type=csv"
     )
     assert resp.status_code == 200, resp.text
     rows = _parse_csv(resp.text)

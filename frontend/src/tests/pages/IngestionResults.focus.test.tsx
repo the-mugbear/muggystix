@@ -1,5 +1,5 @@
 /**
- * Ingestion Results (pages/ParseErrors.tsx) — what a link to one row does, and
+ * Ingestion Results (pages/IngestionResults.tsx) — what a link to one row does, and
  * the "View Details" lookup.  Written before the page moved onto
  * `usePagedList` + `useUrlPage` and the lookup became a query (plan B4 / B19,
  * 2026-10-10), and green on the page as it was: the row a link names is opened
@@ -38,7 +38,7 @@ vi.mock('../../contexts/AuthContext', () => ({
 vi.mock('../../components/scans/ImportResult', () => ({ default: () => null }));
 vi.mock('../../components/scans/FormatRetryDialog', () => ({ default: () => null }));
 
-import IngestionResults from '../../pages/ParseErrors';
+import IngestionResults from '../../pages/IngestionResults';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
 Element.prototype.scrollIntoView = vi.fn();
@@ -63,11 +63,11 @@ const response = (items: unknown[], total = items.length) => ({
 
 const Where = () => <output data-testid="where">{useSearchParams()[0].toString()}</output>;
 const where = () => screen.getByTestId('where').textContent;
-const renderPage = (url: string, link = '/parse-errors') => render(
+const renderPage = (url: string, link = '/scans?view=results') => render(
   <MemoryRouter initialEntries={[url]}>
     <TooltipProvider>
       <Routes>
-        <Route path="/parse-errors" element={<><IngestionResults /><Where /><Link to={link}>the link</Link></>} />
+        <Route path="/scans" element={<><IngestionResults /><Where /><Link to={link}>the link</Link></>} />
       </Routes>
     </TooltipProvider>
   </MemoryRouter>,
@@ -83,40 +83,40 @@ beforeEach(() => {
 
 describe('Ingestion Results — a link to one row', () => {
   it('opens the job’s row and takes the id out of the address, keeping the filter and the page', async () => {
-    renderPage('/parse-errors?status=failed&page=2&job_id=5');
+    renderPage('/scans?view=results&status=failed&page=2&job_id=5');
     await screen.findByText('file-5.xml');
     await waitFor(() => expect(isOpen(5)).toBe(true));
     expect(isOpen(4)).toBe(false);
-    await waitFor(() => expect(where()).toBe('status=failed&page=2'));
+    await waitFor(() => expect(where()).toBe('view=results&status=failed&page=2'));
     expect(lastQuery()).toMatchObject({ skip: 25, limit: 25, status: 'failed' });
     expect(toast.info).not.toHaveBeenCalled();
   });
 
   it('a parse-error link is resolved to the job that recorded it, never to a job with that number', async () => {
     api.getIngestionResults.mockResolvedValue(response([failed(77), failed(5, { parse_error_id: 77 })]));
-    renderPage('/parse-errors?error_id=77');
+    renderPage('/scans?view=results&error_id=77');
     await screen.findByText('file-5.xml');
     await waitFor(() => expect(isOpen(5)).toBe(true));
     expect(isOpen(77)).toBe(false);
-    await waitFor(() => expect(where()).toBe(''));
+    await waitFor(() => expect(where()).toBe('view=results'));
   });
 
   it('a row that is not on this page is said, and the id leaves the address', async () => {
-    renderPage('/parse-errors?search=dmz&job_id=999');
+    renderPage('/scans?view=results&search=dmz&job_id=999');
     await screen.findByText('file-5.xml');
     await waitFor(() => expect(toast.info).toHaveBeenCalledWith(
       'Ingestion result for job #999 isn\'t on this page — search or page to it.', { id: 'pe-focus-999' },
     ));
-    await waitFor(() => expect(where()).toBe('search=dmz'));
+    await waitFor(() => expect(where()).toBe('view=results&search=dmz'));
     expect(isOpen(4)).toBe(false);
     expect(isOpen(5)).toBe(false);
     expect(toast.info).toHaveBeenCalledTimes(1);
   });
 
   it('a row the reader then closes stays closed', async () => {
-    renderPage('/parse-errors?job_id=5');
+    renderPage('/scans?view=results&job_id=5');
     await waitFor(() => expect(tableRow(5) && isOpen(5)).toBe(true));
-    await waitFor(() => expect(where()).toBe(''));
+    await waitFor(() => expect(where()).toBe('view=results'));
     fireEvent.click(within(tableRow(5)).getByRole('button', { name: 'Collapse details' }));
     await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 20); }); });
     expect(isOpen(5)).toBe(false);
@@ -131,7 +131,7 @@ describe('Ingestion Results — a link to one row', () => {
         ? Promise.resolve(response([failed(478, { superseded_by_job_id: 484 })], 80))
         : new Promise((resolve) => { answerAll = resolve; })
     ));
-    renderPage('/parse-errors?status=superseded&page=2', '/parse-errors?job_id=484');
+    renderPage('/scans?view=results&status=superseded&page=2', '/scans?view=results&job_id=484');
     await screen.findByText('file-478.xml');
     expect(lastQuery()).toMatchObject({ skip: 25, status: 'superseded' });
 
@@ -140,12 +140,12 @@ describe('Ingestion Results — a link to one row', () => {
     // The superseded rows are not where job #484 is looked for.
     await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 20); }); });
     expect(toast.info).not.toHaveBeenCalled();
-    expect(where()).toBe('job_id=484');
+    expect(where()).toBe('view=results&job_id=484');
 
     await act(async () => { answerAll(response([row({ id: 484, original_filename: 'imported.xml' })])); });
     await screen.findByText('imported.xml');
     await waitFor(() => expect(isOpen(484)).toBe(true));
-    await waitFor(() => expect(where()).toBe(''));
+    await waitFor(() => expect(where()).toBe('view=results'));
     expect(toast.info).not.toHaveBeenCalled();
   });
 });
@@ -161,15 +161,15 @@ describe('Ingestion Results — the list’s own address writes and the row focu
         ? response([failed(478, { superseded_by_job_id: 484 })], 80)
         : response([row({ id: 484, original_filename: 'imported.xml' })], 80)
     ));
-    renderPage('/parse-errors?status=superseded&page=2', '/parse-errors?page=2&job_id=484');
+    renderPage('/scans?view=results&status=superseded&page=2', '/scans?view=results&page=2&job_id=484');
     await screen.findByText('file-478.xml');
     fireEvent.click(screen.getByRole('link', { name: 'the link' }));
     await screen.findByText('imported.xml');
     await waitFor(() => expect(isOpen(484)).toBe(true));
-    await waitFor(() => expect(where()).toBe(''));
+    await waitFor(() => expect(where()).toBe('view=results'));
     // Past any write still on its way: the address stays as it is.
     await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 30); }); });
-    expect(where()).toBe('');
+    expect(where()).toBe('view=results');
     expect(isOpen(484)).toBe(true);
     // The new filter was asked for from its first page, and never from page 2.
     const asked = api.getIngestionResults.mock.calls
@@ -184,14 +184,14 @@ describe('Ingestion Results — the list’s own address writes and the row focu
     api.getIngestionResults.mockImplementation(async (_projectId: number, q: { skip: number }) => (
       q.skip === 25 ? response([failed(5)], 30) : response([], 30)
     ));
-    renderPage('/parse-errors?page=9&job_id=5');
+    renderPage('/scans?view=results&page=9&job_id=5');
     await waitFor(() => expect(toast.info).toHaveBeenCalledWith(
       'Ingestion result for job #5 isn\'t on this page — search or page to it.', { id: 'pe-focus-5' },
     ));
     await screen.findByText('file-5.xml');
-    await waitFor(() => expect(where()).toBe('page=2'));
+    await waitFor(() => expect(where()).toBe('view=results&page=2'));
     await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 30); }); });
-    expect(where()).toBe('page=2');
+    expect(where()).toBe('view=results&page=2');
     expect(lastQuery()).toMatchObject({ skip: 25 });
     expect(toast.info).toHaveBeenCalledTimes(1);
   });
@@ -207,10 +207,10 @@ describe('Ingestion Results — the list’s own address writes and the row focu
       return <button type="button" onClick={() => navigate(-1)}>back</button>;
     };
     render(
-      <MemoryRouter initialEntries={['/parse-errors?status=superseded&page=2']}>
+      <MemoryRouter initialEntries={['/scans?view=results&status=superseded&page=2']}>
         <TooltipProvider>
           <Routes>
-            <Route path="/parse-errors" element={<><IngestionResults /><Where /><Back /></>} />
+            <Route path="/scans" element={<><IngestionResults /><Where /><Back /></>} />
           </Routes>
         </TooltipProvider>
       </MemoryRouter>,
@@ -218,10 +218,10 @@ describe('Ingestion Results — the list’s own address writes and the row focu
     // The row's own "imported by job #484" link.
     fireEvent.click(await screen.findByRole('link', { name: 'job #484' }));
     await screen.findByText('imported.xml');
-    await waitFor(() => expect(where()).toBe(''));
+    await waitFor(() => expect(where()).toBe('view=results'));
     fireEvent.click(screen.getByRole('button', { name: 'back' }));
     await screen.findByText('file-478.xml');
-    expect(where()).toBe('status=superseded&page=2');
+    expect(where()).toBe('view=results&status=superseded&page=2');
     expect(lastQuery()).toMatchObject({ skip: 25, status: 'superseded' });
   });
 });
@@ -244,7 +244,7 @@ describe('Ingestion Results — View Details', () => {
 
   it('asks for the row’s parse error — not the job’s number — and opens on what the server returned', async () => {
     api.getParseError.mockResolvedValue(detail());
-    renderPage('/parse-errors');
+    renderPage('/scans?view=results');
     await screen.findByText('file-5.xml');
     expect(api.getParseError).not.toHaveBeenCalled();
     await open(5);
@@ -258,7 +258,7 @@ describe('Ingestion Results — View Details', () => {
 
   it('a lookup that fails is said and opens nothing', async () => {
     api.getParseError.mockRejectedValue({ response: { status: 404, data: { detail: 'Parse error not found' } } });
-    renderPage('/parse-errors');
+    renderPage('/scans?view=results');
     await screen.findByText('file-5.xml');
     await open(5);
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Parse error not found', { id: 'pe-detail-5' }));
@@ -274,7 +274,7 @@ describe('Ingestion Results — View Details', () => {
   });
 
   it('a row with no recorded parse error says so and asks for nothing', async () => {
-    renderPage('/parse-errors');
+    renderPage('/scans?view=results');
     await screen.findByText('file-6.xml');
     await open(6);
     expect(toast.error).toHaveBeenCalledWith(
@@ -286,7 +286,7 @@ describe('Ingestion Results — View Details', () => {
 
   it('closed and opened again, it is read again and shows the newer answer', async () => {
     api.getParseError.mockResolvedValueOnce(detail());
-    renderPage('/parse-errors');
+    renderPage('/scans?view=results');
     await screen.findByText('file-5.xml');
     await open(5);
     const first = await screen.findByRole('dialog');

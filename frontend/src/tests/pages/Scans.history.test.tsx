@@ -35,6 +35,7 @@ vi.mock('../../contexts/AuthContext', () => ({
 }));
 
 import Scans from '../../pages/Scans';
+import { formatInstant } from '../../utils/scanTime';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
 const scan = (id: number, filename: string) => ({
@@ -128,37 +129,105 @@ describe('Scans — filter by uploader (v5.281.0)', () => {
 // Screenshot 2026-09-23: "Sep 7, 2026, 04:16 P…" / "uploaded · run time un…".
 // UX review 2026-09-24: four lines per row — the zone on every time, and
 // "run time unknown" under every file without one.
-describe('Scans — the When column', () => {
+describe('Scans — the time column', () => {
+  /** A row's time cell: its lines, top to bottom. */
+  const timeLines = (filename: string) => {
+    const cell = screen.getByText(filename).closest('tr')!.querySelectorAll('td')[1];
+    return Array.from(cell.querySelectorAll('p'));
+  };
+  const at = (iso: string) => formatInstant(new Date(iso), { withZone: false });
+  // An nmap run of October 2025 uploaded a year later, above a file with no
+  // time of its own uploaded the day before.
+  const RAN = '2025-10-03T10:00:00Z';
+  const withTimes = () => api.getScans.mockResolvedValue([
+    scan(3, 'older.xml'),
+    { ...scan(9, 'newest.xml'), created_at: '2026-10-09T11:00:00Z', start_time: RAN, end_time: '2025-10-03T10:05:00Z', time_source: 'tool_run' },
+  ]);
+
   it('wraps the time and its note instead of cutting them off', async () => {
+    withTimes();
     renderPage();
     await screen.findByText('newest.xml');
-    const note = screen.getAllByText('uploaded')[0];
+    const [time, note] = timeLines('newest.xml');
     expect(note).not.toHaveClass('truncate');
     expect(note).toHaveClass('break-words');
-    expect(note.previousElementSibling).not.toHaveClass('truncate');
+    expect(time).not.toHaveClass('truncate');
   });
 
   it('prints one time without a zone per row, and no "run time unknown"', async () => {
     renderPage();
     await screen.findByText('newest.xml');
     expect(screen.queryByText(/run time unknown/)).toBeNull();
-    const time = screen.getAllByText('uploaded')[0].previousElementSibling as HTMLElement;
+    const [time] = timeLines('newest.xml');
     const zone = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
       .formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value;
     if (zone) expect(time.textContent).not.toContain(zone);
   });
 
+  // G8 (2026-10-10): under "Newest upload first" the column, headed "When",
+  // showed the scan's own start time on the rows whose file recorded one and
+  // the upload time on the others — October 2025 between October 2026.
+  it('is the upload time on every row, and the scan’s own time is a labelled second line', async () => {
+    withTimes();
+    renderPage();
+    await screen.findByText('newest.xml');
+    const [uploaded, ran, ...more] = timeLines('newest.xml');
+    expect(uploaded.textContent).toBe(at('2026-10-09T11:00:00Z'));
+    expect(ran.textContent).toBe(`ran ${at(RAN)} · took 5m 0s`);
+    expect(more).toHaveLength(0);
+    // A file with no time of its own: the upload time, and nothing under it
+    // (the heading says what the time is).
+    const older = timeLines('older.xml');
+    expect(older.map((p) => p.textContent)).toEqual([at('2026-09-19T10:00:00Z')]);
+    // Where the run time came from stays one hover away.
+    expect(uploaded.parentElement).toHaveAttribute('title', expect.stringMatching(/^Ran .*\n[\s\S]*Reported by nmap[\s\S]*\nUploaded /));
+  });
+
+  it('flags a scanner clock of unknown zone on the second line, never as the row’s time', async () => {
+    api.getScans.mockResolvedValue([
+      scan(3, 'older.xml'),
+      { ...scan(9, 'newest.xml'), start_time: '2024-07-15T10:30:01', time_source: 'tool_clock' },
+    ]);
+    renderPage();
+    await screen.findByText('newest.xml');
+    const [uploaded, ran] = timeLines('newest.xml');
+    expect(uploaded.textContent).toBe(at('2026-09-19T10:00:00Z'));
+    expect(ran.textContent).toMatch(/^ran .*2024.* · scanner clock, zone unknown$/);
+    expect(ran).toHaveClass('text-warning');
+  });
+
   // UX walkthrough 2026-10-02 (U16): the time-zone sentence was a second
   // permanent helper line above the table.
-  it('names the zone on the When heading, with the explanation on an (i), and one helper line', async () => {
+  it('is headed "Uploaded" — what the list is ordered by — with the zone and its (i) on the heading, and one helper line', async () => {
     renderPage();
     await screen.findByText('newest.xml');
     expect(screen.getByText(/^Newest upload first\./)).toBeInTheDocument();
     expect(screen.queryByText(/Times are shown in your time zone/)).toBeNull();
     const hint = screen.getByTestId('viewer-zone-hint');
-    expect(hint.closest('th')).toHaveTextContent(/^When/);
+    expect(hint.closest('th')).toHaveTextContent(/^Uploaded/);
+    expect(screen.queryByRole('columnheader', { name: /^When/ })).toBeNull();
     expect(hint.textContent).not.toBe('');
     expect(within(hint).getByRole('button', { name: 'About the times in this column' })).toBeInTheDocument();
+  });
+
+  it('in the all-files view sorted by when the scans ran, the column is that time and says so', async () => {
+    withTimes();
+    renderPage('/scans?batch_files=show&sort_by=start_time');
+    await screen.findByText('newest.xml');
+    expect(screen.getByTestId('viewer-zone-hint').closest('th')).toHaveTextContent(/^Ran/);
+    expect(timeLines('newest.xml').map((p) => p.textContent)).toEqual([
+      at(RAN), `uploaded ${at('2026-10-09T11:00:00Z')}`,
+    ]);
+    // No run time in the file: a dash, never the upload time in its place.
+    expect(timeLines('older.xml').map((p) => p.textContent)).toEqual(['—', `uploaded ${at('2026-09-19T10:00:00Z')}`]);
+  });
+
+  it('in the all-files view sorted by anything else it is the upload time', async () => {
+    withTimes();
+    renderPage('/scans?batch_files=show&sort_by=filename');
+    await screen.findByText('newest.xml');
+    expect(screen.getByTestId('viewer-zone-hint').closest('th')).toHaveTextContent(/^Uploaded/);
+    expect(timeLines('newest.xml')[0].textContent).toBe(at('2026-10-09T11:00:00Z'));
   });
 });
 
@@ -220,7 +289,7 @@ describe('Scans — layout', () => {
     ]);
     renderPage();
     const link = await screen.findByRole('link', { name: /1 failed import needs attention/ });
-    expect(link).toHaveAttribute('href', '/parse-errors?status=needs_attention');
+    expect(link).toHaveAttribute('href', '/scans?view=results&status=needs_attention');
     // Said once, in the lead: the queue strip does not repeat the figure.
     expect(screen.getByTestId('ingestion-queue')).not.toHaveTextContent(/needs? attention/);
   });
@@ -256,7 +325,7 @@ describe('Scans — layout', () => {
     ]);
     renderPage();
     const link = await screen.findByRole('link', { name: '4 failed imports were re-imported later' });
-    expect(link).toHaveAttribute('href', '/parse-errors?status=superseded');
+    expect(link).toHaveAttribute('href', '/scans?view=results&status=superseded');
     expect(screen.queryByTestId('ingestion-queue')).not.toBeInTheDocument();
     expect(leadText()).not.toMatch(/nothing failed|need attention/);
   });
@@ -323,7 +392,7 @@ describe('Scans — layout', () => {
     });
     renderPage();
     const link = await screen.findByRole('link', { name: /78 failed or partial imports need attention/ });
-    expect(link).toHaveAttribute('href', '/parse-errors?status=needs_attention');
+    expect(link).toHaveAttribute('href', '/scans?view=results&status=needs_attention');
     expect(screen.queryByText(/nothing failed/)).not.toBeInTheDocument();
   });
 
@@ -336,7 +405,7 @@ describe('Scans — layout', () => {
     const link = await screen.findByRole('link', { name: '31 never imported' });
     // No reason breakdown: every upload (Failed no longer holds expired or
     // discarded ones — UX review 2026-09-24).
-    expect(link).toHaveAttribute('href', '/parse-errors');
+    expect(link).toHaveAttribute('href', '/scans?view=results');
     expect(leadText()).not.toMatch(/nothing failed/);
   });
 
@@ -348,8 +417,8 @@ describe('Scans — layout', () => {
     });
     renderPage();
     await screen.findByRole('link', { name: '33 never imported' });
-    expect(screen.getByRole('link', { name: '31 expired before review' })).toHaveAttribute('href', '/parse-errors?status=expired');
-    expect(screen.getByRole('link', { name: '2 discarded' })).toHaveAttribute('href', '/parse-errors?status=discarded');
+    expect(screen.getByRole('link', { name: '31 expired before review' })).toHaveAttribute('href', '/scans?view=results&status=expired');
+    expect(screen.getByRole('link', { name: '2 discarded' })).toHaveAttribute('href', '/scans?view=results&status=discarded');
   });
 
   // Screenshot 2026-09-23: a run-on sentence listing every possible reason
@@ -389,8 +458,11 @@ describe('Scans — layout', () => {
       imports_need_attention: 0, imports_not_imported: 3, imports_not_imported_by_reason: { dismissed: 3 },
     });
     renderPage();
-    await screen.findByRole('link', { name: '3 never imported' });
+    const link = await screen.findByRole('link', { name: '3 never imported' });
     expect(leadText()).toMatch(/3 never imported \(3 dismissed failures\)/);
+    // The 3 open the 3: Ingestion results' dismissed-failures view, not every
+    // failed import (it opened `status=failed`, dismissed or not).
+    expect(link).toHaveAttribute('href', '/scans?view=results&status=failed_dismissed');
   });
 
   it('says "nothing failed" only when the project has no failed job at all', async () => {

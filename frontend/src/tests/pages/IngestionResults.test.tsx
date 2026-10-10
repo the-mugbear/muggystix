@@ -1,5 +1,5 @@
 /**
- * Ingestion Results (pages/ParseErrors.tsx) — first page-level test.
+ * Ingestion Results (pages/IngestionResults.tsx) — first page-level test.
  *
  * v5.242.0: Operations' "Inspect import errors" landed on every upload, because
  * the page had no view of "what needs someone"; its five stat cards did nothing
@@ -35,7 +35,7 @@ vi.mock('../../contexts/AuthContext', () => ({
 // The completed row's import-result block fetches a scan; not what this checks.
 vi.mock('../../components/scans/ImportResult', () => ({ default: () => null }));
 
-import IngestionResults from '../../pages/ParseErrors';
+import IngestionResults from '../../pages/IngestionResults';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
 const row = (over: Record<string, unknown>) => ({
@@ -55,12 +55,12 @@ const response = (items: unknown[]) => ({
   },
 });
 
-const renderPage = (url = '/parse-errors') =>
+const renderPage = (url = '/scans?view=results') =>
   render(
     <MemoryRouter initialEntries={[url]}>
       <TooltipProvider>
         <Routes>
-          <Route path="/parse-errors" element={<IngestionResults />} />
+          <Route path="/scans" element={<IngestionResults />} />
         </Routes>
       </TooltipProvider>
     </MemoryRouter>,
@@ -73,7 +73,7 @@ beforeEach(() => {
 
 describe('Ingestion Results — the counts are the filter', () => {
   it('opens on the view Operations links to, and asks the server for it', async () => {
-    renderPage('/parse-errors?status=needs_attention');
+    renderPage('/scans?view=results&status=needs_attention');
     const chip = await screen.findByRole('button', { name: /Needs attention\s*2/ });
     expect(chip).toHaveAttribute('aria-pressed', 'true');
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(
@@ -98,6 +98,31 @@ describe('Ingestion Results — the counts are the filter', () => {
     ));
   });
 
+  // G7 — "Failed 3" stood beside Operations' "2 imports failed": one of the
+  // three had been dismissed and nothing said so.
+  it('says how many of the failed imports are dismissed, and that count opens exactly those', async () => {
+    api.getIngestionResults.mockResolvedValue({
+      ...response([]), summary: { ...response([]).summary, total_failed_dismissed: 1 },
+    });
+    renderPage();
+    const failed = await screen.findByRole('button', { name: /^Failed\s*3$/ });
+    const dismissed = screen.getByRole('button', { name: /^of them dismissed\s*1$/ });
+    // Stated right after the figure it is a part of.
+    expect(failed.nextElementSibling).toBe(dismissed);
+    fireEvent.click(dismissed);
+    await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
+      1, expect.objectContaining({ status: 'failed_dismissed' }), expect.any(AbortSignal),
+    ));
+    expect(screen.getByRole('button', { name: /^of them dismissed\s*1$/ })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: /^Failed\s*3$/ })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('says nothing about dismissed failures when there are none, or when the server did not count them', async () => {
+    renderPage();
+    await screen.findByRole('button', { name: /^Failed\s*3$/ });
+    expect(screen.queryByRole('button', { name: /dismissed/ })).not.toBeInTheDocument();
+  });
+
   it('counts uploads, not per-scan history rows, and shows a transient state only while it holds something', async () => {
     renderPage();
     expect(await screen.findByRole('button', { name: /All uploads\s*10/ })).toBeInTheDocument();
@@ -107,7 +132,7 @@ describe('Ingestion Results — the counts are the filter', () => {
   });
 
   it('keeps a deep-linked filter visible even when its chip would be hidden', async () => {
-    renderPage('/parse-errors?status=queued');
+    renderPage('/scans?view=results&status=queued');
     expect(await screen.findByRole('button', { name: /queued\s*0/ })).toHaveAttribute('aria-pressed', 'true');
   });
 });
@@ -154,7 +179,7 @@ describe('Ingestion Results — a partial import', () => {
       row({ id: 12, original_filename: 'old.json', status: 'failed', dismissed_at: '2026-09-01T00:00:00Z' }),
     ]));
     api.dismissIngestionJob.mockResolvedValue({});
-    renderPage('/parse-errors?status=needs_attention');
+    renderPage('/scans?view=results&status=needs_attention');
 
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss the 2 shown' }));
     const dialog = await screen.findByRole('dialog');
@@ -297,7 +322,7 @@ describe('Ingestion Results — superseded failures and specific reasons', () =>
     await screen.findByText('smbmap-samba.txt');
     const sup = screen.getByTestId('superseded-by');
     expect(sup).toHaveTextContent('Superseded — imported by job #484');
-    expect(within(sup).getByRole('link', { name: 'job #484' })).toHaveAttribute('href', '/parse-errors?job_id=484');
+    expect(within(sup).getByRole('link', { name: 'job #484' })).toHaveAttribute('href', '/scans?view=results&job_id=484');
     expect(screen.getByTestId('failure-reason')).toHaveTextContent('SMBMap parser found 0 hosts');
     expect(screen.getByTestId('failure-reason')).not.toHaveTextContent(/format may not be supported/);
   });

@@ -25,7 +25,7 @@ import { hasLiveKey } from '../../utils/agentRuns';
 const HOUR = 3_600_000;
 const at = (ms: number) => new Date(Date.now() + ms).toISOString();
 const session = (over = {}) => ({
-  kind: 'project', id: 72, project_id: 1, status: 'active', user_id: 7,
+  id: 72, project_id: 1, status: 'active', user_id: 7,
   key_expires_at: at(HOUR), ...over,
 });
 const listed = (...sessions: object[]) => ({ project_id: 1, sessions, total: sessions.length });
@@ -51,7 +51,7 @@ describe('hasLiveKey', () => {
 });
 
 describe('useMyAssistSessions', () => {
-  it('asks for this operator’s active project sessions and keeps the ones with a live key', async () => {
+  it('asks for this operator’s active sessions and keeps the ones with a live key', async () => {
     api.listAgentSessions.mockResolvedValue(listed(
       session({ id: 72 }),
       session({ id: 60, key_expires_at: at(-HOUR) }),   // key ran out: resumable, not live
@@ -62,7 +62,7 @@ describe('useMyAssistSessions', () => {
     await waitFor(() => expect(result.current.sessions.map((s) => s.id)).toEqual([72]));
     // Narrowed on the server, not by filtering the whole project's rows here.
     expect(api.listAgentSessions).toHaveBeenCalledWith(
-      1, { kind: 'project', status: 'active', user_id: 7 }, { signal: expect.any(AbortSignal) },
+      1, { status: 'active', user_id: 7 }, { signal: expect.any(AbortSignal) },
     );
     expect(result.current.failed).toBe(false);
   });

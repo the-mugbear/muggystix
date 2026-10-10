@@ -149,7 +149,6 @@ class ScopeDomainBatchCreate(BaseModel):
 
 class ScopeDomainRow(BaseModel):
     id: int
-    scope_id: int
     domain: str
     include_subdomains: bool
     description: Optional[str] = None

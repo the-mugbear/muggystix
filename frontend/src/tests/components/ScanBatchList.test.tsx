@@ -62,19 +62,22 @@ describe('ScanBatchRow', () => {
     expect(screen.getByText(/312 files imported/)).toBeInTheDocument();
     expect(screen.getByText('+850')).toBeInTheDocument();
     expect(screen.getByText('4 processing')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '1 failed' })).toHaveAttribute('href', '/parse-errors?status=needs_attention');
+    expect(screen.getByRole('link', { name: '1 failed' })).toHaveAttribute('href', '/scans?view=results&status=needs_attention');
     expect(getScans).not.toHaveBeenCalled();
   });
 
   // Screenshot 2026-09-23: one full-width cell put "32 files" under WHEN and
   // the times in a fifth block past the last header.
-  it('fills the same five columns as a file row: Scan · When · New hosts · Contributed · Actions', () => {
+  it('fills the same five columns as a file row: Scan · Uploaded · New hosts · Contributed · Actions', () => {
     const { container } = renderRow({});
     const [scan, when, newHosts, contributed, actions, ...rest] = cells(container);
     expect(rest).toHaveLength(0);
     expect(scan).toHaveTextContent('nmap-tcp-top1000');
-    // No created_at on this fixture: the first file's upload stands in.
-    expect(when).toHaveTextContent(`${formatInstant(new Date('2026-09-11T10:00:00Z'), ROW_TZ)}uploaded`);
+    // No created_at on this fixture: the first file's upload stands in.  The
+    // cell is the upload time and nothing else — the heading says "Uploaded"
+    // (G8), so the row does not repeat the word.
+    expect(when.textContent).toBe(formatInstant(new Date('2026-09-11T10:00:00Z'), ROW_TZ));
+    expect(when).toHaveAttribute('title', `Uploaded ${formatInstant(new Date('2026-09-11T10:00:00Z'), TZ)}`);
     // Screenshot 2026-09-23: "uploaded; first file …" read as nonsense.
     expect(when).not.toHaveTextContent(/first file/);
     expect(newHosts).toHaveTextContent('+850');
@@ -108,9 +111,15 @@ describe('ScanBatchRow', () => {
     expect(contributed).toHaveTextContent('Nothing imported');
     // Ingestion Results lists expired uploads in their own view, not under Failed.
     expect(within(contributed).getByRole('link', { name: '31 expired before import' }))
-      .toHaveAttribute('href', '/parse-errors?status=expired');
+      .toHaveAttribute('href', '/scans?view=results&status=expired');
     expect(contributed).not.toHaveTextContent(/0 files/);
     expect(screen.queryByText(/reached the import/)).not.toBeInTheDocument();
+  });
+
+  it('a batch\'s dismissed failures open the dismissed-failures view, not every failed import', () => {
+    const { container } = renderRow({}, vi.fn(), { ...batch, failed_files: 0, dismissed_failed_files: 2 });
+    expect(within(cells(container)[3]).getByRole('link', { name: '2 failed (dismissed)' }))
+      .toHaveAttribute('href', '/scans?view=results&status=failed_dismissed');
   });
 
   it('shows at most four tool chips, then "+N more" with the full list on hover', () => {
@@ -223,7 +232,7 @@ describe('ScanBatchRow', () => {
     const { container } = renderRow({}, vi.fn(), { ...batch, created_at: '2026-09-11T10:00:00Z', superseded_files: 1 });
     // The batch row says how many failed but were imported later.
     expect(screen.getByRole('link', { name: '1 failed, imported later (superseded)' }))
-      .toHaveAttribute('href', '/parse-errors?status=superseded');
+      .toHaveAttribute('href', '/scans?view=results&status=superseded');
     fireEvent.click(screen.getByRole('button', { name: /show the files of/i }));
     await screen.findByText('smbmap-samba.txt');
     expect(getBatchUnimportedJobs).toHaveBeenCalledWith(1, 7, expect.any(AbortSignal));
@@ -233,7 +242,7 @@ describe('ScanBatchRow', () => {
     const smb = rows[0].querySelectorAll('td');
     expect(smb[3]).toHaveTextContent('Superseded — imported by job #484');
     expect(within(smb[3] as HTMLElement).getByRole('link', { name: 'imported by job #484' }))
-      .toHaveAttribute('href', '/parse-errors?job_id=484');
+      .toHaveAttribute('href', '/scans?view=results&job_id=484');
     // The parser's cause, not the generic sentence.
     expect(smb[3]).toHaveTextContent('SMBMap parser found 0 hosts');
     expect(smb[3]).not.toHaveTextContent(/format may not be supported/);
@@ -274,8 +283,9 @@ describe('ScanBatchRow', () => {
       last_uploaded: '2026-09-23T22:08:00Z', reprocessed_files: 1,
     });
     const when = cells(container)[1];
-    expect(when).toHaveTextContent(`${formatInstant(new Date('2026-09-18T22:20:00Z'), ROW_TZ)}uploaded`);
-    expect(when).toHaveTextContent(`re-processed ${formatInstant(new Date('2026-09-23T22:08:00Z'), ROW_TZ)}`);
+    expect(when.textContent).toBe(
+      `${formatInstant(new Date('2026-09-18T22:20:00Z'), ROW_TZ)}a file re-processed ${formatInstant(new Date('2026-09-23T22:08:00Z'), ROW_TZ)}`,
+    );
   });
 
   // Local Network, 2026-09-23: "46 files · …" read "17 files imported · 4

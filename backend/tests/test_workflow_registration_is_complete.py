@@ -1,158 +1,103 @@
-"""A new agent workflow cannot go missing from the surfaces that list them.
+"""A stored session cannot go missing from the session list without someone
+having decided it.
 
-This is the guard for the bug that actually happened. `AgentSession`'s docstring
-described four workflows from the day it was written, but "the list of
-workflows" was duplicated across five places — the service's kind set, the
-service's per-kind branches, the endpoint's `SessionKindLiteral`, the rollup
-bucket, and the frontend union — and **assist was missing from all of them for
-months**. An operator with a live assist key saw nothing on Agent Runs, the
-surface whose entire job is showing what the agents are doing, and the
-per-(model, tool) rollup under-reported what a harness had done on the project.
+This is the guard for the bug that actually happened.  "The list of kinds of
+session" was duplicated across five places — the service's kind set, its
+per-kind branches, the endpoint's literal, the rollup's buckets and the
+frontend union — and **assist was missing from all of them for months**.  An
+operator with a live assist key saw nothing on Agent Runs, and the
+per-(model, tool) rollup under-reported what a harness had done.  Nothing
+failed: an absent kind produces no error, only a shorter list that looks
+complete.
 
-Nothing failed. A workflow that is simply absent produces no error, no empty
-state, and no log line — it produces a shorter list that looks complete.
+2.489.0 — the five copies are gone.  A session has no kind on the wire, no
+per-kind branch computes anything, and there is ONE statement of which stored
+``agent_sessions.workflow`` values are sessions the list has:
+``agent_session_service.LISTED_WORKFLOWS``.  What this file guards now:
 
-The alternative fix was collapsing the twelve columns duplicated across the four
-session tables into `agent_sessions`, so there would be one list by
-construction. That is a large mechanical refactor of every reader of `status`,
-`environment` and `generated_by_*`, and the consolidation has twice shown that
-removing a thing which was quietly carrying a second load is how regressions get
-in. This test costs nothing and catches the same class.
+* every value the enum declares is either listed or named here as off the
+  list, so a NEW value cannot be silently absent (and a retired one cannot
+  come back half-listed);
+* the list, its count, the by-id read, the per-(model, tool) rollup and
+  ``sessions_with_a_page`` all agree about a row of every stored value — they
+  are one filter, and this keeps them one.
 
-v2.442.0 — ``plan_generation`` and ``execution`` stay on the enum only as
-LABELS on sessions minted before the consolidation: the tables their timeline
-rows were read from (test plans, execution runs) are gone, so there is nothing
-to list and the API refuses the kind.  They are named in ``RETIRED_LABELS``
-below — an explicit, checked list, so a NEW workflow still cannot go missing,
-and a retired one cannot quietly come back half-registered.
+(Before 2.489.0 the same guard read ``ALL_SESSION_KINDS`` and the endpoint's
+``SessionKindLiteral``, and checked that ``?kind=<retired>`` was a 422.  There
+is no ``kind`` parameter any more.)
 """
-from app.db.models_agent import AgentSessionWorkflow
+from app.db.models_agent import AgentSession, AgentSessionWorkflow
+from app.services.agent_session_service import (
+    LISTED_WORKFLOWS,
+    count_agent_sessions,
+    get_agent_session_row,
+    list_agent_sessions,
+    sessions_with_a_page,
+    summarise_by_model_tool,
+)
 
-#: Enum members that label pre-consolidation rows and have no timeline branch.
-RETIRED_LABELS = {"plan_generation", "execution"}
+#: Enum members whose rows are on no page: what such a session did (a test
+#: plan, an execution run) was removed with its tables in v2.442.0.
+OFF_THE_LIST = {"plan_generation", "execution"}
+#: Stored on old rows though the enum no longer declares it (recon runs went
+#: in v2.433.0).
+STORED_ONLY = {"recon"}
 
 
-def _listed_workflows():
+def test_every_declared_workflow_is_listed_or_deliberately_not():
     declared = {w.value for w in AgentSessionWorkflow}
-    assert RETIRED_LABELS <= declared, (
-        "a retired label left the enum — drop it from RETIRED_LABELS too"
+    listed = set(LISTED_WORKFLOWS)
+    assert listed <= declared
+    assert OFF_THE_LIST <= declared, "a value left the enum — drop it from OFF_THE_LIST too"
+    assert not listed & OFF_THE_LIST
+    undecided = declared - listed - OFF_THE_LIST
+    assert not undecided, (
+        f"workflow value(s) {sorted(undecided)} are neither in LISTED_WORKFLOWS nor "
+        "named here as off the list. A session stored with one would be invisible on "
+        "Agent Sessions and uncounted in the model/tool rollup — with no error to notice."
     )
-    return declared - RETIRED_LABELS
+    # What a new session is stored as is on the list.
+    assert AgentSessionWorkflow.PROJECT.value in listed
 
 
-def test_a_retired_label_is_retired_everywhere(client, db_session, test_project, test_user):
-    """Not listed by the service, not accepted by the API, and a legacy row
-    carrying the label never surfaces as a ``project`` session."""
-    from typing import get_args
-
-    from app.api.v1.endpoints.agent_sessions import SessionKindLiteral
-    from app.db.models_agent import AgentSession
-    from app.services.agent_session_service import ALL_SESSION_KINDS, list_agent_sessions
-
-    assert not RETIRED_LABELS & set(ALL_SESSION_KINDS)
-    assert not RETIRED_LABELS & set(get_args(SessionKindLiteral))
-    for label in sorted(RETIRED_LABELS):
-        db_session.add(AgentSession(
-            workflow=label, project_id=test_project.id, started_by_id=test_user.id, status="ended",
-        ))
-    db_session.commit()
-    assert list_agent_sessions(db_session, test_project.id) == []
-    for label in sorted(RETIRED_LABELS):
-        r = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions", params={"kind": label})
-        assert r.status_code == 422, (label, r.text)
-
-
-def test_every_workflow_appears_in_the_session_service():
-    """The service's default kind set must cover every declared workflow.
-
-    ``ALL_SESSION_KINDS`` exists because this list previously drifted between
-    three call sites inside the service alone.
-    """
-    from app.services.agent_session_service import ALL_SESSION_KINDS
-
-    declared = _listed_workflows()
-    missing = declared - set(ALL_SESSION_KINDS)
-    assert not missing, (
-        f"workflows declared on AgentSessionWorkflow but absent from the agent-"
-        f"session timeline: {sorted(missing)}. A session of that kind would be "
-        "invisible on Agent Runs and uncounted in the model/tool rollup — with "
-        "no error to notice."
-    )
-
-
-def test_every_workflow_appears_in_the_api_literal():
-    """The endpoint's `kind` filter must accept every declared workflow.
-
-    A kind the service returns but the response model rejects is worse than an
-    omission: it is a 500 on a valid row.
-    """
-    from typing import get_args
-
-    from app.api.v1.endpoints.agent_sessions import SessionKindLiteral
-
-    declared = _listed_workflows()
-    accepted = set(get_args(SessionKindLiteral))
-    missing = declared - accepted
-    assert not missing, (
-        f"workflows the timeline can return but the API literal rejects: "
-        f"{sorted(missing)}. Add them to SessionKindLiteral."
-    )
-
-
-def test_the_service_can_actually_list_every_kind(db_session, test_project):
-    """Structural agreement is not enough — each kind needs a branch that runs.
-
-    A kind present in ``ALL_SESSION_KINDS`` with no matching query branch
-    returns an empty list rather than raising, which is the same silent-absence
-    failure in a different place.
-    """
-    from app.services.agent_session_service import (
-        ALL_SESSION_KINDS,
-        count_agent_sessions,
-        list_agent_sessions,
-    )
-
-    for kind in sorted(ALL_SESSION_KINDS):
-        # Both entry points, because they enumerate the kinds separately.
-        rows = list_agent_sessions(db_session, test_project.id, kinds=[kind], limit=5)
-        total = count_agent_sessions(db_session, test_project.id, kinds=[kind])
-        assert isinstance(rows, list), f"{kind}: list_agent_sessions has no branch"
-        assert isinstance(total, int), f"{kind}: count_agent_sessions has no branch"
-
-
-def test_the_model_tool_rollup_buckets_every_kind(db_session, test_project, test_user):
-    """The rollup answers "what has this harness been doing here". A kind it
-    does not bucket makes that answer wrong, not merely incomplete."""
-    from app.services.agent_session_service import (
-        ALL_SESSION_KINDS,
-        summarise_by_model_tool,
-    )
-    from app.db.models_agent import Agent, AgentSession
-
-    # A session of every kind under one (model, tool) pair: each must be
-    # counted once, under its own kind.
-    agent = Agent(
-        name="rollup-probe", project_id=test_project.id, owner_id=test_user.id,
-    )
-    db_session.add(agent)
-    db_session.flush()
-    for workflow in (AgentSessionWorkflow.ASSIST.value, AgentSessionWorkflow.PROJECT.value):
-        db_session.add(AgentSession(
-            workflow=workflow,
-            project_id=test_project.id, agent_id=agent.id, status="active",
-            generated_by_model="probe-model", generated_by_tool="probe-tool",
-        ))
-    db_session.commit()
-
-    rows = summarise_by_model_tool(db_session, test_project.id)
-    assert rows, "expected at least one (model, tool) bucket"
-    probe = next(r for r in rows if r["generated_by_model"] == "probe-model")
-    # One each: a project session used to be counted a second time as
-    # "assist", through the pointer row every start wrote (fixed v2.449.0).
-    assert (probe["project"], probe["assist"], probe["total"]) == (1, 1, 2)
-    for row in rows:
-        missing = set(ALL_SESSION_KINDS) - set(row)
-        assert not missing, (
-            f"model/tool rollup has no counter for {sorted(missing)} — sessions "
-            "of that kind are silently uncounted"
+def test_every_reader_agrees_about_a_row_of_every_stored_value(
+    client, db_session, test_project, test_user,
+):
+    ids = {}
+    for workflow in sorted(set(LISTED_WORKFLOWS) | OFF_THE_LIST | STORED_ONLY):
+        row = AgentSession(
+            workflow=workflow, project_id=test_project.id, started_by_id=test_user.id,
+            status="ended", generated_by_model="probe-model", generated_by_tool="probe-tool",
         )
+        db_session.add(row)
+        db_session.flush()
+        ids[workflow] = row.id
+    db_session.commit()
+    expected = {ids[w] for w in LISTED_WORKFLOWS}
+
+    rows = list_agent_sessions(db_session, test_project.id)
+    assert {r.id for r in rows} == expected
+    assert count_agent_sessions(db_session, test_project.id) == len(expected)
+    assert sessions_with_a_page(db_session, ids.values()) == expected
+    [probe] = summarise_by_model_tool(db_session, test_project.id)
+    assert probe == {
+        "generated_by_model": "probe-model", "generated_by_tool": "probe-tool",
+        "total": len(expected),
+    }
+    for workflow, session_id in ids.items():
+        row = get_agent_session_row(db_session, test_project.id, session_id)
+        assert (row is not None) == (workflow in LISTED_WORKFLOWS), workflow
+        status = client.get(
+            f"/api/v1/projects/{test_project.id}/agent-sessions/{session_id}"
+        ).status_code
+        assert status == (200 if workflow in LISTED_WORKFLOWS else 404), workflow
+
+    # And the route says the same, with no kind on any row.
+    body = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions").json()
+    assert body["total"] == len(expected)
+    assert {r["id"] for r in body["sessions"]} == expected
+    assert all("kind" not in r for r in body["sessions"])
+    # A row carries no fact that depends on what it is stored as, but one:
+    # Resume refuses a row not stored as ``project`` (never sent as a field).
+    assert {r.id for r in rows if r.resume_supported} == {ids["project"]}
+    assert all("resume_supported" not in r for r in body["sessions"])

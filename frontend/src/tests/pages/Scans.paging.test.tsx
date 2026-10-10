@@ -92,6 +92,23 @@ beforeEach(() => {
   ));
 });
 
+describe('Scans — the first read', () => {
+  it('keeps the title and the view switch on screen while the list is read', async () => {
+    // The whole page used to be a skeleton until the first answer, so
+    // pressing "Imported scans" took the switch away and put it back.
+    let answer: (page: ReturnType<typeof historyPage>) => void = () => undefined;
+    api.getImportHistory.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    renderPage();
+    expect(await screen.findByRole('heading', { name: 'Scans' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Imported scans' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Ingestion results' })).toBeInTheDocument();
+    expect(screen.queryByText('file-9.xml')).toBeNull();
+    await act(async () => { answer(historyPage()); });
+    expect(await screen.findByText('file-9.xml')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Imported scans' })).toBeInTheDocument();
+  });
+});
+
 describe('Scans — "Load more" of the import history', () => {
   it('offers more on the server’s word, asks where the loaded entries end, and lists both pages in order', async () => {
     renderPage();

@@ -7,16 +7,17 @@
  */
 import { api, projectPath } from './client';
 
+/** The project's one scope.  No request takes its `id`: every scope route is
+ *  keyed by the project alone (backend 2.489.0). */
 export interface Scope {
   id: number;
-  name: string;
   description: string | null;
   created_at: string;
   updated_at: string | null;
   subnets: Subnet[];
   // v2.94.0 — server-paginated subnets.  subnets_total is the unpaginated
-  // count; the /scopes editor uses it to drive a "load more" affordance so
-  // 6000-subnet projects don't ship every subnet in one payload.
+  // count (under the search, when there is one); the /scopes editor pages by
+  // it so 6000-subnet projects don't ship every subnet in one payload.
   subnets_total?: number;
   subnets_skip?: number | null;
   subnets_limit?: number | null;
@@ -24,7 +25,6 @@ export interface Scope {
 
 export interface Subnet {
   id: number;
-  scope_id: number;
   cidr: string;
   description: string | null;
   // Physical/logical site this subnet belongs to (e.g. "London DC").
@@ -43,7 +43,6 @@ export interface Subnet {
 
 export interface SubnetFileUploadResponse {
   message: string;
-  scope_id: number;
   subnets_added: number;
   /** Domain rows in the same file land in scope_domains (backend 2.326.0). */
   domains_added?: number;
@@ -124,7 +123,6 @@ export interface SubnetLabelWithCounts {
 
 export interface SubnetEntry {
   id: number;
-  scope_id: number;
   cidr: string;
   description: string | null;
   created_at: string;
@@ -143,7 +141,6 @@ export const getDefaultScope = async (
   opts: {
     subnetsSkip?: number;
     subnetsLimit?: number;
-    withFindingsOnly?: boolean;
     subnetsSearch?: string;
   } = {},
   signal?: AbortSignal,
@@ -151,7 +148,6 @@ export const getDefaultScope = async (
   const params = new URLSearchParams();
   if (opts.subnetsSkip !== undefined) params.set('subnets_skip', String(opts.subnetsSkip));
   if (opts.subnetsLimit !== undefined) params.set('subnets_limit', String(opts.subnetsLimit));
-  if (opts.withFindingsOnly !== undefined) params.set('with_findings_only', String(opts.withFindingsOnly));
   if (opts.subnetsSearch && opts.subnetsSearch.trim()) {
     params.set('subnets_search', opts.subnetsSearch.trim());
   }
@@ -162,36 +158,29 @@ export const getDefaultScope = async (
 
 export const addScopeSubnets = async (
   projectId: number,
-  scopeId: number,
   subnets: Array<{ cidr: string; description?: string }>,
 ): Promise<SubnetEntry[]> => {
-  const response = await api.post<SubnetEntry[]>(`${projectPath(projectId)}/scopes/${scopeId}/subnets`, { subnets });
+  const response = await api.post<SubnetEntry[]>(`${projectPath(projectId)}/scopes/subnets`, { subnets });
   return response.data;
 };
 
 export const updateSubnet = async (
   projectId: number,
-  scopeId: number,
   subnetId: number,
   body: { cidr?: string; description?: string; site?: string },
 ): Promise<SubnetEntry> => {
-  const response = await api.patch<SubnetEntry>(`${projectPath(projectId)}/scopes/${scopeId}/subnets/${subnetId}`, body);
+  const response = await api.patch<SubnetEntry>(`${projectPath(projectId)}/scopes/subnets/${subnetId}`, body);
   return response.data;
 };
 
-export const deleteSubnet = async (projectId: number, scopeId: number, subnetId: number): Promise<void> => {
-  await api.delete(`${projectPath(projectId)}/scopes/${scopeId}/subnets/${subnetId}`);
+export const deleteSubnet = async (projectId: number, subnetId: number): Promise<void> => {
+  await api.delete(`${projectPath(projectId)}/scopes/subnets/${subnetId}`);
 };
 
 export const uploadSubnetFile = async (
   projectId: number,
   file: File,
 ): Promise<SubnetFileUploadResponse> => {
-  // Scopes no longer carry a user-supplied name or description.  The
-  // backend auto-generates a fallback name from the upload filename
-  // so the underlying NOT NULL column is satisfied without requiring
-  // the user to fill in metadata.  See backend/app/api/v1/endpoints/
-  // scopes.py:upload_subnet_file for the fallback logic.
   const formData = new FormData();
   formData.append('file', file);
 
@@ -210,10 +199,10 @@ export const getScopeCoverage = async (projectId: number, limit: number = 25, si
 
 /** The hosts in the project's scope (a project has one). */
 export const getScopeHostList = async (
-  projectId: number, scopeId: number, format: 'txt' | 'csv' | 'json' | 'web' = 'txt',
+  projectId: number, format: 'txt' | 'csv' | 'json' | 'web' = 'txt',
   { signal }: { signal?: AbortSignal } = {},
 ): Promise<string> => {
-  const response = await api.get(`${projectPath(projectId)}/export/scope/${scopeId}`, {
+  const response = await api.get(`${projectPath(projectId)}/export/scope`, {
     params: { format_type: format },
     responseType: 'text',
     signal,

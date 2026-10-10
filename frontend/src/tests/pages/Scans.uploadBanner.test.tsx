@@ -281,7 +281,7 @@ describe('Scans — the upload banner', () => {
     await waitFor(() => expect(headingOf(A.name)).toBe('Import failed: a.xml'));
     expect(within(rowOf(A.name)).getByText('Import failed')).toBeInTheDocument();
     fireEvent.click(within(rowOf(A.name)).getByRole('button', { name: 'Why it failed' }));
-    expect(navigate).toHaveBeenCalledWith('/parse-errors?job_id=1');
+    expect(navigate).toHaveBeenCalledWith('/scans?view=results&job_id=1');
   });
 
   it('"Why it failed" opens the parse error when the job names one', async () => {
@@ -290,7 +290,7 @@ describe('Scans — the upload banner', () => {
 
     await waitFor(() => expect(headingOf(A.name)).toBe('Import failed: a.xml'));
     fireEvent.click(within(rowOf(A.name)).getByRole('button', { name: 'Why it failed' }));
-    expect(navigate).toHaveBeenCalledWith('/parse-errors?error_id=55');
+    expect(navigate).toHaveBeenCalledWith('/scans?view=results&error_id=55');
   });
 
   it('files that finish together have their results asked for in ONE request', async () => {

@@ -40,7 +40,7 @@ const PAST = '2000-01-01T00:00:00Z';
 const LONG_PROJECT = `Engagement-${'x'.repeat(189)}`;          // 200 characters
 
 const session = (over: Partial<AgentSessionRow> = {}): AgentSessionRow => ({
-  kind: 'project', id: 42, project_id: 1, status: 'active',
+  id: 42, project_id: 1, status: 'active',
   key_expires_at: FUTURE, renewable_until: LATER, ...over,
 });
 const rotated = (over: Partial<ResumeAgentSessionResponse> = {}): ResumeAgentSessionResponse => ({

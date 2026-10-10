@@ -241,11 +241,8 @@ project_router.include_router(posture.router, prefix="/posture", tags=["posture"
 # /projects/{pid}/scopes/subnet-labels and
 # /projects/{pid}/scopes/subnets/{sid}/labels.  Separate file from
 # scopes.py to keep the latter under the file-size policy (v2.65.0).
-# MUST be included BEFORE scopes.router: scopes.py declares a bare
-# `/{scope_id}` route (no :int converter) that would otherwise match
-# `/scopes/subnet-labels` and 422 on int-parsing the path segment.
-# FastAPI resolves routes in include order, so registering this first
-# lets the static prefix win.
+# No path of one router matches the other's (scopes.py lost its bare
+# `/{scope_id}` route in 2.489.0), so the include order decides nothing.
 project_router.include_router(subnet_labels.router, prefix="/scopes", tags=["subnet-labels"])
 project_router.include_router(scopes.router, prefix="/scopes", tags=["scopes"])
 project_router.include_router(export.router, prefix="/export", tags=["export"])

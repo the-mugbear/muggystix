@@ -21,7 +21,7 @@ def _make_user(db_session, username):
     u = User(
         id=_UID[0], username=username, email=f"{username}@example.com",
         full_name=username.title(), hashed_password="$2b$12$abcdefghijklmnopqrstuv",
-        role=UserRole.MEMBER, is_active=True, is_verified=True,
+        role=UserRole.MEMBER, is_active=True,
         created_at=datetime.now(timezone.utc),
     )
     db_session.add(u)

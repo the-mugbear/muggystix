@@ -42,7 +42,6 @@ const tool = (over: Partial<ToolRegistryEntry> = {}): ToolRegistryEntry => ({
   url: 'https://nmap.org/',
   kali: true,
   status: 'reference',
-  phases: ['discovery'],
   intrusive: false,
   requires_privileges: true,
   output_format: 'xml',

@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, defer, selectinload
 
 from app.api.deps import agent_read_floor, check_agent_rate_limit
+from app.api.v1.endpoints.agent_schemas import AgentPage, agent_page
 from app.api.v1.endpoints.client_reports import report_file_response, report_scope_response
 from app.api.v1.endpoints.scanner_observations import IssueHostOut, IssuePageOut, IssueRowOut
 from app.db.models_agent import Agent
@@ -62,13 +63,10 @@ def _operator_role(request: Request) -> Optional[str]:
 # Scanner observations — the Findings page's "Scanner observations" view
 # ---------------------------------------------------------------------------
 
-class AssistIssuePage(IssuePageOut):
-    """The page's rows and total, plus what every other agent list says about
-    its own cut (prod feedback 2026-10-02: ``total: 1532`` beside 50 rows and
-    nothing naming the way to the rest)."""
-    has_more: bool
-    limit: int
-    offset: int
+class AssistIssuePage(IssuePageOut, AgentPage):
+    """The page's rows and total, in the agents' page (prod feedback
+    2026-10-02: ``total: 1532`` beside 50 rows and nothing naming the way to
+    the rest)."""
 
 
 @router.get(
@@ -78,13 +76,12 @@ class AssistIssuePage(IssuePageOut):
 )
 def list_assist_scanner_observations(
     request: Request,
-    search: Optional[str] = Query(None, max_length=200),
+    search: Optional[str] = Query(None, max_length=200, description="Only issues whose title or CVE id contains this text"),
     severity: Optional[str] = Query(None, max_length=20),
     include_judged: bool = Query(False, description="Also list issues a finding already covers on every host"),
-    min_hosts: int = Query(1, ge=1, le=100000),
-    offset: Optional[int] = Query(None, ge=0, description="Issues to skip — page until has_more is false"),
-    skip: int = Query(0, ge=0, description="The page route's name for offset; offset wins when both are sent"),
+    min_hosts: int = Query(1, ge=1, le=100000, description="Only issues on at least this many hosts"),
     limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     kind: Optional[str] = Query(None, max_length=20,
                                 description="misconfiguration | vulnerability | informational"),
     sort: Literal["severity", "hosts"] = Query(
@@ -93,29 +90,21 @@ def list_assist_scanner_observations(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    start = skip if offset is None else offset
     try:
         page = observations.list_issues(
             db, request.state.agent_project_id, search=search, severity=severity, include_judged=include_judged,
-            min_hosts=min_hosts, skip=start, limit=limit, kind=kind, sort=sort, exploitable=exploitable,
+            min_hosts=min_hosts, skip=offset, limit=limit, kind=kind, sort=sort, exploitable=exploitable,
         )
     except observations.ObservationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     items = [IssueRowOut(**vars(r)) for r in page.items]
-    return AssistIssuePage(
-        items=items, total=page.total, has_more=start + len(items) < page.total, limit=limit, offset=start,
-    )
+    return AssistIssuePage(**agent_page(items, total=page.total, limit=limit, offset=offset))
 
 
-class AssistIssueHostPage(BaseModel):
-    """One page of an issue's hosts.  v2.429.1 (MCP acceptance run 2): the
-    bare list stopped at the limit without saying so — 100 of an issue's 146
-    hosts read as the whole list."""
+class AssistIssueHostPage(AgentPage):
+    """One page of an issue's hosts: 100 of an issue's 146 hosts must not read
+    as the whole list."""
     items: List[IssueHostOut]
-    total: int = Field(..., description="Hosts carrying the issue — the page's rows are `limit` of them from `offset`")
-    has_more: bool
-    limit: int
-    offset: int
 
 
 @router.get(
@@ -125,7 +114,10 @@ class AssistIssueHostPage(BaseModel):
 )
 def list_assist_scanner_observation_hosts(
     request: Request,
-    issue_key: str = Query(..., min_length=1, max_length=600),
+    issue_key: str = Query(
+        ..., min_length=1, max_length=600,
+        description="The issue's `issue_key`, as a row of /assist/scanner-observations gives it.",
+    ),
     limit: int = Query(500, ge=1, le=5000, description="Hosts per page, by address"),
     offset: int = Query(0, ge=0),
     agent: Agent = Depends(check_agent_rate_limit),
@@ -136,9 +128,7 @@ def list_assist_scanner_observation_hosts(
         for h in observations.issue_hosts(db, request.state.agent_project_id, issue_key, limit=limit, offset=offset)
     ]
     total = observations.issue_host_total(db, request.state.agent_project_id, issue_key)
-    return AssistIssueHostPage(
-        items=items, total=total, has_more=offset + len(items) < total, limit=limit, offset=offset,
-    )
+    return AssistIssueHostPage(**agent_page(items, total=total, limit=limit, offset=offset))
 
 
 # ---------------------------------------------------------------------------

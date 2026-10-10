@@ -99,10 +99,9 @@ describe('navigation manifest', () => {
       ['/operations', 'operations'],
       ['/hosts/12', 'inventory'],
       ['/scans/compare', 'inventory'],
-      ['/scopes/3', 'inventory'],
+      ['/scopes', 'inventory'],
       ['/findings/37', 'findings'],
       ['/reports/4', 'findings'],
-      ['/assist-sessions/28', 'workflows'],
       ['/agent-sessions/72', 'workflows'],
       ['/activity', 'collaboration'],
       ['/settings/projects', 'administration'],
@@ -112,6 +111,8 @@ describe('navigation manifest', () => {
     for (const [path, hub] of owned) {
       expect(resolveActiveHub(path)?.id, path).toBe(hub);
     }
+    // 5.383.0 — the old address of a session is no page: no hub lights for it.
+    expect(resolveActiveHub('/assist-sessions/28')).toBeNull();
   });
 
   it('the IA the UX review settled on (v5.294.0)', () => {
@@ -142,8 +143,8 @@ describe('navigation manifest', () => {
     // Findings sits right after Inventory in the sidebar.
     const order = HUBS.map((h) => h.id);
     expect(order.indexOf('findings')).toBe(order.indexOf('inventory') + 1);
-    // Profile and LLM Providers are palette-only; /assist-sessions is only a
-    // redirect now (v5.312.0), with no palette entry of its own.
+    // Profile and LLM Providers are palette-only; /assist-sessions is no page
+    // at all (5.383.0).
     const palettePaths = NAV_COMMANDS.map((c) => c.path);
     expect(NAV_PAGES.find((p) => p.path === '/assist-sessions')).toBeUndefined();
     for (const path of ['/profile', '/llm-settings']) {
@@ -157,10 +158,16 @@ describe('navigation manifest', () => {
     // Both of Ingestion Results' old paths open the Scans page's results view.
     expect(src).toMatch(/path="\/parse-errors" element={<RedirectToImportResults \/>}/);
     expect(src).toMatch(/path="\/ingestion-results" element={<RedirectToImportResults \/>}/);
-    expect(src).toMatch(/<Navigate to={`\/scans\?view=results\$\{rest \? `&\$\{rest\}` : ''\}\$\{hash\}`} replace \/>/);
-    expect(src).toMatch(/path="\/assist-sessions"[\s\S]{0,200}?<Navigate to="\/agent-activity" replace \/>/);
-    // v5.312.0 — the old per-session path resolves to the session page.
-    expect(src).toMatch(/path="\/assist-sessions\/:sessionId"/);
+    // …with the old address's query and hash, through the one function that
+    // builds that address (tests/utils/importResultsPath.test.tsx pins what it
+    // makes of a query).
+    expect(src).toMatch(/<Navigate to={`\$\{importResultsPath\(new URLSearchParams\(search\)\)\}\$\{hash\}`} replace \/>/);
+    // 5.383.0 — `/assist-sessions` and `/assist-sessions/:id` (a session by an
+    // id it no longer has) have no route: they are the not-found page.  The
+    // redirect page, its look-up and the server's routes went together.
+    expect(src).not.toMatch(/path="\/assist-sessions/);
+    expect(src).not.toMatch(/AssistSessions/);
+    expect(src).toMatch(/path="\*" element={<NotFound \/>}/);
     expect(src).toMatch(/path="\/agent-sessions\/:sessionId"[\s\S]{0,200}?<AgentSessionDetail \/>/);
   });
 
@@ -288,8 +295,6 @@ describe('navigation manifest', () => {
     '/reference/sbom',
     // v5.296.0 — a Reference hub entry, like the SBOM.
     '/reference/tool-coverage',
-    // v5.312.0 — only a redirect to Agent Sessions now.
-    '/assist-sessions',
   ]);
 
   it('no static top-level route is missing from the manifest', () => {

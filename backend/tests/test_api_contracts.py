@@ -50,7 +50,6 @@ def viewer_client(db_session):
             hashed_password=TEST_USER_PW_HASH,
             role=UserRole.MEMBER,
             is_active=True,
-            is_verified=True,
             created_at=datetime.now(timezone.utc),
         )
 
@@ -221,9 +220,19 @@ class TestExportEndpoints:
         assert response.status_code == 200
         assert "application/json" in response.headers["content-type"]
 
-    def test_export_scope_not_found(self, client, test_project):
-        response = client.get(f"/api/v1/projects/{test_project.id}/export/scope/999")
-        assert response.status_code == 404
+    def test_export_scope_of_a_project_with_no_scope_is_empty(self, client, db_session, test_project):
+        """The export names no scope (2.489.0).  A project that has none yet
+        exports nothing in every format — a read, so none is created — and
+        the old path with an id is gone."""
+        from app.db import models
+
+        url = f"/api/v1/projects/{test_project.id}/export/scope"
+        for format_type, empty in (("txt", ""), ("web", ""), ("csv", "ip_address,hostname,state\r\n"), ("json", "[]")):
+            response = client.get(url, params={"format_type": format_type})
+            assert response.status_code == 200, (format_type, response.text)
+            assert response.text == empty, format_type
+        assert db_session.query(models.Scope).filter(models.Scope.project_id == test_project.id).count() == 0
+        assert client.get(f"{url}/999").status_code == 404
 
     # The inventory JSON is an async job (v2.196.0): enqueue via POST
     # /reports/jobs and poll/download.  It is the only host download that is

@@ -17,6 +17,58 @@ from app.services.scan_time import scan_time_for_api
 
 
 # ---------------------------------------------------------------------------
+# The one page of every agent list
+# ---------------------------------------------------------------------------
+
+#: The words every agent list a caller can page answers with, beside ``items``.
+PAGE_KEYS = ("items", "total", "limit", "offset", "returned", "has_more")
+
+
+class AgentPage(BaseModel):
+    """What every agent list a caller can page says about its own cut.  A
+    list's model subclasses this and adds ``items`` (typed) and whatever else
+    it answers; the two arguments are always ``limit`` and ``offset``.
+
+    The values come from ``agent_page`` — the one place the arithmetic is
+    written.  ``tests/test_agent_list_paging.py`` lists every such route."""
+    total: int = Field(0, description="Every row the filters match — the answer to 'how many', never the length of a page.")
+    limit: int = Field(0, description="The page size this answer was cut at.")
+    offset: int = Field(0, description="Rows skipped before this page.")
+    returned: int = Field(0, description="Rows in `items`.")
+    has_more: bool = Field(False, description="Rows remain past this page: ask again with offset + returned.")
+
+
+class AgentRowsPage(AgentPage):
+    """A page whose rows a service serializes itself (evidence, proposals,
+    the scope's entries)."""
+    items: List[Any] = Field(default_factory=list)
+
+
+def agent_page(items: List[Any], *, total: int, limit: int, offset: int) -> Dict[str, Any]:
+    """The envelope of one page: ``{items, total, limit, offset, returned,
+    has_more}``.  ``total`` is the caller's own count for the list it paged
+    (the service's figure, never a second count made here)."""
+    total = int(total or 0)
+    returned = len(items)
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "returned": returned,
+        "has_more": offset + returned < total,
+    }
+
+
+def as_agent_page(answer: Dict[str, Any], *, limit: int, offset: int) -> Dict[str, Any]:
+    """A list answer a service builds for a page AND for agents (``items``,
+    ``total`` and whatever else it says), in the agents' page.  For the router
+    factories two doors share (host tests, remediation): the people's route
+    answers the service's own dict, the agents' route this."""
+    return {**answer, **agent_page(answer["items"], total=answer["total"], limit=limit, offset=offset)}
+
+
+# ---------------------------------------------------------------------------
 # Schemas — data reads
 # ---------------------------------------------------------------------------
 
@@ -72,14 +124,10 @@ class HostBrief(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class HostBriefPage(BaseModel):
+class HostBriefPage(AgentPage):
     """One page of ``GET /agent/assist/hosts``.  ``total`` is every matching
     host: answer "how many?" from it, never from the length of ``items``."""
     items: List[HostBrief]
-    total: int = Field(..., description="Every host matching the filters — the answer to 'how many'.")
-    has_more: bool = Field(..., description="True when hosts remain past this page (raise offset by limit).")
-    limit: int
-    offset: int
 
 
 class HostDetail(HostBrief):
@@ -133,7 +181,7 @@ class AssistFinding(BaseModel):
     ))
 
 
-class AssistFindingsResponse(BaseModel):
+class AssistFindingsResponse(AgentPage):
     """A page of one host's SCANNER ROWS (vulnerability rows, not project
     findings).  total/has_more let an agent report complete coverage without
     guessing.
@@ -141,10 +189,6 @@ class AssistFindingsResponse(BaseModel):
     The rows are ``items``, never ``findings``: that word is kept for what
     the team has judged.  (The class names predate the vocabulary.)"""
     host_id: int
-    total: int
-    has_more: bool
-    limit: int
-    offset: int
     items: List[AssistFinding] = Field(default_factory=list)
 
 
@@ -252,13 +296,8 @@ class AssistNameRow(BaseModel):
     sources: List[str] = Field(default_factory=list)
 
 
-class AssistNamesResponse(BaseModel):
+class AssistNamesResponse(AgentPage):
     items: List[AssistNameRow] = Field(default_factory=list)
-    total: int = 0
-    offset: int = 0
-    limit: int = 0
-    returned: int = 0
-    has_more: bool = False
 
 
 class ProjectInfo(BaseModel):

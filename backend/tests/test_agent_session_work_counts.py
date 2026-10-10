@@ -61,7 +61,7 @@ def _evidence(db, project, host, session, test=None):
 
 def _rows(client, project):
     body = client.get(f"/api/v1/projects/{project.id}/agent-sessions").json()
-    return {r["id"]: r for r in body["sessions"] if r["kind"] == "project"}
+    return {r["id"]: r for r in body["sessions"]}
 
 
 def test_a_row_counts_its_own_sessions_tests_and_evidence(

@@ -352,7 +352,6 @@ def test_api_activity_endpoints_enforce_project_membership(
         hashed_password="x",
         role=UserRole.MEMBER,  # not admin → no membership bypass
         is_active=True,
-        is_verified=True,
         created_at=datetime.now(timezone.utc),
     )
     db_session.add(outsider)
@@ -390,7 +389,7 @@ def test_api_activity_owner_attribution_and_mine_filter(
     other = User(
         id=7777, username="other-owner", email="other-owner@example.com",
         hashed_password="x", role=UserRole.MEMBER, is_active=True,
-        is_verified=True, created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc),
     )
     db_session.add(other)
     db_session.flush()
@@ -1166,10 +1165,11 @@ def _mk_agent_session(db_session, project_id, agent, *, model=None, tool=None,
 def test_agent_sessions_unified_timeline(
     client, db_session, test_project, test_agent,
 ):
-    """The unified /agent-sessions endpoint returns project sessions and
-    legacy assist rows in one timeline ordered newest-first, each carrying
-    its attribution and the work it left behind (the host tests it proposed
-    and the evidence it recorded)."""
+    """/agent-sessions returns every session in one list ordered newest-first —
+    one stored before the consolidation (``workflow`` ``assist``) reads exactly
+    like the others, with no ``kind`` to tell them apart (2.489.0) — each
+    carrying its attribution and the work it left behind (the host tests it
+    proposed and the evidence it recorded)."""
     from app.db.models_agent import AgentSession
     from app.db.models_host_tests import HostTest
     from app.db.models_proposals import EvidenceRecord
@@ -1182,11 +1182,14 @@ def test_agent_sessions_unified_timeline(
         db_session, test_project.id, test_agent,
         model="gpt-5-codex", tool="codex", hours_ago=1,
     )
-    # A pre-consolidation assist session.
-    db_session.add(AgentSession(
+    # A pre-consolidation assist session, the oldest of the three.
+    from datetime import datetime, timedelta, timezone
+    oldest = AgentSession(
         workflow="assist", project_id=test_project.id, agent_id=test_agent.id,
         started_by_id=test_agent.owner_id, status="ended",
-    ))
+        started_at=datetime.now(timezone.utc) - timedelta(hours=9),
+    )
+    db_session.add(oldest)
     host = _mk_host(db_session, test_project.id, "10.0.3.1")
     for i in range(2):
         db_session.add(HostTest(
@@ -1205,12 +1208,12 @@ def test_agent_sessions_unified_timeline(
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["total"] == 3
-    kinds = [s["kind"] for s in body["sessions"]]
-    assert kinds.count("project") == 2
-    assert "assist" in kinds
-    projects = [s for s in body["sessions"] if s["kind"] == "project"]
-    # Newest-started first.
-    assert [s["id"] for s in projects] == [newer.id, older.id]
+    projects = body["sessions"]
+    # Newest-started first, whatever each row is stored as.
+    assert [s["id"] for s in projects] == [newer.id, older.id, oldest.id]
+    assert all("kind" not in s and "session_live" not in s for s in projects)
+    # Every row carries the same fields.
+    assert len({frozenset(s) for s in projects}) == 1
     assert projects[0]["generated_by_model"] == "gpt-5-codex"
     assert projects[0]["generated_by_tool"] == "codex"
     assert projects[0]["host_test_count"] == 2
@@ -1241,14 +1244,17 @@ def test_agent_sessions_filter_by_model(
     assert len(body["sessions"]) == 1
     assert body["sessions"][0]["id"] == codex.id
     assert body["sessions"][0]["generated_by_model"] == "gpt-5-codex"
-    assert body["sessions"][0]["kind"] == "project"
 
 
 def test_agent_sessions_by_model_tool_summary(
     client, db_session, test_project, test_agent,
 ):
-    """The summary endpoint groups by (model, tool) and counts kinds.
-    Drives the "compare models on this project" rollup card."""
+    """The summary endpoint groups by (model, tool): one ``total`` per pair
+    and no split by kind of session (2.489.0).  Each ``total`` is the
+    ``total`` of the list filtered by that model and tool — a row stored as
+    ``assist`` counts, a row the list does not have (``execution``) does not."""
+    from app.db.models_agent import AgentSession
+
     # Two claude-opus sessions, one codex session.
     for model_id, tool_id in [
         ("claude-opus-4-7", "claude-code"),
@@ -1257,6 +1263,13 @@ def test_agent_sessions_by_model_tool_summary(
     ]:
         _mk_agent_session(db_session, test_project.id, test_agent,
                           model=model_id, tool=tool_id, status="ended")
+    for workflow in ("assist", "execution"):
+        db_session.add(AgentSession(
+            workflow=workflow, project_id=test_project.id, agent_id=test_agent.id,
+            started_by_id=test_agent.owner_id, status="ended",
+            generated_by_model="claude-opus-4-7", generated_by_tool="claude-code",
+        ))
+    db_session.commit()
 
     resp = client.get(
         f"/api/v1/projects/{test_project.id}/agent-sessions/by-model-tool"
@@ -1266,14 +1279,16 @@ def test_agent_sessions_by_model_tool_summary(
         (r["generated_by_model"], r["generated_by_tool"]): r
         for r in resp.json()["summary"]
     }
-    claude = summary[("claude-opus-4-7", "claude-code")]
-    assert claude["project"] == 2
-    assert claude["total"] == 2
-    codex = summary[("gpt-5-codex", "codex")]
-    assert codex["project"] == 1
-    assert codex["total"] == 1
-    # The retired kinds are not reported at all.
-    assert "execution" not in claude and "plan_generation" not in claude
+    assert summary[("claude-opus-4-7", "claude-code")] == {
+        "generated_by_model": "claude-opus-4-7", "generated_by_tool": "claude-code", "total": 3,
+    }
+    assert summary[("gpt-5-codex", "codex")]["total"] == 1
+    for (model_id, tool_id), row in summary.items():
+        listed = client.get(
+            f"/api/v1/projects/{test_project.id}/agent-sessions",
+            params={"model": model_id, "tool": tool_id},
+        ).json()
+        assert row["total"] == listed["total"] == len(listed["sessions"])
 
 
 # ---------------------------------------------------------------------------
@@ -1301,14 +1316,15 @@ def test_agent_sessions_status_filter_narrows_to_active(
 def test_coverage_summary_counts_hosts_by_pipeline_stage(
     client, db_session, test_project,
 ):
-    """Project coverage reports per-stage host counts and gap counts.
+    """Project coverage reports how many hosts are planned and tested.
 
     Planned = the host has a test still to do (proposed / in progress);
     tested = the host has an evidence record whose outcome is finding,
     no_finding or inconclusive.  A finished or dismissed test does not keep
     a host planned, and a failed attempt or an informational record does
-    not make it tested.  (``hosts_with_plan_entry`` /
-    ``hosts_with_execution_result`` keep their names from test plans.)
+    not make it tested.  The fields are ``hosts_planned`` / ``hosts_tested``
+    (2.489.0); the test-plan-era names and the two "no_" gap counts nothing
+    read are gone, with no alias.
     """
     from app.db.models_host_tests import HostTest
     from app.db.models_proposals import EvidenceRecord
@@ -1346,10 +1362,13 @@ def test_coverage_summary_counts_hosts_by_pipeline_stage(
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["total_hosts"] == 6
-    assert body["hosts_with_plan_entry"] == 2
-    assert body["hosts_with_execution_result"] == 2
-    assert body["hosts_no_plan"] == 4
-    assert body["hosts_no_execution"] == 4
+    assert body["hosts_planned"] == 2
+    assert body["hosts_tested"] == 2
+    for retired in (
+        "hosts_with_plan_entry", "hosts_with_execution_result",
+        "hosts_no_plan", "hosts_no_execution",
+    ):
+        assert retired not in body
 
 
 def test_coverage_summary_reports_scope_breakdown(

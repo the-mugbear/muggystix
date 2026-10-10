@@ -4,8 +4,6 @@ import { useSearchParams } from 'react-router-dom';
 import {
   Search,
   Download,
-  ChevronLeft,
-  ChevronRight,
   ChevronDown,
   ArrowUp,
   ArrowDown,
@@ -14,6 +12,7 @@ import {
 import { getSbom, SbomComponent } from '../services/api';
 import { queryErrorText } from '../lib/query';
 import { useUrlPage } from '../hooks/useUrlPage';
+import { PagedFooter } from '../components/operations/QueueParts';
 import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { downloadTextFile } from '../utils/download';
 import { formatTimestamp } from '../utils/relativeTime';
@@ -445,53 +444,39 @@ const SbomReference: React.FC = () => {
           </Table>
         </div>
 
-        {/* Inline pagination — simple prev/next + rows-per-page + count. */}
-        <div className="flex flex-wrap items-center justify-end gap-md border-t border-border px-md py-sm">
-          <div className="flex items-center gap-xs">
-            <Label htmlFor="sbom-rows-per-page" className="text-caption text-muted-foreground">
-              Rows per page
-            </Label>
-            <Select
-              value={String(rowsPerPage)}
-              onValueChange={(v) => setRowsPerPage(Number(v))}
+        {/* The shared footer ("51–100 of 130 · page 2 of 3"), with this
+            page's rows-per-page beside it.  The rows are cut from the one
+            answer in memory, so no page is ever on its way. */}
+        {filtered.length > 0 && (
+          <div className="border-t border-border px-md pb-sm pt-xxs">
+            <PagedFooter
+              pager={{ page, pageSize: rowsPerPage, total: filtered.length, onPage: setPage }}
+              shown={pageRows.length}
+              noun="components"
             >
-              <SelectTrigger id="sbom-rows-per-page" className="w-20">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PAGE_SIZES.map((n) => (
-                  <SelectItem key={n} value={String(n)}>
-                    {n}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              <span className="ml-auto flex items-center gap-xs">
+                <Label htmlFor="sbom-rows-per-page" className="text-caption text-muted-foreground">
+                  Rows per page
+                </Label>
+                <Select
+                  value={String(rowsPerPage)}
+                  onValueChange={(v) => setRowsPerPage(Number(v))}
+                >
+                  <SelectTrigger id="sbom-rows-per-page" className="w-20">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PAGE_SIZES.map((n) => (
+                      <SelectItem key={n} value={String(n)}>
+                        {n}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </span>
+            </PagedFooter>
           </div>
-          <p className="text-caption text-muted-foreground">
-            Page {page + 1} of {totalPages} · {filtered.length.toLocaleString()} component
-            {filtered.length === 1 ? '' : 's'}
-          </p>
-          <div className="flex gap-xxs">
-            <Button
-              variant="outline"
-              size="icon"
-              disabled={page === 0}
-              onClick={() => setPage(Math.max(0, page - 1))}
-              aria-label="Previous page"
-            >
-              <ChevronLeft className="size-4" aria-hidden />
-            </Button>
-            <Button
-              variant="outline"
-              size="icon"
-              disabled={page >= totalPages - 1}
-              onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
-              aria-label="Next page"
-            >
-              <ChevronRight className="size-4" aria-hidden />
-            </Button>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );

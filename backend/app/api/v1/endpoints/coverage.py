@@ -78,24 +78,17 @@ class ProjectCoverageResponse(BaseModel):
     """Project-wide coverage summary (v3 alpha.3).
 
     Hosts-of-record (``total_hosts``) include every host the project
-    has ever seen — recon, manual upload, anything.  The two pipeline
-    stage counts (``hosts_with_plan_entry``,
-    ``hosts_with_execution_result``) are derived from agent-facing
-    tables and so are zero for a project that's only been through
-    bare ingestion.
-
-    ``hosts_no_plan`` and ``hosts_no_execution`` are the *gap*
-    counts — they exist as their own keys so the UI doesn't have to
-    re-derive ``total_hosts - covered`` and risk drift if the
-    derivation changes.
+    has ever seen.  ``hosts_planned`` and ``hosts_tested`` are the hosts the
+    Hosts query lists as ``has:planned`` / ``has:tested`` (the same
+    predicates): planned = a host test proposed or in progress, tested = an
+    evidence record with outcome finding, no_finding or inconclusive.  Both
+    are zero for a project that has only been through ingestion.
     """
     project_id: int
 
     total_hosts: int = 0
-    hosts_with_plan_entry: int = 0
-    hosts_with_execution_result: int = 0
-    hosts_no_plan: int = 0
-    hosts_no_execution: int = 0
+    hosts_planned: int = 0
+    hosts_tested: int = 0
 
     # Scope-level coverage (what fraction of declared scope has been
     # discovered).  Empty list when the project has no scopes declared.
@@ -134,7 +127,7 @@ def _cidr_size(cidr: str) -> int:
 @router.get(
     "/",
     response_model=ProjectCoverageResponse,
-    summary="Project coverage summary across recon / plan / execution stages (v3 alpha.3)",
+    summary="Project coverage: hosts planned and tested, and how much of the scope was discovered",
 )
 def get_project_coverage(
     project_id: int = Path(..., gt=0),
@@ -147,7 +140,7 @@ def get_project_coverage(
     Single endpoint, all aggregates returned together — the v3
     Operations page renders the whole "Host coverage" section from one
     call.  Counts are distinct-host counts, never row counts (a host
-    with three plan entries still counts as one plan-covered host).
+    with three proposed tests still counts as one planned host).
     """
     # --- Host-of-record total ----------------------------------------
     total_hosts = (
@@ -159,11 +152,11 @@ def get_project_coverage(
 
     # --- Planned and tested hosts: the one definition of each ---------
     from app.services import host_query_predicates as P
-    hosts_with_plan_entry = db.query(Host.id).filter(
-        Host.project_id == project.id, P.has_plan_entry_predicate(project.id),
+    hosts_planned = db.query(Host.id).filter(
+        Host.project_id == project.id, P.planned_predicate(project.id),
     ).count()
-    hosts_with_execution_result = db.query(Host.id).filter(
-        Host.project_id == project.id, P.has_test_execution_predicate(project.id),
+    hosts_tested = db.query(Host.id).filter(
+        Host.project_id == project.id, P.tested_predicate(project.id),
     ).count()
 
     # --- Scope-level coverage ----------------------------------------
@@ -270,10 +263,8 @@ def get_project_coverage(
     return ProjectCoverageResponse(
         project_id=project.id,
         total_hosts=total_hosts,
-        hosts_with_plan_entry=hosts_with_plan_entry,
-        hosts_with_execution_result=hosts_with_execution_result,
-        hosts_no_plan=max(0, total_hosts - hosts_with_plan_entry),
-        hosts_no_execution=max(0, total_hosts - hosts_with_execution_result),
+        hosts_planned=hosts_planned,
+        hosts_tested=hosts_tested,
         total_scopes=len(scope_objs),
         scopes=scopes_rows,
         hosts_outside_scope=hosts_outside_scope,

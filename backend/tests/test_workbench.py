@@ -463,24 +463,30 @@ def test_the_workbench_says_whether_the_project_has_hosts_and_scope_entries(clie
         assert r.status_code == 200, r.text
         return r.json()["setup"]
 
-    assert setup() == {"has_hosts": False, "has_scopes": False, "scope_rows": 0, "only_scope_id": None}
+    # The whole answer, so a field that names the scope cannot come back
+    # (`scope_rows` and `only_scope_id` went in 2.489.0: nothing takes a
+    # scope id, and the row's existence decides nothing).
+    assert setup() == {"has_hosts": False, "has_scopes": False}
 
-    # The scope ROW every project gets says nothing: an entry does.
+    # The scope ROW says nothing: an entry does.
     scope = models.Scope(project_id=pid)
     db_session.add(scope)
     db_session.commit()
-    assert setup() == {"has_hosts": False, "has_scopes": False, "scope_rows": 1, "only_scope_id": scope.id}
+    assert setup() == {"has_hosts": False, "has_scopes": False}
+
+    # A domain alone is not a subnet entry.
+    db_session.add(models.ScopeDomain(scope_id=scope.id, domain="setup.example", include_subdomains=False))
+    db_session.commit()
+    assert setup() == {"has_hosts": False, "has_scopes": False}
 
     db_session.add(models.Subnet(scope_id=scope.id, cidr="10.9.9.0/24"))
     db_session.commit()
-    assert setup() == {"has_hosts": False, "has_scopes": True, "scope_rows": 1, "only_scope_id": scope.id}
+    assert setup() == {"has_hosts": False, "has_scopes": True}
 
     _make_host(db_session, pid, "10.9.9.1")
     db_session.commit()
     light = setup(include_rows="false", include_investigate="false")
-    # (A second scope cannot exist since 2.488.0 — `uq_scopes_project` — so
-    # `scope_rows` is 0 or 1 and the "two scopes: none is the scope" case went.)
-    assert light == {"has_hosts": True, "has_scopes": True, "scope_rows": 1, "only_scope_id": scope.id}
+    assert light == {"has_hosts": True, "has_scopes": True}
     assert setup() == light
 
 
@@ -546,7 +552,8 @@ def test_legacy_sessions_do_not_break_the_session_list_and_are_not_listed(
 
     r = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions")
     assert r.status_code == 200, r.text
-    assert [(s["id"], s["kind"]) for s in r.json()["sessions"]] == [(project.id, "project")]
+    assert [s["id"] for s in r.json()["sessions"]] == [project.id]
+    assert r.json()["total"] == 1
 
 
 # v2.424.1 — Operations loads the "Worth a look" queue on its own request so

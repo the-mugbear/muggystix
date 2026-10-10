@@ -24,7 +24,7 @@ vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, vi.fn()] }));
 
 import { SubnetLabelEditorPopover, SubnetLabelManagerDialog } from '../../components/SubnetLabelManager';
-import { useListQuery } from '../../hooks/useListQuery';
+import { usePagedList } from '../../hooks/usePagedList';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
 const label = (id: number, name: string) => ({
@@ -113,9 +113,9 @@ describe('SubnetLabelEditorPopover — the selection is the reader’s while it 
 
 // A save shows on the subnet's row at once, and costs no re-read of the scope:
 // the PUT answers with the subnet's labels, and they are put on its row where
-// it is in the Scope page's list — a "Show more" list (`useListQuery` of
+// it is in the Scope page's list — a paged list (`usePagedList` of
 // `getDefaultScope`), read here by the real hook so that what is written is
-// what the page shows, on whichever loaded page the row is.
+// what the page shows, on whichever page the reader is.
 describe('SubnetLabelEditorPopover — a save shows on the subnet’s row at once', () => {
   interface Subnet { id: number; cidr: string; labels?: Array<{ id: number; name: string; color: string | null }> }
   const PCI = { id: 1, name: 'PCI', color: null };
@@ -129,7 +129,7 @@ describe('SubnetLabelEditorPopover — a save shows on the subnet’s row at onc
   }));
   // The Scope page's read of its subnets, two to a page.
   const ScopeRows = () => {
-    const list = useListQuery<Subnet>(
+    const list = usePagedList<Subnet>(
       'getDefaultScope', ({ offset, limit }) => getScope(offset, limit), [1, { subnetsSearch: '' }], { pageSize: 2 },
     );
     return (
@@ -144,18 +144,31 @@ describe('SubnetLabelEditorPopover — a save shows on the subnet’s row at onc
             </SubnetLabelEditorPopover>
           </div>
         ))}
-        <button type="button" onClick={() => { void list.loadMore(); }}>Load more</button>
+        <button type="button" onClick={() => list.setPage(1)}>Next page</button>
       </>
     );
   };
 
-  it('on the loaded page the row is on, with no re-read of the scope', async () => {
+  it('on the first page: that row only, with no re-read of the scope', async () => {
+    api.listSubnetLabels.mockResolvedValue([label(1, 'PCI'), label(2, 'DMZ')]);
+    api.replaceSubnetLabels.mockResolvedValue([DMZ]);
+    getScope.mockClear();
+    render(<ScopeRows />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit labels for 1' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove PCI' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.getByTestId('labels-1')).toHaveTextContent(/^DMZ$/));
+    expect(screen.getByTestId('labels-2')).toHaveTextContent('none');
+    expect(getScope).toHaveBeenCalledTimes(1);
+  });
+
+  it('on a later page the row is on, with no re-read of the scope', async () => {
     api.listSubnetLabels.mockResolvedValue([label(1, 'PCI'), label(2, 'DMZ')]);
     api.replaceSubnetLabels.mockResolvedValue([DMZ]);
     getScope.mockClear();
     render(<ScopeRows />);
     await screen.findByTestId('labels-1');
-    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
     expect(await screen.findByTestId('labels-3')).toHaveTextContent('PCI, DMZ');
     expect(getScope).toHaveBeenCalledTimes(2);
 
@@ -163,12 +176,10 @@ describe('SubnetLabelEditorPopover — a save shows on the subnet’s row at onc
     fireEvent.click(await screen.findByRole('button', { name: 'Remove PCI' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(api.replaceSubnetLabels).toHaveBeenCalledWith(1, 3, [2]));
-    // The server's answer, on that row only — and the editor has closed.
+    // The server's answer on the row — and the editor has closed.
     await waitFor(() => expect(screen.getByTestId('labels-3')).toHaveTextContent(/^DMZ$/));
-    expect(screen.getByTestId('labels-1')).toHaveTextContent(/^PCI$/);
-    expect(screen.getByTestId('labels-2')).toHaveTextContent('none');
     await waitFor(() => expect(screen.queryByText('Labels for 10.0.3.0/24')).not.toBeInTheDocument());
-    // Not by reading the scope again (every loaded page of it).
+    // Not by reading the scope again.
     expect(getScope).toHaveBeenCalledTimes(2);
     // Opened again, the editor starts from the row's labels as they now are.
     fireEvent.click(screen.getByRole('button', { name: 'Edit labels for 3' }));

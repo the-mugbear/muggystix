@@ -30,7 +30,6 @@ def _make_user(db_session, username):
         hashed_password="$2b$12$abcdefghijklmnopqrstuv",
         role=UserRole.MEMBER,
         is_active=True,
-        is_verified=True,
         created_at=datetime.now(timezone.utc),
     )
     db_session.add(user)
@@ -126,7 +125,8 @@ def test_archiving_and_unarchiving_have_their_own_actions(client, db_session):
     ]
     row = _rows(db_session, "project_archived", project["id"])[0]
     assert row.details["changes"]["status"] == {"old": "active", "new": "archived"}
-    assert row.details["changes"]["is_archived"] == {"old": False, "new": True}
+    # The status IS the archiving; no second flag is recorded beside it.
+    assert set(row.details["changes"]) == {"status"}
 
 
 def test_deleting_a_project_keeps_who_its_members_were(client, db_session, test_user):

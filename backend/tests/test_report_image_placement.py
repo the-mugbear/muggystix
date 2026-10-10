@@ -96,7 +96,7 @@ def act_as():
 def _member(db, project, user_id, username, role):
     user = User(
         id=user_id, username=username, email=f"{username}@example.com", full_name=username.title(),
-        hashed_password="x", role=UserRole.MEMBER, is_active=True, is_verified=True,
+        hashed_password="x", role=UserRole.MEMBER, is_active=True,
         created_at=datetime.now(timezone.utc),
     )
     db.add(user)

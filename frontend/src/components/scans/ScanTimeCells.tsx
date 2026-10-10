@@ -51,15 +51,32 @@ export const ScanTimeSourceNote: React.FC<SourceNoteProps> = ({ label, explanati
 interface CellProps {
   scan: ScanTimeFields & { uploaded_by?: string | null; uploaded_by_name?: string | null };
   format?: TimeFormatOptions;
+  /** Which time the column IS — the one its heading names and the list is
+   *  ordered by.  `uploaded` (the default; the import history's own order) or
+   *  `ran` (the all-files view sorted by when the scan ran). */
+  primary?: ScanTimeColumn;
 }
 
+/** The two times a scan has; the column shows one and says which. */
+export type ScanTimeColumn = 'uploaded' | 'ran';
+
+/** The time column's heading, for the time it shows. */
+export const SCAN_TIME_HEADING: Record<ScanTimeColumn, string> = { uploaded: 'Uploaded', ran: 'Ran' };
+
 /**
- * When a scan happened, in ONE column (v5.270.0): the time it ran, per its own
- * output, else the time it was uploaded.  The other time, the duration and
- * where the time came from ("Reported by nmap") are on hover.  A scanner clock
- * of unknown zone stays visibly flagged — it may be hours off.
+ * A scan's time column.  It shows ONE thing on every row — the time its
+ * heading names — with the scan's other time on a labelled second line
+ * ("ran …" under an upload time, "uploaded …" under a run time).
+ *
+ * Until 5.383.0 the column was headed "When" and showed the scan's own start
+ * time where the file recorded one and the upload time elsewhere, under a list
+ * ordered by upload: October 2025 rows sat between October 2026 ones.
+ *
+ * Where each time came from ("Reported by nmap"), the duration and the UTC
+ * window are on hover.  A scanner clock of unknown zone stays visibly flagged
+ * — it may be hours off.  Dates here are provenance: nothing is judged old.
  */
-export const ScanWhenCell: React.FC<CellProps> = ({ scan, format }) => {
+export const ScanWhenCell: React.FC<CellProps> = ({ scan, format, primary = 'uploaded' }) => {
   // The hover keeps the zone; the cell drops it — the page names the viewer's
   // zone once, on the column's heading (ViewerZoneHint).
   const run = describeScanRun(scan, format);
@@ -75,24 +92,36 @@ export const ScanWhenCell: React.FC<CellProps> = ({ scan, format }) => {
     `Uploaded ${upload.label}${uploader ? ` by ${uploader}` : ''}`,
   ].filter(Boolean).join('\n');
   // UX review 2026-09-24 — one time line, no zone per row (it wrapped the
-  // column to four lines); a second line only when it says something: the
-  // scanner clock caveat, how long it took, or that this is the upload time
-  // ("run time unknown" on every row was noise — the hover explains it).
+  // column to four lines); a second line only when it says something ("run
+  // time unknown" on every row was noise — the hover explains it).
   // v5.287.0 still holds: the lines wrap rather than truncate (a cut-off time
   // is worse than a second line), but without the zone they rarely need to.
+  const toolClock = run.kind === 'tool_clock';
+  const took = run.durationLabel && run.durationLabel !== 'Instant' ? `took ${run.durationLabel}` : null;
+  if (primary === 'ran') {
+    return (
+      <div className="min-w-0" title={hover}>
+        <p className="break-words text-metadata tabular-nums">
+          {shown.startLabel ?? <span className="text-muted-foreground">—</span>}
+        </p>
+        {toolClock && <p className="break-words text-caption text-warning">{run.sourceLabel}</p>}
+        <p className="break-words text-caption tabular-nums text-muted-foreground">uploaded {shownUpload.label}</p>
+      </div>
+    );
+  }
+  // The scan's own time, where the file has one and it is not the upload's
+  // minute.  A scanner clock is always shown: it cannot be compared.
+  const ran = shown.startLabel && (toolClock || shown.startLabel !== shownUpload.label)
+    ? `ran ${shown.startLabel}`
+    : null;
+  const second = [ran, toolClock ? 'scanner clock, zone unknown' : took].filter(Boolean).join(' · ');
   return (
     <div className="min-w-0" title={hover}>
-      <p className="break-words text-metadata tabular-nums">{shown.startLabel ?? shownUpload.label}</p>
-      {run.startLabel ? (
-        run.kind === 'tool_clock' ? (
-          <p className="break-words text-caption text-warning">{run.sourceLabel}</p>
-        ) : (
-          run.durationLabel && run.durationLabel !== 'Instant' && (
-            <p className="break-words text-caption text-muted-foreground">took {run.durationLabel}</p>
-          )
-        )
-      ) : (
-        <p className="break-words text-caption text-muted-foreground">uploaded</p>
+      <p className="break-words text-metadata tabular-nums">{shownUpload.label}</p>
+      {second && (
+        <p className={cn('break-words text-caption tabular-nums', toolClock ? 'text-warning' : 'text-muted-foreground')}>
+          {second}
+        </p>
       )}
     </div>
   );

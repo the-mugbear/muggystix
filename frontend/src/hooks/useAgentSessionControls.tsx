@@ -38,11 +38,13 @@ export interface AgentSessionControls {
 
 const END_SESSION = ['endAgentSession'] as const;
 
-export const canEndSession =(row: AgentSessionRow): boolean =>
-  row.kind === 'project' && row.status === 'active' && row.can_end === true;
+// The server says what the routes will accept for THIS caller (`can_end`,
+// `can_resume`); nothing is decided here from what kind of session a row is.
+export const canEndSession = (row: AgentSessionRow): boolean =>
+  row.status === 'active' && row.can_end === true;
 
 export const canResumeSession = (row: AgentSessionRow): boolean =>
-  row.kind === 'project' && row.status === 'active' && row.can_resume === true;
+  row.status === 'active' && row.can_resume === true;
 
 export function useAgentSessionControls(): AgentSessionControls {
   const toast = useToast();

@@ -58,7 +58,7 @@ def _base(project):
 def _member(db, project, user_id, username, role=ProjectRole.ANALYST, active=True, member=True):
     user = User(
         id=user_id, username=username, email=f"{username}@example.com", full_name=username.title(),
-        hashed_password="x", role=UserRole.MEMBER, is_active=active, is_verified=True,
+        hashed_password="x", role=UserRole.MEMBER, is_active=active,
         created_at=datetime.now(timezone.utc),
     )
     db.add(user)

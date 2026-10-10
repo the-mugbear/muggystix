@@ -48,9 +48,9 @@ export interface UserProjectMembership {
   project_id: number;
   project_name: string;
   project_slug: string;
+  /** `'archived'` = the project is archived (the one fact; no separate flag). */
   project_status: string;
   project_is_default: boolean;
-  project_is_archived: boolean;
   role: string;
   joined_at: string | null;
 }

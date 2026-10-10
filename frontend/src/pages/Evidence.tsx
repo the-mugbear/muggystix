@@ -45,6 +45,7 @@ import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
 import PostureEmpty from '../components/posture/PostureEmpty';
 import { cn } from '../utils/cn';
 import { buildHostsUrl } from '../utils/drilldownLinks';
+import { importResultsPath } from '../utils/importResultsPath';
 
 const GAP_PREVIEW = 12;
 /** Matrix columns shown before "the rest are on Segments" (largest first). */
@@ -595,7 +596,7 @@ const Evidence: React.FC = () => {
               <p className="mt-xs text-caption text-muted-foreground">
                 <span className="font-medium text-foreground">{data.data_quality.scans.toLocaleString()}</span> scan{data.data_quality.scans === 1 ? '' : 's'} imported ·{' '}
                 {attention == null ? 'imports needing attention could not be counted' : attention > 0 ? (
-                  <Link to="/parse-errors?status=needs_attention" className="text-warning hover:underline">
+                  <Link to={importResultsPath({ status: 'needs_attention' })} className="text-warning hover:underline">
                     {attention.toLocaleString()} import{attention === 1 ? '' : 's'} need{attention === 1 ? 's' : ''} attention — {attention === 1 ? 'its' : 'their'} data did not fully land →
                   </Link>
                 ) : 'no import needs attention'}

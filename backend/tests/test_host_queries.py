@@ -128,7 +128,7 @@ def test_history_isolated_per_user(client, db_session, test_project):
     """A row owned by another user must not appear in my history."""
     other = User(
         id=999, username="other", email="other@example.com", full_name="Other",
-        hashed_password="x", role=UserRole.MEMBER, is_active=True, is_verified=True,
+        hashed_password="x", role=UserRole.MEMBER, is_active=True,
         created_at=datetime.now(timezone.utc),
     )
     db_session.add(other)

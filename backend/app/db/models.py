@@ -1054,11 +1054,6 @@ class ReportJob(Base):
     result_filename = Column(String, nullable=True)
     media_type = Column(String, nullable=True)
     file_size = Column(BigInteger, nullable=True)
-    # No longer written or read: it flagged an artifact capped at a host
-    # limit, and the capped formats (the HTML host report, the Markdown
-    # bundle) were retired with "Export hosts".  The column stays until a
-    # migration drops it.
-    truncated = Column(Boolean, nullable=False, default=False, server_default="false")
 
     # Dead-letter / liveness (mirror IngestionJob).
     retry_count = Column(Integer, nullable=False, default=0, server_default="0")
@@ -1079,6 +1074,8 @@ class ReportJob(Base):
 
 
 class FollowStatus(str, enum.Enum):
+    # ``WATCHING`` is retired: nothing sets it and no control offers it.  The
+    # value stays because rows hold it (they display and can be cleared).
     WATCHING = "watching"
     IN_REVIEW = "in_review"
     REVIEWED = "reviewed"
@@ -1090,7 +1087,12 @@ class HostFollow(Base):
     id = Column(Integer, primary_key=True, index=True)
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    status = Column(SQLEnum(FollowStatus), nullable=False, default=FollowStatus.WATCHING)
+    # No default, here or in the database: every writer names the status it
+    # means (``HostFollowService.apply_review_status``, the bulk assign's
+    # ``in_review``).  The model's default was the retired ``watching`` until
+    # 2.489.0, so a writer that forgot the status silently made one; now it is
+    # refused by the NOT NULL column.
+    status = Column(SQLEnum(FollowStatus), nullable=False)
     last_viewed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

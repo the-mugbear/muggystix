@@ -22,6 +22,7 @@ from app.api.deps import (
     require_project_role, require_role,
 )
 from app.api.v1.endpoints.agent_common import load_agent_session, require_project_host
+from app.api.v1.endpoints.agent_schemas import as_agent_page
 from app.db.models_agent import Agent
 from app.core.security import log_audit_event
 from app.db.models_auth import User, UserRole
@@ -97,8 +98,14 @@ _STALE = Query(None, ge=1, le=365, description=(
 _TREND_DAYS = Query(90, ge=7, le=730, description="How many days of daily counts to return.")
 
 
-def make_router(reader, admin, *, dependencies=()):
+def make_router(reader, admin, *, dependencies=(), page=None):
+    """``page`` puts the two paged lists (the rows, a host's timeline) in a
+    door's own page: the agents' door passes ``as_agent_page``; the people's
+    doors answer the service's dict."""
     router = APIRouter(dependencies=[Depends(enabled), *dependencies])
+
+    def paged(answer, limit, offset):
+        return page(answer, limit=limit, offset=offset) if page else answer
 
     @router.get("/remediation", summary="Findings on hosts with their remediation contact and status")
     def listing(status: Optional[RemediationStatus] = _STATUS,
@@ -114,11 +121,11 @@ def make_router(reader, admin, *, dependencies=()):
                 limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
                 actor: Actor = Depends(reader), db: Session = Depends(get_db)):
         require_project_host(db, actor.project_id, host_id)
-        return remediation.list_rows(
+        return paged(remediation.list_rows(
             db, [actor.project_id], status=status, state=state, contact=contact, unassigned=unassigned,
             host_id=host_id, finding_id=finding_id, severity=severity, team=team,
             overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, verification=verification,
-            flag=flag, q=q, group=group, limit=limit, offset=offset)
+            flag=flag, q=q, group=group, limit=limit, offset=offset), limit, offset)
 
     @router.get("/remediation/export",
                 summary="The list's rows for a file, in one answer (no counts; up to 20,000 rows)")
@@ -223,8 +230,9 @@ def make_router(reader, admin, *, dependencies=()):
     def events(host_id: int, finding_host_id: Optional[int] = Query(None, gt=0),
                limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
                actor: Actor = Depends(reader), db: Session = Depends(get_db)):
-        return remediation.list_events(db, actor.project_id, host_id, actor.who.user_id,
-                                       finding_host_id=finding_host_id, limit=limit, offset=offset)
+        return paged(remediation.list_events(db, actor.project_id, host_id, actor.who.user_id,
+                                             finding_host_id=finding_host_id, limit=limit, offset=offset),
+                     limit, offset)
 
     @router.post("/remediation/events", status_code=201, summary="Add a note to a host's timeline")
     def add_note(body: NoteCreate, response: Response, actor: Actor = Depends(admin),
@@ -285,7 +293,7 @@ def agent_admin(request: Request, actor: Actor = Depends(agent_reader)):
 
 
 agent_router = make_router(
-    agent_reader, agent_admin, dependencies=[Depends(agent_read_floor(READ_ROLE))],
+    agent_reader, agent_admin, dependencies=[Depends(agent_read_floor(READ_ROLE))], page=as_agent_page,
 )
 
 

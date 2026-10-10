@@ -258,7 +258,6 @@ def host_scope_membership(db: Session, host: models.Host) -> Dict[str, Any]:
     subnets = [
         {
             "id": s.id,
-            "scope_id": s.scope_id,
             "cidr": s.cidr,
             "description": s.description,
             "site": s.site,

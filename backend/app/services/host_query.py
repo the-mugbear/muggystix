@@ -443,7 +443,7 @@ def build_filtered_host_query(
         query = query.filter(P.has_exploit_predicate())
 
     if has_test_execution:
-        query = query.filter(P.has_test_execution_predicate(project_id))
+        query = query.filter(P.tested_predicate(project_id))
 
     if scan_ids:
         try:

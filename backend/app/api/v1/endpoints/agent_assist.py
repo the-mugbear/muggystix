@@ -37,6 +37,8 @@ from app.db.models_findings import FindingSeverity, FindingSource
 from app.api.deps import agent_read_floor, check_agent_rate_limit
 
 from app.api.v1.endpoints.agent_schemas import (
+    AgentPage,
+    agent_page,
     AssistFinding,
     AssistFindingsResponse,
     AssistNameRow,
@@ -458,12 +460,8 @@ def count_assist_hosts(
 ):
     """How many hosts match — the whole answer to a counting question.
 
-    v2.291.0.  ``/assist/hosts`` returns a bare list with no total, so "how many
-    hosts have critical findings and no assignee?" could only be answered by
-    paging to exhaustion.  That is expensive, and its failure mode is the worst
-    possible one for a question whose entire answer is a number: an agent that
-    stops at the first page reports a confident, wrong count.  A COUNT(*) makes
-    the question one call and the answer exact.
+    The same number as ``total`` on ``/assist/hosts``, without a page of hosts
+    beside it: a question whose entire answer is a number is one call.
 
     Shares ``_build_assist_host_query`` with the list endpoint, so the filters,
     the DSL, and the session's row scope cannot drift between "which hosts" and
@@ -485,7 +483,7 @@ def count_assist_hosts(
 @router.get(
     "/assist/hosts",
     response_model=HostBriefPage,
-    summary="List hosts — same filter shape as the host inventory page; {items, total, has_more}",
+    summary="List hosts — same filter shape as the host inventory page, paged",
 )
 def list_assist_hosts(
     request: Request,
@@ -506,9 +504,9 @@ def list_assist_hosts(
             "tag / label / site / username values). "
             "Combine with AND / OR / NOT and parentheses; comma = OR within a "
             "field, a repeated field = AND. ANDs with the discrete filters "
-            "above. follow: and assigned: resolve against the operator who "
-            "started this session — e.g. "
-            "'follow:in_review' = hosts you have in review, 'assigned:me'. "
+            "above. 'follow:mine' and 'assigned:me' resolve against the "
+            "operator who started this session; 'follow:in_review' is hosts "
+            "ANY teammate has in review. "
             "A malformed query returns 400."
         ),
     ),
@@ -534,7 +532,8 @@ def list_assist_hosts(
     - the discrete params (``state``/``ports``/``services``/…), and
     - ``q``, the full boolean query DSL.  ``q`` is what lets an assist
       agent express the rich, operator-relative questions — "hosts I have
-      in review" (``follow:in_review``), "assigned to me" (``assigned:me``),
+      in review" (``follow:mine``; ``follow:in_review`` is any teammate's),
+      "assigned to me" (``assigned:me``),
       "Log4Shell-exposed" (``cve:CVE-2021-44228 OR vuln:\\"log4j\\"``) —
       that the discrete params can't.  It runs the identical engine the
       Hosts page uses; ``follow:``/``assigned:`` resolve against the
@@ -544,10 +543,9 @@ def list_assist_hosts(
     Project-wide: nothing narrows this read to a scope (a scope's own hosts
     are ``/agent/scope/hosts.ndjson``).
 
-    v2.440.0 (diag 4) — returns ``{items, total, has_more, limit, offset}``:
-    the bare list's length was read as "how many hosts", and a 500-row
-    default page answered a question about ~900 hosts with 500.  ``total`` is
-    the same COUNT as ``/assist/hosts/count``.
+    Answers the agents' page (``agent_schemas.AgentPage``): ``total`` is the
+    same COUNT as ``/assist/hosts/count`` — the answer to "how many hosts",
+    which the length of a page never is.
     """
     query = _build_assist_host_query(
         db, request,
@@ -562,10 +560,7 @@ def list_assist_hosts(
     hosts = apply_host_sorting(query, sort_by, sort_order).offset(offset).limit(limit).all()
 
     def page(items):
-        return HostBriefPage(
-            items=items, total=total, has_more=offset + len(items) < total,
-            limit=limit, offset=offset,
-        )
+        return HostBriefPage(**agent_page(items, total=total, limit=limit, offset=offset))
 
     if not hosts:
         return page([])
@@ -895,16 +890,12 @@ def _serialize_web_interface(w, observed=None, latest: Optional[set] = None) -> 
     )
 
 
-class AssistWebInterfacesPage(BaseModel):
+class AssistWebInterfacesPage(AgentPage):
     """v2.343.3 (review) — the continuation for host detail's capped
     ``web_interfaces``.  Disclosing the cap (``web_interfaces_truncated``) was
     half the fix; without a way to page past it, the omitted interfaces and
     their screenshot references were still unreachable over MCP."""
     items: List[AssistWebInterface] = []
-    total: int = 0
-    has_more: bool = False
-    limit: int = 50
-    offset: int = 0
 
 
 @router.get(
@@ -950,13 +941,10 @@ def list_assist_host_web_interfaces(
     )
     from app.services.web_interface_observation import latest_ids_for, observations
     observed, latest = observations(db, rows), latest_ids_for(db, host.id, rows)
-    return AssistWebInterfacesPage(
-        items=[_serialize_web_interface(w, observed, latest) for w in rows],
-        total=int(total),
-        has_more=offset + len(rows) < total,
-        limit=limit,
-        offset=offset,
-    )
+    return AssistWebInterfacesPage(**agent_page(
+        [_serialize_web_interface(w, observed, latest) for w in rows],
+        total=total, limit=limit, offset=offset,
+    ))
 
 
 class AssistAccessResult(BaseModel):
@@ -979,12 +967,8 @@ class AssistAccessResult(BaseModel):
     raw_output_truncated: bool = False
 
 
-class AssistAccessPage(BaseModel):
+class AssistAccessPage(AgentPage):
     items: List[AssistAccessResult] = []
-    total: int = 0
-    has_more: bool = False
-    limit: int = 50
-    offset: int = 0
 
 
 @router.get(
@@ -1016,8 +1000,8 @@ def list_assist_host_access(
     scoped = db.query(NetexecResult).filter(NetexecResult.host_id == host_id)
     total = scoped.with_entities(func.count(NetexecResult.id)).scalar() or 0
     rows = scoped.order_by(NetexecResult.protocol, NetexecResult.port, NetexecResult.id).offset(offset).limit(limit).all()
-    return AssistAccessPage(
-        items=[
+    return AssistAccessPage(**agent_page(
+        [
             AssistAccessResult(
                 id=r.id, scan_id=r.scan_id, tool=r.tool or "netexec", protocol=r.protocol, port=r.port,
                 auth_success=r.auth_success, username=r.username, local_admin=r.local_admin,
@@ -1027,8 +1011,8 @@ def list_assist_host_access(
             )
             for r in rows
         ],
-        total=int(total), has_more=offset + len(rows) < total, limit=limit, offset=offset,
-    )
+        total=total, limit=limit, offset=offset,
+    ))
 
 
 class AssistUninterpretedImport(BaseModel):
@@ -1042,14 +1026,12 @@ class AssistUninterpretedImport(BaseModel):
     shapes: List[Dict[str, Any]] = []
 
 
-class AssistUninterpretedPage(BaseModel):
+class AssistUninterpretedPage(AgentPage):
     """v2.418.0 — the imports whose parser did not interpret every line, with
     those lines as REDACTED shapes (values replaced by <IP>, <HOST>, <VALUE>…).
     Not an ingestion issue: the data that was read is in the project.  It is
     what a parse audit starts from."""
     items: List[AssistUninterpretedImport] = []
-    total: int = 0
-    has_more: bool = False
 
 
 @router.get(
@@ -1087,8 +1069,8 @@ def list_assist_uninterpreted_lines(
     total = scoped.with_entities(func.count(models.IngestionJob.id)).scalar() or 0
     rows = scoped.order_by(models.IngestionJob.created_at.desc(), models.IngestionJob.id.desc()) \
         .offset(offset).limit(limit).all()
-    return AssistUninterpretedPage(
-        items=[
+    return AssistUninterpretedPage(**agent_page(
+        [
             AssistUninterpretedImport(
                 job_id=j.id, filename=j.original_filename or j.filename, tool_name=j.tool_name,
                 format=j.final_file_type, created_at=j.created_at,
@@ -1098,8 +1080,8 @@ def list_assist_uninterpreted_lines(
             )
             for j in rows
         ],
-        total=int(total), has_more=offset + len(rows) < total,
-    )
+        total=total, limit=limit, offset=offset,
+    ))
 
 
 @router.get(
@@ -1386,12 +1368,7 @@ def get_assist_host_vulnerabilities(
             },
         ))
     return AssistFindingsResponse(
-        host_id=host_id,
-        total=total,
-        has_more=offset + len(rows) < total,
-        limit=limit,
-        offset=offset,
-        items=findings,
+        host_id=host_id, **agent_page(findings, total=total, limit=limit, offset=offset),
     )
 
 
@@ -1492,10 +1469,9 @@ class AssistProjectFinding(BaseModel):
     hosts_truncated: bool = False
 
 
-class AssistFindingsPage(BaseModel):
-    total: int
+class AssistFindingsPage(AgentPage):
     severity_counts: dict
-    findings: List[AssistProjectFinding]
+    items: List[AssistProjectFinding]
 
 
 @router.get(
@@ -1505,7 +1481,7 @@ class AssistFindingsPage(BaseModel):
 )
 def list_assist_findings(
     request: Request,
-    status: Optional[str] = Query(None, description="open / confirmed / false_positive / accepted_risk / remediated / retest; 'all' (or omit) for every status."),
+    status: Optional[str] = Query(None, description="open / confirmed / false_positive / accepted_risk / remediated / retest, or a group: active (still being worked) / resolved (every terminal status); 'all' (or omit) for every status."),
     severity: Optional[str] = Query(None, description="critical / high / medium / low / info; 'all' (or omit) for every severity."),
     source: Optional[str] = Query(None, description="note / scanner / execution / manual; 'all' (or omit) for every source."),
     host_id: Optional[int] = Query(None, description="Only findings affecting this host."),
@@ -1602,7 +1578,9 @@ def list_assist_findings(
                 hosts_truncated=on["host_count"] > 10,
             )
         )
-    return AssistFindingsPage(total=total, severity_counts=counts, findings=findings)
+    return AssistFindingsPage(
+        severity_counts=counts, **agent_page(findings, total=total, limit=limit, offset=offset),
+    )
 
 
 #: The statuses a finding can be listed by, and the two GROUPS the pages link
@@ -1726,16 +1704,10 @@ def _assist_notes(db: Session, notes) -> List[AssistNote]:
     return out
 
 
-class AssistNotesPage(BaseModel):
-    """v2.343.2 (review) — the notes on a host, as a page that says whether it
-    is the whole record.  The bare list this replaced was capped at ``limit``
-    with no total and no way to continue, so a host with 51 notes read as a
-    host with 50 — and an analyst had no way to know."""
+class AssistNotesPage(AgentPage):
+    """The notes on a host, as a page that says whether it is the whole
+    record: a host with 51 notes must not read as a host with 50."""
     items: List[AssistNote] = []
-    total: int = 0
-    has_more: bool = False
-    limit: int = 50
-    offset: int = 0
 
 
 @router.get(
@@ -1780,13 +1752,7 @@ def list_assist_host_notes(
         .limit(limit)
         .all()
     )
-    return AssistNotesPage(
-        items=_assist_notes(db, rows),
-        total=int(total),
-        has_more=offset + len(rows) < int(total),
-        limit=limit,
-        offset=offset,
-    )
+    return AssistNotesPage(**agent_page(_assist_notes(db, rows), total=total, limit=limit, offset=offset))
 
 
 class AssistVocabulary(BaseModel):
@@ -1918,16 +1884,12 @@ class AssistSegment(BaseModel):
     recommended_action: Dict[str, str] = {}
 
 
-class AssistSegmentsResponse(BaseModel):
-    """Worst-first subnets plus the project-wide totals they roll up into."""
+class AssistSegmentsResponse(AgentPage):
+    """Worst-first subnets (``items``; ``total`` is every subnet in the
+    project) plus the project-wide ``totals`` they roll up into."""
     adopted: bool
-    #: Subnets in the project.  Compare with ``len(subnets)`` — the page is
-    #: capped, and a truncated list must not read as the whole estate.
-    total: int = 0
-    limit: int = 0
-    offset: int = 0
     totals: Dict[str, Any] = {}
-    subnets: List[AssistSegment] = []
+    items: List[AssistSegment] = []
     reason: Optional[str] = None
 
 
@@ -1968,9 +1930,8 @@ def list_assist_segments(
 
     * ``exposure`` — active findings by severity, and a tier-weighted score
       (a finding in a tier-1 segment outranks the same finding in a lab).
-    * ``neglect`` — unowned findings, unreviewed hosts, median host age,
-      stale-host count.  Exposure says how bad it is; neglect says whether
-      anyone is looking.
+    * ``neglect`` — unowned active findings and unreviewed hosts.  Exposure
+      says how bad it is; neglect says whether anyone is looking.
     * ``hygiene`` — EOL OS, certificate problems, weak/guest auth, risky
       services with the ports behind them.  This is the "this subnet is
       out of date" material, per subnet.
@@ -1990,7 +1951,7 @@ def list_assist_segments(
     insights = compute_subnet_insights(db, pid, limit=limit, offset=offset)
     if not insights.get("adopted"):
         return AssistSegmentsResponse(
-            adopted=False, total=0, limit=limit, offset=offset,
+            adopted=False, **agent_page([], total=0, limit=limit, offset=offset),
             reason=(
                 "No scoped subnets for this project, so there is nothing to "
                 "segment by. Define a scope with subnets to enable it."
@@ -2046,11 +2007,8 @@ def list_assist_segments(
     ]
     return AssistSegmentsResponse(
         adopted=True,
-        total=insights.get("total", 0),
-        limit=limit,
-        offset=offset,
         totals=insights.get("totals", {}),
-        subnets=subnets,
+        **agent_page(subnets, total=insights.get("total", 0), limit=limit, offset=offset),
     )
 
 
@@ -2064,14 +2022,21 @@ class AssistRecentNote(AssistNote):
     target: Optional[Dict[str, Any]] = None
 
 
+class AssistRecentNotesPage(AgentPage):
+    """The project's notes, newest first, as a page: ``total`` is every note
+    the filter matches."""
+    items: List[AssistRecentNote] = []
+
+
 @router.get(
     "/assist/notes",
-    response_model=List[AssistRecentNote],
+    response_model=AssistRecentNotesPage,
     summary="Recent notes across the project — what the team has been doing",
 )
 def list_assist_recent_notes(
     request: Request,
     limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     author: Optional[str] = Query(None, description="Username, or 'me'."),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
@@ -2110,7 +2075,6 @@ def list_assist_recent_notes(
             Finding.title, models.Scan.filename,
             models.Port.port_number, port_host.ip_address,
         )
-        .options(*note_load_options())
         .outerjoin(models.Host, models.Annotation.host_id == models.Host.id)
         .outerjoin(Finding, models.Annotation.finding_id == Finding.id)
         .outerjoin(models.Scan, models.Annotation.scan_id == models.Scan.id)
@@ -2135,7 +2099,16 @@ def list_assist_recent_notes(
                 raise HTTPException(status_code=400, detail=f"No user named {author!r}")
             q = q.filter(models.Annotation.user_id == row[0])
 
-    rows = q.order_by(models.Annotation.created_at.desc()).limit(limit).all()
+    # Every join is to the note's ONE target (many-to-one), so a row is a note
+    # and the count is the list's.
+    total = q.with_entities(func.count(models.Annotation.id)).scalar() or 0
+    rows = (
+        q.options(*note_load_options())
+        # id breaks a tie: notes written together share created_at, and a page
+        # boundary between them would repeat or skip one.
+        .order_by(models.Annotation.created_at.desc(), models.Annotation.id.desc())
+        .offset(offset).limit(limit).all()
+    )
     serialized = _assist_notes(db, [r[0] for r in rows])
     out = []
     for note, (a, ip, f_title, scan_name, port_no, port_ip) in zip(serialized, rows):
@@ -2155,7 +2128,7 @@ def list_assist_recent_notes(
         out.append(AssistRecentNote(
             **note.model_dump(), host_id=a.host_id, host_ip=ip, target=target,
         ))
-    return out
+    return AssistRecentNotesPage(**agent_page(out, total=total, limit=limit, offset=offset))
 
 
 @router.get(
@@ -2308,23 +2281,16 @@ def list_assist_names(
                 sources=sorted(st.evidence),
             )
         )
-    return AssistNamesResponse(
-        items=items, total=total, offset=offset, limit=limit,
-        returned=len(items), has_more=offset + len(items) < total,
-    )
+    return AssistNamesResponse(**agent_page(items, total=total, limit=limit, offset=offset))
 
 
 # ---------------------------------------------------------------------------
 # Scans — list (read-only)
 # ---------------------------------------------------------------------------
 
-class AssistScansPage(BaseModel):
+class AssistScansPage(AgentPage):
     """A page of scans with the total, like every other list an agent counts."""
     items: List[ScanBrief]
-    total: int
-    has_more: bool
-    limit: int
-    offset: int
 
 
 @router.get(
@@ -2335,9 +2301,7 @@ class AssistScansPage(BaseModel):
 def list_assist_scans(
     request: Request,
     limit: int = Query(100, ge=1, le=500),
-    # v2.434.2 (acceptance run R4) — no way past the newest 500 before.  A
-    # page shorter than ``limit`` is the last one.
-    offset: int = Query(0, ge=0, description="Skip this many (newest first); page until a page is shorter than limit."),
+    offset: int = Query(0, ge=0, description="Scans to skip, newest first."),
     tool: Optional[str] = Query(
         None, max_length=100,
         description="Only this tool's scans (nmap, nessus, netexec…) — the Scans page's tool chips",
@@ -2378,9 +2342,7 @@ def list_assist_scans(
         row = ScanBrief.model_validate(s)
         row.ingestion_job_id = jobs.get(s.id)
         out.append(row)
-    return AssistScansPage(
-        items=out, total=total, has_more=offset + len(out) < total, limit=limit, offset=offset,
-    )
+    return AssistScansPage(**agent_page(out, total=total, limit=limit, offset=offset))
 
 
 # ---------------------------------------------------------------------------

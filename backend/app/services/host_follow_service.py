@@ -30,6 +30,13 @@ class NoteHasRepliesError(Exception):
 # a note is neither; rows that already carry them keep the label.
 VALID_NOTE_TYPES = {"observation", "question", "decision", "handoff"}
 
+#: What a note's author is told when the note was saved and the telling failed.
+NOTE_NOTIFY_FAILED = (
+    "Note saved, but mention notifications could not be delivered. "
+    "Tagged users may not have been alerted; contact an admin if "
+    "this persists."
+)
+
 
 class HostFollowService:
     def __init__(self, db: Session):
@@ -230,6 +237,90 @@ class HostFollowService:
         self.db.refresh(note)
         self.db.refresh(note, attribute_names=["author"])
         return note
+
+    def post_note(
+        self,
+        host: "models.Host",
+        author,
+        project,
+        body: str,
+        *,
+        parent_id: Optional[int] = None,
+        actor_type: str = "user",
+        agent_session_id: Optional[int] = None,
+    ) -> "tuple[Annotation, dict]":
+        """Write a note on ``host`` and tell the people it concerns — the ONE
+        path for a person's note (``POST /hosts/{id}/notes``) and an agent's
+        (``POST /agent/hosts/{id}/notes``).  An agent's note is its operator's
+        (``author`` is the operator), so the operator is never told about it
+        and everybody else is told exactly as for a note the operator typed
+        (until 2.489.0 only the page's route notified; an agent's ``@mention``
+        reached nobody).
+
+        The note commits first (``create_note``); the telling is best-effort in
+        a second transaction, so a failure there never loses the note:
+
+        1. the ``@mentioned`` members (and the ``note_mention`` webhook),
+        2. on a reply, everyone already in the thread,
+        3. everyone reviewing the host —
+
+        each step skipping those already told.  Returns ``(note, fields)``
+        where ``fields`` is what the author is shown: ``mentions_notified`` /
+        ``unmatched_mentions``, or ``mention_warning`` when the telling failed.
+        Raises ``ValueError`` for a ``parent_id`` that is not a note on this
+        host.
+        """
+        from app.services.notification_service import NotificationService
+        from app.services.webhook_dispatcher import stage_dispatch
+
+        note = self.create_note(
+            host.id, author.id, body,
+            parent_id=parent_id, actor_type=actor_type, agent_session_id=agent_session_id,
+        )
+        # Read before anything below can roll back and expire them.
+        note_id, host_id, project_id, author_id = note.id, host.id, project.id, author.id
+        try:
+            notifications = NotificationService(self.db)
+            mentions = notifications.process_note_mentions(note, author, project) or []
+            fields = notifications.mention_outcome(note.body, project_id, mentions)
+            told = {n.user_id for n in mentions}
+            told |= {
+                n.user_id for n in notifications.notify_discussion_participants(
+                    note, author, project, exclude_user_ids=told,
+                )
+            }
+            notifications.notify_host_followers_of_note(
+                note, author, project, exclude_user_ids=told,
+            )
+            # Staged INSIDE this transaction: the outbox row and the
+            # notifications are atomic, the POST is fired after the commit, and
+            # the rollback below discards the intent along with the rest.
+            if mentions:
+                stage_dispatch(
+                    self.db,
+                    project_id=project_id,
+                    event="note_mention",
+                    title=(
+                        f"@{author.username} mentioned {len(mentions)} user(s) on "
+                        f"{host.hostname or host.ip_address}"
+                    ),
+                    body=(body or "")[:280],
+                    context={"host_id": host_id, "note_id": note_id},
+                )
+            self.db.commit()
+        except Exception:
+            logger.exception(
+                "Mention processing failed",
+                extra={
+                    "note_id": note_id,
+                    "host_id": host_id,
+                    "author_id": author_id,
+                    "project_id": project_id,
+                },
+            )
+            fields = {"mention_warning": NOTE_NOTIFY_FAILED}
+            self.db.rollback()
+        return note, fields
 
     def _root_note(self, note: Annotation) -> Annotation:
         """Walk parent_id to the thread root (cycle-guarded)."""

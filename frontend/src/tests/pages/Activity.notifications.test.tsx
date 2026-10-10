@@ -25,7 +25,7 @@ vi.mock('../../services/api', () => ({
 }));
 
 import { readsOnScreen } from '../helpers/readsOnScreen';
-import Activity from '../../pages/Activity';
+import Activity from '../../pages/Collaboration';
 import { notificationHref } from '../../utils/notificationLinks';
 
 const note = (over: Record<string, unknown>) => ({

@@ -2,9 +2,8 @@
  * Project coverage endpoint client (v3 alpha.3 backend, v3 alpha.5
  * UI consumer).
  *
- * One call returns everything the v3 Operations page's "Host
- * coverage" section needs: per-stage host counts, gap counts,
- * per-scope coverage with %, and the out-of-scope host count.
+ * One call: hosts planned and tested, per-scope coverage with %, and
+ * the out-of-scope host count.
  *
  * See ``backend/app/api/v1/endpoints/coverage.py`` for the contract.
  */
@@ -25,17 +24,12 @@ export interface ScopeCoverageRow {
 export interface ProjectCoverageResponse {
   project_id: number;
   total_hosts: number;
-  /** Hosts with a test still to do (proposed / in progress). The field names
-   *  date from test plans (removed 5.320.0); the definitions are the
-   *  backend's `host_test_queries`. */
-  hosts_with_plan_entry: number;
+  /** Hosts with a test still to do (proposed / in progress) — the hosts
+   *  `has:planned` lists. */
+  hosts_planned: number;
   /** Hosts with evidence of a test that ran (finding / no finding /
-   *  inconclusive). */
-  hosts_with_execution_result: number;
-  /** Gap counts — explicit fields rather than derived so the UI
-   *  doesn't drift from the backend's definition. */
-  hosts_no_plan: number;
-  hosts_no_execution: number;
+   *  inconclusive) — the hosts `has:tested` lists. */
+  hosts_tested: number;
   total_scopes: number;
   scopes: ScopeCoverageRow[];
   /** Hosts that don't map to any subnet under any declared scope.

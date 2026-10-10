@@ -440,7 +440,6 @@ class HostScopeSubnetLabel(BaseModel):
 class HostScopeSubnetEntry(BaseModel):
     """One scope subnet that contains the host's address (v2.342.0)."""
     id: int
-    scope_id: int
     cidr: str
     description: Optional[str] = None
     site: Optional[str] = None
@@ -984,7 +983,6 @@ class SubnetBase(BaseModel):
 
 class Subnet(SubnetBase):
     id: int
-    scope_id: int
     created_at: datetime
     # v2.86.0 — subnet labels attached to this row, selectin-loaded via
     # Subnet.label_assignments → SubnetLabelAssignment.label.  Empty list

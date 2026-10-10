@@ -437,10 +437,12 @@ def test_an_agent_reads_and_writes_what_the_page_does_and_is_named(client, db_se
     assert done.status_code == 200, done.text
     listed = client.get(AGENT, params={"contact": "roger"}, headers=key).json()
     assert [r["finding_host_id"] for r in listed["items"]] == [world["smb_a"]]
-    assert listed == listing(client, test_project, contact="roger")   # the page's answer
+    # The page's answer, key for key, plus the one page word it does not say.
+    assert listed.pop("returned") == 1
+    assert listed == listing(client, test_project, contact="roger")
 
     timeline = client.get(f"{AGENT}/hosts/{world['a']}/events", headers=key).json()
-    assert timeline["total"] == 3
+    assert timeline["total"] == 3 and timeline["returned"] == 3
     assert all(e["agent_session_id"] is not None and e["author"] == "Test Admin" for e in timeline["items"])
     assert client.get(f"{AGENT}/contacts", headers=key).json()["items"][0]["contact_email"] == "roger@example.com"
 

@@ -36,7 +36,7 @@ def test_findings_list_treats_all_empty_and_any_as_no_filter(client, db_session,
         assert r.json()["severity_counts"], value
     # A real status still filters.
     r = client.get("/api/v1/agent/assist/findings", headers=h, params={"status": "retest"})
-    assert [f["title"] for f in r.json()["findings"]] == ["retest one"]
+    assert [f["title"] for f in r.json()["items"]] == ["retest one"]
 
 
 def test_vocabulary_statuses_and_severities_are_the_enums(client, test_project):
@@ -127,7 +127,7 @@ def test_finding_detail_keeps_endpoint_identity_and_counts_hosts_distinctly(clie
 
     # The list view counts the same way.
     r = client.get("/api/v1/agent/assist/findings", headers=h)
-    row = next(f for f in r.json()["findings"] if f["id"] == finding.id)
+    row = next(f for f in r.json()["items"] if f["id"] == finding.id)
     assert row["host_count"] == 2 and row["endpoint_count"] == 3
     assert row["hosts"] == ["10.99.0.4", "10.99.0.5"]
 

@@ -30,7 +30,6 @@ def _member(db_session, user_id=2, username="plain-member"):
         hashed_password="x",
         role=UserRole.MEMBER,
         is_active=True,
-        is_verified=True,
     )
     db_session.add(member)
     db_session.commit()

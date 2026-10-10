@@ -270,7 +270,10 @@ def test_endpoint_serves_the_registry_and_filters_by_status(client, db_session):
     assert 0 < reference["count"] <= body["count"]
     assert all(t["status"] == "reference" for t in reference["tools"])
     nmap = next(t for t in reference["tools"] if t["name"] == "nmap")
-    assert nmap["phases"] and nmap["intrusive"] is not None
+    assert nmap["intrusive"] is not None
+    # A session has no phases, and neither has the catalogue (2.489.0: the
+    # column is dropped; it named recon phases that went with recon runs).
+    assert all("phases" not in t for t in body["tools"])
 
 
 def test_the_registry_row_carries_its_run_command(client, db_session):

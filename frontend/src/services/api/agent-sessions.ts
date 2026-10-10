@@ -1,23 +1,15 @@
 /**
- * Unified agent-session timeline (v2.30.0 backend, v3 UI consumer).
- *
- * Drives the Project Activity timeline + the per-(model, tool)
- * rollup card.  See backend
+ * Agent sessions: the list, one session, its notes, End, Resume and the
+ * per-(model, tool) table.  See backend
  * ``app/api/v1/endpoints/agent_sessions.py``.
  */
 import { api, projectPath } from './client';
 import type { McpClientSetup } from './assist';
 
 
-// v5.185.0 — assist joined the timeline. The backend model always described
-// four workflows; the service and this type both enumerated three, so assist
-// sessions were invisible on Agent Runs.
-// 5.313.1 — recon runs are gone, and their legacy rows with them.
-// 5.320.0 — so are plans and execution runs ('plan_generation' / 'execution').
-export type AgentSessionKind = 'project' | 'assist';
-
+/** One session.  There is no `kind` (5.383.0): every session carries the same
+ *  fields and reads the same, whenever it was started. */
 export interface AgentSessionRow {
-  kind: AgentSessionKind;
   id: number;
   project_id: number;
   agent_id?: number | null;
@@ -30,27 +22,23 @@ export interface AgentSessionRow {
   generated_by_model?: string | null;
   generated_by_tool?: string | null;
   prompt_version?: string | null;
-  /** v5.211.0 — the operator's stated purpose (project sessions only). */
+  /** The label the session was given at start, if any. */
   purpose?: string | null;
-  /** v5.214.0 — project sessions only. When the live key stops working
-   *  (null once revoked) and until when the session can still be renewed or
-   *  resumed. An active row whose key has expired but is still renewable is
-   *  a session the operator can reconnect to, not a dead one. */
+  /** v5.214.0 — when the live key stops working (null once revoked) and until
+   *  when the session can still be renewed or resumed. An active row whose
+   *  key has expired but is still renewable is a session the operator can
+   *  reconnect to, not a dead one (`utils/agentRuns.keyState`). */
   key_expires_at?: string | null;
   renewable_until?: string | null;
-  /** v5.219.0 — project sessions only. How the session ended ('agent' is the
-   *  clean exit; 'operator' and 'lapsed' mean the agent never called end) and
-   *  how many feedback submissions it made. Both null/0 on older backends. */
+  /** v5.219.0 — how the session ended ('agent' is the clean exit; 'operator'
+   *  and 'lapsed' mean the agent never called end) and how many feedback
+   *  submissions it made. */
   end_reason?: 'agent' | 'operator' | 'lapsed' | string | null;
   feedback_count?: number;
   /** v5.288.0 — the operator's display name; shown before the username. */
   user_full_name?: string | null;
-  /** v5.288.0 — legacy assist rows still stored as active: whether the session
-   *  can still act. Null/absent when not computed. */
-  session_live?: boolean | null;
-  /** 5.320.0 — project sessions only: the host tests the session proposed
-   *  and the evidence records it wrote (they replace `phases`, the runs and
-   *  plans a session used to open). */
+  /** 5.320.0 — the host tests the session proposed and the evidence records
+   *  it wrote. */
   host_test_count?: number;
   evidence_count?: number;
   /** v5.312.0 — its last authenticated call, and the authority it acts with:
@@ -77,8 +65,8 @@ export interface AgentSessionRow {
   can_resume?: boolean;
 }
 
-/** v5.312.0 — one session as the list shows it (a project session or a legacy
- *  assist one); 404 for any other legacy per-workflow row. */
+/** v5.312.0 — one session as the list shows it; 404 for an id the list does
+ *  not have. */
 export const getAgentSession = async (projectId: number, sessionId: number, signal?: AbortSignal): Promise<AgentSessionRow> => {
   const response = await api.get<AgentSessionRow>(`${projectPath(projectId)}/agent-sessions/${sessionId}`, { signal });
   return response.data;
@@ -110,22 +98,6 @@ export const getAgentSessionNotes = async (
   const response = await api.get<AgentSessionNotes>(
     `${projectPath(projectId)}/agent-sessions/${sessionId}/notes`,
     { params: { limit }, signal },
-  );
-  return response.data;
-};
-
-/** 5.328.0 — the session an old `/assist-sessions/:id` link meant. Until
- *  2.449.0 a session had a second id (its `assist_sessions` row) and its page
- *  was addressed by that; only sessions from before then have one. 404 when
- *  nothing had the id. */
-export const getAgentSessionByLegacyAssistId = async (
-  projectId: number,
-  legacyAssistSessionId: number,
-  signal?: AbortSignal,
-): Promise<AgentSessionRow> => {
-  const response = await api.get<AgentSessionRow>(
-    `${projectPath(projectId)}/assist-sessions/${legacyAssistSessionId}`,
-    { signal },
   );
   return response.data;
 };
@@ -168,13 +140,12 @@ export interface AgentSessionListResponse {
 }
 
 export interface AgentSessionFilters {
-  kind?: AgentSessionKind;
   agent_id?: number;
   model?: string;
   tool?: string;
   user_id?: number;
-  /** Filter by native session status — pass 'active' for the in-flight
-   *  banner.  v3 alpha.3. */
+  /** Filter by the stored status — pass 'active' for the sessions still
+   *  open (whether a key still works is `utils/agentRuns.hasLiveKey`). */
   status?: string;
   limit?: number;
   offset?: number;
@@ -202,8 +173,8 @@ export const endAgentSession = async (projectId: number, sessionId: number): Pro
 export interface ModelToolSummaryRow {
   generated_by_model: string | null;
   generated_by_tool: string | null;
-  project: number;
-  assist: number;
+  /** Sessions run with this model and tool: the `total` of the list
+   *  filtered by them. */
   total: number;
 }
 

@@ -39,12 +39,12 @@ import AgentActivityRail from '../../components/AgentActivityRail';
 const NOW = new Date('2026-10-09T12:00:00Z');
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
-const ACTIVE_Q: AgentSessionFilters = { status: 'active', kind: 'project', limit: 1 };
+const ACTIVE_Q: AgentSessionFilters = { status: 'active', limit: 1 };
 const RECENT_Q: AgentSessionFilters = { limit: 8 };
 const LONG_PURPOSE = `Check ${'p'.repeat(194)}`;                // 200 characters
 
 const row = (over: Partial<AgentSessionRow> = {}): AgentSessionRow => ({
-  kind: 'project', id: 7, project_id: 1, status: 'active', purpose: 'Sweep the DMZ',
+  id: 7, project_id: 1, status: 'active', purpose: 'Sweep the DMZ',
   generated_by_model: 'claude-opus', user_username: 'ana', started_at: '2026-10-09T11:55:00Z',
   key_expires_at: '2026-10-10T12:00:00Z', renewable_until: '2026-10-12T12:00:00Z', ...over,
 });
@@ -315,13 +315,15 @@ describe('AgentActivityRail — what the reader sees', () => {
 
   it('a row with nothing but its id and state — every optional value null — is still one clean line', async () => {
     server.recent = [
-      row({ id: 3, kind: 'assist', status: 'ended', purpose: null, generated_by_model: null, user_username: null, started_at: null, key_expires_at: null, renewable_until: null }),
-      // An assist row's purpose is not shown, whatever it holds.
-      row({ id: 4, kind: 'assist', status: 'ended', purpose: 'not for this row', generated_by_model: null, user_username: null, started_at: null }),
+      row({ id: 3, status: 'ended', purpose: null, generated_by_model: null, user_username: null, started_at: null, key_expires_at: null, renewable_until: null }),
+      // Every row reads the same (5.383.0): a session from before the
+      // consolidation used to be named "Assist" with its purpose left out.
+      row({ id: 4, status: 'ended', purpose: 'find FTP', generated_by_model: null, user_username: null, started_at: null }),
     ];
     await show();
     const popover = await openPopover();
-    expect(rowTexts(popover)).toEqual(['Assist #3· ended', 'Assist #4· ended']);
+    expect(rowTexts(popover)).toEqual(['Session #3· ended', 'Session #4· endedfind FTP']);
+    expect(popover).not.toHaveTextContent(/Assist/);
     expect(popover).not.toHaveTextContent(/null|undefined/);
   });
 

@@ -379,9 +379,9 @@ _HAS_KEYWORDS = {
                          "Has a CRITICAL scanner observation that is itself flagged exploitable — "
                          "the Hosts page's \"critical · exploit\". has:critical AND has:exploit is "
                          "wider: the exploit may be on a lower-severity observation."),
-    "tested": (lambda ctx: P.has_test_execution_predicate(ctx.project_id),
+    "tested": (lambda ctx: P.tested_predicate(ctx.project_id),
                "Tested: has an evidence record with outcome finding, no_finding or inconclusive."),
-    "planned": (lambda ctx: P.has_plan_entry_predicate(ctx.project_id),
+    "planned": (lambda ctx: P.planned_predicate(ctx.project_id),
                 "Has a test that is proposed or in progress (planned, not necessarily tested yet)."),
     "untouched": (lambda ctx: P.untouched_predicate(ctx.db),
                   "Nobody has touched it yet: no review or assignment, note, "

@@ -234,7 +234,7 @@ def test_findings_sort_by_owner_name_unowned_last(client, db_session, test_proje
     other = User(
         id=2,  # test_user pins id=1 without advancing the sequence
         username="zed", email="zed@example.com", full_name="aaron zed",
-        hashed_password="x", role=UserRole.MEMBER, is_active=True, is_verified=True,
+        hashed_password="x", role=UserRole.MEMBER, is_active=True,
         created_at=datetime.now(timezone.utc),
     )
     db_session.add(other)

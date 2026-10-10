@@ -25,7 +25,7 @@ const deferred = (): Deferred => {
 };
 
 const row = (id: number): AgentSessionRow => ({
-  kind: 'project', id, project_id: 1, status: 'active', can_end: true,
+  id, project_id: 1, status: 'active', can_end: true,
 });
 
 // A block, not an expression: `mockReset()` returns the mock, and a function

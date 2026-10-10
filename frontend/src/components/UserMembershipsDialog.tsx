@@ -78,7 +78,6 @@ interface ProjectSummary {
   name: string;
   slug?: string;
   status?: string;
-  is_archived?: boolean;
 }
 
 const roleVariant = (
@@ -151,7 +150,7 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
     if (!memberships) return [];
     const memberIds = new Set(memberships.map((m) => m.project_id));
     return projects
-      .filter((p) => !memberIds.has(p.id) && !p.is_archived)
+      .filter((p) => !memberIds.has(p.id) && p.status !== 'archived')
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [memberships, projects]);
 
@@ -329,7 +328,6 @@ export const UserMembershipsDialog: React.FC<UserMembershipsDialogProps> = ({
                               </p>
                               <p className="text-caption text-muted-foreground">
                                 {row.project_status}
-                                {row.project_is_archived && ' · archived'}
                                 {isImplicit && ' · implicit (global admin)'}
                               </p>
                             </div>

@@ -1,5 +1,5 @@
 /**
- * Where a notification opens (client-free; `pages/Activity.tsx` navigates
+ * Where a notification opens (client-free; `pages/Collaboration.tsx` navigates
  * there).  One function, so a new notification kind gets its link — and its
  * test — in one place instead of falling through to "the host, or nothing".
  */

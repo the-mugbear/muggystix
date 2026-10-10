@@ -5,7 +5,30 @@
  * the /findings list and the finding detail page can't drift — both prompt
  * for a "why" summary on the same set of terminal moves.
  */
-import { FindingHostStatus, FindingStatus } from '../services/api';
+import { FindingHostStatus, FindingSource, FindingStatus } from '../services/api';
+
+/**
+ * Where a finding came from, as the pages say it (the Findings list's Source
+ * filter, the finding page's Source line).  The keys are the STORED values and
+ * stay as they are — rows hold them:
+ *
+ *   scanner    a promoted scanner observation
+ *   execution  made from a test's result (evidence → finding).  The value's
+ *              name dates from execution runs; a test and its evidence is
+ *              what writes it today, so it reads "Test result".
+ *   manual     written directly ("Add finding", an accepted proposal)
+ *   note       made from a host note.  Nothing can make one any more (notes
+ *              are discussion); findings made that way earlier keep the
+ *              value, so the filter still offers it.
+ */
+export const SOURCE_LABEL: Record<FindingSource, string> = {
+  scanner: 'Scanner',
+  execution: 'Test result',
+  manual: 'Manual',
+  note: 'Note',
+};
+/** The Source filter's options, in the order shown. */
+export const SOURCE_OPTIONS: FindingSource[] = ['scanner', 'execution', 'manual', 'note'];
 
 export const STATUS_LABEL: Record<FindingStatus, string> = {
   open: 'Open',

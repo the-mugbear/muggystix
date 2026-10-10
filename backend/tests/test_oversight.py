@@ -30,7 +30,7 @@ def _user(db, name, role=UserRole.MEMBER, active=True):
     u = User(
         id=_UID[0], username=name, email=f"{name}@example.com", full_name=name.title(),
         hashed_password="$2b$12$abcdefghijklmnopqrstuv", role=role,
-        is_active=active, is_verified=True, created_at=NOW,
+        is_active=active, created_at=NOW,
     )
     db.add(u)
     db.flush()
@@ -39,7 +39,7 @@ def _user(db, name, role=UserRole.MEMBER, active=True):
 
 def _project(db, name, status="active", start=None, end=None):
     p = Project(name=name, slug=name.lower().replace(" ", "-"), status=status,
-                is_archived=(status == "archived"), start_date=start, end_date=end)
+                start_date=start, end_date=end)
     db.add(p)
     db.flush()
     return p

@@ -129,7 +129,6 @@ def viewer_key(db_session, test_project):
         hashed_password="$2b$12$abcdefghijklmnopqrstuv",
         role=UserRole.MEMBER,
         is_active=True,
-        is_verified=True,
     )
     db_session.add(user)
     db_session.flush()

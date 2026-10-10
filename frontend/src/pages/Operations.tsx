@@ -63,6 +63,7 @@ import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
 import { sinceChips, type SinceChip } from '../utils/sinceLastVisit';
 import { filenameSummary } from '../utils/filenameSummary';
 import { agentInstruction } from '../utils/agentRuns';
+import { importResultsPath } from '../utils/importResultsPath';
 import { cn } from '../utils/cn';
 import {
   firstNonEmptyTab, needFromParams, operationsTabCounts, tabFromParams, tabSearch,
@@ -86,7 +87,7 @@ const LIGHT_WORKBENCH = { includeInvestigate: false, includeRows: false } as con
  *  re-read is the reader's (Refresh, a page, an action). */
 const COUNTS_POLL_MS = 60_000;
 
-const IMPORT_ERRORS_PATH = '/parse-errors?status=needs_attention';
+const IMPORT_ERRORS_PATH = importResultsPath({ status: 'needs_attention' });
 
 const LINK = 'rounded underline decoration-1 underline-offset-4 hover:text-info focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
@@ -406,10 +407,6 @@ const Operations: React.FC = () => {
     void invalidateReads(queryClient, ...OPERATIONS_READS, 'listAgentSessions');
   }, [pageParams, queryClient, resetAcknowledge, setPageParams]);
 
-  // FRX·CRIT-2: brand-new projects (no scope ROW and no hosts) see the welcome
-  // block alone — Refresh chrome just adds noise before anything exists.
-  const isBrandNewProject = !!setup && !setup.has_hosts && setup.scope_rows === 0;
-
   // v4.29.0 — the agent-session entry.  Lives on Operations because it's the
   // project-level coordination hub.  Since 5.313.0 it is the ONLY way an agent
   // starts: the per-object buttons (a scope's scan, a host's tests) open the
@@ -452,39 +449,38 @@ const Operations: React.FC = () => {
         <div className="min-w-0 flex-1">
           <h1 className="text-page-title font-semibold">Operations</h1>
         </div>
-        {!isBrandNewProject && (
-          <>
-            {canStartAgent && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setAssistDialogOpen(true)}
-                aria-label={
-                  myAssistSessions.length > 0
-                    ? `Start Agent Session — you have ${myAssistSessions.length} active session${myAssistSessions.length === 1 ? '' : 's'}`
-                    : 'Start Agent Session'
-                }
-              >
-                <MessageCircleQuestion className="size-4" aria-hidden />
-                Start Agent Session
-                {myAssistSessions.length > 0 && (
-                  <Badge variant="warning" className="ml-xxs">
-                    {myAssistSessions.length}
-                  </Badge>
-                )}
-              </Button>
+        {/* On every project, a new one included: `setup` no longer says
+            whether the scope ROW exists (it decided nothing else), and a
+            project with only domains declared still starts sessions here. */}
+        {canStartAgent && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setAssistDialogOpen(true)}
+            aria-label={
+              myAssistSessions.length > 0
+                ? `Start Agent Session — you have ${myAssistSessions.length} active session${myAssistSessions.length === 1 ? '' : 's'}`
+                : 'Start Agent Session'
+            }
+          >
+            <MessageCircleQuestion className="size-4" aria-hidden />
+            Start Agent Session
+            {myAssistSessions.length > 0 && (
+              <Badge variant="warning" className="ml-xxs">
+                {myAssistSessions.length}
+              </Badge>
             )}
-            {/* One freshness control for the page (v5.294.0): the OLDEST
-                load on it, and one refresh that reaches every section. */}
-            <LastUpdated
-              compact
-              lastFetched={lastFetched}
-              onRefresh={refreshAll}
-              isLoading={workbenchQuery.isFetching}
-              label="Operations"
-            />
-          </>
+          </Button>
         )}
+        {/* One freshness control for the page (v5.294.0): the OLDEST
+            load on it, and one refresh that reaches every section. */}
+        <LastUpdated
+          compact
+          lastFetched={lastFetched}
+          onRefresh={refreshAll}
+          isLoading={workbenchQuery.isFetching}
+          label="Operations"
+        />
       </div>
 
       <StartAssistDialog
@@ -531,8 +527,7 @@ const Operations: React.FC = () => {
               <AgentTaskButton
                 variant="default"
                 label="Scan with your agent"
-                // The scope is named when the project has exactly one.
-                instruction={agentInstruction.scanScope(setup.only_scope_id ?? undefined)}
+                instruction={agentInstruction.scanScope()}
               />
             )}
             <Button size="sm" variant="outline" onClick={() => navigate('/scans')}>

@@ -31,7 +31,7 @@ const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
 const membership = (over: Record<string, unknown> = {}) => ({
   project_id: 7, project_name: 'Acme', project_slug: 'acme', project_status: 'active',
-  project_is_default: false, project_is_archived: false, role: 'admin', joined_at: '2026-09-01T00:00:00Z',
+  project_is_default: false, role: 'admin', joined_at: '2026-09-01T00:00:00Z',
   ...over,
 });
 const rosterRow = (user_id: number, role: string) => ({

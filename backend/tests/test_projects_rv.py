@@ -1,6 +1,6 @@
 """Tests for the project endpoint review fixes (RV-3, RV-11).
 
-RV-3: create_project requires global admin + sets is_archived from status.
+RV-3: create_project requires global admin; a project created archived is archived.
 RV-11: project listing computes member counts in one grouped query.
 
 The ``client`` fixture authenticates as a global admin.
@@ -29,7 +29,6 @@ def _make_user(db_session, username, role=UserRole.MEMBER):
         hashed_password="$2b$12$abcdefghijklmnopqrstuv",
         role=role,
         is_active=True,
-        is_verified=True,
         created_at=datetime.now(timezone.utc),
     )
     db_session.add(u)
@@ -46,15 +45,20 @@ def test_create_project_requires_global_admin(db_session):
     assert exc.value.status_code == 403
 
 
-def test_create_archived_project_sets_is_archived(client, db_session):
-    """status='archived' must set is_archived so it doesn't linger active."""
+def test_a_project_created_archived_is_archived(client, db_session):
+    """status='archived' IS the project being archived — there is no second
+    flag to keep in step (``projects.is_archived`` was dropped in 2.489.0), and
+    no answer carries one."""
     r = client.post(
         "/api/v1/projects/",
         json={"name": "rv3-archived-proj", "status": "archived"},
     )
     assert r.status_code == 201, r.text
     body = r.json()
-    assert body["is_archived"] is True
+    assert body["status"] == "archived"
+    assert "is_archived" not in body
+    # The project's own routes answer 410, as for any archived project.
+    assert client.get(f"/api/v1/projects/{body['id']}/hosts/").status_code == 410
 
     # Default listing (no include_archived) must exclude it.
     listing = client.get("/api/v1/projects/").json()

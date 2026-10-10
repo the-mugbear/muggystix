@@ -457,6 +457,9 @@ export interface IngestionResultsResponse {
     /** Failed imports only (v2.408.0): expired and discarded staged uploads,
      *  also written `failed`, are counted apart. */
     total_failed: number;
+    /** 2.489.0 — how many of `total_failed` someone has dismissed; the view
+     *  `status=failed_dismissed` lists exactly those. */
+    total_failed_dismissed?: number;
     /** v2.408.0 — staged uploads nobody started within 24 h. */
     total_expired?: number;
     /** v2.408.0 — staged uploads discarded at the format review. */

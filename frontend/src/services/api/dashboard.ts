@@ -241,13 +241,9 @@ export interface InvestigationQueueResponse {
  *  chooses between its setup blocks and the work by. */
 export interface ProjectSetup {
   has_hosts: boolean;
-  /** A scope of the project has at least one subnet ENTRY (the scope row a
-   *  project gets at creation says nothing; a domain alone does not count). */
+  /** The project's scope has at least one subnet ENTRY (the scope row itself
+   *  says nothing; a domain alone does not count). */
   has_scopes: boolean;
-  /** The project's scope rows, with or without entries. */
-  scope_rows: number;
-  /** The scope's id when the project has exactly one; null with none or several. */
-  only_scope_id: number | null;
 }
 
 export interface WorkbenchResponse {
@@ -421,19 +417,14 @@ export interface AgentActivityStatusBreakdown {
   other: number;
 }
 
-export interface AgentActivityWorkflowCount {
-  workflow: string;
-  calls: number;
-}
-
 export interface AgentActivityDayBucket {
   day: string;
   calls: number;
   errors: number;
 }
 
+/** A session of the list (`/agent-sessions/:session_id` opens it). */
 export interface AgentActivitySessionRow {
-  workflow: string;
   session_id: number;
   calls: number;
   last_activity?: string | null;
@@ -458,7 +449,6 @@ export interface AgentActivitySummary {
   first_call_at?: string | null;
   last_call_at?: string | null;
   status_breakdown: AgentActivityStatusBreakdown;
-  by_workflow: AgentActivityWorkflowCount[];
   daily: AgentActivityDayBucket[];
   busiest_sessions: AgentActivitySessionRow[];
   /** Absent on backends before 2.343.0. */

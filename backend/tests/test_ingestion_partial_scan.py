@@ -392,7 +392,9 @@ def test_delete_partial_scan_removes_only_what_that_scan_created(db_session, tes
     fresh = dedup.find_or_create_host("10.50.0.2", partial.id, {"state": "up"}, project_id=pid)
     dedup.find_or_create_port(fresh.id, partial.id, port(80))
     worked = dedup.find_or_create_host("10.50.0.3", partial.id, {"state": "up"}, project_id=pid)
-    db_session.add(models.HostFollow(host_id=worked.id, user_id=test_user.id))
+    db_session.add(models.HostFollow(
+        host_id=worked.id, user_id=test_user.id, status=models.FollowStatus.IN_REVIEW,
+    ))
     db_session.commit()
     partial_id, first_id, known_id = partial.id, first.id, known.id
 

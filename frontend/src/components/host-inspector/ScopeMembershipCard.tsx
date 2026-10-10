@@ -33,6 +33,10 @@ export interface ScopeMembershipCardProps {
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
+/** The Scope page, searched for the entry: a project has one scope, so an
+ *  entry's link opens that page at the entry — never a scope by its id. */
+const scopeEntryPath = (cidr: string) => `/scopes?subnet_q=${encodeURIComponent(cidr)}`;
+
 export const ScopeMembershipCard: React.FC<ScopeMembershipCardProps> = ({ membership }) => {
   const [open, setOpen] = useState(false);
   // The detail endpoint always sends the block; its absence means an older
@@ -96,9 +100,9 @@ export const ScopeMembershipCard: React.FC<ScopeMembershipCardProps> = ({ member
         {status}
         {closest && !open && (
           <Link
-            to={`/scopes/${closest.scope_id}`}
+            to={scopeEntryPath(closest.cidr)}
             className="font-mono text-caption text-foreground underline-offset-2 hover:underline"
-            title="The most specific scope entry containing this address — open its scope"
+            title="The most specific scope entry containing this address — open it on the Scope page"
           >
             {closest.cidr}
           </Link>
@@ -131,9 +135,9 @@ export const ScopeMembershipCard: React.FC<ScopeMembershipCardProps> = ({ member
             {subnets.map((s) => (
               <li key={s.id} className="flex min-w-0 flex-wrap items-center gap-xs">
                 <Link
-                  to={`/scopes/${s.scope_id}`}
+                  to={scopeEntryPath(s.cidr)}
                   className="font-mono text-metadata text-foreground underline-offset-2 hover:underline"
-                  title="Open this scope"
+                  title="Open this entry on the Scope page"
                 >
                   {s.cidr}
                 </Link>

@@ -1,10 +1,9 @@
 /**
  * /findings — the unified findings view (foundation phase 6).
  *
- * The project-wide roll-up of the finding spine: promoted notes (and, as
- * later phases reference them, scanner vulns + execution findings) in one
- * filterable list by status / severity. The destination that "matriculate
- * up" lands on.
+ * The project's findings — promoted scanner observations, findings made
+ * from a test's result and findings written directly — in one list,
+ * filterable by status, severity, source and owner.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
@@ -75,7 +74,9 @@ import { ViewTabs } from '../components/ui/view-tabs';
 
 const FINDINGS_VIEWS = [['findings', 'Findings'], ['observations', 'Scanner observations']] as const;
 import ScannerObservations from '../components/findings/ScannerObservations';
-import { STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates, matchesStatusFilter } from '../utils/findingStatus';
+import {
+  SOURCE_LABEL, SOURCE_OPTIONS, STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates, matchesStatusFilter,
+} from '../utils/findingStatus';
 import { endpointPreviewTitle } from '../utils/findingEndpoints';
 import { selectAllState } from '../utils/selection';
 
@@ -587,8 +588,8 @@ const FindingsList: React.FC = () => {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All sources</SelectItem>
-            {(['note', 'scanner', 'execution', 'manual'] as FindingSource[]).map((s) => (
-              <SelectItem key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</SelectItem>
+            {SOURCE_OPTIONS.map((s) => (
+              <SelectItem key={s} value={s}>{SOURCE_LABEL[s]}</SelectItem>
             ))}
           </SelectContent>
         </Select>

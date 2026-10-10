@@ -24,7 +24,7 @@ vi.mock('../../services/api', () => ({
 // The project the page is shown in: both feeds are asked of it, by name first.
 vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 91 } }) }));
 
-import Activity from '../../pages/Activity';
+import Activity from '../../pages/Collaboration';
 
 const note = (over: Record<string, unknown>) => ({
   note_id: 1, host_id: 5, ip_address: '10.0.0.5', hostname: 'h5', body: 'a note', status: 'open',

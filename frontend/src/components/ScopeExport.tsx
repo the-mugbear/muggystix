@@ -7,7 +7,6 @@ import GeneratedTextDialog, { countEntries } from './GeneratedTextDialog';
 interface ScopeExportProps {
   open: boolean;
   onClose: () => void;
-  scopeId: number;
 }
 
 const EXPORT_FORMATS = [
@@ -24,12 +23,12 @@ type ExportFormat = (typeof EXPORT_FORMATS)[number]['value'];
 /** Export the hosts in the project's scope as text.  The dialog itself —
  *  format, generate, copy, download, and the rule that the text keeps the
  *  format it was made in — is `GeneratedTextDialog`. */
-export default function ScopeExport({ open, onClose, scopeId }: ScopeExportProps) {
+export default function ScopeExport({ open, onClose }: ScopeExportProps) {
   // Asked for by the button, not by opening the dialog: an action, so its
   // answer, busy state and failure are the mutation's.
   const projectId = useProjectId();
   const generate = useMutation({
-    mutationFn: (format: ExportFormat) => getScopeHostList(projectId, scopeId, format),
+    mutationFn: (format: ExportFormat) => getScopeHostList(projectId, format),
     onError: (err) => console.error('Error fetching scope hosts:', err),
   });
 

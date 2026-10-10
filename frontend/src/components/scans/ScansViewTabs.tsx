@@ -12,11 +12,10 @@ import React from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { useProjectRole } from '../../hooks/useProjectRole';
+import { IMPORT_RESULTS_VIEW } from '../../utils/importResultsPath';
 import { ViewTabs } from '../ui/view-tabs';
 
 export type ScansView = 'scans' | 'results';
-
-export const IMPORT_RESULTS_VIEW = 'results';
 
 /** The view the address names — `results` only for someone who may read it. */
 export function useScansView(): ScansView {

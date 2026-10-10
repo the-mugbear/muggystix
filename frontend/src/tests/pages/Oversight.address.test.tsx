@@ -122,13 +122,17 @@ describe('Oversight — the project table follows the address (real router)', ()
     await open('/oversight?tab=projects&q=project&sort=targets&page=2');
     expect(box().value).toBe('project');
     expect(sortBox()).toHaveTextContent('Most hosts');
-    expect(screen.getByText('Page 2 of 3')).toBeInTheDocument();
+    // The shared footer: the rows' place in the whole list, then the page.
+    expect(screen.getByText('26–50 of 60')).toBeInTheDocument();
+    expect(screen.getByText('page 2 of 3')).toBeInTheDocument();
     expect(names()).toEqual(range(35, 11));
   });
 
   it('a reload on page 3 shows page 3 and writes nothing', async () => {
     const router = await open('/oversight?tab=projects&page=3');
-    expect(screen.getByText('Page 3 of 3')).toBeInTheDocument();
+    expect(screen.getByText('51–60 of 60')).toBeInTheDocument();
+    expect(screen.getByText('page 3 of 3')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next 25 projects' })).toBeDisabled();
     expect(names()).toEqual(range(51, 60));
     await settle();
     expect(router.state.location.search).toBe('?tab=projects&page=3');
@@ -140,11 +144,13 @@ describe('Oversight — the project table follows the address (real router)', ()
   it('the pager writes the address (replace)', async () => {
     const router = await open('/oversight?tab=projects');
     expect(names()).toEqual(range(1, 25));
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByText('1–25 of 60')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Previous 25 projects' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Next 25 projects' }));
     expect(router.state.location.search).toBe('?tab=projects&page=2');
     expect(router.state.historyAction).toBe('REPLACE');
     expect(names()).toEqual(range(26, 50));
-    fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Previous 25 projects' }));
     expect(router.state.location.search).toBe('?tab=projects');
     expect(names()).toEqual(range(1, 25));
   });
@@ -186,7 +192,8 @@ describe('Oversight — the project table follows the address (real router)', ()
 
   it('a page past the end shows the last page', async () => {
     await open('/oversight?tab=projects&page=40');
-    expect(screen.getByText('Page 3 of 3')).toBeInTheDocument();
+    expect(screen.getByText('51–60 of 60')).toBeInTheDocument();
+    expect(screen.getByText('page 3 of 3')).toBeInTheDocument();
     expect(names()).toEqual(range(51, 60));
   });
 

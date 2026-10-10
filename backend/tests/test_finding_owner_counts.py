@@ -26,7 +26,7 @@ from tests.conftest import TEST_USER_PW_HASH
 def _user(db, user_id, username, full_name):
     u = User(
         id=user_id, username=username, email=f"{username}@example.com", full_name=full_name,
-        hashed_password=TEST_USER_PW_HASH, role=UserRole.MEMBER, is_active=True, is_verified=True,
+        hashed_password=TEST_USER_PW_HASH, role=UserRole.MEMBER, is_active=True,
         created_at=datetime.now(timezone.utc),
     )
     db.add(u)

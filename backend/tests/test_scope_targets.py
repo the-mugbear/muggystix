@@ -131,7 +131,7 @@ def test_a_scope_of_another_project_is_never_read(client, db_session, test_proje
     # This project declares no scope: every read is empty.
     for name, resp in reads():
         if name == "subnets":
-            assert resp.json()["subnets"] == [] and resp.json()["total"] == 0
+            assert resp.json()["items"] == [] and resp.json()["total"] == 0
         else:
             assert resp.text == "", name
 
@@ -141,7 +141,7 @@ def test_a_scope_of_another_project_is_never_read(client, db_session, test_proje
     _seed_hosts(db_session, test_project, mine, ["10.99.1.9"])
     for name, resp in reads():
         if name == "subnets":
-            assert resp.json()["subnets"] == ["10.99.1.0/24"]
+            assert resp.json()["items"] == ["10.99.1.0/24"]
         else:
             assert "10.99.1.9" in resp.text, name
 
@@ -214,10 +214,13 @@ def test_web_targets_download_yields_urls(client, db_session, test_project, scop
 def test_a_person_downloads_the_same_web_targets_an_agent_does(client, db_session, test_project, scope):
     """Plan A6: the URL list existed only on the agents' door.  The people's
     scope export has it as ``format_type=web`` — the same builder, so the two
-    files are the same bytes — and another project's scope is still a 404."""
+    files are the same bytes.  The path names no scope (2.489.0): the export
+    is the project's own, so another project's scope adds nothing to it and
+    cannot be asked for by id."""
     _seed_hosts(db_session, test_project, scope, ["10.99.1.4", "10.99.1.20"], ports=(22, 80, 443))
     agents = _get(client, _key(client, test_project), "web-targets.txt")
-    people = client.get(f"/api/v1/projects/{test_project.id}/export/scope/{scope.id}?format_type=web")
+    url = f"/api/v1/projects/{test_project.id}/export/scope"
+    people = client.get(f"{url}?format_type=web")
     assert people.status_code == 200, people.text
     assert people.text == agents.text and people.text.count("\n") == 4
     assert "project-scope_web-targets.txt" in people.headers["content-disposition"]
@@ -228,8 +231,10 @@ def test_a_person_downloads_the_same_web_targets_an_agent_does(client, db_sessio
     db_session.add(other)
     db_session.commit()
     theirs = _scope(db_session, other, "10.99.2.0/24")
-    assert client.get(
-        f"/api/v1/projects/{test_project.id}/export/scope/{theirs.id}?format_type=web").status_code == 404
+    _seed_hosts(db_session, other, theirs, ["10.99.2.8"], ports=(80,))
+    assert client.get(f"{url}?format_type=web").text == people.text
+    assert "10.99.2.8" not in client.get(f"{url}?format_type=txt").text
+    assert client.get(f"{url}/{theirs.id}?format_type=web").status_code == 404
 
 
 def _brief(port, service, tunnel=None, method=None, ip="192.168.7.245"):

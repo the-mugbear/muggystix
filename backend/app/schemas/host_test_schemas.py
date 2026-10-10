@@ -47,7 +47,7 @@ class HostTestCreate(TestSpec):
     vulnerability_id: Optional[int] = Field(
         None, gt=0,
         description="The scanner observation on this host that the test is meant to confirm "
-                    "(a vulnerability id from the host's detail). Links the test to that weakness.",
+                    "(a scanner row's id on that host). Links the test to that weakness.",
     )
 
 

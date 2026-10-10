@@ -118,7 +118,7 @@ def test_operator_can_end_a_session_and_its_work_stays(client, test_project, db_
     assert r.status_code == 201, r.text
 
     listing = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions").json()
-    row = next(s for s in listing["sessions"] if s["kind"] == "project" and s["id"] == session_id)
+    row = next(s for s in listing["sessions"] if s["id"] == session_id)
     assert row["status"] == "active"
 
     r = client.post(f"/api/v1/projects/{test_project.id}/agent-sessions/{session_id}/end")

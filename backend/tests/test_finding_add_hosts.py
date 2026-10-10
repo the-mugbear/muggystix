@@ -117,7 +117,7 @@ def test_more_than_500_hosts_is_refused(client, test_project, finding):
 def test_a_viewer_cannot_add_hosts(client, db_session, test_project, finding):
     viewer = User(
         id=401, username="viewer-only", email="viewer-only@example.com", full_name="Viewer",
-        hashed_password="x", role=UserRole.MEMBER, is_active=True, is_verified=True,
+        hashed_password="x", role=UserRole.MEMBER, is_active=True,
         created_at=datetime.now(timezone.utc),
     )
     db_session.add(viewer)

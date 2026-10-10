@@ -2,6 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 
 import type { Scan } from '../../services/api';
+import { importResultsPath } from '../../utils/importResultsPath';
 import ScanContribution from './ScanContribution';
 
 /**
@@ -79,7 +80,7 @@ export function importResultParts(scan: Scan): ImportResultPart[] {
     parts.push({
       key: 'skipped',
       text: `${plural(skipped, 'record')} skipped`,
-      to: scan.import_job_id != null ? `/parse-errors?job_id=${scan.import_job_id}` : '/parse-errors',
+      to: importResultsPath({ job_id: scan.import_job_id }),
       title: scan.import_warnings || 'Input records the parser could not use. Opens Ingestion Results for the reasons.',
       tone: 'warning',
     });
@@ -88,7 +89,7 @@ export function importResultParts(scan: Scan): ImportResultPart[] {
     parts.push({
       key: 'partial',
       text: 'file truncated',
-      to: scan.import_job_id != null ? `/parse-errors?job_id=${scan.import_job_id}` : '/parse-errors',
+      to: importResultsPath({ job_id: scan.import_job_id }),
       title: 'The parser stopped early: the file ended before its closing structure. An unknown number of records were lost.',
       tone: 'warning',
     });

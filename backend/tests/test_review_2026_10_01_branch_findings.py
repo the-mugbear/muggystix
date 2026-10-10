@@ -18,7 +18,8 @@ Each test fails on the code as it was reviewed.
 * M6 — the admins' "on no finding yet" count included observation proposals
   whose observation HAS a finding.
 * m1 — the start response's deprecated ``assist_session_id`` was not accepted
-  by the deprecated routes for a session started after v2.449.0.
+  by the deprecated routes for a session started after v2.449.0.  (Both went
+  in 2.489.0; the two tests now guard the one id on the current routes.)
 """
 from __future__ import annotations
 
@@ -63,7 +64,7 @@ def _base(project):
 def _member(db, project, user_id, username, role=ProjectRole.ANALYST, active=True, member=True):
     user = User(
         id=user_id, username=username, email=f"{username}@example.com", full_name=username.title(),
-        hashed_password="x", role=UserRole.MEMBER, is_active=active, is_verified=True,
+        hashed_password="x", role=UserRole.MEMBER, is_active=active,
         created_at=datetime.now(timezone.utc),
     )
     db.add(user)
@@ -457,47 +458,56 @@ def test_the_admins_count_leaves_out_an_observation_that_has_a_finding(client, d
 
 # --- m1 ----------------------------------------------------------------------
 
-def test_the_deprecated_routes_take_the_id_the_start_response_gives(client, db_session, test_project):
-    r = client.post(f"{_base(test_project)}/assist/start", json={"purpose": "old tab"})
-    assert r.status_code == 201, r.text
-    sid = r.json()["assist_session_id"]                  # what a client of the old shape reads
-    assert db_session.get(AgentSession, sid).legacy_assist_session_id is None
+#
+# Re-meant in 2.489.0.  m1 was about the DEPRECATED by-old-id routes: they had
+# to take the id the start response gave (a tab loaded before the upgrade could
+# start a session and then not end it), an old id had to win over a session id,
+# and another project's id had to read as not found.  Those routes and the
+# second id are gone.  What is left to guard is the same two things on the one
+# set of routes: the id the start response gives is the id every route takes,
+# and another project's session is not reached through this project.
 
-    for path in (f"/assist-sessions/{sid}", f"/assist/sessions/{sid}"):
-        got = client.get(_base(test_project) + path)
-        assert got.status_code == 200, f"{path}: {got.text}"
-        assert got.json()["id"] == sid and got.json()["purpose"] == "old tab"
-    assert client.get(f"{_base(test_project)}/assist-sessions/{sid}/api-activity").status_code == 200
-    assert client.post(f"{_base(test_project)}/assist/sessions/{sid}/end").status_code == 204
+def test_the_start_response_gives_the_one_id_every_route_takes(client, db_session, test_project):
+    r = client.post(f"{_base(test_project)}/assist/start", json={"purpose": "one id"})
+    assert r.status_code == 201, r.text
+    assert "assist_session_id" not in r.json()
+    sid = r.json()["agent_session_id"]
+
+    got = client.get(f"{_base(test_project)}/agent-sessions/{sid}")
+    assert got.status_code == 200, got.text
+    assert got.json()["id"] == sid and got.json()["purpose"] == "one id"
+    assert client.get(f"{_base(test_project)}/agent-sessions/{sid}/api-activity").status_code == 200
+    # The old addresses answer for nothing, this session's own id included.
+    for method, path in (
+        ("get", f"/assist-sessions/{sid}"),
+        ("get", f"/assist/sessions/{sid}"),
+        ("get", f"/assist-sessions/{sid}/api-activity"),
+        ("post", f"/assist/sessions/{sid}/end"),
+    ):
+        assert getattr(client, method)(_base(test_project) + path).status_code == 404, path
+    db_session.expire_all()
+    assert db_session.get(AgentSession, sid).status == "active"
+    assert client.post(f"{_base(test_project)}/agent-sessions/{sid}/end").status_code == 204
     db_session.expire_all()
     assert db_session.get(AgentSession, sid).status == "ended"
 
 
-def test_an_old_id_wins_over_a_session_id_and_another_projects_id_is_not_found(client, db_session, test_project):
+def test_another_projects_session_is_not_found_through_this_project(client, db_session, test_project):
     def start(project, purpose):
         r = client.post(f"{_base(project)}/assist/start", json={"purpose": purpose})
         assert r.status_code == 201, r.text
         return r.json()["agent_session_id"]
 
-    new = start(test_project, "started after the upgrade")
-    old = start(test_project, "started before it")
-    # ``old`` had the assist_sessions id that happens to equal ``new``'s id.
-    db_session.query(AgentSession).filter(AgentSession.id == old).update({"legacy_assist_session_id": new})
-    db_session.commit()
-    got = client.get(f"{_base(test_project)}/assist-sessions/{new}")
-    assert got.status_code == 200 and got.json()["id"] == old
-
+    start(test_project, "this project's")
     other = Project(name="other-m1", slug="other-m1", description="another project")
     db_session.add(other)
     db_session.commit()
     theirs = start(other, "another project's")
-    db_session.query(AgentSession).filter(AgentSession.id == theirs).update({"legacy_assist_session_id": 990001})
-    db_session.commit()
     base = _base(test_project)
-    for foreign in (theirs, 990001):                     # its own id, and its old id
-        assert client.get(f"{base}/assist-sessions/{foreign}").status_code == 404
-        assert client.get(f"{base}/assist/sessions/{foreign}").status_code == 404
-        assert client.get(f"{base}/assist-sessions/{foreign}/api-activity").status_code == 404
-        assert client.post(f"{base}/assist/sessions/{foreign}/end").status_code == 404
+    assert client.get(f"{base}/agent-sessions/{theirs}").status_code == 404
+    assert client.get(f"{base}/agent-sessions/{theirs}/notes").status_code == 404
+    assert client.get(f"{base}/agent-sessions/{theirs}/api-activity").status_code == 404
+    assert client.post(f"{base}/agent-sessions/{theirs}/end").status_code == 404
+    assert client.post(f"{base}/agent-sessions/{theirs}/resume", json={}).status_code == 404
     db_session.expire_all()
     assert db_session.get(AgentSession, theirs).status == "active"

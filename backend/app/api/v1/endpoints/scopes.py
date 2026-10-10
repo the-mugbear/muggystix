@@ -52,19 +52,16 @@ logger = logging.getLogger(__name__)
 # Default scope helper (v2.9.4)
 # ---------------------------------------------------------------------------
 #
-# A project has exactly one scope container; every write path funnels through
-# ``default_scope.get_or_create_default_scope`` (a service since the
-# 2026-10-01 review, B4 — the scope-domain write in dns_names.py uses it too).
+# A project has exactly one scope container (`uq_scopes_project`, 2.488.0), so
+# no route here takes a scope id: each is keyed by the project and resolves
+# the scope through ``services/default_scope`` — ``get_or_create_default_scope``
+# for a write and the page's read.  A subnet or domain id is looked up INSIDE
+# the project's scope, so another project's id is a 404.
 #
-# 2.488.0 — the schema says so too (`uq_scopes_project`); the scope has no
-# name; `GET /scopes/` (a list of "all scopes") and `DELETE /scopes/{scope_id}`
-# (the project's whole scope in one call — no page ever offered it) are gone.
-#
-# v2.244.0 — POST / and PATCH /{scope_id} (create + rename a scope container)
-# were removed. They were leftovers from the pre-v2.9.4 model in which users
-# named and managed scopes; since then a project has exactly one implicit
-# scope and every write path funnels through get_or_create_default_scope.
-# Nothing in the UI had called them for that entire time.
+# Gone, with the scope id (2.489.0): `GET /scopes/{scope_id}` and the
+# `/{scope_id}/…` spelling of every route below.  Earlier: `GET /scopes/`,
+# `DELETE /scopes/{scope_id}` (2.488.0), `POST /` and `PATCH /{scope_id}`
+# (v2.244.0).
 
 
 def _get_or_create_site(db: Session, project_id: int, name: Optional[str], user_id: Optional[int], cache: Optional[dict] = None) -> Optional[Site]:
@@ -269,7 +266,7 @@ async def upload_subnet_file(
                 existing_assignments.add(key)
                 labels_applied += 1
 
-        # Domain rows: same upsert as POST /scopes/{id}/domains, so an existing
+        # Domain rows: same upsert as POST /scopes/domains, so an existing
         # entry widens (exact → include_subdomains) and never narrows.  The
         # parser already validated every name, so ``invalid`` is empty here;
         # it is asserted rather than trusted.
@@ -347,61 +344,29 @@ async def upload_subnet_file(
 def _serialize_scope_with_subnets(
     db: Session,
     scope: Scope,
-    with_findings_only: bool,
     subnets_skip: int,
     subnets_limit: Optional[int],
     subnets_search: Optional[str] = None,
 ) -> dict:
     """Build the ScopeSchema payload with a server-paginated subnets array.
 
-    Shared by ``GET /scopes/default`` and ``GET /scopes/{scope_id}``.
-    ``with_findings_only`` restricts to subnets with at least one correlated
-    host; ``subnets_limit`` (when set) caps the page so a 6000+ subnet project
+    ``subnets_limit`` (when set) caps the page so a 6000+ subnet project
     doesn't ship a multi-MB body.  ``subnets_search`` (case-insensitive
     substring over cidr + description) lets the UI jump straight to an entry
     instead of paging to find it.  ``subnets_total`` always carries the count
-    of the *filtered* set so the frontend's "Showing N of T" + 'load more'
-    affordance stay correct under search.
+    of the *filtered* set, so the page's "1–200 of T" stays correct under
+    search.
     """
-    # Build the search predicate once so it's applied identically to the page
-    # query AND the count query — otherwise subnets_total would describe the
-    # full set while subnets shows the filtered page.
-    search_filter = None
+    # ONE filtered query of which subnets are listed: the page and the total
+    # are both derived from it, so the total cannot describe another set.
+    subnet_q = db.query(Subnet).filter(Subnet.scope_id == scope.id)
     if subnets_search and subnets_search.strip():
         like = f"%{escape_like(subnets_search.strip())}%"
-        search_filter = or_(
+        subnet_q = subnet_q.filter(or_(
             Subnet.cidr.ilike(like, escape="\\"),
             Subnet.description.ilike(like, escape="\\"),
-        )
-
-    # ONE statement of which subnets are listed, for the page and both counts.
-    listed = Subnet.scope_id == scope.id
-    subnet_q = db.query(Subnet).filter(listed)
-    if search_filter is not None:
-        subnet_q = subnet_q.filter(search_filter)
-    if with_findings_only:
-        subnet_q = (
-            subnet_q
-            .outerjoin(HostSubnetMapping)
-            .group_by(Subnet.id)
-            .having(func.count(HostSubnetMapping.id) > 0)
-        )
-        total_q = (
-            db.query(func.count(func.distinct(Subnet.id)))
-            .select_from(Subnet)
-            .outerjoin(HostSubnetMapping)
-            .filter(listed)
-            .group_by(Subnet.id)
-            .having(func.count(HostSubnetMapping.id) > 0)
-        )
-        if search_filter is not None:
-            total_q = total_q.filter(search_filter)
-        subnets_total_count = total_q.count()
-    else:
-        total_q = db.query(func.count(Subnet.id)).filter(listed)
-        if search_filter is not None:
-            total_q = total_q.filter(search_filter)
-        subnets_total_count = total_q.scalar() or 0
+        ))
+    subnets_total_count = subnet_q.with_entities(func.count(Subnet.id)).scalar() or 0
 
     subnet_q = subnet_q.order_by(Subnet.id.asc()).offset(subnets_skip)
     if subnets_limit is not None:
@@ -456,13 +421,6 @@ def _serialize_scope_with_subnets(
     summary="Fetch the project's scope (creating it if needed)",
 )
 def get_default_scope(
-    with_findings_only: bool = Query(
-        False,
-        description=(
-            "Restrict to subnets with at least one correlated host.  Defaults "
-            "to False here — the flat subnet editor shows every entry."
-        ),
-    ),
     subnets_skip: int = Query(0, ge=0, description="Offset into the subnets list (pagination)."),
     subnets_limit: Optional[int] = Query(
         None,
@@ -470,8 +428,8 @@ def get_default_scope(
         le=500,
         description=(
             "Page size for the subnets array.  Omitted = every subnet (legacy "
-            "behaviour).  6000+ subnet projects should pass e.g. 200 and use "
-            "subnets_total to drive a 'load more' affordance."
+            "behaviour).  6000+ subnet projects should pass e.g. 200 and page "
+            "with subnets_skip against subnets_total."
         ),
     ),
     subnets_search: Optional[str] = Query(
@@ -495,9 +453,7 @@ def get_default_scope(
     /scopes on a multi-MB payload + inline serialization.
     """
     scope = get_or_create_default_scope(db, project.id, user_id=current_user.id)
-    return _serialize_scope_with_subnets(
-        db, scope, with_findings_only, subnets_skip, subnets_limit, subnets_search,
-    )
+    return _serialize_scope_with_subnets(db, scope, subnets_skip, subnets_limit, subnets_search)
 
 
 @router.get("/coverage", response_model=ScopeCoverageSummary)
@@ -598,88 +554,29 @@ def get_scope_coverage(
     )
 
 
-@router.get("/{scope_id}", response_model=ScopeSchema)
-def get_scope(
-    scope_id: int,
-    with_findings_only: Optional[bool] = Query(True, description="Only show subnets with correlated host findings"),
-    subnets_skip: int = Query(
-        0,
-        ge=0,
-        description=(
-            "Offset into the scope's subnets list.  Default 0.  Combined "
-            "with subnets_limit for server-paginated detail pages "
-            "(v2.85.0)."
-        ),
-    ),
-    subnets_limit: Optional[int] = Query(
-        None,
-        ge=1,
-        le=500,
-        description=(
-            "Maximum number of subnets to return.  When omitted (the "
-            "pre-v2.85.0 default), every subnet is returned in one shot "
-            "for backward compatibility.  Frontends scaling to 6000+ "
-            "subnet projects should pass a page size (e.g. 200) and use "
-            "subnets_total to drive a 'load more' affordance."
-        ),
-    ),
-    subnets_search: Optional[str] = Query(
-        None,
-        description=(
-            "Case-insensitive substring filter over subnet cidr + description. "
-            "Applied before pagination, and reflected in subnets_total."
-        ),
-    ),
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    """Get a specific scope with its subnets, optionally filtered by findings.
-
-    v2.85.0 — pagination on the subnets array.  6000+ subnet projects
-    were 5+ MB payloads and seconds of inline serialization; passing
-    ``subnets_limit`` chunks the response and the frontend appends
-    subsequent pages.
-    """
-    scope = db.query(Scope).filter(Scope.id == scope_id, Scope.project_id == project.id).first()
-    if not scope:
-        raise HTTPException(status_code=404, detail="Scope not found")
-
-    return _serialize_scope_with_subnets(
-        db, scope, with_findings_only, subnets_skip, subnets_limit, subnets_search
-    )
 @router.get(
-    "/{scope_id}/host-mappings",
+    "/host-mappings",
     response_model=Paginated[HostSubnetMappingSchema],
 )
 def get_scope_host_mappings(
-    scope_id: int,
-    # v2.86.8 — paginate + add subnet_id filter.  Pre-fix this returned
-    # every mapping across every subnet of the scope on every page entry,
-    # which was the heaviest cost on ScopeDetail.tsx for projects with
-    # ~thousands of mapped hosts.  Back-compat: callers that omit
-    # subnet_id + limit still get every row in scope (up to the le=2000
-    # cap).  The frontend should pass subnet_id when the user opens a
-    # specific subnet's details panel.
     subnet_id: Optional[int] = Query(
         None,
-        description=(
-            "Filter mappings to a single subnet (v2.86.8).  Use when the "
-            "UI is rendering one subnet's host list and doesn't need the "
-            "rest."
-        ),
+        description="Only this subnet's mappings.  Another project's subnet lists nothing.",
     ),
     skip: int = Query(0, ge=0),
     limit: int = Query(2000, ge=1, le=2000),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    """Get host-subnet mappings for a specific scope, optionally
-    restricted to one subnet.  Paginated."""
-    scope = db.query(Scope).filter(Scope.id == scope_id, Scope.project_id == project.id).first()
-    if not scope:
-        raise HTTPException(status_code=404, detail="Scope not found")
-
-    q = db.query(HostSubnetMapping).join(Subnet).filter(Subnet.scope_id == scope_id)
+    """Host-subnet mappings of the project's scope, optionally restricted to
+    one subnet.  Paginated.  A read: a project with no scope yet lists
+    nothing, and none is created."""
+    q = (
+        db.query(HostSubnetMapping)
+        .join(Subnet, Subnet.id == HostSubnetMapping.subnet_id)
+        .join(Scope, Scope.id == Subnet.scope_id)
+        .filter(Scope.project_id == project.id)
+    )
     if subnet_id is not None:
         q = q.filter(HostSubnetMapping.subnet_id == subnet_id)
 
@@ -742,28 +639,42 @@ def _validate_cidr(cidr: str) -> str:
             detail=f"{shown!r} is not an IP address or CIDR range",
         )
     return str(net)
+
+
+def _project_subnet_or_404(db: Session, project_id: int, subnet_id: int) -> Subnet:
+    """The subnet, when it is an entry of THIS project's scope — another
+    project's id is not found, like one that does not exist."""
+    subnet = (
+        db.query(Subnet)
+        .join(Scope, Scope.id == Subnet.scope_id)
+        .filter(Subnet.id == subnet_id, Scope.project_id == project_id)
+        .first()
+    )
+    if not subnet:
+        raise HTTPException(status_code=404, detail="Subnet not found")
+    return subnet
+
+
 @router.post(
-    "/{scope_id}/subnets",
+    "/subnets",
     response_model=List[SubnetSchema],
     status_code=201,
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
-    summary="Add one or more subnets to a scope (analyst)",
+    summary="Add one or more subnets to the project's scope (analyst)",
 )
 def add_subnets(
-    scope_id: int,
     body: SubnetBatchCreate,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
 ):
-    """Manually add subnets to an existing scope.
+    """Manually add subnets to the project's scope.
 
-    Duplicates (same CIDR within the same scope) are rejected with 400.
+    Duplicates (same CIDR already in the scope) are rejected with 400.
     After insert the subnet-correlation service runs so any existing
     hosts map into the new subnets automatically.
     """
-    scope = db.query(Scope).filter(Scope.id == scope_id, Scope.project_id == project.id).first()
-    if not scope:
-        raise HTTPException(status_code=404, detail="Scope not found")
+    scope_id = get_or_create_default_scope(db, project.id, user_id=current_user.id).id
 
     # Normalize + validate up front so a bad entry doesn't partially insert.
     normalized: List[tuple] = []
@@ -813,13 +724,12 @@ def add_subnets(
 
 
 @router.patch(
-    "/{scope_id}/subnets/{subnet_id}",
+    "/subnets/{subnet_id}",
     response_model=SubnetSchema,
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
     summary="Edit a subnet (analyst)",
 )
 def update_subnet(
-    scope_id: int,
     subnet_id: int,
     body: SubnetUpdate,
     db: Session = Depends(get_db),
@@ -831,16 +741,7 @@ def update_subnet(
     host mappings reflect the new network.  Old mappings that no longer
     match are removed automatically by the correlation service.
     """
-    scope = db.query(Scope).filter(Scope.id == scope_id, Scope.project_id == project.id).first()
-    if not scope:
-        raise HTTPException(status_code=404, detail="Scope not found")
-    subnet = (
-        db.query(Subnet)
-        .filter(Subnet.id == subnet_id, Subnet.scope_id == scope_id)
-        .first()
-    )
-    if not subnet:
-        raise HTTPException(status_code=404, detail="Subnet not found")
+    subnet = _project_subnet_or_404(db, project.id, subnet_id)
 
     cidr_changed = False
     if body.cidr is not None and body.cidr != subnet.cidr:
@@ -848,7 +749,7 @@ def update_subnet(
         collision = (
             db.query(Subnet)
             .filter(
-                Subnet.scope_id == scope_id,
+                Subnet.scope_id == subnet.scope_id,
                 Subnet.cidr == new_cidr,
                 Subnet.id != subnet_id,
             )
@@ -882,29 +783,19 @@ def update_subnet(
 
 
 @router.delete(
-    "/{scope_id}/subnets/{subnet_id}",
+    "/subnets/{subnet_id}",
     response_model=MessageResponse,
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
-    summary="Delete a subnet from a scope (analyst)",
+    summary="Delete a subnet from the project's scope (analyst)",
 )
 def delete_subnet(
-    scope_id: int,
     subnet_id: int,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    """Remove a single subnet from a scope. FK cascades drop mappings."""
+    """Remove a single subnet from the scope. FK cascades drop mappings."""
     disable_statement_timeout(db)  # a wide subnet maps every host of the project
-    scope = db.query(Scope).filter(Scope.id == scope_id, Scope.project_id == project.id).first()
-    if not scope:
-        raise HTTPException(status_code=404, detail="Scope not found")
-    subnet = (
-        db.query(Subnet)
-        .filter(Subnet.id == subnet_id, Subnet.scope_id == scope_id)
-        .first()
-    )
-    if not subnet:
-        raise HTTPException(status_code=404, detail="Subnet not found")
+    subnet = _project_subnet_or_404(db, project.id, subnet_id)
     db.delete(subnet)
     db.commit()
     return {"message": "Subnet deleted successfully"}
@@ -925,7 +816,7 @@ def _scope_domain_rows(db: Session, project_id: int, domains: List[ScopeDomain])
     counts = dns_name_service.scope_domain_name_counts(db, project_id, domains)
     return [
         ScopeDomainRow(
-            id=d.id, scope_id=d.scope_id, domain=d.domain,
+            id=d.id, domain=d.domain,
             include_subdomains=bool(d.include_subdomains), description=d.description,
             created_at=d.created_at, name_count=counts.get(d.id, 0),
         )
@@ -947,39 +838,30 @@ def _scope_domain_page(db: Session, project_id: int, skip: int, limit: int) -> S
     return page
 
 
-def _load_scope_or_404(db: Session, scope_id: int, project_id: int) -> Scope:
-    scope = db.query(Scope).filter(Scope.id == scope_id, Scope.project_id == project_id).first()
-    if not scope:
-        raise HTTPException(status_code=404, detail="Scope not found")
-    return scope
-
-
 @router.get(
-    "/{scope_id}/domains",
+    "/domains",
     response_model=ScopeDomainPage,
     summary="List the domains declared in scope (paged)",
 )
 def list_scope_domains(
-    scope_id: int,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
     """Paged: a bulk import with declare-scope can create thousands of
-    entries, and the per-entry name counts are computed for the page only."""
-    _load_scope_or_404(db, scope_id, project.id)
+    entries, and the per-entry name counts are computed for the page only.
+    A read: a project with no scope yet lists nothing, and none is created."""
     return _scope_domain_page(db, project.id, skip, limit)
 
 
 @router.post(
-    "/{scope_id}/domains",
+    "/domains",
     response_model=ScopeDomainBatchResponse,
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
     summary="Declare domains in scope (analyst)",
 )
 def add_scope_domains(
-    scope_id: int,
     body: ScopeDomainBatchCreate,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
@@ -988,7 +870,7 @@ def add_scope_domains(
     """Idempotent: an existing entry widens (exact → include_subdomains) but
     never narrows.  ``*.example.com`` is accepted and stored as
     ``example.com`` with include_subdomains."""
-    scope = _load_scope_or_404(db, scope_id, project.id)
+    scope = get_or_create_default_scope(db, project.id, user_id=current_user.id)
     added, updated, invalid = dns_name_service.upsert_scope_domains(
         db, scope,
         [(d.domain, d.include_subdomains, d.description) for d in body.domains],
@@ -1005,21 +887,21 @@ def add_scope_domains(
 
 
 @router.delete(
-    "/{scope_id}/domains/{domain_id}",
+    "/domains/{domain_id}",
     response_model=MessageResponse,
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
     summary="Remove a domain from scope (analyst)",
 )
 def delete_scope_domain(
-    scope_id: int,
     domain_id: int,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    scope = _load_scope_or_404(db, scope_id, project.id)
+    # Looked up inside this project's scope: another project's id is a 404.
     row = (
         db.query(ScopeDomain)
-        .filter(ScopeDomain.id == domain_id, ScopeDomain.scope_id == scope.id)
+        .join(Scope, Scope.id == ScopeDomain.scope_id)
+        .filter(ScopeDomain.id == domain_id, Scope.project_id == project.id)
         .first()
     )
     if not row:

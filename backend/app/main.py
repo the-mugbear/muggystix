@@ -125,7 +125,7 @@ Top-level endpoints (no project scope): `/auth/`, `/users/`, `/audit/`, `/projec
    OS, vulnerability severity, follow status, tags, etc.) or the boolean query DSL.
 5. **Drill down** — `GET /projects/{id}/hosts/{host_id}` for full host detail
    including ports, scripts, notes, and vulnerabilities.
-6. **Export** — `GET /projects/{id}/export/scope/{scope_id}?format_type=json` or
+6. **Export** — `GET /projects/{id}/export/scope?format_type=json` or
    `GET /projects/{id}/hosts/tool-ready/{format}` for tool-compatible output.
 
 ### Personal review queue (JWT)
@@ -177,8 +177,9 @@ the **operator's own project permissions**, re-checked on every call.
 Agent keys are project-scoped and time-limited (default 24h, `AGENT_KEY_TTL_HOURS`)
 and bound to **one** session; what the session writes (host tests, evidence,
 proposals, notes, uploads) carries its id. The `agent-browse` tag below
-documents the host/scope/dashboard surface (reads, plus the three assist
-writes).
+documents the session routes and the three writes on a host. Every agent list
+a caller can page takes `limit` and `offset` and answers
+`{items, total, limit, offset, returned, has_more}`.
 
 ## Error conventions
 
@@ -272,7 +273,7 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "agent-browse",
-        "description": "Browse surface every agent session shares: hosts, scans, scopes, dashboard, notes, follows. Mostly reads, plus three project writes an assist agent may make when the operator's role permits (analyst+): notes (`POST /agent/hosts/{id}/notes`), review status (`POST .../follow`), and hostname/OS (`PATCH /agent/hosts/{id}`) — otherwise 403. Authenticated via `X-API-Key`; data is automatically scoped to the agent's project.",
+        "description": "The session itself (`/agent/identity`, `/agent/session/renew`, `/agent/session/end`) and the three project writes an agent may make on a host when the operator's role permits (analyst+): notes (`POST /agent/hosts/{id}/notes`), review status (`POST .../follow`), and hostname/OS (`PATCH /agent/hosts/{id}`) — otherwise 403. Also the reads that predate `/agent/assist/*` (`/agent/project`, `/agent/dashboard`, `/agent/hosts`, `/agent/hosts/{id}`, `/agent/hosts/{id}/notes`, `/agent/scans`): kept for existing curl clients, bare arrays with no total — for new work use the `agent-assist` reads, which are paged. Authenticated via `X-API-Key`; data is automatically scoped to the agent's project.",
     },
     {
         "name": "agent-host-tests",
@@ -292,7 +293,7 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "agent-assist",
-        "description": "Interactive query surface for an assist agent: project context, host inventory (Hosts-page filter vocabulary), scopes, and scans. The session acts with the operator's own project permissions — reads for anyone; the three project writes (notes / review status / hostname-OS, under the `agent-browse` tag) succeed only for an operator whose role can write (analyst+), else 403. Authenticated via `X-API-Key`; project-scoped. Lets an operator's AI of choice answer ad-hoc questions about project data without minting a plan or scope key.",
+        "description": "Interactive query surface for an assist agent: project context, host inventory (Hosts-page filter vocabulary), the scope, scans, findings and the pages' own reads; lists are paged (`limit` / `offset` → `{items, total, limit, offset, returned, has_more}`). The session acts with the operator's own project permissions — reads for anyone; the three project writes (notes / review status / hostname-OS, under the `agent-browse` tag) succeed only for an operator whose role can write (analyst+), else 403. Authenticated via `X-API-Key`; project-scoped. Lets an operator's AI of choice answer ad-hoc questions about project data without minting a plan or scope key.",
     },
     {
         "name": "agent-feedback",
@@ -363,7 +364,10 @@ app.add_middleware(
 # an agent.  Writes happen AFTER the response is sent, in a fresh DB
 # session, so this never blocks the agent's request loop.  See
 # app/services/agent_api_log_service.py.
-from app.services.agent_api_log_service import AgentApiCallLogger
+from app.services.agent_api_log_service import (
+    AgentApiCallLogger,
+    retention_days as agent_api_call_retention_days,
+)
 app.add_middleware(AgentApiCallLogger)
 
 # Review 2026-10-07 — a body is read before authentication, so it is capped
@@ -739,10 +743,9 @@ async def well_known_identity():
             # Every authenticated /agent/* request is recorded and shown to the
             # operator — and purged after the retention window, so the claim
             # is "recorded" plus the window, never "persistent" (that key is
-            # retired). Read as startup.agent_api_call_retention_loop reads
-            # it: the same variable and default; 0 (or less) = kept.
+            # retired). The retention loop's own reader: 0 = kept.
             'audit_trail_recorded': True,
-            'audit_trail_retention_days': max(0, int(os.getenv('AGENT_API_CALL_RETENTION_DAYS', '90'))),
+            'audit_trail_retention_days': agent_api_call_retention_days(),
             # How commands are controlled — the AGENT'S contract, which the
             # server cannot observe. The boundary that actually holds is the
             # client's sandbox; the server contributes the record and the

@@ -69,11 +69,30 @@ argument on `host_tests_propose`, `record_evidence`, the four `propose_*` tools,
 session keeps the last one, and a host test, an evidence record or a proposal
 snapshots the attribution when it is written (`API_GUIDE.md` §6.8).
 
-Each tool also carries a `workflows` tag that the reference page groups by:
-`assist` (the `assist_*` and `remediation_*` tools), `testing` (`host_tests_*`)
-or `scope` (`scope_*`). Every other tool — the session and catalogue tools,
-`get_upload_job`, evidence and proposals — carries all three and is shown as
-shared. The tag is presentation, never a filter.
+On the reference page each tool is filed under a heading — `assist` (the
+`assist_*` and `remediation_*` tools), `testing` (`host_tests_*`) or `scope`
+(`scope_*`); every other tool (the session and catalogue tools,
+`get_upload_job`, evidence and proposals) is under all three and shown once, as
+shared. The catalogue carries the headings in each tool's `workflows` field,
+which names no kind of session (there is one kind): it is presentation, never a
+filter.
+
+**Paged lists.** Every list tool a caller can page takes `limit` and `offset`
+and answers `{items, total, limit, offset, returned, has_more}` beside whatever
+else it returns: `total` is every row the filters match (the answer to "how
+many"), `returned` the length of `items`, and `has_more` says rows remain — ask
+again with `offset` + `returned`. A tool description that says "paged" means
+exactly this. The helper is `agent_schemas.agent_page`, and
+`tests/test_agent_list_paging.py` lists the routes: the host, finding, name,
+scan, note, segment and scanner-observation lists, the untouched queue and the
+operator's findings, evidence, proposals, host tests, the remediation list and
+timeline, and the scope's subnets and domains. An argument a tool does not take
+(`skip`, say) is an unknown argument (`-32602`). Five reads are not this page
+and say so in their descriptions: `assist_list_evidence_gaps`,
+`assist_list_ingestion_issues`, `assist_get_terrain` and `assist_compare_scans`
+carry a capped list with its count beside it and no `offset`;
+`assist_get_client_report` pages its `findings` member (`findings_total`,
+`findings_has_more`).
 
 ### Remediation tracking
 
@@ -119,7 +138,7 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 | "Which hosts match …?" / "What is on this host?" | `assist_list_hosts` (the Hosts page's `q=` language) · `assist_get_host` (by id or address) |
 | "What are our critical findings?" | `assist_list_findings` — project-wide, with `severity_counts` |
 | "What has nobody picked up?" | `assist_list_findings` with `unowned=true` (findings nobody owns) · `assist_count_hosts` with `q=has:critical AND assigned:none` (hosts with a critical scanner observation and nobody assigned — a different question) |
-| "What do we already know about this host?" | `assist_get_host_notes` (paged — read `has_more`) |
+| "What do we already know about this host?" | `assist_get_host_notes` (paged) |
 | "Which scanner rows are on this host?" | `assist_get_host_vulnerabilities` — raw scanner observations, not findings; each row says whether a finding covers it on this host |
 | "Every web interface on this host, not just the ten on host detail?" | `assist_list_host_web_interfaces` |
 | "What did NetExec find on this host, and was it read right?" | `assist_list_host_access` — each result's interpreted fields beside the tool's line |
@@ -159,9 +178,8 @@ The assist surface is meant to answer whatever an analyst asks about a project.
   `my_findings` and `followups` 15, `recent_notes` 8. "How many" is answered
   from the counts, never from a list's length; the tool description names the
   read that returns each whole list.
-* `setup` — whether the project has anything in it yet: `has_hosts`,
-  `has_scopes` (the scope has at least one subnet entry), `scope_rows`,
-  `only_scope_id`.
+* `setup` — whether the project has anything in it yet: `has_hosts` and
+  `has_scopes` (the scope has at least one subnet entry). It names no scope.
 * `since_last_visit`, `blockers` (imports that need someone) and `followups`
   (the operator's own finished reviews whose host changed afterwards).
 * There are no project-wide measures and no team roster in it: those are the
@@ -195,9 +213,8 @@ what is deliberately *not* a tool — is in [ASSIST_TOOLS.md](ASSIST_TOOLS.md).
 Three things an assist agent is routinely asked for, and how each is served:
 
 * **"How many hosts …?"** — `assist_count_hosts` takes the same `q=` language
-  and returns a total. `assist_list_hosts` returns `{items, total, has_more,
-  limit, offset}`: quote `total`, never the length of `items` — a page is not a
-  total.
+  and returns a total. `assist_list_hosts` is paged: quote `total`, never the
+  length of `items` — a page is not a total.
 * **A filter the server cannot understand is refused, never ignored.** A
   discrete filter value that cannot be read (`ports=80-90`, an unknown `state`,
   a `subnets` value that is not a network, a list that names nothing) is a 422

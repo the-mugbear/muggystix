@@ -40,7 +40,7 @@ const Harness: React.FC<{ onReady: (give: (t: string) => Promise<void>) => void 
 const inAnHour = () => new Date(Date.now() + 3_600_000).toISOString();
 const anHourAgo = () => new Date(Date.now() - 3_600_000).toISOString();
 const session = (over = {}) => ({
-  kind: 'project', id: 79, project_id: 1, status: 'active', user_id: 7,
+  id: 79, project_id: 1, status: 'active', user_id: 7,
   key_expires_at: inAnHour(), ...over,
 });
 const listed = (...sessions: object[]) => ({ project_id: 1, sessions, total: sessions.length });
@@ -57,9 +57,9 @@ describe('useAgentTask', () => {
     let give!: (t: string) => Promise<void>;
     render(<Harness onReady={(g) => { give = g; }} />);
     await act(() => give('Propose tests for host 5'));
-    // Asked of the server: this operator's active project sessions.
+    // Asked of the server: this operator's active sessions.
     expect(api.listAgentSessions).toHaveBeenCalledWith(
-      1, { kind: 'project', status: 'active', user_id: 7 }, expect.anything(),
+      1, { status: 'active', user_id: 7 }, expect.anything(),
     );
     expect(copy).toHaveBeenCalledWith('Propose tests for host 5');
     expect(toast.success.mock.calls[0][0]).toContain('session #79');

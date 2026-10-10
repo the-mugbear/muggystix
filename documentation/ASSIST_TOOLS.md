@@ -30,9 +30,9 @@ Every tool is text in the model's context on every session. One session does
 every kind of work, so `tools/list` returns the whole catalogue: a tool added
 for assist is context spent by a session that only uploads scans too.
 
-The catalogue is 69 tools, 38 of them `assist_*` (35 reads and 3 writes);
+The catalogue is 71 tools, 38 of them `assist_*` (35 reads and 3 writes);
 `GET /api/v1/references/mcp-tools` is the live list. Their descriptions come to
-about 5,000 words, and that number is watched: a description says what the tool
+about 5,500 words, and that number is watched: a description says what the tool
 returns and the one or two things an agent gets wrong without being told, and
 nothing else.
 
@@ -149,7 +149,7 @@ service:
   port or a critical / high observation afterwards, one row per host. The
   team-wide question is `q=has:changed_since_review`.
 * `setup` — whether the project has anything in it yet (`has_hosts`,
-  `has_scopes`, `scope_rows`, `only_scope_id`); `since_last_visit`; `blockers`.
+  `has_scopes`); `since_last_visit`; `blockers`.
 * No project-wide measures and no team roster: "hosts tested", "untouched with
   a critical observation" and "what the team is already reviewing" are the
   `total` of `assist_list_hosts q=has:tested`, `q=has:untouched has:critical`
@@ -159,8 +159,11 @@ service:
 the page's own function (`operations_read_service.compute_my_findings`), keyed
 to the session's operator, at the page's role (any member), in the page's
 order. It answers the page's body (`items`, `total_open`, `need_counts`) plus
-`total` — the size of the list THIS call pages, i.e. `need_counts[need]`, or
-`total_open` with no `need` — and `limit`, `offset`, `has_more`.
+the agents' page, whose `total` is the size of the list THIS call pages, i.e.
+`need_counts[need]`, or `total_open` with no `need`. `assist_list_worth_a_look`
+is built the same way over the untouched queue: the page's body (`queue_total`,
+`tier_counts`, …) plus the agents' page, `total` being the tier's own count
+when `tier` is passed.
 
 ---
 
@@ -341,3 +344,16 @@ description and, where the endpoint's own text is not enough, a per-argument
 description — the arguments themselves come from the route. A filter the
 endpoint cannot understand is a 422 naming the value, never an ignored filter.
 A new payload field on an existing read is preferred to a new tool.
+
+**A list a caller can page answers the one page.** Arguments `limit` and
+`offset`; answer `{items, total, limit, offset, returned, has_more}` beside
+whatever else the read says, built by `agent_schemas.agent_page` (the model
+subclasses `AgentPage`). Where the page's service already counts the list the
+call pages, `total` is that figure — never a second count beside it. The envelope belongs to the
+agents' route: the page's route and the shared service keep their own answer
+(the two router factories two doors share, host tests and remediation, take the
+envelope as an argument on the agents' mount). Add the route to
+`tests/test_agent_list_paging.py` — as paged, or with the reason it is not
+(today: evidence gaps, ingestion issues, the terrain and the scan comparison
+carry a capped list with its count and no `offset`; one client report pages its
+`findings` member).

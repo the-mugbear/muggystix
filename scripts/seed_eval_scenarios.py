@@ -633,7 +633,7 @@ def discussion_users(c: Ctx) -> dict[str, tuple[User, str]]:
         u = c.db.query(User).filter(User.username == username).first()
         if u is None:
             u = User(username=username, email=f"{username}@eval.test", full_name=full_name,
-                     role=UserRole.MEMBER, is_active=True, is_verified=True, created_by_id=c.owner.id,
+                     role=UserRole.MEMBER, is_active=True, created_by_id=c.owner.id,
                      hashed_password=get_password_hash(password))
             c.db.add(u)
         else:

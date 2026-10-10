@@ -127,9 +127,12 @@ def test_agent_investigate_equals_the_page_and_pages(client, db_session, test_pr
     agent = client.get("/api/v1/agent/assist/workbench/investigate", headers=headers)
     page = client.get(_ui(pid, "/workbench/investigate"))
     assert agent.status_code == 200 and page.status_code == 200
-    assert agent.json() == page.json()
+    # The page's own answer, key for key, plus the agents' page words.
+    words = {"total", "limit", "offset", "returned", "has_more"}
+    assert {k: v for k, v in agent.json().items() if k not in words} == page.json()
     total = agent.json()["queue_total"]
     assert total >= 2  # the two untouched hosts with observations
+    assert agent.json()["total"] == total and agent.json()["returned"] == len(agent.json()["items"])
 
     # Paging: the second row alone, with whole-queue totals.
     second = client.get(
@@ -139,6 +142,15 @@ def test_agent_investigate_equals_the_page_and_pages(client, db_session, test_pr
     assert [r["host_id"] for r in second["items"]] == [agent.json()["items"][1]["host_id"]]
     assert second["queue_total"] == total
     assert second["tier_counts"] == agent.json()["tier_counts"]
+    assert (second["total"], second["returned"], second["has_more"]) == (total, 1, total > 2)
+
+    # One tier: `total` is that tier's own count — the list this call pages.
+    tier = agent.json()["items"][0]["tier"]
+    one = client.get(
+        "/api/v1/agent/assist/workbench/investigate", params={"tier": tier}, headers=headers,
+    ).json()
+    assert one["total"] == one["tier_counts"][tier - 1] == len(one["items"])
+    assert one["queue_total"] == total
 
     # Past the end: no rows, totals still whole.
     past = client.get(
@@ -322,9 +334,10 @@ def test_agent_evidence_gaps_equal_the_page(client, db_session, test_project):
     bad_domain = client.get(
         "/api/v1/agent/assist/evidence/gaps", params={"domain": "nope"}, headers=headers,
     )
-    assert bad_domain.status_code == 404
-    assert bad_domain.json()["detail"]["error"] == "unknown_domain"
-    assert "web_tls" in bad_domain.json()["detail"]["accepted"]
+    # The domain is typed on the route: a value that is not one is a 422
+    # naming the accepted ones (the MCP tool derives its enum from the same).
+    assert bad_domain.status_code == 422
+    assert "web_tls" in bad_domain.text and "nope" in bad_domain.text
     # MCP acceptance feedback #15: a CIDR where a matrix key belongs — the
     # refusal names the keys that would work.
     bad_seg = client.get(
@@ -402,8 +415,15 @@ def test_agent_scan_hosts_equal_the_scan_pages_as_scanned_table(client, db_sessi
     page = client.get(_ui(pid, f"/scans/{scan.id}/host-snapshots"))
     agent = client.get(f"/api/v1/agent/assist/scans/{scan.id}/hosts", headers=headers)
     assert page.status_code == 200 and agent.status_code == 200, agent.text
-    assert agent.json() == page.json()
+    # The page's rows and total, in the agents' page (`offset`, not `skip`).
+    assert (agent.json()["items"], agent.json()["total"]) == (page.json()["items"], page.json()["total"])
+    assert "skip" not in agent.json()
     assert [r["credentialed"] for r in agent.json()["items"]] == [True, False, None]
+    second = client.get(
+        f"/api/v1/agent/assist/scans/{scan.id}/hosts", params={"limit": 1, "offset": 1}, headers=headers,
+    ).json()
+    assert second["items"] == page.json()["items"][1:2]
+    assert (second["offset"], second["returned"], second["has_more"]) == (1, 1, True)
 
     # Another project's scan is not found, not empty.
     from app.db.models_project import Project

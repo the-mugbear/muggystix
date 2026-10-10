@@ -106,7 +106,6 @@ def _persist_admin(db_session, password):
         hashed_password=get_password_hash(password),
         role=UserRole.ADMIN,
         is_active=True,
-        is_verified=True,
         created_at=datetime.now(timezone.utc),
     )
     db_session.add(admin)

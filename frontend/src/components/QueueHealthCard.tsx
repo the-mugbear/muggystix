@@ -28,6 +28,7 @@ import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
 import { InlineLoader } from './ui/inline-loader';
 import { cn } from '../utils/cn';
+import { importResultsPath } from '../utils/importResultsPath';
 
 /** How many projects the failed-jobs breakdown names before "and N more". */
 const MAX_FAILED_PROJECTS = 5;
@@ -42,9 +43,9 @@ type QueueSurface = {
 };
 
 const INGESTION_SURFACE: QueueSurface = {
-  queuedHref: '/parse-errors?status=queued',
-  inFlightHref: '/parse-errors?status=processing',
-  failedHref: '/parse-errors?status=failed',
+  queuedHref: importResultsPath({ status: 'queued' }),
+  inFlightHref: importResultsPath({ status: 'processing' }),
+  failedHref: importResultsPath({ status: 'failed' }),
 };
 const REPORT_SURFACE: QueueSurface = {};
 

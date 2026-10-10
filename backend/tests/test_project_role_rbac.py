@@ -33,7 +33,6 @@ def member(db_session):
         hashed_password="x",
         role=UserRole.MEMBER,
         is_active=True,
-        is_verified=True,
     )
     db_session.add(user)
     db_session.commit()
@@ -319,7 +318,7 @@ def test_finding_owner_rejects_non_member(member_client, db_session, test_projec
     from app.db.models_auth import User, UserRole
     _set_role(db_session, test_project, member, "analyst")
     outsider = User(id=99, username="outsider", email="o@x.co", full_name="O",
-                    hashed_password="x", role=UserRole.MEMBER, is_active=True, is_verified=True)
+                    hashed_password="x", role=UserRole.MEMBER, is_active=True)
     db_session.add(outsider)
     f = Finding(project_id=test_project.id, title="t", severity="high",
                 status="open", source="manual")

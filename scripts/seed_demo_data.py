@@ -216,8 +216,8 @@ def seed(db, name: str, host_count: int, owner: User):
     review_hosts = RNG.sample(hosts, max(5, host_count // 5))
     for h in review_hosts:
         roll = RNG.random()
-        status = (FollowStatus.IN_REVIEW if roll < 0.5
-                  else FollowStatus.REVIEWED if roll < 0.8 else FollowStatus.WATCHING)
+        # The two states a host can be put in (``watching`` is retired).
+        status = FollowStatus.IN_REVIEW if roll < 0.5 else FollowStatus.REVIEWED
         assigned = roll < 0.6
         db.add(models.HostFollow(
             host_id=h.id, user_id=owner.id, status=status,

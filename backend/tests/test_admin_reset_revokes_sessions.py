@@ -23,7 +23,6 @@ def _target_with_session(db_session):
         hashed_password="x",
         role=UserRole.MEMBER,
         is_active=True,
-        is_verified=True,
     )
     db_session.add(target)
     db_session.flush()

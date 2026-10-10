@@ -26,6 +26,7 @@ import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
 import { useListCursor } from '../hooks/useListCursor';
 import { usePagedList } from '../hooks/usePagedList';
+import { PagedFooter } from '../components/operations/QueueParts';
 import { useUrlPage } from '../hooks/useUrlPage';
 import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { TableSkeleton } from '../components/PageSkeleton';
@@ -747,8 +748,6 @@ const Names: React.FC = () => {
     }
   };
 
-  const from = total === 0 ? 0 : page * PAGE_SIZE + 1;
-  const to = Math.min(total, (page + 1) * PAGE_SIZE);
   const multiPage = total > PAGE_SIZE;
   const activeLabel = state === 'all' ? 'All names' : STATE_OPTIONS.find((o) => o.value === state)?.label ?? 'Names';
 
@@ -849,18 +848,12 @@ const Names: React.FC = () => {
       )}
 
       {/* v5.288.0 — a section over a thin rule, not a bordered card (§7); the
-          pager shows only when the list spans more than one page. */}
+          pager (at the foot) shows only when the list spans more than one page. */}
       <PostureSection
         title={
           <>
             {activeLabel}
-            {total > 0 && (
-              <SectionCount>
-                {multiPage
-                  ? `${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()}`
-                  : total.toLocaleString()}
-              </SectionCount>
-            )}
+            {total > 0 && <SectionCount>{total.toLocaleString()}</SectionCount>}
           </>
         }
         description={
@@ -868,18 +861,6 @@ const Names: React.FC = () => {
             Evidence chips name the kind of observation; the number beside one counts how many were recorded.
             <InfoTip label="About the evidence chips" text={<EvidenceLegend />} />
           </span>
-        }
-        actions={
-          multiPage ? (
-            <span className="flex gap-xs" role="group" aria-label="Pages">
-              <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage(page - 1)}>
-                Previous
-              </Button>
-              <Button size="sm" variant="outline" disabled={to >= total} onClick={() => setPage(page + 1)}>
-                Next
-              </Button>
-            </span>
-          ) : undefined
         }
       >
           {loading && rows.length === 0 ? (
@@ -1004,6 +985,19 @@ const Names: React.FC = () => {
                 </TableBody>
               </Table>
             </div>
+          )}
+          {/* The shared footer ("101–200 of 240 · page 2 of 3"), at the foot of
+              the list like every other paged list; the heading keeps the
+              count.  It was a range and Previous / Next in the heading.  While
+              another page loads the previous rows stay under the page that
+              was asked for, so the range is cut at the total. */}
+          {multiPage && rows.length > 0 && (
+            <PagedFooter
+              pager={{ page, pageSize: PAGE_SIZE, total, onPage: setPage }}
+              shown={Math.max(0, Math.min(rows.length, total - page * PAGE_SIZE))}
+              noun="names"
+              busy={loading}
+            />
           )}
       </PostureSection>
 

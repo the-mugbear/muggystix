@@ -71,7 +71,7 @@ class TwoSessions:
             user = User(
                 username=f"race-{tag}", email=f"race-{tag}@example.com", full_name="Race Tester",
                 hashed_password=get_password_hash("Race-Password-123!"),
-                role=UserRole.MEMBER, is_active=True, is_verified=True,
+                role=UserRole.MEMBER, is_active=True,
             )
             project = Project(name=f"race-{tag}", slug=f"race-{tag}", description="two-connection test")
             db.add_all([user, project])

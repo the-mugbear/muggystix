@@ -13,13 +13,14 @@ import ErrorBoundary from './components/ErrorBoundary';
 import HubRedirect from './components/HubRedirect';
 import SessionExpiryNotice from './components/SessionExpiryNotice';
 import { ListPageSkeleton, DetailSkeleton, CardListSkeleton } from './components/PageSkeleton';
+import { importResultsPath } from './utils/importResultsPath';
 import Login from './pages/Login';
 import NotFound, { ProjectsRedirect } from './pages/NotFound';
 
 /**
  * Route-aware Suspense fallback (audit H16 + PRF·H2).  Pre-audit every
  * lazy route used ListPageSkeleton, which is table-shaped.  Detail
- * pages (`/scopes/:id`, `/hosts/:id`, `/findings/:id`) flashed a
+ * pages (`/hosts/:id`, `/findings/:id`) flashed a
  * table skeleton then reflowed into a header+content layout,
  * displacing scroll-anchor targets and sticky action bars.
  *
@@ -38,9 +39,6 @@ type RouteSkeletonKind = 'list' | 'detail' | 'cards';
 // `/scans` would resolve to list.
 const ROUTE_SKELETON: Array<{ pattern: string; kind: RouteSkeletonKind }> = [
   // detail
-  // v4.50.0 — ScopeDetail retired; /scopes/:id redirects to /scopes
-  // synchronously (no lazy boundary), so it no longer needs a
-  // skeleton entry.
   { pattern: '/hosts/:id', kind: 'detail' },
   // /scans/compare must precede /scans/:id so the picker gets the
   // card skeleton rather than the detail skeleton.
@@ -99,7 +97,7 @@ const Scans = lazy(() => import('./pages/ScansHub'));
 const ScanDetail = lazy(() => import('./pages/ScanDetail'));
 const ScanDiff = lazy(() => import('./pages/ScanDiff'));
 const Hosts = lazy(() => import('./pages/Hosts'));
-const Activity = lazy(() => import('./pages/Activity'));
+const Activity = lazy(() => import('./pages/Collaboration'));
 const Proposals = lazy(() => import('./pages/Proposals'));
 const HostDetail = lazy(() => import('./pages/HostDetail'));
 const Scopes = lazy(() => import('./pages/Scopes'));
@@ -126,7 +124,6 @@ const AdminGuide = lazy(() => import('./pages/userguide/AdminGuide'));
 const SbomReference = lazy(() => import('./pages/SbomReference'));
 const ToolCoverage = lazy(() => import('./pages/ToolCoverage'));
 const McpReference = lazy(() => import('./pages/McpReference'));
-const AssistSessions = lazy(() => import('./pages/AssistSessions'));
 const AgentSessionDetail = lazy(() => import('./pages/AgentSessionDetail'));
 const Feedback = lazy(() => import('./pages/Feedback'));
 const AuditLog = lazy(() => import('./pages/AuditLog'));
@@ -134,7 +131,7 @@ const LLMSettings = lazy(() => import('./pages/LLMSettings'));
 const IntegrationSettings = lazy(() => import('./pages/IntegrationSettings'));
 const ForceChangePassword = lazy(() => import('./pages/ForceChangePassword'));
 const ForceTwoFactorSetup = lazy(() => import('./pages/ForceTwoFactorSetup'));
-const ProjectActivity = lazy(() => import('./pages/ProjectActivity'));
+const AgentSessions = lazy(() => import('./pages/AgentSessions'));
 // v2.56.0 — cross-project SOC-correlation page.  Different intent from
 // /activity (notes/notifications) and /agent-activity (per-project
 // agent timeline): asks "what tools ran across all my projects at
@@ -151,10 +148,7 @@ const ReportDetail = lazy(() => import('./pages/ReportDetail'));
 /** `/parse-errors?status=failed` → `/scans?view=results&status=failed`. */
 function RedirectToImportResults() {
   const { search, hash } = useLocation();
-  const params = new URLSearchParams(search);
-  params.delete('view');
-  const rest = params.toString();
-  return <Navigate to={`/scans?view=results${rest ? `&${rest}` : ''}${hash}`} replace />;
+  return <Navigate to={`${importResultsPath(new URLSearchParams(search))}${hash}`} replace />;
 }
 
 // Route-level error boundary for the page area inside Layout. Keyed on
@@ -411,25 +405,9 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
-                      {/* v5.173.0 — AI Assist review, keyed by the detail
-                          row's id. v5.312.0 — both paths redirect: the list
-                          to Agent Sessions, a session to its page below. */}
-                      <Route
-                        path="/assist-sessions"
-                        element={
-                          <ProtectedRoute requiredRole="viewer">
-                            <Navigate to="/agent-activity" replace />
-                          </ProtectedRoute>
-                        }
-                      />
-                      <Route
-                        path="/assist-sessions/:sessionId"
-                        element={
-                          <ProtectedRoute requiredRole="viewer">
-                            <AssistSessions />
-                          </ProtectedRoute>
-                        }
-                      />
+                      {/* (`/assist-sessions` and `/assist-sessions/:id`, the
+                          addresses of a session by an id it no longer has,
+                          ended in 5.383.0: they are the not-found page.) */}
                       {/* v5.312.0 — one agent session: its state, controls,
                           the work it opened, notes and calls. */}
                       {/* The list lives at /agent-activity; /agent-sessions is
@@ -449,7 +427,7 @@ function App() {
                         path="/agent-activity"
                         element={
                           <ProtectedRoute requiredRole="viewer">
-                            <ProjectActivity />
+                            <AgentSessions />
                           </ProtectedRoute>
                         }
                       />
@@ -492,17 +470,6 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
-                      {/* v4.50.0 — ScopeDetail retired.  Project has
-                          exactly one scope (since v2.9.4) so the
-                          per-scope detail page duplicated /scopes for
-                          everything except its "Mapped Hosts" tab,
-                          which is now served better by /hosts with a
-                          subnets filter.  Redirect preserves any
-                          bookmarks / shared links. */}
-                      <Route
-                        path="/scopes/:scopeId"
-                        element={<Navigate to="/scopes" replace />}
-                      />
                       <Route
                         path="/posture"
                         element={
@@ -542,8 +509,9 @@ function App() {
                       {/* 5.380.0 — Ingestion Results is the Scans page's "Import
                           results" view.  Both of its old paths land there, and
                           links and bookmarks keep their filters (?status=…,
-                          ?job_id=…).  Kept until nothing links to them: the
-                          in-app links still say /parse-errors. */}
+                          ?job_id=…).  No in-app link uses them any more
+                          (utils/importResultsPath builds the real address);
+                          they stay for bookmarks and old notification links. */}
                       <Route path="/ingestion-results" element={<RedirectToImportResults />} />
                       <Route path="/parse-errors" element={<RedirectToImportResults />} />
                       <Route

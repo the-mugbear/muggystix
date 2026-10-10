@@ -95,7 +95,7 @@ Coverage has a `68%` ratchet floor (`--cov-fail-under` in `backend/pytest.ini`) 
 
 Location: [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests)
 
-Frontend coverage has grown well beyond the original dashboard/version smoke tests. It now spans page-level views (`Hosts`, `Operations`, `ProjectActivity`, `AgentSessionDetail`, the scan compare view), shared components (`HostFilters`, `HostCommandBar`, `HostInspector`, `ProposeTestsDialog`), and pure utilities (`dslFromFilters`, `toolReadyOutput`, `navigation`, `versionConsistency`). Tests assert visible outcomes and the host query-DSL translation rather than implementation details.
+Frontend coverage has grown well beyond the original dashboard/version smoke tests. It now spans page-level views (`Hosts`, `Operations`, `AgentSessions`, `AgentSessionDetail`, the scan compare view), shared components (`HostFilters`, `HostCommandBar`, `HostInspector`, `ProposeTestsDialog`), and pure utilities (`dslFromFilters`, `toolReadyOutput`, `navigation`, `versionConsistency`). Tests assert visible outcomes and the host query-DSL translation rather than implementation details.
 
 Run locally:
 

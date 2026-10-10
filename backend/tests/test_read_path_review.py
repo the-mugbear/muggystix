@@ -657,7 +657,7 @@ def test_adding_subnets_reads_the_hosts_once_however_many_are_added(client, db_s
 
     body = {"subnets": [{"cidr": f"10.24.{n}.0/24", "description": f"net {n}"} for n in range(1, 9)]}
     with statements(db_session) as seen:
-        response = client.post(f"/api/v1/projects/{pid}/scopes/{scope.id}/subnets", json=body)
+        response = client.post(f"/api/v1/projects/{pid}/scopes/subnets", json=body)
     assert response.status_code == 201, response.text
     created = response.json()
     assert [row["cidr"] for row in created] == [item["cidr"] for item in body["subnets"]]
@@ -843,7 +843,7 @@ def wide_estate(db_session, test_project, test_user):
     other_user = User(
         id=test_user.id + 100,   # the fixture's user took id 1 without the sequence
         username="wide-other", email="wide-other@example.com", full_name="Other",
-        hashed_password="x", role=UserRole.MEMBER, is_active=True, is_verified=True,
+        hashed_password="x", role=UserRole.MEMBER, is_active=True,
     )
     db_session.add(other_user)
     db_session.flush()
@@ -1026,8 +1026,8 @@ def _wide_pairs(db, pid, user, facts):
             models.Host.id.in_(
                 db.query(Annotation.host_id).join(H3, H3.id == Annotation.host_id)
                 .filter(H3.project_id == pid, Annotation.body.ilike("%rotate%")).distinct())),
-        "tested": (P.has_test_execution_predicate(pid), models.Host.id.in_(tested_host_ids(pid))),
-        "planned": (P.has_plan_entry_predicate(pid), models.Host.id.in_(planned_host_ids(pid))),
+        "tested": (P.tested_predicate(pid), models.Host.id.in_(tested_host_ids(pid))),
+        "planned": (P.planned_predicate(pid), models.Host.id.in_(planned_host_ids(pid))),
         "local admin": (
             P.local_admin_predicate(),
             models.Host.id.in_(

@@ -21,7 +21,7 @@ from app.db.models_agent import Agent
 from app.db.models_project import ProjectRole
 from app.api.deps import agent_read_floor, check_agent_rate_limit
 from app.api.v1.endpoints.agent_schemas import (
-    ReconUploadResponse, ReconJobStatus,
+    AgentRowsPage, ReconUploadResponse, ReconJobStatus, agent_page,
 )
 from app.api.v1.endpoints.agent_common import load_agent_session
 from app.services.default_scope import project_scope
@@ -59,19 +59,23 @@ def _scope_id(db: Session, agent: Agent) -> int:
 # one: `/agent/scope/…`.  They were `/agent/scopes/{scope_id}/…`.
 # ---------------------------------------------------------------------------
 
+class ScopeDomainsPage(AgentRowsPage):
+    note: str = ""
+
+
 @router.get(
     "/scope/subnets",
+    response_model=AgentRowsPage,
     summary="The project's in-scope subnets and addresses, paginated",
 )
 def get_scope_subnets(
-    offset: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """The project's subnet CIDRs, paginated — walk ``offset`` in ``limit``-sized
-    pages until ``subnets`` comes back empty.  Ordered by id so paging is
-    deterministic."""
+    """The project's subnet CIDRs (``items``, each a CIDR string), as a page.
+    Ordered by id so paging is deterministic."""
     scope_id = _scope_id(db, agent)
     total = (
         db.query(func.count(models.Subnet.id))
@@ -86,28 +90,21 @@ def get_scope_subnets(
         .limit(limit)
         .all()
     )
-    cidrs = [r[0] for r in rows]
-    return {
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-        "returned": len(cidrs),
-        "subnets": cidrs,
-        "has_more": offset + len(cidrs) < total,
-    }
+    return agent_page([r[0] for r in rows], total=total, limit=limit, offset=offset)
 
 
 @router.get(
     "/scope/domains",
+    response_model=ScopeDomainsPage,
     summary="The project's in-scope domains, paginated",
 )
 def get_scope_domains(
-    offset: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """The project's declared domains, paginated.  Each entry is
+    """The project's declared domains (``items``), as a page.  Each entry is
     ``{domain, include_subdomains}`` — an exact entry covers only that name,
     an include_subdomains entry covers every descendant.  A name being in
     scope never puts the address it resolves to in subnet scope."""
@@ -127,12 +124,7 @@ def get_scope_domains(
     )
     domains = [{"domain": d, "include_subdomains": bool(sub)} for d, sub in rows]
     return {
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-        "returned": len(domains),
-        "domains": domains,
-        "has_more": offset + len(domains) < total,
+        **agent_page(domains, total=total, limit=limit, offset=offset),
         "note": (
             "Name scope is independent of subnet scope: an in-scope name does "
             "not make the address it resolves to in scope."

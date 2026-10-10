@@ -53,7 +53,7 @@ import type {
   ImportHistoryEntry,
 } from '../services/api';
 import LastUpdated from '../components/LastUpdated';
-import { ListPageSkeleton } from '../components/PageSkeleton';
+import { TableSkeleton } from '../components/PageSkeleton';
 import { useToast } from '../contexts/ToastContext';
 import { useProject } from '../contexts/ProjectContext';
 import { useProjectId } from '../hooks/useProjectId';
@@ -92,7 +92,8 @@ import UploadReviewDialog from '../components/scans/UploadReviewDialog';
 import { ScanBatchRow } from '../components/scans/ScanBatchList';
 import { ROW_LINK_CLASS, ScanRowActions } from '../components/scans/ScanRowActions';
 import { hydrateHistoryRows, orderHistoryRows } from '../utils/importHistory';
-import { ScanWhenCell, ViewerZoneHint } from '../components/scans/ScanTimeCells';
+import { importResultsPath } from '../utils/importResultsPath';
+import { SCAN_TIME_HEADING, ScanWhenCell, ViewerZoneHint, type ScanTimeColumn } from '../components/scans/ScanTimeCells';
 import { formatDuration } from '../utils/scanTime';
 import {
   Dialog,
@@ -562,6 +563,9 @@ export default function Scans() {
       : historyRows),
     [listedFlat, scans, historyRows],
   );
+  // The time column is the upload time — the grouped history's own order —
+  // except in the all-files view sorted by when the scans ran.
+  const timeColumn: ScanTimeColumn = showBatchFiles && sortBy === 'start_time' ? 'ran' : 'uploaded';
   const historyHeader = (column: SortBy, label: string, className?: string) =>
     showBatchFiles
       ? renderSortHeader(column, label, className)
@@ -871,7 +875,19 @@ export default function Scans() {
   ].filter((v): v is string => !!v).sort((x, y) => new Date(x).getTime() - new Date(y).getTime()).pop() ?? null;
 
   if (loading) {
-    return <ListPageSkeleton titleWidth={160} actionCount={2} tableProps={{ rows: 8, columns: 6 }} />;
+    // The title and the view switch stay where they are while the list is
+    // read: a whole-page skeleton here took away the tab the reader had just
+    // pressed and put it back a moment later (the two views are separate
+    // components, so every switch mounts this one afresh).
+    return (
+      <div className="p-md md:p-lg">
+        <div className="mb-md flex min-h-10 flex-wrap items-start justify-between gap-sm">
+          <h1 className="text-page-title font-semibold">Scans</h1>
+        </div>
+        <ScansViewTabs />
+        <TableSkeleton rows={8} columns={6} />
+      </div>
+    );
   }
 
   return (
@@ -968,8 +984,8 @@ export default function Scans() {
                         onClick={() =>
                           navigate(
                             p.parseErrorId != null
-                              ? `/parse-errors?error_id=${p.parseErrorId}`
-                              : `/parse-errors?job_id=${p.jobId}`,
+                              ? importResultsPath({ error_id: p.parseErrorId })
+                              : importResultsPath({ job_id: p.jobId }),
                           )
                         }
                       >
@@ -1051,7 +1067,7 @@ export default function Scans() {
                   <p className="text-metadata text-muted-foreground">
                     In-flight uploads, staged files waiting for a format review, and failures among
                     the recent uploads. Successful uploads appear in Import history below;{' '}
-                    <Link to="/parse-errors" className="text-primary underline-offset-2 hover:underline">
+                    <Link to={importResultsPath()} className="text-primary underline-offset-2 hover:underline">
                       every import is on Ingestion Results
                     </Link>
                     .
@@ -1320,7 +1336,7 @@ export default function Scans() {
                             {job.parse_error_id && (
                               <button
                                 type="button"
-                                onClick={() => navigate(`/parse-errors?error_id=${job.parse_error_id}`)}
+                                onClick={() => navigate(importResultsPath({ error_id: job.parse_error_id }))}
                                 className="mt-xxs rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                               >
                                 <Badge variant="outline" className="cursor-pointer border-destructive/40 text-destructive hover:bg-destructive/10">
@@ -1676,15 +1692,18 @@ export default function Scans() {
                         unknown" were cut off) and Actions narrowed; batch rows
                         fill these same five columns. */}
                     {historyHeader('filename', 'Scan', 'w-[24%]')}
-                    {/* v5.270.0 — ONE time column: when the scan ran, per its
-                        own output, else when it was uploaded; the other time
-                        and the provenance are on hover.  In the all-files view
-                        it sorts by either. */}
+                    {/* ONE time column, named for the time it shows on every
+                        row (G8; it was "When", and mixed the two): the upload
+                        time — what this history is ordered by — with the
+                        scan's own time on a second line.  In the all-files
+                        view it sorts by either, and sorted by when the scans
+                        ran it IS that time ("Ran"). */}
                     {showBatchFiles ? (
                       <TableHead className="w-[18%]">
                         <span className="inline-flex flex-wrap items-center gap-x-xs">
-                          When
+                          {SCAN_TIME_HEADING[timeColumn]}
                           <ViewerZoneHint />
+                          <span className="text-caption font-normal normal-case text-muted-foreground">sort by</span>
                           {(['start_time', 'created_at'] as const).map((col) => {
                             const label = col === 'start_time' ? 'Ran' : 'Uploaded';
                             const sorted = sortBy === col;
@@ -1715,7 +1734,7 @@ export default function Scans() {
                       // they were a second permanent helper line above the table.
                       <TableHead className="w-[18%]">
                         <span className="inline-flex flex-wrap items-center gap-x-xs">
-                          When
+                          {SCAN_TIME_HEADING[timeColumn]}
                           <ViewerZoneHint />
                         </span>
                       </TableHead>
@@ -1807,7 +1826,7 @@ export default function Scans() {
                             </div>
                           </TableCell>
                           <TableCell className="min-w-0">
-                            <ScanWhenCell scan={scan} />
+                            <ScanWhenCell scan={scan} primary={timeColumn} />
                           </TableCell>
                           {/* What the scan INTRODUCED, out of what it saw:
                               hosts first discovered here, over every host it
@@ -2318,8 +2337,9 @@ const NOT_IMPORTED_REASON: Array<[string, string, string]> = [
 ];
 
 /** Where each reason is listed on Ingestion Results (v2.408.0 split expired
- *  and discarded uploads out of its Failed view). */
-const NOT_IMPORTED_VIEW: Record<string, string> = { expired: 'expired', discarded: 'discarded', dismissed: 'failed' };
+ *  and discarded uploads out of its Failed view; the dismissed failures have
+ *  their own view since 2.489.0 — the link used to open every failed import). */
+const NOT_IMPORTED_VIEW: Record<string, string> = { expired: 'expired', discarded: 'discarded', dismissed: 'failed_dismissed' };
 
 const notImportedReasons = (byReason?: Record<string, number>): Array<{ key: string; text: string }> =>
   NOT_IMPORTED_REASON
@@ -2362,7 +2382,7 @@ const ScansLead: React.FC<{
           {attention > 0 && (
             <>
               {sep}
-              <Link to="/parse-errors?status=needs_attention" className="text-warning underline-offset-2 hover:underline">
+              <Link to={importResultsPath({ status: 'needs_attention' })} className="text-warning underline-offset-2 hover:underline">
                 {attention.toLocaleString()} {projectWide ? 'failed or partial' : 'failed'} import{attention === 1 ? '' : 's'}{' '}
                 need{attention === 1 ? 's' : ''} attention
               </Link>
@@ -2374,7 +2394,7 @@ const ScansLead: React.FC<{
               {/* One reason: its own Ingestion Results view; several: each
                   reason links to its view, the total to every upload. */}
               <Link
-                to={reasons.length === 1 ? `/parse-errors?status=${NOT_IMPORTED_VIEW[reasons[0].key]}` : '/parse-errors'}
+                to={importResultsPath(reasons.length === 1 ? { status: NOT_IMPORTED_VIEW[reasons[0].key] } : undefined)}
                 className="underline-offset-2 hover:underline"
               >
                 {notImported.toLocaleString()} never imported
@@ -2386,7 +2406,7 @@ const ScansLead: React.FC<{
                   {reasons.map((r, i) => (
                     <React.Fragment key={r.key}>
                       {i > 0 && ', '}
-                      <Link to={`/parse-errors?status=${NOT_IMPORTED_VIEW[r.key]}`} className="underline-offset-2 hover:underline">
+                      <Link to={importResultsPath({ status: NOT_IMPORTED_VIEW[r.key] })} className="underline-offset-2 hover:underline">
                         {r.text}
                       </Link>
                     </React.Fragment>
@@ -2401,7 +2421,7 @@ const ScansLead: React.FC<{
           {projectWide && superseded > 0 && (
             <>
               {sep}
-              <Link to="/parse-errors?status=superseded" className="underline-offset-2 hover:underline">
+              <Link to={importResultsPath({ status: 'superseded' })} className="underline-offset-2 hover:underline">
                 {superseded.toLocaleString()} failed import{superseded === 1 ? ' was' : 's were'} re-imported later
               </Link>
             </>

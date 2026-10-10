@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
 import { Link } from 'react-router-dom';
@@ -38,7 +38,9 @@ import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
 import { agentInstruction } from '../utils/agentRuns';
 import { useConfirm } from '../hooks/useConfirm';
 import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
-import { useListQuery, type ListPage } from '../hooks/useListQuery';
+import type { ListPage } from '../hooks/useListQuery';
+import { usePagedList } from '../hooks/usePagedList';
+import { useUrlPage } from '../hooks/useUrlPage';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -73,6 +75,7 @@ import {
 } from '../components/SubnetLabelManager';
 import SiteManagerDialog from '../components/SiteManagerDialog';
 import ScopeDomainsCard from '../components/ScopeDomainsCard';
+import { PagedFooter } from '../components/operations/QueueParts';
 import { InfoTip } from '../components/ui/info-tip';
 import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
 import PostureMeasure from '../components/posture/PostureMeasure';
@@ -147,8 +150,11 @@ const EmptyCellEdit: React.FC<{ label: string; onClick: () => void }> = ({ label
   </button>
 );
 
-const SUBNET_PAGE_SIZE = 200;
+/** Subnets to a page — the Segments table's size.  (The "Load more" list
+ *  read 200 at a time; a page that long put its footer four screens down.) */
+const SUBNET_PAGE_SIZE = 50;
 const NO_LABELS: SubnetLabelWithCounts[] = [];
+const NO_SELECTION: ReadonlySet<number> = new Set();
 type ScopeSubnet = Scope['subnets'][number];
 /** One answer of the scope endpoint, as a page of the subnet list. */
 type ScopePage = Scope & ListPage<ScopeSubnet>;
@@ -167,7 +173,7 @@ const Scopes: React.FC = () => {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
 
-  const [exportScopeId, setExportScopeId] = useState<number | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
   const [showOutOfScopeDialog, setShowOutOfScopeDialog] = useState(false);
 
   const [newCidr, setNewCidr] = useState('');
@@ -185,7 +191,8 @@ const Scopes: React.FC = () => {
   // Subnet search — a case-insensitive substring filter over cidr +
   // description, applied server-side (before pagination) so users can jump
   // straight to an entry instead of paging.  Debounced so we don't fire a
-  // request per keystroke; the result resets the list to page 0.
+  // request per keystroke; a new search starts from the first page (the one
+  // address write drops `page`).
   // In the URL (`?subnet_q=`, replace not push) so a filtered scope can be
   // shared and survives a reload (B15).
   // The address owns the search (5.358.0): `subnetSearch` is what the list is
@@ -193,17 +200,28 @@ const Scopes: React.FC = () => {
   // state.  (It was copied into state once and written back by an effect, so
   // Back or a link to another search was overwritten — the one page the lint
   // rule against that pattern still found.)
-  const subnetBox = useUrlSearchDraft('subnet_q', { also: [] });
+  const subnetBox = useUrlSearchDraft('subnet_q');
   const subnetSearch = subnetBox.value;
 
   // v2.86.0 — subnet labels.  The project-wide catalogue is one read, shared
   // with the manager dialog and each row's label editor (the same key): what
   // the dialog changes is here without a callback, and the editors take what
-  // this read holds rather than asking once per row.  selectedSubnetIds drives the bulk-apply affordance
-  // that appears in the toolbar once any subnet is checked.
+  // this read holds rather than asking once per row.
   const [labelManagerOpen, setLabelManagerOpen] = useState(false);
   const [siteManagerOpen, setSiteManagerOpen] = useState(false);
-  const [selectedSubnetIds, setSelectedSubnetIds] = useState<Set<number>>(new Set());
+  // The subnets ticked for "Apply label…".  They belong to the search they
+  // were ticked under — a bulk action never reaches a row the current search
+  // hides — and are kept from page to page of it: the bar says how many are
+  // not on the page on screen.
+  const [selection, setSelection] = useState<{ search: string; ids: ReadonlySet<number> }>(
+    { search: '', ids: NO_SELECTION },
+  );
+  const selectedSubnetIds = selection.search === subnetSearch ? selection.ids : NO_SELECTION;
+  const changeSelection = (change: (ids: Set<number>) => void) => setSelection((prev) => {
+    const ids = new Set(prev.search === subnetSearch ? prev.ids : NO_SELECTION);
+    change(ids);
+    return { search: subnetSearch, ids };
+  });
 
   const labelsQuery = useQuery({
     queryKey: ['listSubnetLabels', projectId],
@@ -215,15 +233,14 @@ const Scopes: React.FC = () => {
   const labelCatalogueError = queryErrorText(labelsQuery.error, 'The subnet labels could not be loaded.');
 
   // v2.94.0 — the subnet list is server-paginated so a 6000-subnet project
-  // doesn't block /scopes on a multi-MB payload + 6000-row render.  A page
-  // at a time, appended by "Load more"; a reload after a change re-reads
-  // every page that is shown, so the view is stable.  The search is in the
-  // key: a slow reload of one search cannot answer for another (R33).
-  // The endpoint answers with the scope AND one page of its subnets: the
-  // subnets are the list's rows, the scope rides on the page (`response`).
-  // The list under the search box stays while the next search loads, and
-  // when it fails: the rows of the last search that answered (`keepPrevious`).
-  const subnetList = useListQuery<ScopeSubnet, ScopePage>(
+  // doesn't block /scopes on a multi-MB payload + 6000-row render.  ONE page
+  // at a time, its number in the address (`?page=`): a change to the scope
+  // re-reads that page only.  (It was a "Load more" list, and every write
+  // re-read each loaded page in turn — thirty requests after 6,000 subnets.)
+  // The search is in the key: a slow reload of one search cannot answer for
+  // another (R33).  The endpoint answers with the scope AND one page of its
+  // subnets: the subnets are the list's rows.
+  const subnetList = usePagedList<ScopeSubnet, ScopePage>(
     'getDefaultScope',
     async ({ offset, limit, signal }) => {
       const page = await getDefaultScope(projectId, {
@@ -235,17 +252,15 @@ const Scopes: React.FC = () => {
       return { ...page, items: page.subnets, total: page.subnets_total ?? offset + page.subnets.length };
     },
     [projectId, { subnetsSearch: subnetSearch }],
-    // `errorMessage` words `loadMoreError` only: every other failure of this
-    // list is worded here, by what the reader was doing (`failure`).
-    { pageSize: SUBNET_PAGE_SIZE, keepPrevious: true, within: projectId, errorMessage: 'Failed to load more subnets.' },
+    { pageSize: SUBNET_PAGE_SIZE, page: useUrlPage(), within: projectId, errorMessage: 'The subnets could not be loaded.' },
   );
-  const { response: scopePage, rows: subnetRows, total: subnetsTotal } = subnetList;
-  const scope = useMemo<Scope | null>(
-    () => (scopePage && subnetRows ? { ...scopePage, subnets: subnetRows, subnets_total: subnetsTotal } : null),
-    [scopePage, subnetRows, subnetsTotal],
-  );
-  // The search on screen has no answer of its own (yet, or at all).
-  const scopeIsPrevious = subnetList.isPrevious;
+  // The rows on screen: this page's — or, while another page or search loads
+  // and when it could not be read, the rows of the last one that answered.
+  const shownPage = subnetList.response ?? subnetList.lastResponse;
+  const subnets = shownPage ? shownPage.items : null;
+  const subnetsTotal = shownPage ? shownPage.total : 0;
+  // The page or search asked for has no answer of its own (yet, or at all).
+  const subnetsArePrevious = subnetList.response == null && shownPage != null;
 
   // The coverage is a read of its own: it does not depend on the subnet
   // search, so a search never takes the lead and the measures with it.
@@ -256,48 +271,42 @@ const Scopes: React.FC = () => {
   const coverage = coverageQuery.data ?? null;
 
   // The spinner belongs to the first load only.
-  const loading = !coverageQuery.isFetched || (scope == null && subnetList.failure == null);
-  const firstLoadError = (scope == null ? subnetList.failure : null) ?? (coverage == null ? coverageQuery.error : null);
-  const error = queryErrorText(firstLoadError, 'Failed to load scope data');
+  const loading = !coverageQuery.isFetched || (subnets == null && subnetList.error == null);
+  const error = (subnets == null ? subnetList.error : null)
+    ?? (coverage == null ? queryErrorText(coverageQuery.error, 'Failed to load scope data') : null);
   // Nothing asks again by itself (no retry, no poll): without this the reader
   // reloads the page.  Reads again whichever of the two did not answer.
   const retryFirstLoad = () => {
-    if (scope == null && subnetList.failure != null) void subnetList.reload();
+    if (subnets == null && subnetList.error != null) void subnetList.reload();
     if (coverage == null && coverageQuery.isError) void coverageQuery.refetch();
   };
 
-  // A search that could not be read: said under the search box, with Retry,
-  // and the rows that were shown stay (they are the previous search's).
-  const searchError = queryErrorText(scopeIsPrevious ? subnetList.failure : null, 'Failed to search subnets.');
+  // A search or a page that could not be read: said under the search box,
+  // with Retry, and the rows that were shown stay (they are the ones from
+  // before it).
+  const staleError = subnetsArePrevious ? subnetList.error : null;
 
   // Nothing re-reads the scope but a change (no poll, no Refresh), so a
   // failed re-read is a change that the page does not show: the page keeps
   // the state from before it.  Said above the scope, with a Retry that reads
   // again whichever of the two did not answer — not "refresh the page".
-  const subnetsReloadFailed = scope != null && !scopeIsPrevious && subnetList.failure != null;
+  const subnetsReloadFailed = subnetList.response != null && subnetList.error != null;
   const reloadFailed = subnetsReloadFailed || coverageQuery.isRefetchError;
   const retryReload = () => {
     if (subnetsReloadFailed) void subnetList.reload();
     if (coverageQuery.isRefetchError) void coverageQuery.refetch();
   };
 
-  /** After a change to the scope: its subnets and where the hosts stand. */
+  /** After a change to the scope: the page of subnets on screen and where
+   *  the hosts stand. */
   const scopeChanged = () => Promise.all([
     queryClient.invalidateQueries({ queryKey: ['getDefaultScope', projectId] }),
     queryClient.invalidateQueries({ queryKey: ['getScopeCoverage', projectId] }),
   ]);
 
-  const loadingMore = subnetList.loadingMore;
-  // A failed "Load more" is said beside the button (`loadMoreError`), which
-  // is its own retry; the rejection carries nothing more.
-  const loadMoreSubnets = () => {
-    if (!scope || loadingMore) return;
-    subnetList.loadMore().catch(() => undefined);
-  };
-
   const addSubnet = useMutation({
-    mutationFn: ({ scopeId, cidr, description }: { scopeId: number; cidr: string; description?: string }) =>
-      addScopeSubnets(projectId, scopeId, [{ cidr, description }]),
+    mutationFn: ({ cidr, description }: { cidr: string; description?: string }) =>
+      addScopeSubnets(projectId, [{ cidr, description }]),
     onSuccess: (_added, { cidr }) => {
       toast.success(`Added ${cidr}.`);
       setNewCidr('');
@@ -309,14 +318,13 @@ const Scopes: React.FC = () => {
   const addingSubnet = addSubnet.isPending;
 
   const handleAddSubnet = () => {
-    if (!scope || !newCidr.trim()) return;
+    if (!newCidr.trim()) return;
     if (!isIpOrCidr(newCidr)) {
       setNewCidrError(IP_OR_CIDR_HINT);
       return;
     }
     setNewCidrError(null);
     addSubnet.mutate({
-      scopeId: scope.id,
       cidr: newCidr.trim(),
       description: newDescription.trim() || undefined,
     });
@@ -340,9 +348,9 @@ const Scopes: React.FC = () => {
   };
 
   const saveSubnet = useMutation({
-    mutationFn: ({ scopeId, subnetId, ...changes }: {
-      scopeId: number; subnetId: number; cidr: string; description: string; site: string;
-    }) => updateSubnet(projectId, scopeId, subnetId, changes),
+    mutationFn: ({ subnetId, ...changes }: {
+      subnetId: number; cidr: string; description: string; site: string;
+    }) => updateSubnet(projectId, subnetId, changes),
     onSuccess: () => {
       toast.success('Entry updated.');
       cancelEditSubnet();
@@ -353,14 +361,12 @@ const Scopes: React.FC = () => {
   const savingSubnet = saveSubnet.isPending;
 
   const handleSaveSubnet = (subnetId: number) => {
-    if (!scope) return;
     if (!isIpOrCidr(editCidrDraft)) {
       setEditCidrError(IP_OR_CIDR_HINT);
       return;
     }
     setEditCidrError(null);
     saveSubnet.mutate({
-      scopeId: scope.id,
       subnetId,
       cidr: editCidrDraft.trim(),
       description: editDescDraft.trim(),
@@ -368,16 +374,18 @@ const Scopes: React.FC = () => {
     });
   };
 
-  // v2.86.0 — bulk-apply one label across every selected subnet.
+  // v2.86.0 — bulk-apply one label across every selected subnet, on this
+  // page of the search or another.
   // Server-idempotent: re-applying to a subnet that already carries
   // the label is a no-op.  Both the scope and the catalogue are re-read
   // so the chips + per-label counts stay accurate.
+  const clearSelection = () => setSelection({ search: subnetSearch, ids: NO_SELECTION });
   const bulkApply = useMutation({
     mutationFn: ({ labelId, ids }: { labelId: number; labelName: string; ids: number[] }) =>
       bulkApplySubnetLabel(projectId, labelId, ids),
     onSuccess: (_label, { labelName, ids }) => {
       toast.success(`Applied "${labelName}" to ${ids.length} subnet${ids.length === 1 ? '' : 's'}.`);
-      setSelectedSubnetIds(new Set());
+      clearSelection();
       return Promise.all([scopeChanged(), queryClient.invalidateQueries({ queryKey: ['listSubnetLabels', projectId] })]);
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to apply label.')),
@@ -390,20 +398,16 @@ const Scopes: React.FC = () => {
     bulkApply.mutate({ labelId, labelName, ids });
   };
 
-  const toggleSubnetSelected = (subnetId: number) => {
-    setSelectedSubnetIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(subnetId)) next.delete(subnetId); else next.add(subnetId);
-      return next;
-    });
-  };
-  const toggleAllSelected = () => {
-    setSelectedSubnetIds((prev) => {
-      if (!scope) return prev;
-      if (prev.size === scope.subnets.length) return new Set();
-      return new Set(scope.subnets.map((s) => s.id));
-    });
-  };
+  const toggleSubnetSelected = (subnetId: number) => changeSelection((ids) => {
+    if (!ids.delete(subnetId)) ids.add(subnetId);
+  });
+  // The header box is this PAGE's rows: all of them ticked unticks them, any
+  // other state ticks the rest.  Rows ticked on another page are left alone.
+  const toggleAllSelected = () => changeSelection((ids) => {
+    const rows = subnets ?? [];
+    const all = rows.every((s) => ids.has(s.id));
+    rows.forEach((s) => { if (all) ids.delete(s.id); else ids.add(s.id); });
+  });
 
   // A subnet's label chips and their editor — in the Labels column, or inside
   // the row's editor while the row is being edited (v5.289.0).  The editor
@@ -446,17 +450,18 @@ const Scopes: React.FC = () => {
   );
 
   const removeSubnet = useMutation({
-    mutationFn: ({ scopeId, subnetId }: { scopeId: number; subnetId: number; cidr: string }) =>
-      deleteSubnet(projectId, scopeId, subnetId),
-    onSuccess: (_void, { cidr }) => {
+    mutationFn: ({ subnetId }: { subnetId: number; cidr: string }) =>
+      deleteSubnet(projectId, subnetId),
+    onSuccess: (_void, { subnetId, cidr }) => {
       toast.success(`Deleted ${cidr}.`);
+      // A deleted subnet is no longer ticked for anything.
+      if (selectedSubnetIds.has(subnetId)) changeSelection((ids) => { ids.delete(subnetId); });
       return scopeChanged();
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to delete entry.')),
   });
 
   const handleDeleteSubnet = async (subnetId: number, cidr: string) => {
-    if (!scope) return;
     const ok = await confirm({
       title: 'Delete entry',
       body: 'Any host-subnet mappings for this entry will be removed. This cannot be undone.',
@@ -465,7 +470,7 @@ const Scopes: React.FC = () => {
       confirmLabel: 'Delete',
     });
     if (!ok) return;
-    removeSubnet.mutate({ scopeId: scope.id, subnetId, cidr });
+    removeSubnet.mutate({ subnetId, cidr });
   };
 
   const upload = useMutation({
@@ -514,7 +519,11 @@ const Scopes: React.FC = () => {
   }
 
   const coverageLead = coverage ? scopeLead(coverage) : null;
-  const subnetCount = scope ? (scope.subnets_total ?? scope.subnets.length) : 0;
+  // Whether the scope declares a subnet at all — the coverage's count, not
+  // the rows on screen (a search that matches nothing hides them all).
+  const noSubnetsDeclared = coverage ? coverage.total_subnets === 0 : subnetsTotal === 0 && !subnetSearch;
+  const selectedOnPage = (subnets ?? []).filter((s) => selectedSubnetIds.has(s.id)).length;
+  const selectedElsewhere = selectedSubnetIds.size - selectedOnPage;
 
   return (
     <div className="p-md md:p-lg">
@@ -543,20 +552,22 @@ const Scopes: React.FC = () => {
               <ArrowDownToLine className="size-4" aria-hidden /> Export out-of-scope hosts
             </Button>
           )}
-          {scope != null && canWrite && (
+          {subnets != null && canWrite && (
             // Scanning uploads scans: a project analyst's, as on Operations.
             // 5.313.0 — one way to start an agent: the operator's session,
             // handed the task. The per-scope key is gone; 5.313.1 — so is the
             // recon run: the agent reads the scope and uploads to its session.
+            // The task names no scope, and says what the WHOLE scope holds
+            // (the coverage's counts, not the page of rows on screen).
             <AgentTaskButton
               variant="default"
               label="Scan with your agent"
-              instruction={agentInstruction.scanScope(scope.id, coverage ? {
-                subnets: scope.subnets.length,
+              instruction={agentInstruction.scanScope(coverage ? {
+                subnets: coverage.total_subnets,
                 domains: coverage.total_domains,
               } : undefined)}
-              disabled={scope.subnets.length === 0}
-              title={scope.subnets.length === 0 ? 'Add a subnet first — the agent scans the declared subnets.' : undefined}
+              disabled={noSubnetsDeclared}
+              title={noSubnetsDeclared ? 'Add a subnet first — the agent scans the declared subnets.' : undefined}
             />
           )}
         </div>
@@ -642,7 +653,7 @@ const Scopes: React.FC = () => {
           </>
         )}
 
-        {scope == null ? (
+        {subnets == null ? (
           <p className="text-metadata text-muted-foreground">Loading project scope…</p>
         ) : (
           <PostureSection
@@ -650,7 +661,7 @@ const Scopes: React.FC = () => {
             description="Label entries (e.g. “UK DMZ”) and assign sites so your agent and Posture can reason about zones."
             actions={<>
               <span className="tabular-nums text-muted-foreground">
-                {subnetCount.toLocaleString()} entr{subnetCount === 1 ? 'y' : 'ies'}
+                {subnetsTotal.toLocaleString()} entr{subnetsTotal === 1 ? 'y' : 'ies'}
                 {subnetSearch ? ' matching' : ''}
               </span>
               {canExport && (
@@ -658,7 +669,7 @@ const Scopes: React.FC = () => {
                   variant="ghost"
                   size="sm"
                   className="h-7"
-                  onClick={() => setExportScopeId(scope.id)}
+                  onClick={() => setExportOpen(true)}
                   aria-label="Export scope"
                   title="Export scope as txt / csv / json"
                 >
@@ -742,9 +753,9 @@ const Scopes: React.FC = () => {
             )}
 
             {/* Subnet search — filters the server-paginated list so users
-                can jump to an entry instead of paging.  Debounced; resets
-                to page 0 and drives subnets_total so "Showing N of T" and
-                "Load more" stay correct under the filter. */}
+                can jump to an entry instead of paging.  Debounced; starts
+                from the first page and drives subnets_total, so the footer's
+                "1–50 of T" and its pages are the search's. */}
             <div className="mb-xs flex items-center gap-xs">
               <div className="relative min-w-0 flex-1">
                 <Search
@@ -771,20 +782,24 @@ const Scopes: React.FC = () => {
                 </Button>
               )}
             </div>
-            {searchError && (
+            {staleError && (
               <p role="alert" className="mb-xs break-words text-caption text-destructive">
-                {searchError} The subnets below are the previous search’s.{' '}
+                {staleError} The subnets below are the ones shown before.{' '}
                 <button type="button" className="text-info hover:underline" onClick={() => { void subnetList.reload(); }}>Retry</button>
               </p>
             )}
 
             {/* v2.86.0 — bulk-action bar: hidden until at least one
-                subnet is checked.  Mirrors the ScopeDetail surface so
-                the affordance is in the same place on both pages. */}
+                subnet is checked.  The selection is kept from page to page
+                of a search, so the bar says how many of the ticked subnets
+                are not on screen: "Apply label…" reaches those too. */}
             {canWrite && selectedSubnetIds.size > 0 && (
               <div className="mb-xs flex flex-wrap items-center gap-xs border-l-4 border-l-info py-xxs pl-sm">
                 <span className="text-metadata">
-                  {selectedSubnetIds.size} subnet{selectedSubnetIds.size === 1 ? '' : 's'} selected
+                  {selectedSubnetIds.size.toLocaleString()} subnet{selectedSubnetIds.size === 1 ? '' : 's'} selected
+                  {selectedElsewhere > 0 && (
+                    <span className="text-muted-foreground"> · {selectedElsewhere.toLocaleString()} not on this page</span>
+                  )}
                 </span>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -813,7 +828,7 @@ const Scopes: React.FC = () => {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => setSelectedSubnetIds(new Set())}
+                  onClick={clearSelection}
                   disabled={bulkApplying}
                 >
                   Clear selection
@@ -821,7 +836,12 @@ const Scopes: React.FC = () => {
               </div>
             )}
 
-            <div className="overflow-x-auto">
+            {/* Rows of the page or search before the one asked for are
+                dimmed and inert until theirs arrive (or the read is retried). */}
+            <div
+              className={cn('overflow-x-auto', subnetsArePrevious && 'pointer-events-none opacity-60')}
+              aria-busy={subnetList.loading || undefined}
+            >
               {/* Fixed layout (UI_STYLE_GUIDE): an unbounded description or
                   label set wraps inside its column instead of widening it. */}
               {/* UX review 2026-09-24 — the fixed columns left Description,
@@ -837,12 +857,9 @@ const Scopes: React.FC = () => {
                       <TableHead className="w-10">
                         <Checkbox
                           // Some of the subnets = the dash, not an empty box.
-                          checked={selectAllState(
-                            scope.subnets.filter((s) => selectedSubnetIds.has(s.id)).length,
-                            scope.subnets.length,
-                          )}
+                          checked={selectAllState(selectedOnPage, subnets.length)}
                           onCheckedChange={toggleAllSelected}
-                          aria-label="Select all subnets for bulk label apply"
+                          aria-label="Select all subnets on this page for bulk label apply"
                         />
                       </TableHead>
                     )}
@@ -861,18 +878,22 @@ const Scopes: React.FC = () => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {scope.subnets.length === 0 ? (
+                  {subnets.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={canWrite ? 8 : 6} className="py-xl text-center text-muted-foreground">
-                        {subnetSearch
-                          ? `No subnets match "${subnetSearch}". Try a different search or clear it.`
-                          : canWrite
-                            ? "No entries in this project's scope yet. Add one above or upload a file."
-                            : "No entries in this project's scope yet."}
+                        {subnetsTotal > 0
+                          // A page past the end (its rows were deleted, or an
+                          // old link): the list is stepping back to the last.
+                          ? 'Loading…'
+                          : subnetSearch
+                            ? `No subnets match "${subnetSearch}". Try a different search or clear it.`
+                            : canWrite
+                              ? "No entries in this project's scope yet. Add one above or upload a file."
+                              : "No entries in this project's scope yet."}
                       </TableCell>
                     </TableRow>
                   ) : (
-                    scope.subnets.map((subnet) => {
+                    subnets.map((subnet) => {
                       const isEditing = editingSubnetId === subnet.id;
                       const subnetLabels = subnet.labels ?? [];
                       return (
@@ -1097,37 +1118,27 @@ const Scopes: React.FC = () => {
                 </TableBody>
               </Table>
             </div>
-            {scope.subnets_total !== undefined &&
-              scope.subnets.length < scope.subnets_total && (
-                <div className="flex flex-wrap items-center justify-center gap-sm border-t p-sm">
-                  {subnetList.loadMoreError && (
-                    <p role="alert" className="min-w-0 basis-full break-words text-center text-caption text-destructive">
-                      {subnetList.loadMoreError}
-                    </p>
-                  )}
-                  <span className="text-caption text-muted-foreground">
-                    Showing {scope.subnets.length} of {scope.subnets_total}
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={loadMoreSubnets}
-                    disabled={loadingMore}
-                  >
-                    {loadingMore && (
-                      <Loader2 className="mr-xxs size-4 animate-spin" aria-hidden />
-                    )}
-                    Load more
-                  </Button>
-                </div>
-              )}
+            {/* The shared footer: "51–100 of 6,012 · page 2 of 121".  While
+                another page loads the rows of the one before stay under the
+                page that was asked for, so the range is cut at the total. */}
+            {subnetsTotal > SUBNET_PAGE_SIZE && (
+              <PagedFooter
+                pager={{
+                  page: subnetList.page, pageSize: SUBNET_PAGE_SIZE, total: subnetsTotal,
+                  onPage: subnetList.setPage,
+                }}
+                shown={Math.max(0, Math.min(subnets.length, subnetsTotal - subnetList.page * SUBNET_PAGE_SIZE))}
+                noun="subnets"
+                busy={subnetList.loading}
+              />
+            )}
           </PostureSection>
         )}
 
         {/* v5.193.0 — domain scope alongside subnet scope.  Refreshes the
             coverage numbers on change (name-reachable hosts move between states). */}
-        {scope != null && (
-          <ScopeDomainsCard scopeId={scope.id} canEdit={canWrite} />
+        {subnets != null && (
+          <ScopeDomainsCard canEdit={canWrite} />
         )}
 
         {coverage && coverage.out_of_scope_hosts > 0 && (
@@ -1185,11 +1196,10 @@ const Scopes: React.FC = () => {
 
       </div>
 
-      {exportScopeId !== null && (
+      {exportOpen && (
         <ScopeExport
           open
-          onClose={() => setExportScopeId(null)}
-          scopeId={exportScopeId}
+          onClose={() => setExportOpen(false)}
         />
       )}
 

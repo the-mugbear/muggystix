@@ -74,7 +74,7 @@ def test_one_key_reaches_identity_scope_and_host_tests(client, test_project, db_
     _scope_with_subnet(db_session, test_project)
     r = client.get("/api/v1/agent/scope/subnets", headers=_hdr(key))
     assert r.status_code == 200, r.text
-    assert r.json()["subnets"] == ["10.0.0.0/24"]
+    assert r.json()["items"] == ["10.0.0.0/24"]
 
     # the SAME key proposes a test on a host, attributed to this session.
     host = _host(db_session, test_project)
@@ -162,5 +162,5 @@ def test_timeline_shows_one_row_per_session_whatever_it_did(client, test_project
     listing = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions").json()
     rows = listing["sessions"]
     assert listing["total"] == len(rows) == 1, rows
-    assert rows[0]["kind"] == "project" and rows[0]["id"] == base_id
+    assert rows[0]["id"] == base_id
     assert rows[0]["host_test_count"] == 1 and rows[0]["evidence_count"] == 1

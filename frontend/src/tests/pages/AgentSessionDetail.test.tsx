@@ -44,7 +44,6 @@ const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
 const ahead = (ms: number) => new Date(Date.now() + ms).toISOString();
 
 const row = (over: Record<string, unknown> = {}) => ({
-  kind: 'project',
   id: 72,
   project_id: 1,
   agent_id: 7,
@@ -131,9 +130,9 @@ describe('AgentSessionDetail', () => {
     expect(await screen.findByText('Showing the 1 most recent of 73.')).toBeInTheDocument();
   });
 
-  it('shows a legacy assist session on the same page, with nothing to end or resume', async () => {
+  it('shows an ended session with nothing to end or resume', async () => {
     getAgentSession.mockResolvedValue(row({
-      kind: 'assist', id: 31, status: 'ended', key_expires_at: null, renewable_until: null,
+      id: 31, status: 'ended', key_expires_at: null, renewable_until: null,
       completed_at: ago(HOUR), can_end: false, can_resume: false, connection: 'curl',
     }));
     renderAt('31');

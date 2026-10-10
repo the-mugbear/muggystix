@@ -113,7 +113,6 @@ class ProjectResponse(BaseModel):
     description: Optional[str] = None
     status: str = "active"
     is_default: bool = False
-    is_archived: bool = False
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     created_by_id: Optional[int] = None
@@ -231,7 +230,7 @@ def list_projects(
     query = db.query(Project)
 
     if not include_archived:
-        query = query.filter(Project.is_archived == False)
+        query = query.filter(Project.is_archived.is_(False))
 
     # Non-admins only see their projects
     if current_user.role != UserRole.ADMIN:
@@ -308,10 +307,9 @@ def create_project(
         name=data.name,
         slug=slug,
         description=data.description,
+        # ``archived`` here IS the project being archived (``Project.is_archived``
+        # is derived from it), so one created archived is not in selection.
         status=data.status or "active",
-        # RV-3 — keep is_archived consistent with status at creation, so a
-        # project created as "archived" doesn't linger active in selection.
-        is_archived=(data.status == "archived"),
         start_date=data.start_date,
         end_date=data.end_date,
         created_by_id=current_user.id,
@@ -396,9 +394,10 @@ def update_project(
 
     before = {
         "name": project.name, "description": project.description,
-        "status": project.status, "is_archived": bool(project.is_archived),
+        "status": project.status,
         "start_date": _iso(project.start_date), "end_date": _iso(project.end_date),
     }
+    was_archived = bool(project.is_archived)
 
     if data.name is not None:
         if data.name != project.name:
@@ -421,7 +420,7 @@ def update_project(
         if data.status == "archived":
             active_count = db.query(Project).filter(
                 Project.id != project.id,
-                Project.is_archived == False,  # noqa: E712
+                Project.is_archived.is_(False),
             ).count()
             if active_count == 0:
                 raise HTTPException(
@@ -429,7 +428,6 @@ def update_project(
                     detail="Cannot archive the only active project — create another first.",
                 )
         project.status = data.status
-        project.is_archived = (data.status == "archived")
 
     if data.start_date is not None:
         project.start_date = data.start_date
@@ -439,7 +437,7 @@ def update_project(
 
     after = {
         "name": project.name, "description": project.description,
-        "status": project.status, "is_archived": bool(project.is_archived),
+        "status": project.status,
         "start_date": _iso(project.start_date), "end_date": _iso(project.end_date),
     }
     changes = {
@@ -448,9 +446,10 @@ def update_project(
     }
     if changes:
         # Archiving hides a project from selection and unarchiving brings it
-        # back; both get their own action so they can be found by name.
-        if "is_archived" in changes:
-            action = "project_archived" if after["is_archived"] else "project_unarchived"
+        # back; both get their own action so they can be found by name.  The
+        # row's ``changes.status`` says from what to what.
+        if bool(project.is_archived) != was_archived:
+            action = "project_unarchived" if was_archived else "project_archived"
         else:
             action = "project_updated"
         try:
@@ -584,7 +583,6 @@ def delete_project(
     ]
     _audit(db, request, current_user, "project_deleted", project_id=project.id, details={
         "name": project_name, "slug": project.slug, "status": project.status,
-        "is_archived": bool(project.is_archived),
         "created_by_id": project.created_by_id,
         "member_count": len(members), "members": members,
         "attachment_thread_count": len(_attachment_note_ids),

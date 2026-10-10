@@ -43,6 +43,7 @@ import TimeAgo from '../components/TimeAgo';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
+import { PagedFooter } from '../components/operations/QueueParts';
 import { Checkbox } from '../components/ui/checkbox';
 import { InfoTip } from '../components/ui/info-tip';
 import PostureSection from '../components/posture/PostureSection';
@@ -883,12 +884,15 @@ const Oversight: React.FC = () => {
               )}
             </ListFilterBar>
             <ProjectsTable rows={pageRows} onOpen={openProject} caption="All projects in the cohort" />
+            {/* The shared footer ("26–50 of 60 · page 2 of 3").  The rows are
+                cut from the one answer already in memory, so no page is ever
+                on its way and the buttons never wait. */}
             {pages > 1 && (
-              <div className="flex items-center justify-end gap-xs text-caption text-muted-foreground">
-                <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage(page - 1)}>Previous</Button>
-                <span>Page {page + 1} of {pages}</span>
-                <Button size="sm" variant="outline" disabled={page >= pages - 1} onClick={() => setPage(page + 1)}>Next</Button>
-              </div>
+              <PagedFooter
+                pager={{ page, pageSize: PAGE_SIZE, total: filteredProjects.length, onPage: setPage }}
+                shown={pageRows.length}
+                noun="projects"
+              />
             )}
           </TabsContent>
 

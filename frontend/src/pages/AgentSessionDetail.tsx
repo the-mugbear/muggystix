@@ -5,10 +5,8 @@
  * and every call it made.
  *
  * Keyed by the SESSION id — the one Agent Sessions, End, Resume and the agent
- * itself use, and (5.328.0) the session's only id: the row, its notes and its
- * API-call feed are all read by it. The review page this replaces
- * (`/assist-sessions/:id`) was keyed by a second id sequence (session #72 =
- * detail #52); that path now redirects here.
+ * itself use, and the session's only id: the row, its notes and its
+ * API-call feed are all read by it.
  */
 import React, { useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';

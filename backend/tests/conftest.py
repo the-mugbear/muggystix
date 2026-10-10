@@ -323,7 +323,6 @@ def test_user(db_session):
         hashed_password=TEST_USER_PW_HASH,
         role=UserRole.ADMIN,
         is_active=True,
-        is_verified=True,
         created_at=datetime.now(timezone.utc),
     )
     db_session.add(user)

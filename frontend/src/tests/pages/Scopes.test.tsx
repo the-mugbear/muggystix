@@ -71,7 +71,6 @@ const coverage = {
 
 const scope = {
   id: 1,
-  name: 'Eval scope',
   subnets_total: 1,
   subnets: [
     { id: 11, cidr: '10.77.1.0/24', description: 'East segment', site: 'East', host_count: 7, labels: [], created_at: '2026-09-22T00:00:00Z' },
@@ -248,18 +247,38 @@ describe('Scopes page — screenshot review (v5.288.0)', () => {
   });
 
   // 5.313.0 — no per-scope key: the action hands the operator's one agent
-  // session a task naming this scope. 5.313.1 — a scan uploaded to the
-  // session, not a recon run.
-  it('hands scanning this scope to your agent session', async () => {
+  // session the scan task. 5.313.1 — a scan uploaded to the session, not a
+  // recon run.  The task names no scope id (no agent read takes one) and says
+  // what the WHOLE scope holds — the coverage's 3 subnets, not the 1 row the
+  // table has on screen (it counted the loaded rows).
+  it('hands scanning the scope to your agent session, naming no scope id', async () => {
     mySessions.sessions = [];
     renderPage();
     await screen.findByText('10.77.1.0/24');
     fireEvent.click(screen.getByRole('button', { name: /Scan with your agent/ }));
     expect(await screen.findByText('Start Agent Session')).toBeInTheDocument();
     expect(
-      screen.getByText(/^Read this project’s scope in BlueStick \(scope id 1 — 1 subnet, \d+ domains?\), run your scanners on what is in scope, and upload the output to this session\.$/),
+      screen.getByText('Read this project’s scope in BlueStick (3 subnets, 1 domain), run your scanners on what is in scope, and upload the output to this session.'),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/scope id/i)).toBeNull();
     expect(screen.getByText(/Start a session, connect your agent, then give it this/)).toBeInTheDocument();
+  });
+
+  // The button is about the scope, not the rows on screen: a search that
+  // matches nothing does not make "Add a subnet first" true.
+  it('scanning stays offered under a search that matches no subnet, and is refused only when none is declared', async () => {
+    mocked.getDefaultScope.mockResolvedValue({ ...scope, subnets_total: 0, subnets: [] });
+    const { unmount } = render(
+      <MemoryRouter initialEntries={['/scopes?subnet_q=nothing']}><TooltipProvider><Scopes /></TooltipProvider></MemoryRouter>,
+    );
+    await screen.findByText(/No subnets match "nothing"/);
+    expect(screen.getByRole('button', { name: /Scan with your agent/ })).toBeEnabled();
+    unmount();
+
+    mocked.getScopeCoverage.mockResolvedValue({ ...coverage, total_subnets: 0 });
+    renderPage();
+    await screen.findByText(/No entries in this project's scope yet/);
+    expect(screen.getByRole('button', { name: /Scan with your agent/ })).toBeDisabled();
   });
 
   it('points to a live agent session instead of starting another', async () => {
@@ -333,7 +352,7 @@ describe('Scopes page — a project viewer reads the scope', () => {
     mocked.getDefaultScope.mockResolvedValue({ ...scope, subnets: [scope.subnets[0], second] });
     renderPage();
     const first = await screen.findByLabelText('Select 10.77.1.0/24 for bulk label apply');
-    const header = screen.getByLabelText('Select all subnets for bulk label apply');
+    const header = screen.getByLabelText('Select all subnets on this page for bulk label apply');
     expect(header).toHaveAttribute('aria-checked', 'false');
     expect(first.closest('tr')).toHaveAttribute('aria-selected', 'false');
 
@@ -473,26 +492,34 @@ describe('Scopes page — a read that fails with the scope on screen', () => {
     expect(toastMock.error).not.toHaveBeenCalled();
   });
 
-  it('a "Load more" that failed is said beside the button, and pressing it again reads the page', async () => {
+  // The list is pages now (it was "Load more", whose failure was said beside
+  // its button): a page that could not be read is said like a search that
+  // could not, over the rows of the page before it, which wait dimmed.
+  it('a next page that could not be read is said with Retry, over the rows that were shown', async () => {
     const second = { ...scope.subnets[0], id: 12, cidr: '10.77.2.0/24', description: 'West segment' };
     let fail = true;
     mocked.getDefaultScope.mockImplementation((_projectId: number, { subnetsSkip }: { subnetsSkip: number }) => {
-      if (!subnetsSkip) return Promise.resolve({ ...scope, subnets_total: 2 });
+      if (!subnetsSkip) return Promise.resolve({ ...scope, subnets_total: 51 });
       if (fail) { fail = false; return Promise.reject(down('The next page timed out.')); }
-      return Promise.resolve({ ...scope, subnets_total: 2, subnets: [second] });
+      return Promise.resolve({ ...scope, subnets_total: 51, subnets: [second] });
     });
     renderPage();
     await screen.findByText('10.77.1.0/24');
-    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Next 50 subnets' }));
 
-    const alert = await screen.findByText('The next page timed out.');
+    const alert = await screen.findByText(/The next page timed out\./);
     expect(alert).toHaveAttribute('role', 'alert');
-    expect(screen.getByText('10.77.1.0/24')).toBeInTheDocument();
+    expect(alert).toHaveTextContent('The subnets below are the ones shown before.');
+    const stale = screen.getByText('10.77.1.0/24');
+    expect(stale.closest('.overflow-x-auto')).toHaveClass('pointer-events-none', 'opacity-60');
     expect(toastMock.error).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('10.77.2.0/24')).toBeInTheDocument();
-    expect(screen.queryByText('The next page timed out.')).toBeNull();
+    expect(screen.queryByText(/The next page timed out\./)).toBeNull();
+    expect(screen.queryByText('10.77.1.0/24')).toBeNull();
+    expect(screen.getByText('51–51 of 51')).toBeInTheDocument();
     expect(toastMock.error).not.toHaveBeenCalled();
   });
 });

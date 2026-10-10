@@ -56,7 +56,7 @@ def _ensure_owner(db, project: Project, username: str, full_name: str | None) ->
         user = User(
             username=username, full_name=full_name, email=f"{username}@seed.invalid",
             hashed_password=get_password_hash(secrets.token_urlsafe(24)), role=UserRole.MEMBER.value,
-            is_active=True, is_verified=True, must_change_password=True,
+            is_active=True, must_change_password=True,
         )
         db.add(user)
         db.flush()

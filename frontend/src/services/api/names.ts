@@ -129,7 +129,6 @@ export interface HostNamesResponse {
 
 export interface ScopeDomainRow {
   id: number;
-  scope_id: number;
   domain: string;
   include_subdomains: boolean;
   description: string | null;
@@ -222,10 +221,10 @@ export const getHostNames = async (projectId: number, hostId: number, signal?: A
 };
 
 // --- scope domains ---------------------------------------------------------
+// The project's one scope: no path names it (backend 2.489.0).
 
 export const listScopeDomains = async (
   projectId: number,
-  scopeId: number,
   opts: { skip?: number; limit?: number } = {},
   signal?: AbortSignal,
 ): Promise<ScopeDomainPage> => {
@@ -233,19 +232,18 @@ export const listScopeDomains = async (
   if (opts.skip !== undefined) params.set('skip', String(opts.skip));
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   const qs = params.toString();
-  const r = await api.get<ScopeDomainPage>(`${projectPath(projectId)}/scopes/${scopeId}/domains${qs ? `?${qs}` : ''}`, { signal });
+  const r = await api.get<ScopeDomainPage>(`${projectPath(projectId)}/scopes/domains${qs ? `?${qs}` : ''}`, { signal });
   return r.data;
 };
 
 export const addScopeDomains = async (
   projectId: number,
-  scopeId: number,
   domains: Array<{ domain: string; include_subdomains?: boolean; description?: string }>,
 ): Promise<ScopeDomainBatchResponse> => {
-  const r = await api.post<ScopeDomainBatchResponse>(`${projectPath(projectId)}/scopes/${scopeId}/domains`, { domains });
+  const r = await api.post<ScopeDomainBatchResponse>(`${projectPath(projectId)}/scopes/domains`, { domains });
   return r.data;
 };
 
-export const deleteScopeDomain = async (projectId: number, scopeId: number, domainId: number): Promise<void> => {
-  await api.delete(`${projectPath(projectId)}/scopes/${scopeId}/domains/${domainId}`);
+export const deleteScopeDomain = async (projectId: number, domainId: number): Promise<void> => {
+  await api.delete(`${projectPath(projectId)}/scopes/domains/${domainId}`);
 };

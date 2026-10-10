@@ -109,7 +109,9 @@ def _note(db, pid, host, user):
 
 
 def _review(db, pid, host, user):
-    db.add(models.HostFollow(host_id=host.id, user_id=user.id))
+    db.add(models.HostFollow(
+        host_id=host.id, user_id=user.id, status=models.FollowStatus.IN_REVIEW,
+    ))
     return 1
 
 

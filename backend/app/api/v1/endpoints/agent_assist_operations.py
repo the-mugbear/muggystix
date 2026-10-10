@@ -37,10 +37,10 @@ from sqlalchemy.orm import Session
 from app.api.deps import agent_read_floor, check_agent_rate_limit
 from app.api.params import FindingNeedParam
 from app.api.v1.endpoints.agent_common import load_operator
+from app.api.v1.endpoints.agent_schemas import AgentPage, agent_page
 from app.db.models_agent import Agent
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
-from app.schemas.pagination import Paginated
 from app.services.address_terrain_service import TerrainBlock, compute_address_terrain
 from app.services.evidence_service import DOMAIN_LABELS, evidence_gap_hosts, evidence_segments
 from app.services.operations_read_service import (
@@ -75,16 +75,32 @@ class AgentTerrainResponse(BaseModel):
     sort: str = "address"
 
 
-class AgentMyFindingsResponse(MyFindingsResponse):
+class AgentMyFindingsResponse(MyFindingsResponse, AgentPage):
     """``GET /workbench/findings`` as the agent receives it: the page's own
-    answer (``items``, ``total_open``, ``need_counts``) plus the paging words
-    every countable agent list carries.  ``total`` is the size of the list
-    THIS call pages — the service's own figure for it (``need_counts[need]``,
-    or ``total_open`` with no ``need``), never a second count."""
-    total: int = 0
-    limit: int = 25
-    offset: int = 0
-    has_more: bool = False
+    answer (``items``, ``total_open``, ``need_counts``) plus the agents' page
+    words.  ``total`` is the size of the list THIS call pages — the service's
+    own figure for it (``need_counts[need]``, or ``total_open`` with no
+    ``need``), never a second count."""
+
+
+class AgentInvestigationQueue(InvestigationQueueResponse, AgentPage):
+    """``GET /workbench/investigate`` as the agent receives it: the page's own
+    answer (``items``, ``queue_total``, ``untouched_total``, ``tiers``,
+    ``tier_counts``) plus the agents' page words.  ``total`` is the size of
+    the list THIS call pages — the service's own figure for it (the tier's
+    entry of ``tier_counts``, or ``queue_total`` with no ``tier``)."""
+
+
+class AgentScanHostsPage(AgentPage):
+    """``GET /scans/{id}/host-snapshots`` as the agent receives it: the same
+    rows and total, in the agents' page (``offset``, where the page says
+    ``skip``)."""
+    items: List[ScanHostSnapshot]
+
+
+#: The assessment domains, typed: the route's OpenAPI carries the values (the
+#: MCP tool derives its enum from it) and anything else is a 422 naming them.
+EvidenceDomain = Literal[tuple(DOMAIN_LABELS)]  # type: ignore[valid-type]
 
 
 class AgentEvidenceGapsResponse(BaseModel):
@@ -166,7 +182,7 @@ def get_assist_workbench(
 
 @router.get(
     "/assist/workbench/investigate",
-    response_model=InvestigationQueueResponse,
+    response_model=AgentInvestigationQueue,
     summary="'Untouched, with a reason' — untouched hosts with a stated reason, in tier order",
 )
 def get_assist_investigation_queue(
@@ -185,18 +201,25 @@ def get_assist_investigation_queue(
     weakness or a relevant change.  Each row carries its reasons, evidence and
     next action; ``tier_counts`` (aligned with ``tiers``) and ``queue_total``
     describe the whole queue whatever ``tier``/``offset`` you pass.  The order
-    is the stated tier, then most recently seen — never a score.
+    is the stated tier, then most recently seen — never a score.  ``total`` is
+    the size of the list this call pages (with ``tier``, that tier only).
 
     503 when the queue cannot be computed — never an empty queue, which would
     read as "every host has been touched".
     """
     project = _project(db, request)
     try:
-        return compute_investigation_queue(db, project, limit=limit, tier=tier, offset=offset)
+        queue = compute_investigation_queue(db, project, limit=limit, tier=tier, offset=offset)
     except Exception:
         logger.exception("investigation queue failed for project %s", project.id)
         db.rollback()
         raise HTTPException(status_code=503, detail="The untouched-hosts queue could not be computed.")
+    # tier_counts is aligned with the tiers 1..5, so the tier's own entry is
+    # the service's count of the list a `tier` call pages.
+    total = queue.tier_counts[tier - 1] if tier else queue.queue_total
+    return AgentInvestigationQueue(**{
+        **queue.model_dump(), **agent_page(queue.items, total=total, limit=limit, offset=offset),
+    })
 
 
 @router.get(
@@ -235,13 +258,9 @@ def get_assist_my_findings(
         )
     page = compute_my_findings(db, operator, project, limit=limit, offset=offset, need=need)
     total = page.need_counts[need] if need else page.total_open
-    return AgentMyFindingsResponse(
-        **page.model_dump(),
-        total=total,
-        limit=limit,
-        offset=offset,
-        has_more=offset + len(page.items) < total,
-    )
+    return AgentMyFindingsResponse(**{
+        **page.model_dump(), **agent_page(page.items, total=total, limit=limit, offset=offset),
+    })
 
 
 @router.get(
@@ -298,12 +317,12 @@ def get_assist_evidence_gaps(
     request: Request,
     # A query parameter, not a path segment as on the page: MCP path params
     # are ids (integers) by the transport's rule, and a domain is a word.
-    domain: str = Query(..., max_length=64, description=f"One of: {', '.join(DOMAIN_LABELS)}"),
+    domain: EvidenceDomain = Query(..., description="An assessment domain's key, as assist_get_coverage lists them."),
     segment: Optional[str] = Query(
         None, max_length=64,
         description=(
             "A segment KEY from assist_get_coverage's matrix.segments[].key (a site id, "
-            "a subnet key, or 'unmapped') — not a CIDR you type; narrows to one cell."
+            "a subnet key, 'unassigned' or 'unmapped') — not a CIDR you type; narrows to one cell."
         ),
     ),
     limit: int = Query(200, ge=1, le=1000),
@@ -315,16 +334,18 @@ def get_assist_evidence_gaps(
     and the collection or planning step that closes the gap (``action``).
     ``total`` is exact; ``items`` is cut at ``limit``.  Read ``scope_caution``
     when present — hosts outside the declared scope must be confirmed in scope
-    before anyone collects against them."""
+    before anyone collects against them.
+
+    Not the agents' page (``AgentPage``): the answer is the Evidence page's
+    own, key for key, and its service cuts at ``limit`` with no way to skip —
+    ``total`` beside the length of ``items`` says whether the list is whole,
+    and ``segment`` narrows one that is not."""
     project_id = request.state.agent_project_id
     result = evidence_gap_hosts(db, project_id, domain, limit=limit, segment=segment)
     if result is None:
-        # Say WHICH value is wrong and what would be right (MCP acceptance
-        # feedback #15: an agent passed a CIDR where a matrix key belongs).
-        if domain not in DOMAIN_LABELS:
-            raise HTTPException(status_code=404, detail={
-                "error": "unknown_domain", "domain": domain, "accepted": list(DOMAIN_LABELS),
-            })
+        # The domain is typed, so only the segment can be unknown here.  Say
+        # what would be right (MCP acceptance feedback #15: an agent passed a
+        # CIDR where a matrix key belongs).
         segs = evidence_segments(db, project_id)
         raise HTTPException(status_code=404, detail={
             "error": "unknown_segment", "segment": segment,
@@ -373,7 +394,7 @@ def get_assist_scan_compare(
 
 @router.get(
     "/assist/scans/{scan_id}/hosts",
-    response_model=Paginated[ScanHostSnapshot],
+    response_model=AgentScanHostsPage,
     summary="Hosts as one scan observed them — state, hostname, ports, whether it authenticated",
 )
 def get_assist_scan_hosts(
@@ -384,8 +405,8 @@ def get_assist_scan_hosts(
         description="Filter on state_at_scan (the observed state, not the current one).",
     ),
     search: Optional[str] = Query(None, max_length=200, description="Address or hostname at scan"),
-    skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -396,8 +417,9 @@ def get_assist_scan_hosts(
     said so (Nessus), null when it did not say — null is "not stated", never
     "no".  ``ports`` lists at most 50 per host; the two counts are exact."""
     try:
-        return scan_host_snapshots(
-            db, request.state.agent_project_id, scan_id, state=state, search=search, skip=skip, limit=limit,
+        page = scan_host_snapshots(
+            db, request.state.agent_project_id, scan_id, state=state, search=search, skip=offset, limit=limit,
         )
     except ScanNotInProject:
         raise HTTPException(status_code=404, detail="Scan not found in this project")
+    return AgentScanHostsPage(**agent_page(page.items, total=page.total, limit=limit, offset=offset))

@@ -15,8 +15,8 @@ vi.mock('../../hooks/useConfirm', () => ({
 vi.mock('../../services/api', () => ({
   listScopeDomains: vi.fn().mockResolvedValue({
     items: [
-      { id: 1, scope_id: 1, domain: 'acme.com', include_subdomains: true, description: null, name_count: 12 },
-      { id: 2, scope_id: 1, domain: 'portal.acme.com', include_subdomains: false, description: null, name_count: 0 },
+      { id: 1, domain: 'acme.com', include_subdomains: true, description: null, name_count: 12 },
+      { id: 2, domain: 'portal.acme.com', include_subdomains: false, description: null, name_count: 0 },
     ],
     total: 2,
     skip: 0,
@@ -30,7 +30,7 @@ vi.mock('../../services/api', () => ({
 const renderCard = (canEdit = true) =>
   render(
     <TooltipProvider>
-      <ScopeDomainsCard scopeId={1} canEdit={canEdit} />
+      <ScopeDomainsCard canEdit={canEdit} />
     </TooltipProvider>,
   );
 
@@ -75,7 +75,8 @@ describe('ScopeDomainsCard removing', () => {
     renderCard();
     await waitFor(() => expect(screen.getByText('portal.acme.com')).toBeInTheDocument());
     fireEvent.click(await openMenu('portal.acme.com'));
-    await waitFor(() => expect(deleteMock()).toHaveBeenCalledWith(1, 1, 2));
+    // The project and the entry: no scope id (a project has one scope).
+    await waitFor(() => expect(deleteMock()).toHaveBeenCalledWith(1, 2));
     await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Removed portal.acme.com from scope'));
   });
 
@@ -157,7 +158,7 @@ describe('ScopeDomainsCard — after an add the list is the server’s', () => {
   const listMock = () => (api as unknown as { listScopeDomains: ReturnType<typeof vi.fn> }).listScopeDomains;
   const addMock = () => (api as unknown as { addScopeDomains: ReturnType<typeof vi.fn> }).addScopeDomains;
   const entry = (id: number, domain: string, name_count = 0, include_subdomains = false) => ({
-    id, scope_id: 1, domain, include_subdomains, description: null, created_at: null, name_count,
+    id, domain, include_subdomains, description: null, created_at: null, name_count,
   });
   const before = [entry(1, 'acme.com', 12, true), entry(2, 'portal.acme.com')];
   const page = (items: unknown[], total: number, names: number, skip = 0) => ({
@@ -165,7 +166,7 @@ describe('ScopeDomainsCard — after an add the list is the server’s', () => {
   });
   const { reread, ReadsOnScreen } = readsOnScreen({ getScopeCoverage: 'coverage', getDefaultScope: 'subnets' });
   const renderWithPage = () => render(
-    <TooltipProvider><ReadsOnScreen /><ScopeDomainsCard scopeId={1} /></TooltipProvider>,
+    <TooltipProvider><ReadsOnScreen /><ScopeDomainsCard /></TooltipProvider>,
   );
   let original: unknown;
   beforeEach(() => {
@@ -190,7 +191,7 @@ describe('ScopeDomainsCard — after an add the list is the server’s', () => {
     const input = screen.getByLabelText(/^Domain/);
     fireEvent.change(input, { target: { value: 'new.acme.com' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-    await waitFor(() => expect(addMock()).toHaveBeenCalledWith(1, 1, [{ domain: 'new.acme.com', include_subdomains: false }]));
+    await waitFor(() => expect(addMock()).toHaveBeenCalledWith(1, [{ domain: 'new.acme.com', include_subdomains: false }]));
 
     expect(await screen.findByText('new.acme.com')).toBeInTheDocument();
     expect(screen.getByText('3 entries')).toBeInTheDocument();
@@ -222,7 +223,7 @@ describe('ScopeDomainsCard — after an add the list is the server’s', () => {
   // answer is only the first page, so the list is read again, page by page.
   it('with more than one page loaded, the list is read again and nothing the reader loaded is cut', async () => {
     const many = Array.from({ length: 150 }, (_, i) => entry(i + 1, `d${String(i).padStart(3, '0')}.acme.com`));
-    const serve = (rows: unknown[]) => async (_p: number, _s: number, opts: { skip?: number } = {}) =>
+    const serve = (rows: unknown[]) => async (_p: number, opts: { skip?: number } = {}) =>
       page(rows.slice(opts.skip ?? 0, (opts.skip ?? 0) + 100), rows.length, 0, opts.skip ?? 0);
     listMock().mockImplementation(serve(many));
     renderWithPage();
@@ -258,7 +259,7 @@ describe('ScopeDomainsCard — after an add the list is the server’s', () => {
     actions.focus();
     fireEvent.keyDown(actions, { key: 'Enter' });
     fireEvent.click(await screen.findByRole('menuitem', { name: /Remove from scope…/ }));
-    await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(1, 1, 2));
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(1, 2));
     await waitFor(() => expect(screen.queryByText('portal.acme.com')).toBeNull());
     expect(screen.getByText('1 entry')).toBeInTheDocument();
     await waitFor(() => expect(reread).toHaveBeenCalledWith('coverage'));

@@ -73,7 +73,6 @@ export interface ToolRegistryEntry {
   /** Catalogue state. `suggested` waits for an admin to add it to the
    *  catalogue (`reference`) or decline it (`rejected`). */
   status: 'reference' | 'suggested' | 'rejected';
-  phases: string[];
   intrusive: boolean | null;
   requires_privileges: boolean | null;
   output_format: string | null;

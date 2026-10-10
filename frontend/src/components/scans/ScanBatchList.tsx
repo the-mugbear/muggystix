@@ -11,6 +11,7 @@ import { Button } from '../ui/button';
 import { TableCell, TableRow } from '../ui/table';
 import { formatInstant, type TimeFormatOptions } from '../../utils/scanTime';
 import { batchDisplayName } from '../../utils/batchLabel';
+import { importResultsPath } from '../../utils/importResultsPath';
 import { toolFamily } from './ScanContribution';
 import { ROW_LINK_CLASS, ScanRowActions } from './ScanRowActions';
 
@@ -110,8 +111,8 @@ export function batchRefusedAtUpload(b: ScanBatchSummary): number {
  * An agent splitting a large scope into hundreds of chunks, or an operator
  * dropping many files at once, is ONE row, expandable to its files (v5.207.0).
  * It sits in the same chronological table as single files and, since
- * v5.287.0, in the SAME columns: Scan (name, source, tools) · When (upload
- * time) · New hosts · What it contributed (files, hosts, port observations,
+ * v5.287.0, in the SAME columns: Scan (name, source, tools) · Uploaded ·
+ * New hosts · What it contributed (files, hosts, port observations,
  * and why any file was not imported) · the Files toggle.  Since v5.288.0 its
  * expanded files are rows of those same columns too.
  */
@@ -233,14 +234,18 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
           </div>
         </TableCell>
 
-        {/* When — the upload time; a batch has no single run time. */}
+        {/* Uploaded — the column's one meaning (G8); a batch has no single
+            run time.  The heading says "Uploaded", so the row no longer
+            repeats the word under its time. */}
         {/* UX review 2026-09-24 — one time line (no zone: the page names it
-            once) and one muted line; it wrapped to four. */}
+            once); a second, muted one only for a file re-processed later. */}
         <TableCell className="min-w-0" title={[uploaded && `Uploaded ${uploaded}`, reprocessedAt && `A file re-processed ${reprocessedAt}`].filter(Boolean).join('\n') || undefined}>
           <p className="break-words text-metadata tabular-nums">{compact(b.created_at) ?? compact(b.first_uploaded) ?? '—'}</p>
-          <p className="break-words text-caption text-muted-foreground">
-            uploaded{reprocessedAt ? ` · re-processed ${compact(b.last_uploaded)}` : ''}
-          </p>
+          {reprocessedAt && (
+            <p className="break-words text-caption tabular-nums text-muted-foreground">
+              a file re-processed {compact(b.last_uploaded)}
+            </p>
+          )}
         </TableCell>
 
         {/* New hosts — as on a file row: added, out of the unique hosts seen. */}
@@ -321,7 +326,7 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
           )}
           {b.failed_files > 0 && (
             <p className="text-caption">
-              <Link to="/parse-errors?status=needs_attention" className={`${reasonLink} text-destructive`}>
+              <Link to={importResultsPath({ status: 'needs_attention' })} className={`${reasonLink} text-destructive`}>
                 {b.failed_files.toLocaleString()} failed
               </Link>
             </p>
@@ -329,7 +334,7 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
           {superseded > 0 && (
             <p className="text-caption text-muted-foreground">
               <Link
-                to="/parse-errors?status=superseded"
+                to={importResultsPath({ status: 'superseded' })}
                 className={reasonLink}
                 title="Failed here, but a later upload of the same file imported it — nothing needs doing"
               >
@@ -340,7 +345,7 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
           {expired > 0 && (
             <p className="text-caption text-muted-foreground">
               <Link
-                to="/parse-errors?status=expired"
+                to={importResultsPath({ status: 'expired' })}
                 className={reasonLink}
                 title="Uploaded but never started: nobody reviewed their format within 24 hours, so the files were removed"
               >
@@ -350,7 +355,9 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
           )}
           {dismissedFailed > 0 && (
             <p className="text-caption text-muted-foreground">
-              <Link to="/parse-errors?status=failed" className={reasonLink}>
+              {/* The project's dismissed failures (this batch's among them) —
+                  it opened every failed import, dismissed or not. */}
+              <Link to={importResultsPath({ status: 'failed_dismissed' })} className={reasonLink}>
                 {dismissedFailed.toLocaleString()} failed (dismissed)
               </Link>
             </p>
@@ -430,7 +437,7 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
         </TableRow>
       )}
       {/* v5.288.0 — the files are rows of the parent table's columns (Scan ·
-          When · New hosts · Contributed), so they read under its headers;
+          Uploaded · New hosts · Contributed), so they read under its headers;
           they were a header-less list whose figures landed anywhere. */}
       {Array.isArray(state) && (state.length > 0 || stagedJobs.length > 0 || otherJobs.length > 0) && (
         <>
@@ -453,7 +460,7 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
                     {job.superseded_by_job_id != null && (
                       <>
                         {' — '}
-                        <Link to={`/parse-errors?job_id=${job.superseded_by_job_id}`} className={`${reasonLink} text-primary`}>
+                        <Link to={importResultsPath({ job_id: job.superseded_by_job_id })} className={`${reasonLink} text-primary`}>
                           imported by job #{job.superseded_by_job_id}
                         </Link>
                       </>
@@ -469,7 +476,7 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
                   <ScanRowActions
                     link={
                       <Link
-                        to={`/parse-errors?job_id=${job.id}`}
+                        to={importResultsPath({ job_id: job.id })}
                         className={ROW_LINK_CLASS}
                         aria-label={`Open ${job.original_filename} in Ingestion Results`}
                       >

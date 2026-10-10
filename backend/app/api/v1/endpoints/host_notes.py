@@ -316,92 +316,19 @@ def create_host_note(
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
 
-    follow_service = HostFollowService(db)
+    # The write and the telling (mentions, the thread, the host's reviewers,
+    # the webhook) are ``HostFollowService.post_note`` — the agents' route
+    # calls the same.  The note is saved even when the telling fails; the
+    # answer then carries ``mention_warning`` (audit finding H3), otherwise who
+    # the @mentions reached and which matched nobody (v2.404.0).
     try:
-        note = follow_service.create_note(
-            host_id, current_user.id, payload.body,
-            parent_id=payload.parent_id,
+        note, told = HostFollowService(db).post_note(
+            host, current_user, project, payload.body, parent_id=payload.parent_id,
         )
     except ValueError as exc:
         # parent_id validation failure (cross-host threading attempt).
         raise HTTPException(status_code=400, detail=str(exc))
-
-    # Audit finding H3: previously swallowed mention-processing
-    # failures silently, so a broken notification pipeline would
-    # return 200 and nobody would know the mentioned user wasn't
-    # alerted.  Now: log with full context, increment a warning
-    # counter via structured log extras, and surface a best-effort
-    # ``mention_warning`` note on the serialized response so clients
-    # can display a toast ("note saved, but mention notifications
-    # failed — the tagged user may not be alerted").  The note
-    # itself is still persisted; only the side-effect is partial.
-    mention_warning: Optional[str] = None
-    mention_notifs = []
-    outcome: dict = {}
-    try:
-        notification_service = NotificationService(db)
-        mention_notifs = notification_service.process_note_mentions(note, current_user, project) or []
-        # v2.404.0 — who was told and which @words matched nobody, for the
-        # author's confirmation toast (a mention to a non-member was silent).
-        outcome = notification_service.mention_outcome(note.body, project.id, mention_notifs)
-        # A reply reaches everyone already in the thread without an @mention;
-        # then anyone reviewing this host hears a note landed on it.  Each
-        # step skips those already told, so nobody is pinged twice.
-        told = {n.user_id for n in mention_notifs}
-        told |= {
-            n.user_id for n in notification_service.notify_discussion_participants(
-                note, current_user, project, exclude_user_ids=told,
-            )
-        }
-        notification_service.notify_host_followers_of_note(
-            note, current_user, project, exclude_user_ids=told,
-        )
-        # v2.302.0 — staged INSIDE this transaction, immediately before the
-        # commit that makes the note real. The outbox row and the note are now
-        # atomic; the POST itself is fired from the after-commit hook, so the
-        # rollback below discards the intent along with the work. Previously
-        # this ran after the commit, leaving a window where a crash lost the
-        # event outright.
-        if mention_notifs:
-            stage_dispatch(
-                db,
-                project_id=project.id,
-                event="note_mention",
-                title=f"@{current_user.username} mentioned {len(mention_notifs)} user(s) on {host.hostname or host.ip_address}",
-                body=(payload.body or "")[:280],
-                context={"host_id": host_id, "note_id": note.id},
-            )
-        db.commit()
-    except Exception:
-        logger.exception(
-            "Mention processing failed",
-            extra={
-                "note_id": note.id,
-                "host_id": host_id,
-                "author_id": current_user.id,
-                "project_id": project.id,
-            },
-        )
-        mention_warning = (
-            "Note saved, but mention notifications could not be delivered. "
-            "Tagged users may not have been alerted; contact an admin if "
-            "this persists."
-        )
-        outcome = {}
-        db.rollback()
-
-    # The webhook is staged above, inside the transaction. Nothing to do here:
-    # if the commit succeeded the after-commit hook has already handed the POST
-    # to the fast path; if it rolled back, the outbox row went with it.
-
-    serialized = _serialize_note(note)
-    if mention_warning:
-        # Annotation is a Pydantic model; use model_copy to attach the
-        # warning without mutating the schema signature.  Frontend
-        # clients that don't know about mention_warning simply ignore
-        # the extra field.
-        return serialized.model_copy(update={"mention_warning": mention_warning})
-    return serialized.model_copy(update=outcome)
+    return _serialize_note(note).model_copy(update=told)
 
 
 @router.patch(

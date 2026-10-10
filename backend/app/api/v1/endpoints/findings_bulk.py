@@ -18,11 +18,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_project, require_project_role
-from app.api.deps import get_current_user
-from app.db.models_auth import User, UserRole
+from app.api.deps import (
+    BULK_ASSIGNEE_UNKNOWN,
+    get_current_project,
+    get_current_user,
+    load_project_assignee,
+    require_project_role,
+)
+from app.db.models_auth import User
 from app.db.models_findings import Finding
-from app.db.models_project import Notification, Project, ProjectMembership, ProjectRole
+from app.db.models_project import Notification, Project, ProjectRole
 from app.db.session import get_db
 from app.services.finding_service import FindingService
 
@@ -133,27 +138,10 @@ def bulk_assign(
 
     assignee: Optional[User] = None
     if payload.assignee_user_id is not None:
-        assignee = (
-            db.query(User)
-            .filter(User.id == payload.assignee_user_id, User.is_active.is_(True))
-            .first()
-        )
-        if not assignee:
-            raise HTTPException(status_code=404, detail="Assignee not found")
         # Don't hand work to someone who can't open the project.
-        if assignee.role != UserRole.ADMIN:
-            is_member = (
-                db.query(ProjectMembership)
-                .filter(
-                    ProjectMembership.project_id == project.id,
-                    ProjectMembership.user_id == assignee.id,
-                )
-                .first()
-            )
-            if not is_member:
-                raise HTTPException(
-                    status_code=400, detail="Assignee is not a member of this project",
-                )
+        assignee = load_project_assignee(
+            db, project.id, payload.assignee_user_id, unknown=BULK_ASSIGNEE_UNKNOWN,
+        )
 
     for finding in findings:
         finding.owner_id = assignee.id if assignee else None

@@ -46,8 +46,7 @@ vi.mock('react-router-dom', async () => {
 });
 
 /** What the workbench says the project holds: hosts, and a scope with entries. */
-const SETUP: { has_hosts: boolean; has_scopes: boolean; scope_rows: number; only_scope_id: number | null } =
-  { has_hosts: true, has_scopes: true, scope_rows: 1, only_scope_id: 10 };
+const SETUP: { has_hosts: boolean; has_scopes: boolean } = { has_hosts: true, has_scopes: true };
 
 const emptyWorkbench = {
   setup: SETUP,
@@ -146,7 +145,6 @@ function renderRouted(entry = '/operations') {
 }
 
 const session = (over: Record<string, unknown> = {}) => ({
-  kind: 'project' as const,
   id: 99,
   project_id: 1,
   agent_id: null,
@@ -593,7 +591,7 @@ describe('Operations page', () => {
       expect(href('112 untouched hosts have a reason to look')).toBe('/operations?tab=pickup&tier=2');
       // "Free to claim" opens the Tests tab narrowed to exactly those.
       expect(href('15 tests are free to claim')).toBe('/operations?tab=tests&tier=2&kind=triage');
-      expect(href('2 imports failed')).toBe('/parse-errors?status=needs_attention');
+      expect(href('2 imports failed')).toBe('/scans?view=results&status=needs_attention');
       // NO number that is not a link: nothing is added up (it said "101 items").
       const plain = lead.cloneNode(true) as HTMLElement;
       plain.querySelectorAll('a').forEach((a) => a.remove());
@@ -1053,7 +1051,7 @@ describe('Operations page', () => {
       expect(mockedApi.listAgentSessions.mock.calls.every((c) => c[0] === 1)).toBe(true);
       const asked = mockedApi.listAgentSessions.mock.calls.map((c) => c[1]);
       expect(asked.length).toBeGreaterThan(0);
-      for (const filters of asked) expect(filters).toEqual({ kind: 'project', status: 'active', user_id: 7 });
+      for (const filters of asked) expect(filters).toEqual({ status: 'active', user_id: 7 });
       expect(screen.queryByText(/\(active\)|^active$|^ended$/)).not.toBeInTheDocument();
     });
 
@@ -1074,8 +1072,8 @@ describe('Operations page', () => {
 
   // 5.204.3 — the setup card's scan button used to navigate('/scopes') (a
   // dead end). 5.313.0 — no per-scope key: it hands the operator's one agent
-  // session a task naming the registered scope, in place. 5.313.1 — the task
-  // is a scan uploaded to the session, not a recon run.
+  // session the scan task, in place. 5.313.1 — the task is a scan uploaded to
+  // the session, not a recon run.
   describe('a project with nothing in it yet', () => {
     /** The workbench of a project in this state (5.365.0: `setup` — the page
      *  read the scope coverage for it). */
@@ -1084,28 +1082,20 @@ describe('Operations page', () => {
     /** A scope with entries, nothing discovered yet. */
     const noHosts = { has_hosts: false };
 
-    it('setup card: Scan with your agent hands the task for the single scope to the agent session', async () => {
+    // The task names no scope: a project has one, and an agent's scope reads
+    // take no id.  (It said "scope id 10", from `setup.only_scope_id`; the
+    // "several scopes" wording went with the case it was for.)
+    it('setup card: Scan with your agent hands the agent session a task that names no scope', async () => {
       projectWith(noHosts);
       renderPage();
       fireEvent.click(await screen.findByRole('button', { name: /Scan with your agent/ }));
-      expect(await screen.findByRole('dialog', { name: /Start Agent Session/ })).toBeInTheDocument();
+      const dialog = await screen.findByRole('dialog', { name: /Start Agent Session/ });
       expect(
         screen.getByText(
-          `Read this project’s scope in BlueStick (scope id ${SETUP.only_scope_id}), run your scanners on what is in scope, and upload the output to this session.`,
+          'Read this project’s scope in BlueStick, run your scanners on what is in scope, and upload the output to this session.',
         ),
       ).toBeInTheDocument();
-      expect(navigateSpy).not.toHaveBeenCalled();
-    });
-
-    it('setup card: with several scopes, the task names none and lets the agent choose', async () => {
-      projectWith({ ...noHosts, scope_rows: 2, only_scope_id: null });
-      renderPage();
-      fireEvent.click(await screen.findByRole('button', { name: /Scan with your agent/ }));
-      expect(
-        await screen.findByText(
-          'Read this project’s scopes in BlueStick, run your scanners on what is in scope, and upload the output to this session.',
-        ),
-      ).toBeInTheDocument();
+      expect(dialog.textContent).not.toMatch(/scope id/i);
       expect(navigateSpy).not.toHaveBeenCalled();
     });
 
@@ -1119,15 +1109,16 @@ describe('Operations page', () => {
       expect(listCalls()).toEqual({ findings: 0, hosts: 0, tests: 0, changed: 0, pickup: 0 });
     });
 
-    // 5.332.2 — every project has its one scope row from creation; with no
-    // subnet in it, nothing is "registered" yet.
+    // 5.332.2 — a scope with no subnet in it is not "registered" yet.
+    // The page keeps its chrome on every such project (an agent session can
+    // still be started from here — a project with only domains declared is
+    // in this state too).  Until `setup.scope_rows` went, a project with no
+    // scope ROW hid it; the row's existence is no longer told or asked.
     it('a project whose scope has no entries gets the welcome block, not "Scope is registered"', async () => {
       projectWith({ ...noHosts, has_scopes: false });
       renderPage();
       expect(await screen.findByText(/Welcome — let's set up this project/)).toBeInTheDocument();
       expect(screen.queryByText(/Scope is registered/)).not.toBeInTheDocument();
-      // The scope row exists, so the page keeps its chrome (an agent session
-      // can still be started from here).
       expect(screen.getByRole('button', { name: 'Refresh Operations' })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Start Agent Session/ })).toBeInTheDocument();
     });
@@ -1145,14 +1136,6 @@ describe('Operations page', () => {
       } finally {
         vi.useRealTimers();
       }
-    });
-
-    it('a brand-new project gets the welcome block and no refresh chrome', async () => {
-      projectWith({ has_hosts: false, has_scopes: false, scope_rows: 0, only_scope_id: null });
-      renderPage();
-      expect(await screen.findByText(/Welcome — let's set up this project/)).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Refresh Operations' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /Start Agent Session/ })).not.toBeInTheDocument();
     });
   });
 
@@ -1218,7 +1201,7 @@ describe('Operations page', () => {
         expect(heading.compareDocumentPosition(screen.getByRole('tablist')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(screen.getByText('1 import failed · 1 finished partial')).toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Inspect import errors' }));
-        expect(navigateSpy).toHaveBeenCalledWith('/parse-errors?status=needs_attention');
+        expect(navigateSpy).toHaveBeenCalledWith('/scans?view=results&status=needs_attention');
         // 5.320.0 — imports are the only blocked work: no run rows.
         expect(screen.queryByText(/Run #|interrupted run/)).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Open run' })).not.toBeInTheDocument();

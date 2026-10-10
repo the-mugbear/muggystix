@@ -553,7 +553,7 @@ These are good candidates for standardization if repeated:
 - `projectScopedKey(name)` (from `src/utils/scopedStorage.ts`) — namespaced localStorage keys
 - `formatTimestamp` / `formatDate` (from `src/utils/relativeTime.ts`) — the one absolute date format (§6)
 - `<TimeAgo>` (from `src/components/TimeAgo.tsx`) — a relative age in lists, the exact time on hover
-- `<RunKindBadge>` (from `src/components/RunKindBadge.tsx`) — one run-kind badge wherever agent runs are listed
+- `<SessionStateBadge>` / `sessionStateLine` (from `src/components/agent-sessions/SessionParts.tsx`) — where an agent session stands (Live / Resumable / Expired / Ended, and the line under it), the same for every session wherever sessions are listed; a session has no kind and no kind badge
 - `ListFilterBar` / `ListFilterSearch` (from `src/components/ListFilterBar.tsx`) — the shared filter row (§27)
 
 ### 38. An effect never fetches (2026-10-09; was the `cancelled`-flag convention)
@@ -676,6 +676,35 @@ the Operations tabs, Names, Segments, Ingestion Results, the audit log,
 Hosts and Scanner observations do.  A page the address names past the end steps back to the last page
 that exists — the hook's doing, on every one of them; a page writes no clamp
 of its own.
+
+**Every paged list has the same footer, at the foot of the list:**
+`components/operations/QueueParts.PagedFooter` — "51–100 of 120", chevrons
+named for what a press moves by ("Next 50 subnets"), "page 2 of 3"; one page
+shows the range alone.  Pass `busy` while a page loads, so a second press
+cannot ask for the page after one that has not arrived.  A section heading
+carries the count only, never a range or a pager (Names' sat there until
+5.383.0).  A list that pages over rows already in memory — Oversight's project
+table, the SBOM page, Default credentials — keeps `useUrlPage` and its own
+slice and renders the same footer from those numbers (no `busy`: no page is
+ever on its way); a "Rows per page" choice is the footer's child.  Nothing is
+listed → no footer (never "1–0 of 0").  Findings and Hosts keep
+`ui/data-table`'s `DataTablePagination`.  A new paged list never writes its
+own buttons.
+
+**A link to Ingestion results is built by `utils/importResultsPath(params?)`**
+(`/scans?view=results&status=…`): the view parameter is written in one place.
+`/parse-errors` and `/ingestion-results` are redirects for bookmarks and old
+notification links only — no page or component names them
+(`tests/utils/importResultsPath.test.tsx`).
+
+**A time column shows one time and its heading names it.**  The Scans
+history is ordered by upload, so its column is "Uploaded" on every row; a
+scan's own time is a labelled second line ("ran … · took 5m", or "ran … ·
+scanner clock, zone unknown") with its provenance on hover.  Only the
+all-files view sorted by when the scans ran shows that time first, headed
+"Ran", with "uploaded …" beneath and a dash where the file records none.
+Never one column that is one time on some rows and another on the rest.
+Dates are provenance: no row is judged old.
 
 Two of them are opened by links that name filters AND a page
 (`/hosts?q=…&page=4`; a same-page link on the audit log), and that page must

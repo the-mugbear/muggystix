@@ -64,7 +64,10 @@ def docx(extra: dict = None, drop: tuple = (), content_type: str = "wordprocessi
     with zipfile.ZipFile(buf, "w") as zf:
         for name, body in members.items():
             if name not in drop:
-                zf.writestr(name, body)
+                # A fixed member date: `writestr(name, …)` stamps the clock, so
+                # two builds a second apart differed and a byte comparison of
+                # them failed now and then.
+                zf.writestr(zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0)), body)
     return buf.getvalue()
 
 
@@ -222,7 +225,7 @@ def test_an_upload_of_another_shape_is_stored_with_a_warning(client, root, test_
 def test_only_a_global_admin_may_change_template_files(client, db_session, root, test_project):
     project_admin = User(
         id=501, username="padmin", email="padmin@example.com", full_name="P Admin", hashed_password="x",
-        role=UserRole.MEMBER, is_active=True, is_verified=True, created_at=datetime.now(timezone.utc),
+        role=UserRole.MEMBER, is_active=True, created_at=datetime.now(timezone.utc),
     )
     db_session.add(project_admin)
     db_session.flush()

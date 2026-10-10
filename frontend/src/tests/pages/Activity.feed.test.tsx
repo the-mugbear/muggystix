@@ -29,7 +29,7 @@ vi.mock('../../services/api', () => ({
   markAllNotificationsRead: vi.fn().mockResolvedValue(0),
 }));
 
-import Activity from '../../pages/Activity';
+import Activity from '../../pages/Collaboration';
 import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 
 const note = (over: Record<string, unknown>) => ({

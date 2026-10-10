@@ -61,7 +61,7 @@ from app.services.integration_service import IntegrationService, share_credentia
 from app.api.v1.endpoints.agent_common import (
     PORTS_PARAM_HELP, SEARCH_PARAM_HELP, SERVICES_PARAM_HELP, SEVERITY_FLAGS_HELP,
     STATE_PARAM_HELP, SUBNETS_PARAM_HELP,
-    batch_host_enrichment, load_agent_session,
+    batch_host_enrichment, load_agent_session, load_operator,
 )
 from app.services.host_query import build_filtered_host_query
 
@@ -637,6 +637,11 @@ def create_agent_note(
     The ``write:notes`` capability it used to require is gone with the rest of
     the capability system: an agent may write a note if the person whose
     session it is may write a note.
+
+    The note is its operator's, and it is announced like one the operator
+    typed (``HostFollowService.post_note``, the page's path): an ``@mention``
+    of a project member notifies them, as does a note on a host they are
+    reviewing.  The operator is not told about their own agent's note.
     """
     q = (
         db.query(models.Host)
@@ -646,10 +651,10 @@ def create_agent_note(
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
 
-    svc = HostFollowService(db)
-    note = svc.create_note(
-        host_id,
-        request.state.key_operator_id,
+    note, _told = HostFollowService(db).post_note(
+        host,
+        load_operator(db, request),
+        db.get(Project, agent.project_id),
         body.body,
         actor_type=ActorType.AGENT.value,
         agent_session_id=getattr(request.state, "agent_session_id", None),

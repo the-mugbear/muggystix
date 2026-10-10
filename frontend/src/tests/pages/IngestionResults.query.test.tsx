@@ -1,5 +1,5 @@
 /**
- * Ingestion Results (pages/ParseErrors.tsx), review 2026-10-01:
+ * Ingestion Results (pages/IngestionResults.tsx), review 2026-10-01:
  *   B15 — search, sort, direction and page live in the URL (status already did);
  *   R33 — a slow response for an earlier filter never replaces the current rows;
  *   R34 — a failed "Discard" on a staged file is said;
@@ -34,7 +34,7 @@ vi.mock('../../contexts/AuthContext', () => ({
 vi.mock('../../components/scans/ImportResult', () => ({ default: () => null }));
 vi.mock('../../components/scans/FormatRetryDialog', () => ({ default: () => null }));
 
-import IngestionResults from '../../pages/ParseErrors';
+import IngestionResults from '../../pages/IngestionResults';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
 const row = (over: Record<string, unknown>) => ({
@@ -53,13 +53,13 @@ const response = (items: unknown[], total = items.length) => ({
 });
 
 const Where = () => <output data-testid="where">{useSearchParams()[0].toString()}</output>;
-const renderPage = (url = '/parse-errors') => render(
+const renderPage = (url = '/scans?view=results') => render(
   <MemoryRouter initialEntries={[url]}>
     <TooltipProvider>
       <Routes>
         <Route
-          path="/parse-errors"
-          element={<><IngestionResults /><Where /><Link to="/parse-errors?search=masscan">elsewhere</Link></>}
+          path="/scans"
+          element={<><IngestionResults /><Where /><Link to="/scans?view=results&search=masscan">elsewhere</Link></>}
         />
       </Routes>
     </TooltipProvider>
@@ -74,7 +74,7 @@ beforeEach(() => {
 
 describe('Ingestion Results — the view is in the URL (B15)', () => {
   it('a link with search, sort, direction and page restores all four', async () => {
-    renderPage('/parse-errors?status=failed&search=dmz&sort=file_size&dir=asc&page=3');
+    renderPage('/scans?view=results&status=failed&search=dmz&sort=file_size&dir=asc&page=3');
     await screen.findByText('scan.xml');
     expect(api.getIngestionResults).toHaveBeenLastCalledWith(1, {
       skip: 50, limit: 25, status: 'failed', search: 'dmz', sortBy: 'file_size', sortOrder: 'asc',
@@ -85,18 +85,18 @@ describe('Ingestion Results — the view is in the URL (B15)', () => {
 
   // Branch review 2026-10-01 M11 — `?page=1.5` sent `skip=12.5`.
   it.each(['1.5', '-2', '0', 'abc', '1e3', '2 ', ''])('a page of "%s" is the first page', async (value) => {
-    renderPage(`/parse-errors?page=${encodeURIComponent(value)}`);
+    renderPage(`/scans?view=results&page=${encodeURIComponent(value)}`);
     await screen.findByText('scan.xml');
     expect(api.getIngestionResults.mock.calls.every(([, q]) => q.skip === 0)).toBe(true);
   });
 
   it('typing a search writes it to the URL, and a new filter goes back to the first page', async () => {
-    renderPage('/parse-errors?page=2');
+    renderPage('/scans?view=results&page=2');
     await screen.findByText('scan.xml');
     expect(api.getIngestionResults).toHaveBeenLastCalledWith(1, expect.objectContaining({ skip: 25 }), expect.any(AbortSignal));
 
     fireEvent.change(screen.getByLabelText('Search ingestion results by filename or error message'), { target: { value: 'nessus' } });
-    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('search=nessus'));
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('view=results&search=nessus'));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
       1, expect.objectContaining({ skip: 0, search: 'nessus' }), expect.any(AbortSignal),
     ));
@@ -107,7 +107,7 @@ describe('Ingestion Results — the view is in the URL (B15)', () => {
   // entry missed this page because the address was read on the line before).
   it('a link to the page with another search changes the box and what is asked — nothing writes the old search back', async () => {
     const box = () => screen.getByLabelText('Search ingestion results by filename or error message');
-    renderPage('/parse-errors?search=dmz');
+    renderPage('/scans?view=results&search=dmz');
     await screen.findByText('scan.xml');
     expect(box()).toHaveValue('dmz');
 
@@ -118,7 +118,7 @@ describe('Ingestion Results — the view is in the URL (B15)', () => {
     ));
     // Past the debounce: the address is still the link's.
     await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 450); }); });
-    expect(screen.getByTestId('where').textContent).toBe('search=masscan');
+    expect(screen.getByTestId('where').textContent).toBe('view=results&search=masscan');
     expect(box()).toHaveValue('masscan');
   });
 
@@ -126,17 +126,17 @@ describe('Ingestion Results — the view is in the URL (B15)', () => {
     renderPage();
     await screen.findByText('scan.xml');
     fireEvent.click(screen.getByRole('button', { name: /Sort direction/ }));
-    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('dir=asc'));
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('view=results&dir=asc'));
     await screen.findByText('scan.xml');
     fireEvent.click(screen.getByRole('button', { name: /Next/ }));
-    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('dir=asc&page=2'));
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('view=results&dir=asc&page=2'));
     await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
       1, expect.objectContaining({ skip: 25, sortOrder: 'asc' }), expect.any(AbortSignal),
     ));
   });
 
   it('ignores a sort key the server does not have', async () => {
-    renderPage('/parse-errors?sort=drop_table');
+    renderPage('/scans?view=results&sort=drop_table');
     await screen.findByText('scan.xml');
     expect(api.getIngestionResults).toHaveBeenLastCalledWith(1, expect.objectContaining({ sortBy: 'created_at' }), expect.any(AbortSignal));
   });
@@ -155,7 +155,7 @@ describe('Ingestion Results — the latest filter wins (R33)', () => {
       return <button type="button" onClick={() => setParams({ status: 'failed' })}>to failed</button>;
     };
     render(
-      <MemoryRouter initialEntries={['/parse-errors']}>
+      <MemoryRouter initialEntries={['/scans?view=results']}>
         <TooltipProvider><Shell /><IngestionResults /></TooltipProvider>
       </MemoryRouter>,
     );

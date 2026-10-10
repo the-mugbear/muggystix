@@ -11,9 +11,13 @@ from sqlalchemy import (
     Column, Integer, String, Text, DateTime, Boolean, ForeignKey,
     UniqueConstraint, Index, JSON,
 )
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
+
+#: The ``projects.status`` value that archives a project.
+PROJECT_ARCHIVED = "archived"
 
 
 class ProjectRole(str, Enum):
@@ -40,9 +44,11 @@ class Project(Base):
     name = Column(String(100), unique=True, nullable=False, index=True)
     slug = Column(String(100), unique=True, nullable=False, index=True)
     description = Column(Text)
-    status = Column(String(20), nullable=False, default="active")  # active, in_progress, completed, archived
+    # active, completed, archived (``projects._VALID_STATUSES``; older rows may
+    # read in_progress).  ``archived`` is the ONE fact that a project is
+    # archived — see ``is_archived`` below.
+    status = Column(String(20), nullable=False, default="active")
     is_default = Column(Boolean, default=False)
-    is_archived = Column(Boolean, default=False)  # kept for backward compat, derived from status
     start_date = Column(DateTime(timezone=True), nullable=True)
     end_date = Column(DateTime(timezone=True), nullable=True)
     created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -62,6 +68,18 @@ class Project(Base):
     memberships = relationship(
         "ProjectMembership", back_populates="project", cascade="all, delete-orphan"
     )
+
+    @hybrid_property
+    def is_archived(self) -> bool:
+        """Whether the project is archived: ``status == 'archived'``, as a
+        value on a row and as SQL in a filter (``Project.is_archived.is_(False)``).
+
+        Read-only, and the only definition.  It was a second column that
+        every writer had to keep in step with ``status`` until revision
+        ``c2a7e5f1d9b3`` dropped it; a project is archived or unarchived by
+        setting ``status``.
+        """
+        return self.status == PROJECT_ARCHIVED
 
     @property
     def skip_informational_effective(self) -> bool:

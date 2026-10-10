@@ -135,7 +135,7 @@ describe('StartAssistDialog — before a session is started', () => {
 
   it('with a live session: "Start another session" and "Copied" are forgotten with the opening', async () => {
     const live = {
-      id: 86, kind: 'project', status: 'active', can_end: true, can_resume: true,
+      id: 86, status: 'active', can_end: true, can_resume: true,
       key_expires_at: new Date(Date.now() + 3 * 3_600_000).toISOString(),
     } as unknown as AgentSessionRow;
     show({ instruction: 'Propose tests for host 12.', mySessions: [live] });

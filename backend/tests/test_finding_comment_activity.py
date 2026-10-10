@@ -32,7 +32,7 @@ def _comment(db, finding, user_id, body, at):
 def test_lists_discussions_latest_first_with_the_whole_thread(client, db_session, test_project, test_user):
     other = User(
         id=2, username="sam", email="sam@example.com", full_name=None,
-        hashed_password="x", role=UserRole.MEMBER, is_active=True, is_verified=True,
+        hashed_password="x", role=UserRole.MEMBER, is_active=True,
         created_at=datetime.now(timezone.utc),
     )
     db_session.add(other)

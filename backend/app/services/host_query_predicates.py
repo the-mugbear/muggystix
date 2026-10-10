@@ -680,8 +680,9 @@ def _host_in(host_ids_select, host_id_column) -> ColumnElement:
     )
 
 
-def has_test_execution_predicate(project_id: int) -> ColumnElement:
-    """Executed testing is qualifying evidence, independent of task status."""
+def tested_predicate(project_id: int) -> ColumnElement:
+    """Host is TESTED: it has qualifying evidence, independent of any test's
+    status (``host_test_queries.tested_host_ids``, the one definition)."""
     return _host_in(tested_host_ids(project_id), EvidenceRecord.host_id)
 
 
@@ -721,8 +722,9 @@ def untouched_predicate(db: Session) -> ColumnElement:
     return and_(*untouched_conditions(db))
 
 
-def has_plan_entry_predicate(project_id: int) -> ColumnElement:
-    """Host has an active proposed or in-progress test."""
+def planned_predicate(project_id: int) -> ColumnElement:
+    """Host is PLANNED: it has a proposed or in-progress test
+    (``host_test_queries.planned_host_ids``, the one definition)."""
     return _host_in(planned_host_ids(project_id), HostTest.host_id)
 
 

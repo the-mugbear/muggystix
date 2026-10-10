@@ -46,7 +46,6 @@ def _make_member_user(db_session, username: str) -> User:
         hashed_password="$2b$12$abcdefghijklmnopqrstuv",
         role=UserRole.MEMBER,
         is_active=True,
-        is_verified=True,
         created_at=datetime.now(timezone.utc),
     )
     db_session.add(user)

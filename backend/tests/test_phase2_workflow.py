@@ -35,7 +35,6 @@ def _mk_user(db, username, *, member_of=None, role=UserRole.MEMBER):
         hashed_password="x",
         role=role,
         is_active=True,
-        is_verified=True,
         created_at=datetime.now(timezone.utc),
     )
     db.add(user)

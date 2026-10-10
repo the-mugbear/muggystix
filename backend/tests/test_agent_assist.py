@@ -88,7 +88,9 @@ def test_assist_key_can_read_context_and_hosts(client, test_project, db_session)
     # Hosts endpoint — empty for a project with no hosts, but must not 401/403.
     hosts = client.get("/api/v1/agent/assist/hosts", headers=headers)
     assert hosts.status_code == 200, hosts.text
-    assert hosts.json() == {"items": [], "total": 0, "has_more": False, "limit": 500, "offset": 0}
+    assert hosts.json() == {
+        "items": [], "total": 0, "limit": 500, "offset": 0, "returned": 0, "has_more": False,
+    }
 
 
 def test_one_session_key_reaches_host_test_and_scope_reads(client, db_session, test_project):
@@ -107,11 +109,13 @@ def test_one_session_key_reaches_host_test_and_scope_reads(client, db_session, t
 
     tests = client.get("/api/v1/agent/host-tests", headers=headers)
     assert tests.status_code == 200, tests.text
-    assert tests.json() == {"items": [], "total": 0, "has_more": False}
+    assert tests.json() == {
+        "items": [], "total": 0, "limit": 50, "offset": 0, "returned": 0, "has_more": False,
+    }
 
     subnets = client.get("/api/v1/agent/scope/subnets", headers=headers)
     assert subnets.status_code == 200, subnets.text
-    assert subnets.json()["subnets"] == ["10.0.0.0/24"]
+    assert subnets.json()["items"] == ["10.0.0.0/24"]
 
 
 def test_an_assist_key_writes_exactly_what_its_operator_may(
@@ -702,7 +706,7 @@ def test_findings_are_answerable_across_the_project_not_host_by_host(
     # Two findings, not four: the one on three hosts is one finding.
     assert body["total"] == 2
     assert body["severity_counts"] == {"high": 1, "critical": 1}
-    by_title = {f["title"]: f for f in body["findings"]}
+    by_title = {f["title"]: f for f in body["items"]}
     assert by_title["SMB signing not required"]["host_count"] == 3
     assert set(by_title["SMB signing not required"]["hosts"]) == {
         "10.8.0.1", "10.8.0.2", "10.8.0.3"
@@ -713,7 +717,7 @@ def test_findings_are_answerable_across_the_project_not_host_by_host(
         "/api/v1/agent/assist/findings", params={"severity": "critical"}, headers=headers
     ).json()
     assert crit["total"] == 1
-    assert crit["findings"][0]["title"] == "Anonymous FTP"
+    assert crit["items"][0]["title"] == "Anonymous FTP"
 
 
 def test_unowned_findings_are_a_first_class_question(client, db_session, test_project):
@@ -734,7 +738,7 @@ def test_unowned_findings_are_a_first_class_question(client, db_session, test_pr
         "/api/v1/agent/assist/findings", params={"unowned": "true"}, headers=headers
     ).json()
     assert body["total"] == 2
-    assert all(f["owner_username"] is None for f in body["findings"])
+    assert all(f["owner_username"] is None for f in body["items"])
 
 
 def test_the_agent_can_read_notes_it_could_already_write(
@@ -947,7 +951,7 @@ def test_segments_rank_the_network_so_the_agent_does_not_have_to(
 
     headers = _assist(client, test_project.id)
     body = client.get("/api/v1/agent/assist/segments", headers=headers).json()
-    segments = body["subnets"]
+    segments = body["items"]
     by_cidr = {s["cidr"]: s for s in segments}
 
     assert by_cidr["10.21.0.0/24"]["exposure"]["by_severity"]["critical"] == 2
@@ -980,8 +984,9 @@ def test_recent_notes_answer_what_the_team_has_been_doing(
     db_session.commit()
 
     headers = _assist(client, test_project.id)
-    all_notes = client.get("/api/v1/agent/assist/notes", headers=headers).json()
-    assert len(all_notes) == 2
+    page = client.get("/api/v1/agent/assist/notes", headers=headers).json()
+    all_notes = page["items"]
+    assert len(all_notes) == 2 == page["total"]
     # The host is resolved so the agent can say which asset without another call.
     assert all_notes[0]["host_ip"] == "10.8.4.1"
 
@@ -990,7 +995,7 @@ def test_recent_notes_answer_what_the_team_has_been_doing(
     assert all("status" not in n for n in all_notes)
     still_all = client.get(
         "/api/v1/agent/assist/notes", params={"status": "open"}, headers=headers
-    ).json()
+    ).json()["items"]
     assert len(still_all) == 2
 
 
@@ -1240,9 +1245,9 @@ def test_segments_agree_with_the_subnet_insights_page(client, db_session, test_p
     expected = compute_subnet_insights(db_session, test_project.id, limit=25, offset=0)
     assert body["total"] == expected["total"]
     assert body["totals"]["hosts_in_scope"] == expected["totals"]["hosts_in_scope"]
-    assert [s["cidr"] for s in body["subnets"]] == [s["cidr"] for s in expected["subnets"]]
+    assert [s["cidr"] for s in body["items"]] == [s["cidr"] for s in expected["subnets"]]
     # The blocks the P2 item existed for.
-    first = body["subnets"][0]
+    first = body["items"][0]
     for block in ("exposure", "neglect", "hygiene", "recommended_action"):
         assert block in first, f"{block} missing from the segment payload"
     # eol_os_detail is the per-host list; "which hosts are EOL here" is a q=
@@ -1258,7 +1263,7 @@ def test_segments_report_not_assessable_rather_than_clean(client, test_project):
     headers = _assist(client, test_project.id)
     body = client.get("/api/v1/agent/assist/segments", headers=headers).json()
     assert body["adopted"] is False
-    assert body["subnets"] == []
+    assert body["items"] == [] and body["total"] == 0
     assert "scope" in (body["reason"] or "").lower()
 
 
@@ -1570,7 +1575,7 @@ def test_the_scope_read_back_names_every_domain_through_the_whole_lists(client, 
     whole = client.get("/api/v1/agent/scope/domains", headers=headers).json()
     assert "scope_id" not in whole
     assert sorted(scope["domains"], key=lambda d: d["domain"]) == sorted(
-        whole["domains"], key=lambda d: d["domain"],
+        whole["items"], key=lambda d: d["domain"],
     ) == [
         {"domain": "lab.example.com", "include_subdomains": True},
         {"domain": "portal.example.com", "include_subdomains": False},
@@ -1611,9 +1616,9 @@ def test_a_project_with_no_scope_reads_as_empty_and_the_scope_lists_are_gone(cli
         "domains": [], "domain_total": 0, "domains_truncated": False,
         "names_in_scope_total": 0,
     }
-    for path, key in (("/api/v1/agent/scope/subnets", "subnets"), ("/api/v1/agent/scope/domains", "domains")):
+    for path in ("/api/v1/agent/scope/subnets", "/api/v1/agent/scope/domains"):
         body = client.get(path, headers=headers).json()
-        assert (body["total"], body[key]) == (0, []), path
+        assert (body["total"], body["items"]) == (0, []), path
     for path in ("live-hosts.txt", "web-targets.txt", "hosts.ndjson", "named-targets.ndjson"):
         resp = client.get(f"/api/v1/agent/scope/{path}", headers=headers)
         assert (resp.status_code, resp.text) == (200, ""), path

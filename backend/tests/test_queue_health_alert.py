@@ -16,7 +16,7 @@ from app.services.ingestion_service import IngestionService
 def _admin(db, uid=200):
     u = User(
         id=uid, username="sysadmin", email="sysadmin@example.com", full_name="Sys",
-        hashed_password="x", role=UserRole.ADMIN, is_active=True, is_verified=True,
+        hashed_password="x", role=UserRole.ADMIN, is_active=True,
         created_at=datetime.now(timezone.utc),
     )
     db.add(u)

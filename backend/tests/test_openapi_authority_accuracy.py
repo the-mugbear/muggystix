@@ -4,12 +4,12 @@ B-Tech-2: main.py's `agent-assist` / `agent-browse` tag descriptions are
 hand-written and drifted — they still called the assist surface "read-only"
 and claimed "every write endpoint returns 403" long after add-note / set-follow
 / patch-host shipped. The machine-readable truth lives in mcp_tools.TOOLS
-(method GET vs POST/PATCH, per-workflow). This guard fails if the prose claims
-read-only for a workflow the registry gives write tools — so the description
+(method GET vs POST/PATCH). This guard fails if the prose claims read-only
+for tags whose routes the registry gives write tools — so the description
 can't silently fall out of step with the endpoints again.
 """
 from app.main import _OPENAPI_TAGS
-from app.api.v1.endpoints.mcp_tools import TOOLS, WORKFLOW_ASSIST, tool_workflows
+from app.api.v1.endpoints.mcp_tools import TOOLS
 
 
 def _tag_descriptions() -> dict[str, str]:
@@ -18,7 +18,7 @@ def _tag_descriptions() -> dict[str, str]:
 
 def _assist_has_write_tools() -> bool:
     return any(
-        WORKFLOW_ASSIST in tool_workflows(name) and spec["method"] != "GET"
+        name.startswith("assist_") and spec["method"] != "GET"
         for name, spec in TOOLS.items()
     )
 

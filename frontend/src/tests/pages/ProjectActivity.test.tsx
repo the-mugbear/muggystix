@@ -1,5 +1,5 @@
 /**
- * Agent Sessions (`/agent-activity`, pages/ProjectActivity.tsx) — v5.312.0,
+ * Agent Sessions (`/agent-activity`, pages/AgentSessions.tsx) — v5.312.0,
  * session-first: what is live (with its work and its controls), what an ended
  * session left open, then the history, then the analytics.
  */
@@ -7,7 +7,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useSearchParams } from 'react-router-dom';
 
-import ProjectActivity, { fillCallDays, HISTORY_COLUMN_WIDTHS } from '../../pages/ProjectActivity';
+import ProjectActivity, { fillCallDays, HISTORY_COLUMN_WIDTHS } from '../../pages/AgentSessions';
 
 const emptyActivity = {
   window_days: 14,
@@ -16,7 +16,6 @@ const emptyActivity = {
   first_call_at: null,
   last_call_at: null,
   status_breakdown: { success: 0, client_error: 0, server_error: 0, other: 0 },
-  by_workflow: [],
   daily: [],
   busiest_sessions: [],
 };
@@ -46,9 +45,8 @@ const HOUR = 1000 * 60 * 60;
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
 const ahead = (ms: number) => new Date(Date.now() + ms).toISOString();
 
-/** A consolidated session; live key unless overridden. */
+/** A session; live key unless overridden. */
 const session = (overrides: Record<string, unknown> = {}) => ({
-  kind: 'project' as const,
   id: 72,
   project_id: 1,
   agent_id: 7,
@@ -76,17 +74,17 @@ const session = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-/** A pre-consolidation assist row — the one legacy kind left (5.320.0: the
- *  legacy plan-generation and execution rows went with their tables). */
+/** A session from before one session did all the work, as the server sends it
+ *  now: the same fields as any other (5.383.0 — no `kind`), with the sparse
+ *  values such an old row has (no purpose, none of the later counts). */
 const legacyRun = (overrides: Record<string, unknown> = {}) => ({
-  kind: 'assist' as const,
   id: 42,
   project_id: 1,
   agent_id: 7,
   agent_name: "alice's-agent",
   user_id: 3,
   user_username: 'alice',
-  status: 'completed',
+  status: 'ended',
   started_at: ago(30 * HOUR),
   completed_at: ago(29 * HOUR),
   generated_by_model: 'claude-opus-4-7',
@@ -95,13 +93,26 @@ const legacyRun = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
-/** The live call is `{kind: 'project', status: 'active'}`; everything else is
- *  the history. */
+/** The live call is `{status: 'active', limit: 100}`; everything else is the
+ *  history (which never names a status). */
+const isLiveCall = (filters: Record<string, unknown> = {}) => filters.status === 'active';
 const serve = (live: unknown[], history: unknown[], total = history.length) => {
   mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Record<string, unknown> = {}) =>
-    filters.kind === 'project' && filters.status === 'active'
+    isLiveCall(filters)
       ? { project_id: 1, sessions: live, total: live.length }
       : { project_id: 1, sessions: history, total });
+};
+
+/** The roll-up that names a model, so the history offers the model filter —
+ *  the filter these tests change (there is no filter by kind of session). */
+const MODEL = 'claude-opus-4-7';
+const MODEL_SUMMARY = {
+  project_id: 1,
+  summary: [{ generated_by_model: MODEL, generated_by_tool: 'claude-code', total: 1 }],
+};
+const chooseModel = async (user: ReturnType<typeof userEvent.setup>) => {
+  await user.click(await screen.findByLabelText('Filter sessions by model'));
+  await user.click(await screen.findByRole('option', { name: MODEL }));
 };
 
 const renderPage = () =>
@@ -240,7 +251,7 @@ describe('Agent Sessions', () => {
     expect(empty.textContent).not.toMatch(/plan or execution/);
   });
 
-  it('lists one history row per session that opens the session page, a legacy row included', async () => {
+  it('lists one history row per session that opens the session page — every row the same, whenever it started', async () => {
     const ended = session({
       id: 60,
       status: 'ended',
@@ -264,15 +275,39 @@ describe('Agent Sessions', () => {
     expect(within(rows[0]).getByText('Ended')).toBeInTheDocument();
     expect(within(rows[0]).getByRole('link', { name: '3 tests proposed · 1 evidence record' }))
       .toHaveAttribute('href', '/agent-sessions/60');
-    // Legacy assist: its kind badge, and (5.328.0) the same page — it is the
-    // same kind of record now, so its calls and notes can be read. It had no
-    // page, and so no link, before.
-    expect(within(rows[1]).getByText('Assist')).toBeInTheDocument();
-    expect(within(rows[1]).getByText('Project-wide')).toBeInTheDocument();
-    const legacyLinks = within(rows[1]).getAllByRole('link');
-    expect(legacyLinks.length).toBeGreaterThan(0);
-    for (const link of legacyLinks) expect(link).toHaveAttribute('href', '/agent-sessions/42');
+    // A session from before the consolidation is a row like any other
+    // (5.383.0): no kind badge, the same name for a session with no purpose,
+    // the same state badge and the same work cell — it read "Assist",
+    // "Project-wide", its raw status and a dash.
+    expect(within(rows[1]).queryByText('Assist')).toBeNull();
+    expect(within(rows[1]).queryByText('Project-wide')).toBeNull();
+    expect(within(rows[1]).getByText('Agent session')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('Ended')).toBeInTheDocument();
+    const olderLinks = within(rows[1]).getAllByRole('link');
+    expect(olderLinks.length).toBeGreaterThan(0);
+    for (const link of olderLinks) expect(link).toHaveAttribute('href', '/agent-sessions/42');
+    expect(within(rows[1]).getAllByRole('link', { name: 'Open agent session 42' }).length).toBeGreaterThan(0);
     expect(within(rows[1]).getByText('claude-opus-4-7 · claude-code')).toBeInTheDocument();
+    // The two rows have the same cells.
+    expect(rows[1].querySelectorAll('td')).toHaveLength(rows[0].querySelectorAll('td').length);
+    // And the history offers no filter by kind.
+    expect(screen.queryByLabelText('Filter sessions by kind')).toBeNull();
+  });
+
+  it('an old session still stored active, with nothing left to act on it, reads Expired like any other', async () => {
+    const stuck = legacyRun({
+      status: 'active', completed_at: null, key_expires_at: null, renewable_until: ago(24 * HOUR),
+      can_end: true, can_resume: false,
+    });
+    serve([], [stuck]);
+    renderPage();
+    const [row] = await within(await screen.findByTestId('runs-table')).findAllByTestId('run-row');
+    expect(within(row).getByText('Expired')).toBeInTheDocument();
+    expect(within(row).getByText('key expired · past its lifetime')).toBeInTheDocument();
+    expect(within(row).queryByText('Stalled')).toBeNull();
+    // What the server says the routes accept is what is offered: End, no Resume.
+    expect(within(row).getByRole('button', { name: /End/ })).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /Resume/ })).toBeNull();
   });
 
   it('offers the model filter once an agent has reported one, and passes it to the API', async () => {
@@ -282,17 +317,12 @@ describe('Agent Sessions', () => {
     await screen.findByTestId('runs-table');
     expect(screen.queryByLabelText('Filter sessions by model')).not.toBeInTheDocument();
 
-    mockedApi.getAgentSessionSummary.mockResolvedValue({
-      project_id: 1,
-      summary: [{
-        generated_by_model: 'claude-opus-4-7', generated_by_tool: 'claude-code',
-        project: 0, assist: 1, total: 1,
-      }],
-    });
+    mockedApi.getAgentSessionSummary.mockResolvedValue(MODEL_SUMMARY);
     await user.click(screen.getByRole('button', { name: /Refresh agent sessions/i }));
-    const trigger = await screen.findByLabelText('Filter sessions by model');
-    await user.click(trigger);
-    await user.click(await screen.findByRole('option', { name: 'claude-opus-4-7' }));
+    await chooseModel(user);
+    // The roll-up is one count per model and client: no column per kind.
+    const rollup = screen.getByText('Activity by agent / model').closest('section') ?? document.body;
+    expect(within(rollup as HTMLElement).queryByText('Older assist')).toBeNull();
     await waitFor(() =>
       expect(mockedApi.listAgentSessions).toHaveBeenCalledWith(
         1, expect.objectContaining({ model: 'claude-opus-4-7' }), { signal: expect.any(AbortSignal) },
@@ -305,23 +335,20 @@ describe('Agent Sessions', () => {
     const user = userEvent.setup();
     let releaseOld!: () => void;
     const oldDone = new Promise<void>((res) => { releaseOld = res; });
+    mockedApi.getAgentSessionSummary.mockResolvedValue(MODEL_SUMMARY);
     mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Record<string, unknown> = {}) => {
-      if (filters.kind === 'project' && filters.status === 'active') {
+      if (isLiveCall(filters)) {
         return { project_id: 1, sessions: [], total: 0 };
       }
-      if (filters.kind === 'assist') {
-        return { project_id: 1, sessions: [legacyRun({ id: 43, generated_by_model: 'Newer filter', generated_by_tool: null })], total: 1 };
+      if (filters.model === MODEL) {
+        return { project_id: 1, sessions: [legacyRun({ id: 43, purpose: 'Newer filter' })], total: 1 };
       }
       await oldDone;
-      return { project_id: 1, sessions: [legacyRun({ generated_by_model: 'Older filter', generated_by_tool: null })], total: 1 };
+      return { project_id: 1, sessions: [legacyRun({ purpose: 'Older filter' })], total: 1 };
     });
     renderPage();
 
-    await user.click(screen.getByLabelText('Filter sessions by kind'));
-    const assistOption = await screen.findByRole('option', { name: 'Legacy assist' });
-    // The retired kinds are not offered (checked while the list is open).
-    expect(screen.queryByRole('option', { name: /Legacy (execution|plan generation)/ })).not.toBeInTheDocument();
-    await user.click(assistOption);
+    await chooseModel(user);
     expect(await screen.findByText('Newer filter')).toBeInTheDocument();
 
     releaseOld();
@@ -381,7 +408,7 @@ describe('Agent Sessions', () => {
       distinct_agents: 4,
       status_breakdown: { success: 416, client_error: 22, server_error: 0, other: 0 },
       daily: [{ day: today, calls: 438, errors: 22 }],
-      busiest_sessions: [{ workflow: 'session', session_id: 72, calls: 199 }],
+      busiest_sessions: [{ session_id: 72, calls: 199 }],
     });
     renderPage();
 
@@ -395,10 +422,7 @@ describe('Agent Sessions', () => {
     serve([], []);
     mockedApi.getAgentSessionSummary.mockResolvedValue({
       project_id: 1,
-      summary: [{
-        generated_by_model: null, generated_by_tool: null,
-        project: 5, assist: 0, total: 5,
-      }],
+      summary: [{ generated_by_model: null, generated_by_tool: null, total: 5 }],
     });
     renderPage();
     await screen.findByText(/No agent has reported its model or client yet/);
@@ -409,7 +433,7 @@ describe('Agent Sessions', () => {
   it('does not count the history before it has answered: "…", then the count', async () => {
     let answer: (value: unknown) => void = () => undefined;
     mockedApi.listAgentSessions.mockImplementation((_projectId: number, filters: Record<string, unknown> = {}) => (
-      filters.kind === 'project' && filters.status === 'active'
+      isLiveCall(filters)
         ? Promise.resolve({ project_id: 1, sessions: [], total: 0 })
         : new Promise((resolve) => { answer = resolve; })
     ));
@@ -425,7 +449,7 @@ describe('Agent Sessions', () => {
 
   it('says "—", not a count, for a history that could not be read', async () => {
     mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Record<string, unknown> = {}) => {
-      if (filters.kind === 'project' && filters.status === 'active') return { project_id: 1, sessions: [], total: 0 };
+      if (isLiveCall(filters)) return { project_id: 1, sessions: [], total: 0 };
       throw new Error('boom');
     });
     renderPage();
@@ -447,21 +471,18 @@ describe('Agent Sessions — filters in the URL', () => {
     project.my_role = 'analyst';
     mockedApi.listAgentSessions.mockReset();
     mockedApi.getAgentSessionSummary.mockReset();
-    mockedApi.getAgentSessionSummary.mockResolvedValue({
-      project_id: 1,
-      summary: [{ generated_by_model: 'claude-opus-4-7', generated_by_tool: 'claude-code', project: 0, assist: 1, total: 1 }],
-    });
+    mockedApi.getAgentSessionSummary.mockResolvedValue(MODEL_SUMMARY);
     mockedApi.getAgentActivitySummary.mockReset();
     mockedApi.getAgentActivitySummary.mockResolvedValue(emptyActivity);
   });
 
-  it('a link with kind, model and tool restores them and asks the server for them', async () => {
+  it('a link with model and tool restores them and asks the server for them', async () => {
     serve([], [legacyRun()]);
-    renderAt('/agent-activity?kind=assist&model=claude-opus-4-7&tool=claude-code');
+    renderAt('/agent-activity?model=claude-opus-4-7&tool=claude-code');
     await screen.findByTestId('runs-table');
     expect(mockedApi.listAgentSessions).toHaveBeenCalledWith(
       1,
-      expect.objectContaining({ kind: 'assist', model: 'claude-opus-4-7', tool: 'claude-code' }),
+      { model: 'claude-opus-4-7', tool: 'claude-code', limit: 200 },
       { signal: expect.any(AbortSignal) },
     );
     // The chosen model's name is an option once the roll-up has named it
@@ -470,10 +491,10 @@ describe('Agent Sessions — filters in the URL', () => {
     expect(screen.getByLabelText('Filter sessions by client')).toHaveTextContent('claude-code');
   });
 
-  it('choosing a filter writes it, and Clear filters removes all three at once', async () => {
+  it('choosing a filter writes it, and Clear filters removes both at once', async () => {
     const user = userEvent.setup();
     serve([], []);
-    renderAt('/agent-activity?kind=assist&model=claude-opus-4-7&tool=claude-code');
+    renderAt('/agent-activity?model=claude-opus-4-7&tool=claude-code');
     await user.click(await screen.findByRole('button', { name: 'Clear filters' }));
     await waitFor(() => expect(screen.getByTestId('where').textContent).toBe(''));
 
@@ -482,13 +503,19 @@ describe('Agent Sessions — filters in the URL', () => {
     await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('model=claude-opus-4-7'));
   });
 
-  it('ignores a kind the page does not have', async () => {
+  // 5.383.0 — a session has no kind: an older link's `?kind=` is not read
+  // (it selected "Legacy assist" or the consolidated sessions), so no request
+  // carries one and the history is not said to be filtered.
+  it.each(['assist', 'project', 'recon'])('does not read ?kind=%s from an older link', async (kind) => {
     serve([], [legacyRun()]);
-    renderAt('/agent-activity?kind=recon');
-    await screen.findByTestId('runs-table');
+    renderAt(`/agent-activity?kind=${kind}`);
+    await within(await screen.findByTestId('runs-table')).findAllByTestId('run-row');
     expect(mockedApi.listAgentSessions.mock.calls.every((c) => c[0] === 1)).toBe(true);
-    const history = mockedApi.listAgentSessions.mock.calls.map((c) => c[1]).filter((f) => f?.status !== 'active');
-    expect(history.every((f) => f.kind === undefined)).toBe(true);
+    const asked = mockedApi.listAgentSessions.mock.calls.map((c) => c[1]);
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.every((f) => !('kind' in f))).toBe(true);
+    expect(asked.filter((f) => f.status !== 'active')).toEqual([{ limit: 200 }]);
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull();
   });
 });
 
@@ -500,7 +527,7 @@ describe('Agent Sessions — filters in the URL', () => {
  * asking (a longer `limit`, or the next `offset`).
  */
 describe('Agent Sessions — the history a page at a time', () => {
-  type Filters = { kind?: string; status?: string; limit?: number; offset?: number };
+  type Filters = { model?: string; status?: string; limit?: number; offset?: number };
   const ended = (n: number) => session({
     id: 5000 - n, status: 'ended', end_reason: 'agent', key_expires_at: null, can_end: false, can_resume: false,
     purpose: `session ${n}`,
@@ -511,7 +538,7 @@ describe('Agent Sessions — the history a page at a time', () => {
     const sessions = Array.from({ length: count }, (_, i) => ended(i + 1)).slice(from, from + (filters.limit ?? 200));
     return { project_id: 1, sessions, total: count };
   };
-  const isLive = (filters: Filters) => filters.kind === 'project' && filters.status === 'active';
+  const isLive = (filters: Filters) => isLiveCall(filters);
   const count = () => screen.getByTestId('history-count').textContent;
   const older = () => screen.queryByRole('button', { name: 'Load older sessions' });
 
@@ -555,24 +582,24 @@ describe('Agent Sessions — the history a page at a time', () => {
   it('the rows on screen stay while another filter loads, with their count, then give way to its own', async () => {
     const user = userEvent.setup();
     let answer: (value: unknown) => void = () => undefined;
+    mockedApi.getAgentSessionSummary.mockResolvedValue(MODEL_SUMMARY);
     mockedApi.listAgentSessions.mockImplementation((_projectId: number, filters: Filters = {}) => {
       if (isLive(filters)) return Promise.resolve({ project_id: 1, sessions: [], total: 0 });
-      if (filters.kind === 'assist') return new Promise((resolve) => { answer = resolve; });
+      if (filters.model === MODEL) return new Promise((resolve) => { answer = resolve; });
       return Promise.resolve(historyOf(2, filters));
     });
     renderPage();
     await waitFor(() => expect(count()).toBe('2 of 2 shown'));
 
-    await user.click(screen.getByLabelText('Filter sessions by kind'));
-    await user.click(await screen.findByRole('option', { name: 'Legacy assist' }));
+    await chooseModel(user);
     await waitFor(() => expect(mockedApi.listAgentSessions).toHaveBeenCalledWith(
-      1, expect.objectContaining({ kind: 'assist' }), { signal: expect.any(AbortSignal) },
+      1, expect.objectContaining({ model: MODEL }), { signal: expect.any(AbortSignal) },
     ));
     expect(screen.getByText('session 1')).toBeInTheDocument();
     expect(count()).toBe('2 of 2 shown');
 
-    answer({ project_id: 1, sessions: [legacyRun({ generated_by_model: 'Only assist', generated_by_tool: null })], total: 1 });
-    expect(await screen.findByText('Only assist')).toBeInTheDocument();
+    answer({ project_id: 1, sessions: [legacyRun({ purpose: 'Only that model' })], total: 1 });
+    expect(await screen.findByText('Only that model')).toBeInTheDocument();
     expect(screen.queryByText('session 1')).toBeNull();
     expect(count()).toBe('1 of 1 shown');
   });
@@ -621,6 +648,7 @@ describe('Agent Sessions — the history a page at a time', () => {
   });
 
   it('another filter starts from its own newest 200, however far the reader had gone', async () => {
+    mockedApi.getAgentSessionSummary.mockResolvedValue(MODEL_SUMMARY);
     mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Filters = {}) => (
       isLive(filters) ? { project_id: 1, sessions: [], total: 0 } : historyOf(450, filters)
     ));
@@ -630,24 +658,23 @@ describe('Agent Sessions — the history a page at a time', () => {
     await user.click(await screen.findByRole('button', { name: 'Load older sessions' }));
     await waitFor(() => expect(count()).toBe('400 of 450 shown'));
 
-    await user.click(screen.getByLabelText('Filter sessions by kind'));
-    await user.click(await screen.findByRole('option', { name: 'Legacy assist' }));
-    await waitFor(() => expect(historyCalls()[historyCalls().length - 1]).toEqual({ kind: 'assist', limit: 200 }));
+    await chooseModel(user);
+    await waitFor(() => expect(historyCalls()[historyCalls().length - 1]).toEqual({ model: MODEL, limit: 200 }));
     await waitFor(() => expect(count()).toBe('200 of 450 shown'));
   });
 
   it('a failed read on another filter is said, counted as "—", and leaves none of the rows of the filter that was left', async () => {
     const user = userEvent.setup();
+    mockedApi.getAgentSessionSummary.mockResolvedValue(MODEL_SUMMARY);
     mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Filters = {}) => {
       if (isLive(filters)) return { project_id: 1, sessions: [], total: 0 };
-      if (filters.kind === 'assist') throw new Error('boom');
+      if (filters.model === MODEL) throw new Error('boom');
       return historyOf(2, filters);
     });
     renderPage();
     await waitFor(() => expect(count()).toBe('2 of 2 shown'));
 
-    await user.click(screen.getByLabelText('Filter sessions by kind'));
-    await user.click(await screen.findByRole('option', { name: 'Legacy assist' }));
+    await chooseModel(user);
     expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load agent sessions.');
     expect(count()).toBe('—');
     expect(screen.queryByText('session 1')).toBeNull();

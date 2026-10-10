@@ -43,6 +43,24 @@ def _discarded_job():
     Job = models.IngestionJob
     return and_(Job.status == "failed", Job.error_message == DISCARDED_MESSAGE)
 
+
+def _failed_import():
+    """An import that went wrong — the ``failed`` view's OWN condition: not a
+    staged upload that expired or was discarded (those have their own views).
+    ``error_message`` may be NULL, which ``NOT LIKE`` alone would drop."""
+    Job = models.IngestionJob
+    return and_(
+        Job.status == "failed",
+        ~and_(Job.error_message.isnot(None), or_(_expired_job(), _discarded_job())),
+    )
+
+
+def _dismissed_failed_import():
+    """The part of the ``failed`` view someone has dismissed (2.489.0): the
+    view's own condition narrowed by ``dismissed_at`` — what the Failed chip
+    states beside its number, and what ``status=failed_dismissed`` lists."""
+    return and_(_failed_import(), models.IngestionJob.dismissed_at.isnot(None))
+
 _ANALYST_RESPONSES = {
     401: {"description": "Not authenticated"},
     403: {"description": "Insufficient permissions — analyst role required"},
@@ -182,7 +200,8 @@ def get_ingestion_results(
             "or a view: `needs_attention` (failed or partial, not dismissed, not superseded) or "
             "`superseded` (failed or partial, not dismissed, file imported by a later job) — v2.403.0; "
             "`expired` (staged, never started, removed) and `discarded` (staged, discarded by an "
-            "operator) — v2.408.0. `failed` excludes those two: nothing failed in them."
+            "operator) — v2.408.0. `failed` excludes those two: nothing failed in them. "
+            "`failed_dismissed` is the part of `failed` someone has dismissed."
         ),
     ),
     tool: Optional[str] = Query(
@@ -239,12 +258,12 @@ def get_ingestion_results(
         base = base.filter(_discarded_job())
     elif status == "failed":
         # Failed means an import went wrong — not a staged upload that expired
-        # or was discarded (those have their own views). error_message may be
-        # NULL, which NOT LIKE would drop.
-        base = base.filter(
-            models.IngestionJob.status == "failed",
-            ~and_(models.IngestionJob.error_message.isnot(None), or_(_expired_job(), _discarded_job())),
-        )
+        # or was discarded (those have their own views).
+        base = base.filter(_failed_import())
+    elif status == "failed_dismissed":
+        # Not a job status: the failed imports someone has dismissed — the
+        # part of `failed` that `needs_attention` leaves out for that reason.
+        base = base.filter(_dismissed_failed_import())
     elif status:
         base = base.filter(models.IngestionJob.status == status)
     if tool:
@@ -477,7 +496,7 @@ def get_ingestion_results(
         .all()
     )
     status_map = dict(status_counts)
-    needs_attention, superseded, expired, discarded = (
+    needs_attention, superseded, expired, discarded, failed_dismissed = (
         db.query(
             func.count(case((blocked_import_condition(), models.IngestionJob.id))),
             func.count(case((
@@ -486,6 +505,7 @@ def get_ingestion_results(
             ))),
             func.count(case((_expired_job(), models.IngestionJob.id))),
             func.count(case((_discarded_job(), models.IngestionJob.id))),
+            func.count(case((_dismissed_failed_import(), models.IngestionJob.id))),
         )
         .filter(models.IngestionJob.project_id == project.id)
         .one()
@@ -501,6 +521,10 @@ def get_ingestion_results(
         # Failed imports only; the expired and discarded staged uploads that
         # share the job status are counted apart (they sum to the old figure).
         "total_failed": status_map.get("failed", 0) - expired - discarded,
+        # How many of `total_failed` someone has dismissed: the `failed`
+        # view's own condition and `dismissed_at` — `status=failed_dismissed`
+        # lists exactly these.
+        "total_failed_dismissed": int(failed_dismissed or 0),
         "total_expired": expired,
         "total_discarded": discarded,
         "total_queued": status_map.get("queued", 0),

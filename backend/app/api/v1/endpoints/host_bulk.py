@@ -20,10 +20,15 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db import models
 from app.db.models import HostFollow, FollowStatus, HostTag, HostTagAssignment
-from app.db.models_auth import User, UserRole
-from app.db.models_project import Project, ProjectMembership, Notification, ProjectRole
-from app.api.deps import get_current_user
-from app.api.deps import get_current_project, require_project_role
+from app.db.models_auth import User
+from app.db.models_project import Project, Notification, ProjectRole
+from app.api.deps import (
+    BULK_ASSIGNEE_UNKNOWN,
+    get_current_project,
+    get_current_user,
+    load_project_assignee,
+    require_project_role,
+)
 from app.schemas.schemas import ReviewStateToSet
 from app.services import host_query
 from app.services.host_follow_service import HostFollowService
@@ -153,18 +158,9 @@ def bulk_assign(
     if not host_ids:
         return BulkResult(affected=0, requested=len(payload.host_ids))
 
-    assignee = db.query(User).filter(
-        User.id == payload.assignee_user_id, User.is_active.is_(True)
-    ).first()
-    if not assignee:
-        raise HTTPException(status_code=404, detail="Assignee not found")
-    if assignee.role != UserRole.ADMIN:
-        is_member = db.query(ProjectMembership).filter(
-            ProjectMembership.project_id == project.id,
-            ProjectMembership.user_id == assignee.id,
-        ).first()
-        if not is_member:
-            raise HTTPException(status_code=400, detail="Assignee is not a member of this project")
+    assignee = load_project_assignee(
+        db, project.id, payload.assignee_user_id, unknown=BULK_ASSIGNEE_UNKNOWN,
+    )
 
     now = datetime.now(timezone.utc)
     existing = {

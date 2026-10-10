@@ -259,10 +259,10 @@ def test_agent_findings_list_still_counts_distinct_addresses(client, db_session,
     _findings(db_session, test_project, test_user, findings=2, endpoints=12)
     key = _agent(client, test_project)
     body = client.get(f"/api/v1/agent/assist/findings{path}", headers=key).json()
-    assert [f["host_count"] for f in body["findings"]] == [12, 12]
-    assert [f["endpoint_count"] for f in body["findings"]] == [12, 12]
-    assert all(len(f["hosts"]) == 10 and f["hosts_truncated"] for f in body["findings"])
-    assert all(f["hosts"] == sorted(f["hosts"]) for f in body["findings"])
+    assert [f["host_count"] for f in body["items"]] == [12, 12]
+    assert [f["endpoint_count"] for f in body["items"]] == [12, 12]
+    assert all(len(f["hosts"]) == 10 and f["hosts_truncated"] for f in body["items"])
+    assert all(f["hosts"] == sorted(f["hosts"]) for f in body["items"])
 
 
 def test_agent_findings_list_counts_in_sql_and_loads_no_endpoint(client, db_session, test_project, test_user):
@@ -274,7 +274,7 @@ def test_agent_findings_list_counts_in_sql_and_loads_no_endpoint(client, db_sess
     db_session.expire_all()
     with selects(db_session) as statements:
         body = client.get("/api/v1/agent/assist/findings", headers=key).json()
-    finding = body["findings"][0]
+    finding = body["items"][0]
     endpoint_rows = db_session.query(FindingHost).count()
     distinct_hosts = db_session.query(FindingHost.host_id).distinct().count()
     assert finding["endpoint_count"] == endpoint_rows

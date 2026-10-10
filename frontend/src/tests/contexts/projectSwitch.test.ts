@@ -61,8 +61,11 @@ describe('every route with a resource id redirects after a project switch', () =
   it('finds the routes to check', () => {
     // A parsing change that silently matched nothing would make this suite
     // pass while checking nothing.
-    // (Six since 5.320.0, when the test-plan and execution routes went.)
-    expect(routes.length).toBeGreaterThanOrEqual(6);
+    // (Five since 5.383.0, when `/assist-sessions/:sessionId` — a session by
+    // an id it no longer has — went: scans, findings, reports, hosts and
+    // agent sessions.)
+    expect(routes.length).toBeGreaterThanOrEqual(5);
+    expect(routes).not.toContain('/assist-sessions/:sessionId');
     expect(routes).toContain('/agent-sessions/:sessionId');
     expect(routes).toContain('/findings/:findingId');
   });

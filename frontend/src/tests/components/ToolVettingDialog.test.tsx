@@ -25,7 +25,7 @@ import ToolVettingDialog from '../../components/ToolVettingDialog';
 const tool = (over: Partial<ToolRegistryEntry> = {}): ToolRegistryEntry => ({
   name: 'ligolo-ng', description: 'Needed a tunnel to reach 10.2.0.0/16.', category: 'Remote Access',
   ports: '11601', install: 'apt install ligolo-ng', url: 'https://github.com/nicocha30/ligolo-ng', kali: true,
-  status: 'suggested', phases: [], intrusive: null, requires_privileges: null, output_format: null,
+  status: 'suggested', intrusive: null, requires_privileges: null, output_format: null,
   ingestible: false, suggested_rationale: 'No listed tool pivots through a jump host.', ...over,
 });
 const SUGGESTED = tool();

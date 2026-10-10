@@ -308,7 +308,7 @@ def test_recent_notes_name_a_non_host_target(client, db_session, test_project, t
     db_session.commit()
 
     headers = _assist(client, test_project.id)
-    notes = client.get("/api/v1/agent/assist/notes", headers=headers).json()
+    notes = client.get("/api/v1/agent/assist/notes", headers=headers).json()["items"]
     note = next(n for n in notes if n["body"] == "Client asked for a retest")
     assert note["target"] == {"kind": "finding", "id": finding.id, "label": "Weak TLS on the VPN"}
     assert note["host_id"] is None
@@ -863,9 +863,9 @@ def test_the_scope_list_counts_the_subnets_it_lists(client, db_session, test_pro
     while True:
         page = client.get("/api/v1/agent/scope/subnets", params={"offset": len(listed), "limit": 50}, headers=headers).json()
         assert page["total"] == 103
-        if not page["subnets"]:
+        listed += page["items"]
+        if not page["has_more"]:
             break
-        listed += page["subnets"]
     assert len(set(listed)) == 103 and set(row["subnets"]) <= set(listed)
 
 

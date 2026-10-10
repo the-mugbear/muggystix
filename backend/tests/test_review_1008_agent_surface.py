@@ -27,7 +27,7 @@ def agent_headers(db_session, test_project):
     user = User(
         id=92001, username="operator-92001", email="operator-92001@example.com",
         hashed_password="$2b$12$abcdefghijklmnopqrstuv",
-        role=UserRole.MEMBER, is_active=True, is_verified=True,
+        role=UserRole.MEMBER, is_active=True,
     )
     db_session.add(user)
     db_session.flush()

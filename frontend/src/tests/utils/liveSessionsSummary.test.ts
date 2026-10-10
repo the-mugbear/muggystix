@@ -8,12 +8,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AgentSessionRow } from '../../services/api';
-import { liveSessionsSummary } from '../../utils/agentRuns';
+import { keyState, liveSessionsSummary } from '../../utils/agentRuns';
 
 const NOW = Date.parse('2026-10-02T12:00:00Z');
 const HOUR = 3_600_000;
 const row = (over: Partial<AgentSessionRow> = {}): AgentSessionRow => ({
-  kind: 'project', id: 1, project_id: 1, status: 'active',
+  id: 1, project_id: 1, status: 'active',
   key_expires_at: new Date(NOW + HOUR).toISOString(),
   renewable_until: new Date(NOW + 24 * HOUR).toISOString(),
   ...over,
@@ -57,5 +57,14 @@ describe('liveSessionsSummary', () => {
       renewable_until: new Date(NOW - HOUR).toISOString(),
     });
     expect(liveSessionsSummary([over], NOW)).toMatchObject({ connected: 0, resumable: 0, waiting: false });
+    // 5.383.0 — this is what an active session that nothing can act on any
+    // more reads as, whenever it was started: a row from before the
+    // consolidation carried a flag (`session_live`) and a "Stalled" mark of
+    // its own (`isStalledRun`), and the key's state was not read for it.
+    expect(keyState(over, NOW)).toEqual({ text: 'key expired · past its lifetime', tone: 'muted' });
+    // One whose key was revoked and never had a lifetime recorded either.
+    const bare = row({ key_expires_at: null, renewable_until: new Date(NOW - HOUR).toISOString() });
+    expect(keyState(bare, NOW)).toEqual({ text: 'key expired · past its lifetime', tone: 'muted' });
+    expect(keyState(row({ status: 'ended' }), NOW)).toBeNull();
   });
 });

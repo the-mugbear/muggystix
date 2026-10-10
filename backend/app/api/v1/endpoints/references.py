@@ -203,7 +203,6 @@ def tool_registry(
                 "url": t.url,
                 "kali": t.kali,
                 "status": t.status,
-                "phases": t.phases or [],
                 "intrusive": t.intrusive,
                 "requires_privileges": t.requires_privileges,
                 "output_format": t.output_format,
@@ -381,7 +380,7 @@ async def references_index():
             "url": "/api/v1/references/tools",
             "description": (
                 "The tool catalogue — every tool BlueStick knows about, with "
-                "install/usage knowledge, phases, intrusiveness and whether "
+                "install/usage knowledge, intrusiveness and whether "
                 "BlueStick parses its output. Filter with "
                 "?status=reference|suggested|rejected."
             ),

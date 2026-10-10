@@ -196,34 +196,32 @@ def test_agent_activity_summary_aggregates(client, db_session, test_project, tes
     assert sb["client_error"] == 1
     assert sb["server_error"] == 1
 
-    by_wf = {row["workflow"]: row["calls"] for row in body["by_workflow"]}
-    assert by_wf == {"session": 4, "other": 1}
-
     assert sum(d["calls"] for d in body["daily"]) == 5
     assert sum(d["errors"] for d in body["daily"]) == 2
 
     busiest = body["busiest_sessions"]
     assert len(busiest) == 1
     top = busiest[0]
-    assert top["workflow"] == "session"
     assert top["session_id"] == session.id
     assert top["calls"] == 4
 
 
-def test_agent_activity_summary_labels_a_call_by_its_sessions_kind(
+def test_agent_activity_summary_has_no_kinds_of_session(
     client, db_session, test_project, test_agent,
 ):
-    """v2.449.0 — the "assist" label is the session's kind
-    (``agent_sessions.workflow``), not a second id column on the call: a legacy
-    assist session's calls still read "assist", every call is counted once, and
-    the session is ranked once, under its one id (it was listed twice — once
-    per id column)."""
+    """2.489.0 — a session has no kind, so the summary splits nothing by one
+    (``by_workflow`` and each busiest row's ``workflow`` label are gone).
+    Every call is counted once, and a session is ranked once under its one id
+    whatever ``agent_sessions.workflow`` it is stored with — so long as it is a
+    session the list has: a busiest row opens ``/agent-sessions/{id}``, and a
+    row stored as ``execution`` has no page to open.  (Until 2.489.0 such a
+    row was ranked and labelled "session", and its link was a 404.)"""
     from app.db.models_agent import AgentSession
 
     pid = test_project.id
     now = datetime.now(timezone.utc)
     sessions = {}
-    for workflow in ("project", "assist"):
+    for workflow in ("project", "assist", "execution"):
         s = AgentSession(
             workflow=workflow, project_id=pid, agent_id=test_agent.id,
             started_by_id=test_agent.owner_id, status="ended",
@@ -237,17 +235,27 @@ def test_agent_activity_summary_labels_a_call_by_its_sessions_kind(
     for _ in range(2):
         _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=200,
                   created_at=now, agent_session_id=sessions["project"])
+    for _ in range(5):
+        _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=200,
+                  created_at=now, agent_session_id=sessions["execution"])
     _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=200, created_at=now)
     db_session.commit()
 
     body = client.get(f"/api/v1/projects/{pid}/agent-activity/summary").json()
-    assert body["total_calls"] == 6
-    by_wf = {row["workflow"]: row["calls"] for row in body["by_workflow"]}
-    assert by_wf == {"assist": 3, "session": 2, "other": 1}
-    assert [(s["workflow"], s["session_id"], s["calls"]) for s in body["busiest_sessions"]] == [
-        ("assist", sessions["assist"], 3),
-        ("session", sessions["project"], 2),
+    assert body["total_calls"] == 11
+    assert "by_workflow" not in body
+    assert body["busiest_sessions"] == [
+        {"session_id": sessions["assist"], "calls": 3, "last_activity": body["busiest_sessions"][0]["last_activity"]},
+        {"session_id": sessions["project"], "calls": 2, "last_activity": body["busiest_sessions"][1]["last_activity"]},
     ]
+    # Each busiest row is a session the list has, and its page answers.
+    listed = {s["id"] for s in client.get(f"/api/v1/projects/{pid}/agent-sessions").json()["sessions"]}
+    assert {s["session_id"] for s in body["busiest_sessions"]} == listed
+    for s in body["busiest_sessions"]:
+        assert client.get(f"/api/v1/projects/{pid}/agent-sessions/{s['session_id']}").status_code == 200
+    assert client.get(
+        f"/api/v1/projects/{pid}/agent-sessions/{sessions['execution']}"
+    ).status_code == 404
 
 
 def test_agent_activity_summary_empty_window(client, db_session, test_project):
@@ -255,5 +263,5 @@ def test_agent_activity_summary_empty_window(client, db_session, test_project):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["total_calls"] == 0
-    assert body["by_workflow"] == []
+    assert "by_workflow" not in body
     assert body["busiest_sessions"] == []

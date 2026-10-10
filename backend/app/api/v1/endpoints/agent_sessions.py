@@ -1,10 +1,9 @@
 """
-Unified agent-session timeline endpoint (v2.30.0).
+Agent sessions for people: the list, one session, End, Resume, its notes.
 
-Surfaces the unified list assembled by
-``app.services.agent_session_service``.  This is the data
-foundation for the v3 UI's Project Activity timeline + per-(model,
-tool) rollup card.
+Serves the list assembled by ``app.services.agent_session_service`` — the
+Agent Sessions page and its per-(model, tool) table.  A session has no kind:
+every row reads the same.
 
 JWT-authenticated, project-scoped.  Agents cannot read this surface
 — they should not see other agents' attribution / activity.
@@ -12,7 +11,7 @@ JWT-authenticated, project-scoped.  Agents cannot read this surface
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import List, Literal, Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,8 +27,8 @@ from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.session import get_db
 from app.services.agent_key_ttl import resolve_ttl_hours, session_renewal_deadline
 from app.services.agent_session_service import (
+    LISTED_WORKFLOWS,
     SESSION_ACTIVE,
-    agent_session_for_legacy_assist_id,
     count_agent_sessions,
     end_agent_session,
     get_agent_session_row,
@@ -45,21 +44,12 @@ from app.services.mcp_client_setup_service import build_session_mcp_clients
 router = APIRouter()
 
 
-# v2.303.0 — assist was missing here, so the surface that calls itself the
-# unified agent-session timeline omitted a whole workflow: an operator could
-# have a live assist key and see nothing on Agent Runs.
-# (The legacy "plan_generation" and "execution" kinds went with their tables
-# in v2.442.0.)
-SessionKindLiteral = Literal["project", "assist"]
-
-
 class AgentSessionRowResponse(BaseModel):
-    """One row in the unified timeline.  Mirrors the service-layer
-    ``AgentSessionRow`` dataclass — kept as a separate Pydantic
-    model so OpenAPI gets the right schema."""
+    """One session.  Mirrors the service-layer ``AgentSessionRow`` dataclass —
+    kept as a separate Pydantic model so OpenAPI gets the right schema.  There
+    is no ``kind``: every session carries the same fields (2.489.0)."""
     model_config = ConfigDict(from_attributes=False)
 
-    kind: SessionKindLiteral
     id: int
     project_id: int
     agent_id: Optional[int] = None
@@ -73,14 +63,14 @@ class AgentSessionRowResponse(BaseModel):
     generated_by_tool: Optional[str] = None
     prompt_version: Optional[str] = None
     purpose: Optional[str] = None
-    # v2.340.0 — project sessions only.  ``key_expires_at`` is when the live
-    # key stops working (None once revoked); ``renewable_until`` is the
-    # session's lifetime cap, past which it can neither be renewed by the agent
-    # nor resumed by the operator.  Together they tell an ``active`` row apart
-    # from an active row whose agent is dead and whose key has lapsed.
+    # v2.340.0 — ``key_expires_at`` is when the live key stops working (None
+    # once revoked); ``renewable_until`` is the session's lifetime cap, past
+    # which it can neither be renewed by the agent nor resumed by the
+    # operator.  Together they tell an ``active`` row apart from an active row
+    # whose agent is dead and whose key has lapsed.
     key_expires_at: Optional[datetime] = None
     renewable_until: Optional[datetime] = None
-    # v2.343.0 — project sessions only.  ``end_reason`` is how the session
+    # v2.343.0 — ``end_reason`` is how the session
     # ended ('agent' / 'operator' / 'lapsed'; None while active), and
     # ``feedback_count`` is how many feedback submissions it made.  Together
     # they show whether sessions are exiting cleanly and telling us anything on
@@ -90,12 +80,9 @@ class AgentSessionRowResponse(BaseModel):
     # v2.402.0 — the operator's display name; the page shows it in preference
     # to the username.
     user_full_name: Optional[str] = None
-    # v2.402.0 — legacy assist rows still stored as active: whether the session
-    # can still act (a live or renewable key).  None when not computed.
-    session_live: Optional[bool] = None
     # v2.432.0 — the session's last authenticated call and the authority it
     # acts with.  ``can_end`` / ``can_resume`` are the CALLER's rights on an
-    # active project session — owner or project admin may end, only the owner
+    # active session — owner or project admin may end, only the owner
     # may resume (the routes below enforce the same rules).
     # v2.442.0 — the host tests the session proposed and the evidence records
     # it wrote (they replace ``phases``, the runs a session used to open).
@@ -172,8 +159,7 @@ class AgentSessionListResponse(BaseModel):
 class ModelToolSummaryRow(BaseModel):
     generated_by_model: Optional[str] = None
     generated_by_tool: Optional[str] = None
-    project: int = 0
-    assist: int = 0
+    #: The ``total`` of ``GET /agent-sessions?model=…&tool=…``.
     total: int = 0
 
 
@@ -185,17 +171,10 @@ class ModelToolSummaryResponse(BaseModel):
 @router.get(
     "/agent-sessions",
     response_model=AgentSessionListResponse,
-    summary="Unified agent-session timeline for this project (v2.30.0)",
+    summary="The project's agent sessions, newest first",
 )
 def get_agent_sessions(
     project_id: int = Path(..., gt=0),
-    kind: Optional[SessionKindLiteral] = Query(
-        None,
-        description=(
-            "Narrow to one kind: project (every session since v2.337.0), or a "
-            "legacy assist row.  Omit for all."
-        ),
-    ),
     agent_id: Optional[int] = Query(None, description="Filter by agent."),
     model: Optional[str] = Query(
         None,
@@ -212,9 +191,9 @@ def get_agent_sessions(
     status: Optional[str] = Query(
         None,
         description=(
-            "Filter by native status: a project session is 'active' / 'ended'; "
-            "a legacy assist row 'active' / 'ended' / 'expired'.  Pass 'active' "
-            "for the sessions still open."
+            "Filter by the stored status: 'active' / 'ended' (a session from "
+            "before v2.337.0 may also read 'expired').  Pass 'active' for the "
+            "sessions still open."
         ),
     ),
     limit: int = Query(200, ge=1, le=1000),
@@ -223,24 +202,16 @@ def get_agent_sessions(
     project: Project = Depends(get_current_project),
     _user: User = Depends(get_current_user),
 ):
-    """Return every agent session (project sessions, plus legacy assist rows)
-    for this project, ordered newest-started first.
+    """Return this project's agent sessions, ordered newest-started first.
 
-    Filterable by kind, agent, model, tool, user, status.  Drives the
-    v3 Project Activity timeline + the per-(model, tool) comparison
-    surface — a user looking at "everything claude-opus-4-7 did on
-    this project" passes ``?model=claude-opus-4-7``.
+    Filterable by agent, model, tool, user, status — a user looking at
+    "everything claude-opus-4-7 did on this project" passes
+    ``?model=claude-opus-4-7``.  There is no filter by kind: a session has
+    none.
     """
-    # v2.43.3 (AUD-O1): total now comes from `count_agent_sessions` —
-    # one SELECT COUNT(*) per kind against each underlying table — and
-    # the row list is paginated at the SQL layer.  Pre-fix the endpoint
-    # fetched up to 10_000 rows, computed total from `len()`, and
-    # sliced in memory, which silently truncated long-lived projects'
-    # counts AND histories.  See agent_session_service.list_agent_sessions
-    # for the per-kind cap rationale.
-    kinds = [kind] if kind else None
+    # ``total`` is one SELECT COUNT(*) over the same filters and the rows are
+    # paged in SQL (v2.43.3, AUD-O1) — never ``len()`` of a fetched page.
     common_filters = dict(
-        kinds=kinds,
         agent_id=agent_id,
         model=model,
         tool=tool,
@@ -265,27 +236,29 @@ def get_agent_sessions(
 def _with_caller_rights(
     db: Session, rows: list, *, user: User, project_id: int,
 ) -> List[AgentSessionRowResponse]:
-    """Wire rows, with what THIS caller may do to each active project session.
+    """Wire rows, with what THIS caller may do to each active session.
 
     The same rules the End and Resume routes enforce, said up front so the page
     offers only the buttons that will work (it used to guess from the global
     role, so a project admin was never offered End).  Both routes need project
     auditor (an owner demoted to viewer is refused), and Resume is refused past
-    the session's lifetime (v2.433.1: the flags ignored both)."""
+    the session's lifetime (v2.433.1: the flags ignored both).  End takes any
+    active session; Resume refuses a row not stored as ``project``
+    (``resume_supported``), so ``can_resume`` says so too."""
     role: Optional[str] = None
     looked_up = False
     now = datetime.now(timezone.utc)
     out = []
     for r in rows:
         row = AgentSessionRowResponse(**r.to_dict())
-        if row.kind == "project" and row.status == SESSION_ACTIVE:
+        if row.status == SESSION_ACTIVE:
             if not looked_up:
                 role, looked_up = _caller_project_role(db, user=user, project_id=project_id), True
             may_act = role is not None and check_permissions(role, ProjectRole.AUDITOR.value)
             owner = row.user_id == user.id
             renewable = row.renewable_until is None or _aware(row.renewable_until) > now
             row.can_end = may_act and (owner or role == ProjectRole.ADMIN.value)
-            row.can_resume = may_act and owner and renewable
+            row.can_resume = may_act and owner and renewable and r.resume_supported
         out.append(row)
     return out
 
@@ -408,8 +381,9 @@ def resume_project_agent_session(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"This is a legacy '{session.workflow}' session, which cannot be "
-                "resumed. End it and start a new agent session."
+                "This session was started before agent sessions were "
+                "consolidated and cannot be resumed. End it and start a new "
+                "agent session."
             ),
         )
     if session.started_by_id != current_user.id:
@@ -469,9 +443,9 @@ def get_agent_session_summary(
     project: Project = Depends(get_current_project),
     _user: User = Depends(get_current_user),
 ):
-    """Per-(generated_by_model, generated_by_tool) rollup of session
-    counts across the four workflows.  Drives the v3 "compare
-    models" card on the project dashboard."""
+    """Sessions per (generated_by_model, generated_by_tool) — the Agent
+    Sessions page's "By model and tool" table.  Each ``total`` is the
+    ``total`` of the list filtered by that model and tool."""
     summary = summarise_by_model_tool(db, project.id)
     return ModelToolSummaryResponse(
         project_id=project.id,
@@ -494,8 +468,7 @@ def get_agent_session(
     _user: User = Depends(get_current_user),
 ):
     """The session detail page's read — the list's row for one session, built
-    by the same path.  A ``project`` session or a legacy ``assist`` one; the
-    other legacy workflow rows (recon / plan / execution) are on no page."""
+    by the same path (so a row the list does not have is a 404 here too)."""
     row = get_agent_session_row(db, project.id, session_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Agent session not found in this project")
@@ -503,16 +476,14 @@ def get_agent_session(
 
 
 def _listed_session_or_404(db: Session, project_id: int, session_id: int) -> AgentSession:
-    """A session the timeline lists, in THIS project — another project's id
+    """A session the list has, in THIS project — another project's id
     must 404 here, not leak its purpose and note bodies."""
     session = (
         db.query(AgentSession)
         .filter(
             AgentSession.id == session_id,
             AgentSession.project_id == project_id,
-            AgentSession.workflow.in_([
-                AgentSessionWorkflow.PROJECT.value, AgentSessionWorkflow.ASSIST.value,
-            ]),
+            AgentSession.workflow.in_(LISTED_WORKFLOWS),
         )
         .first()
     )
@@ -536,9 +507,7 @@ def get_agent_session_notes(
 ):
     """What the agent wrote under its operator's name.  The session's reads
     are the separate ``/agent-sessions/{id}/api-activity`` feed; its tests and
-    evidence are on the hosts.  Served here, at
-    ``/agent-sessions/{session_id}/notes``; the deprecated
-    ``/assist/sessions/{id}`` answers with the session's row, without them."""
+    evidence are on the hosts."""
     session = _listed_session_or_404(db, project.id, session_id)
     q = (
         db.query(Annotation, Host.ip_address, Host.hostname)
@@ -557,88 +526,3 @@ def get_agent_session_notes(
         ],
     )
 
-
-# ---------------------------------------------------------------------------
-# Old links (deprecated)
-# ---------------------------------------------------------------------------
-#
-# Until v2.449.0 a session also had an ``assist_sessions`` row, and its review
-# page, End and API-call feed were addressed by THAT row's id.  Notes, feedback
-# rows and bookmarks from then still carry such an id.  These routes answer for
-# it by finding the session (``agent_sessions.legacy_assist_session_id``) and
-# calling the handler above — they hold no logic of their own.  A session
-# started since has no such id; these routes then take the session's own id,
-# which is what the start response's deprecated ``assist_session_id`` carries
-# (see ``agent_session_for_legacy_assist_id``, the one resolver).  The fourth
-# one, the API-call feed, is beside its handler in ``agent_activity.py``.
-
-def session_id_for_legacy_assist_id(db: Session, project_id: int, legacy_id: int) -> int:
-    session = agent_session_for_legacy_assist_id(db, project_id, legacy_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Assist session not found in this project")
-    return session.id
-
-
-@router.get(
-    "/assist-sessions/{assist_session_id}",
-    response_model=AgentSessionRowResponse,
-    deprecated=True,
-    summary="The session an old assist-session id belongs to — use /agent-sessions/{id}",
-)
-def get_agent_session_by_legacy_id(
-    project_id: int = Path(..., gt=0),
-    assist_session_id: int = Path(..., gt=0),
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    _user: User = Depends(get_current_user),
-):
-    """Resolve an old ``/assist-sessions/{id}`` link: the response is the
-    session's row, whose ``id`` is the one every current route takes."""
-    return get_agent_session(
-        project_id=project_id,
-        session_id=session_id_for_legacy_assist_id(db, project.id, assist_session_id),
-        db=db, project=project, _user=_user,
-    )
-
-
-@router.get(
-    "/assist/sessions/{assist_session_id}",
-    response_model=AgentSessionRowResponse,
-    deprecated=True,
-    summary="The session an old assist-session id belongs to — use /agent-sessions/{id}",
-)
-def get_agent_session_by_legacy_id_old_path(
-    project_id: int = Path(..., gt=0),
-    assist_session_id: int = Path(..., gt=0),
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    _user: User = Depends(require_project_role(ProjectRole.VIEWER)),
-):
-    """As above, at the path the review page's read had.  The response is the
-    session row (not the old ``AssistSessionDetail``): its notes are
-    ``/agent-sessions/{id}/notes``."""
-    return get_agent_session(
-        project_id=project_id,
-        session_id=session_id_for_legacy_assist_id(db, project.id, assist_session_id),
-        db=db, project=project, _user=_user,
-    )
-
-
-@router.post(
-    "/assist/sessions/{assist_session_id}/end",
-    status_code=204,
-    deprecated=True,
-    summary="End a session by its old assist-session id — use /agent-sessions/{id}/end",
-)
-def end_agent_session_by_legacy_id(
-    project_id: int = Path(..., gt=0),
-    assist_session_id: int = Path(..., gt=0),
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role(ProjectRole.AUDITOR)),
-):
-    end_project_agent_session(
-        project_id=project_id,
-        session_id=session_id_for_legacy_assist_id(db, project.id, assist_session_id),
-        db=db, project=project, current_user=current_user,
-    )

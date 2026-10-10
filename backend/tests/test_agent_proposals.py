@@ -49,7 +49,7 @@ def _host(db, project, ip="10.40.0.1"):
 def _member(db, project, user_id, username, role=ProjectRole.ANALYST):
     user = User(
         id=user_id, username=username, email=f"{user_id}@example.com", full_name=username,
-        hashed_password="x", role=UserRole.MEMBER, is_active=True, is_verified=True,
+        hashed_password="x", role=UserRole.MEMBER, is_active=True,
         created_at=datetime.now(timezone.utc),
     )
     db.add(user)

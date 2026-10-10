@@ -2,18 +2,13 @@
  * Agent Sessions — where an operator manages the agents working on this
  * project (route `/agent-activity`, kept so links and the palette still work).
  *
- * v3.0.0 — the unified timeline of every agent session (plan generation +
- * execution) with model/tool/user attribution.
- * v5.267.0 — the Posture layout (UI_STYLE_GUIDE §7).
- * v5.294.0 — Agent Sessions (the list) became this page's "Sessions" view.
+ * The Posture layout (UI_STYLE_GUIDE §7), session-first: what is live (with
+ * its work and its controls), then the history — one row per session, its
+ * work beside it, each opening the session page (`/agent-sessions/:id`) — and
+ * the analytics last.
  *
- * v5.312.0 — session-first. Since v2.337.0 an operator hands an agent ONE
- * session that does every kind of work, but the page still led with analytics
- * and split the list into two views that disagreed: the Sessions view numbered
- * sessions by their detail row's id and looked up End / Resume by it (so the
- * buttons never showed), and read a resumable session as ended. Now: what is live (with its
- * work and its controls) first, then the history — one row per session, its work under it, each opening the session
- * page (`/agent-sessions/:id`) — and the analytics last.
+ * A session has no kind (5.383.0): every row of the history has the same
+ * cells, and the history is filtered by model and client only.
  */
 import React, { useCallback, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -21,7 +16,6 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Bot, ChevronRight, Loader2, Play, RefreshCw, Search } from 'lucide-react';
 import {
   AgentSessionFilters,
-  AgentSessionKind,
   AgentSessionListResponse,
   AgentSessionRow,
   AgentActivitySummary,
@@ -54,10 +48,8 @@ import {
 import LastUpdated from '../components/LastUpdated';
 import ListFilterBar, { FILTER_TRIGGER_CLASS } from '../components/ListFilterBar';
 import { NavigableTableCell, NavigableTableRow } from '../components/NavigableTableRow';
-import RunKindBadge, { runKindLabel } from '../components/RunKindBadge';
 import TimeAgo from '../components/TimeAgo';
 import { Button } from '../components/ui/button';
-import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import {
   Select,
@@ -82,7 +74,6 @@ import {
 import { cn } from '../utils/cn';
 import {
   agentSessionPath,
-  isStalledRun,
   keyState,
   LIVE_SESSION_FILTERS,
   liveSessionsSummary,
@@ -98,15 +89,6 @@ const QUIET_AFTER_MS = 15 * 60_000;
 const isQuiet = (lastCall: string): boolean =>
   Date.now() - new Date(lastCall).getTime() > QUIET_AFTER_MS;
 
-const KIND_OPTIONS: Array<{ value: '' | AgentSessionKind; label: string }> = [
-  { value: '', label: 'All sessions' },
-  { value: 'project', label: 'Sessions' },
-  // Rows from before the v2.337.0 consolidation, when each kind of work had
-  // its own key. (Legacy plan-generation and execution rows went with plans
-  // and execution runs in 5.320.0.)
-  { value: 'assist', label: 'Legacy assist' },
-];
-
 /** The History table's column widths. SESSION has none on purpose — it takes
  *  the spare width; the others are fixed and must leave it room (test-pinned:
  *  their sum stays under the table's minimum width). */
@@ -119,17 +101,6 @@ export const HISTORY_COLUMN_WIDTHS = {
   work: 'w-44',
   actions: 'w-20',
 } as const;
-
-type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'warning' | 'info' | 'outline' | 'muted';
-
-function statusBadgeVariant(status: string): BadgeVariant {
-  const s = status.toLowerCase();
-  if (s === 'active' || s === 'in_progress') return 'success';
-  if (s === 'completed') return 'info';
-  if (s === 'failed') return 'destructive';
-  if (s === 'paused' || s === 'draft') return 'warning';
-  return 'muted';
-}
 
 const plural = (n: number, one: string, many = `${one}s`) =>
   `${n.toLocaleString()} ${n === 1 ? one : many}`;
@@ -151,17 +122,15 @@ const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ 
   return (
     <PostureSection
       title="Activity by agent / model"
-      description="How many sessions each model and client ran on this project, to compare models working on the same data. Older assist sessions, from before one session did all the work, are counted in their own column."
+      description="How many sessions each model and client ran on this project, to compare models working on the same data."
     >
       <div className="overflow-x-auto">
-        <Table className="min-w-[600px]">
+        <Table className="min-w-[480px]">
           <TableHeader>
             <TableRow>
               <TableHead>Model</TableHead>
               <TableHead>Client</TableHead>
-              <TableHead className="w-20 text-right">Sessions</TableHead>
-              <TableHead className="w-28 text-right">Older assist</TableHead>
-              <TableHead className="w-16 text-right">Total</TableHead>
+              <TableHead className="w-24 text-right">Sessions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -177,9 +146,7 @@ const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ 
                 <TableCell className="truncate" title={r.generated_by_tool ?? undefined}>
                   {r.generated_by_tool || <span className="text-caption text-muted-foreground">—</span>}
                 </TableCell>
-                <TableCell className="text-right tabular-nums">{r.project ?? 0}</TableCell>
-                <TableCell className="text-right tabular-nums">{r.assist}</TableCell>
-                <TableCell className="text-right font-semibold tabular-nums">{r.total}</TableCell>
+                <TableCell className="text-right tabular-nums">{r.total.toLocaleString()}</TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -331,9 +298,6 @@ const ApiCallSection: React.FC<{
   const days = fillCallDays(summary.daily, summary.window_days);
   const maxDay = Math.max(1, ...days.map((d) => d.calls));
   const sb = summary.status_breakdown;
-  const openSession = (s: { workflow: string; session_id: number }) => {
-    if (s.workflow === 'session') navigate(agentSessionPath(s.session_id));
-  };
 
   return (
     <PostureSection
@@ -386,23 +350,22 @@ const ApiCallSection: React.FC<{
           <p className="mb-xxs text-caption text-muted-foreground">Busiest sessions</p>
           <ul className="flex flex-col">
             {summary.busiest_sessions.slice(0, 5).map((s) => (
-              <li key={`${s.workflow}-${s.session_id}`} className="flex min-w-0 items-center gap-xs text-metadata">
+              // Every row is a session of the list, so every row opens.
+              <li key={s.session_id} className="flex min-w-0 items-center gap-xs text-metadata">
                 <span className="min-w-0 truncate">
-                  <span className="text-muted-foreground">{s.workflow}</span> #{s.session_id} ·{' '}
+                  <span className="text-muted-foreground">session</span> #{s.session_id} ·{' '}
                   <strong>{s.calls.toLocaleString()}</strong> call{s.calls === 1 ? '' : 's'}
                 </span>
-                {['execution', 'plan', 'session'].includes(s.workflow) && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-6 px-xs"
-                    onClick={() => openSession(s)}
-                    aria-label={`Open ${s.workflow} #${s.session_id}`}
-                  >
-                    Open
-                    <ChevronRight className="ml-xxs size-3" aria-hidden />
-                  </Button>
-                )}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-xs"
+                  onClick={() => navigate(agentSessionPath(s.session_id))}
+                  aria-label={`Open session #${s.session_id}`}
+                >
+                  Open
+                  <ChevronRight className="ml-xxs size-3" aria-hidden />
+                </Button>
               </li>
             ))}
           </ul>
@@ -420,7 +383,7 @@ const StartSessionButton: React.FC = () => (
   </Button>
 );
 
-const ProjectActivity: React.FC = () => {
+const AgentSessions: React.FC = () => {
   const queryClient = useQueryClient();
   const projectId = useProjectId();
   // Refresh and the analytics' Retry: every read on the page, by its API
@@ -433,33 +396,31 @@ const ProjectActivity: React.FC = () => {
   const controls = useAgentSessionControls();
   const canStartAgent = useCanStartAgentSession();
 
-  // B15 — the history's filters live in the URL (`?kind=&model=&tool=`,
-  // replace not push), so a filtered history can be shared and survives a
-  // reload.
+  // B15 — the history's filters live in the URL (`?model=&tool=`, replace not
+  // push), so a filtered history can be shared and survives a reload.  There
+  // is no filter by kind of session (5.383.0: a session has none); a `?kind=`
+  // in an older link is not read.
   const [searchParams, setSearchParams] = useSearchParams();
-  const kindParam = searchParams.get('kind');
-  const kindFilter: '' | AgentSessionKind = kindParam === 'project' || kindParam === 'assist' ? kindParam : '';
   const modelFilter = searchParams.get('model') ?? '';
   const toolFilter = searchParams.get('tool') ?? '';
-  const setFilter = useCallback((key: 'kind' | 'model' | 'tool', value: string) => {
+  const setFilter = useCallback((key: 'model' | 'tool', value: string) => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       if (value) next.set(key, value); else next.delete(key);
       return next;
     }, { replace: true });
   }, [setSearchParams]);
-  const setKindFilter = (value: '' | AgentSessionKind) => setFilter('kind', value);
   const setModelFilter = (value: string) => setFilter('model', value);
   const setToolFilter = (value: string) => setFilter('tool', value);
   // One navigation: successive setSearchParams calls in a tick each start
-  // from the same URL, so three of them would clear only the last.
+  // from the same URL, so two of them would clear only the last.
   const clearFilters = () => setSearchParams((prev) => {
     const next = new URLSearchParams(prev);
-    ['kind', 'model', 'tool'].forEach((k) => next.delete(k));
+    ['model', 'tool'].forEach((k) => next.delete(k));
     return next;
   }, { replace: true });
 
-  // The live sessions: every active project session, whatever the history's
+  // The live sessions: every active session, whatever the history's
   // filters say — this section answers "what is running right now".  Key
   // state and last calls move while the page is open, so it is re-read each
   // minute (not in a hidden tab).
@@ -478,11 +439,10 @@ const ProjectActivity: React.FC = () => {
   // filter loads; after a FAILED read on a new filter only the error shows.
   const historyFilters = useMemo(() => {
     const filters: AgentSessionFilters = {};
-    if (kindFilter) filters.kind = kindFilter;
     if (modelFilter) filters.model = modelFilter;
     if (toolFilter) filters.tool = toolFilter;
     return filters;
-  }, [kindFilter, modelFilter, toolFilter]);
+  }, [modelFilter, toolFilter]);
   const history = useListQuery<AgentSessionRow, AgentSessionListResponse & ListPage<AgentSessionRow>>(
     'listAgentSessions',
     async ({ offset, limit, signal }) => {
@@ -498,7 +458,7 @@ const ProjectActivity: React.FC = () => {
       within: projectId,
       // A session that started while the reader paged moves every later one
       // down by one: the next page would hand the last row out again.
-      dedupeBy: (row) => `${row.kind}-${row.id}`,
+      dedupeBy: (row) => row.id,
       errorMessage: 'Failed to load agent sessions.',
     },
   );
@@ -558,7 +518,7 @@ const ProjectActivity: React.FC = () => {
   const showModelFilter = knownModels.length > 0 || modelFilter !== '';
   const showToolFilter = knownTools.length > 0 || toolFilter !== '';
   const hygiene = apiSummary?.session_hygiene ?? null;
-  const filtered = Boolean(kindFilter || modelFilter || toolFilter);
+  const filtered = Boolean(modelFilter || toolFilter);
 
   return (
     <div className="flex flex-col gap-lg p-md md:p-lg">
@@ -673,7 +633,7 @@ const ProjectActivity: React.FC = () => {
         title={(
           <>
             History
-            <InfoTip text="One row per session, newest first, with the work it opened. Older rows, from before one session did all the work, open their own pages." />
+            <InfoTip text="One row per session, newest first, with the work it did. Each opens the session's page." />
           </>
         )}
         actions={(
@@ -692,21 +652,6 @@ const ProjectActivity: React.FC = () => {
       >
         <ListFilterBar summary={<span data-testid="history-count">{historyCount}</span>} className="mb-0">
           <div data-testid="runs-filters" className="contents">
-            <Select
-              value={kindFilter || 'all'}
-              onValueChange={(v) => setKindFilter(v === 'all' ? '' : (v as AgentSessionKind))}
-            >
-              <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-52`} aria-label="Filter sessions by kind">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {KIND_OPTIONS.map((o) => (
-                  <SelectItem key={o.value || 'all'} value={o.value || 'all'}>
-                    {o.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
             {showModelFilter && (
               <Select value={modelFilter || 'all'} onValueChange={(v) => setModelFilter(v === 'all' ? '' : v)}>
                 <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-52`} aria-label="Filter sessions by model">
@@ -758,22 +703,21 @@ const ProjectActivity: React.FC = () => {
           </TableHeader>
           <TableBody>
             {rows.map((r) => {
+              // Every row is a session and reads as one: the same cells,
+              // whenever it was started (5.383.0 — no kind badge, no second
+              // status vocabulary, no "stalled" mark of its own).
               const path = sessionRowPath(r);
-              const stalled = isStalledRun(r);
               const operator = rowOperatorName(r);
               // A session is no longer asked its purpose: one without is named as what it is.
-              const purpose = safeFallback(r.purpose, r.kind === 'project' ? 'Agent session' : 'Project-wide');
-              const label = r.kind === 'project'
-                ? `Open agent session ${r.id}`
-                : `Open ${runKindLabel(r.kind)} ${r.id}`;
+              const purpose = safeFallback(r.purpose, 'Agent session');
+              const label = `Open agent session ${r.id}`;
               return (
-                <NavigableTableRow key={`${r.kind}-${r.id}`} data-testid="run-row">
+                <NavigableTableRow key={r.id} data-testid="run-row">
                   <NavigableTableCell to={path} ariaLabel={label} className="tabular-nums text-muted-foreground">
                     {r.id}
                   </NavigableTableCell>
                   <NavigableTableCell to={path} ariaLabel={label}>
                     <div className="flex min-w-0 items-center gap-xs">
-                      {r.kind !== 'project' && <RunKindBadge kind={r.kind} className="shrink-0" />}
                       <span className="min-w-0 truncate" title={purpose}>
                         {purpose}
                       </span>
@@ -788,26 +732,10 @@ const ProjectActivity: React.FC = () => {
                     )}
                   </NavigableTableCell>
                   <TableCell className="overflow-hidden">
-                    {r.kind === 'project' ? (
-                      <div className="flex min-w-0 flex-col items-start gap-xxs">
-                        <SessionStateBadge row={r} />
-                        <StateLineText line={sessionStateLine(r)} className="block max-w-full" />
-                      </div>
-                    ) : (
-                      <div className="flex min-w-0 flex-col items-start gap-xxs">
-                        <Badge variant={stalled ? 'warning' : statusBadgeVariant(r.status)} className="whitespace-nowrap">
-                          {stalled ? 'Stalled' : r.status.replace(/_/g, ' ')}
-                        </Badge>
-                        {stalled && (
-                          <span
-                            className="block max-w-full truncate text-caption text-warning"
-                            title="its session can no longer act"
-                          >
-                            its session can no longer act
-                          </span>
-                        )}
-                      </div>
-                    )}
+                    <div className="flex min-w-0 flex-col items-start gap-xxs">
+                      <SessionStateBadge row={r} />
+                      <StateLineText line={sessionStateLine(r)} className="block max-w-full" />
+                    </div>
                   </TableCell>
                   <TableCell className="truncate">
                     <TimeAgo value={r.started_at} className="text-caption text-muted-foreground" />
@@ -822,16 +750,12 @@ const ProjectActivity: React.FC = () => {
                     </div>
                   </TableCell>
                   <TableCell>
-                    {r.kind === 'project' ? (
-                      // The count line may wrap here: the column is narrow so
-                      // SESSION keeps its share.
-                      <SessionWork row={r} className="whitespace-normal break-words" />
-                    ) : (
-                      <span className="text-caption text-muted-foreground">—</span>
-                    )}
+                    {/* The count line may wrap here: the column is narrow so
+                        SESSION keeps its share. */}
+                    <SessionWork row={r} className="whitespace-normal break-words" />
                   </TableCell>
                   <TableCell>
-                    {r.kind === 'project' && <SessionActions row={r} controls={controls} />}
+                    <SessionActions row={r} controls={controls} />
                   </TableCell>
                 </NavigableTableRow>
               );
@@ -875,4 +799,4 @@ const ProjectActivity: React.FC = () => {
   );
 };
 
-export default ProjectActivity;
+export default AgentSessions;

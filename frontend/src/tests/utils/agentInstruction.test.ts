@@ -34,7 +34,7 @@ describe('agentInstruction', () => {
   it('no task names a scanner, a flag or the tool catalogue', () => {
     const all = [
       agentInstruction.scanScope(),
-      agentInstruction.scanScope(2, { subnets: 8, domains: 3 }),
+      agentInstruction.scanScope({ subnets: 8, domains: 3 }),
       agentInstruction.proposeTests([1]),
       agentInstruction.proposeTestForObservation(1, 5, 'TLS 1.0 enabled'),
       agentInstruction.runHostTests(1),
@@ -46,6 +46,22 @@ describe('agentInstruction', () => {
     expect(all).not.toMatch(/\b(nmap|nuclei|nessus|masscan|httpx|naabu|gobuster|nikto)\b/i);
     expect(all).not.toMatch(/list_tools|catalogue/i);
     expect(all).not.toMatch(/\b(test plan|execution run|recon run|phase)\b/i);
+  });
+
+  // No agent read takes a scope id (a project has one scope, and the session's
+  // project is its key's): the task names none, and says "scope", not "scopes".
+  it('scanScope names no scope id, with or without what the scope holds', () => {
+    const bare = agentInstruction.scanScope();
+    const counted = agentInstruction.scanScope({ subnets: 1, domains: 3 });
+    expect(bare).toBe(
+      'Read this project’s scope in BlueStick, run your scanners on what is in scope, and upload the output to this session.',
+    );
+    expect(counted).toContain('scope in BlueStick (1 subnet, 3 domains), run your scanners');
+    for (const text of [bare, counted, agentInstruction.scanScope({ subnets: 6012, domains: 0 })]) {
+      expect(text).not.toMatch(/scope id|scope_id|scopes\b|\/scopes?\/|#\d/i);
+    }
+    // The counts are what the scope holds, never mistakable for an id.
+    expect(agentInstruction.scanScope({ subnets: 6012, domains: 0 })).toContain('(6,012 subnets, 0 domains)');
   });
 
   it('collectEvidence names the fixed hosts and the kind, shows commands first and brings the output back', () => {

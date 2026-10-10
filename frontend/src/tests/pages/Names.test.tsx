@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { formatTimestamp } from '../../utils/relativeTime';
@@ -198,38 +198,84 @@ describe('Names page — screenshot review (v5.288.0)', () => {
     renderAt('/names');
     await screen.findByText('portal.example-corp.com');
     expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Previous' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Previous/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Next/ })).toBeNull();
     expect(screen.queryByText(/Showing 1/)).toBeNull();
+    expect(screen.queryByText(/page 1 of/)).toBeNull();
     expect(screen.getByRole('heading', { level: 1, name: 'Names' }).querySelector('svg')).toBeNull();
   });
 
-  it('shows the pager once the list spans more than one page', async () => {
-    mocked.listNames.mockResolvedValue({ items: [resolved], total: 250, skip: 0, limit: 100 });
+  // 250 names, 100 to a page: the server's answer for the page it is asked for.
+  const pagedNames = () => mocked.listNames.mockImplementation(async (_projectId: number, q: { skip?: number }) => {
+    const skip = q.skip ?? 0;
+    const items = Array.from({ length: Math.min(100, 250 - skip) }, (_, i) => ({
+      ...resolved, id: 1000 + skip + i, fqdn: `name-${skip + i + 1}.example-corp.com`,
+    }));
+    return { items, total: 250, skip, limit: 100 };
+  });
+  const heading = () => screen.getByRole('heading', { level: 2, name: /^All names/ });
+
+  // The shared footer (PagedFooter) at the foot of the list.  The range and
+  // Previous / Next used to sit in the section heading.
+  it('shows the shared pager at the foot of the list once it spans more than one page; the heading keeps the count', async () => {
+    pagedNames();
     renderAt('/names');
-    await screen.findByText('portal.example-corp.com');
-    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
-    expect(screen.getByText('1–100 of 250')).toBeInTheDocument();
+    await screen.findByText('name-1.example-corp.com');
+    const range = screen.getByText('1–100 of 250');
+    const table = screen.getByRole('table');
+    // After the table, not in the heading.
+    expect(table.compareDocumentPosition(range) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(heading()).toHaveTextContent(/^All names\s*250$/);
+    expect(screen.getByText('page 1 of 3')).toBeInTheDocument();
+    const next = screen.getByRole('button', { name: 'Next 100 names' });
+    expect(next).toBeEnabled();
+    expect(table.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // One pager: the old pair in the heading is gone.
+    expect(screen.queryByRole('group', { name: 'Pages' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Previous 100 names' })).toBeDisabled();
   });
 
   it('opens on the page the address names, and Next asks for the one after it', async () => {
-    mocked.listNames.mockResolvedValue({ items: [resolved], total: 250, skip: 100, limit: 100 });
+    pagedNames();
     renderAt('/names?page=2');
-    await screen.findByText('portal.example-corp.com');
+    await screen.findByText('name-101.example-corp.com');
     expect(mocked.listNames).toHaveBeenCalledTimes(1);
     // (The project first; the last argument is the query's abort signal.)
     expect(mocked.listNames).toHaveBeenLastCalledWith(1, expect.objectContaining({ skip: 100 }), expect.anything());
     expect(screen.getByText('101–200 of 250')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(screen.getByText('page 2 of 3')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next 100 names' }));
     await waitFor(() => expect(mocked.listNames).toHaveBeenLastCalledWith(1, expect.objectContaining({ skip: 200 }), expect.anything()));
+    // The last page is short: the range ends at the total.
+    expect(await screen.findByText('201–250 of 250')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next 100 names' })).toBeDisabled();
+  });
+
+  // A second press while a page loads asked for the page after one that had
+  // not arrived (the old buttons did not wait).
+  it('the pager waits while a page loads', async () => {
+    pagedNames();
+    renderAt('/names');
+    await screen.findByText('name-1.example-corp.com');
+    let answer!: (v: unknown) => void;
+    mocked.listNames.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next 100 names' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next 100 names' })).toBeDisabled());
+    expect(screen.getByRole('button', { name: 'Previous 100 names' })).toBeDisabled();
+    await act(async () => {
+      answer({ items: [{ ...resolved, id: 1100, fqdn: 'name-101.example-corp.com' }], total: 250, skip: 100, limit: 100 });
+    });
+    await screen.findByText('name-101.example-corp.com');
+    expect(screen.getByRole('button', { name: 'Next 100 names' })).toBeEnabled();
   });
 
   // The filter changed first and the page was put back to the first one
   // afterwards: the old page of the new filter was asked for in between.
   it('a filter chosen from a later page asks once, for the first page', async () => {
-    mocked.listNames.mockResolvedValue({ items: [resolved], total: 250, skip: 100, limit: 100 });
+    pagedNames();
     renderAt('/names?page=2');
-    await screen.findByText('portal.example-corp.com');
+    await screen.findByText('name-101.example-corp.com');
     mocked.listNames.mockClear();
     fireEvent.click(screen.getByRole('button', { name: /^Unresolved/ }));
     await waitFor(() => expect(mocked.listNames).toHaveBeenCalled());

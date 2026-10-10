@@ -252,7 +252,6 @@ export interface Host {
 /** One scope subnet that contains the host's address (v2.342.0). */
 export interface HostScopeSubnetEntry {
   id: number;
-  scope_id: number;
   cidr: string;
   description?: string | null;
   site?: string | null;

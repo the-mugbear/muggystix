@@ -46,7 +46,6 @@ class User(Base):
 
     # Account status
     is_active = Column(Boolean, default=True)
-    is_verified = Column(Boolean, default=False)
     last_login = Column(DateTime(timezone=True))
 
     # Activity tracking

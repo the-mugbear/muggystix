@@ -87,8 +87,8 @@ def _scope_with_subnet(db, project):
 
 
 def _delete_subnet(client, db, project):
-    scope, subnet = _scope_with_subnet(db, project)
-    return client.delete(f"{_base(project)}/scopes/{scope.id}/subnets/{subnet.id}")
+    _scope, subnet = _scope_with_subnet(db, project)
+    return client.delete(f"{_base(project)}/scopes/subnets/{subnet.id}")
 
 
 def _correlate_all(client, db, project):
@@ -108,7 +108,7 @@ def _delete_user(client, db, project):
 
     doomed = User(
         id=4242, username="doomed", email="doomed@example.com", full_name="Doomed",
-        hashed_password="x", role=UserRole.MEMBER, is_active=True, is_verified=True,
+        hashed_password="x", role=UserRole.MEMBER, is_active=True,
     )
     db.add(doomed)
     db.commit()

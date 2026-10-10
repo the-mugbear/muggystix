@@ -76,7 +76,7 @@ def _member(db, project, role):
         id=_SEQ[0], username=f"matrix-{_SEQ[0]}",
         email=f"matrix-{_SEQ[0]}@example.com",
         hashed_password="$2b$12$abcdefghijklmnopqrstuv",
-        role=UserRole.MEMBER, is_active=True, is_verified=True,
+        role=UserRole.MEMBER, is_active=True,
     )
     db.add(user)
     db.flush()

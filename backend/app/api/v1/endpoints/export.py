@@ -45,12 +45,11 @@ _HOST_LIST_RESPONSES = {
 
 
 @router.get(
-    "/scope/{scope_id}",
+    "/scope",
     responses=_HOST_LIST_RESPONSES,
     summary="Export scope hosts",
 )
 def export_scope_hosts(
-    scope_id: int,
     format_type: str = Query(
         default="txt",
         pattern="^(txt|csv|json|web)$",
@@ -66,16 +65,14 @@ def export_scope_hosts(
     the agents' ``web-targets.txt``, from the same builder.
 
     A project has exactly one scope (2.488.0), so this is every host the
-    Scope page's table covers; the ``all_scopes`` switch of 2.487.0 is gone.
+    Scope page's table covers, and the path names no scope (2.489.0).  A
+    read: a project with no scope yet exports nothing, and none is created.
     """
     from app.db import models as m
+    from app.services.default_scope import project_scope
     from app.services.scope_targets_service import scope_host_ids
 
-    scope = db.query(m.Scope).filter(m.Scope.id == scope_id, m.Scope.project_id == project.id).first()
-    if not scope:
-        raise HTTPException(status_code=404, detail=f"Scope {scope_id} not found")
-
-    members = scope_host_ids(scope.id)
+    scope = project_scope(db, project.id)
     # The scope has no name; the file is named for what it is.
     safe_name = "project-scope"
 
@@ -87,16 +84,16 @@ def export_scope_hosts(
         # more than one statement's worth of the API limit.
         disable_statement_timeout(db)
         return PlainTextResponse(
-            content="".join(iter_scope_web_targets(db, scope.id)),
+            content="".join(iter_scope_web_targets(db, scope.id)) if scope else "",
             headers={"Content-Disposition": f"attachment; filename={safe_name}_web-targets.txt"},
         )
 
     rows = (
         db.query(m.Host.ip_address, m.Host.hostname, m.Host.state)
-        .filter(m.Host.project_id == project.id, m.Host.id.in_(members))
+        .filter(m.Host.project_id == project.id, m.Host.id.in_(scope_host_ids(scope.id)))
         .order_by(m.Host.ip_address)
         .all()
-    )
+    ) if scope else []
 
     if format_type == "txt":
         body = "\n".join(r.ip_address for r in rows) + ("\n" if rows else "")

@@ -31,7 +31,13 @@ describe('importResultParts', () => {
     ]);
     expect(parts.find((p) => p.key === 'added')?.to).toBe('/hosts?scan_ids=9&first_seen_in_scan=true');
     expect(parts.find((p) => p.key === 'known')?.to).toBe('/hosts?scan_ids=9');
-    expect(parts.find((p) => p.key === 'skipped')?.to).toBe('/parse-errors?job_id=77');
+    expect(parts.find((p) => p.key === 'skipped')?.to).toBe('/scans?view=results&job_id=77');
+  });
+
+  it('a gap with no job to name still opens Ingestion results', () => {
+    const parts = importResultParts(scan({ import_skipped: 3, import_partial: true }));
+    expect(parts.find((p) => p.key === 'skipped')?.to).toBe('/scans?view=results');
+    expect(parts.find((p) => p.key === 'partial')?.to).toBe('/scans?view=results');
   });
 
   it('says "no hosts" rather than nothing for an upload that recorded none', () => {

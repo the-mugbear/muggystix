@@ -31,6 +31,7 @@ import contextvars
 import ipaddress
 import json
 import logging
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -749,6 +750,15 @@ def purge_rows_older_than(db: Session, model, column, days: int, *, batch: int =
         total += deleted
         if deleted < batch:
             return total
+
+
+def retention_days() -> int:
+    """How many days an ``agent_api_calls`` row is kept
+    (``AGENT_API_CALL_RETENTION_DAYS``, default 90); 0 = kept, never purged.
+    The ONE reader of the variable: the retention loop purges by it and
+    ``/.well-known/networkmapper.json`` publishes it, so the claim and the
+    purge cannot disagree."""
+    return max(0, int(os.getenv("AGENT_API_CALL_RETENTION_DAYS", "90")))
 
 
 def purge_older_than(db: Session, days: int) -> int:

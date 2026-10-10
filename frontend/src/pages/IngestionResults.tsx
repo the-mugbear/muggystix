@@ -40,6 +40,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useProjectId } from '../hooks/useProjectId';
 import { invalidateReads, useLastSettled } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
+import { importResultsPath } from '../utils/importResultsPath';
 import { INGESTION_JOB_READS } from '../utils/ingestionReads';
 import { Badge } from '../components/ui/badge';
 import { BreakableName } from '../components/ui/breakable-name';
@@ -178,7 +179,7 @@ const useJobReadsChanged = () => {
   }, [queryClient]);
 };
 
-const ParseErrors: React.FC = () => {
+const IngestionResults: React.FC = () => {
   const navigate = useNavigate();
   // v5.135.0 — Scans links here with ?error_id=N. Previously it navigated to
   // the bare list, so the operator arrived with no idea which of up to 100
@@ -457,7 +458,9 @@ const ParseErrors: React.FC = () => {
   return (
     <div className="p-md md:p-lg">
       {confirmEl}
-      <div className="mb-md flex flex-wrap items-center justify-between gap-sm">
+      {/* `min-h-10` is the other view's header (its buttons): the view switch
+          below must not move when the reader presses it. */}
+      <div className="mb-md flex min-h-10 flex-wrap items-start justify-between gap-sm">
         {/* A view of the Scans page since 5.380.0 (it was a page of its own,
             "Ingestion Results"). */}
         <h1 className="text-page-title font-semibold">Scans</h1>
@@ -689,7 +692,7 @@ const ParseErrors: React.FC = () => {
                               <p className="mt-xxs break-words text-caption text-success" data-testid="superseded-by">
                                 Superseded — imported by{' '}
                                 <Link
-                                  to={`/parse-errors?job_id=${item.superseded_by_job_id}`}
+                                  to={importResultsPath({ job_id: item.superseded_by_job_id })}
                                   onClick={(e) => e.stopPropagation()}
                                   className="rounded underline underline-offset-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                 >
@@ -1181,6 +1184,16 @@ const statusChips = (summary: IngestionResultsResponse['summary'], active: strin
       hint: 'Failed, or finished partial, not dismissed, and not imported since by a later upload of the same file — what Operations lists as blocked',
     },
     { value: 'failed', label: 'Failed', count: summary.total_failed, tone: 'text-destructive', hint: 'The import went wrong: nothing from these files is in the inventory (dismissed ones included)' },
+    // G7 — "Failed 3" stood beside Operations' "2 imports failed": one had
+    // been dismissed and nothing said so.  The dismissed part of Failed is
+    // stated right after it, and opens exactly those rows.  Left out when the
+    // server did not say (an older backend): never shown as 0.
+    ...((summary.total_failed_dismissed ?? 0) > 0 || active === 'failed_dismissed'
+      ? [{
+          value: 'failed_dismissed', label: 'of them dismissed', count: summary.total_failed_dismissed ?? 0,
+          hint: 'Failed imports someone has dismissed: counted in Failed, not in Needs attention',
+        }]
+      : []),
     { value: 'completed', label: 'Completed', count: summary.total_completed, hint: 'Imported — a partial import is marked on its row' },
   ];
   // UX review 2026-09-24 — 31 expired staged uploads read "Failed 31" here
@@ -1215,4 +1228,4 @@ const statusChips = (summary: IngestionResultsResponse['summary'], active: strin
   return chips;
 };
 
-export default ParseErrors;
+export default IngestionResults;

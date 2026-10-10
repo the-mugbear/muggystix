@@ -53,20 +53,13 @@ const IDLE_POLL_MS = 5 * 60_000;
 const PEEK_LIMIT = 8;
 
 const RECENT_FILTERS: AgentSessionFilters = { limit: PEEK_LIMIT };
-const ACTIVE_FILTERS: AgentSessionFilters = { status: 'active', kind: 'project', limit: 1 };
+const ACTIVE_FILTERS: AgentSessionFilters = { status: 'active', limit: 1 };
 const NO_SESSIONS: AgentSessionRow[] = [];
-
-const KIND_LABEL: Record<string, string> = {
-  // 5.312.0 — the unified session, the row every new session is; it read as
-  // the raw "project #72" and opened the list, not the session.
-  project: 'Session',
-  assist: 'Assist',
-};
 
 const statusIcon = (row: AgentSessionRow) => {
   // An active session whose key ran out is waiting on its operator, not
   // working: no spinner for it.
-  if (row.kind === 'project' && row.status === 'active' && !agentConnected(row)) {
+  if (row.status === 'active' && !agentConnected(row)) {
     return <CircleDot className="size-3 text-warning" aria-hidden />;
   }
   const s = row.status.toLowerCase();
@@ -100,9 +93,7 @@ const AgentActivityRail: React.FC = () => {
   const enabled = isAuthenticated && hasProject;
 
   // Two cheap reads of the same endpoint — the recent list, and just the
-  // active count for the badge.  5.313.0 — the badge counts agent SESSIONS
-  // (kind 'project'): a run is part of its session, so counting runs too
-  // told the operator one live agent was two or three.
+  // active count for the badge, which counts agent SESSIONS.
   // A failure is silent — the rail is ambient; failing is the same as having
   // nothing new to show.  Notifications surface API outages through their own
   // polling path.
@@ -233,7 +224,7 @@ const AgentActivityRail: React.FC = () => {
           ) : (
             <ul className="divide-y divide-border">
               {sessions.map((row) => (
-                <li key={`${row.kind}-${row.id}`}>
+                <li key={row.id}>
                   <button
                     type="button"
                     onClick={() => {
@@ -246,13 +237,13 @@ const AgentActivityRail: React.FC = () => {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-xs">
                         <span className="text-metadata font-medium">
-                          {KIND_LABEL[row.kind] ?? row.kind} #{row.id}
+                          Session #{row.id}
                         </span>
                         <span className="text-caption text-muted-foreground">
                           · {row.status}
                         </span>
                       </div>
-                      {row.kind === 'project' && row.purpose && (
+                      {row.purpose && (
                         <div className="line-clamp-1 break-words text-caption text-foreground" title={row.purpose}>
                           {row.purpose}
                         </div>

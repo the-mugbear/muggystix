@@ -167,7 +167,7 @@ describe('StartAssistDialog', () => {
   it('with a live session, copying the task is the primary action', async () => {
     const task = 'Propose tests in BlueStick for these hosts only (host ids): 12, 14.';
     const live = {
-      id: 86, kind: 'project', status: 'active', can_end: true, can_resume: true,
+      id: 86, status: 'active', can_end: true, can_resume: true,
       key_expires_at: new Date(Date.now() + 3 * 3_600_000).toISOString(),
     } as unknown as AgentSessionRow;
     render(

@@ -144,7 +144,7 @@ export const HUB_DEFS: HubDef[] = [
   // `workflows` / `/workflows` so existing links keep working.
   {
     id: 'workflows', label: 'Agents', path: '/workflows', requiredRole: 'viewer', Icon: ShieldCheck,
-    defaultChildPath: '/agent-activity', ownedPaths: ['/agent-sessions', '/assist-sessions'],
+    defaultChildPath: '/agent-activity', ownedPaths: ['/agent-sessions'],
   },
   { id: 'collaboration', label: 'Collaboration', path: '/collaboration', requiredRole: 'viewer', Icon: ActivityPulseIcon },
   { id: 'settings', label: 'Settings', path: '/settings', requiredRole: 'viewer', Icon: SettingsIcon, placement: 'utility' },
@@ -270,9 +270,7 @@ export const NAV_PAGES: NavPage[] = [
   // page. Every agent surface is in this hub, Tool Activity included.
   {
     // v5.312.0 — "Agent Sessions" (was Agent Runs): the session is what an
-    // operator starts and manages. The
-    // /assist-sessions palette entry that also said "Agent Sessions" is gone —
-    // one page, one entry.
+    // operator starts and manages. One page, one entry.
     id: 'agent-activity', path: '/agent-activity', label: 'Agent Sessions', requiredRole: 'viewer', hub: 'workflows',
     palette: {
       Icon: Bot,
@@ -430,7 +428,7 @@ export const HUBS: Hub[] = HUB_DEFS.map((hub) => ({
  * so a 404, the personal pages (/profile, /llm-settings) and the cross-project
  * pages all lit "Operations" as where you were.  Every project detail route is
  * covered by a child prefix (/hosts/12, /findings/37) or an
- * owned path (/agent-sessions/…, /assist-sessions/…).
+ * owned path (/agent-sessions/…).
  */
 export function resolveActiveHub(pathname: string): Hub | null {
   for (const hub of HUBS) {
@@ -471,7 +469,6 @@ const DETAIL_TITLES: Array<{ pattern: RegExp; title: string }> = [
   { pattern: /^\/scans\/compare$/, title: 'Compare scans' },
   { pattern: /^\/scans\/[^/]+$/, title: 'Scan' },
   { pattern: /^\/reports\/[^/]+$/, title: 'Report' },
-  { pattern: /^\/assist-sessions\/[^/]+$/, title: 'Agent session' },
   { pattern: /^\/agent-sessions\/[^/]+$/, title: 'Agent session' },
   { pattern: /^\/reference\/user-guide(\/.*)?$/, title: 'User guide' },
   { pattern: /^\/reference\/sbom$/, title: 'Software bill of materials' },

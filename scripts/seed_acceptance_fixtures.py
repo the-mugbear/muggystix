@@ -176,7 +176,7 @@ def _ensure_account(db, project: Project, username: str, full_name: str, role: P
         user = User(
             username=username, full_name=full_name, email=f"{username}@acceptance.invalid",
             hashed_password=get_password_hash(password), role=UserRole.MEMBER.value,
-            is_active=True, is_verified=True, must_change_password=False,
+            is_active=True, must_change_password=False,
             totp_secret_encrypted=totp_service.encrypt_secret(secret), totp_enabled=True,
             totp_confirmed_at=datetime.now(timezone.utc),
         )

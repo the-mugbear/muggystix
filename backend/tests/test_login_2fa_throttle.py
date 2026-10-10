@@ -22,7 +22,6 @@ def _totp_user(db_session):
         hashed_password="x",
         role=UserRole.MEMBER,
         is_active=True,
-        is_verified=True,
         totp_enabled=True,
     )
     db_session.add(user)

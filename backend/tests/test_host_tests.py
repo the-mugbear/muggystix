@@ -574,7 +574,7 @@ def test_a_test_is_assigned_to_someone_who_can_work_it(client, db_session, test_
     def account(name, role, uid):
         # Explicit ids: the fixture user is inserted with one, so the sequence lags.
         user = User(id=uid, username=name, email=f"{name}@example.com", hashed_password="x", role=role,
-                    is_active=True, is_verified=True, created_at=datetime.now(timezone.utc))
+                    is_active=True, created_at=datetime.now(timezone.utc))
         db_session.add(user)
         db_session.commit()
         return user

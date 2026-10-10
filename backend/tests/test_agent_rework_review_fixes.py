@@ -90,7 +90,7 @@ def test_open_tasks_are_the_host_tests_still_to_do(db_session, test_project):
 
 def _session_row(client, project, session_id):
     body = client.get(f"/api/v1/projects/{project.id}/agent-sessions").json()
-    return next(r for r in body["sessions"] if r["kind"] == "project" and r["id"] == session_id)
+    return next(r for r in body["sessions"] if r["id"] == session_id)
 
 
 def test_resume_is_not_offered_past_the_sessions_lifetime(client, db_session, test_project):

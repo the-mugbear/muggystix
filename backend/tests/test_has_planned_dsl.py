@@ -158,8 +158,8 @@ def test_a_record_that_is_not_a_test_result_does_not_make_a_host_tested(
     assert tested == {"10.44.0.1"}
 
     body = client.get(f"/api/v1/projects/{test_project.id}/coverage/").json()
-    assert body["hosts_with_execution_result"] == 1
-    assert body["hosts_no_execution"] == 2
+    assert body["hosts_tested"] == 1
+    assert body["total_hosts"] == 3
 
 
 @pytest.mark.parametrize("outcome", ["finding", "no_finding", "inconclusive"])
@@ -177,8 +177,8 @@ def test_each_real_outcome_makes_a_host_tested_with_or_without_a_test(
     assert "10.44.0.3" not in planned
 
     body = client.get(f"/api/v1/projects/{test_project.id}/coverage/").json()
-    assert body["hosts_with_execution_result"] == 2
-    assert body["hosts_with_plan_entry"] == 2
+    assert body["hosts_tested"] == 2
+    assert body["hosts_planned"] == 2
 
 
 def test_untouched_follows_tests_and_evidence(

@@ -8,9 +8,9 @@
 import React from 'react';
 
 import { useScansView } from '../components/scans/ScansViewTabs';
-import ParseErrors from './ParseErrors';
+import IngestionResults from './IngestionResults';
 import Scans from './Scans';
 
-const ScansHub: React.FC = () => (useScansView() === 'results' ? <ParseErrors /> : <Scans />);
+const ScansHub: React.FC = () => (useScansView() === 'results' ? <IngestionResults /> : <Scans />);
 
 export default ScansHub;

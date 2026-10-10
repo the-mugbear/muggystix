@@ -210,6 +210,53 @@ def test_expired_and_discarded_uploads_are_not_counted_as_failed(client, db_sess
     assert ids("discarded") == {discarded.id}
 
 
+def test_the_failed_figure_says_how_many_are_dismissed_and_lists_exactly_those(client, db_session, test_project):
+    """G7 (2026-10-10): Ingestion results read "Failed 3" beside Operations'
+    "2 imports failed" — one of the three had been dismissed and nothing said
+    so.  ``total_failed_dismissed`` is the dismissed part of ``total_failed``
+    (the ``failed`` view's own condition), and ``status=failed_dismissed``
+    lists exactly those rows.  More rows than one page, so the figure is
+    checked against the whole list and not a page of it."""
+    from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
+
+    base = f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results"
+    now = datetime.now(timezone.utc)
+    open_ids = {_job(db_session, test_project, sha=f"{n:064x}", error="boom").id for n in range(1, 3)}
+    dismissed_ids = {
+        _job(db_session, test_project, sha=f"{n:064x}", error="boom", dismissed=now).id for n in range(10, 17)
+    }
+    # Dismissed, but nothing failed in them: not part of Failed at all.
+    _job(db_session, test_project, sha="e" * 64, dismissed=now,
+         error=f"{EXPIRED_MESSAGE_PREFIX}: not started within 24 hours.")
+    _job(db_session, test_project, sha="d" * 64, dismissed=now, error=DISCARDED_MESSAGE)
+    # A dismissed PARTIAL import is not a failed one.
+    _job(db_session, test_project, sha="c" * 64, status="completed", partial=True, dismissed=now)
+    # Another project's dismissed failure.
+    _job(db_session, _other_project(db_session), sha="b" * 64, error="boom", dismissed=now)
+
+    def listed(status):
+        """Every row of a view, paged through, with the total each page states."""
+        ids, skip = set(), 0
+        while True:
+            page = client.get(base, params={"status": status, "skip": skip, "limit": 3}).json()
+            ids |= {i["id"] for i in page["items"]}
+            skip += 3
+            if skip >= page["total"]:
+                return ids, page["total"]
+
+    summary = client.get(base).json()["summary"]
+    failed, failed_total = listed("failed")
+    dismissed, dismissed_total = listed("failed_dismissed")
+
+    assert failed == open_ids | dismissed_ids
+    assert summary["total_failed"] == failed_total == len(failed) == 9
+    assert dismissed == dismissed_ids
+    assert summary["total_failed_dismissed"] == dismissed_total == len(dismissed) == 7
+    # What is left is what Needs attention lists (none of these is superseded).
+    assert listed("needs_attention")[0] == open_ids
+    assert summary["total_needs_attention"] == summary["total_failed"] - summary["total_failed_dismissed"]
+
+
 def test_evidence_counts_imports_by_the_same_rule(client, db_session, test_project):
     """The Evidence page said "N unresolved parse errors" (parse-error rows,
     dismissed failures included) beside pages that said two imports needed

@@ -74,8 +74,8 @@ from starlette.background import BackgroundTask
 from app.api.v1.endpoints.mcp_tools import (
     TOOLS,
     advertised_schema,
+    tool_groups,
     tool_list_payload,
-    tool_workflows,
 )
 from app.services import mcp_telemetry_service as mcp_telemetry
 from app.services.agent_policy import (
@@ -166,7 +166,10 @@ def _server_instructions(base_url: str) -> str:
         "they are finished; finishing a task is not that.\n\n"
         "The tool descriptions and their schemas are enough for most work. The "
         "guide (read_agent_guide) is reference for when a tool leaves you "
-        "guessing; read the part you need, not the whole thing up front.\n\n"
+        "guessing; read the part you need, not the whole thing up front. A list "
+        "tool that says it is paged takes `limit` and `offset` and answers "
+        "{items, total, limit, offset, returned, has_more}: quote `total`, never "
+        "the length of a page.\n\n"
         "Bulk data is file-shaped and deliberately not a tool — fetch it with "
         "curl -sS and your X-API-Key header (never -k), then read the file "
         "locally:\n"
@@ -182,10 +185,9 @@ def _server_instructions(base_url: str) -> str:
         f"ingested); poll the job with get_upload_job"
     )
 
-# The tool registry moved to ``mcp_tools.py`` in v2.278.0 — see that module for
-# the entry format, and for why workflow filtering is presentational.  This file
-# is the transport: framing, auth, dispatch, telemetry.  The alias keeps the
-# name the dispatcher and the telemetry summary already read.
+# The tool registry is ``mcp_tools.py`` — see that module for the entry format.
+# This file is the transport: framing, auth, dispatch, telemetry.  The alias
+# keeps the name the dispatcher and the telemetry summary already read.
 _TOOLS = TOOLS
 
 
@@ -216,10 +218,11 @@ def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
                 "kind": "read" if spec["method"] == "GET" else "write",
                 "method": spec["method"],
                 "path": spec["path"],
-                # The kind of work the tool belongs to — a grouping for the
-                # reference page only (every session lists every tool since
-                # v2.337.0); derived from the name in one place, v2.338.0.
-                "workflows": sorted(tool_workflows(name)),
+                # The reference page's headings for the tool — presentation
+                # only.  The key is still called `workflows` because the page
+                # (`McpReference.tsx`) reads it by that name; it names no kind
+                # of session.  Rename it together with the page.
+                "workflows": tool_groups(name),
                 "input_schema": advertised_schema(spec),
             }
             for name, spec in _TOOLS.items()

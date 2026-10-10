@@ -24,7 +24,6 @@ vi.mock('../../contexts/ToastContext', () => ({
 
 // The panel shows the session list's own rows (5.328.0): one id per session.
 const session = (over: Partial<AgentSessionRow> = {}): AgentSessionRow => ({
-  kind: 'project',
   id: 12,
   project_id: 1,
   purpose: 'Looking for FTP exposure',

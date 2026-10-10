@@ -11,7 +11,7 @@ vi.mock('react-router-dom', async () => vi.importActual('react-router-dom'));
 let canWrite = true;
 vi.mock('../../hooks/useProjectRole', () => ({ useProjectRole: () => ({ canWrite }) }));
 vi.mock('../../pages/Scans', () => ({ default: () => <p>the imported scans</p> }));
-vi.mock('../../pages/ParseErrors', () => ({ default: () => <p>the import results</p> }));
+vi.mock('../../pages/IngestionResults', () => ({ default: () => <p>the import results</p> }));
 
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import ScansViewTabs from '../../components/scans/ScansViewTabs';

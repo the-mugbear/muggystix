@@ -63,6 +63,12 @@ const range = (from: number, to: number, step = 1) => {
   for (let i = from; step > 0 ? i <= to : i >= to; i += step) out.push(`pkg-${pad(i)}`);
   return out;
 };
+/** The shared footer, as read: "51–100 of 130 · page 2 of 3" — the rows' place
+ *  in the whole list, then the page (no page number when there is one page). */
+const pager = () => [
+  screen.getByText(/^[\d,]+–[\d,]+ of [\d,]+$/).textContent,
+  screen.queryByText(/^page [\d,]+ of [\d,]+$/)?.textContent,
+].filter(Boolean).join(' · ');
 const head = (label: string) => screen.getByRole('columnheader', { name: label });
 const pressed = (group: string) => within(screen.getByRole('group', { name: group }))
   .getAllByRole('button').find((b) => b.getAttribute('aria-pressed') === 'true')?.textContent;
@@ -78,10 +84,10 @@ describe('SBOM — what the reader sees', () => {
     expect(screen.getByText('2.475.0')).toBeInTheDocument();
     expect(screen.getByText('65 / 65')).toBeInTheDocument();
     expect(screen.getByText('Showing 130 of 130')).toBeInTheDocument();
-    expect(screen.getByText('Page 1 of 3 · 130 components')).toBeInTheDocument();
+    expect(pager()).toBe('1–50 of 130 · page 1 of 3');
     expect(names()).toEqual(range(1, 50));
     expect(head('Name')).toHaveAttribute('aria-sort', 'ascending');
-    expect(screen.getByRole('button', { name: 'Previous page' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Previous 50 components' })).toBeDisabled();
     expect(mocked.getSbom).toHaveBeenCalledTimes(1);
 
     const row = (name: string) => screen.getByText(name).closest('tr') as HTMLElement;
@@ -109,7 +115,9 @@ describe('SBOM — what the reader sees', () => {
     mocked.getSbom.mockResolvedValue(sbom([{ ...component(1), name: LONG }]));
     await open();
     expect(screen.getByText(LONG).className).toMatch(/break-words/);
-    expect(screen.getByText('Page 1 of 1 · 1 component')).toBeInTheDocument();
+    // One page: the count, no page number, no buttons.
+    expect(pager()).toBe('1–1 of 1');
+    expect(screen.queryByRole('button', { name: /^(Next|Previous) / })).toBeNull();
   });
 
   it('searches by name, whatever the case, and says when nothing matches', async () => {
@@ -117,12 +125,14 @@ describe('SBOM — what the reader sees', () => {
     type('PKG-13');
     await waitFor(() => expect(names()).toEqual(['pkg-130']));
     expect(screen.getByText('Showing 1 of 130')).toBeInTheDocument();
-    expect(screen.getByText('Page 1 of 1 · 1 component')).toBeInTheDocument();
+    expect(pager()).toBe('1–1 of 1');
 
     type('left-pad');
     expect(await screen.findByText(/No components match your filters\./)).toBeInTheDocument();
     expect(screen.getByText('Try searching for the package name exactly as published.')).toBeInTheDocument();
     expect(screen.getByText('Showing 0 of 130')).toBeInTheDocument();
+    // Nothing listed: no range of nothing ("1–0 of 0").
+    expect(screen.queryByText(/ of 0$/)).toBeNull();
   });
 
   it('filters by layer, by source and by licence — together', async () => {
@@ -165,30 +175,32 @@ describe('SBOM — what the reader sees', () => {
   it('pages through the list, and by another page size', async () => {
     const user = userEvent.setup();
     await open();
-    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
-    expect(screen.getByText('Page 2 of 3 · 130 components')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next 50 components' }));
+    expect(pager()).toBe('51–100 of 130 · page 2 of 3');
     expect(names()).toEqual(range(51, 100));
-    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next 50 components' }));
     expect(names()).toEqual(range(101, 130));
-    expect(screen.getByRole('button', { name: 'Next page' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Previous page' }));
+    expect(screen.getByRole('button', { name: 'Next 50 components' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Previous 50 components' }));
     expect(names()).toEqual(range(51, 100));
 
     // Another size starts from the first page.
     await user.click(screen.getByRole('combobox', { name: 'Rows per page' }));
     await user.click(await screen.findByRole('option', { name: '25' }));
-    await waitFor(() => expect(screen.getByText('Page 1 of 6 · 130 components')).toBeInTheDocument());
+    await waitFor(() => expect(pager()).toBe('1–25 of 130 · page 1 of 6'));
     expect(names()).toEqual(range(1, 25));
+    // The buttons say how many rows a press moves by.
+    expect(screen.getByRole('button', { name: 'Next 25 components' })).toBeEnabled();
   });
 
   it('a filter or a sort chosen on a later page starts from the first', async () => {
     await open();
-    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next 50 components' }));
     fireEvent.click(within(screen.getByRole('group', { name: 'Filter by application layer' })).getByRole('button', { name: 'backend' }));
-    expect(screen.getByText('Page 1 of 2 · 65 components')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    expect(pager()).toBe('1–50 of 65 · page 1 of 2');
+    fireEvent.click(screen.getByRole('button', { name: 'Next 50 components' }));
     fireEvent.click(within(head('Name')).getByRole('button'));
-    expect(screen.getByText('Page 1 of 2 · 65 components')).toBeInTheDocument();
+    expect(pager()).toBe('1–50 of 65 · page 1 of 2');
     expect(names()[0]).toBe('pkg-129');
   });
 
@@ -217,13 +229,13 @@ describe('SBOM — the list state lives in the address (real router)', () => {
     expect(head('Version')).toHaveAttribute('aria-sort', 'descending');
     // Backend (odd), MIT (not a multiple of 7 or 13), newest version first.
     const expected = range(129, 1, -2).filter((n) => { const i = Number(n.slice(4)); return i % 7 !== 0 && i % 13 !== 0; });
-    expect(screen.getByText(`Page 2 of ${Math.ceil(expected.length / 25)} · ${expected.length} components`)).toBeInTheDocument();
+    expect(pager()).toBe(`26–50 of ${expected.length} · page 2 of ${Math.ceil(expected.length / 25)}`);
     expect(names()).toEqual(expected.slice(25, 50));
   });
 
   it('a reload on page 3 shows page 3 and writes nothing', async () => {
     const router = await open('/sbom?page=3');
-    expect(screen.getByText('Page 3 of 3 · 130 components')).toBeInTheDocument();
+    expect(pager()).toBe('101–130 of 130 · page 3 of 3');
     expect(names()).toEqual(range(101, 130));
     await settle();
     expect(router.state.location.search).toBe('?page=3');
@@ -235,16 +247,16 @@ describe('SBOM — the list state lives in the address (real router)', () => {
     expect(pressed('Filter by application layer')).toBe('all');
     expect(pressed('Filter by source (direct or transitive)')).toBe('all');
     expect(head('Name')).toHaveAttribute('aria-sort', 'ascending');
-    expect(screen.getByText('Page 3 of 3 · 130 components')).toBeInTheDocument();
+    expect(pager()).toBe('101–130 of 130 · page 3 of 3');
     expect(names()).toEqual(range(101, 130));
   });
 
   it('the pager writes the address (replace); the first page is left out', async () => {
     const router = await open('/sbom?layer=backend');
-    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next 50 components' }));
     expect(router.state.location.search).toBe('?layer=backend&page=2');
     expect(router.state.historyAction).toBe('REPLACE');
-    fireEvent.click(screen.getByRole('button', { name: 'Previous page' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Previous 50 components' }));
     expect(router.state.location.search).toBe('?layer=backend');
   });
 
@@ -264,11 +276,11 @@ describe('SBOM — the list state lives in the address (real router)', () => {
     expect(router.state.location.search).toBe('?layer=frontend');
     expect(router.state.historyAction).toBe('REPLACE');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next 50 components' }));
     fireEvent.click(within(screen.getByRole('group', { name: 'Filter by source (direct or transitive)' })).getByRole('button', { name: 'transitive' }));
     expect(router.state.location.search).toBe('?layer=frontend&source=transitive');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next 50 components' }));
     fireEvent.click(within(head('License')).getByRole('button'));
     expect(router.state.location.search).toBe('?layer=frontend&source=transitive&sort=license');
     fireEvent.click(within(head('License')).getByRole('button'));
@@ -290,7 +302,7 @@ describe('SBOM — the list state lives in the address (real router)', () => {
     expect(box().value).toBe('');
     expect(pressed('Filter by application layer')).toBe('frontend');
     expect(head('Version')).toHaveAttribute('aria-sort', 'descending');
-    expect(screen.getByText('Page 2 of 2 · 65 components')).toBeInTheDocument();
+    expect(pager()).toBe('51–65 of 65 · page 2 of 2');
     expect(names()).toEqual(range(30, 2, -2));
     await settle();
     expect(router.state.location.search).toBe('?layer=frontend&sort=version&dir=desc&page=2');

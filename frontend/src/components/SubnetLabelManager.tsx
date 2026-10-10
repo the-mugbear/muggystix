@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
-  useMutation, useQuery, useQueryClient, type InfiniteData, type QueryClient,
+  useMutation, useQuery, useQueryClient, type QueryClient,
 } from '@tanstack/react-query';
 import { Loader2, Pencil, Plus, Trash2, X as CloseIcon } from 'lucide-react';
 
@@ -388,28 +388,24 @@ interface SubnetLabelEditorPopoverProps {
 }
 
 /**
- * The scope's subnets as they are cached: the Scope page reads them as a
- * "Show more" list (`useListQuery('getDefaultScope', …)`), so a cached read
- * is pages of rows (`items`).
+ * The scope's subnets as they are cached: the Scope page reads them a page
+ * at a time (`usePagedList('getDefaultScope', …)`), so a cached read is one
+ * page of rows (`items`).
  */
-type CachedSubnets = InfiniteData<{ items: Array<{ id: number; labels?: SubnetLabelInfo[] }> }>;
+type CachedSubnets = { items: Array<{ id: number; labels?: SubnetLabelInfo[] }> };
 
 /**
  * Put a subnet's labels — the server's answer to a save — on its row in
- * every cached read of the project's scope (whatever its search), on
- * whichever loaded page the row is.  The change shows at once and the scope
- * is not read again (a re-read asks for every loaded page).
+ * every cached read of the project's scope (whatever its search or page).
+ * The change shows at once and the scope is not read again.
  */
 const putSubnetLabels = (
   queryClient: QueryClient, projectId: number, subnetId: number, labels: SubnetLabelInfo[],
 ): void => {
   queryClient.setQueriesData<CachedSubnets>({ queryKey: ['getDefaultScope', projectId] }, (old) => (
-    old?.pages ? {
+    old?.items ? {
       ...old,
-      pages: old.pages.map((page) => ({
-        ...page,
-        items: page.items.map((row) => (row.id === subnetId ? { ...row, labels } : row)),
-      })),
+      items: old.items.map((row) => (row.id === subnetId ? { ...row, labels } : row)),
     } : old
   ));
 };

@@ -9,8 +9,8 @@ Everything that reads or ends a session is in ``agent_sessions.py``, keyed by
 the session id this route returns (``/projects/{id}/agent-sessions/…``).  This
 module also listed, showed and ended sessions until v2.449.0 — keyed by the id
 of a second row (``assist_sessions``) that each start wrote.  That table is
-gone (migration ``b8e2a5c7d1f3``); the old by-id paths answer from
-``agent_sessions.py`` for the sessions that had such an id.
+gone (migration ``b8e2a5c7d1f3``), and so are the by-id paths that still
+answered for the old ids (2.489.0, revision ``c2a7e5f1d9b3``).
 
 The agent-facing counterparts (``/agent/assist/*``, X-API-Key auth) live in
 ``agent_assist.py``; the two surfaces are physically separated — different auth
@@ -22,7 +22,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, require_project_role
@@ -73,45 +73,16 @@ class StartAssistRequest(BaseModel):
             "within the session's lifetime."
         ),
     )
-    # v2.309.0 removed ``can_write_assigned`` with the capability system: a
-    # session's authority is its operator's project role now, decided per
-    # request, so there is nothing to opt into.
-    #
-    # v2.310.0 — but it is kept here to be REJECTED, not ignored. Pydantic's
-    # default is `extra="ignore"`, and the failure that produces is the worst
-    # shape available: a caller that sent `can_write_assigned: false` asking for
-    # a read-only key gets a 201 and a key with their full analyst write
-    # authority. Silently granting more than was requested is not a compatible
-    # change, however compatible the response looks. Sending `true` is equally
-    # wrong in the other direction — it asked for "assigned hosts only" and
-    # would now get the whole project.
-    #
-    # So an old caller gets an error explaining the new model, and a chance to
-    # decide whether they still want the session.
-    can_write_assigned: Optional[bool] = Field(
-        default=None,
-        deprecated=True,
-        description=(
-            "REMOVED in v2.309.0. Rejected rather than ignored, because the "
-            "value you sent no longer means what it meant. An assist session "
-            "now carries the permissions of the operator who starts it, "
-            "checked on every call. Omit this field."
-        ),
-    )
-
-    @field_validator("can_write_assigned")
-    @classmethod
-    def _reject_retired_capability_flag(cls, value):
-        if value is None:
-            return value
-        raise ValueError(
-            "can_write_assigned was removed in v2.309.0 and is no longer "
-            "honoured. An assist session now acts with the permissions of the "
-            "operator who starts it, re-checked on every call — there is no "
-            "per-session write grant to set. Retry without this field; if you "
-            "were relying on it to obtain a read-only key, start the session as "
-            "a user whose project role is read-only instead."
-        )
+    # A key this route does not take is REFUSED (422), never ignored.  A
+    # session acts with its operator's project role, re-checked on every call;
+    # there is nothing a caller can ask for here that narrows it.  So a body
+    # that tries — the ``can_write_assigned: false`` of the capability system
+    # removed in v2.309.0 asked for a read-only key — must not get a 201 and a
+    # key with the operator's full authority, which is what pydantic's default
+    # ``extra="ignore"`` would hand it.  (Until 2.489.0 that one name was kept
+    # as a field whose only job was to be refused; forbidding every unknown
+    # key says the same for it and for anything else.)
+    model_config = ConfigDict(extra="forbid")
 
 
 # --- MCP client setup -------------------------------------------------------
@@ -125,14 +96,6 @@ class StartAssistResponse(BaseModel):
     # every ``/agent-sessions/{id}`` route takes.  It is the session's ONLY id
     # (v2.449.0).
     agent_session_id: int
-    assist_session_id: int = Field(
-        deprecated=True,
-        description=(
-            "The same value as agent_session_id. Until v2.449.0 this was the id "
-            "of a second row; kept so a client written against that shape still "
-            "gets a session id that every route accepts. Read agent_session_id."
-        ),
-    )
     project_id: int
     project_name: str
     agent_id: int
@@ -219,7 +182,6 @@ def start_assist_session(
     )
     return StartAssistResponse(
         agent_session_id=session_id,
-        assist_session_id=session_id,
         project_id=project.id,
         project_name=project.name,
         agent_id=agent_id,
