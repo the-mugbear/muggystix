@@ -301,7 +301,8 @@ person ticks it. There is no agent write for a caption or the tick: both are
 decisions of the person who attached the image.
 
 **The client report.** `assist_get_client_report` returns each finding as the
-report states it. Its `confirmations` are the test results the report prints
+report states it, 25 per answer by default (`limit`, `offset`;
+`findings_total` and `findings_has_more` say whether to ask again). Its `confirmations` are the test results the report prints
 as how the finding was confirmed (at most 10, with `confirmations_omitted`);
 `by` is the operator's full name even when an agent recorded the result — the
 report names no session. `confirmations` and `summary.evidence_records` are

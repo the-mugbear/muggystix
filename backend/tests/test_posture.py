@@ -35,7 +35,9 @@ def test_empty_project_reads_needs_assessment(db_session, test_project):
     assert any(p["kind"] == "onboard" for p in out["priorities"])
     assert out["headline"]["active_exposure"]["active_findings"] == 0
     # Evidence currency is always present (even with no scans).
-    assert "scan_staleness_days" in out["evidence"]
+    assert "days_since_last_import" in out["evidence"]
+    # A name that invites "stale" is not served (native MCP run 2026-10-10).
+    assert "scan_staleness_days" not in out["evidence"]
     # Systemic carries an adoption flag so the UI can distinguish
     # "can't assess" from "assessed, nothing found".
     assert "adopted" in out["headline"]["systemic"]
@@ -223,7 +225,7 @@ def test_posture_response_contract(db_session, test_project):
     # v2.442.0 — the ``decisions`` block (blocked execution runs; a plan
     # approval queue until v2.433.0) went with execution runs.  Pinned absent.
     assert "decisions" not in out
-    assert set(out["evidence"]) >= {"scan_count", "scan_staleness_days"}
+    assert set(out["evidence"]) >= {"scan_count", "days_since_last_import"}
     for p in out["priorities"]:
         assert set(p) >= {"kind", "title", "blast_radius", "action", "severity", "owner", "link"}
 

@@ -1295,7 +1295,10 @@ def get_assist_host_vulnerabilities(
     host_id: int = Path(..., gt=0),
     severity: Optional[str] = Query(
         None,
-        description="Comma-separated severities to include (critical/high/medium/low/info). Default: all.",
+        description=(
+            "Comma-separated severities to include (critical/high/medium/low/info, and "
+            "unknown — a row whose scanner stated none). Default: all."
+        ),
     ),
     cve: Optional[str] = Query(None, max_length=40, description="Only rows for this CVE id (exact, any case)."),
     plugin_id: Optional[str] = Query(None, max_length=100, description="Only rows from this scanner plugin id (exact)."),
@@ -2664,10 +2667,16 @@ def get_assist_patterns(
 class AssistIngestionIssue(BaseModel):
     """One upload that failed, is still in flight, or landed incomplete."""
     #: ``failed`` (the worker gave up), ``expired`` (a staged upload nobody
-    #: started within 24 hours — never imported, nothing failed), ``degraded``
-    #: (parsed, but rows were dropped) or ``parse_error`` (a recorded failure
-    #: with no job row).
+    #: started within 24 hours — never imported, nothing failed), ``partial``
+    #: (finished, but parsing stopped early: part of the file is NOT in the
+    #: project), ``degraded`` (parsed to the end, but rows were dropped) or
+    #: ``parse_error`` (a recorded failure with no job row).
     kind: str
+    #: One of the imports `needs_attention` counts: failed or partial, not
+    #: dismissed, and not replaced by a later clean import of the same file.
+    needs_attention: bool = False
+    #: Someone dismissed it on the page: looked at, and no longer waiting.
+    dismissed: bool = False
     filename: str
     tool_name: Optional[str] = None
     file_type: Optional[str] = None
@@ -2700,9 +2709,15 @@ class AssistIngestionIssues(BaseModel):
     needs_attention: int = Field(0, description=(
         "Failed or partial imports nobody has dismissed and no later import of "
         "the same file has replaced — the page's Needs attention count and "
-        "Operations' blocked imports."
+        "Operations' blocked imports. Each is in `issues` with needs_attention true."
     ))
-    degraded: int = 0
+    partial: int = Field(0, description=(
+        "Imports that finished partial: parsing stopped early, so what came after "
+        "that point in the file is NOT in the project."
+    ))
+    degraded: int = Field(0, description=(
+        "Imports that parsed to the end but dropped rows (skipped_count)."
+    ))
     #: Unresolved parse errors with NO surviving job row — the ones that would
     #: otherwise go unreported, since a failed job already carries its error.
     #: Deliberately NOT the project's total: `failed` above accounts for the
@@ -2752,10 +2767,12 @@ def list_assist_ingestion_issues(
     result from every other tool on this surface, and only one of them is a
     finding about the network.
 
-    Three kinds, deliberately distinguished:
+    The kinds, deliberately distinguished:
 
     * ``failed`` — the worker gave up on the file. Nothing from it is in the
       project.
+    * ``partial`` — the import finished, but parsing stopped early: what came
+      after that point in the file is NOT in the project.
     * ``degraded`` — the file parsed and its data IS in the project, but the
       parser dropped rows (``skipped_count``). Counts drawn from it are
       undercounts, and this is invisible everywhere else: the job says
@@ -2788,16 +2805,22 @@ def list_assist_ingestion_issues(
         .order_by(models.IngestionJob.created_at.desc())
         .all()
     )
-    degraded_jobs = (
+    # Completed, and not all of the file is in the project: it finished
+    # PARTIAL (the shared rule `needs_attention` counts by), or it dropped
+    # rows.  The list used only the second, so a truncated import that skipped
+    # nothing was counted and never listed (feedback #45).
+    incomplete_jobs = (
         db.query(models.IngestionJob)
         .filter(
             models.IngestionJob.project_id == pid,
             models.IngestionJob.status == "completed",
-            models.IngestionJob.skipped_count > 0,
+            or_(models.IngestionJob.partial.is_(True), models.IngestionJob.skipped_count > 0),
         )
         .order_by(models.IngestionJob.created_at.desc())
         .all()
     )
+    partial_jobs = [j for j in incomplete_jobs if j.partial]
+    degraded_jobs = [j for j in incomplete_jobs if not j.partial]
 
     # A failed job usually carries a parse_error_id, so listing both tables
     # unfiltered would report the same upload twice under two names.  Fold the
@@ -2848,16 +2871,38 @@ def list_assist_ingestion_issues(
     discarded = sum(1 for k in kinds.values() if k == "discarded")
     expired = sum(1 for k in kinds.values() if k == "expired")
     failed_jobs = [j for j in failed_jobs if kinds[j.id] != "discarded"]
-    needs_attention = (
-        db.query(func.count(models.IngestionJob.id))
+    # The ids the count is made of, so each listed row can say whether it is
+    # one of them — the count and the marks are one statement's answer.
+    waiting_ids = {
+        job_id for (job_id,) in db.query(models.IngestionJob.id)
         .filter(models.IngestionJob.project_id == pid, blocked_import_condition())
-        .scalar()
-    ) or 0
+        .all()
+    }
+    needs_attention = len(waiting_ids)
 
     issues: List[AssistIngestionIssue] = []
+    for j in partial_jobs:
+        said = (j.parser_warnings or "").strip()
+        issues.append(AssistIngestionIssue(
+            kind="partial",
+            needs_attention=j.id in waiting_ids,
+            dismissed=j.dismissed_at is not None,
+            filename=j.original_filename or j.filename,
+            tool_name=j.tool_name,
+            message=(
+                "Finished partial — parsing stopped early, so part of this file "
+                "is NOT in the project." + (f" {said}" if said else "")
+            ),
+            skipped_count=j.skipped_count or 0,
+            parser_warnings=j.parser_warnings,
+            job_id=j.id,
+            created_at=j.created_at,
+        ))
     for j in failed_jobs:
         issues.append(AssistIngestionIssue(
             kind=kinds[j.id],
+            needs_attention=j.id in waiting_ids,
+            dismissed=j.dismissed_at is not None,
             filename=j.original_filename or j.filename,
             tool_name=j.tool_name,
             message=(
@@ -2907,6 +2952,7 @@ def list_assist_ingestion_issues(
         expired=expired,
         discarded=discarded,
         needs_attention=int(needs_attention),
+        partial=len(partial_jobs),
         degraded=len(degraded_jobs),
         unresolved_parse_errors=len(orphan_errors),
         unresolved_parse_errors_total=unresolved_total,

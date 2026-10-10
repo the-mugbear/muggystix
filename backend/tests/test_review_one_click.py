@@ -88,7 +88,9 @@ def test_the_agents_reviewed_is_the_status_and_nothing_else(client, db_session, 
     headers = _agent_headers(client, test_project)
 
     r = client.post(f"/api/v1/agent/hosts/{host.id}/follow", headers=headers, json={"status": "reviewed"})
-    assert r.status_code == 204, r.text
+    # The answer states the status held (an empty 204 reached an MCP client's
+    # model as the bare text "OK" — native MCP run 2026-10-10).
+    assert (r.status_code, r.json()) == (200, {"host_id": host.id, "status": "reviewed"}), r.text
     row = _row(db_session, host, test_user)
     assert row.status == FollowStatus.REVIEWED and row.reviewed_at is not None
     assert row.review_conclusion is None and row.review_summary is None
@@ -121,7 +123,7 @@ def test_a_conclusion_still_sent_is_never_written(client, db_session, test_proje
     assert client.post(f"{_base(test_project)}/{one.id}/follow", json=sent).status_code == 200
     assert client.post(f"{_base(test_project)}/bulk/follow", json={**sent, "host_ids": [many.id]}).status_code == 200
     assert client.post(f"/api/v1/agent/hosts/{agent.id}/follow",
-                       headers=_agent_headers(client, test_project), json=sent).status_code == 204
+                       headers=_agent_headers(client, test_project), json=sent).status_code == 200
 
     for host in (one, many, agent):
         row = _row(db_session, host, test_user)

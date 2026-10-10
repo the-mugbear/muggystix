@@ -70,7 +70,7 @@ const response = {
     systemic: { adopted: true, blind_spot_count: 1, condition_count: 4 },
     detected_exposure: { vuln_count: 431 },
   },
-  evidence: { scan_count: 9, scan_staleness_days: 2 },
+  evidence: { scan_count: 9, days_since_last_import: 2 },
   priorities: [
     { kind: 'exposure', tier: 'action', title: '3 critical/high findings active', blast_radius: '3 of 7 active findings · 1 critical',
       action: 'Confirm the evidence and how each is reported', severity: 'critical', owner: null, link: '/findings?status=active', score: 93 },

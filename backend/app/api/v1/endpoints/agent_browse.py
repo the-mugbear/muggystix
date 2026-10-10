@@ -744,9 +744,15 @@ def list_agent_notes(
     ]
 
 
+class AgentFollowResponse(BaseModel):
+    host_id: int
+    #: The operator's review status on the host after the call (``none`` = removed).
+    status: str
+
+
 @router.post(
     "/hosts/{host_id}/follow",
-    status_code=204,
+    response_model=AgentFollowResponse,
     summary="Set review status on a host",
 )
 def set_agent_follow(
@@ -760,7 +766,9 @@ def set_agent_follow(
 
     Gated by the operator's project role; see ``create_agent_note``.  The
     accepted values are the request model's (``AgentFollowStatus``): anything
-    else — the retired ``watching`` included — is a 422 naming them.
+    else — the retired ``watching`` included — is a 422 naming them.  The
+    answer states the status now held (it was an empty 204, which an MCP
+    client showed as the bare text "OK").
     """
     q = (
         db.query(models.Host)
@@ -776,11 +784,12 @@ def set_agent_follow(
     # that set one can undo it.
     if body.status == FOLLOW_CLEAR:
         svc.unfollow(host_id, request.state.key_operator_id)
-        return
+        return AgentFollowResponse(host_id=host_id, status=FOLLOW_CLEAR)
 
     svc.set_follow_status(
         host_id, request.state.key_operator_id, FollowStatus(body.status),
     )
+    return AgentFollowResponse(host_id=host_id, status=body.status)
 
 
 @router.patch(

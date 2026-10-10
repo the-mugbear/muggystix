@@ -206,7 +206,12 @@ class AssistClientReport(ReportOut):
         "issued_snapshot = the text as issued, frozen; draft_live = what the draft "
         "would say if previewed now"))
     counts: Dict[str, Any] = Field(default_factory=dict)
-    findings: List[AssistReportFinding] = Field(default_factory=list)
+    findings: List[AssistReportFinding] = Field(default_factory=list, description=(
+        "One PAGE of the report's findings, in the report's order (`limit` / `offset`)."))
+    findings_total: int = Field(0, description="How many findings the report states — `counts` covers them all.")
+    findings_has_more: bool = Field(False, description="More findings follow this page: ask again with the next offset.")
+    limit: int = 25
+    offset: int = 0
     delta: Optional[Dict[str, Any]] = None
     scope: Optional[Dict[str, Any]] = None
 
@@ -251,6 +256,8 @@ def list_assist_client_reports(
 def get_assist_client_report(
     request: Request,
     report_id: int = Path(..., ge=1),
+    limit: int = Query(25, ge=1, le=200, description="Findings per answer (the rest of the report is always whole)."),
+    offset: int = Query(0, ge=0, description="Findings to skip, in the report's order."),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -258,8 +265,12 @@ def get_assist_client_report(
     dataset, summary = ClientReportService(db).content(report)
     base = serialize_report(db, report, _operator_role(request) or "", with_summary=False)
     dataset = dataset or {}
+    # The findings are paged: a report's whole text in one answer was about
+    # 9,000 tokens for 23 nearly empty findings (native MCP run 2026-10-10).
+    # Details, summary, counts, delta and scope are whole on every page.
+    stated = dataset.get("findings") or []
     findings = []
-    for item in dataset.get("findings") or []:
+    for item in stated[offset:offset + limit]:
         row = {k: v for k, v in item.items() if not k.startswith("_")}
         # The render's file names mean nothing outside the render; keep the
         # attachment id (fetchable) and the caption.
@@ -293,6 +304,10 @@ def get_assist_client_report(
             "content_source": "draft_live" if report.status == ReportStatus.DRAFT else "issued_snapshot",
             "counts": dataset.get("counts") or {},
             "findings": findings,
+            "findings_total": len(stated),
+            "findings_has_more": offset + len(findings) < len(stated),
+            "limit": limit,
+            "offset": offset,
             "delta": dataset.get("delta"),
             "scope": dataset.get("scope"),
         }

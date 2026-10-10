@@ -676,6 +676,30 @@ def health_check():
         db.close()
 
 
+def _oauth_not_used() -> JSONResponse:
+    from app.services.agent_policy import OAUTH_NOT_USED
+    return JSONResponse(
+        status_code=404,
+        content={'error': 'oauth_not_supported', 'error_description': OAUTH_NOT_USED},
+    )
+
+
+# Where an MCP client lands when a refused key (a bare 401) sends it looking
+# for OAuth: the discovery documents, then dynamic client registration.  Each
+# is still a 404 — nothing is advertised — but one that says what happened,
+# because the client shows its model the last of them (2.485.0; nginx used to
+# answer `POST /register` itself, with an HTML 405).
+@app.get('/.well-known/oauth-authorization-server', include_in_schema=False)
+@app.get('/.well-known/oauth-authorization-server/{rest:path}', include_in_schema=False)
+@app.get('/.well-known/openid-configuration', include_in_schema=False)
+@app.get('/.well-known/openid-configuration/{rest:path}', include_in_schema=False)
+@app.get('/.well-known/oauth-protected-resource', include_in_schema=False)
+@app.get('/.well-known/oauth-protected-resource/{rest:path}', include_in_schema=False)
+@app.api_route('/register', methods=['GET', 'POST'], include_in_schema=False)
+async def oauth_is_not_used(rest: str = ''):
+    return _oauth_not_used()
+
+
 @app.get('/.well-known/networkmapper.json')
 async def well_known_identity():
     """Instance identity document — unauthenticated, intentionally public.

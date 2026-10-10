@@ -918,9 +918,9 @@ def test_granted_writes_land_through_mcp(client, test_project, test_user, db_ses
     assert note["structuredContent"]["actor_type"] == "agent"
 
     follow = call("assist_set_follow", {"host_id": host.id, "status": "reviewed"})
-    # 204 has no body to structure — the result is a plain OK, and the page says so.
-    assert follow["isError"] is False and follow["content"][0]["text"] == "OK"
-    assert "structuredContent" not in follow
+    # The status now held, not the bare "OK" of an empty 204.
+    assert follow["isError"] is False
+    assert follow["structuredContent"] == {"host_id": host.id, "status": "reviewed"}
 
     # Capture the scan-evidence timestamp before a pure metadata correction.
     db_session.expire_all()
@@ -947,7 +947,7 @@ def test_granted_writes_land_through_mcp(client, test_project, test_user, db_ses
 
     # `none` clears the follow — the inverse the enum otherwise lacks (v2.315.0).
     cleared = call("assist_set_follow", {"host_id": host.id, "status": "none"})
-    assert cleared["isError"] is False and cleared["content"][0]["text"] == "OK"
+    assert cleared["isError"] is False and cleared["structuredContent"]["status"] == "none"
     db_session.expire_all()
     assert db_session.query(HostFollow).filter(
         HostFollow.host_id == host.id, HostFollow.user_id == test_user.id

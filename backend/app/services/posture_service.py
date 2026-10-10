@@ -413,7 +413,7 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
         # evidence does not go stale (the key name predates that decision).
         "evidence": {
             "scan_count": project_att["neglect"]["scan_count"],
-            "scan_staleness_days": project_att["neglect"]["scan_staleness_days"],
+            "days_since_last_import": project_att["neglect"]["days_since_last_import"],
         },
         "priorities": [s["priority"] | {"score": s["score"], "tier": s["tier"]} for s in signals[:8]],
         "sites": {"adopted": site_att.get("adopted", False), "items": site_att.get("sites", [])},

@@ -123,7 +123,11 @@ _VERIFY_CHECKS = {
     "claude_code": (
         "`claude mcp list` should report {name} as Connected; inside a session, "
         "`/mcp` lists it with its tools. “Failed to connect” is the certificate "
-        "or the key, in that order."
+        "or the key, in that order. A running session keeps the key it started "
+        "with: after a Resume gives you a new one, `claude mcp remove {name}`, "
+        "add it again with the new key, and restart Claude Code (`claude "
+        "--continue` keeps the conversation). A refused key shows there as an "
+        "OAuth or “client registration” error, not as a key error."
     ),
     "codex": (
         "`codex mcp list` only shows that {name} is CONFIGURED. Inside an "

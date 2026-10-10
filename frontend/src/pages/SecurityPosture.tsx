@@ -70,7 +70,7 @@ const SevDot: React.FC<{ severity: Severity }> = ({ severity }) => (
 // "what was the posture during this assessment window", so an older import is
 // not a warning. Only "no scans at all" is — there is nothing to read.
 const EvidenceCurrency: React.FC<{ evidence: PostureResponse['evidence'] }> = ({ evidence }) => {
-  const days = evidence.scan_staleness_days;
+  const days = evidence.days_since_last_import;
   const text = evidence.scan_count === 0
     ? 'No scans yet'
     : days == null ? `${evidence.scan_count} scans`

@@ -61,7 +61,9 @@ class PosturePriority(_Loose):
 
 class PostureEvidence(_Loose):
     scan_count: int
-    scan_staleness_days: Optional[int] = None
+    # Whole days since the newest import — provenance, never a freshness
+    # judgment (it was `scan_staleness_days`, a name that invited one).
+    days_since_last_import: Optional[int] = None
 
 
 class PostureConclusion(_Loose):

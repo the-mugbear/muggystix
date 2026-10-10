@@ -146,7 +146,7 @@ export interface PostureResponse {
     scanner_active: number;
     non_scanner_active: number;
   };
-  evidence: { scan_count: number; scan_staleness_days: number | null };
+  evidence: { scan_count: number; days_since_last_import: number | null };
 }
 
 export const getPosture = async (

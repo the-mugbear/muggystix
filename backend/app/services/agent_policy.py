@@ -123,6 +123,23 @@ def render_read_back(*, over_mcp: bool = False) -> str:
 # Key expiry
 # ---------------------------------------------------------------------------
 
+#: What a client is told when it goes looking for OAuth.  The MCP endpoint
+#: answers a refused key with a bare 401; some clients (Claude Code) then try
+#: OAuth discovery and dynamic client registration, and show their model the
+#: LAST answer — so that answer has to say what actually happened.  It cannot
+#: say WHY the key was refused (nothing in an OAuth probe identifies the key);
+#: the session's page tells the operator.
+OAUTH_NOT_USED = (
+    "BlueStick does not use OAuth: its MCP endpoint takes an agent key in the "
+    "X-API-Key header. Your client asked for OAuth because that endpoint answered "
+    "401 — the key it sent was refused (the session was ended, the key expired, or "
+    "the operator's password changed). Tell the operator: open this session under "
+    "Agents in BlueStick and Resume it (or start a new one) to get a new key, "
+    "replace the key in the client's MCP configuration, then restart the client — "
+    "a running client keeps the old key."
+)
+
+
 def render_key_expiry_guidance(*, base_url: str = "<base>", over_mcp: bool = False) -> str:
     """How to survive your own credential expiring mid-job.
 

@@ -178,6 +178,16 @@ describe('nginx security headers', () => {
     expect(live?.own).toContain('default_type text/plain;');
   });
 
+  // 2.485.0 — an MCP client whose key was refused goes looking for OAuth and
+  // ends at `POST /register`; the web root's HTML 405 was what its model saw.
+  it('hands /register to the backend, with no add_header of its own', () => {
+    const register = blocks.find((b) => b.name === '= /register');
+    expect(register).toBeDefined();
+    expect(register?.own.some((l) => l.startsWith('proxy_pass '))).toBe(true);
+    expect(register?.own.some((l) => l.startsWith('add_header '))).toBe(false);
+    expect(register?.own).toContain('proxy_set_header X-Forwarded-For $remote_addr;');
+  });
+
   it('declares the complete set at server level, for the locations that inherit it', () => {
     const server = active.slice(0, active.search(/^\s*location\s/m));
     for (const header of [...required, 'X-XSS-Protection']) {

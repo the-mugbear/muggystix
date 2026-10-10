@@ -122,4 +122,7 @@ def slice_agents_md(content: str, part: Optional[str]) -> str:
     # that a dropped section leaves behind.
     result = '\n'.join(out_lines)
     result = re.sub(r'\n{3,}', '\n\n', result)
+    # …and the rules themselves: every dropped section left its own `---`, so
+    # the remediation part printed six in a row (native MCP run 2026-10-10).
+    result = re.sub(r'(?:^---\n\n){2,}', '---\n\n', result, flags=re.MULTILINE)
     return result

@@ -189,7 +189,8 @@ def test_the_agents_review_status_takes_the_offered_states_and_refuses_watching(
         return [f.status for f in db_session.query(HostFollow).filter(HostFollow.host_id == host.id)]
 
     for value in ("in_review", "reviewed"):
-        assert client.post(url, headers=headers, json={"status": value}).status_code == 204
+        answer = client.post(url, headers=headers, json={"status": value})
+        assert (answer.status_code, answer.json()) == (200, {"host_id": host.id, "status": value})
         assert stored() == [FollowStatus(value)]
 
     for refused in ("watching", "bogus", ""):
@@ -200,10 +201,11 @@ def test_the_agents_review_status_takes_the_offered_states_and_refuses_watching(
         assert stored() == [FollowStatus.REVIEWED]
 
     # Clearing works by both of its words.
-    assert client.post(url, headers=headers, json={"status": "none"}).status_code == 204
+    assert client.post(url, headers=headers, json={"status": "none"}).status_code == 200
     assert stored() == []
-    assert client.post(url, headers=headers, json={"status": "in_review"}).status_code == 204
-    assert client.post(url, headers=headers, json={"status": "clear"}).status_code == 204
+    assert client.post(url, headers=headers, json={"status": "in_review"}).status_code == 200
+    cleared = client.post(url, headers=headers, json={"status": "clear"})
+    assert (cleared.status_code, cleared.json()["status"]) == (200, "none")
     assert stored() == []
 
     # A row from before the state was retired: not writable, still clearable.
@@ -211,7 +213,7 @@ def test_the_agents_review_status_takes_the_offered_states_and_refuses_watching(
     db_session.commit()
     assert client.post(url, headers=headers, json={"status": "watching"}).status_code == 422
     assert stored() == [FollowStatus.WATCHING]
-    assert client.post(url, headers=headers, json={"status": "none"}).status_code == 204
+    assert client.post(url, headers=headers, json={"status": "none"}).status_code == 200
     assert stored() == []
 
     # The values are the route's: OpenAPI carries them, and the MCP tool
@@ -1321,6 +1323,70 @@ def test_ingestion_issues_surfaces_a_completed_but_degraded_upload(
     issue = next(i for i in body["issues"] if i["kind"] == "degraded")
     assert issue["skipped_count"] == 30
     assert "incomplete" in issue["message"]
+
+
+def test_every_import_needs_attention_counts_is_listed_and_marked(client, db_session, test_project):
+    """Native MCP run 2026-10-10 (feedback #45): `needs_attention` was 4 and
+    `issues` held 3 of them.  The list built "incomplete" from its own rule
+    (completed with skipped rows) while the count used the shared one
+    (completed and PARTIAL) — so a truncated import that skipped nothing, the
+    case where hosts are missing, was counted and not listed; and a dismissed
+    failure was listed like one still waiting."""
+    from datetime import datetime, timezone
+    from app.db import models
+
+    def job(name, **over):
+        row = models.IngestionJob(project_id=test_project.id, filename=name, original_filename=name,
+                                  storage_path=f"/tmp/{name}", tool_name="nmap", **over)
+        db_session.add(row)
+        return row
+
+    truncated = job("truncated.xml", status="completed", partial=True, skipped_count=0,
+                    parser_warnings="parsing stopped early, so hosts after this point are MISSING")
+    waiting = job("broken.xml", status="failed", error_message="not XML")
+    dismissed = job("old.xml", status="failed", error_message="not XML",
+                    dismissed_at=datetime.now(timezone.utc))
+    db_session.commit()
+
+    body = client.get("/api/v1/agent/assist/ingestion-issues", headers=_assist(client, test_project.id)).json()
+    rows = {i["job_id"]: i for i in body["issues"]}
+    assert body["needs_attention"] == 2
+    assert sorted(j for j, i in rows.items() if i["needs_attention"]) == sorted([truncated.id, waiting.id])
+    assert rows[truncated.id]["kind"] == "partial"
+    assert "MISSING" in rows[truncated.id]["message"]
+    assert body["partial"] == 1 and body["degraded"] == 0
+    assert (rows[dismissed.id]["kind"], rows[dismissed.id]["dismissed"], rows[dismissed.id]["needs_attention"]) == (
+        "failed", True, False)
+    assert rows[waiting.id]["dismissed"] is False
+
+
+def test_small_answers_the_native_run_asked_for(client, test_project):
+    """Native MCP run 2026-10-10: an unknown query field named no fields; the
+    upload-job 404 did not say where an earlier session's job is read; a guide
+    part left a row of empty rules; one condition read as "mixed"."""
+    from app.services.agents_guide_service import slice_agents_md
+    from app.services.systemic_insight_service import _root_cause
+
+    headers = _assist(client, test_project.id)
+    bogus = client.get("/api/v1/agent/assist/hosts", headers=headers, params={"q": "bogus:yes"})
+    assert bogus.status_code == 400
+    assert "Unknown field 'bogus'" in bogus.text and "port" in bogus.text and "hostname" in bogus.text
+
+    missing = client.get("/api/v1/agent/uploads/999999", headers=headers)
+    assert missing.status_code == 404 and "assist_list_scans" in missing.json()["detail"]
+
+    guide = "# T\n\n---\n\n" + "".join(
+        f'<!-- agents:section tags="{tag}" -->\nbody {tag}\n<!-- agents:end -->\n\n---\n\n'
+        for tag in ("testing", "assist", "reconnaissance", "remediation", "testing")
+    )
+    sliced = slice_agents_md(guide, "remediation")
+    assert "body remediation" in sliced and "body testing" not in sliced
+    assert "---\n\n---" not in sliced
+
+    assert _root_cause({"smb_signing"})["kind"] == "smb-configuration"
+    assert _root_cause({"weak_tls"})["kind"] == "tls-configuration"
+    assert _root_cause({"eol_os"})["kind"] == "lifecycle"
+    assert _root_cause({"smb_signing", "weak_tls"})["kind"] == "mixed"
 
 
 def test_ingestion_issues_is_quiet_when_nothing_is_wrong(client, test_project):

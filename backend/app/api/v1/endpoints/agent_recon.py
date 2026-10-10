@@ -402,7 +402,15 @@ def get_upload_job(
         .first()
     )
     if not job:
-        raise HTTPException(status_code=404, detail="Upload job not found in this session")
+        # Deliberately this session's jobs only.  A resumed or later session of
+        # the same operator asked for its earlier upload and got a bare 404
+        # (native MCP run 2026-10-10): say where that job's outcome is read.
+        raise HTTPException(status_code=404, detail=(
+            "Upload job not found in this session — this reads only jobs THIS session "
+            "uploaded. For an upload by an earlier session or a person, read the scan: "
+            "assist_list_scans gives each scan's ingestion_job_id, and "
+            "assist_list_ingestion_issues lists imports that failed or finished partial."
+        ))
 
     return ReconJobStatus(
         job_id=job.id,

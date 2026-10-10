@@ -70,6 +70,8 @@ const ROOT_CAUSE_LABEL: Record<string, string> = {
   certificates: 'Certificates',
   'access-control': 'Access control',
   'legacy-services': 'Legacy services',
+  'smb-configuration': 'SMB configuration',
+  'tls-configuration': 'TLS configuration',
   mixed: 'Mixed',
 };
 

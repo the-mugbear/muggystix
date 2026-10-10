@@ -864,7 +864,12 @@ def _validate(node: Node) -> None:
             leaves += 1
             spec = FIELD_BUILDERS.get(n.name)
             if spec is None:
-                raise DSLError(f"Unknown field '{n.name}'", position=n.pos)
+                # Name the fields: "Unknown field 'bogus'" alone left an agent
+                # to guess the vocabulary (native MCP run 2026-10-10).
+                raise DSLError(
+                    f"Unknown field '{n.name}'. Fields: {', '.join(sorted(FIELD_BUILDERS))}",
+                    position=n.pos,
+                )
             if spec.trgm:
                 for v in n.values:
                     # The trigram threshold is about the text matched, not a

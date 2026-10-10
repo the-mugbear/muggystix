@@ -603,7 +603,7 @@ The contract agents follow is the [agent guide](AGENT_GUIDE.md), served at `GET 
 | GET | `/agent/scans` | Scan list. `tool`, `created_after` (an ISO-8601 date or timestamp; a value that is not one is a **422** naming it, never an empty list). |
 | GET | `/agent/scopes` | Scope list with every subnet CIDR and every declared domain (uncapped); `subnet_total` / `domain_total` are the lists' lengths and each scope's `names_in_scope_total` is the distinct inventory names THAT scope's entries cover (the project-wide figure was repeated on every row until v2.483.1; a name two scopes cover counts in each) (domains were missing here until v2.464.0 — only `/agent/assist/scopes` carried them). |
 | GET · POST | `/agent/hosts/{host_id}/notes` | Read a host's notes; create one from the agent's identity. An `@username` in an agent's note notifies nobody. |
-| POST | `/agent/hosts/{host_id}/follow` | Set the operator's review status on a host: `{"status": "in_review" \| "reviewed" \| "none"}` (`none` clears it; 204). The values are an enum in the route's schema: the two states the people's `POST /hosts/{host_id}/follow` sets, from the same type, plus `none` (this door has no DELETE); anything else, the retired `watching` included, is a `422` naming them. |
+| POST | `/agent/hosts/{host_id}/follow` | Set the operator's review status on a host: `{"status": "in_review" \| "reviewed" \| "none"}` (`none` clears it). Answers `{host_id, status}`, the status now held (**v2.485.0**; it was an empty 204). The values are an enum in the route's schema: the two states the people's `POST /hosts/{host_id}/follow` sets, from the same type, plus `none` (this door has no DELETE); anything else, the retired `watching` included, is a `422` naming them. |
 
 ### 5.2 Host tests
 

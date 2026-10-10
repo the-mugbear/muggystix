@@ -59,6 +59,32 @@ def test_the_published_retention_is_the_configured_one(client, db_session, monke
     assert _well_known(client, db_session)["safety_properties"]["audit_trail_retention_days"] == 0
 
 
+def test_a_client_that_goes_looking_for_oauth_is_told_what_to_do(client, db_session):
+    """Native MCP run 2026-10-10 (feedback #44): a refused key is a 401 with a
+    bare challenge, which Claude Code answers by looking for OAuth — three
+    discovery documents, then `POST /register` — and its model was shown the
+    last answer, nginx's HTML 405.  Each of those now says, in the OAuth error
+    shape, that there is no OAuth here and what to do about the key.  It
+    advertises nothing: every one is a 404."""
+    for method, path in (
+        ("GET", "/.well-known/oauth-authorization-server"),
+        ("GET", "/.well-known/oauth-authorization-server/api/v1/mcp"),
+        ("GET", "/.well-known/openid-configuration"),
+        ("GET", "/.well-known/oauth-protected-resource"),
+        ("GET", "/.well-known/oauth-protected-resource/api/v1/mcp"),
+        ("POST", "/register"),
+        ("GET", "/register"),
+    ):
+        answer = client.request(method, path, json={} if method == "POST" else None)
+        assert answer.status_code == 404, (method, path, answer.text)
+        body = answer.json()
+        assert body["error"] == "oauth_not_supported", (method, path)
+        said = body["error_description"]
+        assert "X-API-Key" in said and "restart" in said.lower() and "Resume" in said
+    # The identity document is untouched.
+    assert client.get("/.well-known/networkmapper.json").status_code == 200
+
+
 def test_retired_claims_stay_retired(client, db_session):
     props = _well_known(client, db_session)["safety_properties"]
     for retired in (

@@ -199,6 +199,32 @@ def test_a_draft_reads_live_and_an_issued_report_reads_as_issued(client, db_sess
     assert [r["id"] for r in listing["items"]] == [draft["id"]]
 
 
+def test_a_reports_findings_come_a_page_at_a_time_and_say_how_many_there_are(client, db_session, test_project):
+    """Every finding of a report in one answer was about 9,000 tokens for 23
+    nearly empty ones (native MCP run 2026-10-10).  The findings are paged in
+    the report's order; the details, summary and counts are whole on each page."""
+    host = _host(db_session, test_project, "10.60.1.1")
+    for n in range(5):
+        _finding(db_session, test_project, f"Issue {n}", "high", hosts=[host],
+                 description="d", impact="i", recommendation="r")
+    headers = _assist_headers(client, test_project.id)
+    url = f"/api/v1/agent/assist/client-reports/{_create(client, test_project)['id']}"
+
+    whole = client.get(url, headers=headers).json()
+    assert (whole["findings_total"], whole["findings_has_more"], whole["limit"], whole["offset"]) == (5, False, 25, 0)
+    refs = [f["ref"] for f in whole["findings"]]
+    assert len(refs) == 5
+
+    paged = []
+    for offset in (0, 2, 4):
+        page = client.get(url, headers=headers, params={"limit": 2, "offset": offset}).json()
+        assert page["findings_total"] == 5 and page["counts"] == whole["counts"]
+        assert page["findings_has_more"] is (offset + 2 < 5)
+        paged.extend(f["ref"] for f in page["findings"])
+    assert paged == refs
+    assert client.get(url, headers=headers, params={"limit": 0}).status_code == 422
+
+
 def test_report_evidence_is_an_attachment_id_and_files_download(client, db_session, test_project, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "REPORT_FILES_DIR", str(tmp_path / "client_reports"))
     host = _host(db_session, test_project, "10.60.0.2")

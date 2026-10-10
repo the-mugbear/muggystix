@@ -727,6 +727,13 @@ def _root_cause(conds: Set[str]) -> Dict[str, str]:
         return {"kind": "access-control", "text": "Guest / anonymous access only — confirm whether it is intended on these hosts."}
     if cleartext and not (eol or pki or cred):
         return {"kind": "legacy-services", "text": "Cleartext / legacy services only — confirm whether they are still required."}
+    # ONE condition is never "mixed" (native MCP run 2026-10-10: a subnet whose
+    # only condition was SMB signing read "Mixed weaknesses", while one whose
+    # only condition was end-of-life systems got its own question).
+    if conds == {"smb_signing"}:
+        return {"kind": "smb-configuration", "text": "SMB signing not required is the only recurring weakness — ask whether a shared SMB configuration baseline applies to this segment."}
+    if conds == {"weak_tls"}:
+        return {"kind": "tls-configuration", "text": "Deprecated TLS versions only — ask whether these services share a TLS configuration."}
     return {"kind": "mixed", "text": "Mixed weaknesses — review the per-condition breakdown."}
 
 

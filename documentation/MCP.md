@@ -310,6 +310,12 @@ A client reads `tools/list` when it connects and may keep that list. After a
 BlueStick upgrade, reconnect the client (or restart it) so its tool list is the
 server's current one.
 
+**A new key needs the client restarted.** Resuming a session issues a new key
+and the old one stops working. Replacing it in the configuration (`claude mcp
+remove bluestick`, then the add command again) does not reach a client that is
+already running: restart it (`claude --continue` keeps the conversation). The
+Claude Code recipe says so in its check line.
+
 ### The certificate
 
 BlueStick's certificate is issued by your organisation's **local root CA**
@@ -369,9 +375,25 @@ the argument's only name.
 
 The challenge is deliberately bare. MCP's authorization spec uses 401 plus
 `resource_metadata` to bootstrap OAuth 2.1 discovery; this server is not an
-OAuth resource server, and advertising discovery it doesn't implement would send
-capable clients into a dead end. Authorization is **OPTIONAL** in MCP, so
-header auth is outside the optional profile rather than non-conformant.
+OAuth resource server and advertises no discovery. Authorization is
+**OPTIONAL** in MCP, so header auth is outside the optional profile rather than
+non-conformant.
+
+**A bare challenge does not keep every client out of OAuth.** Claude Code
+(seen with 2.1.296) answers any 401 by asking for
+`/.well-known/oauth-authorization-server`, `/.well-known/openid-configuration`
+and `/.well-known/oauth-protected-resource`, then `POST /register`, and shows
+its model the LAST answer — so the 401's own detail never reaches the model,
+and a revoked key, an expired one and a changed password look the same there.
+Each of those paths is still a 404 (nothing is advertised), but since 2.485.0
+it is a JSON one in the OAuth error shape whose `error_description` says that
+BlueStick takes an agent key in `X-API-Key`, that the key was refused, and what
+the operator does next: Resume the session (or start one) for a new key,
+replace it in the client's configuration, and **restart the client** — a
+running client keeps the key it started with. WHY the key was refused is on the
+session's page; an OAuth probe carries nothing that identifies the key. How a
+given client words that answer for its model is the client's; it was read
+against the request sequence above, not against every client.
 
 **Pre-auth ceilings.** The endpoint is unauthenticated at the FastAPI layer, so
 everything before a key is checked is bounded: the body is read through a capped

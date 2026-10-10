@@ -103,17 +103,17 @@ def compute_project_attention(db: Session, project_id: int) -> Dict[str, Any]:
     latest_scan = (
         db.query(func.max(Scan.created_at)).filter(Scan.project_id == project_id).scalar()
     )
-    staleness_days: Optional[int] = None
+    days_since_last_import: Optional[int] = None
     if latest_scan is not None:
         # SQLite returns naive datetimes; Postgres tz-aware. Normalize.
         ls = latest_scan if latest_scan.tzinfo else latest_scan.replace(tzinfo=timezone.utc)
-        staleness_days = max(0, (now - ls).days)
+        days_since_last_import = max(0, (now - ls).days)
 
     # --- Recommended action: dominant component → next step ----------------
     # Order matters: a never-scanned scope is the loudest signal, then
     # untriaged backlog, then open criticals, then review gap.  The age of the
     # last scan is NOT a step (removed v2.374.1): a project is one assessment
-    # window — `scan_staleness_days` below is provenance, never a judgment.
+    # window — `days_since_last_import` below is provenance, never a judgment.
     if scan_count == 0:
         action = {"kind": "onboard", "text": "No scan data yet — upload a scan."}
     elif unowned > 0:
@@ -135,7 +135,7 @@ def compute_project_attention(db: Session, project_id: int) -> Dict[str, Any]:
         },
         "neglect": {
             "scan_count": int(scan_count),
-            "scan_staleness_days": staleness_days,
+            "days_since_last_import": days_since_last_import,
             "unowned_active_findings": int(unowned),
             "unreviewed_hosts": int(unreviewed_hosts),
             "total_hosts": int(total_hosts),
