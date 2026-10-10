@@ -19,7 +19,9 @@
 # parse errors, a PARSER AUDIT of aggregate field coverage (how many rows of
 # each format carry each field — counts only, never values), health checks,
 # the TLS certificate nginx serves (derived facts: CA-issued or self-signed,
-# expiry, whether it names HOST_IP), agent-surface outcomes (refused calls by
+# expiry, whether it names HOST_IP), the frontend build actually being served,
+# which agent routes are in use (calls by route template, every outcome —
+# counts only), agent-surface outcomes (refused calls by
 # route, MCP tool outcomes, proposals, evidence — counts only), the agents'
 # feedback IN FULL (feedback.txt: the newest 200 entries' ratings and free
 # text — read it before sending), the backend / worker / report-worker /
@@ -349,8 +351,21 @@ print_info "Collecting service versions and settings..."
 {
     echo "=== SERVICE VERSIONS ==="
     if $BACKEND_UP; then
-        echo "--- backend root '/' (deployed backend + frontend versions) ---"
+        echo "--- backend root '/' (the running backend's version; its frontend_version is read from the deployed FILES, not from the build being served) ---"
         compose exec -T backend curl -fsS http://localhost:8000/ 2>&1 || echo "backend root unreachable"
+        echo ""
+        # The frontend that nginx is actually serving.  Copying files is not
+        # deploying: after a file copy with no rebuild the line above already
+        # names the new frontend version while the browser still gets the old
+        # build.  Version, the backend version it was built against, build
+        # time and commit — nothing that names the deployment.
+        echo "--- frontend build being served (from the frontend image) ---"
+        if container_running frontend; then
+            compose exec -T frontend cat /etc/bluestick-frontend-build.json 2>/dev/null \
+                || echo "not recorded (a frontend image built before 5.367.0)"
+        else
+            echo "frontend container not running"
+        fi
         echo ""
         echo "--- ingestion settings ---"
         # app.core.config only — importing app.main would run migrations.
@@ -485,6 +500,11 @@ if $DB_UP; then
         echo "=== AGENT SURFACE (counts; no bodies, commands or text) ==="
         q "Agent sessions by status" "SELECT status, count(*) FROM agent_sessions GROUP BY 1 ORDER BY 2 DESC;"
         q "Agent API calls by status class (last 7 days)" "SELECT (status_code / 100) || 'xx' AS class, count(*), count(*) FILTER (WHERE via_mcp) AS via_mcp FROM agent_api_calls WHERE created_at > now() - interval '7 days' GROUP BY 1 ORDER BY 1;"
+        # Which agent routes are in USE (every outcome, not only refusals):
+        # what a route can be retired on.  The log's reach is said first — a
+        # route with no row proves nothing about a time the log does not cover.
+        q "The agent call log's reach" "SELECT count(*) AS calls, min(created_at) AS oldest, max(created_at) AS newest FROM agent_api_calls;"
+        q "Agent API calls by route, every outcome (last 30 days)" "SELECT method, coalesce(path_template, '(unmatched route)') AS route, count(*) AS calls, count(*) FILTER (WHERE via_mcp) AS via_mcp, count(*) FILTER (WHERE status_code >= 400) AS refused, count(DISTINCT agent_session_id) AS sessions, max(created_at) AS last FROM agent_api_calls WHERE created_at > now() - interval '30 days' GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 200;"
         q "Refused / failed agent calls by route (last 7 days)" "SELECT method, coalesce(path_template, '(unmatched route)') AS route, status_code, coalesce(error_class, '-') AS error_class, count(*), max(created_at) AS last FROM agent_api_calls WHERE status_code >= 400 AND created_at > now() - interval '7 days' GROUP BY 1, 2, 3, 4 ORDER BY 5 DESC LIMIT 40;"
         q "MCP tool calls by tool and outcome (last 7 days)" "SELECT coalesce(tool_name, rpc_method, '-') AS tool, outcome, coalesce(error_code::text, '-') AS error_code, count(*), round(avg(duration_ms)) AS avg_ms FROM mcp_tool_calls WHERE created_at > now() - interval '7 days' GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 60;"
         q "MCP handshakes by client (last 7 days; the client names itself only in initialize)" "SELECT coalesce(client_name, '(unnamed)') AS client, coalesce(client_version, '-') AS version, coalesce(protocol_version, '-') AS protocol, count(*) AS handshakes FROM mcp_tool_calls WHERE rpc_method = 'initialize' AND created_at > now() - interval '7 days' GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 20;"
@@ -729,6 +749,13 @@ tracebacks() {
     grep -iE 'skipping|malformed|unrecognised|unrecognized|could not parse' "$LOG_DIR/logs_worker.txt" 2>/dev/null \
         | sed -E 's/^[^ ]+ +//' | cut -c1-200 | sort | uniq -c | sort -rn | head -40 || true
     echo ""
+    # Since frontend 5.352.0 a read is CANCELLED when the reader leaves the
+    # page or changes a filter before it answers; nginx logs that as 499.  A
+    # 499 is therefore ordinary navigation, not a failure — many of them beside
+    # slow routes in request_timing.txt mean readers are not waiting.
+    echo "##### frontend (nginx) responses by status (499 = the browser cancelled the request: the reader moved on)"
+    grep -oE '" [1-5][0-9]{2} ' "$LOG_DIR/logs_frontend.txt" 2>/dev/null | tr -d '" ' | sort | uniq -c | sort -k2n || true
+    echo ""
     echo "##### Auth events (backend)"
     grep -iE 'login|unauthori[sz]ed|forbidden|locked|2fa|totp' "$LOG_DIR/logs_backend.txt" 2>/dev/null | tail -30 || true
 } > "$LOG_DIR/error_analysis.txt" 2>&1
@@ -755,7 +782,9 @@ Files:
 - platform.txt            kernel, CPU/memory/disk, versions, upload dir counts
 - containers.txt          container state, images, limits, resource usage
 - configuration.txt       .env keys (values redacted unless numeric/boolean), docker-compose.yml
-- versions_and_schema.txt deployed versions, ingestion settings, Alembic state, table sizes,
+- versions_and_schema.txt deployed versions AND the frontend build actually being
+                          served (they differ after a file copy with no rebuild),
+                          ingestion settings, Alembic state, table sizes,
                           the data-repair ledger (which one-off corrections ran),
                           Postgres memory settings with cache-hit and temp-file counters
 - ingestion.txt           ingestion queue, failed-job tracebacks, parse errors
@@ -779,7 +808,9 @@ Files:
 - tls.txt                 the certificate nginx serves: self-signed or CA-issued,
                           expiry, SAN counts, whether it names HOST_IP, whether it
                           is the file in ssl/certs and matches its key (no names)
-- agent_surface.txt       agent sessions, refused agent calls by route, MCP tool
+- agent_surface.txt       agent sessions, how far back the call log reaches, agent
+                          calls by route (every outcome, 30 days: which routes
+                          are in use), refused calls by route, MCP tool
                           outcomes and clients, proposals (with accept errors),
                           evidence records (outcomes, raw-output size),
                           feedback — counts only
@@ -787,7 +818,8 @@ Files:
                           notes, endpoint critiques, tool suggestions, reviewer
                           notes. FREE TEXT — scrubbed, but read it before sending;
                           collect with --no-feedback to leave it out
-- error_analysis.txt      error counts, tracebacks, parser skip lines, auth events
+- error_analysis.txt      error counts, tracebacks, parser skip lines, nginx responses
+                          by status (499 = a request the browser cancelled), auth events
 - code.txt                branch / recent commits when deployed from git
 - anonymisation.txt       how many values of each kind were replaced
 

@@ -102,6 +102,11 @@ RUN apk upgrade --no-cache \
 
 # Copy build files (nginx config is mounted by docker-compose at runtime)
 COPY --from=builder /app/build /usr/share/nginx/html
+# What THIS image was built from (version, backend version, time, commit) —
+# outside the web root, so it is not served.  scripts/collect-logs.sh reads it:
+# the backend's "/" reports the versions in the deployed FILES, which on a
+# file-copy deployment can be newer than the build nginx is serving.
+COPY --from=builder /app/src/buildInfo.json /etc/bluestick-frontend-build.json
 
 # Ensure proper permissions for nginx
 RUN chmod -R 755 /usr/share/nginx/html

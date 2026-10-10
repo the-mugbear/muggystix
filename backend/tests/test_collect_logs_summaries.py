@@ -294,6 +294,51 @@ def test_both_files_survive_the_scrubber_readable(diag, tmp_path):
     assert "dc01" not in scrubbed and "Acme" not in scrubbed
 
 
+def test_the_bundle_says_which_agent_routes_are_in_use_and_which_frontend_is_served():
+    """2026-10-10 — two things a bundle could not answer:
+
+    * which agent routes are still called.  It listed only REFUSED calls by
+      route, so "nobody calls this route any more" (the condition for retiring
+      the pre-assist reads) could not be read from it;
+    * which frontend build nginx serves.  The backend's "/" reports the version
+      in the deployed FILES, which after a file copy with no rebuild is newer
+      than the build in the browser.
+    """
+    script = (SCRIPTS / "collect-logs.sh").read_text(encoding="utf-8")
+    surface = script[script.index('"=== AGENT SURFACE'):script.index('"$LOG_DIR/agent_surface.txt"')]
+    in_use = next(line for line in surface.splitlines() if "by route, every outcome" in line)
+    # Route TEMPLATES and counts only — never a path, a body or a parameter —
+    # and no status filter: a successful call is a use.
+    assert "path_template" in in_use and "GROUP BY 1, 2" in in_use
+    assert "status_code >= 400 AND" not in in_use
+    for raw in ("agent_api_calls.path,", " path,", "query_params", "request_body_summary", "source_ip", "user_agent"):
+        assert raw not in in_use, raw
+    # How far back the log reaches is said first: no row proves nothing about
+    # a time the log does not cover.
+    assert surface.index("The agent call log's reach") < surface.index("by route, every outcome")
+
+    versions = script[script.index('"=== SERVICE VERSIONS ==="'):script.index('"$LOG_DIR/versions_and_schema.txt"')]
+    assert "/etc/bluestick-frontend-build.json" in versions
+
+    # A cancelled read (nginx 499) is counted, and said to be ordinary.
+    errors = script[script.index('"=== ERROR ANALYSIS ==="'):script.index('"$LOG_DIR/error_analysis.txt"')]
+    assert "499" in errors and "logs_frontend.txt" in errors
+
+
+def test_the_frontend_image_records_what_it_was_built_from():
+    """The file the bundle reads exists in the image — outside the web root."""
+    import os
+
+    roots = [pathlib.Path(p) for p in (os.getenv("BLUESTICK_REPO_ROOT"), "/repo") if p] + [SCRIPTS.parent]
+    dockerfile = next((r / "frontend" / "Dockerfile" for r in roots if (r / "frontend" / "Dockerfile").is_file()), None)
+    if dockerfile is None:
+        pytest.skip("the repository root is not mounted here (check.sh mounts it)")
+    text = dockerfile.read_text(encoding="utf-8")
+    assert "/app/src/buildInfo.json /etc/bluestick-frontend-build.json" in text
+    # Read by the script, not served.
+    assert "/usr/share/nginx/html/bluestick-frontend-build.json" not in text
+
+
 def test_collect_logs_writes_lists_and_guards_both_files():
     script = (SCRIPTS / "collect-logs.sh").read_text(encoding="utf-8")
     for name in ("request_timing.txt", "sql_statements.txt"):
