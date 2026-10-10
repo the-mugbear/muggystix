@@ -34,6 +34,7 @@ import {
   getToolRegistry,
   ToolRegistryEntry,
 } from '../services/api';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { queryErrorText } from '../lib/query';
 import { cn } from '../utils/cn';
 import { safeHttpHref } from '../utils/safeHref';
@@ -109,7 +110,13 @@ const CATEGORY_TONE: Record<string, CategoryTone> = {
 
 const ToolReference: React.FC = () => {
   const toast = useToast();
-  const [filter, setFilter] = useState('');
+  // The filter is in the address (`?q=`), so a test row can link to its tool
+  // here and the link can be shared.  The list is filtered by what is TYPED
+  // (it is all in memory — nothing to wait for); the address follows a moment
+  // later, and the box follows the address when it changes from elsewhere.
+  const filterBox = useUrlSearchDraft('q', { also: [] });
+  const filter = filterBox.draft;
+  const setFilter = filterBox.setDraft;
   const [vetting, setVetting] = useState<ToolEntry | null>(null);
   const { hasRole } = useAuth();
 
@@ -260,7 +267,11 @@ const ToolReference: React.FC = () => {
         />
         <Accordion
           type="multiple"
-          defaultValue={groupedEntries.map(([cat]) => cat)}
+          // Every category of the catalogue starts open — not only those the
+          // filter leaves now: the page can open already filtered (a link
+          // from a test row), and a category that appears when the filter
+          // changes must not arrive closed.
+          defaultValue={Array.from(new Set(tools.map((t) => t.category)))}
           className="flex flex-col gap-sm"
         >
           {groupedEntries.map(([category, tools]) => (

@@ -116,6 +116,27 @@ describe('ToolReference', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not load the tool catalogue.');
   });
 
+  // Plan A9 — a test row links to its tool here: the filter is the address's.
+  it('opens on the tool the address names, and the box says so', async () => {
+    getToolRegistry.mockResolvedValue({
+      count: 2,
+      tools: [tool(), tool({ name: 'testssl', category: 'Web Analysis', ports: '443' })],
+    });
+    render(
+      <MemoryRouter initialEntries={['/tool-reference?q=testssl']}>
+        <TooltipProvider><ToolReference /></TooltipProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('testssl')).toBeInTheDocument();
+    expect(screen.queryByText('nmap')).not.toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: 'Filter tools' })).toHaveValue('testssl');
+
+    // Typing filters at once — the list is in memory.
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter tools' }), { target: { value: 'nma' } });
+    expect(await screen.findByText('nmap')).toBeInTheDocument();
+    expect(screen.queryByText('testssl')).not.toBeInTheDocument();
+  });
+
   it('renders the registry rather than a built-in list', async () => {
     getToolRegistry.mockResolvedValue({
       count: 2,

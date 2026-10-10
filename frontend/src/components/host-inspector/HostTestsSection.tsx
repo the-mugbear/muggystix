@@ -31,6 +31,7 @@ import {
 } from '../../services/api';
 import { useListQuery } from '../../hooks/useListQuery';
 import { useProjectId } from '../../hooks/useProjectId';
+import { toolReferencePath, useToolReferenceName } from '../../hooks/useToolReferenceName';
 import { queryErrorText } from '../../lib/query';
 import { agentInstruction } from '../../utils/agentRuns';
 import { formatApiError } from '../../utils/apiErrors';
@@ -281,6 +282,8 @@ export const HostTestRow: React.FC<{
 
   // A result that showed an issue opens the row: the next step is inside it.
   useEffect(() => { if (needsDecision) setOpen(true); }, [needsDecision]);
+  // Asked for only by an open row (the link is inside it).
+  const toolReference = useToolReferenceName(test.tool, { enabled: open });
 
   const dirty = dismissing && reason.trim().length > 0;
   useEffect(() => { onDirty?.(test.id, dirty); }, [dirty, onDirty, test.id]);
@@ -454,6 +457,15 @@ export const HostTestRow: React.FC<{
                   {(() => { try { return new URL(ref).hostname; } catch { return ref; } })()}
                 </a>
               ))}
+            </p>
+          )}
+          {/* The tool, where the installation's Tool reference lists it: its
+              install and run commands, for someone who has not used it. */}
+          {toolReference && (
+            <p className="min-w-0 truncate text-caption">
+              <Link to={toolReferencePath(toolReference)} className="text-primary hover:underline">
+                {toolReference} in the Tool reference
+              </Link>
             </p>
           )}
           <p className="break-words text-caption text-muted-foreground">{provenance}</p>

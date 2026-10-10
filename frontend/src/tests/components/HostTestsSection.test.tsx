@@ -20,6 +20,7 @@ const api = vi.hoisted(() => ({
   listEvidenceRecords: vi.fn(),
   getEvidenceRawOutput: vi.fn(),
   listProposals: vi.fn(),
+  getToolRegistry: vi.fn(),
 }));
 vi.mock('../../services/api', () => api);
 
@@ -139,6 +140,25 @@ describe('HostTestsSection — the list', () => {
     expect(screen.getByRole('link', { name: 'owasp.org' })).toHaveAttribute('href', 'https://owasp.org/x');
     expect(screen.queryByText(/javascript:/)).not.toBeInTheDocument();
     expect(screen.getByText(/No result recorded yet/)).toBeInTheDocument();
+  });
+
+  // Plan A9 — the tool a test names links to its Tool reference entry, in the
+  // catalogue's own spelling; a tool the catalogue does not list gets no link,
+  // and nothing is asked for while the row is closed.
+  it('links an open test’s tool to its Tool reference entry, when the catalogue lists it', async () => {
+    api.getToolRegistry.mockResolvedValue({ count: 1, tools: [{ name: 'cURL', description: '', category: 'Web Analysis', status: 'reference' }] });
+    api.listHostTests.mockResolvedValue(page([test(), test({ id: 12, tool: 'homegrown.sh', description: 'A local script' })]));
+    renderSection();
+    await screen.findByText('Check response headers');
+    expect(api.getToolRegistry).not.toHaveBeenCalled();
+
+    await open(11);
+    expect(await screen.findByRole('link', { name: 'cURL in the Tool reference' }))
+      .toHaveAttribute('href', '/tool-reference?q=cURL');
+    await open(12);
+    expect(screen.getAllByRole('link', { name: /in the Tool reference/ })).toHaveLength(1);
+    // One read for both rows.
+    expect(api.getToolRegistry).toHaveBeenCalledTimes(1);
   });
 
   it('counts every status and switches between them without asking the server again', async () => {
