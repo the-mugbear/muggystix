@@ -71,13 +71,17 @@ const ScreenshotLightbox: React.FC<ScreenshotLightboxProps> = ({
           )}
         />
         <DialogPrimitive.Content
-          aria-label={dialogName(caption)}
+          aria-describedby={undefined}
           className={cn(
             'fixed left-1/2 top-1/2 z-50 max-h-[95vh] max-w-[95vw] -translate-x-1/2 -translate-y-1/2',
             'flex flex-col items-center justify-center gap-sm p-md',
             'focus:outline-none',
           )}
         >
+          {/* The name is a real title (Radix logs an error for a dialog
+              without one — an `aria-label` does not count); the visible
+              caption below is the same text, so this one is not shown. */}
+          <DialogPrimitive.Title className="sr-only">{dialogName(caption)}</DialogPrimitive.Title>
           <DialogPrimitive.Close
             className="absolute right-md top-md z-10 inline-flex size-8 items-center justify-center rounded-full bg-black/40 text-white hover:bg-black/70 focus:outline-none focus:ring-2 focus:ring-white"
             aria-label="Close screenshot"

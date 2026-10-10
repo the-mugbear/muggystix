@@ -32,17 +32,28 @@ describe('ScreenshotLightbox — caption', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show less' }));
     expect(caption.className).toContain('line-clamp-3');
     // The dialog's name is announced whole, so it is cut.
-    expect(screen.getByRole('dialog').getAttribute('aria-label')!.length).toBeLessThanOrEqual(120);
+    expect(screen.getByRole('heading', { hidden: true }).textContent!.length).toBeLessThanOrEqual(120);
+  });
+
+  it('names the dialog with a title, so the dialog library has nothing to complain of', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    show('https://10.0.0.5:8443 — Login');
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('https://10.0.0.5:8443 — Login');
+    expect(errors).not.toHaveBeenCalled();
+    expect(warnings).not.toHaveBeenCalled();
+    errors.mockRestore();
+    warnings.mockRestore();
   });
 
   it('offers nothing to open on a short caption, and names the dialog without one', () => {
     const { unmount } = show('https://10.0.0.5:8443 — Login');
     expect(screen.getByTestId('lightbox-caption')).toHaveTextContent('https://10.0.0.5:8443 — Login');
     expect(screen.queryByRole('button', { name: 'Show the whole caption' })).toBeNull();
-    expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'https://10.0.0.5:8443 — Login');
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('https://10.0.0.5:8443 — Login');
     unmount();
     show();
     expect(screen.queryByTestId('lightbox-caption')).toBeNull();
-    expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Screenshot');
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('Screenshot');
   });
 });

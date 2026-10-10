@@ -36,6 +36,9 @@ The project is dense on purpose — a feature with no data cannot be judged:
 On top of that, through the REAL routes (the running API on localhost:8000),
 as real project members:
 
+  * Two subnet labels ("PCI", "Internet-facing"), the first on two subnets
+    and both on one — the Scope page's label picker and a labelled row.
+
   * Four accounts — ``acc-lead`` (project admin), ``acc-analyst``,
     ``acc-auditor``, ``acc-viewer`` — and an agent key for each: ``admin``
     (the lead's — remediation writes need a project admin), ``analyst``,
@@ -442,6 +445,26 @@ def _seed_remediation(db, base_url: str, pid: int, lead_user: User, lead: Api) -
     return {"tracking_on": True, "finding_host_ids": ids}
 
 
+def _seed_subnet_labels(db, pid: int, lead: Api) -> dict:
+    """Two subnet labels, one of them on two subnets — so the Scope page's
+    label picker, the labelled row and Segments' label lens have something
+    to show (the 2026-10-10 walkthrough found the project had none)."""
+    existing = {lbl["name"]: lbl["id"] for lbl in lead("GET", "/scopes/subnet-labels")}
+    ids = {
+        name: existing.get(name) or lead("POST", "/scopes/subnet-labels", json={"name": name, "color": color})["id"]
+        for name, color in (("PCI", "teal"), ("Internet-facing", "orange"))
+    }
+    subnets = [
+        sid for (sid,) in db.query(models.Subnet.id).join(models.Scope, models.Scope.id == models.Subnet.scope_id)
+        .filter(models.Scope.project_id == pid).order_by(models.Subnet.cidr).limit(2)
+    ]
+    for position, subnet_id in enumerate(subnets):
+        wanted = [ids["PCI"], ids["Internet-facing"]] if position == 0 else [ids["PCI"]]
+        lead("PUT", f"/scopes/subnets/{subnet_id}/labels", json={"label_ids": wanted})
+    print(f"subnet labels: {', '.join(ids)} on {len(subnets)} subnets")
+    return {"label_ids": ids, "subnet_ids": subnets}
+
+
 def _delete_project(db, base_url: str, token: str, name: str) -> None:
     """Through the real route (a global admin's), so the files go with it."""
     from app.core.config import settings
@@ -766,6 +789,7 @@ def main() -> None:
     fixtures["analyst_work"] = _seed_analyst_work(db, pid, users, lead, analyst)
     fixtures["other_project"] = _seed_other_project(db, args.base_url, host.ip_address)
     fixtures["remediation"] = _seed_remediation(db, args.base_url, pid, users["acc-lead"], lead)
+    fixtures["subnet_labels"] = _seed_subnet_labels(db, pid, lead)
     fixtures["scanner_integration"] = _seed_scanner_integration(db, args.base_url, admin_user)
 
     data = {"project_id": pid, "project_name": ACCEPTANCE_PROJECT, "keys": keys, "accounts": creds,
