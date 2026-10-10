@@ -17,7 +17,17 @@ mounted) and **fails if any test skipped for want of Quarto or the templates**: 
 `backend` recipe below, the client-report tests — the hostile-text contract among them — skip,
 and the run is green without them. Its second step is `ruff check` over `backend/` in the same
 image (pyflakes rules only, `backend/ruff.toml`): any finding fails the gate. It ends with a
-one-screen summary and a non-zero exit on any failure. The gates, for running one alone:
+one-screen summary and a non-zero exit on any failure.
+
+The backend step is **sharded**: the test files are split into `CHECK_SHARDS` groups (default 4)
+that run at once, each in its own container with its own pytest process and its own test
+database. Every file runs exactly once (checked before anything starts), any failing or
+unfinished shard fails the step, and the summary carries the summed counts. The balance comes
+from `scripts/check-shard-weights.txt`; `scripts/README.md` (the `check.sh` entry) owns the
+details — the caps, `--update-shard-weights`, `--only backend`, `CHECK_SHARDS=1` for the single
+process. A test file therefore must not assume it is alone on the database server.
+
+The gates, for running one alone:
 
 - **Migrations** — `scripts/test-alembic-roundtrip.sh` boots a throwaway Postgres and walks EVERY
   revision down and back up, so a migration with a broken or no-op `downgrade()` is caught.

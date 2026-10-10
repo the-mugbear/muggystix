@@ -830,6 +830,155 @@ def test_a_deploy_ends_by_showing_the_settings_in_force_and_where_each_comes_fro
 
 
 # ---------------------------------------------------------------------------
+# check.sh: the shard plan (the gate's backend step runs the test files in
+# several containers at once — a file left out of every shard would be a test
+# that silently stopped running)
+# ---------------------------------------------------------------------------
+
+class _ShardTree:
+    """The real ``check.sh`` in a temporary tree with made-up test files.
+    ``--plan-shards N`` prints the plan and starts nothing."""
+
+    def __init__(self, tmp_path: pathlib.Path, files: dict[str, float | None]):
+        self.root = tmp_path / "tree"
+        (self.root / "scripts").mkdir(parents=True)
+        shutil.copy(SCRIPTS / "check.sh", self.root / "scripts" / "check.sh")
+        self.tests = self.root / "backend" / "tests"
+        self.tests.mkdir(parents=True)
+        for name in files:
+            path = self.tests / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("def test_it():\n    pass\n")
+        self.weights = self.root / "scripts" / "check-shard-weights.txt"
+        self.weights.write_text(
+            "# seconds file\n\n" + "".join(f"{w} {name}\n" for name, w in files.items() if w is not None)
+        )
+
+    def plan(self, shards: int) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", str(self.root / "scripts" / "check.sh"), "--plan-shards", str(shards)],
+            capture_output=True, text=True,
+        )
+
+    def shards(self, shards: int) -> dict[int, list[str]]:
+        result = self.plan(shards)
+        assert result.returncode == 0, _output(result)
+        out: dict[int, list[str]] = {}
+        for line in result.stdout.splitlines():
+            shard, _weight, name = line.split("\t")
+            out.setdefault(int(shard), []).append(name)
+        return out
+
+
+_SHARD_FILES: dict[str, float | None] = {
+    "test_slow.py": 40.0, "test_slower.py": 55.5, "test_mid_a.py": 12.0, "test_mid_b.py": 11.0,
+    "test_quick_a.py": 0.4, "test_quick_b.py": 0.3, "test_quick_c.py": 0.2, "test_quick_d.py": 0.1,
+    "test_new_a.py": None, "test_new_b.py": None,          # not in the weights: still run
+    "nested/test_deeper.py": 3.0,                         # pytest collects it, so a shard gets it
+}
+
+
+@pytest.mark.parametrize("shards", [1, 2, 3, 4, 7, 11, 40])
+def test_every_test_file_is_in_exactly_one_shard(tmp_path, shards):
+    tree = _ShardTree(tmp_path, _SHARD_FILES)
+    (tree.tests / "conftest.py").write_text("")           # not a test file
+    (tree.tests / "helpers_test.py").write_text("")       # nor is this (python_files = test_*.py)
+
+    planned = tree.shards(shards)
+
+    everything = [name for names in planned.values() for name in names]
+    assert sorted(everything) == sorted(_SHARD_FILES)      # each once, nothing else
+    assert set(planned) <= set(range(1, shards + 1))
+
+
+def test_the_shard_plan_is_the_same_every_time_and_balanced_by_seconds(tmp_path):
+    tree = _ShardTree(tmp_path, _SHARD_FILES)
+
+    first, second = tree.shards(2), tree.shards(2)
+
+    assert first == second
+    # Heaviest first, each to the lightest shard: the two slow files are apart,
+    # and the two mid ones sit with the lighter of them.
+    slower = next(s for s, names in first.items() if "test_slower.py" in names)
+    slow = next(s for s, names in first.items() if "test_slow.py" in names)
+    assert slower != slow
+    assert {"test_mid_a.py", "test_mid_b.py"} <= set(first[slow])
+
+    def load(names):
+        return sum(_SHARD_FILES[n] if _SHARD_FILES[n] is not None else 1.0 for n in names)
+
+    assert abs(load(first[1]) - load(first[2])) < 12.0     # by count alone it could be 80
+
+
+@pytest.mark.parametrize("weights", ["missing", "empty", "stale", "garbage"])
+def test_no_weights_file_can_drop_a_test_file(tmp_path, weights):
+    tree = _ShardTree(tmp_path, _SHARD_FILES)
+    if weights == "missing":
+        tree.weights.unlink()
+    elif weights == "empty":
+        tree.weights.write_text("")
+    elif weights == "stale":                                # names only files that are gone
+        tree.weights.write_text("9.0 test_removed_long_ago.py\n3.0 test_also_gone.py\n")
+    else:
+        tree.weights.write_text("not a number test_slow.py\n\x00\n12\n  \n-4 test_slower.py\n")
+
+    planned = tree.shards(4)
+
+    assert sorted(n for names in planned.values() for n in names) == sorted(_SHARD_FILES)
+    assert "test_removed_long_ago.py" not in _output(tree.plan(4))
+
+
+def test_a_plan_that_is_not_the_whole_suite_stops_the_step(tmp_path):
+    """The completeness check itself: with the assignment broken so that it
+    loses a file, the script refuses and names the file."""
+    tree = _ShardTree(tmp_path, _SHARD_FILES)
+    script = tree.root / "scripts" / "check.sh"
+    text = script.read_text()
+    intact = 'printf "%d\\t%s\\t%s\\n", best, $1, $2'
+    assert text.count(intact) == 1
+    script.write_text(text.replace(intact, 'if ($2 != "test_quick_c.py") ' + intact))
+
+    result = tree.plan(4)
+
+    assert result.returncode == 1
+    assert "NOT the test suite" in result.stderr
+    assert "> test_quick_c.py" in result.stderr
+    assert result.stdout == ""                              # no plan is handed on
+
+
+def test_shard_tallies_are_summed_into_one(tmp_path):
+    result = subprocess.run(
+        ["bash", str(SCRIPTS / "check.sh"), "--sum-tallies"], capture_output=True, text=True,
+        input=(
+            "3 failed, 970 passed, 2 skipped, 7 warnings in 81.20s (0:01:21)\n"
+            "900 passed, 1 warning, 1 error in 5.20s\n"
+            "===== 1000 passed, 4 skipped, 2 errors in 100.00s (0:01:40) =====\r\n"
+            "5 deselected in 0.10s\n"
+        ),
+    )
+    assert result.returncode == 0, _output(result)
+    assert result.stdout.strip() == "3 failed, 2870 passed, 6 skipped, 5 deselected, 8 warnings, 3 errors"
+
+
+def test_the_checked_in_shard_weights_name_only_test_files_once():
+    """A stale line is harmless (it is ignored), but a line that is not
+    '<seconds> <file>' or a file listed twice means the file was edited by
+    hand and no longer says what was measured."""
+    weights = SCRIPTS / "check-shard-weights.txt"
+    assert weights.is_file(), "scripts/check-shard-weights.txt is the gate's shard balance; check.sh --update-shard-weights writes it"
+    seen = []
+    for line in weights.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        seconds, name = line.split()
+        assert float(seconds) >= 0
+        assert pathlib.PurePosixPath(name).name.startswith("test_") and name.endswith(".py"), line
+        seen.append(name)
+    assert len(seen) == len(set(seen))
+    assert len(seen) > 100          # a truncated file would still run everything, badly balanced
+
+
+# ---------------------------------------------------------------------------
 # Every script still parses
 # ---------------------------------------------------------------------------
 

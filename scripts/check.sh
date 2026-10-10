@@ -4,6 +4,7 @@
 #
 #   ./scripts/check.sh            # everything
 #   ./scripts/check.sh --fast     # skip the Alembic round trip (step 4)
+#   ./scripts/check.sh --only backend     # one step: backend | ruff | frontend | alembic
 #   make check                    # the same as the first
 #
 # There is no hosted CI: this is what stands between a change and main.  It
@@ -15,8 +16,9 @@
 # Steps (all are run even when one fails, so the summary is complete):
 #
 #   1. Backend suite in the REPORT-WORKER image — the backend image plus
-#      Quarto — with report-templates/ mounted.  FAILS if any test was
-#      skipped for want of Quarto or the templates: here they must run.
+#      Quarto — with report-templates/ mounted, SHARDED (below).  FAILS if
+#      any test was skipped for want of Quarto or the templates: here they
+#      must run.
 #   2. Backend lint: `ruff check` in the same image — pyflakes (F) rules only
 #      (backend/ruff.toml), --no-cache.  Any finding fails the gate.
 #   3. Frontend: `tsc --noEmit`, `eslint` (no warnings allowed), then
@@ -32,28 +34,193 @@
 # mounted explicitly (so a git worktree tests ITS tests, not the main
 # checkout's), and BLUESTICK_SKIP_DB_INIT=1 so nothing here can migrate the
 # development database.  The stack must be up (the suite creates and drops
-# its own database on the running db container); nothing is built or pulled.
+# its own databases on the running db container); nothing is built or pulled.
+#
+# Shards (step 1).  The suite's test FILES are split into CHECK_SHARDS groups
+# (default 4) and each group runs at once in its own container: its own
+# pytest process, its own test database (the name carries the container's
+# host name — backend/tests/conftest.py).  No package does this (pytest-xdist
+# would be a new dependency); the script does.
+#
+#   * Every test file runs exactly once.  The files are listed from
+#     backend/tests, each is given to one shard, and before anything starts
+#     the shards' lists together are compared with a second, independent
+#     listing — a file in no shard, or in two, fails the step.
+#   * Balanced by time, not by count: scripts/check-shard-weights.txt holds
+#     seconds per test file; files are dealt heaviest first to the lightest
+#     shard (ties by name, so the plan is the same every time).  A file the
+#     weights do not name gets a default weight and still runs — a new test
+#     file needs no edit there — and a weight for a file that is gone is
+#     ignored.  Refresh the weights when the shards drift apart (the summary
+#     shows the longest shard against the wall time):
+#         ./scripts/check.sh --update-shard-weights
+#     runs step 1 alone with pytest's --durations and, if it PASSES, rewrites
+#     the file from what each test took (CHECK_SHARD_WEIGHTS_OUT=path writes
+#     elsewhere).  Commit the result.
+#   * The verdict is the single run's: the step fails if any shard fails or
+#     ends without pytest's tally line, and the Quarto / template skip check
+#     reads every shard's log.  The summary line carries the summed counts.
+#   * CHECK_SHARDS=1 is the single process this step was before: one
+#     container, pytest given the tests directory, its output live.
+#   * The number is capped at the machine's processors (nproc) and by the
+#     database: each shard is allowed SHARD_CONNECTIONS connections of what
+#     max_connections leaves free when the step starts.  A lowered number is
+#     said.
+#   * No test is pinned to a shard or to a serial pass: none needs the server
+#     to itself.  What was checked is listed above SHARD_CONNECTIONS below.
 #
 # From a git worktree: the worktree has no .env and no running stack, so the
 # compose project is the MAIN checkout's and only the source comes from the
 # worktree.  That is detected; override with
 #   CHECK_COMPOSE_ROOT=/path/to/main/checkout ./scripts/check.sh
 #
-# Extra pytest arguments:  CHECK_PYTEST_ARGS="-k quarto -x" ./scripts/check.sh
+# Extra pytest arguments, given to every shard:
+#   CHECK_PYTEST_ARGS="-k quarto -x" ./scripts/check.sh
+# (a shard in which the arguments select nothing is not a failure, as long
+# as some shard ran tests).
 #
 
 set -uo pipefail
 
 FAST=0
+ONLY="${CHECK_ONLY:-}"
+UPDATE_WEIGHTS=0
+MODE=run
+PLAN_SHARDS=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --fast) FAST=1; shift ;;
-        -h|--help) sed -n '2,41p' "$0"; exit 0 ;;
+        --only)
+            [[ $# -ge 2 ]] || { echo "--only needs a step: backend | ruff | frontend | alembic" >&2; exit 2; }
+            ONLY="$2"; shift 2 ;;
+        --update-shard-weights) UPDATE_WEIGHTS=1; ONLY=backend; shift ;;
+        # The next two run nothing: they exist for tests/test_ops_scripts.py.
+        --plan-shards)
+            [[ $# -ge 2 ]] || { echo "--plan-shards needs a number" >&2; exit 2; }
+            MODE=plan; PLAN_SHARDS="$2"; shift 2 ;;
+        --sum-tallies) MODE=sum; shift ;;
+        -h|--help) awk 'NR > 1 { if ($0 !~ /^#/) exit; print }' "$0"; exit 0 ;;
         *) echo "Unknown argument: $1 (see --help)" >&2; exit 2 ;;
     esac
 done
+case "$ONLY" in
+    ""|backend|ruff|frontend|alembic) ;;
+    *) echo "Unknown step '$ONLY': backend | ruff | frontend | alembic" >&2; exit 2 ;;
+esac
+
+DEFAULT_SHARDS=4
+if [[ ! "${CHECK_SHARDS:-$DEFAULT_SHARDS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "CHECK_SHARDS must be a whole number, 1 or more (got '${CHECK_SHARDS:-}')" >&2
+    exit 2
+fi
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# --- The shard plan (no Docker: these are pure, and tested as such) ----------
+TESTS_DIR="$SRC/backend/tests"
+SHARD_WEIGHTS_FILE="$SRC/scripts/check-shard-weights.txt"
+# Seconds for a test file the weights do not name (about the mean of those
+# they do).  It only steers the balance; the file runs either way.
+SHARD_DEFAULT_WEIGHT=1.0
+
+# Every test file, relative to backend/tests, one per line — what pytest
+# collects when given the directory (pytest.ini: python_files = test_*.py).
+list_test_files() {
+    ( cd "$TESTS_DIR" 2>/dev/null && find . -type f -name 'test_*.py' ) | sed 's|^\./||' | LC_ALL=C sort
+}
+
+# The same set, found another way (the shell's own glob): the list the plan
+# is checked against.
+list_test_files_again() {
+    (
+        cd "$TESTS_DIR" 2>/dev/null || exit 0
+        shopt -s globstar nullglob dotglob
+        for f in **/test_*.py; do [[ -f "$f" ]] && printf '%s\n' "$f"; done
+    ) | LC_ALL=C sort
+}
+
+# stdin: test files.  stdout: "<shard>\t<weight>\t<file>", one line per file
+# read — by construction a file cannot be left out: every line that comes in
+# is printed with a shard number between 1 and $1.  Heaviest first, each to
+# the shard that is lightest so far (the lowest-numbered of equals).
+assign_shards() {
+    awk -v wf="$SHARD_WEIGHTS_FILE" -v def="$SHARD_DEFAULT_WEIGHT" '
+        BEGIN {
+            while ((getline line < wf) > 0) {
+                if (line ~ /^[ \t]*(#|$)/) continue
+                split(line, part, /[ \t]+/)
+                if (part[1] ~ /^[0-9]+(\.[0-9]+)?$/ && part[2] != "") weight[part[2]] = part[1]
+            }
+        }
+        { printf "%s\t%s\n", (($0 in weight) ? weight[$0] : def), $0 }
+    ' | LC_ALL=C sort -t "$(printf '\t')" -k1,1gr -k2,2 | awk -F '\t' -v n="$1" '
+        {
+            best = 1
+            for (i = 2; i <= n; i++) if (load[i] + 0 < load[best] + 0) best = i
+            load[best] += $1
+            printf "%d\t%s\t%s\n", best, $1, $2
+        }
+    '
+}
+
+# $1 = a plan (assign_shards' output).  Fails, saying what differs, unless
+# the plan holds every test file exactly once.
+plan_is_complete() {
+    local planned expected
+    planned="$(printf '%s\n' "$1" | awk -F '\t' 'NF { print $3 }' | LC_ALL=C sort)"
+    expected="$(list_test_files_again)"
+    if [[ -z "$expected" ]]; then
+        echo "check.sh: no test files found under $TESTS_DIR" >&2
+        return 1
+    fi
+    if [[ "$planned" != "$expected" ]]; then
+        echo "check.sh: the shard plan is NOT the test suite — nothing was run." >&2
+        echo "  ('<' = in a shard but not a test file, or there twice; '>' = a test file in no shard)" >&2
+        diff <(printf '%s\n' "$planned") <(printf '%s\n' "$expected") | grep -E '^[<>]' | sed 's/^/    /' >&2
+        return 1
+    fi
+    return 0
+}
+
+# stdin: pytest tally lines ("3 failed, 970 passed, 7 warnings in 81.20s
+# (0:01:21)").  stdout: the counts summed, in pytest's order.
+sum_tallies() {
+    awk '
+        BEGIN { split("failed passed skipped deselected xfailed xpassed warnings errors", order, " ") }
+        {
+            sub(/\r$/, ""); gsub(/^=+ +| +=+$/, ""); sub(/ in [0-9.]+s.*$/, "")
+            n = split($0, parts, /, */)
+            for (i = 1; i <= n; i++) {
+                if (split(parts[i], kv, " ") < 2 || kv[1] !~ /^[0-9]+$/) continue
+                key = kv[2]
+                if (key == "error") key = "errors"
+                if (key == "warning") key = "warnings"
+                count[key] += kv[1]
+            }
+        }
+        END {
+            out = ""
+            for (i = 1; i <= 8; i++) if (order[i] in count) {
+                out = out (out == "" ? "" : ", ") count[order[i]] " " order[i]
+                delete count[order[i]]
+            }
+            for (key in count) out = out (out == "" ? "" : ", ") count[key] " " key
+            print out
+        }
+    '
+}
+
+if [[ "$MODE" == sum ]]; then
+    sum_tallies
+    exit 0
+fi
+if [[ "$MODE" == plan ]]; then
+    [[ "$PLAN_SHARDS" =~ ^[1-9][0-9]*$ ]] || { echo "--plan-shards needs a number, 1 or more" >&2; exit 2; }
+    plan="$(list_test_files | assign_shards "$PLAN_SHARDS")"
+    plan_is_complete "$plan" || exit 1
+    printf '%s\n' "$plan"
+    exit 0
+fi
 
 # The compose project: this tree if it is a deployment (.env present), else
 # the main checkout of the worktree.
@@ -71,7 +238,8 @@ if [[ -z "$COMPOSE_ROOT" || ! -f "$COMPOSE_ROOT/docker-compose.yml" || ! -f "$CO
     exit 2
 fi
 
-compose() { docker compose -f "$COMPOSE_ROOT/docker-compose.yml" --project-directory "$COMPOSE_ROOT" "$@"; }
+COMPOSE=(docker compose -f "$COMPOSE_ROOT/docker-compose.yml" --project-directory "$COMPOSE_ROOT")
+compose() { "${COMPOSE[@]}" "$@"; }
 
 # The image compose builds for a service.  `config --images SERVICE` also
 # lists the images of the services it depends on (the database), in no fixed
@@ -102,46 +270,81 @@ LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bluestick-check.XXXXXX")"
 #
 #   * The log directory is removed on every exit EXCEPT a failed run, whose
 #     summary names it.
-#   * THIS run's test database is dropped.  Its name carries the suite
-#     container's host name, which is read while the container runs
-#     (watch_suite_container); only databases named exactly
-#     `<POSTGRES_DB>_test_<that host>_<digits>` are dropped — never the
-#     application database, never another run's.
+#   * Every suite container of THIS run (one, or one per shard) is removed.
+#     Their names carry this script's PID, so two gates running at once — two
+#     checkouts — never touch each other's.
+#   * THIS run's test databases are dropped: each shard's, and the scratch
+#     databases a migration test makes beside it (`…_<pid>_boot`).  A name
+#     carries its suite container's host name, which is read while the
+#     container runs (watch_suite_container); only databases named exactly
+#     `<POSTGRES_DB>_test_<that host>_<digits>[_<suffix>]` are dropped —
+#     never the application database, never another run's.
 KEEP_LOGS=0
-SUITE_CONTAINER="bluestick-check-$$"
-SUITE_HOST_FILE="$LOG_DIR/suite-host"
-WATCHER_PID=""
+SUITE_CONTAINER="bluestick-check-$$"       # shard N of several: …-sN
+declare -a SUITE_CONTAINERS=() SUITE_PIDS=() WATCHER_PIDS=()
 
 env_value() { grep -E "^$1=" "$COMPOSE_ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2-; }
+pg_user() { local u; u="$(env_value POSTGRES_USER)"; printf '%s' "${u:-nmapuser}"; }
+pg_db()   { local d; d="$(env_value POSTGRES_DB)";   printf '%s' "${d:-networkMapper}"; }
 
-drop_run_test_database() {
-    [[ -s "$SUITE_HOST_FILE" ]] || return 0
-    local host pg_user pg_db prefix names name
-    # The same normalisation backend/tests/conftest.py applies to the host name.
-    host="$(tr '[:upper:]' '[:lower:]' < "$SUITE_HOST_FILE" | tr -cd 'a-z0-9' | cut -c1-16)"
-    pg_user="$(env_value POSTGRES_USER)"; pg_user="${pg_user:-nmapuser}"
-    pg_db="$(env_value POSTGRES_DB)";     pg_db="${pg_db:-networkMapper}"
-    [[ -n "$host" && "$pg_db" != *"'"* && "$pg_db" != *'"'* ]] || return 0
-    prefix="${pg_db}_test_${host}_"
-    names="$(compose exec -T db psql -U "$pg_user" -d postgres -tAc \
-        "SELECT datname FROM pg_database WHERE left(datname, ${#prefix}) = '${prefix}' AND substr(datname, ${#prefix} + 1) ~ '^[0-9]+\$' AND datname <> '${pg_db}'" \
-        2>/dev/null || true)"
-    while IFS= read -r name; do
-        [[ -n "$name" ]] || continue
-        if compose exec -T db psql -U "$pg_user" -d postgres -tAc \
-            "DROP DATABASE IF EXISTS \"${name}\" WITH (FORCE)" >/dev/null 2>&1; then
-            echo "check.sh: dropped this run's test database ${name}" >&2
-        fi
-    done <<< "$names"
+suite_host_file() { printf '%s/suite-host.%s' "$LOG_DIR" "$1"; }
+
+# Write down a suite container's host name, if it exists and is not yet known.
+record_suite_host() {
+    local file host
+    file="$(suite_host_file "$1")"
+    [[ -s "$file" ]] && return 0
+    host="$(docker inspect --format '{{.Config.Hostname}}' "$1" 2>/dev/null || true)"
+    [[ -n "$host" ]] || return 1
+    printf '%s\n' "$host" > "$file"
+}
+
+drop_run_test_databases() {
+    local file host user db prefix names name
+    user="$(pg_user)"; db="$(pg_db)"
+    [[ "$db" != *"'"* && "$db" != *'"'* ]] || return 0
+    for file in "$LOG_DIR"/suite-host.*; do
+        [[ -s "$file" ]] || continue
+        # The same normalisation backend/tests/conftest.py applies to the host name.
+        host="$(tr '[:upper:]' '[:lower:]' < "$file" | tr -cd 'a-z0-9' | cut -c1-16)"
+        [[ -n "$host" ]] || continue
+        prefix="${db}_test_${host}_"
+        names="$(compose exec -T db psql -U "$user" -d postgres -tAc \
+            "SELECT datname FROM pg_database WHERE left(datname, ${#prefix}) = '${prefix}' AND substr(datname, ${#prefix} + 1) ~ '^[0-9]+(_[a-z0-9]+)?\$' AND datname <> '${db}'" \
+            2>/dev/null </dev/null || true)"
+        while IFS= read -r name; do
+            [[ -n "$name" ]] || continue
+            if compose exec -T db psql -U "$user" -d postgres -tAc \
+                "DROP DATABASE IF EXISTS \"${name}\" WITH (FORCE)" >/dev/null 2>&1 </dev/null; then
+                echo "check.sh: dropped this run's test database ${name}" >&2
+            fi
+        done <<< "$names"
+    done
 }
 
 cleanup() {
-    local rc=$?
+    local rc=$? pid name
     trap - EXIT INT TERM HUP
-    [[ -n "$WATCHER_PID" ]] && kill "$WATCHER_PID" 2>/dev/null
-    # An interrupted suite container may still be shutting down; it is ours.
-    docker rm -f "$SUITE_CONTAINER" >/dev/null 2>&1 || true
-    drop_run_test_database
+    for pid in "${WATCHER_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
+    # An interrupted suite container may still be running, or shutting down;
+    # it is ours.  Its host name is asked for one last time first: without it
+    # the container's database cannot be found.
+    for name in "${SUITE_CONTAINERS[@]}"; do
+        record_suite_host "$name"
+        docker rm -f "$name" >/dev/null 2>&1 || true
+    done
+    if [[ "${#SUITE_PIDS[@]}" -gt 0 ]]; then
+        # The `compose run` clients of the shards: ended, then waited for, so
+        # that none creates its container after the removal above — and the
+        # removal is repeated for one that just did.
+        for pid in "${SUITE_PIDS[@]}"; do kill "$pid" 2>/dev/null; done
+        for pid in "${SUITE_PIDS[@]}"; do wait "$pid" 2>/dev/null; done
+        for name in "${SUITE_CONTAINERS[@]}"; do
+            record_suite_host "$name"
+            docker rm -f "$name" >/dev/null 2>&1 || true
+        done
+    fi
+    drop_run_test_databases
     if [[ "$KEEP_LOGS" -ne 1 ]]; then
         rm -rf "$LOG_DIR"
     fi
@@ -150,28 +353,121 @@ cleanup() {
 trap cleanup EXIT
 trap 'echo "" >&2; echo "check.sh: interrupted — cleaning up." >&2; exit 130' INT TERM HUP
 
-# Record the suite container's host name as soon as it exists (it is --rm, so
+# Record a suite container's host name as soon as it exists (it is --rm, so
 # it cannot be asked afterwards).
 watch_suite_container() {
-    local host
     for _ in $(seq 1 240); do
-        host="$(docker inspect --format '{{.Config.Hostname}}' "$SUITE_CONTAINER" 2>/dev/null || true)"
-        if [[ -n "$host" ]]; then
-            printf '%s\n' "$host" > "$SUITE_HOST_FILE"
-            return 0
-        fi
+        record_suite_host "$1" && return 0
         sleep 0.5
     done
 }
 
 declare -a STEP_NAMES=() STEP_RESULTS=() STEP_NOTES=()
 record() { STEP_NAMES+=("$1"); STEP_RESULTS+=("$2"); STEP_NOTES+=("$3"); }
-elapsed() { local s=$(( SECONDS - $1 )); printf '%dm%02ds' $(( s / 60 )) $(( s % 60 )); }
+minutes() { printf '%dm%02ds' $(( $1 / 60 )) $(( $1 % 60 )); }
+elapsed() { minutes $(( SECONDS - $1 )); }
 banner() { echo ""; echo "=== $1 ==="; }
 
 # --- 1. Backend suite, in the report-worker image ---------------------------
+
+# What a shard may hold open on the database server at once, for the cap on
+# the number of shards.  A shard's test engine has no pool (one connection
+# per test session, a few more in the lock and race tests); the application's
+# own pool (DB_POOL_SIZE=5) is barely touched under test; the largest user is
+# test_db_init_concurrent_boot.py, whose five real processes each connect.
+# Measured on 2026-10-10 with four shards (sampled each second, two runs):
+# the whole server peaked at 29 client connections, 16 of them the running
+# application's and 13 the four shards' — under 4 a shard at the worst
+# moment, of max_connections 120.  12 leaves room for a shard to be unlucky.
+#
+# Tests that cannot share the server with another shard: NONE, by reading —
+#   * the test database's name carries the container's host name
+#     (conftest._test_database_name), and so do the scratch databases the
+#     migration tests derive from it (`…_boot`, `…_b8e2`, `…_c8f2`, `…_f5c2`);
+#   * advisory locks (the boot lock, the housekeeping leader lock, the seed
+#     lock) are per database in PostgreSQL, and every read of
+#     pg_stat_activity / pg_locks in a test is filtered to current_database();
+#   * test_stale_test_database_sweep.py makes databases under its own prefix
+#     (`sweepcheck<pid>…`); the file is in one shard, and conftest's sweep at
+#     a shard's start only drops `<db>_test_…` databases more than a day old
+#     with nobody connected — never a live shard's;
+#   * nothing listens on a port; files go under each container's own /tmp
+#     (UPLOAD_DIR resolves to /tmp/uploads there), and /app is not writable
+#     by the suite's user;
+#   * no test changes a server-wide setting, a role or an extension.
+# A test that turns out to need the server alone belongs in a serial pass
+# after the shards — say which and why here; never skip or retry it.
+SHARD_CONNECTIONS=12
+
+db_scalar() {
+    compose exec -T db psql -U "$(pg_user)" -d postgres -tAc "$1" 2>/dev/null </dev/null | tr -d '[:space:]'
+}
+
+# $1 = the number of test files.  Sets SHARDS; says why when it is fewer than
+# was asked for.
+resolve_shard_count() {
+    local want="${CHECK_SHARDS:-$DEFAULT_SHARDS}" cpus max reserved used room by_db
+    SHARDS="$want"
+    cpus="$(nproc 2>/dev/null || echo 1)"
+    if (( SHARDS > cpus )); then
+        SHARDS="$cpus"
+        echo "check.sh: $want shards asked for, $cpus processor(s) here — running $SHARDS."
+    fi
+    (( SHARDS > $1 )) && SHARDS="$1"
+    if (( SHARDS > 1 )); then
+        max="$(db_scalar 'SHOW max_connections')"
+        reserved="$(db_scalar 'SHOW superuser_reserved_connections')"
+        used="$(db_scalar 'SELECT count(*) FROM pg_stat_activity')"
+        if [[ "$max" =~ ^[0-9]+$ && "$reserved" =~ ^[0-9]+$ && "$used" =~ ^[0-9]+$ ]]; then
+            room=$(( max - reserved - used ))
+            by_db=$(( room / SHARD_CONNECTIONS ))
+            (( by_db < 1 )) && by_db=1
+            if (( SHARDS > by_db )); then
+                echo "check.sh: the database has $room connection(s) free (max_connections $max, $used in use);" \
+                     "at $SHARD_CONNECTIONS a shard that is room for $by_db — running $by_db, not $SHARDS."
+                SHARDS="$by_db"
+            fi
+        fi
+    fi
+    (( SHARDS < 1 )) && SHARDS=1
+    return 0
+}
+
+# The command a suite container runs.  $1 = what pytest is given.
+# `-rfEs` prints one line per failure, error and skip reason: the skip lines
+# are what the Quarto check reads, the others are repeated under the summary.
+suite_shell() {
+    local extra="${CHECK_PYTEST_ARGS:-}"
+    [[ "$UPDATE_WEIGHTS" -eq 1 ]] && extra="--durations=0 --durations-min=0 $extra"
+    printf '%s' "quarto --version >/dev/null 2>&1 || { echo 'CHECK: quarto is not in this image'; exit 97; }
+               python -c 'import pytest' 2>/dev/null || { echo 'CHECK: pytest is not in this image (built with INSTALL_DEV=false?)'; exit 98; }
+               cd /tmp && python -m pytest $1 -q -p no:cacheprovider --rootdir=/app -c /app/pytest.ini --no-cov -rfEs $extra"
+}
+
+suite_tally() {
+    grep -aE '^=+ .* in [0-9.]+s( \([0-9:]+\))? =+' "$1" 2>/dev/null | tail -1 | sed -E 's/\r$//; s/^=+ //; s/ =+$//'
+}
+
+# stdin: suite logs' `--durations` lines.  stdout: the weights file.
+write_shard_weights() {
+    echo "# Seconds each backend test file takes (setup + call + teardown of its tests),"
+    echo "# for scripts/check.sh to balance its shards.  Generated — refresh with"
+    echo "#     ./scripts/check.sh --update-shard-weights"
+    echo "# A file not listed here still runs (default weight $SHARD_DEFAULT_WEIGHT); a line for a file"
+    echo "# that is gone is ignored.  <seconds> <path under backend/tests>"
+    awk '
+        { sub(/\r$/, "") }
+        $1 ~ /^[0-9.]+s$/ && ($2 == "setup" || $2 == "call" || $2 == "teardown") {
+            file = $3; sub(/::.*$/, "", file); sub(/^(\/app\/)?tests\//, "", file)
+            seconds = $1; sub(/s$/, "", seconds)
+            total[file] += seconds
+        }
+        END { for (file in total) printf "%.2f %s\n", total[file], file }
+    ' | LC_ALL=C sort -k2,2
+}
+
 backend_suite() {
-    local log="$LOG_DIR/backend.log" started=$SECONDS image
+    local started=$SECONDS image i name log
     banner "1/4 Backend suite (report-worker image: Quarto + templates)"
 
     image="$(service_image report-worker)"
@@ -207,43 +503,160 @@ backend_suite() {
     # is the API's, so it gets the API's default.  REPORT_TEMPLATES_DIR: its
     # default is <cwd>/report-templates and pytest runs from /tmp, so without
     # it the tests that read the shipped templates skip ("not mounted") even
-    # though they are mounted.  `-rs` prints one line per skip reason, which
-    # is what the Quarto check below reads.
-    # Named, so its host name — part of the test database's name — can be
-    # read while it runs (see cleanup above).
-    watch_suite_container &
-    WATCHER_PID=$!
-    compose run --rm --no-deps --name "$SUITE_CONTAINER" "${mounts[@]}" \
-        -e COVERAGE_FILE=/tmp/.coverage -e BLUESTICK_SKIP_DB_INIT=1 -e DB_POOL_SIZE=5 \
-        -e REPORT_TEMPLATES_DIR=/app/report-templates -e BLUESTICK_REPO_ROOT=/repo \
-        report-worker \
-        sh -c "quarto --version >/dev/null 2>&1 || { echo 'CHECK: quarto is not in this image'; exit 97; }
-               python -c 'import pytest' 2>/dev/null || { echo 'CHECK: pytest is not in this image (built with INSTALL_DEV=false?)'; exit 98; }
-               cd /tmp && python -m pytest /app/tests -q -p no:cacheprovider --rootdir=/app -c /app/pytest.ini --no-cov -rs ${CHECK_PYTEST_ARGS:-}" \
-        2>&1 | tee "$log"
-    local rc=${PIPESTATUS[0]}
-    kill "$WATCHER_PID" 2>/dev/null; wait "$WATCHER_PID" 2>/dev/null; WATCHER_PID=""
+    # though they are mounted.
+    local -a suite_env=(
+        -e COVERAGE_FILE=/tmp/.coverage -e BLUESTICK_SKIP_DB_INIT=1 -e DB_POOL_SIZE=5
+        -e REPORT_TEMPLATES_DIR=/app/report-templates -e BLUESTICK_REPO_ROOT=/repo
+    )
 
-    local tally quarto_skips
-    tally="$(grep -E '^=+ .*(passed|failed|error|no tests ran).* in [0-9.]+s' "$log" | tail -1 | sed -E 's/^=+ //; s/ =+$//')"
+    local files plan
+    files="$(list_test_files)"
+    if [[ -z "$files" ]]; then
+        record "backend suite" FAIL "no test files under $TESTS_DIR"
+        return
+    fi
+    if grep -qvE '^[A-Za-z0-9_./-]+$' <<< "$files"; then
+        grep -vE '^[A-Za-z0-9_./-]+$' <<< "$files" | sed 's/^/  /'
+        record "backend suite" FAIL "a test file's name has a character a shard's command line cannot carry (listed above) — rename it"
+        return
+    fi
+    resolve_shard_count "$(grep -c '' <<< "$files")"
+
+    local -a logs=() rcs=()
+    if (( SHARDS == 1 )); then
+        # The single process: pytest is given the directory, its output is live.
+        name="$SUITE_CONTAINER"; log="$LOG_DIR/backend.log"
+        SUITE_CONTAINERS+=("$name"); logs+=("$log")
+        # Named, so its host name — part of the test database's name — can be
+        # read while it runs (see cleanup above).
+        watch_suite_container "$name" &
+        WATCHER_PIDS+=($!)
+        compose run --rm --no-deps --name "$name" "${mounts[@]}" "${suite_env[@]}" \
+            report-worker sh -c "$(suite_shell /app/tests)" 2>&1 | tee "$log"
+        rcs+=("${PIPESTATUS[0]}")
+    else
+        plan="$(assign_shards "$SHARDS" <<< "$files")"
+        if ! plan_is_complete "$plan"; then
+            record "backend suite" FAIL "the shard plan left a test file out or held one twice (above) — nothing was run"
+            return
+        fi
+        echo "$(grep -c '' <<< "$files") test files in $SHARDS shards (weights: ${SHARD_WEIGHTS_FILE#"$SRC"/}):"
+        awk -F '\t' '{ n[$1]++; w[$1] += $2 } END { for (i = 1; (i in n); i++) printf "  shard %d  %3d files  planned %4.0fs\n", i, n[i], w[i] }' <<< "$plan"
+
+        local targets
+        for i in $(seq 1 "$SHARDS"); do
+            name="${SUITE_CONTAINER}-s$i"; log="$LOG_DIR/backend-shard-$i.log"
+            targets="$(awk -F '\t' -v s="$i" '$1 == s { printf "/app/tests/%s ", $3 }' <<< "$plan")"
+            SUITE_CONTAINERS+=("$name"); logs+=("$log")
+            watch_suite_container "$name" &
+            WATCHER_PIDS+=($!)
+            # `exec`: the background process IS the compose client, so the
+            # cleanup can end it.  -T and no stdin: four clients share no terminal.
+            ( exec "${COMPOSE[@]}" run --rm --no-deps -T --name "$name" "${mounts[@]}" "${suite_env[@]}" \
+                report-worker sh -c "$(suite_shell "$targets")" ) >"$log" 2>&1 </dev/null &
+            SUITE_PIDS+=($!)
+        done
+
+        # Wait for all of them, saying every so often how far each has got
+        # (pytest's own percentage, of that shard's tests).
+        local running tick=0 line pct
+        while :; do
+            running=0
+            for i in "${!SUITE_PIDS[@]}"; do kill -0 "${SUITE_PIDS[$i]}" 2>/dev/null && running=$((running + 1)); done
+            (( running == 0 )) && break
+            sleep 2
+            tick=$((tick + 1))
+            if (( tick % 10 == 0 )); then
+                line="  $(elapsed "$started")"
+                for i in "${!logs[@]}"; do
+                    pct="$(grep -aoE '\[ *[0-9]+%\]' "${logs[$i]}" 2>/dev/null | tail -1 | tr -d '[] ')"
+                    line+="   shard $((i + 1)) ${pct:-starting}"
+                done
+                echo "$line"
+            fi
+        done
+        for i in "${!SUITE_PIDS[@]}"; do
+            wait "${SUITE_PIDS[$i]}" 2>/dev/null
+            rcs+=("$?")
+        done
+        SUITE_PIDS=()
+    fi
+    for i in "${WATCHER_PIDS[@]}"; do kill "$i" 2>/dev/null; wait "$i" 2>/dev/null; done
+    WATCHER_PIDS=()
+
+    # --- The verdict, over every log ----------------------------------------
+    local tally seconds longest=0 ran=0 summed where quarto_skips other_skips
+    local -a tallies=() broken=()
+    for i in "${!logs[@]}"; do
+        tally="$(suite_tally "${logs[$i]}")"
+        tallies+=("$tally")
+        where="${logs[$i]}"
+        (( SHARDS > 1 )) && where="shard $((i + 1)): ${logs[$i]}"
+        if [[ -z "$tally" ]]; then
+            # No tally line: pytest did not finish (killed, crashed at
+            # collection, the image has no Quarto / pytest).
+            broken+=("$where (pytest exited ${rcs[$i]} with no tally)")
+        elif [[ "${rcs[$i]}" -eq 0 ]]; then
+            ran=$((ran + 1))
+        elif [[ "${rcs[$i]}" -eq 5 && "$SHARDS" -gt 1 ]]; then
+            :   # CHECK_PYTEST_ARGS selected nothing in this shard; judged below
+        else
+            broken+=("$where")
+        fi
+        seconds="$(sed -nE 's/.* in ([0-9]+)(\.[0-9]+)?s.*/\1/p' <<< "$tally")"
+        [[ "$seconds" =~ ^[0-9]+$ ]] && (( seconds > longest )) && longest="$seconds"
+        (( SHARDS > 1 )) && printf '  shard %d  %s\n' $((i + 1)) "${tally:-no tally — pytest exited ${rcs[$i]}}"
+    done
+    summed="$(printf '%s\n' "${tallies[@]}" | sum_tallies)"
+    if (( SHARDS > 1 )); then
+        summed="${summed:-no tally} in $SHARDS shards, $(elapsed "$started") wall (longest shard $(minutes "$longest"))"
+    else
+        summed="${tallies[0]:-pytest exited ${rcs[0]}} ($(elapsed "$started"))"
+    fi
     # A Quarto/template test that skipped ran nowhere: that is the defect this
     # script exists to close.  Matched on the skip REASON pytest prints.
-    quarto_skips="$(grep -E '^SKIPPED \[[0-9]+\]' "$log" | grep -icE 'quarto|report-templates' || true)"
+    quarto_skips="$(cat "${logs[@]}" 2>/dev/null | grep -aE '^SKIPPED \[[0-9]+\]' | grep -icE 'quarto|report-templates' || true)"
 
-    if [[ "$rc" -ne 0 ]]; then
-        record "backend suite" FAIL "${tally:-pytest exited $rc} ($(elapsed "$started")) — $log"
+    if [[ "${#broken[@]}" -gt 0 ]]; then
+        echo ""
+        for i in "${!logs[@]}"; do
+            # The failures themselves, for a shard whose output was not live.
+            if (( SHARDS > 1 )) && [[ "${rcs[$i]}" -ne 0 && "${rcs[$i]}" -ne 5 ]]; then
+                echo "--- shard $((i + 1)) (${logs[$i]}) ---"
+                if grep -qaE '^=+ (FAILURES|ERRORS) =+' "${logs[$i]}"; then
+                    sed -nE '/^=+ (FAILURES|ERRORS) =+/,$p' "${logs[$i]}"
+                else
+                    tail -n 40 "${logs[$i]}"
+                fi
+            fi
+        done
+        echo ""
+        echo "Failed:"
+        cat "${logs[@]}" 2>/dev/null | grep -aE '^(FAILED|ERROR) ' | sed 's/^/  /'
+        record "backend suite" FAIL "$summed — open $(printf '%s; ' "${broken[@]}" | sed 's/; $//')"
+    elif (( ran == 0 )); then
+        record "backend suite" FAIL "no tests ran (pytest's arguments selected nothing) — $LOG_DIR"
     elif [[ "${quarto_skips:-0}" -ne 0 ]]; then
-        grep -E '^SKIPPED \[[0-9]+\]' "$log" | grep -iE 'quarto|report-templates' | sed 's/^/  /'
-        record "backend suite" FAIL "$quarto_skips Quarto/template skip reason(s): those tests did not run — $log"
+        echo ""
+        grep -aE '^SKIPPED \[[0-9]+\]' "${logs[@]}" | grep -iE 'quarto|report-templates' | sed 's/^/  /'
+        record "backend suite" FAIL "$quarto_skips Quarto/template skip reason(s): those tests did not run — $LOG_DIR"
     else
-        local other_skips
-        other_skips="$(grep -cE '^SKIPPED \[[0-9]+\]' "$log" || true)"
+        other_skips="$(cat "${logs[@]}" | grep -acE '^SKIPPED \[[0-9]+\]' || true)"
         if [[ "${other_skips:-0}" -ne 0 ]]; then
             echo ""
             echo "Skipped (not Quarto / templates — listed so a new skip is seen):"
-            grep -E '^SKIPPED \[[0-9]+\]' "$log" | sed 's/^/  /'
+            cat "${logs[@]}" | grep -aE '^SKIPPED \[[0-9]+\]' | sed 's/^/  /'
         fi
-        record "backend suite" PASS "${tally:-ok} ($(elapsed "$started")); no Quarto/template test skipped"
+        if [[ "$UPDATE_WEIGHTS" -eq 1 ]]; then
+            local out="${CHECK_SHARD_WEIGHTS_OUT:-$SHARD_WEIGHTS_FILE}"
+            if [[ -n "${CHECK_PYTEST_ARGS:-}" ]]; then
+                echo "check.sh: CHECK_PYTEST_ARGS is set — the weights were NOT written (they must come from the whole suite)."
+            else
+                cat "${logs[@]}" | write_shard_weights > "$out.tmp" && mv "$out.tmp" "$out"
+                echo "check.sh: wrote $(grep -cvE '^#' "$out") test files' seconds to $out"
+            fi
+        fi
+        record "backend suite" PASS "$summed; no Quarto/template test skipped"
     fi
 }
 
@@ -333,10 +746,18 @@ alembic_roundtrip() {
     fi
 }
 
-backend_suite
-backend_lint
-frontend_checks
-alembic_roundtrip
+case "$ONLY" in
+    backend)  backend_suite ;;
+    ruff)     backend_lint ;;
+    frontend) frontend_checks ;;
+    alembic)  FAST=0; alembic_roundtrip ;;
+    *)
+        backend_suite
+        backend_lint
+        frontend_checks
+        alembic_roundtrip
+        ;;
+esac
 
 # --- Summary (one screen) ---------------------------------------------------
 echo ""
@@ -352,7 +773,11 @@ for i in "${!STEP_NAMES[@]}"; do
 done
 echo "--------------------------------------------------------------"
 if [[ "$failed" -eq 0 ]]; then
-    echo "  PASSED$([[ "$FAST" -eq 1 ]] && echo ' (--fast: the Alembic round trip was not run)')"
+    if [[ -n "$ONLY" ]]; then
+        echo "  PASSED — the $ONLY step ONLY; this is not the gate"
+    else
+        echo "  PASSED$([[ "$FAST" -eq 1 ]] && echo ' (--fast: the Alembic round trip was not run)')"
+    fi
     exit 0          # the EXIT trap removes the log directory
 fi
 KEEP_LOGS=1         # a failed run keeps its logs: the summary names them
