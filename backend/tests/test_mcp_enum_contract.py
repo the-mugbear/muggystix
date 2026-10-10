@@ -134,3 +134,47 @@ def test_host_test_and_evidence_states_are_distinct():
     assert set(status["enum"]) == {"proposed", "in_progress", "done", "dismissed"}
     outcome = TOOLS["record_evidence"]["input_schema"]["properties"]["outcome"]
     assert set(outcome["enum"]) == {"finding", "no_finding", "inconclusive", "failed", "info"}
+
+
+# The two below came from ``test_review_1008_mcp_derived_registry.py`` — the
+# one-off proof that the derived registry matched the hand-typed one, deleted
+# on 2026-10-10 as its own header said to once the registry had shipped.  They
+# are the part of it that is a lasting contract.
+
+def test_a_stale_authored_name_is_an_error_not_ignored():
+    """What a tool authors about an argument its endpoint does not have (a
+    renamed or removed parameter) fails loudly, as does a tool for a path that
+    is not routed."""
+    import pytest
+
+    from app.api.v1.endpoints import mcp_tools
+
+    openapi = _components()
+    entry = {"method": "GET", "path": "/api/v1/agent/assist/scans"}
+    assert "limit" in mcp_tools.derive_tool("t", entry, openapi)["input_schema"]["properties"]
+    for stale in ({"params": {"no_such": "x"}}, {"hidden": ["no_such"]}):
+        with pytest.raises(ValueError, match="no_such"):
+            mcp_tools.derive_tool("t", {**entry, **stale}, openapi)
+    with pytest.raises(ValueError, match="not a routed endpoint"):
+        mcp_tools.derive_tool("t", {"method": "GET", "path": "/api/v1/agent/nope"}, openapi)
+
+
+def test_the_registry_never_imports_the_application():
+    """Importing ``app.main`` applies migrations; a process that has not loaded
+    it gets an error from the registry, not a migration."""
+    import sys
+
+    import pytest
+
+    from app.api.v1.endpoints import mcp_tools
+
+    _components()  # make sure it IS loaded, so there is something to take away
+    loaded = sys.modules.pop("app.main")
+    try:
+        with pytest.raises(RuntimeError, match="API process"):
+            mcp_tools._Registry(mcp_tools._AUTHORED)["agent_identity"]
+        assert "app.main" not in sys.modules
+        # Listing names needs no route.
+        assert "agent_identity" in list(mcp_tools._Registry(mcp_tools._AUTHORED))
+    finally:
+        sys.modules["app.main"] = loaded

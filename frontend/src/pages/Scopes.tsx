@@ -862,7 +862,7 @@ const Scopes: React.FC = () => {
                     {/* w-22, not w-16: "12 unscanned" sits under the count on
                         one line (at w-20 it broke after the number and every
                         row grew a line). */}
-                    <TableHead className="w-22 text-right">Hosts</TableHead>
+                    <TableHead className="w-22 pl-0 text-right">Hosts</TableHead>
                     <TableHead>Description</TableHead>
                     {/* A typical site name ("DMZ / Internet-facing") wraps
                         to two lines at most. */}
@@ -930,7 +930,10 @@ const Scopes: React.FC = () => {
                               </Link>
                             )}
                           </TableCell>
-                          <TableCell className="text-right tabular-nums text-metadata">
+                          {/* No left padding: the cell is right-aligned, and the
+                              12px it gives back is what keeps "12 unscanned"
+                              on one line (seen wrapping at 88px with it). */}
+                          <TableCell className="pl-0 text-right tabular-nums text-metadata">
                             {subnet.host_count != null ? subnet.host_count.toLocaleString() : '—'}
                             {/* How far collection has got in this subnet: the
                                 hosts no vulnerability scan has covered, opening
@@ -939,7 +942,7 @@ const Scopes: React.FC = () => {
                               <Link
                                 to={`/hosts?subnets=${encodeURIComponent(subnet.cidr)}&q=${encodeURIComponent('gap:vuln_assessment')}`}
                                 title={`${subnet.not_vuln_assessed_count!.toLocaleString()} of ${(subnet.host_count ?? 0).toLocaleString()} hosts in ${subnet.cidr} have no vulnerability scan — show them`}
-                                className="block text-caption text-primary hover:underline focus:outline-none focus-visible:underline"
+                                className="block whitespace-nowrap text-caption text-primary hover:underline focus:outline-none focus-visible:underline"
                               >
                                 {subnet.not_vuln_assessed_count!.toLocaleString()} unscanned
                               </Link>
