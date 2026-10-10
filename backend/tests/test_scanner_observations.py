@@ -346,6 +346,13 @@ def test_an_observation_is_dismissed_from_the_list_on_the_ticked_hosts_or_on_all
     assert db_session.get(Finding, whole.json()["finding_id"]).status == FindingStatus.FALSE_POSITIVE.value
     left = {r["title"]: (r["host_count"], r["judged_host_count"]) for r in client.get(_url(test_project)).json()["items"]}
     assert "TLS Version 1.0 Protocol Detection" not in left, left
+    # The history says what happened: the reason given, or — none given — that
+    # it was a dismissal (it read "Promoted from scanner vulnerability").
+    def trail(finding_id):
+        return [h["summary"] for h in client.get(
+            f"/api/v1/projects/{test_project.id}/findings/{finding_id}/history").json()]
+    assert trail(whole.json()["finding_id"]) == ["Dismissed as a false positive (scanner observation)"]
+    assert "signing is enforced by GPO" in " ".join(trail(some.json()["finding_id"]))
 
     # Refused whole: an unknown observation, a host that does not carry it, an empty list.
     for body in ({"issue_key": "title:no such"},

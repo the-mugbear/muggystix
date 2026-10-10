@@ -344,7 +344,14 @@ class FindingService:
                 self.db, history_model=FindingStatusHistory, fk_field="finding_id",
                 entity_id=finding.id, from_status=None, to_status=status,
                 changed_by_id=actor_id,
-                summary=summary or "Promoted from scanner vulnerability",
+                # Said as what it was: a finding made by a false-positive
+                # dismissal read "Promoted from scanner vulnerability" on its
+                # history when no reason was given.
+                summary=summary or (
+                    "Dismissed as a false positive (scanner observation)"
+                    if status == FindingStatus.FALSE_POSITIVE.value
+                    else "Promoted from a scanner observation"
+                ),
             )
         else:
             may_move = on_join == "set" or (
