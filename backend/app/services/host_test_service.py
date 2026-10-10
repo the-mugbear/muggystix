@@ -259,8 +259,15 @@ def list_tests(db, project_id, user_id, *, host_id=None, status=None, label=None
         hosts = build_filtered_host_query(db, db.get(User, user_id), project_id=project_id, q=q)
         query = query.filter(HostTest.host_id.in_(hosts.with_entities(models.Host.id)))
     total = query.count()
-    rows = query.order_by(HostTest.created_at.desc(), HostTest.id.desc()).offset(offset).limit(limit).all()
-    return {"items": serialize_many(db, rows), "total": total, "has_more": offset + len(rows) < total}
+    # The page comes back with what its rows are serialized from (the host and
+    # the two people, each many-to-one, so the joins add no rows and the page
+    # cut is unchanged).  It used to be read plain and then read again by id
+    # with these joins (`tests/test_read_cost_2026_10_10.py`).
+    rows = (
+        query.options(*_serialized_loads())
+        .order_by(HostTest.created_at.desc(), HostTest.id.desc()).offset(offset).limit(limit).all()
+    )
+    return {"items": _serialize_loaded(db, rows), "total": total, "has_more": offset + len(rows) < total}
 
 
 def _display(user):
@@ -268,13 +275,28 @@ def _display(user):
     return (user.full_name or user.username) if user is not None else None
 
 
+def _serialized_loads():
+    """What a test's serialized row reads beside its own columns — the ONE
+    list, for the list's query and for ``serialize_many``'s read by id."""
+    return (joinedload(HostTest.host), joinedload(HostTest.assigned_to), joinedload(HostTest.created_by))
+
+
 def serialize_many(db, rows):
+    """Serialize tests the caller holds (just written, or read one at a time):
+    one statement brings their host and people, one their evidence."""
     ids = [row.id for row in rows]
     if not ids:
         return []
-    loaded = {r.id: r for r in db.query(HostTest).options(
-        joinedload(HostTest.host), joinedload(HostTest.assigned_to), joinedload(HostTest.created_by),
-    ).filter(HostTest.id.in_(ids))}
+    loaded = {r.id: r for r in db.query(HostTest).options(*_serialized_loads()).filter(HostTest.id.in_(ids))}
+    return _serialize_loaded(db, [loaded[test_id] for test_id in ids])
+
+
+def _serialize_loaded(db, rows):
+    """``rows`` already carry ``_serialized_loads``.  ONE evidence query for
+    the page, never one per row."""
+    ids = [row.id for row in rows]
+    if not ids:
+        return []
     # One query for what each test's results say (v2.445.0): how many, the
     # latest outcome, and whether a result that showed an issue is still not
     # on a finding — what the one-line row and the weakness marker read.
@@ -290,8 +312,7 @@ def serialize_many(db, rows):
         if finding_id is not None and finding_id not in r["finding_ids"]:
             r["finding_ids"].append(finding_id)
     result = []
-    for test_id in ids:
-        row = loaded[test_id]
+    for row in rows:
         data = {c.name: getattr(row, c.name) for c in HostTest.__table__.columns
                 if c.name not in ("request_hash", "request_key")}
         r = results.get(row.id, {"count": 0, "last": None, "open": 0, "finding_ids": []})
