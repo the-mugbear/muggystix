@@ -44,7 +44,7 @@ vi.mock('../../services/api', () => ({
   followHost: vi.fn(), unfollowHost: vi.fn(), assignHost: vi.fn(), unassignHost: vi.fn(),
   createNote: vi.fn(), updateAnnotation: vi.fn(), deleteAnnotation: vi.fn(),
   createAnnotation: vi.fn(), uploadNoteAttachment: vi.fn(), deleteNoteAttachment: vi.fn(),
-  getNoteAttachmentObjectUrl: vi.fn(),
+  getNoteAttachmentBlob: vi.fn(),
   promoteVulnerability: vi.fn(), previewPromoteVulnerability: vi.fn(),
   updateHostTest: vi.fn(), getHostNotes: vi.fn().mockResolvedValue([]),
 }));

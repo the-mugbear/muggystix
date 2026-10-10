@@ -18,7 +18,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
   getFindingImages: vi.fn(),
-  getNoteAttachmentObjectUrl: vi.fn(),
+  getNoteAttachmentBlob: vi.fn(),
   fetchWebInterfaceScreenshot: vi.fn(),
   getHostWebInterfaces: vi.fn(),
   getWebInterfaceRecord: vi.fn(),
@@ -50,8 +50,9 @@ const expectAllRevokedOnce = () => {
   expect(outstanding()).toEqual([]);
   expect([...revoked].sort()).toEqual([...made].sort());
 };
-/** What the API layer does with the bytes it fetched. */
-const objectUrl = () => URL.createObjectURL(new Blob(['bytes']));
+/** What the API layer answers with: the bytes.  The URL is made of them by
+ *  `lib/objectUrls` (it was made by the API function itself). */
+const bytes = () => new Blob(['bytes']);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -78,9 +79,9 @@ describe('object URLs: made == revoked', () => {
       items: findingId === 7 ? [image(1), image(2)] : [image(3), image(4)], caption_max: 2000,
     }));
     let late!: () => void;
-    api.getNoteAttachmentObjectUrl.mockImplementation((_projectId: number, id: number) => (id === 4
-      ? new Promise<string>((resolve) => { late = () => resolve(objectUrl()); })
-      : Promise.resolve(objectUrl())));
+    api.getNoteAttachmentBlob.mockImplementation((_projectId: number, id: number) => (id === 4
+      ? new Promise<Blob>((resolve) => { late = () => resolve(bytes()); })
+      : Promise.resolve(bytes())));
     const { result, rerender, unmount } = renderHook(({ id }) => useFindingImages(id), { initialProps: { id: 7 } });
     await waitFor(() => expect(result.current.images).toHaveLength(2));
     act(() => {
@@ -114,9 +115,9 @@ describe('object URLs: made == revoked', () => {
       created_at: '2026-09-01T00:00:00Z', include_in_report: false, uploaded_by_id: 1,
     });
     const refused = new Set([3]);
-    api.getNoteAttachmentObjectUrl.mockImplementation((_projectId: number, id: number) => {
+    api.getNoteAttachmentBlob.mockImplementation((_projectId: number, id: number) => {
       if (refused.delete(id)) return Promise.reject(new Error('503'));
-      return Promise.resolve(objectUrl());
+      return Promise.resolve(bytes());
     });
     const { rerender, unmount } = render(
       <NoteAttachments noteId={5} canManage={false} attachments={[att(1), att(2)]} />,
@@ -139,7 +140,7 @@ describe('object URLs: made == revoked', () => {
       id: 7, source: 'httpx', url: 'https://app.example.com', protocol: 'https', port: 443,
       technologies: [], has_screenshot: true, scan_id: 3, port_id: 443,
     };
-    api.fetchWebInterfaceScreenshot.mockImplementation(() => Promise.resolve(objectUrl()));
+    api.fetchWebInterfaceScreenshot.mockImplementation(() => Promise.resolve(bytes()));
     const { unmount } = render(
       <MemoryRouter><TooltipProvider>
         <WebInterfacesCard hostId={1} count={1} rows={[row] as never} embedded />

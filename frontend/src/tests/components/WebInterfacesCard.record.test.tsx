@@ -14,6 +14,7 @@ vi.mock('../../services/api', () => api);
 
 import WebInterfacesCard from '../../components/WebInterfacesCard';
 import { TooltipProvider } from '../../components/ui/tooltip';
+import { blobFor, installBlobUrls } from '../helpers/blobUrls';
 
 const row = {
   id: 7, source: 'testssl', url: 'https://app.example.com:443', protocol: 'https', port: 443,
@@ -27,10 +28,14 @@ const renderCard = () =>
     </TooltipProvider></MemoryRouter>,
   );
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  installBlobUrls();
+});
 
-// Code review 2026-10-09: the screenshot is an object URL made by the request;
-// only the one on show was ever revoked.
+// Code review 2026-10-09: the screenshot is shown from an object URL (made of
+// the request's bytes by the card's store); only the one on show was ever
+// revoked.
 describe('WebInterfacesCard — a screenshot nobody is looking at', () => {
   const shot = { ...row, has_screenshot: true };
   const renderShot = () => render(
@@ -42,30 +47,30 @@ describe('WebInterfacesCard — a screenshot nobody is looking at', () => {
   it('is released when it arrives after the card has gone', async () => {
     const revoke = vi.fn();
     Object.defineProperty(URL, 'revokeObjectURL', { value: revoke, configurable: true, writable: true });
-    let answer!: (url: string) => void;
-    api.fetchWebInterfaceScreenshot.mockImplementation(() => new Promise<string>((resolve) => { answer = resolve; }));
+    let answer!: (bytes: Blob) => void;
+    api.fetchWebInterfaceScreenshot.mockImplementation(() => new Promise<Blob>((resolve) => { answer = resolve; }));
     const { unmount } = renderShot();
     fireEvent.click(screen.getByRole('button', { name: `View screenshot of ${row.url}` }));
     await waitFor(() => expect(answer).toBeDefined());
     unmount();
-    answer('blob:late');
+    answer(blobFor('blob:late'));
     await waitFor(() => expect(revoke).toHaveBeenCalledWith('blob:late'));
   });
 
   it('is released when the reader asked for another meanwhile', async () => {
     const revoke = vi.fn();
     Object.defineProperty(URL, 'revokeObjectURL', { value: revoke, configurable: true, writable: true });
-    const answers: Array<(url: string) => void> = [];
-    api.fetchWebInterfaceScreenshot.mockImplementation(() => new Promise<string>((resolve) => { answers.push(resolve); }));
+    const answers: Array<(bytes: Blob) => void> = [];
+    api.fetchWebInterfaceScreenshot.mockImplementation(() => new Promise<Blob>((resolve) => { answers.push(resolve); }));
     renderShot();
     const open = screen.getByRole('button', { name: `View screenshot of ${row.url}` });
     fireEvent.click(open);
     await waitFor(() => expect(answers).toHaveLength(1));
     fireEvent.click(open);
     await waitFor(() => expect(answers).toHaveLength(2));
-    answers[0]('blob:first');
+    answers[0](blobFor('blob:first'));
     await waitFor(() => expect(revoke).toHaveBeenCalledWith('blob:first'));
-    answers[1]('blob:second');
+    answers[1](blobFor('blob:second'));
     await new Promise((r) => setTimeout(r, 0));
     expect(revoke).not.toHaveBeenCalledWith('blob:second');
   });

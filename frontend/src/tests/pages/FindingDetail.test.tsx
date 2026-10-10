@@ -30,7 +30,8 @@ vi.mock('../../services/api', () => ({
   uploadFindingNoteAttachment: vi.fn(),
   // The finding's images (caption, "In report", where the text places each).
   getFindingImages: vi.fn().mockResolvedValue({ items: [], caption_max: 2000 }),
-  getNoteAttachmentObjectUrl: vi.fn().mockResolvedValue('blob:img'),
+  // The bytes; the page's cache makes the object URL of them ('blob:img' below).
+  getNoteAttachmentBlob: vi.fn().mockResolvedValue(new Blob(['img'])),
   setNoteAttachmentCaption: vi.fn(),
   setNoteAttachmentInReport: vi.fn(),
   deleteNoteAttachment: vi.fn(),
@@ -75,6 +76,8 @@ const renderAt = (url: string) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // jsdom makes no object URLs: an image's bytes get this one.
+  URL.createObjectURL = vi.fn(() => 'blob:img');
   resetProjectMembersCache();
   projectRole.value = 'analyst';
   mocked.getFinding.mockResolvedValue(finding());
@@ -868,14 +871,14 @@ describe('FindingDetail — report text (v5.260.0)', () => {
     // Nothing is fetched for the thread's thumbnail either while the list is
     // on its way: it comes from the same cache.
     await screen.findByRole('button', { name: 'View relay.png' });
-    expect(mocked.getNoteAttachmentObjectUrl).not.toHaveBeenCalled();
+    expect(mocked.getNoteAttachmentBlob).not.toHaveBeenCalled();
 
     await act(async () => { release({ items: [image57], caption_max: 2000 }); });
     const placed = await screen.findByTestId('evidence-image-57');
     await waitFor(() => expect(placed.querySelector('img')?.getAttribute('src')).toBe('blob:img'));
     await waitFor(() => expect(screen.getByRole('button', { name: 'View relay.png' }).querySelector('img')).not.toBeNull());
     // M6 — the placed image and the comment's thumbnail are one fetch.
-    expect(mocked.getNoteAttachmentObjectUrl).toHaveBeenCalledTimes(1);
+    expect(mocked.getNoteAttachmentBlob).toHaveBeenCalledTimes(1);
   });
 
   it('says the images could not be loaded when the list fails — on the page and in the text — and retries', async () => {

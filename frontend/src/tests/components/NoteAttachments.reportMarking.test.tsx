@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../services/api', () => ({
   uploadNoteAttachment: vi.fn(),
   deleteNoteAttachment: vi.fn(),
-  getNoteAttachmentObjectUrl: vi.fn(),
+  getNoteAttachmentBlob: vi.fn(),
   setNoteAttachmentInReport: vi.fn(),
   setNoteAttachmentCaption: vi.fn(),
 }));
@@ -12,6 +12,7 @@ const toastMock = { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
 
 import * as api from '../../services/api';
+import { blobFor, installBlobUrls } from '../helpers/blobUrls';
 import { readsOnScreen } from '../helpers/readsOnScreen';
 import NoteAttachments from '../../components/host-inspector/NoteAttachments';
 
@@ -26,21 +27,28 @@ beforeEach(() => {
   vi.clearAllMocks();
   // jsdom has no object URLs; the component revokes its own on unmount.
   URL.revokeObjectURL = vi.fn();
-  mocked.getNoteAttachmentObjectUrl.mockResolvedValue('blob:x');
+  // The API answers with the bytes; `lib/objectUrls` makes the URL of them.
+  installBlobUrls();
+  mocked.getNoteAttachmentBlob.mockResolvedValue(blobFor('blob:x'));
 });
 
 describe('NoteAttachments — report marking (v5.260.0)', () => {
   it('marks an image the viewer may mark, and shows the others read-only', async () => {
     mocked.setNoteAttachmentInReport.mockResolvedValue(att(1, { include_in_report: true }));
-    const onChanged = vi.fn();
+    // The thread these images come with is read again by the change itself
+    // (it used to be told through an `onChanged` callback): this stands in
+    // for the finding's comment thread.
+    const { reread, ReadsOnScreen } = readsOnScreen({ getFindingNotes: 'the thread' });
     render(
-      <NoteAttachments
-        noteId={5}
-        attachments={[att(1), att(2, { uploaded_by_id: 9, include_in_report: true })]}
-        canManage
-        onChanged={onChanged}
-        reportMarking={{ canMark: (a) => a.uploaded_by_id === 1 }}
-      />,
+      <>
+        <ReadsOnScreen />
+        <NoteAttachments
+          noteId={5}
+          attachments={[att(1), att(2, { uploaded_by_id: 9, include_in_report: true })]}
+          canManage
+          reportMarking={{ canMark: (a) => a.uploaded_by_id === 1 }}
+        />
+      </>,
     );
     const box = screen.getByRole('checkbox', { name: 'Include shot-1.png in the report' });
     // Someone else's image that is already in: stated, not editable.
@@ -49,7 +57,7 @@ describe('NoteAttachments — report marking (v5.260.0)', () => {
 
     fireEvent.click(box);
     await waitFor(() => expect(mocked.setNoteAttachmentInReport).toHaveBeenCalledWith(1, 1, true));
-    expect(onChanged).toHaveBeenCalled();
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('the thread'));
     expect(box).toHaveAttribute('data-state', 'checked');
   });
 
@@ -58,7 +66,7 @@ describe('NoteAttachments — report marking (v5.260.0)', () => {
   // (the thread read again with another value) stayed hidden behind it.
   it('after a mark, what the thread says next is shown — a later change by someone else is not hidden', async () => {
     mocked.setNoteAttachmentInReport.mockResolvedValue(att(1, { include_in_report: true }));
-    const props = { noteId: 5, canManage: true, onChanged: vi.fn(), reportMarking: { canMark: () => true } };
+    const props = { noteId: 5, canManage: true, reportMarking: { canMark: () => true } };
     const { rerender } = render(<NoteAttachments {...props} attachments={[att(1)]} />);
     const box = () => screen.getByRole('checkbox', { name: 'Include shot-1.png in the report' });
     fireEvent.click(box());
@@ -76,7 +84,7 @@ describe('NoteAttachments — report marking (v5.260.0)', () => {
   it('puts the mark back when the server refuses', async () => {
     mocked.setNoteAttachmentInReport.mockRejectedValue(new Error('403'));
     render(
-      <NoteAttachments noteId={5} attachments={[att(1)]} canManage onChanged={vi.fn()}
+      <NoteAttachments noteId={5} attachments={[att(1)]} canManage
         reportMarking={{ canMark: () => true }} />,
     );
     const box = screen.getByRole('checkbox', { name: 'Include shot-1.png in the report' });
@@ -86,7 +94,7 @@ describe('NoteAttachments — report marking (v5.260.0)', () => {
   });
 
   it('shows no marks where the surface is not a finding', () => {
-    render(<NoteAttachments noteId={5} attachments={[att(1, { include_in_report: true })]} canManage={false} onChanged={vi.fn()} />);
+    render(<NoteAttachments noteId={5} attachments={[att(1, { include_in_report: true })]} canManage={false} />);
     expect(screen.queryByText('In report')).not.toBeInTheDocument();
   });
 });
@@ -98,7 +106,7 @@ describe('NoteAttachments — captions and placement on a finding', () => {
 
   it('shows each image’s caption and where the report text places it', () => {
     render(
-      <NoteAttachments noteId={5} canManage onChanged={vi.fn()}
+      <NoteAttachments noteId={5} canManage
         attachments={[
           att(1, { include_in_report: true, caption: 'The relayed session' }),
           att(2, { include_in_report: true }),
@@ -117,15 +125,17 @@ describe('NoteAttachments — captions and placement on a finding', () => {
 
   it('edits a caption in place and tells the page', async () => {
     mocked.setNoteAttachmentCaption = vi.fn().mockResolvedValue(att(1, { caption: 'New words' }));
-    const onChanged = vi.fn();
     // 5.351.0 — the page was told through `reportMarking.onImagesChanged`
-    // (which re-read the finding's images); the change now says that read is
-    // out of date itself.  This stands in for the page's read of them.
-    const { reread, ReadsOnScreen } = readsOnScreen({ getFindingImages: 'the finding’s images' });
+    // (which re-read the finding's images), and the thread through
+    // `onChanged`; the change now says both reads are out of date itself.
+    // These stand in for the page's reads of them.
+    const { reread, ReadsOnScreen } = readsOnScreen({
+      getFindingImages: 'the finding’s images', getFindingNotes: 'the thread',
+    });
     render(
       <>
         <ReadsOnScreen />
-        <NoteAttachments noteId={5} canManage onChanged={onChanged} attachments={[att(1, { caption: 'Old words' })]}
+        <NoteAttachments noteId={5} canManage attachments={[att(1, { caption: 'Old words' })]}
           reportMarking={{ canMark: () => true, captionMax: 2000 }} />
       </>,
     );
@@ -137,8 +147,8 @@ describe('NoteAttachments — captions and placement on a finding', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save caption' }));
     await waitFor(() => expect(mocked.setNoteAttachmentCaption).toHaveBeenCalledWith(1, 1, 'New words'));
     await waitFor(() => expect(reread).toHaveBeenCalledWith('the finding’s images'));
-    expect(reread).toHaveBeenCalledTimes(1);
-    expect(onChanged).toHaveBeenCalled();
+    await waitFor(() => expect(reread).toHaveBeenCalledWith('the thread'));
+    expect(reread).toHaveBeenCalledTimes(2);     // each of the two, once
     expect(screen.queryByRole('textbox', { name: 'Caption for shot-1.png' })).not.toBeInTheDocument();
   });
 
@@ -148,7 +158,7 @@ describe('NoteAttachments — captions and placement on a finding', () => {
     const setup = (caption: string | null) => {
       mocked.setNoteAttachmentCaption = vi.fn().mockResolvedValue(att(1, { caption: 'saved' }));
       render(
-        <NoteAttachments noteId={5} canManage onChanged={vi.fn()} attachments={[att(1, { caption })]}
+        <NoteAttachments noteId={5} canManage attachments={[att(1, { caption })]}
           reportMarking={{ canMark: () => true }} />,
       );
       fireEvent.click(screen.getByRole('button', { name: `${caption ? 'Edit' : 'Add'} caption for shot-1.png` }));
@@ -197,7 +207,7 @@ describe('NoteAttachments — captions and placement on a finding', () => {
       response: { status: 422, data: { detail: 'A caption is at most 2000 characters (this one is 2001).' } },
     });
     render(
-      <NoteAttachments noteId={5} canManage onChanged={vi.fn()} attachments={[att(1)]}
+      <NoteAttachments noteId={5} canManage attachments={[att(1)]}
         reportMarking={{ canMark: () => true }} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Add caption for shot-1.png' }));
@@ -214,15 +224,22 @@ describe('NoteAttachments — captions and placement on a finding', () => {
     mocked.setNoteAttachmentInReport.mockRejectedValue({
       response: { status: 409, data: { detail: 'Cannot take this image out of the report: image 1 is placed in the Description.' } },
     });
-    const onChanged = vi.fn();
+    // A refused change reads nothing again — neither the thread nor the
+    // finding's images.
+    const { reread, ReadsOnScreen } = readsOnScreen({
+      getFindingNotes: 'the thread', getFindingImages: 'the finding’s images',
+    });
     render(
-      <NoteAttachments noteId={5} canManage onChanged={onChanged}
-        attachments={[att(1, { include_in_report: true })]}
-        reportMarking={{ canMark: () => true, placement: placement({ 1: ['description'] }) }} />,
+      <>
+        <ReadsOnScreen />
+        <NoteAttachments noteId={5} canManage
+          attachments={[att(1, { include_in_report: true })]}
+          reportMarking={{ canMark: () => true, placement: placement({ 1: ['description'] }) }} />
+      </>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Delete shot-1.png' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(refusal);
-    expect(onChanged).not.toHaveBeenCalled();
+    expect(reread).not.toHaveBeenCalled();
 
     const box = screen.getByRole('checkbox', { name: 'Include shot-1.png in the report' });
     fireEvent.click(box);
@@ -235,7 +252,7 @@ describe('NoteAttachments — captions and placement on a finding', () => {
   describe('saving one caption while editing another', () => {
     const open = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
     const setup = () => render(
-      <NoteAttachments noteId={5} canManage onChanged={vi.fn()}
+      <NoteAttachments noteId={5} canManage
         attachments={[att(1, { caption: 'First' }), att(2, { caption: 'Second' })]}
         reportMarking={{ canMark: () => true }} />,
     );
@@ -289,28 +306,28 @@ describe('NoteAttachments — captions and placement on a finding', () => {
     it('shows an image on the finding’s list from the page’s cache, and fetches only what the list lacks', async () => {
       const thumbnails = cache();
       render(
-        <NoteAttachments noteId={5} canManage={false} onChanged={vi.fn()} attachments={[att(1), att(2)]}
+        <NoteAttachments noteId={5} canManage={false} attachments={[att(1), att(2)]}
           reportMarking={{ canMark: () => false, thumbnails }} />,
       );
       expect(screen.getByRole('button', { name: 'View shot-1.png' }).querySelector('img')).toHaveAttribute('src', 'blob:shared');
       expect(thumbnails.ensure).toHaveBeenCalledWith(1);
       await waitFor(() => expect(screen.getByRole('button', { name: 'View shot-2.png' }).querySelector('img')).toHaveAttribute('src', 'blob:x'));
       // (the project, then the attachment)
-      expect(mocked.getNoteAttachmentObjectUrl.mock.calls.map((c) => [c[0], c[1]])).toEqual([[1, 2]]);
+      expect(mocked.getNoteAttachmentBlob.mock.calls.map((c) => [c[0], c[1]])).toEqual([[1, 2]]);
     });
 
     it('fetches nothing of its own while the finding’s list is still being read', async () => {
       render(
-        <NoteAttachments noteId={5} canManage={false} onChanged={vi.fn()} attachments={[att(1)]}
+        <NoteAttachments noteId={5} canManage={false} attachments={[att(1)]}
           reportMarking={{ canMark: () => false, thumbnails: cache({ listStatus: 'loading', has: () => false, urls: {} }) }} />,
       );
       await new Promise((r) => setTimeout(r, 10));
-      expect(mocked.getNoteAttachmentObjectUrl).not.toHaveBeenCalled();
+      expect(mocked.getNoteAttachmentBlob).not.toHaveBeenCalled();
     });
 
     it('says when a thumbnail could not be loaded, and a click tries again', async () => {
-      mocked.getNoteAttachmentObjectUrl.mockRejectedValueOnce(new Error('503'));
-      render(<NoteAttachments noteId={5} canManage={false} onChanged={vi.fn()} attachments={[att(1)]} />);
+      mocked.getNoteAttachmentBlob.mockRejectedValueOnce(new Error('503'));
+      render(<NoteAttachments noteId={5} canManage={false} attachments={[att(1)]} />);
       const failed = await screen.findByRole('button', { name: 'shot-1.png could not be loaded — try again' });
       expect(screen.getByTestId('thumbnail-failed-1')).toHaveTextContent('Retry');
       fireEvent.click(failed);
@@ -320,7 +337,7 @@ describe('NoteAttachments — captions and placement on a finding', () => {
 
   it('gives a reader the caption and the mark, and no control', () => {
     render(
-      <NoteAttachments noteId={5} canManage={false} onChanged={vi.fn()}
+      <NoteAttachments noteId={5} canManage={false}
         attachments={[att(1, { include_in_report: true, caption: 'c'.repeat(2000) })]}
         reportMarking={{ canMark: () => false, placement: placement({}) }} />,
     );

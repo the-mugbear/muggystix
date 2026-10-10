@@ -7,8 +7,8 @@ import { cn } from '../utils/cn';
 interface ScreenshotLightboxProps {
   open: boolean;
   onClose: () => void;
-  // Pre-fetched blob URL.  Parent is responsible for fetching + revoking
-  // (typical pattern: fetchWebInterfaceScreenshot() inside useEffect).
+  // Pre-fetched blob URL.  The parent fetches the bytes in a query and
+  // makes / releases the URL through lib/objectUrls.
   src: string | null;
   loading?: boolean;
   error?: string | null;

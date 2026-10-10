@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const api = vi.hoisted(() => ({
   uploadNoteAttachment: vi.fn(),
   deleteNoteAttachment: vi.fn(),
-  getNoteAttachmentObjectUrl: vi.fn(),
+  getNoteAttachmentBlob: vi.fn(),
 }));
 vi.mock('../../services/api', () => api);
 vi.mock('../../contexts/ToastContext', () => ({

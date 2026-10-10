@@ -1,10 +1,14 @@
 /**
- * Object URLs: the one place that revokes them (plan B1).
+ * Object URLs: the one place that makes and revokes them (plan B1).
  *
- * An object URL (`URL.createObjectURL`, or the API functions that hand one
- * back for authenticated bytes: `getNoteAttachmentObjectUrl`,
- * `fetchWebInterfaceScreenshot`) pins its bytes in the browser until
- * `URL.revokeObjectURL` — and a missed one shows nowhere.  There were five
+ * An object URL (`URL.createObjectURL`) pins its bytes in the browser until
+ * `URL.revokeObjectURL` — and a missed one shows nowhere.  So nothing else
+ * makes one for something on screen: an API function that fetches
+ * authenticated bytes answers with the `Blob` (`getNoteAttachmentBlob`,
+ * `fetchWebInterfaceScreenshot`), a pasted file is a `Blob` already, and the
+ * URL is made here, by the store that will revoke it (`acceptBlob`,
+ * `putBlob`, `useBlobUrl`).  A lint rule holds both calls to this file and
+ * `utils/download` (`eslint.config.mjs`).  There were five
  * hand-made ways of not missing one (a list of "created" URLs, an "unmounted"
  * flag, a request counter, an effect per URL, a ref read at unmount).  This is
  * the one: a URL is HELD under a key, and it is revoked — once — when
@@ -14,13 +18,13 @@
  *   - everything is dropped (`clear`: the page moved to another record),
  *   - its owner has gone (`close`: the component unmounted);
  *
- * and a URL that ARRIVES after one of those — the request was still out — is
- * revoked at once instead of being held (`claim(key).accept(url)`).
+ * and bytes that ARRIVE after one of those — the request was still out — are
+ * not held: their URL is revoked at once (`claim(key).acceptBlob(blob)`).
  *
  * `useObjectUrls()` is the store of one mounted component; `useBlobUrl(blob)`
  * is the URL of bytes already in hand.  Nothing else in `src/` calls
- * `URL.revokeObjectURL` for something on screen (a file save is
- * `utils/download`, which revokes its own).
+ * `URL.createObjectURL` or `URL.revokeObjectURL` (a file save is
+ * `utils/download`, which makes and revokes its own).
  *
  * Not server state: a URL is a handle on bytes in THIS tab, so it is never a
  * query's data (a query's answer can be read again after it was revoked).
@@ -35,6 +39,9 @@ export interface ObjectUrlClaim {
    * comes back (nothing will show it, so nothing else would revoke it).
    */
   accept: (url: string) => string | null;
+  /** The bytes have arrived: their URL is made here and accepted as above
+   *  (so one made for a claim that is no longer current is revoked at once). */
+  acceptBlob: (blob: Blob) => string | null;
   /** Still the latest claim of its key, in a store that has not been cleared
    *  or closed since: what it brings would be shown. */
   isCurrent: () => boolean;
@@ -73,24 +80,28 @@ export class ObjectUrlStore<K> {
     const token = {};
     if (!this.isClosed) this.claims.set(key, token);
     const isCurrent = () => !this.isClosed && this.claims.get(key) === token;
-    return {
-      isCurrent,
-      accept: (url) => {
-        if (!isCurrent()) {
-          URL.revokeObjectURL(url);
-          return null;
-        }
-        // Answered: the claim is spent (a second answer would be revoked).
-        this.claims.delete(key);
-        this.held.set(key, url);
-        return url;
-      },
+    const accept = (url: string): string | null => {
+      if (!isCurrent()) {
+        URL.revokeObjectURL(url);
+        return null;
+      }
+      // Answered: the claim is spent (a second answer would be revoked).
+      this.claims.delete(key);
+      this.held.set(key, url);
+      return url;
     };
+    return { isCurrent, accept, acceptBlob: (blob) => accept(URL.createObjectURL(blob)) };
   }
 
   /** Hold a URL that is already made, in place of whatever the key held. */
   put(key: K, url: string): string | null {
     return this.claim(key).accept(url);
+  }
+
+  /** Make the URL of bytes already in hand (a pasted file) and hold it, in
+   *  place of whatever the key held. */
+  putBlob(key: K, blob: Blob): string | null {
+    return this.claim(key).acceptBlob(blob);
   }
 
   /** The key's URL is no longer shown: revoke it, and whatever is still on

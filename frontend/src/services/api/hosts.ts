@@ -664,13 +664,17 @@ export const setNoteAttachmentCaption = async (
   return response.data;
 };
 
-/** Fetch an attachment's bytes (authenticated) as an object URL for <img src>. */
-export const getNoteAttachmentObjectUrl = async (projectId: number, attachmentId: number, signal?: AbortSignal): Promise<string> => {
+/**
+ * Fetch an attachment's bytes (authenticated).  The bytes, not an object URL:
+ * a URL for an <img src> is made by its owner, `lib/objectUrls`, which also
+ * revokes it.
+ */
+export const getNoteAttachmentBlob = async (projectId: number, attachmentId: number, signal?: AbortSignal): Promise<Blob> => {
   const response = await api.get(`${projectPath(projectId)}/hosts/notes/attachments/${attachmentId}`, {
     responseType: 'blob',
     signal,
   });
-  return URL.createObjectURL(response.data as Blob);
+  return response.data as Blob;
 };
 
 export interface NoteActivityItem {
@@ -1125,16 +1129,14 @@ export const getHostNetexecResults = async (projectId: number, hostId: number, s
 };
 
 /**
- * Fetch a web interface's screenshot PNG and return a blob:// URL
- * suitable for use in an ``<img src>``.
+ * Fetch a web interface's screenshot PNG — the bytes.
  *
  * The frontend authenticates via a Bearer token injected by the
  * axios request interceptor.  A plain ``<img src>`` tag would bypass
- * that interceptor and hit the backend without auth, so we fetch
- * the bytes through axios, wrap them in a Blob, and produce a local
- * object URL instead.  Callers must revoke the URL when the image
- * unmounts to avoid memory leaks — see the ``useEffect`` cleanup
- * pattern in ``ScreenshotLightbox.tsx``.
+ * that interceptor and hit the backend without auth, so the bytes are
+ * fetched through axios and shown from a local object URL.  That URL is
+ * made — and revoked — by its owner, ``lib/objectUrls`` (the card's
+ * store), never here.
  *
  * Returns ``null`` on 404 (no screenshot present / path guard
  * rejected) so callers can render a fallback without a try/catch.
@@ -1143,13 +1145,13 @@ export const fetchWebInterfaceScreenshot = async (
   projectId: number,
   interfaceId: number,
   signal?: AbortSignal,
-): Promise<string | null> => {
+): Promise<Blob | null> => {
   try {
     const response = await api.get(
       `${projectPath(projectId)}/hosts/web-interfaces/${interfaceId}/screenshot`,
       { responseType: 'blob', signal },
     );
-    return URL.createObjectURL(response.data as Blob);
+    return response.data as Blob;
   } catch (err: unknown) {
     if (asAxiosError(err).response?.status === 404) return null;
     throw err;

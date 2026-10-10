@@ -4,7 +4,8 @@
 //
 //  - the Rules of Hooks (error) and effect dependencies (warning);
 //  - components and pages import the API from the `services/api` barrel;
-//  - one helper each for a file save and for an absolute moment.
+//  - one helper each for a file save and for an absolute moment;
+//  - object URLs are made and revoked by their two owners only.
 //
 // The gate runs `npm run lint -- --max-warnings 0`: a deliberate omission
 // from an effect's dependencies carries a disable comment that says why.
@@ -31,6 +32,16 @@ const BARE_MOMENT = {
     + "[callee.object.type='NewExpression'][callee.object.callee.name='Date']",
   message: 'Format a moment with formatTimestamp (utils/relativeTime), not new Date(x).toLocaleString().',
 };
+// An object URL pins its bytes until it is revoked, and a missed one shows
+// nowhere: it is made and revoked by its two owners only — lib/objectUrls
+// (something on screen) and utils/download (a file save).  Matched by the
+// method's name, however `URL` is reached (`URL.…`, `window.URL.…`).
+const OBJECT_URL = {
+  selector: 'CallExpression[callee.type="MemberExpression"]'
+    + '[callee.property.name=/^(createObjectURL|revokeObjectURL)$/]',
+  message: 'Make and revoke an object URL through lib/objectUrls (useObjectUrls, useBlobUrl) '
+    + 'or save the file with utils/download (saveBlob); an API function answers with the Blob.',
+};
 
 export default [
   { ignores: ['build/**', 'dist/**', 'node_modules/**', 'coverage/**'] },
@@ -54,7 +65,7 @@ export default [
       // question).  The official TanStack rule; it replaced a hidden partition
       // of the cache that nothing at the call site could show.
       '@tanstack/query/exhaustive-deps': 'error',
-      'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT],
+      'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT, OBJECT_URL],
     },
   },
   {
@@ -101,8 +112,11 @@ export default [
       }],
     },
   },
+  // Each helper is exempt from its own rule only (a later entry replaces the
+  // list for its files, so it names every restriction that still applies).
   { files: ['src/utils/download.ts'], rules: { 'no-restricted-syntax': ['error', BARE_MOMENT] } },
-  { files: ['src/utils/relativeTime.ts'], rules: { 'no-restricted-syntax': ['error', DOWNLOAD_NAME] } },
+  { files: ['src/utils/relativeTime.ts'], rules: { 'no-restricted-syntax': ['error', DOWNLOAD_NAME, OBJECT_URL] } },
+  { files: ['src/lib/objectUrls.ts'], rules: { 'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT] } },
   // Tests build fixtures and expected values with the primitives themselves.
   { files: ['src/tests/**'], rules: { 'no-restricted-syntax': 'off' } },
 ];

@@ -22,16 +22,14 @@ import { invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 
 interface NoteAttachmentsProps {
-  /** Host that owns the note — used for the default (host-note) upload path. */
+  /** Host that owns the note — used for the default (host-note) upload path,
+   *  and which read a change puts out of date: the host's (`getHost`) with
+   *  it, a finding's comment thread (`getFindingNotes`) without. */
   hostId?: number;
   noteId: number;
   attachments: NoteAttachment[];
   /** Analyst+ — gates the attach/delete affordances (display is always on). */
   canManage: boolean;
-  /** An image was added, removed or changed.  A host note's thread is read
-   *  again here (its attachments come with `getHost`), so only another owner
-   *  of the note (a finding's comment thread) needs to be told. */
-  onChanged?: () => void;
   /**
    * Override the upload call so the same component serves other annotation
    * targets (e.g. a finding's comment thread). Defaults to the host-note
@@ -92,7 +90,7 @@ const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
  * `hooks/useAttachmentImages`, the cache the finding page uses too.
  */
 const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(({
-  hostId, noteId, attachments, canManage, onChanged, uploadFn, externalTrigger = false, onBusyChange,
+  hostId, noteId, attachments, canManage, uploadFn, externalTrigger = false, onBusyChange,
   reportMarking,
 }, ref) => {
   const toast = useToast();
@@ -127,13 +125,15 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
     if (message) next[id] = message; else delete next[id];
     return next;
   });
-  // After a change the thread is read again: a host note's attachments come
-  // with the host (`getHost`); any other owner says how through `onChanged`.
+  // After a change the thread is read again, and this component says so
+  // itself — no owner hands it a "reload".  A note has one of two owners: a
+  // host, whose notes and their attachments come with the host (`getHost`), or
+  // a finding, whose comment thread is its own read (`getFindingNotes`).
   // On a finding (`reportMarking`) a caption, a mark or an image is also one
   // of the finding's images: the editor's picker and the placed images follow.
   const changed = () => {
     if (hostId != null) void queryClient.invalidateQueries({ queryKey: ['getHost', projectId, hostId] });
-    onChanged?.();
+    else void invalidateReads(queryClient, 'getFindingNotes');
     if (reportMarking) void invalidateReads(queryClient, 'getFindingImages');
   };
 

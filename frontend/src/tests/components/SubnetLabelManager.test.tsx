@@ -24,6 +24,7 @@ vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, vi.fn()] }));
 
 import { SubnetLabelEditorPopover, SubnetLabelManagerDialog } from '../../components/SubnetLabelManager';
+import { useListQuery } from '../../hooks/useListQuery';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
 const label = (id: number, name: string) => ({
@@ -73,9 +74,9 @@ describe('SubnetLabelEditorPopover — the selection is the reader’s while it 
   // to hand it down).
   beforeEach(() => { api.listSubnetLabels.mockResolvedValue(catalogue); });
   // As the Scope page does: a NEW array of the subnet's labels on every render.
-  const Row = ({ onSaved = vi.fn() }: { onSaved?: (next: unknown) => void }) => (
+  const Row = () => (
     <SubnetLabelEditorPopover
-      subnetId={7} subnetCidr="10.0.0.0/24" onSaved={onSaved}
+      subnetId={7} subnetCidr="10.0.0.0/24"
       currentLabels={[{ id: 1, name: 'PCI', color: null }]}
     >
       <button type="button">Edit labels</button>
@@ -110,6 +111,85 @@ describe('SubnetLabelEditorPopover — the selection is the reader’s while it 
   });
 });
 
+// A save shows on the subnet's row at once, and costs no re-read of the scope:
+// the PUT answers with the subnet's labels, and they are put on its row where
+// it is in the Scope page's list — a "Show more" list (`useListQuery` of
+// `getDefaultScope`), read here by the real hook so that what is written is
+// what the page shows, on whichever loaded page the row is.
+describe('SubnetLabelEditorPopover — a save shows on the subnet’s row at once', () => {
+  interface Subnet { id: number; cidr: string; labels?: Array<{ id: number; name: string; color: string | null }> }
+  const PCI = { id: 1, name: 'PCI', color: null };
+  const DMZ = { id: 2, name: 'DMZ', color: null };
+  const subnets: Subnet[] = [
+    { id: 1, cidr: '10.0.1.0/24', labels: [PCI] }, { id: 2, cidr: '10.0.2.0/24' },
+    { id: 3, cidr: '10.0.3.0/24', labels: [PCI, DMZ] },
+  ];
+  const getScope = vi.fn((offset: number, limit: number) => Promise.resolve({
+    id: 5, items: subnets.slice(offset, offset + limit), total: subnets.length,
+  }));
+  // The Scope page's read of its subnets, two to a page.
+  const ScopeRows = () => {
+    const list = useListQuery<Subnet>(
+      'getDefaultScope', ({ offset, limit }) => getScope(offset, limit), [1, { subnetsSearch: '' }], { pageSize: 2 },
+    );
+    return (
+      <>
+        {(list.rows ?? []).map((s) => (
+          <div key={s.id}>
+            <span data-testid={`labels-${s.id}`}>{(s.labels ?? []).map((l) => l.name).join(', ') || 'none'}</span>
+            {/* The editor writes the row itself: the page hands it no `onSaved`
+                (it did, and put the answer on the row with `mapRows`). */}
+            <SubnetLabelEditorPopover subnetId={s.id} subnetCidr={s.cidr} currentLabels={s.labels ?? []}>
+              <button type="button">Edit labels for {s.id}</button>
+            </SubnetLabelEditorPopover>
+          </div>
+        ))}
+        <button type="button" onClick={() => { void list.loadMore(); }}>Load more</button>
+      </>
+    );
+  };
+
+  it('on the loaded page the row is on, with no re-read of the scope', async () => {
+    api.listSubnetLabels.mockResolvedValue([label(1, 'PCI'), label(2, 'DMZ')]);
+    api.replaceSubnetLabels.mockResolvedValue([DMZ]);
+    getScope.mockClear();
+    render(<ScopeRows />);
+    await screen.findByTestId('labels-1');
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByTestId('labels-3')).toHaveTextContent('PCI, DMZ');
+    expect(getScope).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit labels for 3' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove PCI' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.replaceSubnetLabels).toHaveBeenCalledWith(1, 3, [2]));
+    // The server's answer, on that row only — and the editor has closed.
+    await waitFor(() => expect(screen.getByTestId('labels-3')).toHaveTextContent(/^DMZ$/));
+    expect(screen.getByTestId('labels-1')).toHaveTextContent(/^PCI$/);
+    expect(screen.getByTestId('labels-2')).toHaveTextContent('none');
+    await waitFor(() => expect(screen.queryByText('Labels for 10.0.3.0/24')).not.toBeInTheDocument());
+    // Not by reading the scope again (every loaded page of it).
+    expect(getScope).toHaveBeenCalledTimes(2);
+    // Opened again, the editor starts from the row's labels as they now are.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit labels for 3' }));
+    expect(await screen.findByRole('button', { name: 'Remove DMZ' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove PCI' })).not.toBeInTheDocument();
+  });
+
+  it('a refused save changes no row', async () => {
+    api.listSubnetLabels.mockResolvedValue([label(1, 'PCI'), label(2, 'DMZ')]);
+    api.replaceSubnetLabels.mockRejectedValue(refused(403, 'Analyst role required.'));
+    getScope.mockClear();
+    render(<ScopeRows />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit labels for 1' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove PCI' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Analyst role required.'));
+    expect(screen.getByTestId('labels-1')).toHaveTextContent(/^PCI$/);
+    expect(getScope).toHaveBeenCalledTimes(1);
+  });
+});
+
 // Plan B22 — every row's editor reads the catalogue's key itself.  That must
 // not cost a request per row: the page's read is the one that asks, rows that
 // mount later take what is there, and a change to a label reaches them all.
@@ -124,7 +204,7 @@ describe('SubnetLabelEditorPopover — a table of rows and the one catalogue', (
       <PageRead />
       {rows.map((id) => (
         <SubnetLabelEditorPopover
-          key={id} subnetId={id} subnetCidr={`10.0.${id}.0/24`} onSaved={vi.fn()}
+          key={id} subnetId={id} subnetCidr={`10.0.${id}.0/24`}
           currentLabels={[{ id: 2, name: 'DMZ', color: null }]}
         >
           <button type="button">Edit labels for {id}</button>

@@ -9,10 +9,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // injects its own), but the barrel's HTTP client must not load in jsdom.
 vi.mock('../../services/api', () => ({
   getFindingImages: vi.fn(),
-  getNoteAttachmentObjectUrl: vi.fn(),
+  getNoteAttachmentBlob: vi.fn(),
 }));
 
 import { useFindingImages } from '../../hooks/useFindingImages';
+import { blobFor, installBlobUrls } from '../helpers/blobUrls';
 
 const image = (id: number, over: Record<string, unknown> = {}) => ({
   id, note_id: 1, filename: `shot-${id}.png`, caption: null, content_type: 'image/png', size_bytes: 10,
@@ -22,10 +23,15 @@ const image = (id: number, over: Record<string, unknown> = {}) => ({
 
 const deps = () => ({
   getFindingImages: vi.fn(),
-  getNoteAttachmentObjectUrl: vi.fn(),
+  getNoteAttachmentBlob: vi.fn(),
 });
 
-beforeEach(() => { URL.revokeObjectURL = vi.fn(); });
+// The API answers with an image's bytes (`blobFor(url)`); the cache makes the
+// object URL of them, which is `url` here.
+beforeEach(() => {
+  URL.revokeObjectURL = vi.fn();
+  installBlobUrls();
+});
 
 describe('useFindingImages', () => {
   it('lists the images and offers only the ticked, printable ones for placing', async () => {
@@ -53,10 +59,10 @@ describe('useFindingImages', () => {
   it('fetches the bytes only when asked, once, and never for an id off the list', async () => {
     const d = deps();
     d.getFindingImages.mockResolvedValue({ items: [image(1), image(2, { in_report: false })], caption_max: 2000 });
-    d.getNoteAttachmentObjectUrl.mockResolvedValue('blob:one');
+    d.getNoteAttachmentBlob.mockResolvedValue(blobFor('blob:one'));
     const { result } = renderHook(() => useFindingImages(7, d));
     await waitFor(() => expect(result.current.placeable).toHaveLength(1));
-    expect(d.getNoteAttachmentObjectUrl).not.toHaveBeenCalled();
+    expect(d.getNoteAttachmentBlob).not.toHaveBeenCalled();
 
     act(() => {
       result.current.resolver.ensure(999);
@@ -65,8 +71,8 @@ describe('useFindingImages', () => {
       result.current.resolver.ensure(1);
     });
     await waitFor(() => expect(result.current.urls[1]).toBe('blob:one'));
-    expect(d.getNoteAttachmentObjectUrl).toHaveBeenCalledTimes(1);
-    expect(d.getNoteAttachmentObjectUrl).toHaveBeenCalledWith(1, 1);
+    expect(d.getNoteAttachmentBlob).toHaveBeenCalledTimes(1);
+    expect(d.getNoteAttachmentBlob).toHaveBeenCalledWith(1, 1);
     // The caption falls back to the file name, as the report does.
     expect(result.current.resolver.lookup(1)).toEqual({ caption: 'shot-1.png', src: 'blob:one' });
   });
@@ -138,37 +144,37 @@ describe('useFindingImages', () => {
     let inFlight = 0;
     let peak = 0;
     const releases: Array<() => void> = [];
-    d.getNoteAttachmentObjectUrl.mockImplementation((_projectId: number, id: number) => {
+    d.getNoteAttachmentBlob.mockImplementation((_projectId: number, id: number) => {
       inFlight += 1;
       peak = Math.max(peak, inFlight);
-      return new Promise<string>((resolve) => {
-        releases.push(() => { inFlight -= 1; resolve(`blob:${id}`); });
+      return new Promise<Blob>((resolve) => {
+        releases.push(() => { inFlight -= 1; resolve(blobFor(`blob:${id}`)); });
       });
     });
     const { result } = renderHook(() => useFindingImages(7, d));
     await waitFor(() => expect(result.current.placeable).toHaveLength(12));
     act(() => { ids.forEach((id) => result.current.resolver.ensure(id)); });
-    await waitFor(() => expect(d.getNoteAttachmentObjectUrl).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(d.getNoteAttachmentBlob).toHaveBeenCalledTimes(4));
     while (Object.keys(result.current.urls).length < 12) {
       // eslint-disable-next-line no-await-in-loop
       await act(async () => { releases.shift()?.(); await Promise.resolve(); });
     }
     expect(peak).toBe(4);
-    expect(d.getNoteAttachmentObjectUrl).toHaveBeenCalledTimes(12);
+    expect(d.getNoteAttachmentBlob).toHaveBeenCalledTimes(12);
   });
 
   it('reports an image whose bytes could not be fetched, and fetches it again on retry', async () => {
     const d = deps();
     d.getFindingImages.mockResolvedValue({ items: [image(1)], caption_max: 2000 });
-    d.getNoteAttachmentObjectUrl.mockRejectedValueOnce(new Error('503'));
+    d.getNoteAttachmentBlob.mockRejectedValueOnce(new Error('503'));
     const { result } = renderHook(() => useFindingImages(7, d));
     await waitFor(() => expect(result.current.placeable).toHaveLength(1));
     act(() => result.current.resolver.ensure(1));
     await waitFor(() => expect(result.current.resolver.failed?.(1)).toBe(true));
     // Asking again does not hammer a failing image; a retry does fetch.
     act(() => result.current.resolver.ensure(1));
-    expect(d.getNoteAttachmentObjectUrl).toHaveBeenCalledTimes(1);
-    d.getNoteAttachmentObjectUrl.mockResolvedValueOnce('blob:one');
+    expect(d.getNoteAttachmentBlob).toHaveBeenCalledTimes(1);
+    d.getNoteAttachmentBlob.mockResolvedValueOnce(blobFor('blob:one'));
     act(() => result.current.resolver.retry?.(1));
     await waitFor(() => expect(result.current.urls[1]).toBe('blob:one'));
     expect(result.current.resolver.failed?.(1)).toBe(false);
@@ -177,7 +183,7 @@ describe('useFindingImages', () => {
   it('serves the comment thread’s thumbnails from the same cache — any listed image, one fetch', async () => {
     const d = deps();
     d.getFindingImages.mockResolvedValue({ items: [image(1), image(2, { in_report: false })], caption_max: 2000 });
-    d.getNoteAttachmentObjectUrl.mockImplementation((_projectId: number, id: number) => Promise.resolve(`blob:${id}`));
+    d.getNoteAttachmentBlob.mockImplementation((_projectId: number, id: number) => Promise.resolve(blobFor(`blob:${id}`)));
     const { result } = renderHook(() => useFindingImages(7, d));
     await waitFor(() => expect(result.current.images).toHaveLength(2));
     expect(result.current.thumbnails.has(2)).toBe(true);
@@ -189,22 +195,22 @@ describe('useFindingImages', () => {
       result.current.resolver.ensure(1);      // the placed image: the same fetch
     });
     await waitFor(() => expect(result.current.thumbnails.urls[2]).toBe('blob:2'));
-    expect(d.getNoteAttachmentObjectUrl.mock.calls.map((c) => c[1]).sort()).toEqual([1, 2]);
+    expect(d.getNoteAttachmentBlob.mock.calls.map((c) => c[1]).sort()).toEqual([1, 2]);
     expect(result.current.resolver.lookup(2)).toBeNull();
   });
 
   it('revokes an object URL that arrives after the page is gone', async () => {
     const d = deps();
     d.getFindingImages.mockResolvedValue({ items: [image(1)], caption_max: 2000 });
-    let release!: (url: string) => void;
-    d.getNoteAttachmentObjectUrl.mockReturnValue(new Promise<string>((resolve) => { release = resolve; }));
+    let release!: (bytes: Blob) => void;
+    d.getNoteAttachmentBlob.mockReturnValue(new Promise<Blob>((resolve) => { release = resolve; }));
     const { result, unmount } = renderHook(() => useFindingImages(7, d));
     await waitFor(() => expect(result.current.placeable).toHaveLength(1));
     act(() => result.current.resolver.ensure(1));
-    await waitFor(() => expect(d.getNoteAttachmentObjectUrl).toHaveBeenCalled());
+    await waitFor(() => expect(d.getNoteAttachmentBlob).toHaveBeenCalled());
     unmount();
     expect(URL.revokeObjectURL).not.toHaveBeenCalled();
-    await act(async () => { release('blob:late'); await Promise.resolve(); });
+    await act(async () => { release(blobFor('blob:late')); await Promise.resolve(); });
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:late');
   });
 

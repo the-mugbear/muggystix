@@ -11,7 +11,7 @@
  * administers (archived included) and reads and writes each row through its
  * own project.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Copy, Download, History, Search, X } from 'lucide-react';
@@ -89,9 +89,6 @@ export interface RemediationWorkListProps {
   projects?: Array<{
     project_id: number; name: string; archived: boolean; states: Record<RemediationState, number>;
   }>;
-  /** Told each page that loads, for the page's lead sentence — the
-   *  cross-project page only, until it reads through `children` too. */
-  onLoaded?: (page: RemediationPage, filtered: boolean) => void;
   /** The page around the list, drawn with what the list has loaded: the
    *  answer on screen (null until the first), whether it was asked for under
    *  a filter, and the list itself to place.  The page's lead, and anything
@@ -108,7 +105,7 @@ export interface RemediationWorkListProps {
 }
 
 export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
-  scope, canWrite, policy, projects, onLoaded, canOpen, onOpen, where = 'in this project', children,
+  scope, canWrite, policy, projects, canOpen, onOpen, where = 'in this project', children,
 }) => {
   const toast = useToast();
   const across = scope === 'all';
@@ -223,14 +220,6 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   if (list.lastResponse && answered?.page !== list.lastResponse) {
     setAnswered({ page: list.lastResponse, filtered });
   }
-  // (hazard — removable: `onLoaded` copies the answer into the PAGE's state
-  // from an effect.  `pages/Remediation` reads it through `children` instead;
-  // `pages/RemediationDeadlines` is the one caller left, and the prop and
-  // this effect go when it does the same.)
-  useEffect(() => {
-    if (list.lastResponse) onLoaded?.(list.lastResponse, filtered);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [list.lastResponse]);
 
   // The contacts and the teams, each read only while its view is open.  The
   // project page asks its own project; across projects it is the chosen one,

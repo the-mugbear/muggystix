@@ -32,7 +32,7 @@
 import { useCallback, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { getFindingImages, getNoteAttachmentObjectUrl } from '../services/api';
+import { getFindingImages, getNoteAttachmentBlob } from '../services/api';
 import type { FindingImage } from '../services/api';
 import { queryErrorText } from '../lib/query';
 import { EvidenceImages, ImageListStatus, ImageThumbnails } from '../utils/evidenceImages';
@@ -41,7 +41,7 @@ import { useProjectId } from './useProjectId';
 
 export interface FindingImagesDeps {
   getFindingImages: typeof getFindingImages;
-  getNoteAttachmentObjectUrl: typeof getNoteAttachmentObjectUrl;
+  getNoteAttachmentBlob: typeof getNoteAttachmentBlob;
 }
 
 export interface FindingImagesState {
@@ -67,7 +67,7 @@ export interface FindingImagesState {
 
 // Built on use, not at import: a page test that mocks the `services/api`
 // barrel without these two would otherwise fail on import.
-const defaultDeps = (): FindingImagesDeps => ({ getFindingImages, getNoteAttachmentObjectUrl });
+const defaultDeps = (): FindingImagesDeps => ({ getFindingImages, getNoteAttachmentBlob });
 
 const NO_IMAGES: FindingImage[] = [];
 
@@ -100,7 +100,7 @@ export function useFindingImages(
   // may be asked for at all: only an image on the finding's own list.
   const {
     urls, failed, request, retry: fetchAgain,
-  } = useAttachmentImages(findingId, deps.getNoteAttachmentObjectUrl);
+  } = useAttachmentImages(findingId, deps.getNoteAttachmentBlob);
 
   const placeable = useMemo(() => images.filter((i) => i.in_report && i.printable), [images]);
   const byId = useMemo(() => new Map(placeable.map((i) => [i.id, i])), [placeable]);

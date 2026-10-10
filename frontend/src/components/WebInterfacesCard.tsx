@@ -64,18 +64,19 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count, ro
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxCaption, setLightboxCaption] = useState<string>('');
   // Asked for on click, one screenshot at a time; `null` = the server has none.
-  // The answer is an object URL, which the browser keeps until it is revoked:
-  // it is held in the card's store (`lib/objectUrls`), which has room for ONE
-  // screenshot.  Asking for the next releases the one on show; one that
-  // arrives for a click the reader has since replaced, or after the card has
-  // gone, is never on show and is revoked as it arrives (code review
-  // 2026-10-09); the card going releases the last.
+  // The answer is the image's bytes, shown from an object URL, which the
+  // browser keeps until it is revoked: the URL is made and held by the card's
+  // store (`lib/objectUrls`), which has room for ONE screenshot.  Asking for
+  // the next releases the one on show; one that arrives for a click the
+  // reader has since replaced, or after the card has gone, is never on show
+  // and its URL is revoked as it arrives (code review 2026-10-09); the card
+  // going releases the last.
   const shown = useObjectUrls<'screenshot'>();
   const screenshot = useMutation({
     mutationFn: async (row: WebInterface) => {
       const claim = shown.claim('screenshot');
-      const url = await fetchWebInterfaceScreenshot(projectId, row.id);
-      return url ? claim.accept(url) : null;
+      const bytes = await fetchWebInterfaceScreenshot(projectId, row.id);
+      return bytes ? claim.acceptBlob(bytes) : null;
     },
   });
   const lightboxSrc = screenshot.data ?? null;

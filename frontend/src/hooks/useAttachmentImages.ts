@@ -15,13 +15,15 @@
  *   - One that could not be fetched is `failed(id)` — said, with `retry(id)`,
  *     never a spinner for ever; asking again does not hammer it.
  *
- * The request is a mutation, not a query: what comes back is an object URL,
- * which is not something to cache and read again (it is revoked).
+ * The request is a mutation, not a query: the bytes that come back are held
+ * once, behind an object URL made by `lib/objectUrls` as they arrive — a URL
+ * is not something to cache and read again (it is revoked), and the bytes are
+ * not kept a second time in a query's cache.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 
-import { getNoteAttachmentObjectUrl } from '../services/api';
+import { getNoteAttachmentBlob } from '../services/api';
 import { ObjectUrlClaim, useObjectUrls } from '../lib/objectUrls';
 import { IMAGE_FETCH_CONCURRENCY, ImageThumbnails } from '../utils/evidenceImages';
 import { runLimited } from '../utils/runLimited';
@@ -58,16 +60,16 @@ const withoutUrls = (urls: Record<number, string>, drop: (id: number) => boolean
  * @param scope    What the images belong to (the finding's id).  Another
  *                 scope starts empty: the earlier one's URLs are revoked and
  *                 its late answers dropped.
- * @param fetchUrl The API function, injectable for a `renderHook` test; the
- *                 barrel's is read only when a fetch is made.
+ * @param fetchBlob The API function, injectable for a `renderHook` test; the
+ *                  barrel's is read only when a fetch is made.
  */
 export function useAttachmentImages(
   scope: unknown,
-  fetchUrl?: typeof getNoteAttachmentObjectUrl,
+  fetchBlob?: typeof getNoteAttachmentBlob,
 ): AttachmentImages {
   const projectId = useProjectId();
   const { mutateAsync: fetchBytes } = useMutation({
-    mutationFn: (id: number) => (fetchUrl ?? getNoteAttachmentObjectUrl)(projectId, id),
+    mutationFn: (id: number) => (fetchBlob ?? getNoteAttachmentBlob)(projectId, id),
     gcTime: 0,
   });
   const store = useObjectUrls<number>();
@@ -90,9 +92,10 @@ export function useAttachmentImages(
     // Let go while it waited its turn: nothing would show it.
     if (!claim.isCurrent()) return;
     try {
-      // A URL nobody will show (the owner has gone, another scope, let go
-      // meanwhile) is revoked by the claim, here, where it arrives.
-      const url = claim.accept(await fetchBytes(id));
+      // The URL of the bytes is made by the claim, here, where they arrive —
+      // and one nobody will show (the owner has gone, another scope, let go
+      // meanwhile) is revoked by it at once.
+      const url = claim.acceptBlob(await fetchBytes(id));
       if (url !== null) setUrls((m) => ({ ...m, [id]: url }));
     } catch {
       if (claim.isCurrent()) setFailedIds((prev) => new Set(prev).add(id));

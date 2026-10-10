@@ -376,7 +376,6 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
           attachments={note.attachments ?? []}
           canManage={canManage}
           uploadFn={(file) => uploadFindingNoteAttachment(projectId, findingId, note.id, file)}
-          onChanged={() => void load()}
           reportMarking={reportMarking}
         />
       </MessageBubble>

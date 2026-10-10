@@ -2,7 +2,7 @@
  * 5.340.0 — the cross-project Remediation deadlines page, the installation's
  * settings section, and where a deadline alert opens.
  */
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -115,6 +115,39 @@ describe('Remediation deadlines (across projects)', () => {
     ));
     const lead = await screen.findByText(/due within 7 days/);
     expect(lead).toHaveTextContent('3 overdue and 0 due within 7 days, of 8 open findings on hosts');
+  });
+
+  // The lead is read where it is shown — from the list's answer on screen,
+  // through the work list's `children` (it was page state an effect filled
+  // through `onLoaded`).  What it says belongs to the ANSWER: "in this
+  // selection" comes with the narrowed answer's counts, not with the click.
+  it('the lead follows the answer on screen: its counts and "in this selection" arrive together', async () => {
+    const { container } = show();
+    const lead = await screen.findByText(/due within 7 days/);
+    expect(lead).toHaveTextContent(
+      '3 overdue and 0 due within 7 days, of 8 open findings on hosts across the projects you administer. '
+      + '5 have not been assigned, so no deadline is running.');
+    // The page is laid out as it was: the lead under the title, the projects,
+    // the list, the trend — in that order.
+    const order = (text: string) => container.textContent?.indexOf(text) ?? -1;
+    expect(order('Remediation deadlines')).toBeLessThan(order('due within 7 days'));
+    expect(screen.getAllByRole('heading').map((h) => h.textContent?.replace(/\d+$/, '')))
+      .toEqual(['Remediation deadlines', 'Projects', 'Findings on hosts', 'Over time']);
+
+    let answer: (v: unknown) => void = () => undefined;
+    const whole = await listRemediationOverview.mock.results[0].value;
+    listRemediationOverview.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    const projects = screen.getByRole('table', { name: 'Remediation deadlines by project' });
+    fireEvent.click(within(projects).getByRole('button', { name: 'Old engagement: show overdue (1)' }));
+    await waitFor(() => expect(listRemediationOverview).toHaveBeenLastCalledWith(
+      expect.objectContaining({ project_id: 9, state: ['overdue'] }), expect.anything()));
+    // Still the answer that is on screen, said as what it was asked for.
+    expect(lead).toHaveTextContent('of 8 open findings on hosts across the projects you administer.');
+    await act(async () => {
+      answer({ ...whole, items: [row(2, 9, 'Old engagement')], total: 1, state_counts: states({ overdue: 1, closed: 3 }) });
+    });
+    await waitFor(() => expect(lead).toHaveTextContent(
+      '1 overdue and 0 due within 7 days, of 1 open finding on a host in this selection.'));
   });
 
   it('names each row’s project, links nowhere outside it, and saves through that project', async () => {

@@ -7,10 +7,11 @@ import { StrictMode } from 'react';
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../services/api', () => ({ getNoteAttachmentObjectUrl: vi.fn() }));
+vi.mock('../../services/api', () => ({ getNoteAttachmentBlob: vi.fn() }));
 
 import { useAttachmentImages } from '../../hooks/useAttachmentImages';
 import { ObjectUrlStore, useBlobUrl, useObjectUrls } from '../../lib/objectUrls';
+import { blobFor, installBlobUrls } from '../helpers/blobUrls';
 
 const revoked: string[] = [];
 beforeEach(() => {
@@ -61,6 +62,21 @@ describe('ObjectUrlStore', () => {
     store.release(1);
     expect(claim.accept('blob:late')).toBeNull();
     expect(revoked).toEqual(['blob:late']);
+  });
+
+  // The store makes the URL of bytes itself (`putBlob`, `acceptBlob`): nothing
+  // else in `src/` calls `URL.createObjectURL` for something on screen.
+  it('makes the URL of bytes: held while its claim is current, revoked at once when it is not', () => {
+    const store = new ObjectUrlStore<string>();
+    expect(store.putBlob('a', new Blob(['first']))).toBe('blob:made-1');
+    expect(store.get('a')).toBe('blob:made-1');
+    const earlier = store.claim('a');
+    const later = store.claim('a');
+    expect(revoked).toEqual(['blob:made-1']);
+    expect(later.acceptBlob(new Blob(['second']))).toBe('blob:made-2');
+    expect(earlier.acceptBlob(new Blob(['late']))).toBeNull();
+    expect(revoked).toEqual(['blob:made-1', 'blob:made-3']);
+    expect(store.get('a')).toBe('blob:made-2');
   });
 
   it('keepOnly releases the rest, held or on its way', () => {
@@ -147,19 +163,22 @@ describe('useBlobUrl', () => {
 });
 
 describe('useAttachmentImages — what the cache lets go', () => {
-  const fetchUrl = vi.fn();
+  const fetchBlob = vi.fn();
   // Past the queue's own tick and the mutation's.
   const flush = () => act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+  // The API answers with an image's bytes (`blobFor(url)`); the cache makes
+  // the object URL of them, which is `url` here.
   beforeEach(() => {
-    fetchUrl.mockReset().mockImplementation((_projectId: number, id: number) => Promise.resolve(`blob:${id}`));
+    installBlobUrls();
+    fetchBlob.mockReset().mockImplementation((_projectId: number, id: number) => Promise.resolve(blobFor(`blob:${id}`)));
   });
 
   it('another scope: the earlier images are revoked at once, and a late one on arrival', async () => {
-    let late!: (url: string) => void;
-    fetchUrl.mockImplementation((_projectId: number, id: number) => (id === 2
-      ? new Promise<string>((resolve) => { late = resolve; })
-      : Promise.resolve(`blob:${id}`)));
-    const { result, rerender } = renderHook(({ scope }) => useAttachmentImages(scope, fetchUrl), {
+    let late!: (bytes: Blob) => void;
+    fetchBlob.mockImplementation((_projectId: number, id: number) => (id === 2
+      ? new Promise<Blob>((resolve) => { late = resolve; })
+      : Promise.resolve(blobFor(`blob:${id}`))));
+    const { result, rerender } = renderHook(({ scope }) => useAttachmentImages(scope, fetchBlob), {
       initialProps: { scope: 7 },
     });
     act(() => { result.current.request(1); result.current.request(2); });
@@ -169,21 +188,21 @@ describe('useAttachmentImages — what the cache lets go', () => {
     rerender({ scope: 8 });
     expect(result.current.urls).toEqual({});
     expect(revoked).toEqual(['blob:1']);
-    await act(async () => { late('blob:2'); await Promise.resolve(); });
+    await act(async () => { late(blobFor('blob:2')); await Promise.resolve(); });
     expect(revoked).toEqual(['blob:1', 'blob:2']);
     expect(result.current.urls).toEqual({});
     // The same id may be asked for again in the new scope.
     act(() => result.current.request(1));
     await flush();
     expect(result.current.urls).toEqual({ 1: 'blob:1' });
-    expect(fetchUrl).toHaveBeenCalledTimes(3);
+    expect(fetchBlob).toHaveBeenCalledTimes(3);
   });
 
   it('keepOnly: an image no longer shown is revoked, its failure forgotten, and it can be asked for again', async () => {
-    fetchUrl.mockImplementation((_projectId: number, id: number) => (id === 3
+    fetchBlob.mockImplementation((_projectId: number, id: number) => (id === 3
       ? Promise.reject(new Error('503'))
-      : Promise.resolve(`blob:${id}`)));
-    const { result } = renderHook(() => useAttachmentImages(null, fetchUrl));
+      : Promise.resolve(blobFor(`blob:${id}`))));
+    const { result } = renderHook(() => useAttachmentImages(null, fetchBlob));
     act(() => { [1, 2, 3].forEach((id) => result.current.request(id)); });
     await flush();
     expect(result.current.urls).toEqual({ 1: 'blob:1', 2: 'blob:2' });
@@ -201,17 +220,17 @@ describe('useAttachmentImages — what the cache lets go', () => {
 
   it('an image that waited its turn for an owner that has gone is not fetched', async () => {
     const releases: Array<() => void> = [];
-    fetchUrl.mockImplementation((_projectId: number, id: number) => new Promise<string>((resolve) => {
-      releases.push(() => resolve(`blob:${id}`));
+    fetchBlob.mockImplementation((_projectId: number, id: number) => new Promise<Blob>((resolve) => {
+      releases.push(() => resolve(blobFor(`blob:${id}`)));
     }));
-    const { result, unmount } = renderHook(() => useAttachmentImages(null, fetchUrl));
+    const { result, unmount } = renderHook(() => useAttachmentImages(null, fetchBlob));
     act(() => { [1, 2, 3, 4, 5, 6].forEach((id) => result.current.request(id)); });
     await flush();
-    expect(fetchUrl).toHaveBeenCalledTimes(4);   // the limit
+    expect(fetchBlob).toHaveBeenCalledTimes(4);   // the limit
     unmount();
     releases.forEach((release) => release());
     await flush();
-    expect(fetchUrl).toHaveBeenCalledTimes(4);
+    expect(fetchBlob).toHaveBeenCalledTimes(4);
     expect([...revoked].sort()).toEqual(['blob:1', 'blob:2', 'blob:3', 'blob:4']);
   });
 });

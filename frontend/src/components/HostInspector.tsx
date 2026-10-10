@@ -727,12 +727,13 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   };
 
   const addPendingImages = useCallback((files: File[]) => {
+    // The preview's URL is made by the store that will revoke it.  (None is
+    // handed back only once the inspector has gone — nothing would show it.)
     const imgs = files
       .filter((f) => f.type.startsWith('image/'))
-      .map((file) => {
-        const url = URL.createObjectURL(file);
-        previews.put(file, url);
-        return { file, url };
+      .flatMap((file) => {
+        const url = previews.putBlob(file, file);
+        return url === null ? [] : [{ file, url }];
       });
     if (imgs.length) setPendingImages((prev) => [...prev, ...imgs]);
   }, [previews]);

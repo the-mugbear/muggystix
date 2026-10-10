@@ -16,6 +16,7 @@ vi.mock('../../services/api', () => api);
 
 import WebInterfacesCard from '../../components/WebInterfacesCard';
 import { TooltipProvider } from '../../components/ui/tooltip';
+import { blobFor, installBlobUrls } from '../helpers/blobUrls';
 
 const row = (over: Record<string, unknown>) => ({
   id: 1, source: 'eyewitness', url: 'https://10.0.0.5:8443/', protocol: 'https', port: 8443,
@@ -34,7 +35,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
   URL.revokeObjectURL = vi.fn();
-  api.fetchWebInterfaceScreenshot.mockResolvedValue('blob:shot');
+  // The bytes; the card's store makes the object URL of them.
+  installBlobUrls();
+  api.fetchWebInterfaceScreenshot.mockResolvedValue(blobFor('blob:shot'));
 });
 
 describe('WebInterfacesCard — history stays reachable', () => {

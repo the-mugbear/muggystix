@@ -406,15 +406,10 @@ const Scopes: React.FC = () => {
     });
   };
 
-  // A single subnet's label change, without re-reading the scope: the PUT
-  // answered with the subnet's labels, so they are put on its row where it
-  // is.  (The editor re-reads the catalogue's counts.)
-  const applyLabelEdit = (subnetId: number, nextLabels: SubnetLabelInfo[]) => {
-    subnetList.mapRows((s) => (s.id === subnetId ? { ...s, labels: nextLabels } : s));
-  };
-
   // A subnet's label chips and their editor — in the Labels column, or inside
-  // the row's editor while the row is being edited (v5.289.0).
+  // the row's editor while the row is being edited (v5.289.0).  The editor
+  // puts a saved change on the subnet's row itself (the PUT answers with the
+  // subnet's labels), without re-reading the scope.
   const renderLabels = (subnet: { id: number; cidr: string }, subnetLabels: SubnetLabelInfo[]) => (
     <div className="flex flex-wrap items-center gap-xxs">
       {subnetLabels.length === 0 ? (
@@ -429,7 +424,6 @@ const Scopes: React.FC = () => {
         subnetId={subnet.id}
         subnetCidr={subnet.cidr}
         currentLabels={subnetLabels}
-        onSaved={(next) => applyLabelEdit(subnet.id, next)}
       >
         <Button
           variant="ghost"

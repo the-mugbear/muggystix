@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useMutation, useQuery, useQueryClient, type InfiniteData, type QueryClient,
+} from '@tanstack/react-query';
 import { Loader2, Pencil, Plus, Trash2, X as CloseIcon } from 'lucide-react';
 
 import {
@@ -381,15 +383,39 @@ interface SubnetLabelEditorPopoverProps {
   subnetId: number;
   subnetCidr: string;
   currentLabels: SubnetLabelInfo[];
-  // The subnet's labels as the server now has them: the owner puts them on
-  // its row.  The catalogue's counts are re-read here.
-  onSaved: (next: SubnetLabelInfo[]) => void;
   // Anchor element (the small "Edit labels" button rendered in the row).
   children: React.ReactNode;
 }
 
+/**
+ * The scope's subnets as they are cached: the Scope page reads them as a
+ * "Show more" list (`useListQuery('getDefaultScope', …)`), so a cached read
+ * is pages of rows (`items`).
+ */
+type CachedSubnets = InfiniteData<{ items: Array<{ id: number; labels?: SubnetLabelInfo[] }> }>;
+
+/**
+ * Put a subnet's labels — the server's answer to a save — on its row in
+ * every cached read of the project's scope (whatever its search), on
+ * whichever loaded page the row is.  The change shows at once and the scope
+ * is not read again (a re-read asks for every loaded page).
+ */
+const putSubnetLabels = (
+  queryClient: QueryClient, projectId: number, subnetId: number, labels: SubnetLabelInfo[],
+): void => {
+  queryClient.setQueriesData<CachedSubnets>({ queryKey: ['getDefaultScope', projectId] }, (old) => (
+    old?.pages ? {
+      ...old,
+      pages: old.pages.map((page) => ({
+        ...page,
+        items: page.items.map((row) => (row.id === subnetId ? { ...row, labels } : row)),
+      })),
+    } : old
+  ));
+};
+
 export const SubnetLabelEditorPopover: React.FC<SubnetLabelEditorPopoverProps> = ({
-  subnetId, subnetCidr, currentLabels, onSaved, children,
+  subnetId, subnetCidr, currentLabels, children,
 }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -421,8 +447,11 @@ export const SubnetLabelEditorPopover: React.FC<SubnetLabelEditorPopoverProps> =
 
   const save = useMutation({
     mutationFn: (ids: number[]) => replaceSubnetLabels(projectId, subnetId, ids),
+    // The PUT answers with the subnet's labels as the server now has them:
+    // they go on its row here (no owner is handed them), and the catalogue's
+    // counts are read again.
     onSuccess: (next) => {
-      onSaved(next);
+      putSubnetLabels(queryClient, projectId, subnetId, next);
       void queryClient.invalidateQueries({ queryKey: ['listSubnetLabels', projectId] });
       setOpen(false);
     },

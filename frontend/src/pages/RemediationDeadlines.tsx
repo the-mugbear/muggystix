@@ -63,8 +63,6 @@ const RemediationDeadlines: React.FC = () => {
   const projects: RemediationProjects | null = query.data ?? null;
   const error = queryErrorText(query.error, 'The projects could not be loaded.');
   const load = () => { void query.refetch(); };
-  const [page, setPage] = useState<RemediationPage | null>(null);
-  const [filtered, setFiltered] = useState(false);
   const [showIdle, setShowIdle] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -112,7 +110,12 @@ const RemediationDeadlines: React.FC = () => {
   const shown = showIdle ? ranked : ranked.filter(tracked);
   const idleUnassigned = idle.reduce((sum, p) => sum + p.states.not_assigned, 0);
 
-  return (
+  // The page around the work list, drawn with what the list has on screen:
+  // the lead reads the list's answer where it is shown (the list hands it to
+  // its `children`), never from a copy kept in this page's state.
+  const layout = ({ page, filtered, list }: {
+    page: RemediationPage | null; filtered: boolean; list: React.ReactNode;
+  }) => (
     <div className="flex flex-col gap-lg p-md md:p-lg">
       <div className="min-w-0">
         <h1 className="text-page-title">Remediation deadlines</h1>
@@ -197,18 +200,7 @@ const RemediationDeadlines: React.FC = () => {
           </PostureSection>
 
           <div ref={listRef} className="scroll-mt-16">
-            <PostureSection title="Findings on hosts">
-              <RemediationWorkList
-                scope="all"
-                canWrite
-                policy={policy}
-                projects={projects?.items}
-                onLoaded={(next, isFiltered) => { setPage(next); setFiltered(isFiltered); }}
-                canOpen={canOpen}
-                onOpen={onOpen}
-                where="across the projects you administer"
-              />
-            </PostureSection>
+            <PostureSection title="Findings on hosts">{list}</PostureSection>
           </div>
 
           <PostureSection title="Over time">
@@ -217,6 +209,22 @@ const RemediationDeadlines: React.FC = () => {
         </>
       )}
     </div>
+  );
+
+  // With no project to administer there is no list to read (and none is asked for).
+  if (none) return layout({ page: null, filtered: false, list: null });
+  return (
+    <RemediationWorkList
+      scope="all"
+      canWrite
+      policy={policy}
+      projects={projects?.items}
+      canOpen={canOpen}
+      onOpen={onOpen}
+      where="across the projects you administer"
+    >
+      {layout}
+    </RemediationWorkList>
   );
 };
 
