@@ -1,22 +1,16 @@
 """
 Server-side prompt sanitizer.
 
-Audit finding H2: the client-side ``promptSanitizer.ts`` stripped
-agent API keys and inlined scanner credentials before the
-``InAppAgentPanel`` posted to ``/llm-providers/{id}/complete``, but
-the backend endpoint itself did no scrubbing.  A user who bypassed
-the frontend (direct curl, scripted client, compromised analyst
-session) could deliberately include a real agent API key or
-credential in the ``prompt`` body and the backend would forward the
-full text to the configured LLM provider, where it would land in the
-provider's request log.
+Text sent to a configured LLM provider (``POST /llm-providers/{id}/complete``,
+the report drafter) lands in that provider's request log, so secret-shaped
+strings are replaced first: a BlueStick agent key (as an ``X-API-Key`` line
+or bare) and the well-known third-party token formats.
 
-This module mirrors ``frontend/src/utils/promptSanitizer.ts`` at the
-bullet / pattern level.  Keep them in sync when patterns change —
-the frontend version is defense-in-depth (makes the intent visible
-to users and prevents accidental leakage via the happy path), and
-the server version is the enforcement point (catches anything that
-bypasses the frontend).
+There is no rule for scanner-integration credentials any more.  The one that
+existed redacted the labelled bullets the session prompt used to print
+(``- Access key: `…```); nothing prints an integration's credentials now —
+they leave the server only through the agents' recorded request — so the rule
+had nothing to match and went with the block (2.482.0).
 
 The sanitizer is intentionally aggressive: false positives (redacting
 non-secret text that happens to match a pattern) are cheap — the LLM
@@ -47,19 +41,7 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
         ),
         f"X-API-Key: {_REDACTED}",
     ),
-    # 2. Inlined scanner-credential bullets emitted by
-    #    ``agent_prompt_service._integration_block``.  The template
-    #    shape is ``  - <Label>: `<value>``` (backtick-wrapped
-    #    value after a label).  Redact the value, keep the label so
-    #    the LLM can still reason about the structure of the prompt.
-    (
-        re.compile(
-            r"^(\s*-\s*(?:Access key|Secret key|Password|Username|API key|PDCP token|Secret)\s*:\s*)`[^`]*`",
-            re.IGNORECASE | re.MULTILINE,
-        ),
-        rf"\1`{_REDACTED}`",
-    ),
-    # 3. Defense in depth — any bare ``nm_agent_...`` token elsewhere
+    # 2. Defense in depth — any bare ``nm_agent_...`` token elsewhere
     #    in the text gets stripped.  The 20+ char minimum avoids
     #    false-matching shorter strings that happen to start with
     #    ``nm_agent_`` (prompt-version strings, etc).
@@ -67,12 +49,11 @@ _PATTERNS: list[tuple[re.Pattern, str]] = [
         re.compile(r"nm_agent_[A-Za-z0-9_-]{20,}"),
         _REDACTED,
     ),
-    # 4. Well-known third-party secret formats.  These prompts are
+    # 3. Well-known third-party secret formats.  These prompts are
     #    forwarded to whatever LLM provider the operator configured, so
     #    a pasted cloud / API credential (not just a BlueStick agent key)
     #    would land in that provider's request log.  Same cheap-redaction
-    #    posture: err on the side of over-stripping.  Keep in sync with
-    #    frontend/src/utils/promptSanitizer.ts.
+    #    posture: err on the side of over-stripping.
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), _REDACTED),            # AWS access key id
     (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"), _REDACTED),       # OpenAI-style secret key
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), _REDACTED),  # GitHub tokens

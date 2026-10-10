@@ -7,6 +7,9 @@ status.  Split out of agent_api.py.
 Every read is bounded by the key's project; nothing narrows one to a scope,
 and a scope's own hosts are read through /agent/scopes/{scope_id}/….  The
 inventory reads agents mostly use are /agent/assist/* (agent_assist.py).
+
+Also here: the recorded request for one configured scanner's credentials
+(``POST /agent/scanner-integrations/{integration_id}/credentials``).
 """
 import logging
 from datetime import datetime
@@ -31,6 +34,7 @@ from app.api.deps import (
     agent_session_metadata_write,
     authenticate_for_renewal,
     check_agent_rate_limit,
+    get_client_info,
     session_renewal_deadline,
 )
 from app.core.security import check_permissions
@@ -50,7 +54,10 @@ from app.api.v1.endpoints.agent_schemas import (
     AgentNoteCreate, AgentNoteResponse, AgentFollowRequest, FOLLOW_CLEAR,
     AgentHostUpdate, AgentHostUpdateResponse,
     AgentToolSuggestionRequest, AgentToolSuggestionResponse,
+    ScannerCredentialsRequest, ScannerCredentialsResponse,
 )
+from app.services.agent_policy import SCANNER_ASK_FIRST_REFUSAL, SCANNER_CREDENTIALS_NOTE
+from app.services.integration_service import IntegrationService, share_credentials_with_agent
 from app.api.v1.endpoints.agent_common import (
     PORTS_PARAM_HELP, SEARCH_PARAM_HELP, SERVICES_PARAM_HELP, SEVERITY_FLAGS_HELP,
     STATE_PARAM_HELP, SUBNETS_PARAM_HELP,
@@ -346,6 +353,53 @@ def suggest_tool(
             else f"Recorded {entry.name} as a catalogue suggestion for a curator."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# A configured scanner's credentials — one integration, on a recorded request
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/scanner-integrations/{integration_id}/credentials",
+    response_model=ScannerCredentialsResponse,
+    summary="Request one configured scanner's credentials (recorded)",
+)
+def request_scanner_credentials(
+    body: ScannerCredentialsRequest,
+    request: Request,
+    integration_id: int = Path(..., ge=1),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """Hand the agent ONE scanner integration's credentials, and record it.
+
+    A POST that declares nothing, so the gate's default holds: the key's
+    operator must be able to WRITE to the project (analyst and above; an
+    auditor's or a viewer's agent is refused 403).  Integrations are the
+    installation's, so any project's session may ask for any active one.
+
+    ``operator_agreed`` is the agent's statement that it asked.  The server
+    cannot check a conversation it never sees, so nothing here is an approval:
+    what it does is refuse a request that does not make the statement, and
+    write an audit row (``scanner_credentials_shared``: the operator, the
+    project, the session, the integration — no secret) in this request's own
+    transaction, before the credentials are returned.
+    """
+    if body.operator_agreed is not True:
+        raise HTTPException(status_code=422, detail=SCANNER_ASK_FIRST_REFUSAL)
+    row = IntegrationService(db).get(integration_id)
+    if row is None or not row.is_active:
+        raise HTTPException(status_code=404, detail="No active scanner integration has that id")
+    shared = share_credentials_with_agent(
+        db,
+        row,
+        operator_id=request.state.key_operator_id,
+        project_id=request.state.agent_project_id,
+        agent_session_id=getattr(request.state, "agent_session_id", None),
+        **get_client_info(request),
+    )
+    db.commit()
+    return {**shared, "note": SCANNER_CREDENTIALS_NOTE}
 
 
 @router.get("/project", response_model=ProjectInfo, summary="Get project metadata")

@@ -17,6 +17,7 @@ from app.services.agent_policy import (
     SAFETY_RULES,
     render_safety_rules,
     render_read_back,
+    render_scanner_integrations_rule,
 )
 from app.services.agent_prompt_service import build_session_instructions
 
@@ -93,12 +94,39 @@ def test_the_mcp_opening_renders_the_same_rules_as_the_prompt():
     assert render_safety_rules(over_mcp=True) in opening
     assert render_read_back(over_mcp=True) in opening
     assert render_key_expiry_guidance(over_mcp=True) in opening
+    assert render_scanner_integrations_rule(over_mcp=True) in opening
+    assert render_scanner_integrations_rule() in _session()
     # Named as tools, and plain text: no route, no Markdown.
     assert "agent_identity" in opening and "session_renew" in opening
     assert "**" not in opening and "GET /agent/identity" not in opening
     # Nothing about the tool catalogue or the retired plans.
     for absent in ("list_tools", "test plan"):
         assert absent not in opening
+
+
+def test_the_scanner_rule_asks_first_and_claims_nothing_the_server_cannot_back():
+    """Owner, 2026-10-10: the agent asks the operator before using a
+    configured scanner and says that credentials will be shared from BlueStick
+    to the agent.  The rule is an instruction — the server never sees the
+    conversation — so it says what is true (asked, one scanner, recorded) and
+    never that BlueStick approves, verifies or enforces the answer."""
+    from app.services.agent_policy import SCANNER_ASK_FIRST_REFUSAL, SCANNER_CONSENT_MEANING
+
+    curl, mcp = render_scanner_integrations_rule(), render_scanner_integrations_rule(over_mcp=True)
+    assert "`GET /agent/assist/scanner-integrations`" in curl
+    assert "`POST /agent/scanner-integrations/{integration_id}/credentials`" in curl
+    assert "list_scanner_integrations" in mcp and "request_scanner_credentials" in mcp
+    assert "`" not in mcp and "/agent/" not in mcp
+    for text in (curl, mcp, SCANNER_ASK_FIRST_REFUSAL):
+        assert "ask the operator" in text.lower()
+        assert SCANNER_CONSENT_MEANING in text
+        assert "shares that scanner's credentials with you" in text
+        lowered = text.lower()
+        for claim in ("enforce", "approv", "verif", "gated", "guarantee"):
+            assert claim not in lowered, claim
+    for text in (curl, mcp):
+        assert "for that one scanner" in text and "every request is recorded" in text
+        assert "out of notes, evidence, feedback and proposals" in text
 
 
 def test_both_doors_read_the_401_where_the_server_puts_it():

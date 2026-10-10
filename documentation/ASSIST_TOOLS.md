@@ -72,6 +72,7 @@ returning from leave.
 | Of the hosts assessed for vulnerabilities, how many the scanner logged in to | `assist_get_coverage` → the `vuln_assessment` domain's `credentialed` (`credentialed` / `not_credentialed` / `credentials_not_stated`, adding up to the assessed count); `assist_list_hosts q=vulnscan:credentialed\|uncredentialed\|unstated` lists each; one host: `assist_get_host` → `assessment.vuln_scan_credentialed` (`yes` / `no` / `not_stated`, null when not assessed) |
 | What's the headline condition, and why | `assist_get_posture` |
 | How many hosts match X | `assist_count_hosts` |
+| Which scanners this installation has configured | `list_scanner_integrations` — name, type and address, never credentials (not an `assist_*` tool: the list is the installation's, not the project's). Using one means asking the operator first and then `request_scanner_credentials`; [MCP.md](MCP.md) §6 |
 
 **`assist_get_posture`** wraps `posture_service` — the executive condition, the
 signals behind it, and the finding disposition. It is the single call that

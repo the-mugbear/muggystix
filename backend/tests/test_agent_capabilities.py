@@ -81,6 +81,11 @@ GATED_PROJECT_WRITES = {
     ("POST", "/api/v1/agent/proposals/finding-text"),
     ("POST", "/api/v1/agent/proposals/observation"),
     ("POST", "/api/v1/agent/uploads"),
+    # v2.482.0 — one configured scanner's credentials.  It writes no project
+    # data, but it is deliberately NOT a session-metadata write: a read-only
+    # operator's agent must be refused the installation's scanner credentials
+    # (owner, 2026-10-10: only an operator who can write to the project).
+    ("POST", "/api/v1/agent/scanner-integrations/{integration_id}/credentials"),
 }
 
 #: Not under /agent, but mutation-capable: tools/call loops back into the

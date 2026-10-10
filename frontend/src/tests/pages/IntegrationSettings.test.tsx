@@ -1,15 +1,19 @@
 /**
  * Scanner Integrations — who may do what (branch review 2026-10-01 S5).
  *
- * The list is account-level and open to every signed-in user, so the route is
- * `viewer` (it was the PROJECT analyst, which refused a viewer of the selected
- * project).  Adding, editing and deleting need the GLOBAL administrator; the
- * page does not render those controls for anyone else.
+ * The list is the INSTALLATION's (one for every project, whoever configured
+ * each — 5.375.0) and open to every signed-in user, so the route is `viewer`
+ * (it was the PROJECT analyst, which refused a viewer of the selected
+ * project).  Adding, editing and deleting need the GLOBAL administrator, on
+ * any row; the page does not render those controls for anyone else.  No
+ * secret is ever on the page: the server sends none.
  */
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TooltipProvider } from '../../components/ui/tooltip';
+import { createQueryClient } from '../../lib/query';
+import { heldByMutations, withClient } from '../helpers/heldByMutations';
 
 vi.mock('../../services/api', () => ({
   listIntegrations: vi.fn(),
@@ -33,9 +37,12 @@ import IntegrationSettings from '../../pages/IntegrationSettings';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
+// Configured by ANOTHER account (the signed-in one is user 1): the list is
+// everyone's, and a global admin's controls are on every row.
 const entry = {
-  id: 4, name: 'Client X Nessus', integration_type: 'nessus', project_id: null, base_url: 'https://nessus.example:8834',
+  id: 4, name: 'Client X Nessus', integration_type: 'nessus', base_url: 'https://nessus.example:8834',
   has_secret: true, has_secret2: false, extra_config: null, is_active: true,
+  created_by: 'someone-else',
   created_at: '2026-09-01T00:00:00Z', updated_at: '2026-09-01T00:00:00Z',
 };
 
@@ -49,31 +56,129 @@ beforeEach(() => {
 });
 
 describe('Scanner Integrations — a member reads, a global admin changes', () => {
-  it('shows a member the integrations without any control that changes them', async () => {
+  it('shows a member another person’s integration without any control that changes it', async () => {
     renderPage();
     expect(await screen.findByText('Client X Nessus')).toBeInTheDocument();
     expect(screen.getByText('Secret set')).toBeInTheDocument();
+    expect(screen.getByText('Configured by someone-else')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Add Integration/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Edit integration/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Delete integration/ })).toBeNull();
     expect(screen.getByText(/A global administrator adds and changes them/)).toBeInTheDocument();
+    // The list is asked for as the installation's: no project, no user.
+    expect(mocked.listIntegrations.mock.calls[0]).toHaveLength(1);
+    expect(mocked.listIntegrations.mock.calls[0][0]).toBeInstanceOf(AbortSignal);
   });
 
   it('an empty list does not tell a member to add one', async () => {
     mocked.listIntegrations.mockResolvedValue([]);
     renderPage();
     expect(await screen.findByText('No integrations configured yet.')).toBeInTheDocument();
-    expect(screen.queryByText(/Add one to make its credentials/)).toBeNull();
+    expect(screen.queryByText(/Add one so that agents/)).toBeNull();
     expect(screen.queryByRole('button', { name: /Add Your First Integration/ })).toBeNull();
   });
 
-  it('shows a global administrator the controls', async () => {
+  it('shows a global administrator the controls on a row someone else configured', async () => {
     account.role = 'admin';
     renderPage();
     expect(await screen.findByText('Client X Nessus')).toBeInTheDocument();
+    expect(screen.getByText('Configured by someone-else')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Add Integration/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Edit integration Client X Nessus' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete integration Client X Nessus' })).toBeInTheDocument();
+  });
+
+  it('says whose it was when the account that configured it is gone', async () => {
+    mocked.listIntegrations.mockResolvedValue([{ ...entry, created_by: null }]);
+    renderPage();
+    expect(await screen.findByText('Configured by an account that has since been removed')).toBeInTheDocument();
+  });
+
+  it('says once what an agent does with these, and claims no approval', async () => {
+    renderPage();
+    await screen.findByText('Client X Nessus');
+    const lead = screen.getByText(/An agent can see that a scanner is configured/);
+    expect(lead).toHaveTextContent('is told to ask its operator before using it');
+    expect(lead).toHaveTextContent('only when it then requests them');
+    expect(lead).toHaveTextContent('every request is recorded');
+    expect(lead).toHaveTextContent('for every project');
+    expect(screen.getAllByText(/An agent can see/)).toHaveLength(1);
+    // The server cannot see the operator's answer: the page does not say it does.
+    expect(document.body.textContent).not.toMatch(/approv|enforc|verif/i);
+    // The per-project model is gone from the page.
+    expect(screen.queryByText('all projects')).toBeNull();
+    expect(screen.queryByText(/session prompt/)).toBeNull();
+  });
+});
+
+describe('Scanner Integrations — no secret is on the page or kept by it', () => {
+  const ACCESS = 'zebra-access-key-3317';
+  const SECRET = 'zebra-secret-key-6652';
+
+  it('renders nothing but "a secret is set" for a stored secret, to a member and to an admin', async () => {
+    for (const role of ['member', 'admin']) {
+      account.role = role;
+      const view = renderPage();
+      await screen.findByText('Client X Nessus');
+      expect(screen.getByText('Secret set')).toBeInTheDocument();
+      // No reveal control and no field holding a stored value.
+      expect(screen.queryByRole('button', { name: /show|reveal/i })).toBeNull();
+      expect(document.querySelectorAll('input')).toHaveLength(0);
+      view.unmount();
+    }
+  });
+
+  it('an admin’s edit dialog opens with empty secret fields', async () => {
+    account.role = 'admin';
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit integration Client X Nessus' }));
+    await screen.findByRole('dialog');
+    expect(screen.getByLabelText(/Access Key/)).toHaveValue('');
+    expect(screen.getByLabelText(/Secret Key/)).toHaveValue('');
+  });
+
+  it('what was typed is not held once the save has settled', async () => {
+    account.role = 'admin';
+    mocked.createIntegration.mockResolvedValue({ ...entry, id: 5, name: 'New one' });
+    const client = createQueryClient();
+    render(<TooltipProvider><IntegrationSettings /></TooltipProvider>, { wrapper: withClient(client) });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Add Integration/ }));
+    await screen.findByRole('dialog');
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'New one' } });
+    fireEvent.change(screen.getByLabelText('Access Key'), { target: { value: ACCESS } });
+    fireEvent.change(screen.getByLabelText('Secret Key'), { target: { value: SECRET } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(mocked.createIntegration).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'New one', secret: ACCESS, secret2: SECRET }),
+    ));
+    // Sent with no project: the integration is the installation's.
+    expect(mocked.createIntegration.mock.calls[0][0]).not.toHaveProperty('project_id');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => {
+      const held = heldByMutations(client);
+      expect(held).not.toContain(ACCESS);
+      expect(held).not.toContain(SECRET);
+    });
+    expect(document.body.textContent).not.toContain(ACCESS);
+  });
+
+  it('nor once a connection test has settled', async () => {
+    account.role = 'admin';
+    mocked.testIntegrationConfig.mockResolvedValue({
+      ok: true, integration_type: 'nessus', message: 'Authenticated.', duration_ms: 12,
+    });
+    const client = createQueryClient();
+    render(<TooltipProvider><IntegrationSettings /></TooltipProvider>, { wrapper: withClient(client) });
+
+    fireEvent.click(await screen.findByRole('button', { name: /Add Integration/ }));
+    await screen.findByRole('dialog');
+    fireEvent.change(screen.getByLabelText('Access Key'), { target: { value: ACCESS } });
+    fireEvent.click(screen.getByRole('button', { name: /Test connection/ }));
+
+    expect(await screen.findByText('Authenticated.')).toBeInTheDocument();
+    await waitFor(() => expect(heldByMutations(client)).not.toContain(ACCESS));
   });
 });
 

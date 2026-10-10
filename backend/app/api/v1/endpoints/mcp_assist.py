@@ -82,6 +82,7 @@ from app.services.agent_policy import (
     render_key_expiry_guidance,
     render_read_back,
     render_safety_rules,
+    render_scanner_integrations_rule,
 )
 from app.services.agent_api_log_service import mcp_loopback_active
 from app.services.agent_prompt_service import resolve_base_url
@@ -133,7 +134,8 @@ def _server_instructions(base_url: str) -> str:
     constant carrying a literal ``{base}`` that nothing ever substituted, so
     every client was handed an unusable URL.
     """
-    # The read-back, the safety rules and the key-expiry handling are RENDERED
+    # The read-back, the safety rules, the key-expiry handling and the
+    # ask-first rule for configured scanners are RENDERED
     # from agent_policy — the same text the pasted session prompt renders — so
     # the two doors cannot drift.  An MCP agent never sees that prompt, so this
     # text has to stand alone.
@@ -154,6 +156,7 @@ def _server_instructions(base_url: str) -> str:
         "the client report says — report text, a new finding, promoting or "
         "dismissing a scanner observation, an endpoint's status — is a proposal "
         "(the propose_* tools) that a person accepts or rejects.\n\n"
+        + render_scanner_integrations_rule(over_mcp=True) + "\n"
         "If your key expires. "
         + render_key_expiry_guidance(over_mcp=True) + "\n"
         "When something here gets in your way — a call you had to retry, a field "

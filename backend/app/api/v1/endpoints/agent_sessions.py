@@ -26,7 +26,6 @@ from app.db.models_agent import AgentSession, AgentSessionWorkflow
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.session import get_db
-from app.services.integration_service import active_integrations_for_prompt
 from app.services.agent_key_ttl import resolve_ttl_hours, session_renewal_deadline
 from app.services.agent_session_service import (
     SESSION_ACTIVE,
@@ -436,9 +435,6 @@ def resume_project_agent_session(
         raw_api_key=raw_key,
         user_label=current_user.full_name or current_user.username,
         user_id=current_user.id,
-        integrations=active_integrations_for_prompt(
-            db, user_id=current_user.id, project_id=project.id,
-        ),
         resumed=True,
     )
     db.commit()

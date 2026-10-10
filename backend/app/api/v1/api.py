@@ -184,15 +184,15 @@ api_router.include_router(
     tags=["llm-providers"],
     dependencies=[Depends(require_password_changed)],
 )
-# Per-user integration credentials (scanner tool creds, self-service).
+# The installation's scanner integrations: every signed-in user reads the
+# list (no secrets), a global admin changes it.  What an agent reads of it and
+# the recorded credential request are agent routes (agent_assist / agent_browse).
 api_router.include_router(
     integrations.router,
     prefix="/integrations",
     tags=["integrations"],
     dependencies=[Depends(require_password_changed)],
 )
-# The agent-facing /agent/integrations route was removed in v2.9.5
-# (code review critical #2) — see integrations.py for the rationale.
 
 # Public reference docs (preflight script, sbom, agents-guide).  No auth
 # dependency — these are intentionally world-readable so an agent can

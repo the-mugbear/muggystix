@@ -51,6 +51,7 @@ read off the server's registry and is the list.
 |---|---|
 | The session itself | `agent_identity` (what am I, what may I write, when does my key expire), `assist_session_info` (the session's purpose and operator), `session_renew` (same key, later deadline), `end_session` (only when the operator says they are finished — it revokes the key), `read_agent_guide`, `submit_feedback` |
 | The tool catalogue | `list_tools` (a reference for people — never a permission list), `suggest_tool` (propose a tool the catalogue lacks, for a curator; it grants nothing) |
+| Configured scanners | `list_scanner_integrations` (the installation's scanner integrations — name, type, address; never credentials; any session), `request_scanner_credentials` (ONE scanner's credentials, with `operator_agreed: true`, after the agent asked the operator; the operator must be able to write to the project; every request is recorded) — see §6 |
 | Query and report | the `assist_*` reads — the next section lists each against the question it answers |
 | Scope reads and uploads | `assist_list_scopes`, then `scope_list_subnets` / `scope_list_domains` for one scope's CIDRs and names; the target files and the upload itself are curl (see "Bulk data" below); `get_upload_job` polls an upload |
 | Host tests | `host_tests_list` (read first — do not duplicate), `host_tests_propose` (up to 200 individual tests, each with its own `request_key`; they appear on each host's page at once), `host_tests_get`, `host_tests_update` (409 when `expected_revision` is stale) |
@@ -487,6 +488,29 @@ bounds of the session in its own words before its first call. That is the one
 moment a human sees the agent's *understanding* rather than its output, and it
 makes the agent's own words part of the audit trail.
 
+### Configured scanners: the agent asks first
+
+The installation's scanner integrations (**Settings → Scanner Integrations**;
+one list for every project) are in nothing an agent reads by default — not the
+opening instructions, not the pasted prompt, not any `assist_*` read.
+`list_scanner_integrations` shows that a scanner is configured, without
+credentials. The agent's rule (`agent_policy.render_scanner_integrations_rule`,
+rendered into both doors): before using one, ask the operator whether they
+want it to, and tell them that saying yes means BlueStick shares that
+scanner's credentials with the agent; only then `request_scanner_credentials`,
+for that one scanner; keep the credentials out of notes, evidence, feedback
+and proposals. Which scanner, when and with what options is the operator's
+call and the agent's judgment — BlueStick says nothing about it.
+
+What the server does: it refuses a request that does not carry
+`operator_agreed: true` (422, with what to ask), refuses one whose operator
+cannot write to the project (403 for an auditor's or a viewer's agent), and
+writes an audit row (`scanner_credentials_shared`: operator, project, session,
+integration — no secret) before it answers. **What it cannot do** is know that
+the operator said yes: that conversation happens in the agent's client. The
+flag is the agent's statement, and the record is how a person checks it
+afterwards.
+
 ---
 
 ## 7. Reviewing what happened
@@ -531,3 +555,5 @@ makes the agent's own words part of the audit trail.
 | `POST /api/v1/agent/feedback` | agent key | file feedback; answers an acknowledgement |
 | `POST /api/v1/agent/uploads` · `GET /api/v1/agent/uploads/{job_id}` | agent key | upload scanner output (curl, multipart) · poll its parse (`get_upload_job`) |
 | `POST /api/v1/agent/tool-suggestions` | agent key | propose a tool for the catalogue |
+| `GET /api/v1/agent/assist/scanner-integrations` | agent key | the configured scanners, without credentials |
+| `POST /api/v1/agent/scanner-integrations/{integration_id}/credentials` | agent key (operator: analyst or above) | one scanner's credentials, on a recorded request |

@@ -59,6 +59,14 @@ MATRIX = [
      {"analyst": True, "auditor": True, "viewer": True}),
     ("screenshot file", "GET", "/api/v1/agent/assist/web-interfaces/999999/screenshot",
      {"analyst": True, "auditor": True, "viewer": True}),
+    # v2.482.0 — the Scanner Integrations page is every signed-in user's, so
+    # THAT scanners are configured is every member's read.  Their credentials
+    # are a project write to the gate (the route then 404s on this id): an
+    # operator who can only read is refused.
+    ("configured scanners", "GET", "/api/v1/agent/assist/scanner-integrations",
+     {"analyst": True, "auditor": True, "viewer": True}),
+    ("scanner credentials", "POST", "/api/v1/agent/scanner-integrations/999999/credentials",
+     {"analyst": True, "auditor": False, "viewer": False}),
 ]
 
 
@@ -121,6 +129,7 @@ def test_role_route_matrix(
     if method == "POST":
         body = (
             {"body": "matrix note"} if "notes" in path
+            else {"operator_agreed": True} if "credentials" in path
             else {"name": "nuclei", "rationale": "matrix"}
         )
     resp = client.request(method, path, headers=headers, json=body)

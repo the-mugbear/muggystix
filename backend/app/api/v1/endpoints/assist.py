@@ -36,7 +36,6 @@ from app.services.agent_session_service import (
     mint_session_key,
     resolve_project_agent,
 )
-from app.services.integration_service import active_integrations_for_prompt
 from app.services.mcp_client_setup_service import McpClientSetup, build_session_mcp_clients
 
 router = APIRouter()
@@ -206,9 +205,6 @@ def start_assist_session(
         raw_api_key=raw_key,
         user_label=current_user.full_name or current_user.username,
         user_id=current_user.id,
-        integrations=active_integrations_for_prompt(
-            db, user_id=current_user.id, project_id=project.id,
-        ),
     )
     # Read before commit() expires the row (a SELECT per attribute after it).
     session_id = session.id

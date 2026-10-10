@@ -8,9 +8,9 @@ agent_assist…) can share a single schema definition.  A test is a host test
 """
 
 from datetime import datetime
-from typing import List, Literal, Optional, get_args
+from typing import Any, Dict, List, Literal, Optional, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from app.schemas.schemas import ReviewStateToSet, ScanInfoBase
 from app.services.scan_time import scan_time_for_api
@@ -340,6 +340,58 @@ class AgentToolSuggestionResponse(BaseModel):
     # True when the "suggestion" names a tool already in the catalogue.
     already_catalogued: bool = False
     message: str
+
+
+# ---------------------------------------------------------------------------
+# Schemas — the installation's configured scanners
+# ---------------------------------------------------------------------------
+
+class ScannerIntegrationBrief(BaseModel):
+    """A configured scanner as any session may read it: no credentials."""
+    id: int
+    name: str
+    integration_type: str = Field(
+        ..., description="nessus, openvas, nuclei, burp or generic_api.",
+    )
+    base_url: Optional[str] = None
+    extra_config: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "What was configured beside the address and is not a secret, e.g. "
+            "a Nessus licence's max_hosts_per_scan or an OpenVAS gmp_port."
+        ),
+    )
+
+
+class ScannerIntegrationsResponse(BaseModel):
+    items: List[ScannerIntegrationBrief]
+    total: int
+    note: str
+
+
+class ScannerCredentialsRequest(BaseModel):
+    operator_agreed: StrictBool = Field(
+        False,
+        description=(
+            "Must be true, and only after you asked the operator whether they "
+            "want you to use this scanner and told them that saying yes means "
+            "BlueStick shares its credentials with you. Anything else is "
+            "refused (422)."
+        ),
+    )
+
+
+class ScannerCredentialsResponse(ScannerIntegrationBrief):
+    credentials: Dict[str, Optional[str]] = Field(
+        ...,
+        description=(
+            "This scanner's credentials, named by what they are: Nessus "
+            "access_key + secret_key, OpenVAS username + password, Nuclei "
+            "pdcp_token, Burp api_key, anything else secret. A value never "
+            "configured is null."
+        ),
+    )
+    note: str
 
 
 class AgentDashboard(BaseModel):

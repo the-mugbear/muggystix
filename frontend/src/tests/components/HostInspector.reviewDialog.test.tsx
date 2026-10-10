@@ -209,7 +209,7 @@ describe('HostInspector — the optional note on a finished review', () => {
     mocked.setReviewNote.mockResolvedValue(reviewed({ review_summary: 'RDP only, patched in June' }));
     renderIt();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Add a note' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add a review note' }));
     const input = screen.getByRole('textbox', { name: 'Note on your review' });
     fireEvent.change(input, { target: { value: '  RDP only, patched in June  ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -217,7 +217,7 @@ describe('HostInspector — the optional note on a finished review', () => {
     await waitFor(() => expect(mocked.setReviewNote).toHaveBeenCalledWith(1, 1, 'RDP only, patched in June'));
     expect(await screen.findByTestId('review-note')).toHaveTextContent('RDP only, patched in June');
     expect(screen.queryByRole('textbox', { name: 'Note on your review' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Edit note' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit review note' })).toBeInTheDocument();
     // Writing a note is not a review-status change.
     expect(mocked.followHost).not.toHaveBeenCalled();
   });
@@ -227,7 +227,7 @@ describe('HostInspector — the optional note on a finished review', () => {
     mocked.setReviewNote.mockResolvedValue(reviewed());
     renderIt();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit note' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit review note' }));
     const input = screen.getByRole('textbox', { name: 'Note on your review' });
     expect(input).toHaveValue('looked at ssh');
     fireEvent.change(input, { target: { value: 'something else' } });
@@ -235,12 +235,12 @@ describe('HostInspector — the optional note on a finished review', () => {
     expect(mocked.setReviewNote).not.toHaveBeenCalled();
     expect(screen.getByTestId('review-note')).toHaveTextContent('looked at ssh');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit note' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit review note' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Note on your review' }), { target: { value: '   ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(mocked.setReviewNote).toHaveBeenCalledWith(1, 1, null));
     await waitFor(() => expect(screen.queryByTestId('review-note')).toBeNull());
-    expect(screen.getByRole('button', { name: 'Add a note' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add a review note' })).toBeInTheDocument();
   });
 
   it('a failed save keeps what was typed, and says so', async () => {
@@ -248,7 +248,7 @@ describe('HostInspector — the optional note on a finished review', () => {
     mocked.setReviewNote.mockRejectedValue({ response: { status: 503, data: { detail: 'The database is busy.' } } });
     renderIt();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Add a note' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add a review note' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Note on your review' }), { target: { value: 'half a thought' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
@@ -261,15 +261,15 @@ describe('HostInspector — the optional note on a finished review', () => {
     renderIt();
     expect(await screen.findByTestId('review-note')).toHaveTextContent('looked at ssh');
     expect(screen.getByText('No actionable issue')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Edit note' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Add a note' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Edit review note' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add a review note' })).toBeNull();
   });
 
   it('is not offered before the review is finished', async () => {
     withFollow({ ...reviewed(), status: 'in_review' });
     renderIt();
     await screen.findByRole('button', { name: 'Mark reviewed' });
-    expect(screen.queryByRole('button', { name: 'Add a note' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add a review note' })).toBeNull();
   });
 
   it('a long note is clamped, and the whole of it is one click away', async () => {

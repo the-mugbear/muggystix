@@ -92,6 +92,18 @@ const sections: GuideSection[] = [
           you and the agent read — it does not decide what may run; an agent that needs a tool the
           catalogue lacks records it with <Mono>suggest_tool</Mono> for an admin to add.
         </Para>
+        <Subhead>Configured scanners: the agent asks you first</Subhead>
+        <Para>
+          The scanners under <Link to="/integrations" className="underline">Settings → Scanner
+          Integrations</Link> are the installation's — one list for every project. An agent can
+          see that one is configured (its name, type and address), never its credentials. It is
+          told to ask you before using one, and to say that agreeing means BlueStick shares that
+          scanner's credentials with the agent. Only then does it request them, for that one
+          scanner — which needs you to be an <strong>analyst</strong> or above on the project,
+          and is recorded each time: on the session's page as the call it made, and in the audit
+          log with the scanner, the project and the session. BlueStick cannot hear your answer;
+          the record is how the request is checked afterwards.
+        </Para>
         <Subhead>Which agent did the work</Subhead>
         <Para>
           The client (Claude Code, Codex, VS Code…) is recorded from the MCP handshake, and the

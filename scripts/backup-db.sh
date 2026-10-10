@@ -115,7 +115,7 @@ PG_USER="$(env_val POSTGRES_USER)"; PG_USER="${PG_USER:-nmapuser}"
 PG_DB="$(env_val POSTGRES_DB)";     PG_DB="${PG_DB:-networkMapper}"
 
 # --- Credential-encryption key fingerprint ---------------------------------
-# TOTP/2FA secrets and per-user LLM/integration/webhook credentials are stored
+# TOTP/2FA secrets and the LLM-provider, scanner-integration and webhook credentials are stored
 # in the DB as Fernet ciphertext, keyed (via HKDF) off CREDENTIAL_ENCRYPTION_KEY
 # — or SECRET_KEY when that's unset — which lives ONLY in .env, never in the
 # database.  Restoring this dump onto a deployment with a different key leaves

@@ -67,6 +67,12 @@ as real project members:
     (that is an installation-wide switch a global admin owns, in System
     settings); where it is off it says so, and every remediation route
     answers 404.
+  * ONE scanner integration, "[acceptance seed] scanner" (Nessus type), at a
+    documentation address with obviously fake credentials, created through
+    the people's route as the first active global admin — what the "ask
+    before using a configured scanner" steps run against.  Integrations are
+    the installation's, so ``--rebuild`` leaves it and a re-run reuses it.
+    Creating it contacts nothing (the connection-test route is never called).
 
 The accounts' passwords and TOTP secrets, the four agent keys and the fixture
 ids are written to ``uploads/acceptance-fixtures.json`` (mode 0600) and
@@ -119,6 +125,12 @@ ACCOUNTS = (
     ("acc-viewer", "Acceptance Viewer", ProjectRole.VIEWER),
 )
 OUT = "/app/uploads/acceptance-fixtures.json"
+#: The configured scanner the ask-first steps use.  A documentation address
+#: (RFC 5737: nothing answers there) and credentials that say what they are.
+SCANNER_NAME = f"{MARK} scanner"
+SCANNER_URL = "https://192.0.2.10:8834"
+SCANNER_FAKE_ACCESS_KEY = "FAKE-ACCESS-KEY-acceptance-seed-not-a-credential"
+SCANNER_FAKE_SECRET_KEY = "FAKE-SECRET-KEY-acceptance-seed-not-a-credential"
 
 # A NetExec run whose last lines no pattern reads: a login, a module result
 # and two status lines the parser keeps only as text.
@@ -350,6 +362,44 @@ def _seed_other_project(db, base_url: str, shared_ip: str) -> dict:
         .filter(models.Annotation.finding_id == finding.id).order_by(models.NoteAttachment.id).limit(1).scalar()
     )
     return ids
+
+
+def _seed_scanner_integration(db, base_url: str, admin_user: User) -> dict:
+    """The installation's "[acceptance seed] scanner", made once.
+
+    Created through ``POST /integrations/`` as the global admin (the only
+    account that may).  That route checks the address's form and stores the
+    row; it opens no connection, and the connection test (``POST
+    /integrations/test``) is deliberately not called — the address is a
+    documentation one.  The fake credentials are returned so a run can search
+    what it wrote afterwards (notes, evidence, feedback) for them.
+    """
+    from app.db.models_integrations import IntegrationCredential
+
+    row = (
+        db.query(IntegrationCredential).filter(IntegrationCredential.name == SCANNER_NAME)
+        .order_by(IntegrationCredential.id).first()
+    )
+    if row is None:
+        r = httpx.post(
+            f"{base_url}/api/v1/integrations/", timeout=60,
+            headers={"Authorization": f"Bearer {_token(db, admin_user)}"},
+            json={"name": SCANNER_NAME, "integration_type": "nessus", "base_url": SCANNER_URL,
+                  "secret": SCANNER_FAKE_ACCESS_KEY, "secret2": SCANNER_FAKE_SECRET_KEY,
+                  "extra_config": {"max_hosts_per_scan": 256}},
+        )
+        if r.status_code >= 400:
+            raise SystemExit(f"POST /integrations/ -> {r.status_code}: {r.text[:500]}")
+        integration_id, active = r.json()["id"], True
+    else:
+        integration_id, active = row.id, bool(row.is_active)
+    if not active:
+        print(f"{SCANNER_NAME!r} is switched off: agents do not see it until a global admin turns it on.")
+    return {
+        "integration_id": integration_id, "name": SCANNER_NAME, "base_url": SCANNER_URL,
+        "is_active": active,
+        "fake_credentials": {"access_key": SCANNER_FAKE_ACCESS_KEY, "secret_key": SCANNER_FAKE_SECRET_KEY},
+    }
 
 
 def _seed_remediation(db, base_url: str, pid: int, lead_user: User, lead: Api) -> dict:
@@ -716,6 +766,7 @@ def main() -> None:
     fixtures["analyst_work"] = _seed_analyst_work(db, pid, users, lead, analyst)
     fixtures["other_project"] = _seed_other_project(db, args.base_url, host.ip_address)
     fixtures["remediation"] = _seed_remediation(db, args.base_url, pid, users["acc-lead"], lead)
+    fixtures["scanner_integration"] = _seed_scanner_integration(db, args.base_url, admin_user)
 
     data = {"project_id": pid, "project_name": ACCEPTANCE_PROJECT, "keys": keys, "accounts": creds,
             "fixtures": fixtures, "note": "Local acceptance fixtures — keys expire with their sessions."}

@@ -1,16 +1,14 @@
 """Contract tests for the server-side prompt sanitizer.
 
-Mirrors ``frontend/src/utils/promptSanitizer.ts`` at the pattern
-level.  The invariant these tests enforce is that every shape the
-v2.9.1 ``_integration_block`` template emits must be matched by the
-sanitizer, so a direct POST to ``/llm-providers/{id}/complete``
-(bypassing the frontend) can never leak a credential.
+Text posted to ``/llm-providers/{id}/complete`` (and what the report drafter
+sends) goes to a hosted provider, so a BlueStick agent key and the well-known
+third-party token formats are replaced first.
 
-If a test here fails because you changed the bullet shape in
-``agent_prompt_service._integration_block``, the correct fix is to
-update **both** ``prompt_sanitizer.py`` and
-``frontend/src/utils/promptSanitizer.ts`` to match — not to relax the
-tests.
+The labelled-bullet rule (``- Access key: `…```) and its tests went with
+``agent_prompt_service._integration_block`` in 2.482.0: the session prompt no
+longer prints a scanner integration's credentials, so there is no such bullet
+to redact.  That the prompt carries none is pinned where the prompt is built
+(``test_scanner_integrations_agent.py``).
 """
 
 from __future__ import annotations
@@ -64,52 +62,42 @@ class TestApiKeyRedaction:
         assert "nm_agent_bbbbbbbbbbbbbbbbbbbb" not in out
 
 
-class TestIntegrationCredentialRedaction:
-    """Each bullet shape emitted by _integration_block in agent_prompt_service."""
+class TestThirdPartyTokenRedaction:
+    """The well-known token formats, wherever they sit in the text.  Each
+    value is assembled here from a prefix and filler: none is a real token."""
 
     @pytest.mark.parametrize(
-        "label",
+        "token",
         [
-            "Access key",
-            "Secret key",
-            "Password",
-            "Username",
-            "API key",
-            "PDCP token",
-            "Secret",
+            "AKIA" + "A1" * 8,                       # AWS access key id
+            "sk-" + "a1B2" * 6,                      # OpenAI-style secret key
+            "ghp_" + "a1B2" * 6,                     # GitHub token
+            "xoxb-" + "1234-abcd-5678",              # Slack token
+            "AIza" + "a1B2_" * 7,                    # Google API key
+            ".".join(["eyJ" + "a1B2" * 3] * 3),      # JSON Web Token
         ],
+        ids=["aws", "openai", "github", "slack", "google", "jwt"],
     )
-    def test_credential_bullet_value_stripped(self, label):
-        prompt = f"- {label}: `actual_secret_value_here`"
-        out = sanitize_for_llm(prompt)
-        assert "actual_secret_value_here" not in out
-        # Label should still be visible so the LLM can reason about structure
-        assert label in out
+    def test_token_is_replaced(self, token):
+        out = sanitize_for_llm(f"The scanner printed {token} in its banner.")
+        assert token not in out
         assert "[REDACTED" in out
+        assert "in its banner." in out
 
-    def test_nessus_full_integration_block(self):
-        """End-to-end: the Nessus block shape from _integration_block."""
-        prompt = (
-            "- **Nessus — `Work Nessus`**\n"
-            "  - URL: `https://nessus.example.com:8834`\n"
-            "  - Access key: `abc123accesskey`\n"
-            "  - Secret key: `xyz789secretkey`\n"
-            "  - Guidance: launch a policy scan via the Nessus REST API\n"
-        )
-        out = sanitize_for_llm(prompt)
-        assert "abc123accesskey" not in out
-        assert "xyz789secretkey" not in out
-        # URL is not a secret; should survive.  Only the labeled
-        # credential values get stripped.
-        assert "nessus.example.com" in out
-        assert "Guidance" in out
+    def test_bearer_credential_is_replaced_and_the_scheme_kept(self):
+        credential = "a1B2c3D4" * 4
+        out = sanitize_for_llm(f"Authorization: Bearer {credential}")
+        assert credential not in out
+        assert "Bearer [REDACTED" in out
 
-    def test_case_insensitive_labels(self):
-        """The _integration_block template uses mixed case; sanitizer
-        must match regardless."""
-        prompt = "  - SECRET KEY: `mixedcase_secret`"
-        out = sanitize_for_llm(prompt)
-        assert "mixedcase_secret" not in out
+
+def test_a_labelled_bullet_is_ordinary_text():
+    """The session prompt no longer prints credentials as labelled bullets, so
+    the rule that redacted them by label is gone: a bullet that happens to
+    carry such a label (a finding quoting a default password, say) reaches the
+    drafter as written."""
+    text = "- Password: `admin` was accepted on the device's login page"
+    assert sanitize_for_llm(text) == text
 
 
 class TestEdgeCases:
@@ -127,7 +115,7 @@ class TestEdgeCases:
         """Running the sanitizer twice should produce the same output."""
         prompt = (
             "X-API-Key: nm_agent_zzzzzzzzzzzzzzzzzzzz\n"
-            "- Access key: `leaked`\n"
+            "and again bare: nm_agent_yyyyyyyyyyyyyyyyyyyyyyyy\n"
         )
         once = sanitize_for_llm(prompt)
         twice = sanitize_for_llm(once)

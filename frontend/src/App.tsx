@@ -603,12 +603,13 @@ function App() {
                       <Route
                         path="/integrations"
                         element={
-                          /* viewer — integrations are ACCOUNT-level and their
-                             list is open to every signed-in user; `analyst`
-                             here is the PROJECT role and refused a viewer of
-                             the selected project a page listing their own
-                             integrations.  Writes need the global admin: the
-                             page hides them for everyone else. */
+                          /* viewer — integrations are the INSTALLATION's and
+                             their list is open to every signed-in user;
+                             `analyst` here is the PROJECT role and would
+                             refuse a viewer of the selected project a list
+                             the server lets them read.  Writes need the
+                             global admin: the page hides them for everyone
+                             else. */
                           <ProtectedRoute requiredRole="viewer">
                             <IntegrationSettings />
                           </ProtectedRoute>

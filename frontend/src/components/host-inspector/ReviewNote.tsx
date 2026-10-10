@@ -8,7 +8,9 @@
  *
  * Shown: the note, if there is one (clamped to two lines, the whole text one
  * click away — a note written before this was a free paragraph).  Writers
- * also get "Add a note" / "Edit note": one input, Save / Cancel.  Saving it
+ * also get "Add a review note" / "Edit review note" (named for the review:
+ * the discussion's own "Add note" sits beside it and is a different thing):
+ * one input, Save / Cancel.  Saving it
  * empty removes it.  The server's answer goes back to the caller (`onSaved`),
  * which puts it on the cached host; nothing is remembered here.
  */
@@ -98,7 +100,7 @@ export const ReviewNote: React.FC<{
       )}
       {canEdit && (
         <Button size="sm" variant="ghost" className="h-7 text-caption" onClick={() => setDraft(note ?? '')}>
-          {note ? 'Edit note' : 'Add a note'}
+          {note ? 'Edit review note' : 'Add a review note'}
         </Button>
       )}
     </>

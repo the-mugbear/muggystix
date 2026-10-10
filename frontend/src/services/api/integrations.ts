@@ -1,5 +1,9 @@
 /**
- * Per-user scanner-integration credentials (Nessus, OpenVAS, ...).
+ * The installation's scanner integrations (Nessus, OpenVAS, ...).
+ *
+ * One list for the whole installation: an integration belongs to no user and
+ * no project.  Every signed-in user reads it (never a secret — the server
+ * answers `has_secret` flags); a global administrator changes it.
  *
  * v2.29.0 — extracted from services/api.ts.  api.ts re-exports
  * everything from here so consumers can keep importing from
@@ -16,12 +20,13 @@ export interface IntegrationEntry {
   id: number;
   name: string;
   integration_type: string;
-  project_id: number | null;
   base_url: string | null;
   has_secret: boolean;
   has_secret2: boolean;
   extra_config: Record<string, any> | null;
   is_active: boolean;
+  /** Username of the account that configured it; null once that account is gone. */
+  created_by: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -29,7 +34,6 @@ export interface IntegrationEntry {
 export interface IntegrationCreatePayload {
   name: string;
   integration_type: string;
-  project_id?: number | null;
   base_url?: string;
   secret?: string;
   secret2?: string;
@@ -39,8 +43,6 @@ export interface IntegrationCreatePayload {
 
 export interface IntegrationUpdatePayload {
   name?: string;
-  project_id?: number | null;
-  clear_project?: boolean;
   base_url?: string;
   secret?: string;
   clear_secret?: boolean;
@@ -50,9 +52,8 @@ export interface IntegrationUpdatePayload {
   is_active?: boolean;
 }
 
-export const listIntegrations = async (projectId?: number, signal?: AbortSignal): Promise<IntegrationEntry[]> => {
-  const params = projectId != null ? { project_id: projectId } : undefined;
-  const r = await api.get<IntegrationEntry[]>('/integrations/', { params, signal });
+export const listIntegrations = async (signal?: AbortSignal): Promise<IntegrationEntry[]> => {
+  const r = await api.get<IntegrationEntry[]>('/integrations/', { signal });
   return r.data;
 };
 

@@ -127,7 +127,22 @@ _CREATES_A_ROW = {
     # v2.457.0: a note without a request_key is a second entry on retry; the
     # field changes of remediation_apply converge, its notes need not.
     "remediation_add_note", "remediation_apply",
+    # v2.482.0: each request for a scanner's credentials writes its own audit
+    # row, so it is never "idempotent".  (Deliberately not marked additive —
+    # see test_the_credential_request_reads_as_a_write_to_confirm.)
+    "request_scanner_credentials",
 }
+
+
+def test_the_credential_request_reads_as_a_write_to_confirm():
+    """A client may approve a non-destructive write without asking.  The call
+    that hands over a scanner's credentials must not be one of those: it is
+    advertised as destructive (so the client asks) and never as read-only."""
+    notes = {t["name"]: t["annotations"] for t in tool_list_payload()}["request_scanner_credentials"]
+    assert notes["destructiveHint"] is True
+    assert notes["readOnlyHint"] is False
+    assert notes["idempotentHint"] is False
+    assert not TOOLS["request_scanner_credentials"].get("additive")
 #: Writes that converge on retry.
 _CONVERGES = {
     "session_renew", "end_session",

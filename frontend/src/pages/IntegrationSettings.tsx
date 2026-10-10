@@ -24,7 +24,7 @@ import {
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
-import { queryErrorText } from '../lib/query';
+import { SECRET_MUTATION, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
 import { Button } from '../components/ui/button';
@@ -92,7 +92,7 @@ const SECRET_LABELS: Record<
   },
   generic_api: {
     one: 'API key / token',
-    help1: 'The secret the agent should use',
+    help1: 'The secret an agent is given when it requests this integration',
   },
 };
 
@@ -106,20 +106,21 @@ const emptyForm: IntegrationCreatePayload = {
 };
 
 const IntegrationSettings: React.FC = () => {
-  // Every signed-in user may READ the integrations (they are account-level);
-  // adding, editing and deleting one need the GLOBAL administrator — the
-  // server's rule.  The controls are not rendered for anyone else (style
-  // guide §40: hidden, not disabled; no copy pointing at a control the
-  // reader does not have).
+  // Every signed-in user may READ the integrations — one list for the whole
+  // installation, whoever configured each; adding, editing, testing and
+  // deleting one need the GLOBAL administrator — the server's rule, on any
+  // row.  The controls are not rendered for anyone else (style guide §40:
+  // hidden, not disabled; no copy pointing at a control the reader does not
+  // have).
   const canManage = useAuth().user?.role === 'admin';
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
   const queryClient = useQueryClient();
-  // Integrations are the installation's, not a project's (nothing here asks
-  // for one project's): the keys name no project.
+  // Integrations are the installation's, not a project's and not a user's:
+  // the keys name neither.
   const integrationsQuery = useQuery({
     queryKey: ['listIntegrations'],
-    queryFn: ({ signal }) => listIntegrations(undefined, signal),
+    queryFn: ({ signal }) => listIntegrations(signal),
   });
   const typesQuery = useQuery({
     queryKey: ['listIntegrationTypes'],
@@ -150,9 +151,8 @@ const IntegrationSettings: React.FC = () => {
   const editing = isEdit ? integrations.find((r) => r.id === editingId) ?? null : null;
   const [form, setForm] = useState<IntegrationCreatePayload>(emptyForm);
   // Nessus-only: operator-supplied license cap (hosts per registered
-  // Nessus scan).  Stored on save in `extra_config.max_hosts_per_scan`
-  // so the agent prompt's Nessus block can steer the agent to chunk
-  // large scopes into multiple license-sized scans.
+  // Nessus scan).  Stored on save in `extra_config.max_hosts_per_scan`;
+  // an agent reads it with the scanner (a fact, not an instruction).
   const [maxHostsPerScan, setMaxHostsPerScan] = useState<string>('');
   // OpenVAS/Greenbone-only: where gvmd listens for GMP. The Base URL is GSA
   // (the web UI), which can't verify a login, so Test connection
@@ -178,8 +178,8 @@ const IntegrationSettings: React.FC = () => {
   ]);
 
   /** Per-type extras the backend stores in `extra_config`: the Nessus license
-   *  cap (drives the agent prompt's chunking guidance) and the GVM GMP port
-   *  (the port the connection test authenticates against). */
+   *  cap and the GVM GMP port (the port the connection test authenticates
+   *  against). */
   const buildExtraConfig = (): Record<string, unknown> | undefined => {
     if (form.integration_type === 'nessus' && maxHostsPerScan.trim()) {
       return { max_hosts_per_scan: Number(maxHostsPerScan) };
@@ -219,8 +219,11 @@ const IntegrationSettings: React.FC = () => {
   /** Pre-save connection test.  Hands the current form values to
    *  `POST /integrations/test`; result renders inline below the Test
    *  button regardless of outcome (the endpoint always returns 200
-   *  with a tri-state `ok` field). */
+   *  with a tri-state `ok` field).  It SENDS the typed secrets: nothing of
+   *  the request is kept once it has settled (`SECRET_MUTATION`, and the
+   *  `reset` where it is called); the outcome shown is `testResult`. */
   const connectionTest = useMutation({
+    ...SECRET_MUTATION,
     mutationFn: (payload: IntegrationCreatePayload) => testIntegrationConfig(payload),
     onMutate: () => setTestResult(null),
     onSuccess: (result) => setTestResult(result),
@@ -240,11 +243,14 @@ const IntegrationSettings: React.FC = () => {
     secret: form.secret || undefined,
     secret2: form.secret2 || undefined,
     extra_config: buildExtraConfig(),
-  });
+  }, { onSettled: () => connectionTest.reset() });
 
   const integrationsChanged = () => queryClient.invalidateQueries({ queryKey: ['listIntegrations'] });
 
   const save = useMutation({
+    // It carries the secrets as typed: nothing of it is kept once it has
+    // settled (`SECRET_MUTATION`, and the `reset` where it is called).
+    ...SECRET_MUTATION,
     // What is saved is what was handed over with the click, not whatever the
     // form holds when the request is built.
     mutationFn: async ({ id, form, extraConfig }: {
@@ -281,7 +287,10 @@ const IntegrationSettings: React.FC = () => {
     onError: (err) => toast.error(formatApiError(err, 'Failed to save integration.')),
   });
   const saving = save.isPending;
-  const handleSave = () => save.mutate({ id: editingId, form, extraConfig: buildExtraConfig() });
+  const handleSave = () => save.mutate(
+    { id: editingId, form, extraConfig: buildExtraConfig() },
+    { onSettled: () => save.reset() },
+  );
 
   // The edit dialog's "clear" beside a stored secret: removed at once, not on Save.
   const clearSecret = useMutation({
@@ -307,7 +316,7 @@ const IntegrationSettings: React.FC = () => {
   const handleDelete = async (r: IntegrationEntry) => {
     const ok = await confirm({
       title: 'Delete integration',
-      body: 'The stored credentials will be permanently removed and any agent prompt that references this integration will stop seeing it. This cannot be undone.',
+      body: 'The stored credentials will be permanently removed and agents, in every project, will no longer see this scanner. This cannot be undone.',
       resourceName: r.name,
       severity: 'danger',
       confirmLabel: 'Delete',
@@ -325,8 +334,11 @@ const IntegrationSettings: React.FC = () => {
         <div>
           <h1 className="text-page-title">Scanner Integrations</h1>
           <p className="mt-xxs text-metadata text-muted-foreground">
-            Credentials for external scanning tools (Nessus, OpenVAS, Nuclei, Burp, etc). Secrets
-            are encrypted at rest and surfaced to agents via the session prompt when relevant.
+            The scanners this installation has configured (Nessus, OpenVAS, Nuclei, Burp, etc),
+            for every project. Secrets are encrypted at rest and shown to no one here. An agent
+            can see that a scanner is configured and is told to ask its operator before using it;
+            it is given that scanner's credentials only when it then requests them, and every
+            request is recorded.
             {!canManage && ' A global administrator adds and changes them.'}
           </p>
         </div>
@@ -354,7 +366,7 @@ const IntegrationSettings: React.FC = () => {
             {canManage && (
               <>
                 <p className="text-caption text-muted-foreground">
-                  Add one to make its credentials available to your agent when it scans.
+                  Add one so that agents can see it and ask to use it.
                 </p>
                 <Button onClick={openNew}>
                   <Plus className="size-4" aria-hidden /> Add Your First Integration
@@ -385,8 +397,10 @@ const IntegrationSettings: React.FC = () => {
                     {r.has_secret ? 'Secret set' : 'No secret'}
                   </Badge>
                   {r.has_secret2 && <Badge variant="success">Secondary secret</Badge>}
-                  {r.project_id == null && <Badge variant="outline">all projects</Badge>}
                 </div>
+                <p className="mt-xs truncate text-caption text-muted-foreground">
+                  Configured by {r.created_by ?? 'an account that has since been removed'}
+                </p>
                 {canManage && (<>
                 <Separator className="my-sm" />
                 <div className="flex gap-xxs">
@@ -519,10 +533,8 @@ const IntegrationSettings: React.FC = () => {
               </div>
             )}
             {/* Nessus-only license cap (v2.49.4).  Lives in
-                extra_config.max_hosts_per_scan so the agent prompt
-                can steer the agent to chunk large scopes into
-                multiple license-sized scans instead of one oversize
-                scan Nessus rejects or truncates. */}
+                extra_config.max_hosts_per_scan; an agent reads the
+                figure with the scanner. */}
             {form.integration_type === 'nessus' && (
               <div className="flex flex-col gap-xs">
                 <Label htmlFor="int-max-hosts">
@@ -539,9 +551,8 @@ const IntegrationSettings: React.FC = () => {
                 />
                 <p className="text-caption text-muted-foreground">
                   Your Nessus license's per-scan host limit (typical Pro tiers:
-                  256 / 512 / 1024).  When set, the agent's prompt instructs it
-                  to split scopes larger than this into multiple
-                  sequential Nessus scans.  Leave blank if unknown.
+                  256 / 512 / 1024).  An agent sees this figure with the
+                  scanner.  Leave blank if unknown.
                 </p>
               </div>
             )}
@@ -577,7 +588,7 @@ const IntegrationSettings: React.FC = () => {
                 checked={!!form.is_active}
                 onCheckedChange={(v) => setForm((f) => ({ ...f, is_active: Boolean(v) }))}
               />
-              <Label htmlFor="int-active">Active (inactive credentials are not surfaced to agents)</Label>
+              <Label htmlFor="int-active">Active (an inactive scanner is not shown to agents, and its credentials cannot be requested)</Label>
             </div>
 
             {/* Pre-save connection test (v2.49.4).  Probe-by-type:

@@ -46,9 +46,12 @@ from app.api.v1.endpoints.agent_schemas import (
     HostDetail,
     PortBrief,
     ScanBrief,
+    ScannerIntegrationsResponse,
     ScopeBrief,
     VulnCounts,
 )
+from app.services.agent_policy import SCANNER_LIST_NOTE
+from app.services.integration_service import IntegrationService, describe_for_agent
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, severity_rank
 from app.api.v1.endpoints.agent_common import (
     PORTS_PARAM_HELP,
@@ -2464,6 +2467,36 @@ def get_assist_session_self(
         # answer to "what may I do here" and there is no second list to consult.
         "operator": operator,
     }
+
+
+# ---------------------------------------------------------------------------
+# The installation's configured scanners — that they exist, never credentials
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/assist/scanner-integrations",
+    response_model=ScannerIntegrationsResponse,
+    # The Scanner Integrations page is every signed-in user's, so this read is
+    # every member's (declared, not left to the default, because the next
+    # route over hands out credentials and must not be confused with it).
+    dependencies=[Depends(agent_read_floor(ProjectRole.VIEWER))],
+    summary="The scanners configured in this installation — no credentials",
+)
+def list_assist_scanner_integrations(
+    request: Request,
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """The ACTIVE scanner integrations of the installation (they belong to no
+    project): name, type, address and what was configured beside it.  No
+    credential and nothing derived from one.  Credentials are a separate,
+    recorded request for ONE integration
+    (``POST /agent/scanner-integrations/{integration_id}/credentials``)."""
+    items = [
+        describe_for_agent(row)
+        for row in IntegrationService(db).list_all(active_only=True)
+    ]
+    return {"items": items, "total": len(items), "note": SCANNER_LIST_NOTE}
 
 
 # ---------------------------------------------------------------------------

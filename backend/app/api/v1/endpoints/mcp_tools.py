@@ -190,6 +190,48 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "additive": True,
         "params": {"name": "Tool name as it would be invoked (e.g. ligolo-ng)."},
     },
+    # The installation's configured scanners.  The ask-first rule is the
+    # session's (agent_policy.render_scanner_integrations_rule); it is said
+    # here too because an agent may read a tool and nothing else.
+    "list_scanner_integrations": {
+        "description": (
+            "The scanners configured in this BlueStick installation (they belong "
+            "to no project): each one's `id`, name, type and address, plus what "
+            "was configured beside it (e.g. a Nessus licence's host cap). NO "
+            "credentials. Before using one, ask the operator whether they want "
+            "you to, and tell them that saying yes means BlueStick shares that "
+            "scanner's credentials with you so you can talk to it; only then call "
+            "request_scanner_credentials."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/scanner-integrations",
+    },
+    "request_scanner_credentials": {
+        "description": (
+            "ASK THE OPERATOR FIRST. Returns ONE configured scanner's credentials "
+            "(`credentials`, named by what they are) so you can talk to it. Before "
+            "calling, ask the operator whether they want you to use that scanner "
+            "and tell them that saying yes means BlueStick shares its credentials "
+            "with you; call this only after they say yes, with `operator_agreed: "
+            "true`. Without it the call is refused (422). Every request is "
+            "recorded and shown to the operator. Needs an operator who can write "
+            "to the project (403 otherwise: tell them). Keep the credentials out "
+            "of notes, evidence, feedback and proposals."
+        ),
+        "method": "POST",
+        "path": "/api/v1/agent/scanner-integrations/{integration_id}/credentials",
+        # NOT marked `additive`, although it replaces nothing: a client may
+        # approve an additive write without asking, and this call hands over
+        # credentials — it should read to the client as one to confirm.
+        # Each request writes its own audit row, so a retry is not a no-op.
+        "idempotent": False,
+        "params": {
+            "integration_id": {
+                "minimum": 1,
+                "description": "The scanner's `id` (from list_scanner_integrations).",
+            },
+        },
+    },
     "submit_feedback": {
         "description": (
             "File feedback about BlueStick AT THE MOMENT you hit friction — a "

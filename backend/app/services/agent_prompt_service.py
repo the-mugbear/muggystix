@@ -24,13 +24,14 @@ from app.services.agent_policy import (
     render_read_back,
     render_key_expiry_guidance,
     render_safety_rules,
+    render_scanner_integrations_rule,
 )
 
 logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.26.0"
+PROMPT_VERSION = "4.27.0"
 
 
 _INSTANCE_ID_CACHE: Optional[str] = None
@@ -132,66 +133,6 @@ def _feedback_section(base_url: str) -> str:
     )
 
 
-def _integration_block(integrations: list) -> str:
-    """The scanner credentials the operator configured — facts only.
-
-    Nothing is printed when none is configured, and nothing here says how to
-    use a scanner: which tool and which parameters is the agent's judgment
-    and the operator's call.
-
-    The ``  - <Label>: `<value>``` bullet shape is a contract:
-    ``prompt_sanitizer.sanitize_for_llm`` redacts those values by label before
-    any text is sent to a hosted LLM (``POST /llm-providers/{id}/complete``),
-    and ``tests/test_prompt_sanitizer.py`` pins the labels.  Change a label
-    here and there together.  The pasted prompt keeps the plaintext: the
-    operator who configured the integration is the one pasting it.
-    """
-    if not integrations:
-        return ""
-    lines = ["### Scanner credentials the operator configured\n"]
-    for i in integrations:
-        itype = i.get("integration_type", "generic_api")
-        name = i.get("name") or "(unnamed)"
-        base = i.get("base_url") or "(no base URL)"
-        extra = i.get("extra_config") if isinstance(i.get("extra_config"), dict) else {}
-        if itype == "nessus":
-            max_hosts = extra.get("max_hosts_per_scan")
-            cap = f"  - License cap: {max_hosts} hosts per scan\n" if max_hosts else ""
-            lines.append(
-                f"- **Nessus — `{name}`**\n"
-                f"  - URL: `{base}`\n"
-                f"  - Access key: `{i.get('secret') or '(missing)'}`\n"
-                f"  - Secret key: `{i.get('secret2') or '(missing)'}`\n"
-                f"{cap}"
-            )
-        elif itype == "openvas":
-            lines.append(
-                f"- **OpenVAS / Greenbone — `{name}`**\n"
-                f"  - URL: `{base}` · GMP port: `{extra.get('gmp_port', 9390)}`\n"
-                f"  - Username: `{i.get('secret') or '(missing)'}`\n"
-                f"  - Password: `{i.get('secret2') or '(missing)'}`\n"
-            )
-        elif itype == "nuclei":
-            lines.append(
-                f"- **Nuclei — `{name}`**\n"
-                f"  - PDCP token: `{i.get('secret') or '(not set)'}`\n"
-            )
-        elif itype == "burp":
-            lines.append(
-                f"- **Burp — `{name}`**\n"
-                f"  - URL: `{base}`\n"
-                f"  - API key: `{i.get('secret') or '(missing)'}`\n"
-            )
-        else:
-            lines.append(
-                f"- **{itype} — `{name}`**\n"
-                f"  - URL: `{base}`\n"
-                f"  - Secret: `{i.get('secret') or '(not set)'}`\n"
-            )
-    lines.append("\n")
-    return "".join(lines)
-
-
 def build_session_instructions(
     *,
     request: Optional[Request],
@@ -201,14 +142,16 @@ def build_session_instructions(
     raw_api_key: str,
     user_label: str,
     user_id: Optional[int],
-    integrations: Optional[list] = None,
     resumed: bool = False,
 ) -> str:
     """The session-start prompt for a project agent session.
 
-    Conditional parts: the resumed-session notice (``resumed``) and the
-    configured scanner credentials.  What the session is for is whatever the
-    operator asks of the agent; the prompt carries no stated purpose.
+    One conditional part: the resumed-session notice (``resumed``).  What the
+    session is for is whatever the operator asks of the agent; the prompt
+    carries no stated purpose.  It reads nothing about the installation's
+    scanner integrations and prints none of them: the ask-first rule
+    (``agent_policy.render_scanner_integrations_rule``) names the read that
+    lists them, and their credentials come only through the recorded request.
     """
     from datetime import datetime, timezone
     base_url = resolve_base_url(request)
@@ -277,6 +220,8 @@ def build_session_instructions(
         f"tests, record evidence, propose a change or end the session. Run "
         f"anything that may take more than a minute or two in the background "
         f"and poll it; never block one tool call on a scan.\n\n"
+        f"### Scanners configured in BlueStick — ask before using one\n"
+        + render_scanner_integrations_rule() + "\n"
         f"### The guide is reference\n"
         f"`curl -sS '{guide_url}' -o bluestick-guide.md`, then search it "
         f"(`grep -n '<route or word>' bluestick-guide.md`); it is too long to "
@@ -291,6 +236,5 @@ def build_session_instructions(
         f"finished: if you have filed no feedback yet, file it; then "
         f"`POST {base_url}/agent/session/end` with a line of `notes`. It "
         f"revokes your key, so it is the last call.\n\n"
-        + _integration_block(integrations or [])
         + f"**Prompt version:** {PROMPT_VERSION}\n"
     )

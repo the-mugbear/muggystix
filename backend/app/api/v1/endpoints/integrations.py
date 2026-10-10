@@ -1,16 +1,18 @@
 """
-Integration Credentials Endpoints
+Integration Credentials Endpoints — the people's routes (``/integrations/``).
 
-Two surfaces:
-  1. User-facing admin CRUD at ``/integrations/`` (JWT, self-service).
-     Secrets are write-only — responses return ``has_secret``/``has_secret2``
-     booleans rather than plaintext.
-  2. Agent-facing read-only at ``/agent/integrations`` (API-key auth).
-     Returns decrypted secrets so the agent can call scanner APIs
-     directly.  Scoped to the agent's project.
+The installation has ONE list of configured scanners (owner decision of
+2026-10-10).  Every signed-in user reads it, without secrets: a response
+carries ``has_secret`` / ``has_secret2`` and who configured each, never
+plaintext.  Creating, changing, testing and deleting one are the GLOBAL
+administrator's, on any row.
+
+What an agent may read of this list, and the one recorded request that hands
+it a scanner's credentials, are on the agent surface
+(``agent_assist.list_assist_scanner_integrations``,
+``agent_browse.request_scanner_credentials``).
 """
 
-import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path
@@ -21,18 +23,18 @@ from app.db.session import get_db
 from app.db.models_auth import User, UserRole
 from app.db.models_integrations import IntegrationCredential, IntegrationType
 from app.api.deps import get_current_user, require_role
-from app.services.integration_service import IntegrationService
+from app.services.integration_service import IntegrationService, extra_config_of
 from app.services.url_validator import (
     require_public_http_url,
     is_integration_private_allowed,
 )
 
 
-# Integration credentials (scanner endpoints, LLM providers) are treated as
-# system infrastructure: only global admins create/update/delete/test them.
-# This supersedes the earlier per-project membership gate (v2.90.4) — managing
-# scanner/LLM secrets is an admin/ops action, and the test probe is a
-# network-egress primitive that must not be reachable by lower-priv members.
+# Scanner integrations are system infrastructure: only global admins
+# create/update/delete/test them.  Managing scanner secrets is an admin/ops
+# action, and the test probe is a network-egress primitive that must not be
+# reachable by lower-priv members.  This is an instance-level router: no
+# project role applies here.
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
@@ -44,12 +46,15 @@ class IntegrationResponse(BaseModel):
     id: int
     name: str
     integration_type: str
-    project_id: Optional[int]
     base_url: Optional[str]
     has_secret: bool
     has_secret2: bool
     extra_config: Optional[Dict[str, Any]] = None
     is_active: bool
+    created_by: Optional[str] = Field(
+        None,
+        description="Username of the account that configured it; null when that account is gone.",
+    )
     created_at: Any
     updated_at: Any
 
@@ -57,22 +62,16 @@ class IntegrationResponse(BaseModel):
 
 
 def _to_response(row: IntegrationCredential) -> IntegrationResponse:
-    extra = None
-    if row.extra_config:
-        try:
-            extra = json.loads(row.extra_config)
-        except ValueError:
-            extra = None
     return IntegrationResponse(
         id=row.id,
         name=row.name,
         integration_type=row.integration_type,
-        project_id=row.project_id,
         base_url=row.base_url,
         has_secret=bool(row.secret_encrypted),
         has_secret2=bool(row.secret2_encrypted),
-        extra_config=extra,
+        extra_config=extra_config_of(row),
         is_active=bool(row.is_active),
+        created_by=row.created_by.username if row.created_by is not None else None,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -81,7 +80,6 @@ def _to_response(row: IntegrationCredential) -> IntegrationResponse:
 class IntegrationCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     integration_type: str
-    project_id: Optional[int] = None
     base_url: Optional[str] = None
     secret: Optional[str] = None
     secret2: Optional[str] = None
@@ -91,8 +89,6 @@ class IntegrationCreate(BaseModel):
 
 class IntegrationUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
-    project_id: Optional[int] = None
-    clear_project: bool = False
     base_url: Optional[str] = None
     secret: Optional[str] = None
     clear_secret: bool = False
@@ -109,15 +105,12 @@ class IntegrationUpdate(BaseModel):
 @router.get(
     "/",
     response_model=List[IntegrationResponse],
-    summary="List the current user's integration credentials",
+    summary="List the installation's scanner integrations (no secrets)",
 )
-def list_integrations(
-    project_id: Optional[int] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    svc = IntegrationService(db)
-    return [_to_response(r) for r in svc.list_for_user(current_user.id, project_id=project_id)]
+def list_integrations(db: Session = Depends(get_db)):
+    """Every signed-in user's read: each integration with whether a secret is
+    stored and who configured it — never a secret."""
+    return [_to_response(r) for r in IntegrationService(db).list_all()]
 
 
 @router.get(
@@ -231,10 +224,9 @@ def create_integration(
     svc = IntegrationService(db)
     try:
         row = svc.create(
-            user_id=current_user.id,
+            created_by_id=current_user.id,
             name=body.name,
             integration_type=body.integration_type,
-            project_id=body.project_id,
             base_url=body.base_url,
             secret=body.secret,
             secret2=body.secret2,
@@ -262,7 +254,7 @@ def update_integration(
     # row to know the integration_type — fetch it first for the
     # validation, then let the service perform the actual update.
     if body.base_url:
-        existing = svc.get(integration_id, current_user.id)
+        existing = svc.get(integration_id)
         if not existing:
             raise HTTPException(status_code=404, detail="Integration not found")
         try:
@@ -276,10 +268,7 @@ def update_integration(
     try:
         row = svc.update(
             integration_id=integration_id,
-            user_id=current_user.id,
             name=body.name,
-            project_id=body.project_id,
-            clear_project=body.clear_project,
             base_url=body.base_url,
             secret=body.secret,
             clear_secret=body.clear_secret,
@@ -301,31 +290,7 @@ def delete_integration(
 ):
     svc = IntegrationService(db)
     try:
-        svc.delete(integration_id, current_user.id)
+        svc.delete(integration_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return None
-
-
-# ---------------------------------------------------------------------------
-# Agent-facing read endpoint REMOVED in v2.9.5 (code review critical #2).
-# ---------------------------------------------------------------------------
-#
-# The previous ``/agent/integrations`` endpoint returned decrypted
-# scanner credentials to any authenticated agent key for the owner +
-# project — no per-plan binding, no capability check, no audit.  A
-# leaked plan-generation key could pull every active Nessus/OpenVAS/
-# etc. credential for the project.
-#
-# The endpoint was also redundant in practice: the reconnaissance
-# prompt builder (``agent_prompt_service._integration_block``) already
-# inlines the credentials directly into the recon instructions when
-# the user clicks "Start Agentic Recon", so a terminal-side agent has
-# everything it needs without a second round trip.
-#
-# If a future workflow needs programmatic access to integration
-# credentials from an agent context, it should come back as a
-# capability-scoped endpoint: require the key to be minted for a
-# specific reconnaissance plan, require an explicit per-integration
-# grant on that plan, log each retrieval, and consider returning a
-# short-lived proxy token rather than the reusable plaintext.

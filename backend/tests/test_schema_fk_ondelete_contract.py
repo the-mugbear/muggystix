@@ -187,8 +187,9 @@ EXPECTED_ONDELETE = {
     ('ingestion_jobs', 'project_id'): 'CASCADE',
     ('ingestion_jobs', 'scan_id'): 'SET NULL',
     ('ingestion_jobs', 'submitted_by_id'): 'SET NULL',
-    ('integration_credentials', 'project_id'): 'CASCADE',
-    ('integration_credentials', 'user_id'): 'CASCADE',
+    # c8f2d5a9e3b1 — integrations are the installation's: who configured one is
+    # provenance, and deleting that account keeps the integration.
+    ('integration_credentials', 'created_by_id'): 'SET NULL',
     ('llm_providers', 'user_id'): 'CASCADE',
     ('netexec_results', 'host_id'): 'CASCADE',
     ('netexec_results', 'scan_id'): 'CASCADE',
