@@ -38,12 +38,21 @@ describe('agentInstruction', () => {
       agentInstruction.proposeTests([1]),
       agentInstruction.proposeTestForObservation(1, 5, 'TLS 1.0 enabled'),
       agentInstruction.runHostTests(1),
+      agentInstruction.collectEvidence([1, 2], 'Web / TLS'),
       agentInstruction.reviewFinding(3, ['impact']),
       WRAP_UP_PROMPT,
     ].join('\n');
     expect(all).not.toMatch(/\b(nmap|nuclei|nessus|masscan|httpx|naabu|gobuster|nikto)\b/i);
     expect(all).not.toMatch(/list_tools|catalogue/i);
     expect(all).not.toMatch(/\b(test plan|execution run|recon run|phase)\b/i);
+  });
+
+  it('collectEvidence names the fixed hosts and the kind, shows commands first and brings the output back', () => {
+    const text = agentInstruction.collectEvidence([7, 9], 'Web / "TLS"');
+    expect(text).toContain('for these hosts only (host ids): 7, 9.');
+    expect(text).toContain(`"Web / 'TLS'"`);
+    expect(text).toContain('show me each command before you run it');
+    expect(text).toContain('upload the output to this session');
   });
 
   it('reviewFinding asks for evidence ids, and never a guess', () => {

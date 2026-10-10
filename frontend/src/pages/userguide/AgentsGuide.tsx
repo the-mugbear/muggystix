@@ -47,7 +47,8 @@ const sections: GuideSection[] = [
         </Para>
         <Para>
           Pages that deal with one object — a scope, a host, a host selection — have a button such
-          as <em>Scan with your agent</em>, <em>Propose tests</em> or <em>Ask agent</em>. It opens
+          as <em>Scan with your agent</em>, <em>Collect with your agent</em> (Evidence, for the
+          hosts in a gap that are all in scope), <em>Propose tests</em> or <em>Ask agent</em>. It opens
           the same start dialog with a one-line task to copy (for example{' '}
           <Mono>Propose tests in BlueStick for these hosts only (host ids): 12, 14.</Mono>); if your session is
           already live, the dialog says so and you paste the task to that agent instead of

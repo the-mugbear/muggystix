@@ -491,8 +491,10 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                       <div className="truncate text-caption" title={port.last_seen ?? port.first_seen ?? undefined}>
                         {fresh.seen ?? '—'}
                       </div>
+                      {/* Two short words in a 12% column: they wrap, never cut
+                          ("not reval…" told nobody what the warning was). */}
                       {fresh.notRevalidated && (
-                        <div className="truncate text-caption text-warning" title={NOT_REVALIDATED_TITLE}>
+                        <div className="break-words text-caption text-warning" title={NOT_REVALIDATED_TITLE}>
                           {NOT_REVALIDATED_LABEL}
                         </div>
                       )}

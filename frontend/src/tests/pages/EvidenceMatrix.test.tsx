@@ -184,9 +184,38 @@ describe('Evidence — domain × segment matrix', () => {
     expect(await within(matrix).findByText(caution)).toBeInTheDocument();
     expect(within(matrix).getByText(/Probe these hosts with httpx/)).toBeInTheDocument();
 
+    // Some of the listed hosts are outside the scope: no collection task names them.
+    expect(within(matrix).queryByRole('button', { name: 'Collect with your agent' })).toBeNull();
+
     fireEvent.click(within(matrix).getByRole('button', { name: /Propose tests/ }));
     const task = await screen.findByText(/^Propose tests in BlueStick for these hosts only/);
     expect(task.textContent).toContain(caution);
+  });
+
+  // Plan A5: the collection step could only be copied as IPs; the agent could
+  // be asked to propose tests but not to collect what the gap is about.
+  it('hands an in-scope collection gap to your agent — the listed hosts, no tool named', async () => {
+    gapsMock.mockResolvedValue({
+      domain: 'web_tls', label: 'Web / TLS', segment: null, segment_label: null, total: 9,
+      items: [{ host_id: 7, ip_address: '10.0.0.9', hostname: null, ports: [443] }, { host_id: 8, ip_address: '10.0.0.10', hostname: null, ports: [8443] }],
+      action: { kind: 'collect', text: 'Probe these hosts with httpx and upload the JSON.' },
+      project_has_scope: true, outside_scope: 0, scope_caution: null,
+    });
+    await renderPage();
+    const matrix = screen.getByText('Where the gaps are').closest('section')!;
+    fireEvent.click(within(matrix).getByRole('button', { name: /Web \/ TLS, whole project/ }));
+    fireEvent.click(await within(matrix).findByRole('button', { name: 'Collect with your agent' }));
+    const task = await screen.findByText(/^Collect the missing "Web \/ TLS" evidence for these hosts only \(host ids\): 7, 8\./);
+    expect(task.textContent).not.toMatch(/httpx/);
+  });
+
+  it('offers no collection task where no scope is declared, or the gap is one to test rather than collect', async () => {
+    await renderPage();
+    const matrix = screen.getByText('Where the gaps are').closest('section')!;
+    // The default answer states no scope facts at all.
+    fireEvent.click(within(matrix).getByRole('button', { name: /Web \/ TLS, whole project/ }));
+    await within(matrix).findByText('192.168.9.9');
+    expect(within(matrix).queryByRole('button', { name: 'Collect with your agent' })).toBeNull();
   });
 
   // UX review 2026-09-24: the outside-scope column was tinted and hatched like

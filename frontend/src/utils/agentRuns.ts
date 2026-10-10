@@ -195,6 +195,15 @@ export const agentInstruction = {
       + 'already on it (host_tests_list) so you do not duplicate them, then use host_tests_propose: one '
       + 'test per check, each with its exact command and why it is worth running. Do not run anything yet.';
   },
+  /** Collect the evidence a FIXED list of in-scope hosts lacks (Evidence's
+   *  gap list) and bring it back as an import. `evidence` is the kind's name
+   *  as the page shows it ("Web / TLS"). The page's own advice names tools
+   *  for a person; this text does not — which tool is the agent's judgment. */
+  collectEvidence: (hostIds: number[], evidence: string): string =>
+    `Collect the missing "${evidence.replace(/"/g, "'").slice(0, 80)}" evidence for these hosts only (host ids): `
+    + `${hostIds.join(', ')}. They are in scope and nothing imported so far assessed them for it. Read what each `
+    + 'host exposes in BlueStick, choose the tool and its options yourself, show me each command before you run '
+    + 'it, and upload the output to this session.',
   /** Propose a test that would confirm ONE scanner observation on a host
    *  (5.322.0). `vulnerability_id` links the test to the weakness, so its
    *  result is shown on it and promoting it joins the issue's finding. */

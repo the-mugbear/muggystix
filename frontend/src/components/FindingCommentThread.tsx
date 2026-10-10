@@ -18,7 +18,7 @@ import {
   uploadFindingNoteAttachment,
 } from '../services/api';
 import NoteAttachments, { type NoteAttachmentsHandle, type ReportMarking } from './host-inspector/NoteAttachments';
-import MentionText from './MentionText';
+import { DiscussionText } from './MentionText';
 import MentionTextarea from './MentionTextarea';
 import { Button } from './ui/button';
 import { useAuth } from '../contexts/AuthContext';
@@ -350,7 +350,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
             </div>
           </div>
         ) : (
-          note.body && <p className="whitespace-pre-wrap break-words text-body"><MentionText text={note.body} /></p>
+          note.body && <DiscussionText text={note.body} className="text-body" />
         )}
         <NoteAttachments
           ref={(h) => { if (h) attachRefs.current.set(note.id, h); else attachRefs.current.delete(note.id); }}

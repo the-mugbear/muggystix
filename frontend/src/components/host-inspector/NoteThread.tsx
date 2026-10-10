@@ -6,7 +6,7 @@ import type { Annotation } from '../../services/api';
 import MessageBubble, { wasEdited } from '../MessageBubble';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
-import MentionText from '../MentionText';
+import { DiscussionText } from '../MentionText';
 import MentionTextarea from '../MentionTextarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { cn } from '../../utils/cn';
@@ -16,7 +16,7 @@ import NoteAttachments, { type NoteAttachmentsHandle } from './NoteAttachments';
 // and a select made every note's header the tallest thing in it.
 const ACTION_BUTTON = 'size-7';
 const ACTION_ICON = 'size-3.5';
-// A body past either bound is clamped to four lines until opened.
+// A body past either bound is clamped to about four lines until opened.
 const LONG_NOTE_CHARS = 400;
 const LONG_NOTE_LINES = 5;
 
@@ -180,9 +180,11 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
         {/* v5.241.0 — a note body is unbounded (an agent's assessment runs to
             a screen of markdown). Long bodies open on demand; the threshold is
             on the text, not a DOM measurement. */}
-        <p className={cn('whitespace-pre-wrap break-words text-body', longBody && !bodyOpen && 'line-clamp-4')}>
-          <MentionText text={note.body} />
-        </p>
+        {/* Markdown, because an agent's note is written in it and a person's
+            may be; a line break stays a line break and @mentions stay marked.
+            Clamped by height: a line clamp does not hold over several blocks. */}
+        <DiscussionText text={note.body}
+          className={cn('text-body', longBody && !bodyOpen && 'max-h-24 overflow-hidden')} />
         {longBody && (
           <button type="button" onClick={() => setBodyOpen((v) => !v)} aria-expanded={bodyOpen}
             className="rounded text-caption text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">

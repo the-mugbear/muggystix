@@ -180,6 +180,17 @@ const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ sel
             <Button size="sm" variant="outline" onClick={() => void copyIps()} title="Copy the IPs as a target list for the collection step">
               Copy IPs
             </Button>
+            {/* The collection step, handed to the operator's agent — only
+                where the server says every listed host is in the declared
+                scope: a task never names a host that still needs "confirm in
+                scope", and with no scope declared none can be said to be. */}
+            {gaps.action.kind === 'collect' && gaps.project_has_scope && !gaps.outside_scope && gaps.items.length > 0 && (
+              <AgentTaskButton
+                label="Collect with your agent"
+                title="Hand these hosts to your agent to collect this evidence and upload it"
+                instruction={agentInstruction.collectEvidence(gaps.items.map((h) => h.host_id), gaps.label)}
+              />
+            )}
             {/* 5.313.0 — handed to the operator's agent session as a task
                 naming exactly these hosts. 5.320.0 — the agent proposes
                 tests on each host (there is no plan to draft). */}

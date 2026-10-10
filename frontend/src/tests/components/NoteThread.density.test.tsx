@@ -100,14 +100,27 @@ describe('NoteThread — row density', () => {
   it('clamps a long body until asked for, and leaves a short one alone', () => {
     const long = 'Lorem ipsum dolor sit amet. '.repeat(40);
     renderThread([note({ id: 1, body: long }), note({ id: 2, body: 'Short.' })]);
-    const body = screen.getByText(long.trim());
-    expect(body).toHaveClass('line-clamp-4');
-    expect(screen.getByText('Short.')).not.toHaveClass('line-clamp-4');
+    // The body is Markdown (blocks), so it is clamped by height on its wrapper.
+    const body = screen.getByText(long.trim()).parentElement!;
+    expect(body).toHaveClass('max-h-24', 'overflow-hidden');
+    expect(screen.getByText('Short.').parentElement).not.toHaveClass('max-h-24');
     expect(screen.getAllByRole('button', { name: 'Show full note' })).toHaveLength(1);
 
     fireEvent.click(screen.getByRole('button', { name: 'Show full note' }));
-    expect(body).not.toHaveClass('line-clamp-4');
+    expect(body).not.toHaveClass('max-h-24');
     expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  // An agent writes its notes in Markdown; they used to print as "## Assessment"
+  // and "- a" literally.  A person's line break stays a line break.
+  it('renders the body as Markdown and keeps a single line break', () => {
+    const { container } = renderThread([note({ body: '## Assessment\n\n- **SMB** signing off\n- `445/tcp` open\n\nfirst line\nsecond line' })]);
+    expect(container.querySelectorAll('li')).toHaveLength(2);
+    expect(container.querySelector('li strong')).toHaveTextContent('SMB');
+    expect(container.querySelector('li code')).toHaveTextContent('445/tcp');
+    expect(screen.queryByText(/##/)).not.toBeInTheDocument();
+    const para = screen.getByText(/first line/);
+    expect(para.querySelector('br')).not.toBeNull();
   });
 
   it('clamps a body of many short lines too (agent markdown)', () => {

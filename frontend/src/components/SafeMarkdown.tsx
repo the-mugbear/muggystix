@@ -29,6 +29,7 @@ import React, { useEffect } from 'react';
 
 import type { EvidenceImages } from '../utils/evidenceImages';
 import { CellAlign, isTableRow, splitTableRow, tableAlignments } from '../utils/markdownEditing';
+import { findMentionSpans } from '../utils/mentions';
 import { EvidenceResolver, evidenceReferenceAt } from '../utils/reportImages';
 
 const SAFE_SCHEMES = new Set(['http', 'https', 'mailto']);
@@ -213,20 +214,59 @@ const EvidenceImage: React.FC<{ id: number; alt: string; evidence: EvidenceImage
   );
 };
 
-const renderInline =(s: string, keyPrefix = 'i', evidence?: EvidenceResolver): React.ReactNode[] => {
+/** How one text is rendered — the same for every block and run inside it. */
+interface How {
+  evidence?: EvidenceResolver;
+  lineBreaks?: boolean;
+  mentions?: readonly string[];
+}
+
+/**
+ * Plain text with its @mentions of project members marked, so a reader sees
+ * who was notified.  Only the given usernames are marked (the rule the server
+ * notifies by — utils/mentions.ts); any other `@word` stays text.  The one
+ * marker: `MentionText` (plain bodies) and discussion Markdown both use it.
+ */
+export const markMentions = (body: string, usernames: readonly string[], keyPrefix = 'm'): React.ReactNode[] => {
+  const spans = findMentionSpans(body, usernames);
+  if (spans.length === 0) return [body];
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const s of spans) {
+    if (s.start > cursor) parts.push(body.slice(cursor, s.start));
+    parts.push(
+      <span key={`${keyPrefix}-${s.start}`} className="rounded-sm bg-primary/10 px-0.5 font-medium text-primary" title={`Mentions ${s.username}`}>
+        {body.slice(s.start, s.end)}
+      </span>,
+    );
+    cursor = s.end;
+  }
+  if (cursor < body.length) parts.push(body.slice(cursor));
+  return parts;
+};
+
+const renderInline =(s: string, keyPrefix = 'i', how: How = {}): React.ReactNode[] => {
+  const { evidence } = how;
   const out: React.ReactNode[] = [];
   let text = '';
   let k = 0;
   const key = () => `${keyPrefix}-${k++}`;
-  const flush = () => { if (text) { out.push(text); text = ''; } };
+  const flush = () => {
+    if (!text) return;
+    // A run of plain text is where a mention can be: never inside code or a link's target.
+    if (how.mentions?.length) out.push(...markMentions(text, how.mentions, key()));
+    else out.push(text);
+    text = '';
+  };
 
   let i = 0;
   while (i < s.length) {
     const c = s[i];
 
-    // Hard break: backslash or two+ spaces before a newline.
+    // Hard break: backslash or two+ spaces before a newline — or, in
+    // discussion text, any newline (the writer pressed Enter).
     if (c === '\n') {
-      if (/( {2,}|\\)$/.test(text)) {
+      if (how.lineBreaks || /( {2,}|\\)$/.test(text)) {
         text = text.replace(/( {2,}|\\)$/, '');
         flush();
         out.push(<br key={key()} />);
@@ -296,7 +336,7 @@ const renderInline =(s: string, keyPrefix = 'i', evidence?: EvidenceResolver): R
       const dest = close !== -1 ? linkDestination(s, close + 1) : null;
       if (dest) {
         flush();
-        const label = renderInline(s.slice(i + 1, close), `${keyPrefix}-${k}`, evidence);
+        const label = renderInline(s.slice(i + 1, close), `${keyPrefix}-${k}`, how);
         out.push(renderLink(safeHref(dest.url), label, key()));
         i = dest.end;
         continue;
@@ -344,7 +384,7 @@ const renderInline =(s: string, keyPrefix = 'i', evidence?: EvidenceResolver): R
         const close = closingDelimiter(s, i, open);
         if (close === -1) continue;
         flush();
-        const inner = renderInline(s.slice(i + open.length, close), `${keyPrefix}-${k}`, evidence);
+        const inner = renderInline(s.slice(i + open.length, close), `${keyPrefix}-${k}`, how);
         out.push(React.createElement(tag, { key: key() }, inner));
         i = close + open.length;
         matched = true;
@@ -533,15 +573,15 @@ const parseBlocks =(source: string): Block[] => {
   return blocks;
 };
 
-const renderBlocks = (blocks: Block[], keyPrefix: string, evidence?: EvidenceResolver): React.ReactNode[] =>
+const renderBlocks = (blocks: Block[], keyPrefix: string, how: How = {}): React.ReactNode[] =>
   blocks.map((b, n) => {
     const key = `${keyPrefix}-${n}`;
     switch (b.kind) {
       case 'para':
-        return <p key={key}>{renderInline(b.text, key, evidence)}</p>;
+        return <p key={key}>{renderInline(b.text, key, how)}</p>;
       case 'heading':
         // A heading in written text is a bold paragraph, as in the report.
-        return <p key={key}><strong>{renderInline(b.text, key, evidence)}</strong></p>;
+        return <p key={key}><strong>{renderInline(b.text, key, how)}</strong></p>;
       case 'code':
         return (
           <pre key={key} className="overflow-x-auto rounded bg-muted p-sm font-mono text-caption">
@@ -553,7 +593,7 @@ const renderBlocks = (blocks: Block[], keyPrefix: string, evidence?: EvidenceRes
       case 'quote':
         return (
           <blockquote key={key} className="space-y-xs border-l-2 border-border pl-sm text-muted-foreground">
-            {renderBlocks(parseBlocks(b.lines.join('\n')), key, evidence)}
+            {renderBlocks(parseBlocks(b.lines.join('\n')), key, how)}
           </blockquote>
         );
       case 'list': {
@@ -562,8 +602,8 @@ const renderBlocks = (blocks: Block[], keyPrefix: string, evidence?: EvidenceRes
           const ikey = `${key}-${j}`;
           // A tight item is its text alone, not a paragraph.
           const content = inner.length === 1 && inner[0].kind === 'para'
-            ? renderInline(inner[0].text, ikey, evidence)
-            : renderBlocks(inner, ikey, evidence);
+            ? renderInline(inner[0].text, ikey, how)
+            : renderBlocks(inner, ikey, how);
           return <li key={ikey} className="space-y-xs">{content}</li>;
         });
         return b.ordered ? (
@@ -581,7 +621,7 @@ const renderBlocks = (blocks: Block[], keyPrefix: string, evidence?: EvidenceRes
               <tr className="border-b border-border">
                 {b.head.map((c, j) => (
                   <th key={j} scope="col" className={`${cellClass} text-left font-medium`} style={textAlign(b.align[j])}>
-                    {renderInline(c, `${key}-h${j}`, evidence)}
+                    {renderInline(c, `${key}-h${j}`, how)}
                   </th>
                 ))}
               </tr>
@@ -591,7 +631,7 @@ const renderBlocks = (blocks: Block[], keyPrefix: string, evidence?: EvidenceRes
                 <tr key={n} className="border-b border-border/60">
                   {r.map((c, j) => (
                     <td key={j} className={cellClass} style={textAlign(b.align[j])}>
-                      {renderInline(c, `${key}-${n}-${j}`, evidence)}
+                      {renderInline(c, `${key}-${n}-${j}`, how)}
                     </td>
                   ))}
                 </tr>
@@ -616,11 +656,20 @@ interface Props {
    * text marker.  Every OTHER image is its alt text, always.
    */
   evidence?: EvidenceResolver;
+  /**
+   * Discussion text (a note, a comment) sets both of these — through
+   * `DiscussionText`, which knows the project's members.  A single newline is
+   * then a line break, because the writer pressed Enter; report text leaves
+   * it off, where a newline is a space as the report prints it.
+   */
+  lineBreaks?: boolean;
+  /** Usernames whose `@name` is marked in plain runs of text. */
+  mentions?: readonly string[];
 }
 
-const SafeMarkdown: React.FC<Props> = ({ text, className, evidence }) => (
+const SafeMarkdown: React.FC<Props> = ({ text, className, evidence, lineBreaks, mentions }) => (
   <div className={`min-w-0 space-y-xs break-words ${className ?? ''}`.trim()}>
-    {renderBlocks(parseBlocks(text), 'md', evidence)}
+    {renderBlocks(parseBlocks(text), 'md', { evidence, lineBreaks, mentions })}
   </div>
 );
 

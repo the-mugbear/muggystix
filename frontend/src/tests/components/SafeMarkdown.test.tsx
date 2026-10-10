@@ -240,6 +240,26 @@ describe('SafeMarkdown — the finding’s own images (evidence:<id>)', () => {
     expect(c.querySelector('li img')?.getAttribute('alt')).toBe('in list');
   });
 
+  it('report text: a single newline is a space, and @name is plain text', () => {
+    const c = md('first line\nsecond line @eval-ana');
+    expect(c.querySelector('br')).toBeNull();
+    expect(c.textContent).toBe('first line second line @eval-ana');
+    expect(c.querySelector('span[title]')).toBeNull();
+  });
+
+  it('discussion text: a newline is a line break and a member\'s @name is marked — not in code, not another word', () => {
+    const c = render(
+      <SafeMarkdown lineBreaks mentions={['eval-ana']} text={'first line\nsecond **line** @eval-ana, not @nobody\n\n`@eval-ana` in code'} />,
+    ).container;
+    expect(c.querySelectorAll('p')[0].querySelectorAll('br')).toHaveLength(1);
+    const marked = Array.from(c.querySelectorAll('span[title]'));
+    expect(marked.map((m) => [m.textContent, m.getAttribute('title')])).toEqual([['@eval-ana', 'Mentions eval-ana']]);
+    expect(c.querySelector('code')?.textContent).toBe('@eval-ana');
+    expect(c.querySelector('strong')?.textContent).toBe('line');
+    // Raw HTML is still never HTML.
+    expect(render(<SafeMarkdown lineBreaks text={'<img src=x onerror=alert(1)>'} />).container.querySelector('img')).toBeNull();
+  });
+
   it('without a resolver, marks the reference as text and loads nothing', () => {
     const c = md('See ![The relayed session](evidence:57) and ![](evidence:9).');
     expect(c.querySelector('img')).toBeNull();
