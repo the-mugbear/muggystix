@@ -210,15 +210,9 @@ export const NAV_PAGES: NavPage[] = [
   },
   {
     id: 'scans', path: '/scans', label: 'Scans', requiredRole: 'viewer', hub: 'inventory',
-    palette: { Icon: ScanLinesIcon, order: 2 },
-  },
-  // v5.222.0 — beside Scans, not under Settings: import problems are found
-  // during collection, when the operator is on the inventory (design review
-  // item 5).  v5.294.0 — canonical path /ingestion-results (the page was
-  // never only errors); /parse-errors redirects, query string kept.
-  {
-    id: 'ingestion-results', path: '/ingestion-results', label: 'Ingestion Results', requiredRole: 'analyst', hub: 'inventory',
-    palette: { Icon: AlertHexIcon, keywords: ['errors', 'parse', 'import', 'upload', 'ingestion'], order: 2.5 },
+    // Its "Import results" view is what the Ingestion Results page was
+    // (5.380.0): the palette finds it by those words.
+    palette: { Icon: ScanLinesIcon, order: 2, keywords: ['errors', 'parse', 'import', 'upload', 'ingestion', 'import results', 'failed import'] },
   },
   {
     // The page's own title is "Scope": a project has exactly one (v2.9.4).

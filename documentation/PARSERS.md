@@ -648,7 +648,7 @@ class MyToolParser:
 - **Optional quality stats:** set `self.last_parse_stats = {"skipped": N,
   "warnings": "...", "summary": "...", "partial": bool, "uninterpreted": [...]}`.
   These land on the `IngestionJob` as `skipped_count` / `parser_warnings` /
-  `partial` / `uninterpreted_lines` (visible on Inventory → Ingestion Results).
+  `partial` / `uninterpreted_lines` (visible on Inventory → Scans → Ingestion results).
   `uninterpreted` is the lines you dropped or kept only as text, as REDACTED
   shapes from `app/services/line_shapes.py` (`ShapeTally`) — never a raw line,
   a credential or a cell value (v2.418.0; NetExec is the reference).

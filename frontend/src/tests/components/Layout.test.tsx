@@ -123,15 +123,16 @@ describe('Layout shell', () => {
     unmount();
     renderAt('/hosts');
     const strip = screen.getByRole('navigation', { name: 'Inventory sections' });
+    // Ingestion Results is the Scans page's "Import results" view (5.380.0),
+    // not a tab of its own.
     expect(within(strip).getAllByRole('link').map((a) => a.textContent)).toEqual(
-      ['Hosts', 'Names', 'Scans', 'Ingestion Results', 'Scope'],
+      ['Hosts', 'Names', 'Scans', 'Scope'],
     );
   });
 
   // Review 2026-10-01 — the server lets every member READ the scope, so a
-  // viewer keeps the Scope tab (the page hides its own write controls);
-  // Ingestion Results' reads need analyst, so that tab is not offered.
-  it('a project viewer or auditor keeps Scope and is not offered Ingestion Results', () => {
+  // viewer keeps the Scope tab (the page hides its own write controls).
+  it('a project viewer or auditor keeps Scope and Scans', () => {
     for (const my_role of ['viewer', 'auditor']) {
       project = { id: 1, name: 'Demo', status: 'active', my_role };
       const { unmount } = renderAt('/hosts');

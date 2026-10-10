@@ -463,7 +463,7 @@ Every `/parse-errors` route requires **analyst+**.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/parse-errors/ingestion-results` | The **Ingestion Results** page (Inventory hub): one row per import with its format chain (`detected_file_type` → `format_override` → `final_file_type`), `file_retained` and `retained_until`. |
+| GET | `/parse-errors/ingestion-results` | The Scans page's **Ingestion results** view (`/scans?view=results`; a page of its own until frontend 5.380.0): one row per import with its format chain (`detected_file_type` → `format_override` → `final_file_type`), `file_retained` and `retained_until`. |
 | GET | `/parse-errors/ingestion-results/{job_id}/uninterpreted` | **v2.418.0** — the lines an import did not interpret, as REDACTED shapes: `{job_id, original_filename, tool_name, total, distinct, shapes[]}`. Only parsers that publish them (NetExec today) have rows. |
 | GET | `/parse-errors/` | Filterable list. |
 | GET | `/parse-errors/{error_id}` | Detail with `user_message` + full file preview. |

@@ -73,7 +73,7 @@ const sections: GuideSection[] = [
           A file whose content does not match its extension is refused on upload, and so is a file
           identical to one already in the project (import it again on purpose from the review, or{' '}
           <em>Re-process</em> on Ingestion Results). If a file fails to parse, check{' '}
-          <strong>Inventory → Ingestion Results</strong> (analysts and above) for the error, the
+          <strong>Inventory → Scans → Ingestion results</strong> (analysts and above) for the error, the
           format chain (detected → chosen → final) and, while the file is retained — 7 days by
           default — <em>Review the format and retry</em>.
         </Para>

@@ -116,7 +116,8 @@ describe('navigation manifest', () => {
 
   it('the IA the UX review settled on (v5.294.0)', () => {
     const tabs = (id: string) => HUBS.find((h) => h.id === id)!.children.map((c) => c.label);
-    expect(tabs('inventory')).toEqual(['Hosts', 'Names', 'Scans', 'Ingestion Results', 'Scope']);
+    // 5.380.0 — Ingestion Results is the Scans page's second view, not a tab.
+    expect(tabs('inventory')).toEqual(['Hosts', 'Names', 'Scans', 'Scope']);
     // 5.335.0 — Remediation: who was told about each finding on each host and
     // where the fix stands (the owner's request, 2026-10-07), after the report.
     expect(tabs('findings')).toEqual(['Findings', 'Reports', 'Remediation']);
@@ -153,7 +154,10 @@ describe('navigation manifest', () => {
 
   it('App.tsx sends the old paths to their new homes', () => {
     const src = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8');
-    expect(src).toMatch(/path="\/parse-errors" element={<RedirectKeepingQuery to="\/ingestion-results" \/>}/);
+    // Both of Ingestion Results' old paths open the Scans page's results view.
+    expect(src).toMatch(/path="\/parse-errors" element={<RedirectToImportResults \/>}/);
+    expect(src).toMatch(/path="\/ingestion-results" element={<RedirectToImportResults \/>}/);
+    expect(src).toMatch(/<Navigate to={`\/scans\?view=results\$\{rest \? `&\$\{rest\}` : ''\}\$\{hash\}`} replace \/>/);
     expect(src).toMatch(/path="\/assist-sessions"[\s\S]{0,200}?<Navigate to="\/agent-activity" replace \/>/);
     // v5.312.0 — the old per-session path resolves to the session page.
     expect(src).toMatch(/path="\/assist-sessions\/:sessionId"/);
@@ -218,14 +222,17 @@ describe('navigation manifest', () => {
   // Review 2026-10-01 — a page stays reachable for every role the server lets
   // READ it (style guide §40).  Scope's GETs are open to every member, so its
   // route and nav entry are `viewer` and the page hides its write controls;
-  // Ingestion Results' GETs need analyst, so the page is not offered below it.
-  it('Scope is every member\'s page; Ingestion Results is an analyst\'s', () => {
+  // The import results' GETs need analyst: since 5.380.0 they are a VIEW of
+  // the Scans page (every member's), and the view decides — its tabs and the
+  // view itself are for analysts and above (`ScansViewTabs.test.tsx`).
+  it('Scope and Scans are every member\'s pages; Ingestion Results is no page of its own', () => {
     const manifest = Object.fromEntries(NAV_PAGES.map((p) => [p.path, p.requiredRole]));
     const appRoles = appRouteRoles();
     expect(manifest['/scopes']).toBe('viewer');
     expect(appRoles['/scopes']).toBe('viewer');
-    expect(manifest['/ingestion-results']).toBe('analyst');
-    expect(appRoles['/ingestion-results']).toBe('analyst');
+    expect(manifest['/scans']).toBe('viewer');
+    expect(appRoles['/scans']).toBe('viewer');
+    expect(manifest['/ingestion-results']).toBeUndefined();
   });
 
   // Branch review 2026-10-01 S5 — `analyst` on a route is the PROJECT role, so

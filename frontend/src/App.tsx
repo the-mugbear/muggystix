@@ -93,7 +93,9 @@ const RouteSkeleton: React.FC = () => {
 // auth.  Suspense fallback uses ListPageSkeleton — it matches the
 // shape of most pages closely enough that the swap is invisible for
 // the common case.
-const Scans = lazy(() => import('./pages/Scans'));
+// One page, two views: the imported scans and the import results (which was
+// the Ingestion Results page until 5.380.0).
+const Scans = lazy(() => import('./pages/ScansHub'));
 const ScanDetail = lazy(() => import('./pages/ScanDetail'));
 const ScanDiff = lazy(() => import('./pages/ScanDiff'));
 const Hosts = lazy(() => import('./pages/Hosts'));
@@ -106,7 +108,6 @@ const SecurityPosture = lazy(() => import('./pages/SecurityPosture'));
 const Segments = lazy(() => import('./pages/Segments'));
 const Patterns = lazy(() => import('./pages/Patterns'));
 const Evidence = lazy(() => import('./pages/Evidence'));
-const ParseErrors = lazy(() => import('./pages/ParseErrors'));
 const DefaultCredentials = lazy(() => import('./pages/DefaultCredentials'));
 const Profile = lazy(() => import('./pages/Profile'));
 const SystemSettings = lazy(() => import('./pages/SystemSettings'));
@@ -147,10 +148,13 @@ const Remediation = lazy(() => import('./pages/Remediation'));
 const RemediationDeadlines = lazy(() => import('./pages/RemediationDeadlines'));
 const ReportDetail = lazy(() => import('./pages/ReportDetail'));
 
-/** A renamed path: go to the new one with the same query string and hash. */
-function RedirectKeepingQuery({ to }: { to: string }) {
+/** `/parse-errors?status=failed` → `/scans?view=results&status=failed`. */
+function RedirectToImportResults() {
   const { search, hash } = useLocation();
-  return <Navigate to={`${to}${search}${hash}`} replace />;
+  const params = new URLSearchParams(search);
+  params.delete('view');
+  const rest = params.toString();
+  return <Navigate to={`/scans?view=results${rest ? `&${rest}` : ''}${hash}`} replace />;
 }
 
 // Route-level error boundary for the page area inside Layout. Keyed on
@@ -535,17 +539,13 @@ function App() {
                       />
                       {/* Legacy path → new Patterns page (Phase 3 IA). */}
                       <Route path="/insights/systemic" element={<Navigate to="/posture/patterns" replace />} />
-                      <Route
-                        path="/ingestion-results"
-                        element={
-                          <ProtectedRoute requiredRole="analyst">
-                            <ParseErrors />
-                          </ProtectedRoute>
-                        }
-                      />
-                      {/* v5.294.0 — the old path; links and bookmarks keep
-                          their filters (?status=…) across the redirect. */}
-                      <Route path="/parse-errors" element={<RedirectKeepingQuery to="/ingestion-results" />} />
+                      {/* 5.380.0 — Ingestion Results is the Scans page's "Import
+                          results" view.  Both of its old paths land there, and
+                          links and bookmarks keep their filters (?status=…,
+                          ?job_id=…).  Kept until nothing links to them: the
+                          in-app links still say /parse-errors. */}
+                      <Route path="/ingestion-results" element={<RedirectToImportResults />} />
+                      <Route path="/parse-errors" element={<RedirectToImportResults />} />
                       <Route
                         path="/default-credentials"
                         element={

@@ -762,7 +762,9 @@ Portfolio members sheet and the administrators' memberships dialog.
   member reads the project's details and tags) and Scanner Integrations
   (every member reads them, global admins change them).  A page leaves the
   nav, and its route refuses, only when the server refuses that role the
-  read as well (Ingestion Results: its GETs need analyst; Reports — `/reports`
+  read as well (Ingestion results — a view of the Scans page since 5.380.0,
+  shown with its tabs only to analysts and above: its GETs need analyst;
+  Reports — `/reports`
   and `/reports/:id` — every client-report route needs auditor).  Never hide a
   readable page because its writes are out of reach.  Proposals and Agent
   Sessions are every member's pages: the server gives any member those reads

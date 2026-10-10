@@ -86,6 +86,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { formatDate, formatRelativeTime, formatTimestamp } from '../utils/relativeTime';
 import ScanContribution from '../components/scans/ScanContribution';
+import ScansViewTabs from '../components/scans/ScansViewTabs';
 import ImportResult from '../components/scans/ImportResult';
 import UploadReviewDialog from '../components/scans/UploadReviewDialog';
 import { ScanBatchRow } from '../components/scans/ScanBatchList';
@@ -891,6 +892,9 @@ export default function Scans() {
           )}
         </div>
       </div>
+      {/* Imported scans | Import results (the "Ingestion Results" page is this
+          page's second view since 5.380.0). */}
+      <ScansViewTabs />
 
       {/* v5.270.0 — one sentence instead of four stat cards.  "Hosts up" (a
           scanner's own up flag, not liveness) and "Open services" were totals

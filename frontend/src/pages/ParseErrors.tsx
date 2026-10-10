@@ -13,6 +13,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { usePagedList } from '../hooks/usePagedList';
+import ScansViewTabs from '../components/scans/ScansViewTabs';
 import { useUrlPage } from '../hooks/useUrlPage';
 import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { useConfirm } from '../hooks/useConfirm';
@@ -456,9 +457,12 @@ const ParseErrors: React.FC = () => {
     <div className="p-md md:p-lg">
       {confirmEl}
       <div className="mb-md flex flex-wrap items-center justify-between gap-sm">
-        <h1 className="text-page-title">Ingestion Results</h1>
-        <LastUpdated compact lastFetched={loadedAt} onRefresh={() => void loadData()} isLoading={loading} label="ingestion results" />
+        {/* A view of the Scans page since 5.380.0 (it was a page of its own,
+            "Ingestion Results"). */}
+        <h1 className="text-page-title font-semibold">Scans</h1>
+        <LastUpdated compact lastFetched={loadedAt} onRefresh={() => void loadData()} isLoading={loading} label="import results" />
       </div>
+      <ScansViewTabs />
       {/* v5.294.0 — the shared filter row (ListFilterBar); the status filter
           is the count strip below it (v5.242.0). */}
       <ListFilterBar className="mb-sm">

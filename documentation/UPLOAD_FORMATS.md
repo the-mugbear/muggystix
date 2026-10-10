@@ -46,5 +46,5 @@ Upload is **staged**: choose files → review formats → import. BlueStick dete
 ## Quick Tips
 
 - Compressing files before upload is not required; submit raw exports so the auto-detection logic can inspect headers.
-- If a file fails to parse, open **Inventory → Ingestion Results** (the *Needs attention* filter) for the structured error, the format chain (*detected → override → final*) and, while the file is retained, *Review the format and retry*.
+- If a file fails to parse, open **Inventory → Scans → Ingestion results** (the *Needs attention* filter) for the structured error, the format chain (*detected → override → final*) and, while the file is retained, *Review the format and retry*.
 - When migrating a deployment, keep `.env` aligned with the host IP and CORS origins.
