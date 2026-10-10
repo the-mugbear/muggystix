@@ -451,7 +451,33 @@ def host_provenance_conditions(host_id, scan_id: int, *, before_release: bool = 
 
     History is the usual witness, but not the only one (S1): a writer that
     attaches without a history row — a re-observed scanner row, a port another
-    scan updated, a web row — protects the host as well."""
+    scan updated, a web row — protects the host as well.
+
+    **A pointer that names no scan** (decided column by column, 2026-10-10 —
+    ``!= :scan`` is unknown for a NULL, so each comparison below is one of
+    these three on purpose; never rewrite them all as ``IS DISTINCT FROM``):
+
+    * *Cannot be NULL* — ``host_scan_history``, ``port_scan_history``,
+      ``web_interfaces``, ``web_paths``, ``netexec_results``: ``scan_id`` is
+      NOT NULL and cascades with its scan, so ``!=`` is exact.
+    * *"Last updated by", NULL does NOT protect* — ``hosts_v2`` and
+      ``ports_v2.last_updated_scan_id``.  NULL there is what the web parsers
+      leave on a host they create, and what a scan delete leaves when the last
+      updater goes and no history hands the pointer back (always so for a port
+      Nessus created: it writes no port history).  Neither says another scan
+      still has the host: if it protected, a host would outlive the scan that
+      brought it as soon as any later scan had been deleted
+      (``test_deleting_the_later_scan_and_then_the_first_removes_the_host``).
+    * *"First recorded by", NULL protects* — ``host_scripts_v2`` and
+      ``host_attributes`` (``scan_sightings.first_recorded_elsewhere``), as
+      ``vulnerabilities`` always has (``_seen_by_another_scan``).  Every
+      writer stamps its scan, so a row naming none is never this scan's first
+      recording; the one such row that is this scan's alone is the one
+      ``release_scan`` deletes, and it is excluded.  No writer or delete path
+      produces a NULL there today — the column is nullable so that a delete
+      which skips ``release_scan`` loses the pointer and not the row, and the
+      row must then hold its host too.
+    """
     from sqlalchemy import exists
     from sqlalchemy.orm import aliased
 
@@ -467,7 +493,15 @@ def host_provenance_conditions(host_id, scan_id: int, *, before_release: bool = 
     host_vuln = aliased(Vulnerability)
 
     def _none_from_another_scan(model):
+        """For a table whose ``scan_id`` is NOT NULL."""
         return ~exists().where(model.host_id == host_id, model.scan_id != scan_id)
+
+    def _none_first_recorded_elsewhere(kind: str, model):
+        """For a table whose ``scan_id`` is "first recorded by" and nullable."""
+        row = aliased(model)
+        return ~exists().where(
+            row.host_id == host_id, scan_sightings.first_recorded_elsewhere(kind, scan_id, row),
+        )
 
     sightings: List[Any] = []
     if before_release:
@@ -493,12 +527,14 @@ def host_provenance_conditions(host_id, scan_id: int, *, before_release: bool = 
         ~exists().where(this_host.id == host_id, this_host.last_updated_scan_id != scan_id),
         # Something from another scan or source hangs on it.
         ~exists().where(host_vuln.host_id == host_id, _seen_by_another_scan(host_vuln, scan_id)),
+        # A port a scan NAMED as its last updater that is not this one (NULL
+        # does not protect — see the docstring).
         ~exists().where(host_port.host_id == host_id, host_port.last_updated_scan_id != scan_id),
         ~exists().where(
             host_port.host_id == host_id, port_ph.port_id == host_port.id, port_ph.scan_id != scan_id,
         ),
-        _none_from_another_scan(models.HostScript),
-        _none_from_another_scan(HostAttribute),
+        _none_first_recorded_elsewhere(scan_sightings.HOST_SCRIPT, models.HostScript),
+        _none_first_recorded_elsewhere(scan_sightings.HOST_ATTRIBUTE, HostAttribute),
         _none_from_another_scan(models.WebInterface),
         _none_from_another_scan(models.WebPath),
         _none_from_another_scan(NetexecResult),

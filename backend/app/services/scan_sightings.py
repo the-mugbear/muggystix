@@ -147,6 +147,37 @@ def another_scan_reported(kind: str, scan_id: int, thing: Any = None):
     return exists().where(getattr(other, spec.thing_column) == row.id, other.scan_id != scan_id)
 
 
+def first_recorded_elsewhere(kind: str, scan_id: int, thing: Any = None):
+    """Condition on a script / host script / host attribute row (``thing`` —
+    the kind's model, or an alias): the row is NOT ``scan_id``'s own first
+    recording — what a delete path's guard asks before it lets the row's
+    host go with the scan.
+
+    * It names another scan as its first recorder; or
+    * it names NO scan (``scan_id`` is NULL).  Every writer stamps the scan it
+      imports for, and ``release_scan`` only ever hands the pointer to another
+      scan, so a NULL is never this scan's first recording: it is a row whose
+      first recorder was deleted by a path that skipped ``release_scan`` (the
+      column is nullable + ``SET NULL`` so that such a delete loses the
+      pointer and not the row), or one written with no scan to name.  ``!=``
+      alone would read that NULL as "nobody else" — SQL's unknown — and the
+      row would not hold its host.
+
+      Except the row ``_release_first_recorded`` deletes as this scan's alone:
+      NULL, a sighting by this scan and none by another.  It is excluded here
+      so the answer is the same before ``release_scan`` (the hand delete, its
+      preview) and after it (the cleanup, where that row is already gone).
+    """
+    spec = _KINDS[kind]
+    row = spec.thing if thing is None else thing
+    mine = aliased(spec.sighting)
+    this_scan_reported = exists().where(getattr(mine, spec.thing_column) == row.id, mine.scan_id == scan_id)
+    return or_(
+        row.scan_id != scan_id,
+        and_(row.scan_id.is_(None), or_(~this_scan_reported, another_scan_reported(kind, scan_id, row))),
+    )
+
+
 def _another_sighting(spec: _Kind, scan_id: int, *, newest: bool = False):
     """``(exists, scan id)`` over the sightings of ``spec.thing`` by a scan
     other than ``scan_id``: whether there is one, and the earliest (or

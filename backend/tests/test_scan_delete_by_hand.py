@@ -1084,3 +1084,182 @@ def test_the_preview_says_exactly_what_the_delete_then_does(client, db_session, 
     assert preview["dns_names_removed"] == done["dns_names_removed"] == gone["names"] == 2
     assert _names(db_session, pid) == {"on-kept-observation.example.org", "also-seen.example.org"}
     assert preview["import_running"] is False
+
+
+# ---------------------------------------------------------------------------
+# E — a pointer that names no scan (plan C5, 2026-10-10)
+#
+# ``host_provenance_conditions`` compared every pointer with ``!= :scan``, and
+# in SQL a NULL pointer then says nothing.  Whether that is right depends on
+# what a NULL means in the column:
+#
+# * "first recorded by" on a host script / host attribute — every writer
+#   stamps it and no scan can be the first recorder of a row that names none,
+#   so a NULL row is never the deleted scan's first recording: the host is
+#   kept, as the scanner-observation guard has always kept it.  The one
+#   exception is the row ``release_scan`` deletes as the scan's alone (only
+#   this scan has a sighting of it).
+# * "last updated by" on a host or a port — NULL is what deleting the last
+#   updater leaves, and what the web parsers leave on a host they create.  It
+#   does not protect; the last test here shows what would break if it did.
+# ---------------------------------------------------------------------------
+
+def _host_script(db, host, scan=None, *seen_by):
+    row = models.HostScript(
+        host_id=host.id, script_id="smb-os-discovery", output="o", scan_id=scan.id if scan is not None else None,
+    )
+    db.add(row)
+    db.flush()
+    scan_sightings.see_many(db, scan_sightings.HOST_SCRIPT, [(row.id, s.id) for s in seen_by])
+    return row
+
+
+def _host_attribute(db, host, scan=None, *seen_by):
+    row = HostAttribute(
+        host_id=host.id, attribute_type="os_name", value="Linux", source="nessus",
+        scan_id=scan.id if scan is not None else None,
+    )
+    db.add(row)
+    db.flush()
+    scan_sightings.see_many(db, scan_sightings.HOST_ATTRIBUTE, [(row.id, s.id) for s in seen_by])
+    return row
+
+
+# What sits on the host, with a first recorder that names NO scan: the row
+# maker, and which scans have a sighting of it.
+RECORDED_BY_NO_NAMED_SCAN = {
+    "host script nobody has a sighting of": (_host_script, ()),
+    "host attribute nobody has a sighting of": (_host_attribute, ()),
+    "host script only another scan has a sighting of": (_host_script, ("other",)),
+    "host script both scans have a sighting of": (_host_script, ("target", "other")),
+    "host attribute both scans have a sighting of": (_host_attribute, ("target", "other")),
+}
+
+
+def _unnamed_estate(db, pid, make, seen_by):
+    """``target`` has the only host history for two hosts it created.  One
+    carries a row whose first recorder names no scan; the other is plain."""
+    other, target = _scan(db, pid, "other.xml"), _scan(db, pid, "target.xml")
+    scans = {"other": other, "target": target}
+    carrying = _host(db, pid, target, "10.69.0.1")
+    row = make(db, carrying, None, *[scans[name] for name in seen_by])
+    plain = _host(db, pid, target, "10.69.0.2")
+    db.commit()
+    return target.id, carrying.id, plain.id, type(row), row.id
+
+
+@pytest.mark.parametrize(
+    "make,seen_by", RECORDED_BY_NO_NAMED_SCAN.values(), ids=RECORDED_BY_NO_NAMED_SCAN.keys(),
+)
+def test_a_hand_delete_keeps_a_host_carrying_a_row_no_named_scan_first_recorded(
+    client, db_session, test_project, make, seen_by,
+):
+    """The row is not the deleted scan's first recording — something else put
+    it on the host — so the host was not brought by that scan alone."""
+    pid = test_project.id
+    target_id, carrying_id, plain_id, model, row_id = _unnamed_estate(db_session, pid, make, seen_by)
+
+    preview = client.get(_url(pid, target_id, "/deletion-impact")).json()
+    response = client.delete(_url(pid, target_id))
+
+    assert response.status_code == 200, response.text
+    assert _host_ids(db_session, pid) == {carrying_id}
+    assert db_session.query(model).filter_by(id=row_id).count() == 1
+    assert (preview["hosts_removed"], preview["hosts_kept"]) == (1, 1)     # the preview counted the same
+    assert preview["sample_removed_ips"] == ["10.69.0.2"]
+    assert response.json()["hosts_removed"] == 1
+
+
+@pytest.mark.parametrize(
+    "make,seen_by", RECORDED_BY_NO_NAMED_SCAN.values(), ids=RECORDED_BY_NO_NAMED_SCAN.keys(),
+)
+def test_the_cleanup_keeps_a_host_carrying_a_row_no_named_scan_first_recorded(
+    db_session, test_project, make, seen_by,
+):
+    """The same guard after ``release_scan`` — which never deletes these rows
+    (no sighting of this scan's, or another scan's beside it)."""
+    pid = test_project.id
+    target_id, carrying_id, plain_id, model, row_id = _unnamed_estate(db_session, pid, make, seen_by)
+
+    removed = delete_partial_scan(db_session, target_id)
+    db_session.commit()
+
+    assert removed["hosts"] == 1
+    assert _host_ids(db_session, pid) == {carrying_id}
+    assert db_session.query(model).filter_by(id=row_id).count() == 1
+
+
+@pytest.mark.parametrize("make", [_host_script, _host_attribute], ids=["host script", "host attribute"])
+@pytest.mark.parametrize("by_hand", [True, False], ids=["hand delete", "cleanup"])
+def test_a_row_naming_no_scan_that_only_this_scan_reported_goes_with_its_host(
+    client, db_session, test_project, make, by_hand,
+):
+    """``release_scan`` deletes such a row as the scan's alone (its only
+    sighting is this scan's), so it does not hold the host either — the same
+    answer before release (the hand delete, its preview) and after it (the
+    cleanup).  Unchanged by C5."""
+    pid = test_project.id
+    target_id, carrying_id, plain_id, model, row_id = _unnamed_estate(db_session, pid, make, ("target",))
+
+    if by_hand:
+        preview = client.get(_url(pid, target_id, "/deletion-impact")).json()
+        assert (preview["hosts_removed"], preview["hosts_kept"]) == (2, 0)
+        assert client.delete(_url(pid, target_id)).json()["hosts_removed"] == 2
+    else:
+        assert delete_partial_scan(db_session, target_id)["hosts"] == 2
+        db_session.commit()
+
+    assert _host_ids(db_session, pid) == set()
+    assert db_session.query(model).filter_by(id=row_id).count() == 0
+
+
+@pytest.mark.parametrize("by_hand", [True, False], ids=["hand delete", "cleanup"])
+def test_an_update_pointer_naming_no_scan_does_not_keep_a_host(client, db_session, test_project, by_hand):
+    """Deliberate, and unchanged by C5: on ``hosts_v2`` and ``ports_v2`` the
+    pointer is "last updated by".  The web parsers leave it NULL on a host
+    they create, and deleting the last updater clears it — neither says
+    another scan has the host."""
+    pid = test_project.id
+    target = _scan(db_session, pid, "target.xml")
+    unstamped = _host(db_session, pid, target, "10.69.1.1")
+    unstamped.last_updated_scan_id = None                     # as httpx / eyewitness create it
+    port_cleared = _host(db_session, pid, target, "10.69.1.2")
+    port = _port(db_session, port_cleared, 443, stamp=target)
+    port.last_updated_scan_id = None                          # its later updater was deleted
+    db_session.commit()
+    target_id = target.id
+
+    if by_hand:
+        assert client.get(_url(pid, target_id, "/deletion-impact")).json()["hosts_removed"] == 2
+        assert client.delete(_url(pid, target_id)).json()["hosts_removed"] == 2
+    else:
+        assert delete_partial_scan(db_session, target_id)["hosts"] == 2
+        db_session.commit()
+    assert _host_ids(db_session, pid) == set()
+
+
+def test_deleting_the_later_scan_and_then_the_first_removes_the_host(client, db_session, test_project):
+    """Why a NULL update pointer cannot protect.  A Nessus-like import (no
+    port history) brings a host and a port; a later scan updates both and is
+    then deleted, which leaves the port's pointer naming no scan (there is no
+    port history to hand it back by); deleting the first import must still
+    remove the host it brought — with ``IS DISTINCT FROM`` on the port's
+    update pointer it never could."""
+    pid = test_project.id
+    first, later = _scan(db_session, pid, "first.nessus"), _scan(db_session, pid, "later.xml")
+    host = _host(db_session, pid, first, "10.69.2.1")
+    port = _port(db_session, host, 445, stamp=first, updated_by=later)
+    _saw(db_session, host, later)
+    host.last_updated_scan_id = later.id
+    db_session.commit()
+    host_id, port_id, first_id, later_id = host.id, port.id, first.id, later.id
+
+    assert client.delete(_url(pid, later_id)).json()["hosts_removed"] == 0
+    db_session.expire_all()
+    assert _host_ids(db_session, pid) == {host_id}
+    assert db_session.get(models.Host, host_id).last_updated_scan_id == first_id   # handed back by host history
+    assert db_session.get(models.Port, port_id).last_updated_scan_id is None
+
+    assert client.get(_url(pid, first_id, "/deletion-impact")).json()["hosts_removed"] == 1
+    assert client.delete(_url(pid, first_id)).json()["hosts_removed"] == 1
+    assert _host_ids(db_session, pid) == set()
