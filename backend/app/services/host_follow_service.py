@@ -135,49 +135,6 @@ class HostFollowService:
         self.db.commit()
         return []
 
-    def assign_host(self, host_id: int, assignee_id: int, assigned_by_id: int) -> HostFollow:
-        """Assign a host to ``assignee_id``.
-
-        Upserts the assignee's follow row, stamping ``assigned_at`` /
-        ``assigned_by_id`` and bumping status to In Review so the host
-        lands in the assignee's My Queue.  The assignee's ``user_id`` IS
-        the assignment target — there is no separate assigned_to column.
-        """
-        from datetime import datetime, timezone
-
-        follow = self.get_follow(host_id, assignee_id)
-        now = datetime.now(timezone.utc)
-        if follow:
-            follow.assigned_by_id = assigned_by_id
-            follow.assigned_at = now
-            follow.status = FollowStatus.IN_REVIEW
-        else:
-            follow = HostFollow(
-                host_id=host_id,
-                user_id=assignee_id,
-                status=FollowStatus.IN_REVIEW,
-                assigned_by_id=assigned_by_id,
-                assigned_at=now,
-            )
-            self.db.add(follow)
-        self.db.commit()
-        self.db.refresh(follow)
-        return follow
-
-    def unassign_host(self, host_id: int, assignee_id: int) -> Optional[HostFollow]:
-        """Clear assignment metadata, keeping the follow row + status.
-
-        Unassigning isn't unfollowing — the assignee may still be
-        watching/reviewing of their own accord.
-        """
-        follow = self.get_follow(host_id, assignee_id)
-        if follow and follow.assigned_at is not None:
-            follow.assigned_by_id = None
-            follow.assigned_at = None
-            self.db.commit()
-            self.db.refresh(follow)
-        return follow
-
     def record_view(self, host_id: int, user_id: int) -> None:
         """Record that a user viewed a host.
 

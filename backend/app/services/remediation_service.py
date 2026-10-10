@@ -331,14 +331,6 @@ def state_counts_by_project(db, project_ids: Sequence[int], policy: deadlines.Po
     return out
 
 
-def status_counts_by_project(db, project_ids: Sequence[int], policy: Optional[deadlines.Policy] = None,
-                             today: Optional[date] = None) -> dict[int, dict[str, int]]:
-    """Each project's open / closed / deferred, from the same states."""
-    policy = policy or deadlines.load(db)
-    by_state = state_counts_by_project(db, project_ids, policy, today or policy.today())
-    return {pid: _status_counts(counts) for pid, counts in by_state.items()}
-
-
 def durations_by_project(db, project_ids: Sequence[int], today: date,
                          policy: Optional[deadlines.Policy] = None) -> dict[int, dict]:
     """How the fixes went and how late the worst one is, per project.

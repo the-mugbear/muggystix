@@ -9,7 +9,7 @@ import {
   Copy,
 } from 'lucide-react';
 
-import type { Host, FollowStatus, HostDiscovery, Port } from '../../services/api';
+import type { Host, FollowStatus } from '../../services/api';
 import { copyToClipboard } from '../../utils/clipboard';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -22,7 +22,6 @@ import {
 } from '../ui/dropdown-menu';
 import { cn } from '../../utils/cn';
 import { hostTestCounts } from '../../utils/hostTests';
-import { formatRelativeTime } from '../../utils/relativeTime';
 import {
   exposureChips,
 } from '../../utils/portsOfInterest';
@@ -149,29 +148,6 @@ export const FOLLOW_STATUS_OPTIONS: Array<{
   { value: 'in_review', label: 'In Review', badgeClass: 'bg-warning text-warning-foreground' },
   { value: 'reviewed', label: 'Reviewed', badgeClass: 'bg-success text-success-foreground' },
 ];
-
-// --- Pure helpers ---------------------------------------------------------
-
-export const getLatestDiscovery = (discoveries?: HostDiscovery[]): HostDiscovery | null =>
-  (discoveries ?? []).reduce<HostDiscovery | null>((latest, discovery) => {
-    if (!latest) return discovery;
-    const latestTime = new Date(latest.discovered_at || 0).getTime();
-    const nextTime = new Date(discovery.discovered_at || 0).getTime();
-    return nextTime > latestTime ? discovery : latest;
-  }, null);
-
-export const getTopServices = (hostPorts: Port[] = []): string[] =>
-  hostPorts
-    .filter((port) => port.state === 'open' && port.service_name)
-    .slice(0, 3)
-    .map((port) => port.service_name!)
-    .filter(Boolean);
-
-export const getScanLabel = (discovery: HostDiscovery): string =>
-  discovery.scan_filename || `Scan #${discovery.scan_id}`;
-
-export const formatRelativeLastViewed = (value?: string | null): string | null =>
-  formatRelativeTime(value, { fallback: null });
 
 // --- Redesign helpers: Host / Exposure / Attention columns ----------------
 

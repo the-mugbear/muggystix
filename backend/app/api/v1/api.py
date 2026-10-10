@@ -48,9 +48,6 @@ from app.api.v1.endpoints import (
     # Security Posture — manager-facing roll-up composing attention +
     # systemic + finding disposition + the agent decision queue.
     posture,
-    # v3 alpha.6 — JWT-facing recon-session detail (drives v3 Recon Run Detail).
-    # v3 alpha.7 — JWT-facing execution-session lookup by id (drives v3
-    # ExecutionDetail page; permalink for /executions/:sessionId).
     
     # v2.42.0 — public reference docs + agents-guide endpoints, extracted
     # from main.py.  No auth; same stance as the prior @app.get versions.

@@ -150,10 +150,6 @@ export const dueDistance = (row: Pick<RemediationRow, 'state' | 'days_left' | 'c
   return row.days_left === 0 ? 'due today' : `in ${days(row.days_left)}`;
 };
 
-/** Text colour for a state that needs someone; always shown WITH its words. */
-export const stateTone = (state: RemediationState): string =>
-  (state === 'overdue' ? 'text-destructive' : state === 'due_soon' ? 'text-warning' : 'text-muted-foreground');
-
 const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'info'];
 const SEVERITY_WORD: Record<string, string> = {
   critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', info: 'Informational',

@@ -447,27 +447,6 @@ class NotificationService:
             notifications.append(notification)
         return notifications
 
-    def notify_project_assignment(
-        self,
-        user: User,
-        project: Project,
-        role: str,
-        actor: User,
-    ) -> Notification:
-        """Notify a user when they're added to a project."""
-        notification = Notification(
-            user_id=user.id,
-            project_id=project.id,
-            type="assignment",
-            title=f"You were added to project '{project.name}'",
-            body=f"{display_name(actor)} added you as {role}",
-            source_type="project",
-            source_id=project.id,
-            actor_id=actor.id,
-        )
-        self.db.add(notification)
-        return notification
-
     def notify_queue_unhealthy(self, queue_name: str, failed_count: int) -> List[Notification]:
         """Alert global admins that the job reaper PERMANENTLY failed jobs it
         couldn't recover (retry cap exceeded or the uploaded file went missing).
@@ -534,34 +513,6 @@ class NotificationService:
             source_type="report_job",
             source_id=job.id,
             actor_id=None,
-        )
-        self.db.add(notification)
-        return notification
-
-    def notify_host_assignment(
-        self,
-        assignee: User,
-        host,
-        project: Project,
-        actor: User,
-    ) -> Optional[Notification]:
-        """Notify a user when a host is assigned to them by someone else.
-
-        Self-assignment produces no notification — you don't need a ping
-        for work you just gave yourself.
-        """
-        if assignee.id == actor.id:
-            return None
-        label = host.hostname or host.ip_address
-        notification = Notification(
-            user_id=assignee.id,
-            project_id=project.id,
-            type="assignment",
-            title=f"Host {label} assigned to you",
-            body=f"{display_name(actor)} assigned {host.ip_address} to you",
-            source_type="host",
-            source_id=host.id,
-            actor_id=actor.id,
         )
         self.db.add(notification)
         return notification

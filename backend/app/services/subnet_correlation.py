@@ -1,8 +1,8 @@
 import logging
 import sys
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Optional, Sequence, Set, Tuple
 
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from app.db.models import Host, Scan, Scope, Subnet, HostSubnetMapping, HostScanHistory
 from app.services.ip_trie import IPTrie
@@ -105,31 +105,9 @@ class SubnetCorrelationService:
         )
         return len(mapping_set)
 
-    def correlate_scan_hosts_to_subnets(self, scan_id: int) -> int:
-        """Correlate hosts from a specific scan (legacy entry point)."""
-        return self._batch_correlate_hosts(scan_id=scan_id)
-
     def batch_correlate_scan_hosts_to_subnets(self, scan_id: int) -> int:
         """Correlate hosts from a specific scan (batch-optimised)."""
         return self._batch_correlate_hosts(scan_id=scan_id)
-
-    def get_host_subnets(self, host_id: int) -> List[Subnet]:
-        mappings = (
-            self.db.query(HostSubnetMapping)
-            .options(joinedload(HostSubnetMapping.subnet))
-            .filter(HostSubnetMapping.host_id == host_id)
-            .all()
-        )
-        return [m.subnet for m in mappings]
-
-    def get_subnet_hosts(self, subnet_id: int) -> List[Host]:
-        mappings = (
-            self.db.query(HostSubnetMapping)
-            .options(joinedload(HostSubnetMapping.host))
-            .filter(HostSubnetMapping.subnet_id == subnet_id)
-            .all()
-        )
-        return [m.host for m in mappings]
 
     # ------------------------------------------------------------------
     # Fast batch correlation

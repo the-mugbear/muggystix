@@ -130,20 +130,6 @@ export interface SubnetEntry {
   created_at: string;
 }
 
-export interface ScopeHostMappingsQuery {
-  subnetId?: number;
-  skip?: number;
-  limit?: number;
-}
-
-export interface ScopeHostMappingsResult {
-  items: HostSubnetMapping[];
-  total: number;
-  skip: number;
-  limit: number;
-  has_more: boolean;
-}
-
 // --- Scopes ---
 
 /**
@@ -174,10 +160,6 @@ export const getDefaultScope = async (
   return response.data;
 };
 
-export const deleteScope = async (projectId: number, scopeId: number) => {
-  const response = await api.delete(`${projectPath(projectId)}/scopes/${scopeId}`);
-  return response.data;
-};
 export const addScopeSubnets = async (
   projectId: number,
   scopeId: number,

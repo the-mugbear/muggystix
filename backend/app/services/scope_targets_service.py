@@ -129,16 +129,6 @@ def _scope_hosts_query(db: Session, scope_id: int, members=None):
     )
 
 
-def scope_host_count(db: Session, scope_id: int) -> int:
-    """Number of inventory hosts in the scope — constant-time in host count."""
-    return (
-        db.query(func.count())
-        .select_from(scope_host_ids(scope_id).subquery())
-        .scalar()
-        or 0
-    )
-
-
 def _briefs_for_hosts(db: Session, host_rows: List[Any]) -> List[ScopeHostBrief]:
     """Attach open-port detail to an already-ordered page of Host rows.
 

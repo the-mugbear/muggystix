@@ -64,9 +64,6 @@ export const testPriorityBadge = (priority: string): { variant: 'outline'; label
   title: `${priority} priority`,
 });
 
-/** Statuses that still need someone — the ones that make a host "planned". */
-export const ACTIVE_HOST_TEST_STATUSES: HostTestStatus[] = ['proposed', 'in_progress'];
-
 /** Does this test still need a person? It is to do, or its result showed an
  *  issue that nobody has made a finding of — a finished test in that state
  *  must not leave the to-do list, or the decision it is waiting for is lost. */

@@ -180,37 +180,6 @@ class ConfidenceService:
             additional_info=additional_factors
         )
 
-    def resolve_conflict(
-        self,
-        current_value: Any,
-        current_confidence: ConfidenceScore,
-        new_value: Any,
-        new_confidence: ConfidenceScore
-    ) -> Tuple[Any, ConfidenceScore, bool]:
-        """
-        Resolve conflict between current and new value.
-        Returns: (winning_value, winning_confidence, value_changed)
-        """
-
-        # If values are the same, use higher confidence
-        if current_value == new_value:
-            if new_confidence.score > current_confidence.score:
-                return new_value, new_confidence, False
-            else:
-                return current_value, current_confidence, False
-
-        # Different values - use confidence to decide
-        if new_confidence.score > current_confidence.score:
-            return new_value, new_confidence, True
-        elif new_confidence.score == current_confidence.score:
-            # Tie-breaker: use more recent data
-            if new_confidence.timestamp > current_confidence.timestamp:
-                return new_value, new_confidence, True
-            else:
-                return current_value, current_confidence, False
-        else:
-            return current_value, current_confidence, False
-
     def detect_netexec_scan_type(self, output_line: str) -> Tuple[ScanType, DataSource, str]:
         """Detect specific netexec scan type from output"""
 
@@ -239,40 +208,3 @@ class ConfidenceService:
         else:
             return ScanType.NETEXEC, DataSource.CONNECTION_TEST, "netexec"
 
-    def get_scan_method_from_command(self, command_line: str) -> str:
-        """Extract specific scan method from command line"""
-
-        if not command_line:
-            return "unknown"
-
-        cmd_lower = command_line.lower()
-
-        # Nmap detection
-        if "nmap" in cmd_lower:
-            if "-sv" in cmd_lower or "--version-intensity" in cmd_lower:
-                return "nmap -sV"
-            elif "-a" in cmd_lower:
-                return "nmap -A"
-            elif "-o" in cmd_lower:
-                return "nmap -O"
-            elif "-sc" in cmd_lower or "--script" in cmd_lower:
-                return "nmap -sC"
-            else:
-                return "nmap"
-
-        # Masscan detection
-        elif "masscan" in cmd_lower:
-            return "masscan"
-
-        # Netexec detection
-        elif "netexec" in cmd_lower or "nxc" in cmd_lower:
-            if "smb" in cmd_lower:
-                return "netexec smb"
-            elif "ldap" in cmd_lower:
-                return "netexec ldap"
-            elif "winrm" in cmd_lower:
-                return "netexec winrm"
-            else:
-                return "netexec"
-
-        return command_line[:50]  # First 50 chars if unknown

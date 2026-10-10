@@ -24,18 +24,6 @@ export interface ParseError {
   updated_at: string | null;
 }
 
-export interface ParseErrorSummary {
-  id: number;
-  filename: string;
-  file_type: string | null;
-  error_type: string;
-  user_message: string | null;
-  status: string;
-  created_at: string;
-}
-
-
-// consumer appears.
 export const getParseError = async (projectId: number, errorId: number, signal?: AbortSignal): Promise<ParseError> => {
   const response = await api.get(`${projectPath(projectId)}/parse-errors/${errorId}`, { signal });
   return response.data;

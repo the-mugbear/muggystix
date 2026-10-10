@@ -68,12 +68,6 @@ export const useAppTheme = () => {
   return context;
 };
 
-// Backwards-compatible alias for code that imported `useTheme` from
-// this file (a few v3 pages did this before realising it shadowed
-// MUI's own useTheme).  Safe to drop once those last call sites move
-// to `useAppTheme`.
-export const useTheme = useAppTheme;
-
 interface CustomThemeProviderProps {
   children: ReactNode;
 }

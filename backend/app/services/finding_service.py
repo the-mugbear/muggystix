@@ -180,12 +180,6 @@ def _finding_order(sort: Optional[str], sort_dir: Optional[str]):
     return (ordered, Finding.id.desc())
 
 
-def _first_body_line(body: Optional[str]) -> str:
-    """First non-empty line of a note body, or a fallback title."""
-    for line in (body or "").splitlines():
-        if line.strip():
-            return line.strip()
-    return "Promoted finding"
 
 
 class FindingService:

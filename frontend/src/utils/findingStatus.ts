@@ -50,8 +50,6 @@ export const POPULATION_LABEL: Record<FindingPopulation, string> = {
   closed: 'Closed',
 };
 
-export const SCANNER_OBSERVATIONS_LABEL = 'Scanner observations';
-
 export const populationOf = (status: FindingStatus): FindingPopulation =>
   status === 'confirmed' ? 'confirmed' : TERMINAL_STATUSES.has(status) ? 'closed' : 'investigating';
 

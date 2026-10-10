@@ -24,12 +24,6 @@ import {
 import { Textarea } from '../ui/textarea';
 import MarkdownField from '../MarkdownField';
 
-export const emptySettings = (): EngagementSettings => ({
-  client_name: null, classification: null, engagement_type: null,
-  testers: [], distribution: [], system_description: null,
-  applications: null, thick_clients: null, other_targets: null,
-});
-
 interface Props {
   value: EngagementSettings;
   onChange: (next: EngagementSettings) => void;

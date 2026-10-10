@@ -48,8 +48,3 @@ export const SEVERITY_BADGE_VARIANT: Record<Severity, string> = {
 export const SEVERITY_RANK: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3, info: 4, unknown: 5,
 };
-
-/** Sum a (possibly partial) severity-count map. */
-export function severityTotal(counts: Partial<Record<Severity, number>>): number {
-  return SEVERITY_ORDER.reduce((sum, k) => sum + (counts[k] ?? 0), 0);
-}

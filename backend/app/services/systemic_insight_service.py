@@ -119,10 +119,6 @@ _CONDITIONS = [
 ]
 
 
-def _zero_root() -> Dict[str, int]:
-    return {}
-
-
 def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     """Cross-sectional systemic analysis for a project's in-scope hosts.
 

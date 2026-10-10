@@ -55,7 +55,6 @@ from app.services.attention_service import (
     _TIER_WEIGHT,
 )
 from app.services.cert_fields import (
-    parse_cert_not_after,
     derive_cert_fields,
     cert_issue_from_columns,
 )
@@ -80,13 +79,8 @@ def _normalize_dt(dt: Optional[datetime]) -> Optional[datetime]:
 
 
 # Cert parsing/verdict now live in the shared ``cert_fields`` module (the same
-# implementation the parsers use to populate the promoted columns).  These thin
-# delegators keep the blob -> verdict convenience the unit tests exercise.
-def _parse_cert_dt(value: Any) -> Optional[datetime]:
-    """Deprecated alias — see ``cert_fields.parse_cert_not_after``."""
-    return parse_cert_not_after(value)
-
-
+# implementation the parsers use to populate the promoted columns).  This thin
+# delegator keeps the blob -> verdict convenience the unit tests exercise.
 def _cert_issue(tls_info: Any, now: datetime) -> Optional[str]:
     """Blob -> 'expired'/'self-signed'/None.  Hot read paths use the promoted
     ``cert_not_after``/``cert_self_signed`` columns via ``cert_issue_from_columns``;

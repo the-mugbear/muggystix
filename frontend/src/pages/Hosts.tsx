@@ -117,12 +117,8 @@ import {
 } from '../components/ui/side-sheet';
 import HostInspector from '../components/HostInspector';
 
-// v2.43.0 — MONO-1: FOLLOW_STATUS_OPTIONS, the column-render helpers
-// (getLatestDiscovery / getTopServices / getScanLabel /
-// formatRelativeLastViewed), the FollowMenu component, and the 166-line
-// columns useMemo all moved to ../components/hosts/useHostColumns.tsx.
-// Helpers re-exported here so anything in this file
-// that still needs them keeps working.
+// The follow options, the FollowMenu component and the column definitions
+// live in ../components/hosts/useHostColumns.tsx.
 
 // The preset list lives in HostFilters.tsx (`HOST_FILTER_PRESETS`), split into
 // the port groups the filter panel offers and the built-in views the View

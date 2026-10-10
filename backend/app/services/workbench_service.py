@@ -74,13 +74,6 @@ class SinceLastVisit(BaseModel):
     # displayed, not whatever arrived between the load and the click.
     as_of: Optional[datetime] = None
 
-    @property
-    def has_updates(self) -> bool:  # convenience, not serialized
-        return bool(
-            self.new_scan_count or self.new_host_count or self.changed_host_count
-            or self.new_critical_findings or self.new_high_findings
-        )
-
 
 class MyWorkTotals(BaseModel):
     #: Everything waiting on the caller — the four parts below, added up.

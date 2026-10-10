@@ -24,8 +24,6 @@ export const PORTS_OF_INTEREST: PortOfInterestDefinition[] = [
   { port: 3268, label: 'Global Catalog', weight: 4 },
 ];
 
-export const PORTS_OF_INTEREST_SET = new Set(PORTS_OF_INTEREST.map((entry) => entry.port));
-
 export const PORTS_OF_INTEREST_BY_PORT: Map<number, PortOfInterestDefinition> = new Map(
   PORTS_OF_INTEREST.map((entry) => [entry.port, entry]),
 );
