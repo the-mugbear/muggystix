@@ -56,6 +56,13 @@ def export_scope_hosts(
         pattern="^(txt|csv|json|web)$",
         description="Output format: txt (one IP per line), csv, json, or web (one http/https URL per line)",
     ),
+    all_scopes: bool = Query(
+        False,
+        description=(
+            "The hosts in the subnets of EVERY scope of the project — what the Scope "
+            "page's table lists and its export means. Default: this scope's only."
+        ),
+    ),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
@@ -64,12 +71,24 @@ def export_scope_hosts(
     Default format is ``txt`` — one IP per line, suitable for feeding
     into other tools.  ``web`` is the scope's web targets, one URL per line:
     the agents' ``web-targets.txt``, from the same builder.
+
+    ``all_scopes=true`` (2.487.0) is the Scope page's export.  The page shows
+    a project as one scope and since 2.486.0 lists the subnets of every scope
+    of the project, so its export has to be the hosts in all of them: with
+    the one scope's id alone, a host mapped only to a second scope was on the
+    page and missing from the target list.  One membership for all four
+    formats, ``scope_targets_service.project_scope_host_ids``.
     """
     from app.db import models as m
+    from app.services.scope_targets_service import project_scope_host_ids, scope_host_ids
 
     scope = db.query(m.Scope).filter(m.Scope.id == scope_id, m.Scope.project_id == project.id).first()
     if not scope:
         raise HTTPException(status_code=404, detail=f"Scope {scope_id} not found")
+
+    members = project_scope_host_ids(project.id) if all_scopes else scope_host_ids(scope.id)
+    # A scope's name is a relic; the project-wide file is named for what it is.
+    safe_name = "project-scope" if all_scopes else scope.name.replace(" ", "_").replace("/", "-")[:40]
 
     if format_type == "web":
         from app.db.session import disable_statement_timeout
@@ -78,22 +97,17 @@ def export_scope_hosts(
         # The builder reads the scope's hosts in batches; a large scope is
         # more than one statement's worth of the API limit.
         disable_statement_timeout(db)
-        web_name = scope.name.replace(" ", "_").replace("/", "-")[:40]
         return PlainTextResponse(
-            content="".join(iter_scope_web_targets(db, scope.id)),
-            headers={"Content-Disposition": f"attachment; filename={web_name}_web-targets.txt"},
+            content="".join(iter_scope_web_targets(db, scope.id, members=members)),
+            headers={"Content-Disposition": f"attachment; filename={safe_name}_web-targets.txt"},
         )
 
-    rows = db.execute(sql_text("""
-        SELECT DISTINCT h.ip_address, h.hostname, h.state
-        FROM hosts_v2 h
-        JOIN host_subnet_mappings hsm ON hsm.host_id = h.id
-        JOIN subnets s ON s.id = hsm.subnet_id
-        WHERE s.scope_id = :scope_id AND h.project_id = :project_id
-        ORDER BY h.ip_address
-    """), {"scope_id": scope_id, "project_id": project.id}).fetchall()
-
-    safe_name = scope.name.replace(" ", "_").replace("/", "-")[:40]
+    rows = (
+        db.query(m.Host.ip_address, m.Host.hostname, m.Host.state)
+        .filter(m.Host.project_id == project.id, m.Host.id.in_(members))
+        .order_by(m.Host.ip_address)
+        .all()
+    )
 
     if format_type == "txt":
         body = "\n".join(r.ip_address for r in rows) + ("\n" if rows else "")

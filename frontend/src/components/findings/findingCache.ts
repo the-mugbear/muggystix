@@ -30,3 +30,45 @@ export function putFinding(
   queryClient.setQueryData<Finding>(findingKey(projectId, updated.id), updated);
   if (history) void queryClient.invalidateQueries({ queryKey: findingHistoryKey(projectId, updated.id) });
 }
+
+/**
+ * The record a write is about to be sent over.  A mutation takes it in
+ * `onMutate` and hands it back to `putFindingAnswer`:
+ *
+ *   onMutate: () => findingAsSent(queryClient, projectId, id),
+ *   onSuccess: (updated, _v, sent) => putFindingAnswer(queryClient, projectId, updated, sent, { history: false }),
+ */
+export const findingAsSent = (queryClient: QueryClient, projectId: number, findingId: number) => ({
+  sentOver: queryClient.getQueryData<Finding>(findingKey(projectId, findingId)),
+});
+
+/**
+ * Put a write's ANSWER on the cached finding — when it is safe to.
+ *
+ * An answer is the WHOLE finding as it stood when that write committed.  Two
+ * writes of different fields can answer in the other order than they
+ * committed ("Assign to me" answering after a rename that was sent later):
+ * the older snapshot, laid over the record, put the old title back on a page
+ * that had just shown the new one (review 2026-10-10).  So the answer goes on
+ * the record only when nothing has written it, and nothing is reading it,
+ * since the write was sent; otherwise which is newer cannot be told from the
+ * answer and the finding is read again.  Returns true when the answer was put.
+ *
+ * Use this — not `putFinding` — for a write whose answer may cross another
+ * write's.  (`FindingEndpoints` sends its changes one at a time through a
+ * queue and applies every answer in order; that is its own guarantee.)
+ */
+export function putFindingAnswer(
+  queryClient: QueryClient, projectId: number, updated: Finding,
+  sent: { sentOver: Finding | undefined } | undefined, { history }: { history: boolean },
+): boolean {
+  const key = findingKey(projectId, updated.id);
+  const record = queryClient.getQueryState<Finding>(key);
+  if (sent && record?.fetchStatus === 'idle' && record.data === sent.sentOver) {
+    putFinding(queryClient, projectId, updated, { history });
+    return true;
+  }
+  void queryClient.invalidateQueries({ queryKey: key, exact: true });
+  if (history) void queryClient.invalidateQueries({ queryKey: findingHistoryKey(projectId, updated.id) });
+  return false;
+}

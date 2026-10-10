@@ -189,6 +189,42 @@ def test_a_person_downloads_the_same_web_targets_an_agent_does(client, db_sessio
         f"/api/v1/projects/{test_project.id}/export/scope/{theirs.id}?format_type=web").status_code == 404
 
 
+def test_the_scope_pages_export_covers_every_scope_of_the_project(client, db_session, test_project, scope):
+    """Review 2026-10-10 (H2): since 2.486.0 the Scope page's table lists the
+    subnets of EVERY scope of the project, but its "Project scope" export
+    still read the one scope whose id the page holds — a host mapped only to
+    a second scope was on the page and missing from the target list.
+    `all_scopes=true` is the page's export: the table's own membership (a
+    subnet of any scope of the project), in every format; without it one
+    scope's export is still that scope's."""
+    second = _scope(db_session, test_project, "second", "10.99.3.0/24")
+    _seed_hosts(db_session, test_project, scope, ["10.99.1.4"], ports=(80,))
+    _seed_hosts(db_session, test_project, second, ["10.99.3.7"], ports=(443,))
+    base = f"/api/v1/projects/{test_project.id}/export/scope/{scope.id}"
+
+    assert client.get(base, params={"format_type": "txt"}).text.split() == ["10.99.1.4"]
+    assert client.get(f"/api/v1/projects/{test_project.id}/export/scope/{second.id}",
+                      params={"format_type": "txt"}).text.split() == ["10.99.3.7"]
+
+    whole = client.get(base, params={"format_type": "txt", "all_scopes": "true"})
+    assert whole.status_code == 200, whole.text
+    assert whole.text.split() == ["10.99.1.4", "10.99.3.7"]
+    rows = client.get(base, params={"format_type": "json", "all_scopes": "true"}).json()
+    assert [r["ip_address"] for r in rows] == ["10.99.1.4", "10.99.3.7"]
+    assert "10.99.3.7" in client.get(base, params={"format_type": "csv", "all_scopes": "true"}).text
+    web = client.get(base, params={"format_type": "web", "all_scopes": "true"})
+    assert web.text.split() == ["http://10.99.1.4/", "https://10.99.3.7/"]
+
+    # Another project's hosts never come with it.
+    from app.db.models_project import Project
+    other = Project(name="other-export", slug="other-export", description="x")
+    db_session.add(other)
+    db_session.commit()
+    theirs = _scope(db_session, other, "theirs", "10.99.4.0/24")
+    _seed_hosts(db_session, other, theirs, ["10.99.4.9"], ports=(80,))
+    assert "10.99.4.9" not in client.get(base, params={"format_type": "txt", "all_scopes": "true"}).text
+
+
 def _brief(port, service, tunnel=None, method=None, ip="192.168.7.245"):
     from app.services.scope_targets_service import ScopeHostBrief, ScopePortBrief
     return ScopeHostBrief(

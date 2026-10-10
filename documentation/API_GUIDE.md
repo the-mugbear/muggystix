@@ -423,7 +423,7 @@ Renaming a finding (a changed `title`) and deleting it need the finding's author
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/export/scope/{scope_id}?format_type=txt\|csv\|json\|web` | Auditor+. Hosts within a scope (default `txt`). `web` (**v2.478.0**) is one http/https URL per line — the agents' `web-targets.txt`, from the same builder (`scope_targets_service.iter_scope_web_targets`). |
+| GET | `/export/scope/{scope_id}?format_type=txt\|csv\|json\|web` | Auditor+. Hosts within a scope (default `txt`). `all_scopes=true` (**v2.487.0**) = the hosts in the subnets of EVERY scope of the project, in any format — the Scope page's own export, matching its table. `web` (**v2.478.0**) is one http/https URL per line — the agents' `web-targets.txt`, from the same builder (`scope_targets_service.iter_scope_web_targets`). |
 | GET | `/export/scan/{scan_id}?format_type=txt\|csv\|json` | Auditor+. Scan-level export. |
 | GET | `/export/out-of-scope?format_type=txt\|csv\|json` | Auditor+. Out-of-scope host export. |
 | GET | `/reports/hosts/csv` | Auditor+ (the whole `/reports` router). **The host inventory as CSV**: one row per host matching the Hosts list's filters (the same query parameters as `GET /hosts`), streamed, never capped. |

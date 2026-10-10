@@ -56,7 +56,9 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import FindingEndpoints from '../components/findings/FindingEndpoints';
-import { findingHistoryKey, findingKey, putFinding } from '../components/findings/findingCache';
+import {
+  findingAsSent, findingHistoryKey, findingKey, putFinding, putFindingAnswer,
+} from '../components/findings/findingCache';
 import SectionJumpBar, { JumpEntry, jumpTargetStyle } from '../components/SectionJumpBar';
 import { useFindingProposals } from '../hooks/useFindingProposals';
 import type { OnProposalDecided } from '../hooks/useProposalDecision';
@@ -273,8 +275,9 @@ const FindingDetail: React.FC = () => {
 
   const ownerChange = useMutation({
     mutationFn: (ownerId: number | null) => updateFinding(projectId, id, { owner_id: ownerId }),
-    onSuccess: (updated, ownerId) => {
-      replaceFinding(updated, false);
+    onMutate: () => findingAsSent(queryClient, projectId, id),
+    onSuccess: (updated, ownerId, sent) => {
+      putFindingAnswer(queryClient, projectId, updated, sent, { history: false });
       toast.success(ownerId == null ? 'Owner cleared.' : `Owner set to ${updated.owner_name ?? 'user'}.`);
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to update owner.')),
@@ -316,8 +319,9 @@ const FindingDetail: React.FC = () => {
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const rename = useMutation({
     mutationFn: (title: string) => updateFinding(projectId, id, { title }),
-    onSuccess: (updated) => {
-      replaceFinding(updated, false);
+    onMutate: () => findingAsSent(queryClient, projectId, id),
+    onSuccess: (updated, _title, sent) => {
+      putFindingAnswer(queryClient, projectId, updated, sent, { history: false });
       setTitleDraft(null);
       toast.success('Finding renamed.');
     },
@@ -347,16 +351,18 @@ const FindingDetail: React.FC = () => {
     mutationFn: (v: { row: FindingHostInfo; label: string }) => addFindingHosts(projectId, id, [], [
       { host_id: v.row.host_id, name_id: v.row.name_id ?? null, host_status: v.row.host_status },
     ]),
-    onSuccess: (reverted, v) => {
-      replaceFinding(reverted);
+    onMutate: () => findingAsSent(queryClient, projectId, id),
+    onSuccess: (reverted, v, sent) => {
+      putFindingAnswer(queryClient, projectId, reverted, sent, { history: true });
       toast.success(`Put ${v.label} back on the finding.`);
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to undo the removal.')),
   });
   const removeEndpoint = useMutation({
     mutationFn: (v: { row: FindingHostInfo; label: string }) => removeFindingEndpoint(projectId, id, v.row.id),
-    onSuccess: (updated, v) => {
-      replaceFinding(updated, false);
+    onMutate: () => findingAsSent(queryClient, projectId, id),
+    onSuccess: (updated, v, sent) => {
+      putFindingAnswer(queryClient, projectId, updated, sent, { history: false });
       toast.success(`Removed ${v.label} from the finding.`, {
         action: { label: 'Undo', onClick: () => restoreEndpoint.mutate(v) },
       });

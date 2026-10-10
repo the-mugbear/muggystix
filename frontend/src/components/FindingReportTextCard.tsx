@@ -51,7 +51,7 @@ import { Label } from './ui/label';
 import MarkdownField from './MarkdownField';
 import SafeMarkdown from './SafeMarkdown';
 import FieldDraftsReview from './proposals/FieldDraftsReview';
-import { putFinding } from './findings/findingCache';
+import { findingAsSent, putFindingAnswer } from './findings/findingCache';
 
 export const REPORT_TEXT_FIELDS: Array<{ key: FindingReportTextField; label: string; hint: string; rows: number }> = [
   { key: 'description', label: 'Description', hint: 'What the issue is, in the client’s terms.', rows: 6 },
@@ -207,13 +207,15 @@ const FindingReportTextCard: React.FC<Props> = ({
 
   const saver = useMutation({
     mutationFn: (payload: FindingReportTextUpdate) => updateFinding(projectId, finding.id, payload),
-    onMutate: () => setError(null),
-    onSuccess: (updated) => {
+    onMutate: () => { setError(null); return findingAsSent(queryClient, projectId, finding.id); },
+    onSuccess: (updated, _payload, sent) => {
       // The route answers with the finding: it goes onto the page's cached
-      // record (report text is not a status change — the history stands).
+      // record (report text is not a status change — the history stands) —
+      // unless another write reached the record while this one was out, in
+      // which case the finding is read again (`putFindingAnswer`).
       // Saved text may place or release an image: where each one is placed
       // is read again.
-      putFinding(queryClient, projectId, updated, { history: false });
+      putFindingAnswer(queryClient, projectId, updated, sent, { history: false });
       void invalidateReads(queryClient, 'getFindingImages');
       setDraft(null);
       toast.success('Report text saved.');

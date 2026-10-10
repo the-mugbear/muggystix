@@ -30,7 +30,9 @@ export default function ScopeExport({ open, onClose, scopeId, scopeName }: Scope
   // answer, busy state and failure are the mutation's.
   const projectId = useProjectId();
   const generate = useMutation({
-    mutationFn: (format: ExportFormat) => getScopeHostList(projectId, scopeId, format),
+    // The Scope page's export: its table lists the subnets of every scope of
+    // the project, so the target list is the hosts in all of them.
+    mutationFn: (format: ExportFormat) => getScopeHostList(projectId, scopeId, format, { allScopes: true }),
     onError: (err) => console.error('Error fetching scope hosts:', err),
   });
 

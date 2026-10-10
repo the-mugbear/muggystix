@@ -704,6 +704,40 @@ describe('FindingDetail — v5.256.0: the author renames or deletes', () => {
     expect(await screen.findByText('TLS 1.0 on portal')).toBeInTheDocument();
   });
 
+  // Review 2026-10-10 (H1).  Every write answers with the WHOLE finding as it
+  // stood when that write committed.  "Assign to me" answered late — after a
+  // rename had been saved and shown — and its snapshot, taken before the
+  // rename, was laid over the record: the page went back to the old title.
+  // Status and severity already checked what they were sent over; owner,
+  // rename and the others did not.
+  it('an owner answer that arrives after a rename does not put the old title back', async () => {
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: true }));
+    let landOwner!: (f: unknown) => void;
+    mocked.updateFinding
+      .mockImplementationOnce(() => new Promise((resolve) => { landOwner = resolve; }))
+      .mockResolvedValueOnce(finding({ can_modify: true, title: 'New title' }));
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Assign to me' }));
+    await waitFor(() => expect(mocked.updateFinding).toHaveBeenCalledWith(1, 7, { owner_id: 1 }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Rename/ }));
+    fireEvent.change(screen.getByLabelText('Finding title'), { target: { value: 'New title' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('New title')).toBeInTheDocument();
+
+    // The owner change committed FIRST: its answer has the owner and the old title.
+    const reads = mocked.getFinding.mock.calls.length;
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: true, title: 'New title', owner_id: 1, owner_name: 'tester' }));
+    await act(async () => { landOwner(finding({ can_modify: true, owner_id: 1, owner_name: 'tester' })); });
+
+    // Which of the two is newer cannot be told from the answer, so the record is read again.
+    await waitFor(() => expect(mocked.getFinding.mock.calls.length).toBe(reads + 1));
+    expect(screen.getByText('New title')).toBeInTheDocument();
+    expect(screen.queryByText('Weak TLS on portal')).not.toBeInTheDocument();
+  });
+
   it('deletes only after confirmation, then returns to the list', async () => {
     mocked.getFinding.mockResolvedValue(finding({ can_modify: true }));
     mocked.deleteFinding.mockResolvedValue(undefined);

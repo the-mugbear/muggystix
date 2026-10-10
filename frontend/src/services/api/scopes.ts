@@ -226,10 +226,18 @@ export const getScopeCoverage = async (projectId: number, limit: number = 25, si
   return response.data;
 };
 
+/** `allScopes` = the hosts in the subnets of every scope of the project — the
+ *  Scope page's export, which must cover what its table lists; without it,
+ *  the one scope's. */
 export const getScopeHostList = async (
-  projectId: number, scopeId: number, format: 'txt' | 'csv' | 'json' | 'web' = 'txt', signal?: AbortSignal,
+  projectId: number, scopeId: number, format: 'txt' | 'csv' | 'json' | 'web' = 'txt',
+  { allScopes = false, signal }: { allScopes?: boolean; signal?: AbortSignal } = {},
 ): Promise<string> => {
-  const response = await api.get(`${projectPath(projectId)}/export/scope/${scopeId}?format_type=${format}`, { responseType: 'text', signal });
+  const response = await api.get(`${projectPath(projectId)}/export/scope/${scopeId}`, {
+    params: { format_type: format, ...(allScopes ? { all_scopes: true } : {}) },
+    responseType: 'text',
+    signal,
+  });
   return response.data;
 };
 

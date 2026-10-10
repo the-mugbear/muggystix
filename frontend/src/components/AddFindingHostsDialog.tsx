@@ -15,7 +15,7 @@ import { useOpeningKey } from '../hooks/useOpeningKey';
 import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { useToast } from '../contexts/ToastContext';
-import { putFinding } from './findings/findingCache';
+import { findingAsSent, putFindingAnswer } from './findings/findingCache';
 import { Button } from './ui/button';
 import { Checkbox } from './ui/checkbox';
 import {
@@ -67,14 +67,16 @@ const AddFindingHostsBody: React.FC<AddFindingHostsDialogProps> = ({ open, onOpe
 
   const add = useMutation({
     mutationFn: (ids: number[]) => addFindingHosts(projectId, finding.id, ids),
-    onSuccess: (updated, ids) => {
+    onMutate: () => findingAsSent(queryClient, projectId, finding.id),
+    onSuccess: (updated, ids, sent) => {
       // Say how many were new — the server skips any already on the finding
       // (added by someone else since the dialog opened, say).
       const added = new Set(updated.hosts.map((h) => h.host_id).filter((id) => !attached.has(id)));
       const skipped = ids.filter((id) => !added.has(id)).length;
       // The route answers with the finding: it goes onto the page's cached
       // record, and the history the add appended to is read again.
-      putFinding(queryClient, projectId, updated, { history: true });
+      // (unless another write reached the record meanwhile: then it is read again.)
+      putFindingAnswer(queryClient, projectId, updated, sent, { history: true });
       const addedText = `Added ${added.size} host${added.size === 1 ? '' : 's'}`;
       toast.success(skipped ? `${addedText} · ${skipped} already affected` : `${addedText}.`);
       onOpenChange(false);
