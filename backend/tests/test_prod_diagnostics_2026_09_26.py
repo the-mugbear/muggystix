@@ -5,6 +5,7 @@ literal cannot contain NUL (0x00) characters": the stored tool line carried a
 NUL.  A PowerShell ``>`` redirect writes UTF-16 — a NUL after every character
 when read as UTF-8 — and a terminal capture can carry stray NUL bytes.
 """
+from app.db import models
 from app.db.models_confidence import NetexecResult
 from app.parsers.netexec_parser import NetexecParser
 from app.parsers.parser_utils import read_tool_text
@@ -113,8 +114,15 @@ def test_a_cancel_stops_the_netexec_parse(db_session, test_project, tmp_path, mo
     with pytest.raises(ParseFailure):
         parser.parse_file(str(_sweep(tmp_path, 40)), "sweep.txt", project_id=test_project.id)
     assert len(calls) == 2
-    assert parser._created_scan_id is not None
-    written = db_session.query(NetexecResult).filter(NetexecResult.scan_id == parser._created_scan_id).count()
+    # Whatever the parse left behind is less than the whole sweep: it stopped.
+    # (Counted by project — the parser keeps no record of its scan; the job
+    # row's `in_progress_scan_id` is the only one.)
+    written = (
+        db_session.query(NetexecResult)
+        .join(models.Scan, models.Scan.id == NetexecResult.scan_id)
+        .filter(models.Scan.project_id == test_project.id)
+        .count()
+    )
     assert written < 40
 
 

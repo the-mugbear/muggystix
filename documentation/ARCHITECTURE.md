@@ -1,6 +1,6 @@
 # BlueStick Architecture
 
-> **Last verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26); the areas changed since then were re-checked against 2.450.0 / 5.329.0 (2026-10-02)
+> **Last verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26); since then each change has updated the sections it touched in the same commit (latest: 2.477.0, the agent guide's parts and the well-known claims); the rest has not been re-read as a whole since 2026-10-02
 
 BlueStick is a multi-user, multi-project pentest-operations platform that ingests scanner output, deduplicates hosts, correlates them to project scopes, enriches findings with vulnerability data, and records agent-assisted testing: tests proposed on hosts and the evidence of what they produced. This document is the canonical architecture reference — update it when domains, endpoints, or workflows change materially.
 

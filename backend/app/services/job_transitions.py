@@ -105,19 +105,24 @@ class JobTransitions:
     # claim
     # ------------------------------------------------------------------
     def claim_oldest_queued(
-        self, db: Session, *, message: Optional[str] = None,
+        self, db: Session, *, message: Optional[str] = None, first: Sequence[Any] = (),
     ) -> Optional[Tuple[int, datetime]]:
         """Lock the oldest ``queued`` row (``FOR UPDATE SKIP LOCKED``) and flip
         it to ``processing``, stamping ``started_at`` / ``last_heartbeat``
         with the claim instant.  Returns ``(job_id, claimed_at)`` — the
         second element is this attempt's token — or ``None`` when the queue
         is empty.  The caller commits (still inside the lock) and then runs
-        the job outside the transaction."""
+        the job outside the transaction.
+
+        ``first`` is what a queue ranks ahead of age (the report queue takes
+        an issued report's render before any preview); the oldest still wins
+        among equals.  It is the one claim: a queue with its own order passes
+        it here and never repeats the lock and the flip."""
         m = self.model
         stmt = (
             select(m.id)
             .where(m.status == "queued")
-            .order_by(m.created_at)
+            .order_by(*first, m.created_at)
             .limit(1)
             .with_for_update(skip_locked=True)
         )

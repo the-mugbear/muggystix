@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from sqlalchemy import case, select, text, update
+from sqlalchemy import case, select, text
 
 from app.core.config import settings
 # Imported as a module (not ``from … import SessionLocal``) so tests can rebind
@@ -219,22 +219,9 @@ class ReportJobService:
         The claim itself is ``JobTransitions.claim_oldest_queued``'s: the row
         locked ``FOR UPDATE SKIP LOCKED`` and flipped to ``processing`` with
         the claim instant as its token."""
-        row = db.execute(
-            select(ReportJob.id)
-            .where(ReportJob.status == "queued")
-            .order_by(case((ReportJob.format == ISSUE_RENDER_FORMAT, 0), else_=1), ReportJob.created_at)
-            .limit(1)
-            .with_for_update(skip_locked=True)
-        ).first()
-        if row is None:
-            return None
-        job_id = int(row[0])
-        claimed_at = datetime.now(timezone.utc)
-        db.execute(
-            update(ReportJob).where(ReportJob.id == job_id)
-            .values(status="processing", started_at=claimed_at, last_heartbeat=claimed_at, message=message)
+        return _transitions.claim_oldest_queued(
+            db, message=message, first=[case((ReportJob.format == ISSUE_RENDER_FORMAT, 0), else_=1)],
         )
-        return job_id, claimed_at
 
     @staticmethod
     def _supersede_repeated_previews(db) -> int:

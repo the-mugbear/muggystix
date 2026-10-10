@@ -1,6 +1,6 @@
 # BlueStick API Guide
 
-> **Last verified against:** backend 2.429.0 / frontend 5.310.1 (2026-09-26); the areas changed since then were re-checked against 2.450.0 / 5.329.0 (2026-10-02) — and see the note at the end: the live OpenAPI is the authority for the full route list.
+> **Last verified against:** backend 2.429.0 / frontend 5.310.1 (2026-09-26); since then each change has updated the rows it touched in the same commit (the rows say the version, the latest being 2.479.0) — the rest has not been re-read as a whole since 2026-10-02 — and see the note at the end: the live OpenAPI is the authority for the full route list.
 
 Base path: `/api/v1`
 

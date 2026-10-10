@@ -374,9 +374,9 @@ class NetexecParser:
         self.db.add(scan)
         self.db.flush()
         # v2.422.0 — progress reports commit as the parse goes, so a cancelled
-        # or failed import has a committed partial scan: named here so the
-        # dispatcher removes it, as for nmap / masscan.
-        self._created_scan_id = scan.id
+        # or failed import has a committed partial scan: announced here so the
+        # cleanup finds it (`ingestion_jobs.in_progress_scan_id` is the only
+        # record of an attempt's scan — no parser attribute is read for it).
         announce_scan(self.db, scan)
 
         try:

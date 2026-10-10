@@ -77,6 +77,11 @@ class ReportTemplates:
                 margin-bottom: 0;
             }
 
+            /* The briefing's "nothing to show here" and lead-in lines. */
+            .muted {
+                color: var(--muted);
+            }
+
             .section {
                 background: var(--bg-panel);
                 margin-bottom: 22px;
