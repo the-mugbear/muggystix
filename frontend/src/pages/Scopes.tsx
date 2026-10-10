@@ -109,7 +109,7 @@ export function scopeLead(c: ScopeCoverageSummary): { sentence: string; tone: Le
   const named = c.name_reachable_hosts;
   if (out > 0) {
     return {
-      sentence: `${out.toLocaleString()} of ${plural(c.total_hosts, 'host')} ${out === 1 ? 'is' : 'are'} outside every scope — confirm whether ${out === 1 ? 'it is' : 'they are'} in scope.`,
+      sentence: `${out.toLocaleString()} of ${plural(c.total_hosts, 'host')} ${out === 1 ? 'is' : 'are'} outside the scope — confirm whether ${out === 1 ? 'it is' : 'they are'} in scope.`,
       tone: 'warning',
     };
   }
@@ -1132,7 +1132,7 @@ const Scopes: React.FC = () => {
 
         {coverage && coverage.out_of_scope_hosts > 0 && (
           <PostureSection
-            title={<span>Hosts outside every scope</span>}
+            title={<span>Hosts outside the scope</span>}
             description="Discovered at addresses no declared subnet or in-scope name covers. Confirm whether they are in scope before testing them; declare the subnet if they are."
             actions={(
               <Link to={buildHostsUrl({ outOfScopeOnly: true })} className="text-info hover:underline">

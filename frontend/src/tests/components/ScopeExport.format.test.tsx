@@ -56,8 +56,8 @@ describe('ScopeExport — the output keeps the format that produced it', () => {
     pick('csv');
     fireEvent.click(screen.getByRole('button', { name: 'Generate list' }));
     expect(await screen.findByRole('heading', { name: /^2 hosts/ })).toBeInTheDocument();
-    // The Scope page's export is the project's: the hosts in the subnets of
-    // every scope, which is what the page's table lists (review 2026-10-10).
+    // The export is the project's one scope: the hosts in the subnets the
+    // page's table lists.
     expect(api.getScopeHostList).toHaveBeenCalledWith(1, 3, 'csv');
 
     pick('txt');

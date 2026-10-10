@@ -99,7 +99,7 @@ describe('Scopes page — Posture layout (v5.269.0)', () => {
   it('opens with one sentence of where the hosts stand', async () => {
     renderPage();
     expect(await screen.findByText(
-      '1 of 29 hosts is outside every scope — confirm whether it is in scope.',
+      '1 of 29 hosts is outside the scope — confirm whether it is in scope.',
     )).toBeInTheDocument();
   });
 
@@ -123,9 +123,9 @@ describe('Scopes page — Posture layout (v5.269.0)', () => {
     expect(screen.queryByText(/% covered/)).toBeNull();
   });
 
-  it('lists hosts outside every scope without telling anyone to scan them', async () => {
+  it('lists hosts outside the scope without telling anyone to scan them', async () => {
     renderPage();
-    const heading = await screen.findByText('Hosts outside every scope');
+    const heading = await screen.findByText('Hosts outside the scope');
     const section = heading.closest('section')!;
     expect(within(section).getByText('198.51.100.9')).toBeInTheDocument();
     expect(within(section).getByText(/Confirm whether they are in scope/)).toBeInTheDocument();
