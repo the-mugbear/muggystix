@@ -12,6 +12,7 @@ import pytest
 from app.db import models
 from app.db.models import Host
 from app.db.models_findings import Finding, FindingHost, FindingStatus
+from app.db.models_project import Project
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from tests.conftest import USING_POSTGRES
 
@@ -279,3 +280,43 @@ def test_paging_through_issues_that_tie_lists_each_once(client, db_session, test
         assert page["total"] == 30
         paged.extend(row["issue_key"] for row in page["items"])
     assert paged == in_one_read
+
+
+def test_what_an_observation_says_can_be_read_without_opening_a_host(client, db_session, test_project, estate):
+    """The list showed a title, a CVE and a host count; what the scanner SAID
+    was only on a host's page (analyst walkthrough 2026-10-10).  The detail is
+    the issue's most severe row that has a description, and names the scanner
+    whose words they are."""
+    hosts, scan = estate["hosts"], estate["scan"]
+    # A more severe row of the same issue with nothing written, and a described one.
+    _vuln(db_session, hosts[2], scan.id, "Apache Struts RCE", severity=VulnerabilitySeverity.CRITICAL,
+          cve_id="CVE-2017-5638")
+    _vuln(db_session, hosts[1], scan.id, "Apache Struts RCE", severity=VulnerabilitySeverity.HIGH,
+          cve_id="CVE-2017-5638", source="openvas", description="The Jakarta parser mishandles Content-Type.",
+          solution="Upgrade Struts.", cvss_score=9.8, cvss_vector="CVSS:3.1/AV:N/AC:L")
+    key = next(r["issue_key"] for r in client.get(_url(test_project)).json()["items"] if r["cve_id"] == "CVE-2017-5638")
+
+    body = client.get(_url(test_project, "/detail"), params={"issue_key": key})
+    assert body.status_code == 200, body.text
+    assert body.json() == {
+        "issue_key": key, "title": "Apache Struts RCE", "source": "openvas",
+        "description": "The Jakarta parser mishandles Content-Type.", "solution": "Upgrade Struts.",
+        "cvss_score": 9.8, "cvss_vector": "CVSS:3.1/AV:N/AC:L",
+    }
+
+    # Nothing written by any scanner: the row is named, the texts are null.
+    bare = next(r["issue_key"] for r in client.get(_url(test_project)).json()["items"] if r["cve_id"] == "CVE-2023-38408")
+    answer = client.get(_url(test_project, "/detail"), params={"issue_key": bare}).json()
+    assert (answer["title"], answer["description"], answer["solution"]) == ("OpenSSH agent RCE", None, None)
+
+    assert client.get(_url(test_project, "/detail"), params={"issue_key": "title:no such issue"}).status_code == 404
+
+
+def test_another_projects_observation_has_no_detail_here(client, db_session, test_project, estate):
+    other = Project(name="Other", slug="other-obs-detail")
+    db_session.add(other)
+    db_session.commit()
+    host = _host(db_session, other.id, "10.200.0.1")
+    theirs = _vuln(db_session, host, None, "Only in the other project", description="secret")
+    assert theirs.issue_key
+    assert client.get(_url(test_project, "/detail"), params={"issue_key": theirs.issue_key}).status_code == 404

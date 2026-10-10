@@ -201,7 +201,10 @@ const sections: GuideSection[] = [
           hand — <em>Add finding</em> in a host&rsquo;s Findings section, for an issue no scanner row
           or test result on that host stands for. The <strong>Findings</strong> page (Findings hub) lists findings; its{' '}
           <strong>Scanner observations</strong> view lists the raw rows grouped by issue across
-          hosts, and promotes several at once.
+          hosts, 50 to a page, and promotes several at once. <em>Details</em> on a row shows what
+          the scanner wrote about it — its description and remediation, and which scanner&rsquo;s
+          words they are — above the hosts carrying it; what a scanner printed for one particular
+          host is on that host&rsquo;s page.
         </Para>
         <UnorderedList>
           <li><strong>Status</strong> — a finding is <em>under investigation</em> (Open, Retest), <em>Confirmed</em>, or <em>closed</em> (False positive, Accepted risk, Remediated). Closing one asks for a reason — you can save without one —, kept on the finding's history and carried into the report.</li>

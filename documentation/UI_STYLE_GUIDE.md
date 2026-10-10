@@ -672,8 +672,8 @@ page from `hooks/useUrlPage` (`{ pageSize, page: useUrlPage() }`): `?page=`,
 1-based and left out for the first page, replaced (not pushed) when the
 reader pages.  New deps — a filter, a tab — start from page 1, and a link to
 a tab or a filter never carries `page`.  Remediation, Remediation deadlines,
-the Operations tabs, Names, Segments, Ingestion Results, the audit log and
-Hosts do.  A page the address names past the end steps back to the last page
+the Operations tabs, Names, Segments, Ingestion Results, the audit log,
+Hosts and Scanner observations do.  A page the address names past the end steps back to the last page
 that exists — the hook's doing, on every one of them; a page writes no clamp
 of its own.
 

@@ -405,6 +405,45 @@ def issue_hosts(
 
 
 @dataclass
+class IssueDetail:
+    issue_key: str
+    title: str
+    # The scanner whose words these are: two tools describe one issue differently.
+    source: str
+    description: Optional[str] = None
+    solution: Optional[str] = None
+    cvss_score: Optional[float] = None
+    cvss_vector: Optional[str] = None
+
+
+def issue_detail(db: Session, project_id: int, issue_key: str) -> Optional[IssueDetail]:
+    """What a scanner wrote about the issue — so the list can be judged
+    without opening one of its hosts.  One row speaks for it: the most severe
+    that HAS a description (the most severe row may be a bare one from another
+    tool), lowest id on a tie.  What a scanner printed for a particular host
+    (``plugin_output``) differs by host and stays on the host's page.
+    ``None`` when the project has no such issue."""
+    described = case((func.coalesce(func.trim(Vulnerability.description), "") != "", 1), else_=0)
+    row = (
+        _project_rows(db, project_id, Vulnerability)
+        .filter(_key_is(issue_key))
+        .order_by(described.desc(), _rank().desc(), Vulnerability.id.asc())
+        .first()
+    )
+    if row is None:
+        return None
+    return IssueDetail(
+        issue_key=issue_key,
+        title=row.title,
+        source=getattr(row.source, "value", row.source),
+        description=(row.description or "").strip() or None,
+        solution=(row.solution or "").strip() or None,
+        cvss_score=row.cvss_score,
+        cvss_vector=row.cvss_vector or None,
+    )
+
+
+@dataclass
 class PromoteItem:
     issue_key: str
     host_ids: Optional[List[int]] = None

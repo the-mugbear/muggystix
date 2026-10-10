@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../services/api', () => ({
   getObservationIssues: vi.fn(),
+  getObservationIssueDetail: vi.fn(),
   getObservationIssueHosts: vi.fn(),
   promoteObservationIssues: vi.fn(),
 }));
@@ -32,6 +33,11 @@ const renderIt = (canManage = true) =>
 beforeEach(() => {
   vi.clearAllMocks();
   mocked.getObservationIssues.mockResolvedValue({ items: [SMB, TLS], total: 2 });
+  mocked.getObservationIssueDetail.mockResolvedValue({
+    issue_key: SMB.issue_key, title: SMB.title, source: 'nessus',
+    description: 'Signing is not required on the remote SMB server.', solution: 'Enforce message signing.',
+    cvss_score: 5.3, cvss_vector: 'CVSS:3.0/AV:N/AC:L',
+  });
   mocked.getObservationIssueHosts.mockResolvedValue([
     { host_id: 1, ip_address: '10.9.0.1', hostname: null, severity: 'medium', ports: [445], judged: false, endpoint_status: null },
     { host_id: 2, ip_address: '10.9.0.2', hostname: 'fs2', severity: 'medium', ports: [445], judged: false, endpoint_status: null },
@@ -78,7 +84,7 @@ describe('ScannerObservations', () => {
     await screen.findByText('SMB Signing not required');
 
     // Narrow SMB to two of its three hosts: that selects the issue.
-    fireEvent.click(screen.getByRole('button', { name: /Show the hosts carrying SMB Signing/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Show what the scanner wrote about SMB Signing/ }));
     fireEvent.click(await screen.findByRole('checkbox', { name: 'Include 10.9.0.3' }));
     expect(screen.getByText('2 of 3 ticked')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select TLS Version 1.0 Protocol Detection' }));
@@ -104,7 +110,7 @@ describe('ScannerObservations', () => {
   it('never sends an empty host list after every host was unticked and the issue re-selected', async () => {
     renderIt();
     await screen.findByText('SMB Signing not required');
-    fireEvent.click(screen.getByRole('button', { name: /Show the hosts carrying SMB Signing/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Show what the scanner wrote about SMB Signing/ }));
     for (const ip of ['10.9.0.1', '10.9.0.2', '10.9.0.3']) {
       fireEvent.click(await screen.findByRole('checkbox', { name: `Include ${ip}` }));
     }
@@ -125,7 +131,7 @@ describe('ScannerObservations', () => {
     mocked.getObservationIssues.mockResolvedValue({ items: [{ ...SMB, host_count: 4000 }], total: 1 });
     renderIt();
     await screen.findByText('SMB Signing not required');
-    fireEvent.click(screen.getByRole('button', { name: /Show the hosts carrying SMB Signing/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Show what the scanner wrote about SMB Signing/ }));
     const note = await screen.findByTestId('observation-hosts-cut');
     expect(note).toHaveTextContent('The first 100 of 4,000 hosts');
     expect(mocked.getObservationIssueHosts).toHaveBeenCalledWith(1, SMB.issue_key, 101,expect.any(AbortSignal));
@@ -181,7 +187,7 @@ describe('ScannerObservations', () => {
     await screen.findByText('SMB Signing not required');
     expect(screen.getAllByText(/exploit reported/)).toHaveLength(1);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show the hosts carrying SMB Signing not required' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show what the scanner wrote about SMB Signing not required and the hosts carrying it' }));
     const state = async (ip: string) => (await screen.findByText(ip)).closest('li')!;
     expect(await state('10.9.0.1')).toHaveTextContent('2 tests planned');
     expect(await state('10.9.0.2')).toHaveTextContent('tested · 1 to do');
@@ -204,7 +210,7 @@ describe('ScannerObservations', () => {
     expect(header).toHaveAttribute('aria-checked', 'false');
 
     // Narrow SMB to two of its three hosts: that selects the issue.
-    fireEvent.click(screen.getByRole('button', { name: /Show the hosts carrying SMB Signing/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Show what the scanner wrote about SMB Signing/ }));
     fireEvent.click(await screen.findByRole('checkbox', { name: 'Include 10.9.0.3' }));
     expect(rowOf('SMB Signing not required')).toHaveAttribute('data-state', 'selected');
     expect(rowOf('SMB Signing not required')).toHaveAttribute('aria-selected', 'true');
@@ -236,6 +242,46 @@ describe('ScannerObservations', () => {
     expect(slot).toHaveTextContent('1 issue selected');
     expect(within(slot).getByRole('button', { name: 'Promote to findings' })).toBeInTheDocument();
     expect(table.closest('.overflow-x-auto')!.parentElement!.children.length).toBe(precedingBefore);
+  });
+
+  // Analyst walkthrough 2026-10-10: the row showed a title, a CVE and a host
+  // count; what the scanner said could only be read on one of its hosts.
+  it('an open row says what the scanner wrote, whose words they are, above its hosts', async () => {
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+    expect(mocked.getObservationIssueDetail).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /Show what the scanner wrote about SMB Signing/ }));
+    const detail = await screen.findByTestId('observation-detail');
+    expect(mocked.getObservationIssueDetail).toHaveBeenCalledWith(1, SMB.issue_key, expect.any(AbortSignal));
+    expect(detail).toHaveTextContent('Signing is not required on the remote SMB server.');
+    expect(detail).toHaveTextContent('as nessus reports it');
+    expect(detail).toHaveTextContent('Enforce message signing.');
+    expect(detail).toHaveTextContent('CVSS 5.3 · CVSS:3.0/AV:N/AC:L');
+    // The hosts are still there, under it.
+    expect(await screen.findByRole('link', { name: '10.9.0.1' })).toBeInTheDocument();
+  });
+
+  it('says so when no scanner wrote anything, and when the description could not be read — the hosts still list', async () => {
+    mocked.getObservationIssueDetail.mockResolvedValueOnce({
+      issue_key: SMB.issue_key, title: SMB.title, source: 'nmap',
+      description: null, solution: null, cvss_score: null, cvss_vector: null,
+    });
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+    fireEvent.click(screen.getByRole('button', { name: /Show what the scanner wrote about SMB Signing/ }));
+    expect(await screen.findByText('No scanner recorded a description or remediation for this.')).toBeInTheDocument();
+
+    mocked.getObservationIssueDetail.mockRejectedValueOnce(new Error('boom'));
+    fireEvent.click(screen.getByRole('button', { name: /Show what the scanner wrote about TLS Version/ }));
+    expect(await screen.findByText(/Couldn't load what the scanner wrote/)).toBeInTheDocument();
+    expect((await screen.findAllByRole('link', { name: '10.9.0.1' })).length).toBe(2);
+  });
+
+  it('a list that fits one page has no pager', async () => {
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+    expect(screen.queryByText(/page 1 of/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Load .* more/ })).not.toBeInTheDocument();
   });
 
   it('a viewer can read the list but not select or promote', async () => {

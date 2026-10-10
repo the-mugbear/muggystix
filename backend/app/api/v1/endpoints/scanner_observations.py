@@ -2,6 +2,7 @@
 
 ``GET /scanner-observations`` lists each issue once across the project's hosts;
 ``GET /scanner-observations/hosts?issue_key=`` lists the hosts carrying one;
+``GET /scanner-observations/detail?issue_key=`` is what a scanner wrote about it;
 ``POST /scanner-observations/promote`` promotes several issues in one call.
 The logic is ``scanner_observation_service``; this module is the HTTP shape.
 """
@@ -59,6 +60,17 @@ class IssueHostOut(BaseModel):
     tests_recorded: int = 0
 
 
+class IssueDetailOut(BaseModel):
+    issue_key: str
+    title: str
+    # The scanner whose description this is.
+    source: str
+    description: Optional[str] = None
+    solution: Optional[str] = None
+    cvss_score: Optional[float] = None
+    cvss_vector: Optional[str] = None
+
+
 class PromoteItemIn(BaseModel):
     issue_key: str = Field(..., min_length=1, max_length=600)
     # Omitted = every host carrying the issue.
@@ -114,6 +126,23 @@ def list_scanner_observation_hosts(
     project: Project = Depends(get_current_project),
 ):
     return [IssueHostOut(**vars(h)) for h in svc.issue_hosts(db, project.id, issue_key, limit=limit)]
+
+
+@router.get(
+    "/scanner-observations/detail",
+    response_model=IssueDetailOut,
+    summary="What a scanner wrote about one issue",
+    responses={404: {"description": "No scanner observation in this project is that issue"}},
+)
+def get_scanner_observation_detail(
+    issue_key: str = Query(..., min_length=1, max_length=600),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    detail = svc.issue_detail(db, project.id, issue_key)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="No scanner observation in this project is that issue")
+    return IssueDetailOut(**vars(detail))
 
 
 @router.post(

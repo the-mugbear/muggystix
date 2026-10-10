@@ -536,6 +536,25 @@ export const getObservationIssueHosts = async (
   return response.data;
 };
 
+/** What a scanner wrote about an issue: the most severe row that has a
+ *  description speaks for it, and `source` is the scanner whose words they are. */
+export interface ObservationIssueDetail {
+  issue_key: string;
+  title: string;
+  source: string;
+  description: string | null;
+  solution: string | null;
+  cvss_score: number | null;
+  cvss_vector: string | null;
+}
+
+export const getObservationIssueDetail = async (
+  projectId: number, issueKey: string, signal?: AbortSignal,
+): Promise<ObservationIssueDetail> => {
+  const response = await api.get(`${projectPath(projectId)}/scanner-observations/detail`, { params: { issue_key: issueKey }, signal });
+  return response.data;
+};
+
 /** Each issue becomes (or joins) its finding; `host_ids` omitted = every host carrying it. */
 export const promoteObservationIssues = async (
   projectId: number,

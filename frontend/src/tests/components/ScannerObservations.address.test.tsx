@@ -4,7 +4,9 @@
  *
  * The box kept its own copy of `?obs_search=`, seeded once, and wrote it back
  * from a timer, so Back or a link to the same view had the older text written
- * over the address.  It is now `useUrlSearchDraft('obs_search', { also: [] })`.
+ * over the address.  It is now `useUrlSearchDraft('obs_search')`.
+ *
+ * And the list's page (5.378.0): `?page=`, as the other paged lists keep it.
  */
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,6 +15,7 @@ vi.mock('react-router-dom', async () => vi.importActual('react-router-dom'));
 
 vi.mock('../../services/api', () => ({
   getObservationIssues: vi.fn(),
+  getObservationIssueDetail: vi.fn(),
   getObservationIssueHosts: vi.fn(),
   promoteObservationIssues: vi.fn(),
 }));
@@ -66,8 +69,7 @@ describe('ScannerObservations — the search box follows the address (real route
   });
 
   it('typing asks once after the typing stops — trimmed, replacing the entry, every other param kept', async () => {
-    // `page` is not this list's (it loads more); the box never removed it.
-    const router = await open('/findings?view=observations&obs_severity=critical&page=2');
+    const router = await open('/findings?view=observations&obs_severity=critical');
     mocked.getObservationIssues.mockClear();
 
     type('  weak');
@@ -75,10 +77,10 @@ describe('ScannerObservations — the search box follows the address (real route
     type('  weak tls ');
     await pass(200);
     expect(asked()).toHaveLength(0);
-    expect(router.state.location.search).toBe('?view=observations&obs_severity=critical&page=2');
+    expect(router.state.location.search).toBe('?view=observations&obs_severity=critical');
 
     await pass(150);
-    expect(router.state.location.search).toBe('?view=observations&obs_severity=critical&page=2&obs_search=weak+tls');
+    expect(router.state.location.search).toBe('?view=observations&obs_severity=critical&obs_search=weak+tls');
     expect(router.state.historyAction).toBe('REPLACE');
     expect(asked()).toHaveLength(1);
     expect(last()).toMatchObject({ search: 'weak tls', severity: 'critical' });
@@ -86,8 +88,57 @@ describe('ScannerObservations — the search box follows the address (real route
     // Emptied, it is left out of the address.
     type('');
     await pass(350);
-    expect(router.state.location.search).toBe('?view=observations&obs_severity=critical&page=2');
+    expect(router.state.location.search).toBe('?view=observations&obs_severity=critical');
     expect(last()).toMatchObject({ search: '' });
+  });
+
+  // 5.378.0 — the list is paged (it was "Load 50 more": thirteen clicks for
+  // 636 issues, and a reload started again from the top).
+  describe('pages', () => {
+    const many = (from: number) => ({
+      items: Array.from({ length: 50 }, (_, i) => ({ ...ISSUE, issue_key: `title:issue ${from + i}`, title: `Issue ${from + i}` })),
+      total: 120,
+    });
+    beforeEach(() => {
+      mocked.getObservationIssues.mockImplementation(async (_p: number, f: { skip?: number }) => many(f.skip ?? 0));
+    });
+
+    it('opens on the page the address names, and Next asks for the following one and writes it', async () => {
+      const router = await open('/findings?view=observations&page=2');
+      expect(last()).toMatchObject({ skip: 50, limit: 50 });
+      expect(screen.getByText('Issue 50')).toBeInTheDocument();
+      expect(screen.getByText('51–100 of 120')).toBeInTheDocument();
+      expect(screen.getByText('page 2 of 3')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Next 50 issues' }));
+      await pass(20);
+      expect(router.state.location.search).toBe('?view=observations&page=3');
+      expect(router.state.historyAction).toBe('REPLACE');
+      expect(last()).toMatchObject({ skip: 100 });
+      expect(screen.getByText('Issue 100')).toBeInTheDocument();
+      expect(screen.queryByText('Issue 50')).not.toBeInTheDocument();
+    });
+
+    it('a search starts from the first page in the same address write', async () => {
+      const router = await open('/findings?view=observations&page=2');
+      mocked.getObservationIssues.mockClear();
+      type('ssh');
+      await pass(350);
+      expect(router.state.location.search).toBe('?view=observations&obs_search=ssh');
+      // One read, of the first page — never page 2 of the new search first.
+      expect(asked()).toEqual([expect.objectContaining({ search: 'ssh', limit: 50 })]);
+      expect(last()).not.toHaveProperty('skip');
+    });
+
+    it('an issue ticked on one page is still selected, and counted, on the next', async () => {
+      await open('/findings?view=observations');
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select Issue 0' }));
+      expect(screen.getByTestId('observations-bulk-slot')).toHaveTextContent('1 issue selected');
+      fireEvent.click(screen.getByRole('button', { name: 'Next 50 issues' }));
+      await pass(20);
+      expect(screen.getByText('Issue 50')).toBeInTheDocument();
+      expect(screen.getByTestId('observations-bulk-slot')).toHaveTextContent('1 issue selected');
+    });
   });
 
   it('a link to the same view with another search, and Back, re-seed the box; the list follows and the address is left alone', async () => {

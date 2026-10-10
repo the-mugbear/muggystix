@@ -9,6 +9,10 @@
  * every host carrying it or on the hosts ticked under its row: "confirmed" is
  * recorded only where the operator means it (the host-scoped promotion rule).
  * An issue that already has a finding joins it, its status untouched.
+ *
+ * 5.378.0 — an open row says what the scanner wrote about the issue (it could
+ * only be read on a host's page), and the list is paged, its page in the
+ * address, as the other lists are.
  */
 import React, { useCallback, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -16,15 +20,17 @@ import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
 
 import {
+  getObservationIssueDetail,
   getObservationIssueHosts,
   getObservationIssues,
   promoteObservationIssues,
 } from '../../services/api';
-import type { ObservationIssue, ObservationIssueHost, WeaknessKind } from '../../services/api';
+import type { ObservationIssue, ObservationIssueDetail, ObservationIssueHost, WeaknessKind } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useListCursor } from '../../hooks/useListCursor';
-import { useListQuery } from '../../hooks/useListQuery';
+import { usePagedList } from '../../hooks/usePagedList';
 import { useProjectId } from '../../hooks/useProjectId';
+import { useUrlPage } from '../../hooks/useUrlPage';
 import { useUrlSearchDraft } from '../../hooks/useUrlSearchDraft';
 import { formatApiError } from '../../utils/apiErrors';
 import { ENDPOINT_STATUS_LABEL, STATUS_LABEL } from '../../utils/findingStatus';
@@ -43,6 +49,7 @@ import { cn } from '../../utils/cn';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Switch } from '../ui/switch';
 import AgentTaskButton from '../agent-sessions/AgentTaskButton';
+import { PagedFooter } from '../operations/QueueParts';
 import { agentInstruction } from '../../utils/agentRuns';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 
@@ -63,6 +70,51 @@ export const issueTestState = (h: Pick<ObservationIssueHost, 'tests_to_do' | 'te
   return toDo > 0 ? `${plural(toDo, 'test')} planned` : 'no test';
 };
 
+/** What a scanner wrote about the issue, above the hosts carrying it — so it
+ *  can be judged here, without opening one of them.  Long write-ups scroll
+ *  inside their own box; what a scanner printed for one host is on that host. */
+const IssueDetail: React.FC<{ detail: ObservationIssueDetail | 'loading' | 'error' | undefined }> = ({ detail }) => {
+  if (detail === undefined || detail === 'loading') {
+    return (
+      <p className="mb-xs flex items-center gap-xs text-caption text-muted-foreground">
+        <Loader2 className="size-3.5 animate-spin" aria-hidden /> Loading what the scanner wrote…
+      </p>
+    );
+  }
+  if (detail === 'error') {
+    return <p className="mb-xs text-caption text-destructive">Couldn&apos;t load what the scanner wrote. Collapse the row and try again.</p>;
+  }
+  if (!detail.description && !detail.solution) {
+    return (
+      <p className="mb-xs text-caption text-muted-foreground" data-testid="observation-detail">
+        No scanner recorded a description or remediation for this.
+      </p>
+    );
+  }
+  const body = 'max-h-48 overflow-auto whitespace-pre-wrap break-words text-caption text-muted-foreground';
+  return (
+    <div className="mb-sm flex min-w-0 flex-col gap-xs" data-testid="observation-detail">
+      {detail.description && (
+        <div className="min-w-0">
+          <p className="text-caption font-semibold text-foreground">Description <span className="font-normal text-muted-foreground">· as {detail.source} reports it</span></p>
+          <p className={body}>{detail.description}</p>
+        </div>
+      )}
+      {detail.solution && (
+        <div className="min-w-0">
+          <p className="text-caption font-semibold text-foreground">Remediation</p>
+          <p className={body}>{detail.solution}</p>
+        </div>
+      )}
+      {detail.cvss_score != null && (
+        <p className="min-w-0 break-all text-caption text-muted-foreground">
+          CVSS {detail.cvss_score}{detail.cvss_vector ? ` · ${detail.cvss_vector}` : ''}
+        </p>
+      )}
+    </div>
+  );
+};
+
 interface Props {
   /** Analyst or above: may select and promote. */
   canManage: boolean;
@@ -78,8 +130,8 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   // The search box: `value` is the address's and what the list is asked for,
   // `draft` what is being typed — committed a moment after the typing stops,
   // and following the address when it changes from elsewhere (Back, a link).
-  // This list has no page, so a commit removes nothing else.
-  const searchBox = useUrlSearchDraft('obs_search', { also: [] });
+  // A commit takes `page` out in the same write: the result set changed.
+  const searchBox = useUrlSearchDraft('obs_search');
   const search = searchBox.value;
   const severity = params.get('obs_severity') ?? 'all';
   // Any number of hosts by default (v5.288.0): "2 or more" hid every
@@ -93,6 +145,8 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
       const next = new URLSearchParams(prev);
       if (value === fallback) next.delete(key);
       else next.set(key, value);
+      // A filter starts from the first page, in this one write.
+      next.delete('page');
       return next;
     }, { replace: true });
   }, [setParams]);
@@ -108,8 +162,9 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const sort: 'severity' | 'hosts' = params.get('obs_sort') === 'hosts' ? 'hosts' : 'severity';
   const setSort = (v: string) => setParam('obs_sort', v, 'severity');
 
-  // Selection spans loads: issue_key → the issue, and the hosts ticked under
-  // it (absent = every host carrying it).
+  // Selection spans pages: issue_key → the issue, and the hosts ticked under
+  // it (absent = every host carrying it).  The bar counts it and the confirm
+  // dialog lists it, whichever page is on screen.
   const [selected, setSelected] = useState<Map<string, ObservationIssue>>(new Map());
   const [hostChoice, setHostChoice] = useState<Map<string, Set<number>>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -124,31 +179,34 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
     [search, severity, minHosts, includeJudged, kind, exploitable, sort],
   );
 
-  // The filters are the list's key: a page that lands after they changed
-  // belongs to the list it was asked for, never to the one on screen.
-  const list = useListQuery<ObservationIssue>(
+  // One page at a time, the page in the address (`?page=`): 636 issues were
+  // thirteen "Load 50 more" clicks, and a reload started again from the top.
+  // The filters are the list's key, and a new filter is the first page.
+  const list = usePagedList<ObservationIssue>(
     'getObservationIssues',
     ({ offset, limit, signal }) => getObservationIssues(projectId, { ...filters, ...(offset > 0 ? { skip: offset } : {}), limit }, signal),
     [projectId, filters],
-    {
-      pageSize: PAGE, errorMessage: 'Could not load the scanner observations.',
-      // An issue that moved between two pages while they were read is listed once.
-      dedupeBy: (issue) => issue.issue_key,
-    },
+    { pageSize: PAGE, errorMessage: 'Could not load the scanner observations.', page: useUrlPage(), within: projectId },
   );
   const issues = list.rows ?? NO_ISSUES;
-  const { total, loading, loadingMore, error } = list;
+  const { total, error } = list;
+  // No rows of this page yet: loading (or failed — `error` says which).
+  const loading = list.rows === null;
 
-  const loadMore = async () => {
-    try {
-      await list.loadMore();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not load more issues'));
-    }
-  };
-
-  // The hosts under each open issue, read when its row is opened.
+  // What the scanner wrote about each open issue, and the hosts under it —
+  // both read when its row is opened.
   const expandedKeys = useMemo(() => [...expanded], [expanded]);
+  const detailQueries = useQueries({
+    queries: expandedKeys.map((key) => ({
+      queryKey: ['getObservationIssueDetail', projectId, key],
+      queryFn: ({ signal }: { signal: AbortSignal }) => getObservationIssueDetail(projectId, key, signal),
+    })),
+  });
+  const detailOf = (key: string): ObservationIssueDetail | 'loading' | 'error' | undefined => {
+    const query = detailQueries[expandedKeys.indexOf(key)];
+    if (!query) return undefined;
+    return query.data ?? (query.isError ? 'error' : 'loading');
+  };
   const hostQueries = useQueries({
     queries: expandedKeys.map((key) => ({
       queryKey: ['getObservationIssueHosts', projectId, key, HOST_CAP + 1],
@@ -251,7 +309,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
 
   // j/k (↓/↑) move a row cursor, Enter shows or hides the issue's hosts.
   const { cursorRowProps } = useListCursor(
-    loading || error ? 0 : issues.length,
+    error ? 0 : issues.length,
     (i) => toggleExpanded(issues[i]),
     // A promotion re-reads the list (the judged issue may leave it).
     { resetKey: `${search}|${severity}|${minHosts}|${includeJudged}|${kind}|${exploitable}|${sort}`, getId: (i) => issues[i]?.issue_key },
@@ -351,7 +409,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
 
       {error ? (
         <p role="alert" className="text-metadata text-destructive">{error}</p>
-      ) : loading && issues.length === 0 ? (
+      ) : loading ? (
         <p className="flex items-center gap-xs text-metadata text-muted-foreground">
           <Loader2 className="size-4 animate-spin" aria-hidden /> Loading scanner observations…
         </p>
@@ -455,16 +513,17 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                             variant="ghost"
                             onClick={() => toggleExpanded(issue)}
                             aria-expanded={isOpen}
-                            aria-label={`${isOpen ? 'Hide' : 'Show'} the hosts carrying ${issue.title}`}
+                            aria-label={`${isOpen ? 'Hide' : 'Show'} what the scanner wrote about ${issue.title} and the hosts carrying it`}
                           >
                             {isOpen ? <ChevronDown className="size-4" aria-hidden /> : <ChevronRight className="size-4" aria-hidden />}
-                            Hosts
+                            Details
                           </Button>
                         </TableCell>
                       </TableRow>
                       {isOpen && (
                         <TableRow>
                           <TableCell colSpan={canManage ? 5 : 4} className="bg-muted/30 p-sm">
+                            <IssueDetail detail={detailOf(key)} />
                             {hosts === 'loading' || hosts === undefined ? (
                               <p className="flex items-center gap-xs text-caption text-muted-foreground">
                                 <Loader2 className="size-3.5 animate-spin" aria-hidden /> Loading hosts…
@@ -558,13 +617,12 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
               </TableBody>
             </Table>
           </div>
-          {issues.length < total && (
-            <div className="mt-sm flex justify-center">
-              <Button variant="outline" size="sm" onClick={() => void loadMore()} disabled={loadingMore}>
-                {loadingMore && <Loader2 className="size-4 animate-spin" aria-hidden />}
-                Load {Math.min(PAGE, total - issues.length)} more
-              </Button>
-            </div>
+          {total > PAGE && (
+            <PagedFooter
+              pager={{ page: list.page, pageSize: PAGE, total, onPage: list.setPage }}
+              shown={issues.length}
+              noun="issues"
+            />
           )}
         </>
       )}
