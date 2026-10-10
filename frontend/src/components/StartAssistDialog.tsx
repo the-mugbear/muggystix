@@ -30,7 +30,7 @@
  * more thing to click past; owner decision 2026-10-10); after, one copy for
  * the chosen client.
  */
-import React, { useCallback, useState } from 'react';
+import React, { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Check, Copy, Loader2, MessageCircleQuestion } from 'lucide-react';
@@ -46,6 +46,7 @@ import {
   DialogTitle,
 } from './ui/dialog';
 import { startAssistSession, type AgentSessionRow } from '../services/api';
+import { useKeyHandoff } from '../hooks/useKeyHandoff';
 import { useProjectId } from '../hooks/useProjectId';
 import { SECRET_MUTATION, invalidateReads, queryErrorText } from '../lib/query';
 import AssistSessionsPanel from './AssistSessionsPanel';
@@ -86,7 +87,8 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   const queryClient = useQueryClient();
   const projectId = useProjectId();
   // The key is shown once: it is this dialog's mutation result and nothing
-  // else's — never a query, and dropped with the dialog (`reset`, `gcTime: 0`).
+  // else's — never a query, and dropped with the dialog (`gcTime: 0` here;
+  // the `reset()` is `useKeyHandoff`'s `close`).
   const start = useMutation({
     mutationFn: () => startAssistSession(projectId, {}),
     ...SECRET_MUTATION,
@@ -98,55 +100,36 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
       void invalidateReads(queryClient, 'listAgentSessions');
     },
   });
-  const loading = start.isPending;
   const error = queryErrorText(start.error, 'Could not start assist session.');
-  const result = start.data ?? null;
-  const { reset: resetStart } = start;
-  const [keyCopied, setKeyCopied] = useState(false);
   // With a session already live the task is the point: copying it is the
   // primary action, and starting another session is asked for explicitly.
   const [startAnother, setStartAnother] = useState(false);
   const [taskCopied, setTaskCopied] = useState(false);
   const continuing = liveSession != null && !startAnother;
 
-  const reset = useCallback(() => {
-    resetStart();
-    setKeyCopied(false);
-    setStartAnother(false);
-    setTaskCopied(false);
-  }, [resetStart]);
+  // When it may close, and what closing drops — the key first — is shared
+  // with the resume dialog (`useKeyHandoff`).  Every way out is `close`: an
+  // opening inherits nothing, and the page hears of a started session only
+  // after the dialog has closed.
+  const startedSessionId = start.data?.agent_session_id;
+  const {
+    result, loading, keyCopied, markKeyCopied, close, onDialogOpenChange, showClose,
+  } = useKeyHandoff(start, {
+    onOpenChange,
+    onReset: () => {
+      setStartAnother(false);
+      setTaskCopied(false);
+    },
+    afterClose: () => {
+      if (startedSessionId && onSessionStarted) onSessionStarted(startedSessionId);
+    },
+  });
 
   const handleStart = () => start.mutate();
 
-  const handleClose = () => {
-    const sid = result?.agent_session_id;
-    reset();
-    onOpenChange(false);
-    if (sid && onSessionStarted) onSessionStarted(sid);
-  };
-
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (next) {
-          onOpenChange(true);
-          return;
-        }
-        // Veto close while in-flight.
-        if (loading) return;
-        // Veto an accidental close while the key is on screen and nothing
-        // holding it was copied (audit C1) — Done says why.
-        if (result && !keyCopied) return;
-        if (result) {
-          handleClose();
-        } else {
-          reset();
-          onOpenChange(false);
-        }
-      }}
-    >
-      <DialogContent size="lg" showClose={!result || keyCopied}>
+    <Dialog open={open} onOpenChange={onDialogOpenChange}>
+      <DialogContent size="lg" showClose={showClose}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-xs">
             <MessageCircleQuestion className="size-5 text-primary" aria-hidden />
@@ -186,7 +169,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                       Your agent session{' '}
                       <Link
                         to={agentSessionPath(liveSession.id)}
-                        onClick={() => { reset(); onOpenChange(false); }}
+                        onClick={close}
                         className="text-primary underline-offset-4 hover:underline"
                       >
                         #{liveSession.id}
@@ -198,7 +181,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
               )}
               <AssistSessionsPanel
                 sessions={mySessions}
-                onNavigate={() => { reset(); onOpenChange(false); }}
+                onNavigate={close}
               />
               {mySessions.length === 0 && (
                 // 5.312.1 — with no live key the panel is hidden, but a session
@@ -207,7 +190,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                   Continuing an earlier session?{' '}
                   <Link
                     to={SESSIONS_LIST_PATH}
-                    onClick={() => { reset(); onOpenChange(false); }}
+                    onClick={close}
                     className="text-primary underline-offset-4 hover:underline"
                   >
                     Resume it from Agent Sessions
@@ -228,7 +211,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                 apiKey={result.api_key}
                 instructions={result.instructions}
                 mcpClients={result.mcp_clients ?? []}
-                onCopied={() => setKeyCopied(true)}
+                onCopied={markKeyCopied}
               />
               {instruction && (
                 <InstructionBlock text={instruction} lead="Once it is connected, give your agent this:" />
@@ -239,14 +222,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
         <DialogFooter>
           {!result ? (
             <>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  reset();
-                  onOpenChange(false);
-                }}
-                disabled={loading}
-              >
+              <Button variant="outline" onClick={close} disabled={loading}>
                 Cancel
               </Button>
               {continuing ? (
@@ -281,7 +257,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
           ) : (
             <KeyHandoffFooter
               copied={keyCopied}
-              onDone={handleClose}
+              onDone={close}
               note="Resume from Agent Sessions if the agent process dies."
             />
           )}

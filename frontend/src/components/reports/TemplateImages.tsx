@@ -15,7 +15,7 @@
  * size, from the template's own guidance.  The server checks the bytes; this
  * page checks type and size first so a wrong file fails before it is sent.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
@@ -24,6 +24,7 @@ import {
 } from '../../services/api';
 import type { ClientReportFormat, ReportTemplate, ReportTemplateAsset } from '../../services/api';
 import { useProjectId } from '../../hooks/useProjectId';
+import { useBlobUrl } from '../../lib/objectUrls';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 
@@ -142,13 +143,7 @@ const AssetThumbnail: React.FC<{ templateName: string; asset: ReportTemplateAsse
     enabled: asset.present && PREVIEWABLE.has(asset.kind ?? ''),
   });
   // The object URL lives as long as its image is the one shown.
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    if (!blob) { setUrl(null); return undefined; }
-    const objectUrl = URL.createObjectURL(blob);
-    setUrl(objectUrl);
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [blob]);
+  const url = useBlobUrl(blob);
   if (!url) return null;
   return (
     <img

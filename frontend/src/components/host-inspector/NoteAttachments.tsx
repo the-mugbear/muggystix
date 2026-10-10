@@ -1,11 +1,10 @@
-import React, { forwardRef, useEffect, useId, useImperativeHandle, useRef, useState } from 'react';
-import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, ImageOff, ImagePlus, Pencil, Trash2 } from 'lucide-react';
 import {
   NoteAttachment,
   uploadNoteAttachment,
   deleteNoteAttachment,
-  getNoteAttachmentObjectUrl,
   setNoteAttachmentCaption,
   setNoteAttachmentInReport,
 } from '../../services/api';
@@ -17,6 +16,7 @@ import { Checkbox } from '../ui/checkbox';
 import { Textarea } from '../ui/textarea';
 import ScreenshotLightbox from '../ScreenshotLightbox';
 import { useToast } from '../../contexts/ToastContext';
+import { useNoteThumbnails } from '../../hooks/useAttachmentImages';
 import { useProjectId } from '../../hooks/useProjectId';
 import { invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
@@ -88,8 +88,8 @@ const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
  * Evidence images on a single note: thumbnails (click → lightbox), an
  * "Attach image" picker, and per-image delete.  Each attachment is fetched as
  * an authenticated blob and rendered from an object URL (the serve endpoint
- * needs the bearer token, so a bare <img src> wouldn't load) — mirrors how the
- * web-interface screenshots load.
+ * needs the bearer token, so a bare <img src> wouldn't load) — through
+ * `hooks/useAttachmentImages`, the cache the finding page uses too.
  */
 const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(({
   hostId, noteId, attachments, canManage, onChanged, uploadFn, externalTrigger = false, onBusyChange,
@@ -112,64 +112,11 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   const queryClient = useQueryClient();
   const [lightbox, setLightbox] = useState<{ src: string; caption: string } | null>(null);
 
-  const idsKey = attachments.map((a) => a.id).join(',');
-
-  // Which images the page's shared cache serves.  While the finding's list is
-  // still being read nothing is fetched here: it would be fetched again from
-  // the cache a moment later.
-  const shared = reportMarking?.thumbnails;
-  const sharedWaiting = shared?.listStatus === 'loading';
-  const fromShared = (id: number) => !!shared && shared.has(id);
-  const ensureShared = shared?.ensure;
-  useEffect(() => {
-    if (!ensureShared) return;
-    attachments.forEach((att) => ensureShared(att.id));  // a no-op for an id off the list
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idsKey, ensureShared]);
-
-  // The images the shared cache does not serve are read here, each as an
-  // object URL made from the authenticated bytes.  A URL is this component's
-  // to release: every one made is revoked when it goes, and one that arrives
-  // after that is revoked at once.
-  const createdUrls = useRef<string[]>([]);
-  const gone = useRef(false);
-  useEffect(() => {
-    gone.current = false;
-    const made = createdUrls.current;
-    return () => {
-      gone.current = true;
-      made.forEach(URL.revokeObjectURL);
-      made.length = 0;
-    };
-  }, []);
-  // (So the key names this instance: a URL is never handed to another one,
-  // which would be left showing it after this one revoked it.)
-  const instance = useId();
-  const own = useQueries({
-    // eslint-disable-next-line @tanstack/query/exhaustive-deps -- `gone` is "this card has unmounted", not an input of the read
-    queries: attachments.map((att) => ({
-      queryKey: ['getNoteAttachmentObjectUrl', projectId, att.id, instance],
-      queryFn: async ({ signal }) => {
-        const url = await getNoteAttachmentObjectUrl(projectId, att.id, signal);
-        if (gone.current) URL.revokeObjectURL(url);
-        else createdUrls.current.push(url);
-        return url;
-      },
-      enabled: !sharedWaiting && !fromShared(att.id),
-      // The bytes of an attachment never change: read once while it is shown.
-      staleTime: Infinity,
-    })),
-  });
-  const ownOf = (id: number) => own[attachments.findIndex((a) => a.id === id)];
-
-  const thumbnailUrl = (id: number): string | undefined => (fromShared(id) ? shared?.urls[id] : ownOf(id)?.data);
-  // A fetch that failed: the thumbnail says so (and a click tries again)
-  // instead of spinning for ever.
-  const thumbnailFailed = (id: number): boolean => (fromShared(id) ? !!shared?.failed(id) : !!ownOf(id)?.isError);
-  const retryThumbnail = (id: number) => {
-    if (fromShared(id)) shared?.retry(id);
-    else void ownOf(id)?.refetch();
-  };
+  // The thumbnails: from the page's cache where the page has one that serves
+  // the image (a finding), from this card's own otherwise — one hook, which
+  // asks for what is shown and releases every object URL it made.  A fetch
+  // that failed says so (and a click tries again) instead of spinning for ever.
+  const thumbnails = useNoteThumbnails(attachments.map((a) => a.id), reportMarking?.thumbnails);
 
   // What the server refused, per image, kept beside it until the next change:
   // "this image is placed in the Description of …" says what to do, and a
@@ -348,8 +295,8 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
       {attachments.length > 0 && (
         <div ref={captionRowsRef} className={reportMarking ? 'space-y-xs' : 'flex flex-wrap gap-xs'}>
           {attachments.map((att) => {
-            const url = thumbnailUrl(att.id);
-            const loadFailed = !url && thumbnailFailed(att.id);
+            const url = thumbnails.url(att.id);
+            const loadFailed = !url && thumbnails.failed(att.id);
             const caption = att.caption?.trim() || '';
             const thumbnail = (
               <div className="group relative shrink-0">
@@ -357,7 +304,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
                   type="button"
                   onClick={() => {
                     if (url) setLightbox({ src: url, caption: caption || att.filename });
-                    else if (loadFailed) retryThumbnail(att.id);
+                    else if (loadFailed) thumbnails.retry(att.id);
                   }}
                   className="block size-20 overflow-hidden rounded-control border border-border bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={loadFailed ? `${att.filename} could not be loaded — try again` : `View ${att.filename}`}

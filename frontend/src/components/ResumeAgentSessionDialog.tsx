@@ -23,7 +23,7 @@
  * Owner only: the key acts under the starting operator's name, so the
  * backend refuses anyone else with 403 and the page hides the button.
  */
-import React, { useState } from 'react';
+import React from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, RotateCcw } from 'lucide-react';
 import { Alert, AlertDescription } from './ui/alert';
@@ -38,6 +38,7 @@ import {
   DialogTitle,
 } from './ui/dialog';
 import { resumeAgentSession, type AgentSessionRow } from '../services/api';
+import { useKeyHandoff } from '../hooks/useKeyHandoff';
 import { useProjectId } from '../hooks/useProjectId';
 import { SECRET_MUTATION, invalidateReads, queryErrorText } from '../lib/query';
 import { AGENT_SESSION_READS } from '../utils/agentRuns';
@@ -71,7 +72,7 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
   const projectId = useProjectId();
   // The replacement key is shown once: it is this dialog's mutation result
   // and nothing else's — never a query, and dropped with the dialog
-  // (`reset`, `gcTime: 0`).
+  // (`gcTime: 0` here; the `reset()` is `useKeyHandoff`'s `close`).
   const rotate = useMutation({
     mutationFn: (sessionId: number) => resumeAgentSession(projectId, sessionId),
     ...SECRET_MUTATION,
@@ -83,15 +84,13 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
       void invalidateReads(queryClient, ...AGENT_SESSION_READS);
     },
   });
-  const loading = rotate.isPending;
   const error = queryErrorText(rotate.error, 'Could not resume the agent session.');
-  const result = rotate.data ?? null;
-  const [keyCopied, setKeyCopied] = useState(false);
-
-  const reset = () => {
-    rotate.reset();
-    setKeyCopied(false);
-  };
+  // Same rule as the start dialog, from the same hook: no close while the
+  // request is out, none by accident while the key is on screen and nothing
+  // holding it was copied (Done says why), and closing drops the key.
+  const {
+    result, loading, keyCopied, markKeyCopied, close: handleClose, onDialogOpenChange, showClose,
+  } = useKeyHandoff(rotate, { onOpenChange });
 
   const now = Date.now();
   const keyExpiry = session?.key_expires_at ? new Date(session.key_expires_at).getTime() : null;
@@ -108,27 +107,9 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
     rotate.mutate(session.id);
   };
 
-  const handleClose = () => {
-    reset();
-    onOpenChange(false);
-  };
-
   return (
-    <Dialog
-      open={session != null}
-      onOpenChange={(next) => {
-        if (next) {
-          onOpenChange(true);
-          return;
-        }
-        if (loading) return;
-        // Same rule as the start dialog: no accidental close while the key is
-        // on screen and nothing holding it was copied — Done says why.
-        if (result && !keyCopied) return;
-        handleClose();
-      }}
-    >
-      <DialogContent size="xl" showClose={!result || keyCopied}>
+    <Dialog open={session != null} onOpenChange={onDialogOpenChange}>
+      <DialogContent size="xl" showClose={showClose}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-xs">
             <RotateCcw className="size-5 text-primary" aria-hidden />
@@ -216,7 +197,7 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
                 instructions={result.instructions}
                 mcpClients={result.mcp_clients ?? []}
                 keyLabel="The replacement key on its own"
-                onCopied={() => setKeyCopied(true)}
+                onCopied={markKeyCopied}
               />
             </div>
           )}

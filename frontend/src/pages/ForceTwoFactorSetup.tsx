@@ -1,21 +1,13 @@
-import React, { useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
-import { copyToClipboard } from '../utils/clipboard';
-import { downloadTextFile } from '../utils/download';
+import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ShieldAlert, Loader2, Copy, Download } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { enableTwoFactor, startTwoFactorSetup, type TwoFactorSetup } from '../services/api';
-import { SECRET_MUTATION } from '../lib/query';
-import { formatApiError } from '../utils/apiErrors';
-import { useToast } from '../contexts/ToastContext';
+import { useTwoFactorEnrolment } from '../hooks/useTwoFactorEnrolment';
 import { Card, CardContent } from '../components/ui/card';
 import { Label } from '../components/ui/label';
 import { Input } from '../components/ui/input';
 import { Button } from '../components/ui/button';
 import { Alert, AlertDescription } from '../components/ui/alert';
-
-type Step = 'choose' | 'confirm' | 'recovery';
 
 /**
  * Forced TOTP enrollment — shown (no sidebar) when REQUIRE_2FA is on and the
@@ -25,66 +17,19 @@ type Step = 'choose' | 'confirm' | 'recovery';
 const ForceTwoFactorSetup: React.FC = () => {
   const navigate = useNavigate();
   const { logout } = useAuth();
-  const toast = useToast();
 
-  const [step, setStep] = useState<Step>('choose');
-  const [error, setError] = useState('');
-  const [showImport, setShowImport] = useState(false);
-  const [importSecret, setImportSecret] = useState('');
-  const [setupData, setSetupData] = useState<TwoFactorSetup | null>(null);
-  const [code, setCode] = useState('');
-  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
-
-  // Both mutations carry or return a secret — the TOTP secret, a one-time
-  // code, the recovery codes — so neither is kept by the library once it has
-  // settled (`SECRET_MUTATION`, and the `reset` where each is called).  What
-  // the reader is SHOWN once (the secret and QR, the recovery codes) is this
-  // page's own state, copied in `onSuccess` and cleared when they leave that
-  // step; why a step failed is `error`.
-  const starting = useMutation({
-    ...SECRET_MUTATION,
-    mutationFn: (body: { existing_secret?: string }) => startTwoFactorSetup(body),
-    onMutate: () => setError(''),
-    onSuccess: (data) => {
-      setSetupData(data);
-      setCode('');
-      setStep('confirm');
-    },
-    onError: (err) => setError(formatApiError(err, 'Could not start 2FA setup.')),
-  });
-  const startSetup = () => {
-    starting.mutate(
-      showImport && importSecret.trim() ? { existing_secret: importSecret.trim() } : {},
-      { onSettled: () => starting.reset() },
-    );
-  };
-
-  const enabling = useMutation({
-    ...SECRET_MUTATION,
-    mutationFn: (enteredCode: string) => enableTwoFactor(enteredCode),
-    onMutate: () => setError(''),
-    onSuccess: (codes) => {
-      setRecoveryCodes(codes);
-      setStep('recovery');
-      // Enrollment is over: the secret, its QR and the code that confirmed it go.
-      setSetupData(null);
-      setCode('');
-      setImportSecret('');
-    },
-    onError: (err) => setError(formatApiError(err, 'That code was not accepted.')),
-  });
-  const confirmEnable = () => enabling.mutate(code.trim(), { onSettled: () => enabling.reset() });
-  const busy = starting.isPending || enabling.isPending;
+  // The three steps — a new or an imported secret, a code that confirms it,
+  // the recovery codes once — are the one implementation shared with the
+  // Profile page's section (`hooks/useTwoFactorEnrolment`, which also says
+  // how its secrets are kept out of the library's cache).  This page adds its
+  // own frame, and where the reader goes once the codes are saved.
+  const {
+    step, error, showImport, importSecret, setImportSecret, openImport, closeImport,
+    setup: setupData, code, setCode, recoveryCodes, copyCodes, downloadCodes,
+    start: startSetup, confirm: confirmEnable, startOver, busy,
+  } = useTwoFactorEnrolment();
 
   const finish = () => navigate('/', { replace: true });
-
-  const copyCodes = () =>
-    copyToClipboard(recoveryCodes.join('\n')).then((ok) => {
-      if (ok) toast.success('Recovery codes copied.');
-    });
-  const downloadCodes = () => {
-    downloadTextFile('bluestick-recovery-codes.txt', `BlueStick recovery codes\n\n${recoveryCodes.join('\n')}\n`);
-  };
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-md">
@@ -110,14 +55,14 @@ const ForceTwoFactorSetup: React.FC = () => {
             )}
 
             {/* STEP 1 — choose generate vs import */}
-            {step === 'choose' && (
+            {step === 'start' && (
               <div className="flex flex-col gap-sm">
                 {!showImport ? (
                   <>
                     <Button size="lg" onClick={startSetup} disabled={busy}>
                       {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Set up with a new secret
                     </Button>
-                    <Button variant="outline" onClick={() => setShowImport(true)} disabled={busy}>
+                    <Button variant="outline" onClick={openImport} disabled={busy}>
                       Import an existing authenticator secret
                     </Button>
                   </>
@@ -139,7 +84,7 @@ const ForceTwoFactorSetup: React.FC = () => {
                       <Button onClick={startSetup} disabled={busy || !importSecret.trim()}>
                         {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Continue
                       </Button>
-                      <Button variant="ghost" onClick={() => { setShowImport(false); setImportSecret(''); }} disabled={busy}>
+                      <Button variant="ghost" onClick={closeImport} disabled={busy}>
                         Back
                       </Button>
                     </div>
@@ -177,7 +122,7 @@ const ForceTwoFactorSetup: React.FC = () => {
                 <Button size="lg" onClick={confirmEnable} disabled={busy || !code.trim()}>
                   {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Verify &amp; enable
                 </Button>
-                <Button variant="ghost" onClick={() => { setStep('choose'); setSetupData(null); setCode(''); }} disabled={busy}>
+                <Button variant="ghost" onClick={startOver} disabled={busy}>
                   Start over
                 </Button>
               </div>

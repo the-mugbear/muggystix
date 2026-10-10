@@ -1,30 +1,12 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { copyToClipboard as copyText } from '../utils/clipboard';
-import { downloadTextFile } from '../utils/download';
 import { useProjectId } from '../hooks/useProjectId';
-import { queryErrorText } from '../lib/query';
-import { Code, Copy, Download, Loader2 } from 'lucide-react';
+import { Code } from 'lucide-react';
 import { getToolReadyOutput, ToolReadyResult } from '../services/api';
+import GeneratedTextDialog from './GeneratedTextDialog';
 import { Alert, AlertDescription } from './ui/alert';
-import { Button } from './ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from './ui/dialog';
 import { Label } from './ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from './ui/select';
 import { Switch } from './ui/switch';
-import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
 interface ToolReadyOutputProps {
   open: boolean;
@@ -60,14 +42,14 @@ export default function ToolReadyOutput({
   open, onClose, filters, totalHosts, selectedCount,
 }: ToolReadyOutputProps) {
   const projectId = useProjectId();
-  const [selectedFormat, setSelectedFormat] = useState('ip-list');
+  // The two switches are kept between openings, like the format.
   const [includePorts, setIncludePorts] = useState(false);
   // Default in-scope: a declared domain must cover a name before it becomes
   // a target — the same rule the agent's scope guardrail applies.
   const [inScopeNamesOnly, setInScopeNamesOnly] = useState(true);
-  const [copied, setCopied] = useState(false);
   // Asked for by the button, so a mutation: its answer is the output shown,
-  // and asking again starts from nothing.
+  // and asking again starts from nothing.  The dialog itself — format,
+  // generate, copy, download — is `GeneratedTextDialog`.
   const generate = useMutation({
     mutationFn: (format: string) => getToolReadyOutput(projectId, format, {
       ...filters,
@@ -78,193 +60,87 @@ export default function ToolReadyOutput({
     }),
     onError: (err) => console.error('Error generating tool output:', err),
   });
-  // The format the text on screen was MADE in — the request's own argument,
-  // not the picker, which the reader may have moved since: the heading and the
-  // downloaded file's name and extension belong to the text (as in ScopeExport).
-  const outputFormat = generate.variables ?? selectedFormat;
-  const outputFormatInfo = TOOL_FORMATS.find((f) => f.value === outputFormat);
-  const result: ToolReadyResult | null = generate.data ?? null;
-  const loading = generate.isPending;
-  const error = queryErrorText(generate.error, 'Failed to generate output');
-  const output = result?.output ?? '';
-  const preview = output.length > PREVIEW_CHARS ? output.slice(0, PREVIEW_CHARS) : output;
-
-  // Each opening starts empty.
-  const { reset } = generate;
-  React.useEffect(() => {
-    if (open) {
-      reset();
-      setCopied(false);
-    }
-  }, [open, reset]);
-
-  const generateOutput = () => generate.mutate(selectedFormat);
-
-  const copyToClipboard = async () => {
-    // copyText (utils/clipboard) adds an execCommand fallback for non-secure
-    // (http://) contexts where navigator.clipboard is unavailable.
-    if (await copyText(output)) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
-
-  const downloadOutput = () => {
-    const extension = outputFormat === 'json' ? 'json' : 'txt';
-    const filename = `${outputFormatInfo?.label.toLowerCase() || outputFormat}-targets.${extension}`;
-    downloadTextFile(filename, output);
-  };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-xs">
-            <Code className="size-5" aria-hidden />
-            Export targets
-          </DialogTitle>
-        </DialogHeader>
-        {/* Name the population: this exports the VIEW, never the checked rows. */}
-        <p className="text-metadata text-muted-foreground break-words">
-          Exports the <strong className="text-foreground">current view</strong>
-          {totalHosts != null && (
-            <> — all {totalHosts.toLocaleString()} host{totalHosts === 1 ? '' : 's'} matching the applied filters, on every page</>
-          )}
-          , formatted for your own tools.
-          {selectedCount ? (
-            <> The {selectedCount.toLocaleString()} row{selectedCount === 1 ? '' : 's'} you have checked
-              {selectedCount === 1 ? ' does' : ' do'} not narrow it — use <em>Copy IPs</em> in the selection bar for just those.</>
-          ) : null}
-          {' '}A target list is a hand-off; it authorises no scan.
-        </p>
-
-        <div className="space-y-xxs">
-          <Label htmlFor="tro-format">Output format</Label>
-          <Select value={selectedFormat} onValueChange={setSelectedFormat}>
-            <SelectTrigger id="tro-format">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {TOOL_FORMATS.map((format) => (
-                <SelectItem key={format.value} value={format.value}>
-                  {format.label} — {format.description}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex items-center gap-xs">
-          <Switch
-            id="tro-include-ports"
-            checked={includePorts}
-            onCheckedChange={setIncludePorts}
-          />
-          <Label htmlFor="tro-include-ports">Include detailed port information</Label>
-        </div>
-
-        {NAME_AWARE_FORMATS.has(selectedFormat) && (
+    <GeneratedTextDialog<string, ToolReadyResult>
+      open={open}
+      onClose={onClose}
+      icon={<Code className="size-5" aria-hidden />}
+      title="Export targets"
+      formats={TOOL_FORMATS}
+      defaultFormat="ip-list"
+      formatFieldId="tro-format"
+      generate={generate}
+      generateLabel="Generate output"
+      errorFallback="Failed to generate output"
+      textOf={(result) => result.output ?? ''}
+      heading={({ formatLabel }) => <>Generated Output ({formatLabel})</>}
+      filename={({ format, formatLabel }) => `${formatLabel.toLowerCase()}-targets.${format === 'json' ? 'json' : 'txt'}`}
+      copyLabel="Copy output to clipboard"
+      downloadLabel="Download output as file"
+      previewChars={PREVIEW_CHARS}
+      options={(selectedFormat) => (
+        <>
           <div className="flex items-center gap-xs">
             <Switch
-              id="tro-in-scope-names"
-              checked={inScopeNamesOnly}
-              onCheckedChange={setInScopeNamesOnly}
+              id="tro-include-ports"
+              checked={includePorts}
+              onCheckedChange={setIncludePorts}
             />
-            <Label htmlFor="tro-in-scope-names">
-              {inScopeNamesOnly ? 'In-scope names only' : 'All bound names'}
-            </Label>
-            <span className="min-w-0 truncate text-caption text-muted-foreground">
-              {inScopeNamesOnly
-                ? 'Only names a declared domain covers become targets.'
-                : 'Every name currently bound to the address, in scope or not.'}
-            </span>
+            <Label htmlFor="tro-include-ports">Include detailed port information</Label>
           </div>
-        )}
 
-        <Button onClick={() => generateOutput()} disabled={loading} className="w-full">
-          {loading ? (
-            <>
-              <Loader2 className="size-4 animate-spin" aria-hidden />
-              Generating…
-            </>
-          ) : (
-            'Generate output'
-          )}
-        </Button>
-
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-
-        {result?.limit != null && (
-          <Alert variant="warning">
-            <AlertDescription>
-              Built from the first {(result.returned ?? result.limit).toLocaleString()} of{' '}
-              {result.total != null ? result.total.toLocaleString() : 'more'} matching hosts. This
-              format loads port detail per host and stops at {result.limit.toLocaleString()} — narrow
-              the filter, or use IP List, Nmap, Metasploit or Masscan, which export every host.
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {output && (
-          <div className="space-y-xs">
-            <div className="flex items-center justify-between">
-              <h3 className="text-subheading">
-                Generated Output ({outputFormatInfo?.label})
-              </h3>
-              <div className="flex items-center gap-xxs">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={copyToClipboard}
-                      aria-label="Copy output to clipboard"
-                    >
-                      <Copy className="size-4" aria-hidden />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>{copied ? 'Copied!' : 'Copy to clipboard'}</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={downloadOutput}
-                      aria-label="Download output as file"
-                    >
-                      <Download className="size-4" aria-hidden />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Download as file</TooltipContent>
-                </Tooltip>
-              </div>
+          {NAME_AWARE_FORMATS.has(selectedFormat) && (
+            <div className="flex items-center gap-xs">
+              <Switch
+                id="tro-in-scope-names"
+                checked={inScopeNamesOnly}
+                onCheckedChange={setInScopeNamesOnly}
+              />
+              <Label htmlFor="tro-in-scope-names">
+                {inScopeNamesOnly ? 'In-scope names only' : 'All bound names'}
+              </Label>
+              <span className="min-w-0 truncate text-caption text-muted-foreground">
+                {inScopeNamesOnly
+                  ? 'Only names a declared domain covers become targets.'
+                  : 'Every name currently bound to the address, in scope or not.'}
+              </span>
             </div>
-
-            <pre className="max-h-[24rem] overflow-auto rounded-control border border-border bg-muted/30 p-sm font-mono text-caption text-foreground">
-              {preview}
-            </pre>
-
-            <p className="text-caption text-muted-foreground">
-              {result?.returned != null
-                ? `Built from ${result.returned.toLocaleString()} host${result.returned === 1 ? '' : 's'}`
-                : `${output.split('\n').filter((line) => line.trim()).length} entries generated`}
-              {preview.length < output.length &&
-                ' · the preview shows the start; Copy and Download include everything'}
-            </p>
-          </div>
+          )}
+        </>
+      )}
+      notice={(result) => result.limit != null && (
+        <Alert variant="warning">
+          <AlertDescription>
+            Built from the first {(result.returned ?? result.limit).toLocaleString()} of{' '}
+            {result.total != null ? result.total.toLocaleString() : 'more'} matching hosts. This
+            format loads port detail per host and stops at {result.limit.toLocaleString()} — narrow
+            the filter, or use IP List, Nmap, Metasploit or Masscan, which export every host.
+          </AlertDescription>
+        </Alert>
+      )}
+      footnote={({ text, result }, cut) => (
+        <>
+          {result.returned != null
+            ? `Built from ${result.returned.toLocaleString()} host${result.returned === 1 ? '' : 's'}`
+            : `${text.split('\n').filter((line) => line.trim()).length} entries generated`}
+          {cut && ' · the preview shows the start; Copy and Download include everything'}
+        </>
+      )}
+    >
+      {/* Name the population: this exports the VIEW, never the checked rows. */}
+      <p className="text-metadata text-muted-foreground break-words">
+        Exports the <strong className="text-foreground">current view</strong>
+        {totalHosts != null && (
+          <> — all {totalHosts.toLocaleString()} host{totalHosts === 1 ? '' : 's'} matching the applied filters, on every page</>
         )}
-
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            Close
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        , formatted for your own tools.
+        {selectedCount ? (
+          <> The {selectedCount.toLocaleString()} row{selectedCount === 1 ? '' : 's'} you have checked
+            {selectedCount === 1 ? ' does' : ' do'} not narrow it — use <em>Copy IPs</em> in the selection bar for just those.</>
+        ) : null}
+        {' '}A target list is a hand-off; it authorises no scan.
+      </p>
+    </GeneratedTextDialog>
   );
 }

@@ -1,29 +1,8 @@
-import React, { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { copyToClipboard as copyText } from '../utils/clipboard';
-import { downloadTextFile } from '../utils/download';
-import { queryErrorText } from '../lib/query';
-import { Copy, Download, Loader2, ShieldOff } from 'lucide-react';
+import { ShieldOff } from 'lucide-react';
 import { getOutOfScopeHostList } from '../services/api';
 import { useProjectId } from '../hooks/useProjectId';
-import { Alert, AlertDescription } from './ui/alert';
-import { Button } from './ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from './ui/dialog';
-import { Label } from './ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from './ui/select';
-import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
+import GeneratedTextDialog, { countEntries } from './GeneratedTextDialog';
 
 interface OutOfScopeExportProps {
   open: boolean;
@@ -38,9 +17,8 @@ const EXPORT_FORMATS = [
 
 type ExportFormat = (typeof EXPORT_FORMATS)[number]['value'];
 
+/** Export the hosts no scope covers, as text (the dialog is `GeneratedTextDialog`). */
 export default function OutOfScopeExport({ open, onClose }: OutOfScopeExportProps) {
-  const [selectedFormat, setSelectedFormat] = useState<ExportFormat>('txt');
-  const [copied, setCopied] = useState(false);
   // Asked for by the button, so a mutation: its answer is the list shown, and
   // asking again starts from nothing.
   const projectId = useProjectId();
@@ -48,149 +26,32 @@ export default function OutOfScopeExport({ open, onClose }: OutOfScopeExportProp
     mutationFn: (format: ExportFormat) => getOutOfScopeHostList(projectId, format),
     onError: (err) => console.error('Error fetching out-of-scope hosts:', err),
   });
-  // The format the text on screen was MADE in — the request's own argument,
-  // not the picker, which the reader may have moved since: the count and the
-  // downloaded file's extension belong to the text (as in ScopeExport).
-  const outputFormat: ExportFormat = generate.variables ?? selectedFormat;
-  const output = generate.data ?? '';
-  const loading = generate.isPending;
-  const error = queryErrorText(generate.error, 'Failed to fetch out-of-scope hosts');
-
-  // Each opening starts empty.
-  const { reset } = generate;
-  React.useEffect(() => {
-    if (open) {
-      reset();
-      setCopied(false);
-    }
-  }, [open, reset]);
-
-  const generateOutput = () => generate.mutate(selectedFormat);
-
-  const copyToClipboard = async () => {
-    // copyText (utils/clipboard) adds an execCommand fallback for non-secure
-    // (http://) contexts where navigator.clipboard is unavailable.
-    if (await copyText(output)) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
-
-  const downloadOutput = () => {
-    downloadTextFile(`out_of_scope_hosts.${outputFormat}`, output);
-  };
-
-  const entryCount = output
-    ? outputFormat === 'json'
-      ? (() => {
-          try {
-            return JSON.parse(output).length;
-          } catch {
-            return 0;
-          }
-        })()
-      : output.split('\n').filter((line) => line.trim()).length - (outputFormat === 'csv' ? 1 : 0)
-    : 0;
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-xs">
-            <ShieldOff className="size-5" aria-hidden />
-            Out-of-Scope Hosts
-          </DialogTitle>
-        </DialogHeader>
-        <p className="text-metadata text-muted-foreground">
-          Export hosts that have no subnet/scope mapping. These IPs appeared in scan results but do
-          not belong to any defined scope.
-        </p>
-
-        <div className="space-y-xxs">
-          <Label htmlFor="oos-format">Output format</Label>
-          <Select
-            value={selectedFormat}
-            onValueChange={(v) => setSelectedFormat(v as ExportFormat)}
-          >
-            <SelectTrigger id="oos-format">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {EXPORT_FORMATS.map((format) => (
-                <SelectItem key={format.value} value={format.value}>
-                  {format.label} — {format.description}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <Button onClick={() => generateOutput()} disabled={loading} className="w-full">
-          {loading ? (
-            <>
-              <Loader2 className="size-4 animate-spin" aria-hidden />
-              Generating…
-            </>
-          ) : (
-            'Generate list'
-          )}
-        </Button>
-
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-
-        {output && (
-          <div className="space-y-xs">
-            <div className="flex items-center justify-between">
-              <h3 className="text-subheading">
-                {entryCount} host{entryCount === 1 ? '' : 's'}
-                {' · '}{EXPORT_FORMATS.find((f) => f.value === outputFormat)?.label ?? outputFormat}
-              </h3>
-              <div className="flex items-center gap-xxs">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={copyToClipboard}
-                      aria-label="Copy output to clipboard"
-                    >
-                      <Copy className="size-4" aria-hidden />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>{copied ? 'Copied!' : 'Copy to clipboard'}</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={downloadOutput}
-                      aria-label="Download output as file"
-                    >
-                      <Download className="size-4" aria-hidden />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Download as file</TooltipContent>
-                </Tooltip>
-              </div>
-            </div>
-
-            <pre className="max-h-[24rem] overflow-auto rounded-control border border-border bg-muted/30 p-sm font-mono text-caption text-foreground">
-              {output}
-            </pre>
-          </div>
-        )}
-
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            Close
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <GeneratedTextDialog
+      open={open}
+      onClose={onClose}
+      icon={<ShieldOff className="size-5" aria-hidden />}
+      title="Out-of-Scope Hosts"
+      formats={EXPORT_FORMATS}
+      defaultFormat="txt"
+      formatFieldId="oos-format"
+      generate={generate}
+      generateLabel="Generate list"
+      errorFallback="Failed to fetch out-of-scope hosts"
+      textOf={(text) => text}
+      heading={({ text, format, formatLabel }) => {
+        const entryCount = countEntries(text, format);
+        return <>{entryCount} host{entryCount === 1 ? '' : 's'}{' · '}{formatLabel}</>;
+      }}
+      filename={({ format }) => `out_of_scope_hosts.${format}`}
+      copyLabel="Copy output to clipboard"
+      downloadLabel="Download output as file"
+    >
+      <p className="text-metadata text-muted-foreground">
+        Export hosts that have no subnet/scope mapping. These IPs appeared in scan results but do
+        not belong to any defined scope.
+      </p>
+    </GeneratedTextDialog>
   );
 }

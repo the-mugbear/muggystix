@@ -98,6 +98,7 @@ import { groupByProduct, groupVulnerabilities } from '../utils/vulnGrouping';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useProjectId } from '../hooks/useProjectId';
+import { useObjectUrls } from '../lib/objectUrls';
 import { queryErrorText, useLastSettled } from '../lib/query';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { promotedResultMessage, testNeedsWork } from '../utils/hostTests';
@@ -684,13 +685,11 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     };
   }, [hostId, linkedNoteId, linkedRootId]);
 
-  // The composer's screenshots are this host's draft: their previews are
-  // released when the inspector goes (a host change included).
-  const pendingImagesRef = React.useRef(pendingImages);
-  pendingImagesRef.current = pendingImages;
-  useEffect(() => () => {
-    pendingImagesRef.current.forEach((p) => URL.revokeObjectURL(p.url));
-  }, []);
+  // The composer's screenshots are this host's draft: each preview's object
+  // URL is held under its file (`lib/objectUrls`) and released when the image
+  // is taken out or has been uploaded — and whatever is left, when the
+  // inspector goes (a host change included).
+  const previews = useObjectUrls<File>();
 
   type FollowChange = { status: FollowStatus | 'none' };
   // The server's answer about the reader's review, onto the cached host; the
@@ -730,9 +729,13 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   const addPendingImages = useCallback((files: File[]) => {
     const imgs = files
       .filter((f) => f.type.startsWith('image/'))
-      .map((file) => ({ file, url: URL.createObjectURL(file) }));
+      .map((file) => {
+        const url = URL.createObjectURL(file);
+        previews.put(file, url);
+        return { file, url };
+      });
     if (imgs.length) setPendingImages((prev) => [...prev, ...imgs]);
-  }, []);
+  }, [previews]);
 
   // Paste an image straight into the note composer (QoL) — captured here so it
   // attaches to the note on save instead of pasting a garbage data URL into
@@ -756,10 +759,10 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   const removePendingImage = useCallback((idx: number) => {
     setPendingImages((prev) => {
       const target = prev[idx];
-      if (target) URL.revokeObjectURL(target.url);
+      if (target) previews.release(target.file);
       return prev.filter((_, i) => i !== idx);
     });
-  }, []);
+  }, [previews]);
 
   // A new thread: the note, then its screenshots one after another — one
   // write as far as the composer is concerned.  A screenshot that fails does
@@ -774,7 +777,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
       for (const img of images) {
         try {
           uploaded.push(await uploadNoteAttachment(projectId, hostId, note.id, img.file));
-          URL.revokeObjectURL(img.url);
+          previews.release(img.file);
         } catch (e) {
           failed.push({ ...img, error: formatApiError(e, 'Upload failed.'), noteId: note.id });
         }
@@ -814,7 +817,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
       (prev) => prev.map((p) => (p.url === target.url ? { ...p, uploading: true } : p)),
     ),
     onSuccess: (attachment, { target, noteId }) => {
-      URL.revokeObjectURL(target.url);
+      previews.release(target.file);
       setPendingImages((prev) => prev.filter((p) => p.url !== target.url));
       // On the note at once, so the thumbnail shows without a re-read.
       putHost((previous) => ({

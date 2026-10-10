@@ -120,6 +120,39 @@ describe('HostInspector note composer — draft bound to host, recoverable attac
     expect(onDirtyChange).toHaveBeenLastCalledWith(false);
   });
 
+  // Plan B1 — counted: every preview made is revoked exactly once, whether its
+  // image was taken out, uploaded with the note, or still pending at the end.
+  it('every pasted preview is revoked once: removed, uploaded, or left when the inspector goes', async () => {
+    api.createAnnotation.mockResolvedValue({ id: 77, body: 'evidence', status: 'open', attachments: [] });
+    api.uploadNoteAttachment.mockResolvedValue({ id: 9, filename: 'shot.png', content_type: 'image/png', size: 3, url: '/a/9' });
+    const { unmount } = render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText('10.0.0.1')).toBeInTheDocument());
+    const textarea = screen.getByLabelText('Note');
+    const shot = (name: string) => new File(['png'], name, { type: 'image/png' });
+
+    pasteImage(textarea, shot('a.png'));
+    pasteImage(textarea, shot('b.png'));
+    await screen.findByAltText('Pasted image 2');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove pasted image 1' }));
+    await waitFor(() => expect(screen.queryByAltText('Pasted image 2')).not.toBeInTheDocument());
+    expect(revokeObjectURL.mock.calls.map((c) => c[0])).toEqual(['blob:img-1']);
+
+    // The one left goes up with the note: its preview is no longer needed.
+    fireEvent.change(textarea, { target: { value: 'evidence' } });
+    fireEvent.click(screen.getByRole('button', { name: /save note/i }));
+    await waitFor(() => expect(api.uploadNoteAttachment).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByAltText('Pasted image 1')).not.toBeInTheDocument());
+    expect(revokeObjectURL.mock.calls.map((c) => c[0])).toEqual(['blob:img-1', 'blob:img-2']);
+
+    // A third is still a draft when the inspector goes.
+    pasteImage(screen.getByLabelText('Note'), shot('c.png'));
+    await screen.findByAltText('Pasted image 1');
+    unmount();
+    const made = createObjectURL.mock.results.map((r) => r.value as string);
+    expect(made).toEqual(['blob:img-1', 'blob:img-2', 'blob:img-3']);
+    expect(revokeObjectURL.mock.calls.map((c) => c[0]).sort()).toEqual(made);
+  });
+
   it('C3: a failed attachment is kept with Retry, the note is created once, retry targets that note', async () => {
     api.createAnnotation.mockResolvedValue({ id: 77, body: 'evidence', status: 'open', attachments: [] });
     api.uploadNoteAttachment
