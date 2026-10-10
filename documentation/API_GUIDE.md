@@ -150,7 +150,7 @@ X-API-Key: nm_agent_<plaintext>
 | GET | `/projects/{id}` | member | Project detail. |
 | PUT | `/projects/{id}` | project admin / global admin | Update metadata: `name`, `description`, `status`, `start_date`, `end_date`. (`remediation_in_oversight`, v2.458.0, was removed in v2.461.0: remediation tracking is switched on per installation, §3.5a.) Every change is in the `project_updated` audit row. |
 | PATCH | `/projects/{id}/ingest-settings` | analyst+ | Import settings (e.g. skip informational Nessus observations). |
-| DELETE | `/projects/{id}` | global admin | Delete (cascades to owned data). |
+| DELETE | `/projects/{id}` | global admin | Delete (cascades to owned data; the finding endpoints are removed first, so a finding on several names of one host does not block it — v2.477.1). |
 | GET | `/projects/{id}/members` | member | List membership. |
 | POST | `/projects/{id}/members` | project admin / global admin | Add member — body: `{user_id: int, role: str}`. |
 | PUT | `/projects/{id}/members/{user_id}` | project admin / global admin | Change role. |

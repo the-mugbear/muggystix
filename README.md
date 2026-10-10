@@ -138,6 +138,7 @@ docker compose exec backend python scripts/data_repairs.py   # which one-off dat
 docker compose exec backend python scripts/seed_demo_data.py        # a realistic demo project (Posture, Segments/Patterns, Findings become evaluable)
 docker compose exec backend python scripts/seed_named_assets.py     # then the named-asset scenario on it (--reset rebuilds)
 docker compose exec backend python scripts/seed_eval_scenarios.py   # a small project of hand-placed scenarios, each with "open X, expect Y" (--wipe rebuilds)
+docker compose exec backend python scripts/seed_acceptance_fixtures.py   # the "Acceptance" project agent acceptance runs use: all of the above in one project, plus role accounts and agent keys (--rebuild replaces it)
 ```
 
 ### Deploying, backups and what the host needs

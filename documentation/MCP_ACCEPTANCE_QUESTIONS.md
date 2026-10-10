@@ -57,9 +57,12 @@ registry), [`agent_recon.py`](../backend/app/api/v1/endpoints/agent_recon.py)
 
 ## Starting the run
 
-1. **Seed the fixtures** (see "Fixtures" below). The seed prints four agent
-   keys — `admin`, `analyst`, `auditor`, `viewer` — and the fixture ids, and
-   writes both to `uploads/acceptance-fixtures.json`.
+1. **Build the acceptance project** (see "Fixtures" below). Every run happens
+   on ONE nominated project, named **Acceptance**, that one command builds and
+   rebuilds; a run on any other project is not an acceptance run, because the
+   steps below name fixtures only that project is known to hold. The seed
+   prints four agent keys — `admin`, `analyst`, `auditor`, `viewer` — and the
+   fixture ids, and writes both to `uploads/acceptance-fixtures.json`.
 2. **Connect the client with ONE server named `bluestick`.** With a key from the
    Start Agent Session dialog, paste the recipe the dialog shows. With a seeded
    key, use the same recipe by hand (`$URL` is the deployment's base URL):
@@ -88,7 +91,10 @@ registry), [`agent_recon.py`](../backend/app/api/v1/endpoints/agent_recon.py)
 ## If you are the agent running this
 
 1. Call `agent_identity` and say the session's bounds back to the operator
-   (project, role, scope rule, key expiry) before anything else.
+   (project, role, scope rule, key expiry) before anything else. **If
+   `project_name` is not `Acceptance`, or the operator has no project role
+   (a global admin's own session), stop and say so**: the run needs the
+   nominated project and the seeded keys.
 2. Record the deployed backend version, the prompt version, your client and
    your model at the top of the run report.
 3. Work section H in order — it is written so each step leaves what the next
@@ -177,17 +183,32 @@ makes a proposal (see "What a session is") is **not** a missing capability.
 
 ## Fixtures that reveal deficiencies
 
-The development seeds provide a starting point, not all of this suite:
+One command builds the nominated project, **Acceptance**, on a development
+instance:
 
 ```bash
-docker compose exec backend python scripts/seed_demo_data.py
-docker compose exec backend python scripts/seed_named_assets.py
-docker compose exec backend python scripts/seed_acceptance_fixtures.py
+docker compose exec backend python scripts/seed_acceptance_fixtures.py             # build it, or top it up and mint fresh keys
+docker compose exec backend python scripts/seed_acceptance_fixtures.py --rebuild   # delete it and build it again
 ```
 
-These mutate a development instance. The acceptance seeder goes through the real
-routes and writes `uploads/acceptance-fixtures.json` (keys, accounts, fixture
-ids). What it creates, and which steps use it:
+Start a sign-off run from `--rebuild`, so it is judged against a known state
+and not against the previous run's notes, tests and proposals. The seed touches
+that project and its companion ("Acceptance — other project") only, and writes
+`uploads/acceptance-fixtures.json` (keys, accounts, fixture ids). The project
+is dense on purpose — a feature with no data cannot be judged:
+
+| Inventory | From | What it gives a run |
+|---|---|---|
+| 400 hosts over three sites and eight subnets, vulnerabilities, findings, follows, notes, scans of different ages | `seed_demo_data.py` | Lists longer than every page and preview; posture, segments, patterns, terrain |
+| Imported and unresolved names, a domain scope, a load balancer outside subnet scope with four vhosts, a rotated address, one finding on two names of one host, tests aimed at a name, a tested binding | `seed_named_assets.py` | B4, D, H2.9, H3.5, H6.12 |
+| A second scope with its own sites; web interfaces with screenshots; conflicting observations; blocked and failed imports; the review queue; host tests with evidence; discussions | `seed_eval_scenarios.py` (hosts named `s01-…` to `s14-…`) | H2.12's `interface_id`, H2.5, H2.11, H4.4, C, F |
+| One import per saved scanner file (`backend/tests/fixtures/native`: EyeWitness, masscan, NetExec, Nikto, Nuclei, RDAP, smbmap, testssl) | the real upload route | H2.6, H4, E; most of their hosts are outside every scope, which is what the scope partition (H2.3) needs |
+| `acceptance-placed.xml`: `2001:db8:10::25` with HTTPS on 8443 and IMAPS on 993; `10.10.7.254` with SSH on 443, ports 81 and 4443 that nmap only guessed, and an FTP banner that reads like an instruction | the real upload route (`fixtures.imports.placed_*_host_id`) | H3.4's expected lines, G4, G5 |
+
+`nmap-tls-verbose.xml` is **held back**: the seed does not import it, so it is
+the file a run uploads in H4.1 (new) and again in H4.3 (the duplicate).
+
+What the seed adds through the real routes, as project members:
 
 | Fixture | In the fixtures file | Steps |
 |---|---|---|
@@ -208,10 +229,10 @@ and every remediation step answers 404 — which H11.1 asserts. To run H11.2
 onward, a global admin turns tracking on in System settings, then the seed is
 run again.
 
-The seed does not guarantee an EyeWitness screenshot (H2.12's `interface_id`)
-or an in-scope name with a tested observation (H6.12); mark those **Not
-exercised** when the data is absent. Inspect the script's output and current
-behavior rather than assuming every desired fixture was produced.
+The seed says what each import came to; read its output rather than assuming
+every fixture was produced, and mark a step **Not exercised** when its data is
+absent — then say which fixture was missing, because that is a defect of the
+seed to fix, not a limit of the run.
 
 Add controlled fixtures for the following distinctions and keep an expected
 answer sheet outside the agent's context:
@@ -395,8 +416,8 @@ correct server does; anything else is a finding.
 | H3.1 | `assist_list_scopes`, then `scope_list_subnets` and `scope_list_domains` for one scope, paging to the end | CIDRs and declared domains as separate lists. A name in scope does not put its address in subnet scope |
 | H3.2 | `curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/scopes/$SCOPE/hosts.ndjson" -o hosts.ndjson` | One JSON object per in-scope host, in address order, complete. Each open port carries `service`, `tunnel` and `method` (`table` = the scanner guessed the name from the port number, `probed` = it identified the service, null = the tool did not say) |
 | H3.3 | The same for `live-hosts.txt` | One address per line and nothing else, the same hosts in the same order as `hosts.ndjson` |
-| H3.4 | The same for `web-targets.txt` | One URL per line. Check against `hosts.ndjson`: a port identified as HTTP is listed (https when `tunnel` is `ssl` or the name says so, on any port number); a port nothing identified is listed only on a common web port; a TLS service that is not HTTP (imaps, ldaps) and a port identified as something else (ssh on 443) are **not** listed; an IPv6 host is bracketed (`https://[2001:db8::1]:8443/`) and every line parses as a URL |
-| H3.5 | The same for `named-targets.ndjson` | One row per in-scope name: the rule that covers it, its current addresses each flagged `in_subnet_scope`, web evidence reached as that name, `unresolved` with a reason where no address is known |
+| H3.4 | The same for `web-targets.txt` | One URL per line. Check against `hosts.ndjson`: a port identified as HTTP is listed (https when `tunnel` is `ssl` or the name says so, on any port number); a port nothing identified — no service name, `unknown`, or a name nmap only guessed from the port number (`method` is `table`) — is listed only on a common web port; a TLS service that is not HTTP (imaps, ldaps) and a port identified as something else (ssh on 443) are **not** listed; an IPv6 host is bracketed (`https://[2001:db8::1]:8443/`) and every line parses as a URL. On the placed hosts exactly these: `https://[2001:db8:10::25]:8443/`, `http://10.10.7.254:81/`, `https://10.10.7.254:4443/` — and no line for `:993` or `10.10.7.254:443` |
+| H3.5 | The same for `named-targets.ndjson` | One row per in-scope name: the rule that covers it, its current addresses each flagged `in_subnet_scope`, web evidence reached as that name, `unresolved` with a reason where no address is known. A declared domain the inventory holds no name for is a row too (`unresolved`, "declared in scope; no observation of this name"), so the file can hold more rows than `assist_list_names` with `in_scope` lists — that difference is expected, not a defect |
 | H3.6 | Request the scope id of the second project (`fixtures.other_project.scope_id` in the fixtures file; ask the operator for it) — `scope_list_subnets` and one target file | 404 — nothing about the other project |
 | H3.7 | Repeat H3.2–H3.5 with a viewer operator's key | Refused: the target files need auditor or above |
 | H3.8 | `curl` `…/agent/assist/report-context.ndjson` and `…/agent/assist/hosts.ndjson` to files (with a `q`), then count lines against `assist_count_hosts` with the same `q` | One JSON object per matching host, complete, never read into the chat; the line count equals the count. With a viewer operator: 403 |
@@ -406,7 +427,7 @@ correct server does; anything else is a finding.
 
 | Step | Do | Expect |
 |---|---|---|
-| H4.1 | `curl -sS -H "X-API-Key: $KEY" -F file=@scan.xml -F tool_name=nmap -F batch=ACCEPTANCE "$URL/api/v1/agent/uploads"` with a small recognised file | `job_id`, `status`, `batch_id`; nothing had to be opened first |
+| H4.1 | `curl -sS -H "X-API-Key: $KEY" -F file=@scan.xml -F tool_name=nmap -F batch=ACCEPTANCE "$URL/api/v1/agent/uploads"` with `backend/tests/fixtures/native/nmap-tls-verbose.xml` (the file the seed holds back) | `job_id`, `status`, `batch_id`; nothing had to be opened first |
 | H4.2 | `get_upload_job` until it finishes | Queued → processing → completed, with the scan it produced; accepted bytes are not reported as a successful import before that |
 | H4.3 | Upload the same file again | `409` with `detail.code: "duplicate_scan"` naming the scan or job — the data is in |
 | H4.4 | Upload a NetExec log, or any file with lines the parser cannot place; then `assist_list_ingestion_issues` and `assist_list_uninterpreted_lines` (by the job id; then with a SCAN id in its place) | Failed, in-flight and partial imports are listed; uninterpreted lines come back as redacted shapes with counts — no command line, credential or cell value. A scan id where a job id belongs is a 404 that says so. Both reads need an analyst operator: with the auditor key, 403 |

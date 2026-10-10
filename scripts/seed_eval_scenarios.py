@@ -642,8 +642,6 @@ def discussion_users(c: Ctx) -> dict[str, tuple[User, str]]:
             u.hashed_password = get_password_hash(password)
             u.is_active = True
         u.must_change_password = False
-        u.failed_login_attempts = 0
-        u.locked_until = None
         c.db.flush()
         c.db.add(ProjectMembership(project_id=c.pid, user_id=u.id, role=ProjectRole.ANALYST.value))
         out[username] = (u, password)
@@ -730,6 +728,13 @@ def seed(db, name: str, owner: User):
                       status="active")
     db.add(project)
     db.flush()
+    return populate(db, project, owner)
+
+
+def populate(db, project, owner: User):
+    """Every scenario, placed into ``project`` (its own scope, sites and
+    10.77.x subnets).  ``seed`` calls it on a project of its own;
+    seed_acceptance_fixtures.py calls it on the acceptance project."""
     c = Ctx(db, project, owner)
 
     scope = models.Scope(project_id=project.id, name="Eval scope")

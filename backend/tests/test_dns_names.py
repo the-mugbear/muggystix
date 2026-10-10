@@ -833,6 +833,30 @@ class TestReviewRound3:
         test = db_session.query(HostTest).filter_by(id=test_id).one()
         assert test.name_id is None and test.target_fqdn == "b.example.com"
 
+    def test_a_project_with_one_finding_on_two_names_of_a_host_can_be_deleted(self, client, db_session, test_project):
+        """Deleting the project takes its names with it, and a name going sets
+        ``finding_hosts.name_id`` to NULL — which put the finding's two named
+        endpoints on one host onto the same key, so the delete answered 500
+        (found 2026-10-10 rebuilding the acceptance project)."""
+        from app.db.models_project import Project
+        from app.services.finding_service import FindingService
+        doomed = Project(name="doomed", slug="doomed", description="x")
+        db_session.add(doomed)
+        db_session.commit()
+        doomed_id = doomed.id
+        host, names_by = self._lb_with_two_vhosts(db_session, doomed)
+        fsvc = FindingService(db_session)
+        finding = fsvc.create_finding(project_id=doomed_id, title="XFO missing", severity="low", actor_id=None)
+        for fqdn in ("a.example.com", "b.example.com"):
+            fsvc.restore_endpoint(finding=finding, host_id=host.id, name_id=names_by[fqdn].id, host_status="open")
+        db_session.commit()
+
+        r = client.delete(f"/api/v1/projects/{doomed_id}")
+        assert r.status_code == 200, r.text
+        db_session.expire_all()
+        assert db_session.query(Project).filter(Project.id == doomed_id).count() == 0
+        assert db_session.query(models.DNSName).filter_by(project_id=doomed_id).count() == 0
+
     def test_detach_one_endpoint_keeps_sibling_and_undo_restores_name_and_status(
         self, client, db_session, test_project,
     ):

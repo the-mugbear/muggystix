@@ -9,7 +9,7 @@ from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -590,6 +590,17 @@ def delete_project(
         "attachment_thread_count": len(_attachment_note_ids),
     })
     _project_id = project.id
+    # The finding endpoints go first.  Left to the cascade, the project's
+    # names can go before its findings, and a name going sets
+    # ``finding_hosts.name_id`` to NULL: two named endpoints of one finding on
+    # one host then share a key (``uq_finding_host_name``) and the whole
+    # delete fails.
+    from app.db.models_findings import Finding, FindingHost
+    db.execute(
+        sa_delete(FindingHost)
+        .where(FindingHost.finding_id.in_(select(Finding.id).where(Finding.project_id == _project_id)))
+        .execution_options(synchronize_session=False)
+    )
     db.delete(project)
     db.commit()
     for _nid in _attachment_note_ids:

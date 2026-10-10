@@ -32,6 +32,7 @@ from app.db import models
 from app.db.models_agent import Agent
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models_auth import User
+from app.db.models_findings import FindingSeverity, FindingSource
 from app.api.deps import agent_read_floor, check_agent_rate_limit
 
 from app.api.v1.endpoints.agent_schemas import (
@@ -1550,6 +1551,17 @@ def list_assist_findings(
         status = status.strip().lower()
         if status not in _FINDING_STATUSES:
             raise unknown_value_error("status", status, _FINDING_STATUSES | {"all"})
+    # …and so did a severity or a source that is not one — with the whole
+    # project's ``severity_counts`` beside the empty list (agent feedback #33).
+    # Over MCP the tool's enum refused it first; the endpoint is the contract.
+    if severity is not None:
+        severity = severity.strip().lower()
+        if severity not in _FINDING_SEVERITIES:
+            raise unknown_value_error("severity", severity, _FINDING_SEVERITIES | {"all"})
+    if source is not None:
+        source = source.strip().lower()
+        if source not in _FINDING_SOURCES:
+            raise unknown_value_error("source", source, _FINDING_SOURCES | {"all"})
     require_project_host(db, request.state.agent_project_id, host_id)
 
     owner_id = None
@@ -1608,6 +1620,12 @@ _FINDING_STATUSES = frozenset({
     "open", "confirmed", "false_positive", "accepted_risk", "remediated", "retest",
     "active", "resolved",
 })
+
+
+#: Read from the model's own enums, so a new severity or source is accepted
+#: here the day it exists.
+_FINDING_SEVERITIES = frozenset(s.value for s in FindingSeverity)
+_FINDING_SOURCES = frozenset(s.value for s in FindingSource)
 
 
 def _unfiltered(value: Optional[str]) -> Optional[str]:

@@ -684,6 +684,22 @@ def test_an_unknown_filter_value_is_refused_not_answered_with_nothing(client, db
     assert client.get(path, params={"severity": "critical,high"}, headers=headers).status_code == 200
 
 
+def test_an_unknown_severity_or_source_on_the_findings_list_is_refused_too(client, db_session, test_project):
+    """Agent feedback #33 (acceptance run, session 88, 2026-10-10): by curl,
+    ``?source=bogus`` and ``?severity=bogus`` answered 200 with ``total: 0`` —
+    and ``severity=bogus`` beside the whole project's ``severity_counts``, a
+    breakdown for a filter that matched nothing.  Over MCP the tool's enum hid
+    it; the endpoint is the contract for both doors."""
+    headers = _assist(client, test_project.id)
+    url = "/api/v1/agent/assist/findings"
+    for param, value, known in (("source", "bogus", "scanner"), ("severity", "bogus", "critical")):
+        r = client.get(url, params={param: value}, headers=headers)
+        assert r.status_code == 422 and value in r.text and known in r.text, r.text
+    for params in ({"source": "all"}, {"source": "Scanner"}, {"source": "manual"},
+                   {"severity": "all"}, {"severity": "HIGH"}, {"severity": "info"}):
+        assert client.get(url, params=params, headers=headers).status_code == 200, params
+
+
 def test_a_list_filtered_by_a_host_that_is_not_here_is_not_found(client, db_session, test_project):
     """``host_id`` of another project's host, or of none, answered 200 with no
     rows on three lists while the host reads answered 404."""
