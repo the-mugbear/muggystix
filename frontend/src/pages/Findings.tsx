@@ -71,6 +71,9 @@ import {
 } from '../components/ui/table';
 import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
+import { ViewTabs } from '../components/ui/view-tabs';
+
+const FINDINGS_VIEWS = [['findings', 'Findings'], ['observations', 'Scanner observations']] as const;
 import ScannerObservations from '../components/findings/ScannerObservations';
 import { STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates, matchesStatusFilter } from '../utils/findingStatus';
 import { endpointPreviewTitle } from '../utils/findingEndpoints';
@@ -150,23 +153,7 @@ const Findings: React.FC = () => {
             }
           />
         </p>
-        <div role="tablist" aria-label="Findings view" className="mt-sm inline-flex rounded-control border border-border p-[2px]">
-          {([['findings', 'Findings'], ['observations', 'Scanner observations']] as const).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              role="tab"
-              aria-selected={view === value}
-              onClick={() => setView(value)}
-              className={cn(
-                'rounded-control px-sm py-xxs text-metadata focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                view === value ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-accent',
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <ViewTabs label="Findings view" value={view} options={FINDINGS_VIEWS} onChange={setView} className="mt-sm" />
       </div>
       {view === 'observations' ? <ScannerObservations canManage={canWrite} /> : <FindingsList />}
     </div>
