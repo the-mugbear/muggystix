@@ -311,6 +311,25 @@ describe('FindingEndpoints — the state bar', () => {
     expect(rows()).toHaveLength(6);
   });
 
+  // Owner, 2026-10-10: "What's the bar in the line below the 'Affected hosts'
+  // header? Is that intended to be a button?" — on a finding whose endpoints
+  // all stand the same it was one solid pill that did nothing when clicked.
+  it('is not drawn when every endpoint is in one state; the sentence and the chips stay', () => {
+    render(<Harness initial={finding([host('10.1.0.1', LAB), host('10.1.0.2', LAB)])} />);
+    expect(screen.queryByRole('group', { name: 'Endpoint states' })).toBeNull();
+    expect(screen.getByText(/The status above is the issue/)).toBeInTheDocument();
+    expect(chip(/^All/)).toBeInTheDocument();
+    expect(rows()).toHaveLength(2);
+  });
+
+  it('each part looks like the button it is', () => {
+    render(<Harness initial={small()} />);
+    for (const part of within(screen.getByRole('group', { name: 'Endpoint states' })).getAllByRole('button')) {
+      expect(part.className).toMatch(/cursor-pointer/);
+      expect(part.className).toMatch(/hover:brightness-125/);
+    }
+  });
+
   it('sits beside the sentence, which stays the one explanation', () => {
     render(<Harness initial={small()} />);
     expect(screen.getByText(/The status above is the issue/)).toBeInTheDocument();

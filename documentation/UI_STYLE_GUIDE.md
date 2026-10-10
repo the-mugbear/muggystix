@@ -1072,6 +1072,9 @@ panel as three thousand, only shorter. No threshold, no second layout for
   state and that it filters. Fills come from the states' theme tones in
   `utils/findingStatus.ts`; two states that would differ only by red against
   green differ by pattern too. No legend — the chips already name the states.
+  It is drawn only when the rows stand in TWO OR MORE states (a single solid
+  pill compares nothing and filters to what is already shown — 5.376.1), and
+  its parts answer like buttons: a pointer and a hover highlight.
 
 ### 48. Server state is TanStack Query (2026-10-09)
 There is ONE way the app talks to the server: `@tanstack/react-query`.  A read

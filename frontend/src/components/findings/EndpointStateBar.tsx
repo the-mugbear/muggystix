@@ -2,7 +2,8 @@
  * How a finding's endpoints stand, as one thin stacked bar beside the sentence
  * that says it.  A companion to the filter chips, not a second explanation:
  * no legend — each part is a button that applies its state's filter (the chip's
- * own action) and names itself to a pointer and to a screen reader.
+ * own action) and names itself to a pointer and to a screen reader.  Drawn
+ * only when the endpoints stand in two or more states.
  *
  * Hand-built: a small inline visual, like the severity bar.
  */
@@ -23,7 +24,11 @@ interface Props {
 
 const EndpointStateBar: React.FC<Props> = ({ counts, active, onSelect, className }) => {
   const states = ENDPOINT_STATES.filter((s) => counts[s] > 0);
-  if (states.length === 0) return null;
+  // A bar is a comparison: with every endpoint in ONE state there is nothing
+  // to compare and nothing to filter to — it was a solid pill that read as a
+  // decoration and did nothing when clicked (owner, 2026-10-10).  The sentence
+  // beside it already says how they all stand.
+  if (states.length < 2) return null;
   return (
     <div
       role="group"
@@ -46,6 +51,9 @@ const EndpointStateBar: React.FC<Props> = ({ counts, active, onSelect, className
             style={{ flexGrow: counts[s], flexBasis: 0, minWidth: '0.5rem' }}
             className={cn(
               'h-full focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+              // It is a button, so it answers like one: a pointer, and the
+              // part under it stands out from the rest of the bar.
+              'cursor-pointer transition-[filter,opacity] hover:brightness-125 hover:opacity-100',
               ENDPOINT_STATUS_FILL[s],
               active !== 'all' && active !== s && 'opacity-40',
             )}
