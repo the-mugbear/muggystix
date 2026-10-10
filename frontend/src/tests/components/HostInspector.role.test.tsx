@@ -127,6 +127,12 @@ describe('HostInspector — "show informational" failed (R34)', () => {
     const show = await screen.findByRole('button', { name: 'Show 4 informational findings' });
     mocked.getHost.mockRejectedValueOnce({ response: { status: 503, data: { detail: 'The database is busy.' } } });
     fireEvent.click(show);
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('The database is busy.'));
+    // 5.364.0 — said where the rows would have been, in the server's words,
+    // with Retry: it was a toast (a failed READ is never one, style guide §45).
+    const alert = await screen.findByText(/The database is busy\./);
+    expect(alert).toHaveAttribute('role', 'alert');
+    expect(toast.error).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText(/The database is busy\./)).toBeNull());
   });
 });

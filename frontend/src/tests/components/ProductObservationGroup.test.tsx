@@ -34,7 +34,6 @@ describe('ProductObservationGroup', () => {
             severityBadgeVariant={() => 'destructive'}
             expandedVulnIds={new Set()}
             onToggleDescription={vi.fn()}
-            promotedVulns={{}}
             vulnActionId={null}
             onTriage={vi.fn()}
             onQueryHosts={vi.fn()}

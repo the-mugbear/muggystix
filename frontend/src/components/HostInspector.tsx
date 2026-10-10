@@ -97,6 +97,7 @@ import { groupByProduct, groupVulnerabilities } from '../utils/vulnGrouping';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useProjectId } from '../hooks/useProjectId';
+import { queryErrorText, useLastSettled } from '../lib/query';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { promotedResultMessage, testNeedsWork } from '../utils/hostTests';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
@@ -309,9 +310,27 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   // `['getHost', projectId, hostId]`, which the assignee / tag controls, a
   // note's images and a test's result do from where they are written).  A
   // re-read that fails keeps what is on screen.
-  const hostKey = useMemo(() => ['getHost', projectId, hostId] as const, [projectId, hostId]);
-  const hostQuery = useQuery({ queryKey: hostKey, queryFn: ({ signal }) => getHost(projectId, hostId, { signal }) });
-  const host = hostQuery.data ?? null;
+  //
+  // v5.215.0 — informational rows are left out of the detail payload until
+  // asked ("N informational hidden · show").  5.364.0 — asking for them is
+  // part of WHAT IS READ (`includeInfo`, in the key), so every later re-read
+  // of the host brings them again.  They used to be laid over the cached host
+  // by a one-off request, and the next re-read came back without them.
+  const [showInformational, setShowInformational] = useState(false);
+  const hostKey = useMemo(
+    () => ['getHost', projectId, hostId, { includeInfo: showInformational }] as const,
+    [projectId, hostId, showInformational],
+  );
+  const hostQuery = useQuery({
+    queryKey: hostKey,
+    queryFn: ({ signal }) => getHost(projectId, hostId, showInformational ? { includeInfo: true, signal } : { signal }),
+  });
+  // The host stays on screen while the wider read is made, and when it fails
+  // (this inspector is one host's for its whole life: it is keyed by the host).
+  const host = useLastSettled(hostQuery.data) ?? null;
+  const informationalPending = showInformational && hostQuery.data === undefined;
+  const loadingInformational = informationalPending && hostQuery.isFetching;
+  const informationalFailed = informationalPending && hostQuery.isError && !hostQuery.isFetching;
   const putHost = useCallback((update: (previous: Host) => Host) => {
     queryClient.setQueryData<Host>(hostKey, (previous) => (previous ? update(previous) : previous));
   }, [queryClient, hostKey]);
@@ -349,7 +368,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   // The skeleton stands for "nothing to show yet": the first read, and a
   // Retry after it failed.  A re-read behind a host that is on screen does
   // not bring it back.
-  const loading = hostQuery.isPending || (hostQuery.isError && hostQuery.isFetching && !host);
+  const loading = !host && (hostQuery.isPending || hostQuery.isFetching);
   const fetchError = !hostQuery.isError
     ? null
     : (() => {
@@ -475,10 +494,6 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
 
   // Promote / dismiss a scanner vulnerability as a finding (status 'confirmed'
   // promotes; a terminal status dismisses). Idempotent server-side.
-  // vulnId → finding id, optimistically set after a promote/dismiss so the
-  // row shows "Promoted" immediately (the host's vuln rows only carry the
-  // authoritative finding_id on the next host load).
-  const [promotedVulns, setPromotedVulns] = useState<Record<number, number>>({});
   // §11 — triage a scanner vuln through a confirm step that previews the
   // cross-host blast radius first (promotion attaches EVERY project host
   // sharing the plugin_id — an icon-click used to do that silently).
@@ -490,7 +505,6 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   // host's inspector about that host's observation, so it defaults to this
   // host; marking the issue a false positive everywhere is an explicit choice.
   const [triageScope, setTriageScope] = useState<'host' | 'issue'>('host');
-  const [dismissedHereVulns, setDismissedHereVulns] = useState<Record<number, boolean>>({});
 
   // The blast radius, read whenever a triage opens (and again on Retry).
   // The action reaches hosts other than this one, so without the preview the
@@ -516,7 +530,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
       scope,
     }),
     // The toast names the finding and is true wherever the reader is by then.
-    onSuccess: (finding, { intent, scope }) => {
+    onSuccess: (finding, { vulnId, intent, scope }) => {
       const hostOnly = intent === 'false_positive' && scope === 'host';
       // Scanner findings span every host with the same plugin — report it.
       const span = finding.host_count > 1 ? ` across ${finding.host_count} hosts` : '';
@@ -536,6 +550,25 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
             : { label: 'Open finding', onClick: () => navigate(`/findings/${finding.id}`) },
         },
       );
+      // The row says it at once, in the server's own words: the finding it
+      // answered with, and this host's row on it.  (5.364.0 — it was two maps
+      // of "done in this session" that every row was checked against, which
+      // knew nothing of the finding's status: an issue-wide false positive
+      // read "Promoted → finding" until the page was reloaded.)
+      const here = (finding.hosts ?? []).find((h) => h.host_id === hostId);
+      putHost((previous) => ({
+        ...previous,
+        vulnerabilities: previous.vulnerabilities?.map((row) => (row.id !== vulnId ? row : {
+          ...row,
+          finding_id: finding.id,
+          finding_status: finding.status,
+          finding_on_this_host: true,
+          finding_endpoint_status: here?.host_status ?? (hostOnly ? 'false_positive' : row.finding_endpoint_status),
+        })),
+      }));
+      // …then the host is read again: the issue's OTHER rows on this host
+      // are covered by the same finding now.
+      void queryClient.invalidateQueries({ queryKey: ['getHost', projectId, hostId] });
       // This host has a finding it did not (or one changed); the promotion
       // took the issue's test results onto the finding, so the tests and the
       // other evidence are out of date too.
@@ -553,11 +586,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     // The rest is this panel's own state: it is set only while the reader is
     // still on this host.
     triage.mutate({ vulnId, intent, scope, reason: triageReason.trim() }, {
-      onSuccess: (finding) => {
-        setPromotedVulns((prev) => ({ ...prev, [vulnId]: finding.id }));
-        if (intent === 'false_positive' && scope === 'host') {
-          setDismissedHereVulns((prev) => ({ ...prev, [vulnId]: true }));
-        }
+      onSuccess: () => {
         setTriageVuln(null);
         setTriageReason('');
       },
@@ -586,21 +615,6 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   // speak about "this host" over the next one: those toasts are given to
   // `mutate()` itself, which answers only while the inspector is on screen.
 
-  // v5.215.0 — informational rows are left out of the detail payload until
-  // asked.  "N informational · show" reads the host with the hidden rows
-  // included and lays them over the host on screen.
-  const informational = useMutation({
-    mutationFn: () => getHost(projectId, hostId, { includeInfo: true }),
-    onSuccess: (withInfo) => putHost((previous) => ({
-      ...previous, vulnerabilities: withInfo.vulnerabilities, informational_included: true,
-    })),
-  });
-  const loadingInformational = informational.isPending;
-  const loadInformational = () => informational.mutate(undefined, {
-    // Said, not only logged (R34): the "show" link otherwise spun and
-    // stopped with nothing changed.
-    onError: (err) => toast.error(formatApiError(err, 'Could not load the informational observations.')),
-  });
   const onDirtyChangeRef = React.useRef(onDirtyChange);
   useEffect(() => {
     onDirtyChangeRef.current = onDirtyChange;
@@ -1090,12 +1104,12 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
           )}
           {/* v5.215.0 — informational rows are hidden until asked; say how
               many there are so nothing looks lost. */}
-          {(host.informational_count ?? 0) > 0 && host.informational_included === false && (
+          {(host.informational_count ?? 0) > 0 && host.informational_included === false && !informationalFailed && (
             <Button
               size="sm"
               variant="ghost"
               className="text-caption text-muted-foreground"
-              onClick={loadInformational}
+              onClick={() => setShowInformational(true)}
               disabled={loadingInformational}
               aria-label={`Show ${host.informational_count} informational findings`}
             >
@@ -1103,6 +1117,14 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
                 ? 'Loading…'
                 : `${host.informational_count} informational hidden · show`}
             </Button>
+          )}
+          {/* Said where the rows would have been, with Retry (it was a toast
+              over a link that had stopped spinning). */}
+          {informationalFailed && (
+            <p role="alert" className="break-words text-caption text-destructive">
+              {queryErrorText(hostQuery.error, 'The informational observations could not be loaded.')}{' '}
+              <button type="button" className="text-info hover:underline" onClick={() => void hostQuery.refetch()}>Retry</button>
+            </p>
           )}
         </>
       )}
@@ -1120,8 +1142,6 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
             severityBadgeVariant,
             expandedVulnIds,
             onToggleDescription: toggleVulnDescription,
-            promotedVulns,
-            dismissedHereVulns,
             vulnActionId,
             onTriage: openTriage,
             onQueryHosts: handleQueryHosts,

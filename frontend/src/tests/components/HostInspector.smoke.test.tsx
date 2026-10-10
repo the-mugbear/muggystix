@@ -6,7 +6,8 @@
  * (the exact trigger). The Hosts page test stubs HostInspector, so only a
  * real-render test catches this.
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useQueryClient } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('react-router-dom', async () => {
@@ -161,6 +162,63 @@ describe('HostInspector — promoting a scanner observation', () => {
     ));
   });
 
+  // 5.364.0 — the row is the server's answer written onto the host, then the
+  // host read again; it was two maps of "done in this session".
+  it('after a promotion the row says so at once, and the host is read again', async () => {
+    const getHost = api.getHost as ReturnType<typeof vi.fn>;
+    await openPromote();
+    // The re-read is held: what the row says before it answers is the patch.
+    let answerReread!: (host: unknown) => void;
+    getHost.mockImplementationOnce(() => new Promise((resolve) => { answerReread = resolve; }));
+    (api.promoteVulnerability as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 5, title: 'x', status: 'confirmed', host_count: 1,
+      hosts: [{ id: 900, host_id: 1, host_status: 'open' }],
+    });
+    const reads = getHost.mock.calls.length;
+    // (Confirm is offered once the preview is in.)
+    await screen.findByRole('radio', { name: /This host only/ });
+    fireEvent.click(screen.getByRole('button', { name: /^Promote$/ }));
+    expect(await screen.findByText('Promoted → finding')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Promote PostgreSQL Weak Password Policy/ })).toBeNull();
+    await waitFor(() => expect(getHost.mock.calls.length).toBe(reads + 1));
+    // The server's own row replaces the patch when it arrives.
+    answerReread({
+      ...hostWithObservation,
+      vulnerabilities: [{
+        ...hostWithObservation.vulnerabilities[0], finding_id: 5, finding_status: 'confirmed',
+        finding_on_this_host: true, finding_endpoint_status: 'open',
+      }],
+    });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(screen.getByText('Promoted → finding')).toBeInTheDocument();
+  });
+
+  it('an issue-wide false positive reads "False positive", not "Promoted" (it did until a reload)', async () => {
+    const getHost = api.getHost as ReturnType<typeof vi.fn>;
+    getHost.mockResolvedValueOnce(hostWithObservation);
+    (api.previewPromoteVulnerability as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
+    (api.promoteVulnerability as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 5, title: 'x', status: 'false_positive', host_count: 2,
+      hosts: [{ id: 900, host_id: 1, host_status: 'open' }, { id: 901, host_id: 9, host_status: 'open' }],
+    });
+    render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: /^HIGH\s*PostgreSQL Weak Password Policy$/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Dismiss PostgreSQL Weak Password Policy.* as a false positive$/ }));
+    await screen.findByRole('dialog');
+    fireEvent.click(await screen.findByRole('radio', { name: /All 2 hosts carrying this issue/ }));
+    // The inspector asks why before it offers Dismiss.
+    fireEvent.change(document.getElementById('vuln-triage-reason') as HTMLTextAreaElement, {
+      target: { value: 'scanner misfire' },
+    });
+    getHost.mockImplementationOnce(() => new Promise(() => undefined));   // the re-read never answers here
+    fireEvent.click(screen.getByRole('button', { name: /^Dismiss$/ }));
+    await waitFor(() => expect(api.promoteVulnerability).toHaveBeenCalledWith(
+      1, 77, expect.objectContaining({ status: 'false_positive', scope: 'issue' }),
+    ));
+    expect(await screen.findByText('False positive')).toBeInTheDocument();
+    expect(screen.queryByText('Promoted → finding')).toBeNull();
+  });
+
   // v5.289.0 — "Scanner observations 5 … from 6 scanner observations" read as
   // a contradiction; the header names both units and explains the grouping.
   it('names issues and scanner rows when rows of one issue are grouped', async () => {
@@ -215,10 +273,69 @@ describe('HostInspector smoke', () => {
     const btn = await screen.findByRole('button', { name: 'Show 3 informational findings' });
     expect(btn).toHaveTextContent('3 informational hidden · show');
     fireEvent.click(btn);
-    await waitFor(() => expect(getHost).toHaveBeenLastCalledWith(1, 1, { includeInfo: true }));
+    await waitFor(() => expect(getHost).toHaveBeenLastCalledWith(1, 1, expect.objectContaining({ includeInfo: true })));
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Show 3 informational findings' })).not.toBeInTheDocument(),
     );
+  });
+
+  // 5.364.0 — the rows were laid over the cached host by a one-off request, so
+  // the next re-read of the host (an assignee, a tag, a test's result, a note's
+  // image: each says "this host is out of date") came back without them.
+  it('keeps the informational rows when the host is read again after another change', async () => {
+    const getHost = api.getHost as unknown as ReturnType<typeof vi.fn>;
+    const base = await getHost.getMockImplementation()!();
+    const summary = { total_vulnerabilities: 3, critical: 0, high: 0, medium: 0, low: 0, info: 3 };
+    getHost.mockImplementation((_project: number, _host: number, options?: { includeInfo?: boolean }) => Promise.resolve({
+      ...base, informational_count: 3, informational_included: options?.includeInfo === true,
+      vulnerability_summary: summary,
+    }));
+    let client!: ReturnType<typeof useQueryClient>;
+    const Probe = () => { client = useQueryClient(); return null; };
+    try {
+      render(<MemoryRouter><Probe /><HostInspector hostId={1} /></MemoryRouter>);
+      fireEvent.click(await screen.findByRole('button', { name: 'Show 3 informational findings' }));
+      await waitFor(() =>
+        expect(screen.queryByRole('button', { name: 'Show 3 informational findings' })).not.toBeInTheDocument(),
+      );
+
+      // What HostWorkControls, the tests controller and a note's images do.
+      const reads = getHost.mock.calls.length;
+      await act(async () => { await client.invalidateQueries({ queryKey: ['getHost', 1, 1] }); });
+      await waitFor(() => expect(getHost.mock.calls.length).toBeGreaterThan(reads));
+      expect(getHost.mock.calls[getHost.mock.calls.length - 1][2]).toEqual(expect.objectContaining({ includeInfo: true }));
+      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+      expect(screen.queryByRole('button', { name: 'Show 3 informational findings' })).not.toBeInTheDocument();
+    } finally {
+      getHost.mockImplementation(() => Promise.resolve(base));
+    }
+  });
+
+  // The wider read failing was a toast over a link that had stopped spinning.
+  it('says where the link is when the informational rows cannot be loaded, with Retry; the host stays', async () => {
+    const getHost = api.getHost as unknown as ReturnType<typeof vi.fn>;
+    const base = await getHost.getMockImplementation()!();
+    let fail = true;
+    getHost.mockImplementation((_project: number, _host: number, options?: { includeInfo?: boolean }) => {
+      if (options?.includeInfo && fail) return Promise.reject({ response: { status: 503 } });
+      return Promise.resolve({ ...base, informational_count: 3, informational_included: options?.includeInfo === true });
+    });
+    try {
+      render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+      fireEvent.click(await screen.findByRole('button', { name: 'Show 3 informational findings' }));
+      const alert = (await screen.findByRole('button', { name: 'Retry' })).closest('[role="alert"]') as HTMLElement;
+      expect(alert).not.toBeNull();
+      // Not the page's load failure: the host is still on screen.
+      expect(screen.getByText('10.0.0.1')).toBeInTheDocument();
+      expect(screen.queryByText(/Failed to load host details/)).toBeNull();
+
+      fail = false;
+      fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+      await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+      expect(screen.queryByRole('button', { name: 'Show 3 informational findings' })).not.toBeInTheDocument();
+    } finally {
+      getHost.mockImplementation(() => Promise.resolve(base));
+    }
   });
 
   // Review follow-up: a late "show informational" response for host A must not
@@ -240,7 +357,7 @@ describe('HostInspector smoke', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Show 3 informational findings' }));
     // The request is sent a tick after the click; the mocked answers above are
     // handed out in the order the requests are made.
-    await waitFor(() => expect(getHost).toHaveBeenLastCalledWith(1, 1, { includeInfo: true }));
+    await waitFor(() => expect(getHost).toHaveBeenLastCalledWith(1, 1, expect.objectContaining({ includeInfo: true })));
     rerender(<MemoryRouter><HostInspector hostId={2} /></MemoryRouter>);
     await screen.findByRole('button', { name: 'Show 2 informational findings' });
 
