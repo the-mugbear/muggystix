@@ -38,9 +38,6 @@ export interface PostureHeadline {
   ownership: { owned: number; unowned: number; total: number; pct: number | null };
   systemic: { adopted: boolean; blind_spot_count: number; condition_count: number };
   detected_exposure: { vuln_count: number };
-  /** Reviewed hosts whose review concluded "needs more evidence" — the list
-   *  is the hosts filter `conclusion:needs_evidence`. */
-  open_questions?: { needs_evidence_hosts: number };
 }
 
 export interface PostureSiteExposure {

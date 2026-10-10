@@ -1064,10 +1064,9 @@ def _wide_pairs(db, pid, user, facts):
                         _old_follow_in(db, HostFollow.user_id == user.id, HostFollow.status == "in_review")),
         "follow watching": (P.follow_predicate("watching", user),
                             _old_follow_in(db, HostFollow.user_id == user.id, HostFollow.status == "watching")),
-        "conclusion": (
-            P.review_conclusion_predicate(["needs_evidence"]),
-            _old_follow_in(db, HostFollow.status == "reviewed",
-                           HostFollow.review_conclusion.in_(["needs_evidence"]))),
+        # ("conclusion" — `review_conclusion_predicate`, old == new until the
+        # `conclusion:` query word was retired with the review conclusions —
+        # went with the predicate: there is nothing left to compare.)
         "assigned any": (P.assigned_predicate(db, "any", user), models.Host.id.in_(assigned)),
         "assigned none": (P.assigned_predicate(db, "none", user), ~models.Host.id.in_(assigned)),
         "assigned me": (
@@ -1105,7 +1104,7 @@ _WIDE_NAMES = [
     "exploit", "critical exploit", "exploitport", "vuln window", "changed window", "has notes",
     "note", "tested", "planned", "local admin", "writable share", "smb unsigned", "tag name",
     "label id", "label name", "site none", "follow in_review", "follow reviewed", "follow mine",
-    "follow watching", "conclusion", "assigned any", "assigned none", "assigned me",
+    "follow watching", "assigned any", "assigned none", "assigned me",
     "assigned by name", "scan", "scan first seen", "org", "asn", "country", "cloud", "cloud none",
     "certorg",
 ]
@@ -1131,7 +1130,7 @@ def test_converted_predicates_select_what_the_in_form_selected(db_session, test_
 @pytest.mark.parametrize("q", [
     "NOT has:critical", "NOT cve:CVE-2021", "has:notes OR has:exploit", "NOT has:tested",
     "NOT has:planned", "NOT has:local_admin", "follow:in_review OR follow:reviewed", "NOT follow:mine",
-    "assigned:none", "NOT assigned:any", "NOT conclusion:needs_evidence", "NOT org:acme",
+    "assigned:none", "NOT assigned:any", "NOT follow:revisit", "NOT org:acme",
     "NOT country:US", "NOT asn:64500", "NOT certorg:acme", "NOT tag:crown", "NOT label:dmz",
     "site:none", 'NOT issue:"cve:CVE-2021-44228"', "NOT kind:misconfiguration",
     "NOT check:smb_signing_not_required", "NOT exploitport:445", "NOT note:rotate",

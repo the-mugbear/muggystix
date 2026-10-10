@@ -73,9 +73,12 @@ def test_active_critical_is_action_required_whoever_holds_it(db_session, test_pr
     assert not [p for p in out["priorities"] if p["kind"] == "ownership"]
 
 
-def test_open_questions_count_opens_exactly_its_hosts(client, db_session, test_project, test_user):
-    """"Still needs evidence" is an explicit record (a review that concluded
-    needs_evidence), and `conclusion:needs_evidence` is its list."""
+def test_posture_has_no_needs_evidence_count(client, db_session, test_project, test_user):
+    """"Still needs evidence" counted reviews that concluded ``needs_evidence``
+    and opened ``conclusion:needs_evidence``.  A review records no conclusion
+    any more, so the count is gone from the answer — on the service, the
+    people's route and the agents' — even with such rows stored; and the
+    reviewed-hosts measure still counts them as the reviewed hosts they are."""
     def reviewed(ip, conclusion, status=models.FollowStatus.REVIEWED.value):
         h = _host(db_session, test_project.id, ip)
         db_session.add(models.HostFollow(host_id=h.id, user_id=test_user.id, status=status,
@@ -83,19 +86,31 @@ def test_open_questions_count_opens_exactly_its_hosts(client, db_session, test_p
 
     reviewed("10.9.0.1", "needs_evidence")
     reviewed("10.9.0.2", "no_issue")
-    # Back in review: the old conclusion no longer stands.
     reviewed("10.9.0.3", "needs_evidence", status=models.FollowStatus.IN_REVIEW.value)
     _host(db_session, test_project.id, "10.9.0.4")
     db_session.commit()
 
     out = compute_posture(db_session, test_project.id, use_cache=False)
-    assert out["headline"]["open_questions"]["needs_evidence_hosts"] == 1
+    assert "open_questions" not in out["headline"]
+    assert "needs_evidence" not in str(out)
+    assert out["headline"]["review_coverage"]["reviewed"] == 2
+    assert out["headline"]["review_coverage"]["total"] == 4
 
+    page = client.get(f"/api/v1/projects/{test_project.id}/posture")
+    assert page.status_code == 200, page.text
+    assert "open_questions" not in page.json()["headline"]
+    assert "needs_evidence" not in page.text
+
+    started = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={})
+    assert started.status_code == 201, started.text
+    agent = client.get("/api/v1/agent/assist/posture", headers={"X-API-Key": started.json()["api_key"]})
+    assert agent.status_code == 200, agent.text
+    assert "open_questions" not in agent.text and "needs_evidence" not in agent.text
+
+    # The list it opened is not a query any more.
     r = client.get(f"/api/v1/projects/{test_project.id}/hosts/", params={"q": "conclusion:needs_evidence"})
-    assert r.status_code == 200, r.text
-    assert [i["ip_address"] for i in r.json()["items"]] == ["10.9.0.1"]
-    bad = client.get(f"/api/v1/projects/{test_project.id}/hosts/", params={"q": "conclusion:maybe"})
-    assert bad.status_code == 400
+    assert r.status_code == 400, r.text
+    assert "Unknown field 'conclusion'" in r.text
 
 
 def test_unassigned_low_finding_alone_does_not_move_the_label(db_session, test_project, test_user):

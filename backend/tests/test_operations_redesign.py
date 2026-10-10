@@ -370,25 +370,30 @@ def test_every_group_brings_its_own_rows_and_the_total_is_their_sum(
 # Changed since review
 # ---------------------------------------------------------------------------
 
-def _review(client, pid, host, conclusion="no_issue"):
-    r = client.post(
-        f"/api/v1/projects/{pid}/hosts/{host.id}/follow",
-        json={"status": "reviewed", "review_conclusion": conclusion},
-    )
+def _review(client, pid, host):
+    """As the page marks a host Reviewed: the status and nothing else."""
+    r = client.post(f"/api/v1/projects/{pid}/hosts/{host.id}/follow", json={"status": "reviewed"})
     assert r.status_code == 200, r.text
 
 
 def _seed_followups(client, db, pid):
-    """clean (reviewed, unchanged) · open_q (needs evidence) · ported (new open
-    port) · observed (new critical) — the last two changed after the review."""
+    """clean (reviewed, unchanged) · open_q (reviewed, unchanged, and carrying
+    the ``needs_evidence`` conclusion an OLDER version recorded) · ported (new
+    open port) · observed (new critical) — the last two changed after the
+    review, and they are the only two that are "not done": a stored conclusion
+    lists nothing any more."""
     hosts = {name: _host(db, pid, ip) for name, ip in (
         ("clean", "10.24.0.1"), ("open_q", "10.24.0.2"), ("ported", "10.24.0.3"), ("observed", "10.24.0.4"),
     )}
     db.add(models.Port(host_id=hosts["ported"].id, port_number=22, protocol="tcp", state="open",
                        first_seen=datetime.now(timezone.utc) - timedelta(days=30)))
     db.commit()
-    for name, host in hosts.items():
-        _review(client, pid, host, "needs_evidence" if name == "open_q" else "no_issue")
+    for host in hosts.values():
+        _review(client, pid, host)
+    # No route writes a conclusion: a legacy row is made the way it exists.
+    for name, stored in (("open_q", "needs_evidence"), ("ported", "no_issue")):
+        db.query(models.HostFollow).filter_by(host_id=hosts[name].id).one().review_conclusion = stored
+    db.commit()
     later = datetime.now(timezone.utc) + timedelta(hours=1)
     scan = _scan(db, pid)
     db.add(models.Port(host_id=hosts["ported"].id, port_number=8443, protocol="tcp", state="open", first_seen=later))
@@ -400,11 +405,12 @@ def _seed_followups(client, db, pid):
 
 
 def _teammates_followups(db, pid, mine):
-    """A teammate's reviews that ARE follow-ups for the teammate, on hosts
-    that are not follow-ups for the caller: their own changed host, their own
-    open question, and — the case a "reviewed by me" filter over the team-wide
-    predicates gets wrong — a host the CALLER reviewed cleanly (``mine``
-    ["clean"]) that changed after the teammate's OLDER review."""
+    """A teammate's reviews, on hosts that are not follow-ups for the caller:
+    their own changed host (the one that IS a follow-up, for the teammate —
+    returned), their own unchanged review carrying a stored ``needs_evidence``
+    (a follow-up for nobody), and — the case a "reviewed by me" filter over
+    the team-wide predicate gets wrong — a host the CALLER reviewed cleanly
+    (``mine``["clean"]) that changed after the teammate's OLDER review."""
     mate = _user(db, "teammate-reviewer")
     long_ago = datetime.now(timezone.utc) - timedelta(days=3)
     theirs_changed = _host(db, pid, "10.24.5.1")
@@ -427,7 +433,7 @@ def _teammates_followups(db, pid, mine):
                           review_conclusion="no_issue", reviewed_at=long_ago),
     ])
     db.commit()
-    return {"10.24.5.1", "10.24.5.2"}
+    return {"10.24.5.1"}
 
 
 def test_changed_since_review_lists_only_the_callers_reviews(client, db_session, test_project, test_user):
@@ -440,12 +446,76 @@ def test_changed_since_review_lists_only_the_callers_reviews(client, db_session,
 
     followups = client.get(_wb(pid)).json()["followups"]
     listed = [r["ip_address"] for r in followups["items"]]
-    assert sorted(listed) == ["10.24.0.2", "10.24.0.3", "10.24.0.4"]     # one row per host
+    assert sorted(listed) == ["10.24.0.3", "10.24.0.4"]     # one row per host
     assert not theirs & set(listed)
     assert "10.24.0.1" not in listed            # changed after THEIR review, not after mine
-    assert followups["total"] == 3
+    assert followups["total"] == 2
     assert set(followups) == {"items", "total"}
     assert all({"mine", "reviewer", "reviewer_id"}.isdisjoint(r) for r in followups["items"])
+
+
+def test_a_stored_needs_evidence_conclusion_lists_nothing(client, db_session, test_project, test_user):
+    """A finished review is "not done" ONLY when its host changed after it.
+    The caller's unchanged review that an older version concluded
+    ``needs_evidence`` (and a teammate's) is in neither the section nor
+    ``follow:revisit`` — and the two still agree, count == list."""
+    pid = test_project.id
+    hosts = _seed_followups(client, db_session, pid)
+    _teammates_followups(db_session, pid, hosts)
+    stored = db_session.query(models.HostFollow).filter_by(
+        host_id=hosts["open_q"].id, user_id=test_user.id).one()
+    assert stored.status == FollowStatus.REVIEWED and stored.review_conclusion == "needs_evidence"
+
+    followups = client.get(_wb(pid)).json()["followups"]
+    listed = {r["ip_address"] for r in followups["items"]}
+    revisit = _host_ips(client, pid, "follow:revisit")
+    assert "10.24.0.2" not in listed and "10.24.0.2" not in revisit
+    assert "10.24.5.2" not in _host_ips(client, pid, "has:changed_since_review")
+    assert listed == revisit == {"10.24.0.3", "10.24.0.4"}
+    assert followups["total"] == len(revisit) == 2
+    paged = client.get(_wb(pid, "/followups"), params={"limit": 100}).json()
+    assert {r["ip_address"] for r in paged["items"]} == revisit and paged["total"] == 2
+    # Every reason is a change; no row says "needs evidence", none has a conclusion.
+    assert {reason["kind"] for row in followups["items"] for reason in row["reasons"]} == {"new_ports", "new_vulns"}
+    assert all("review_conclusion" not in row for row in followups["items"])
+
+    # It is still an ordinary reviewed host everywhere else …
+    assert "10.24.0.2" in _host_ips(client, pid, "follow:reviewed")
+    # … and "Still reviewed" no longer sets it apart.
+    r = client.post(_wb(pid, "/followups/still-reviewed"), json={"host_ids": [hosts["open_q"].id]})
+    assert r.status_code == 200, r.text
+    db_session.refresh(stored)
+    assert stored.review_conclusion == "needs_evidence"      # stored, shown, never rewritten
+
+
+def test_the_conclusion_query_word_is_refused_as_an_unknown_field(client, db_session, test_project):
+    """``conclusion:`` went with the conclusions.  A query that still uses it
+    is refused like any unknown word (400 naming the field) on the people's
+    door and the agents' — never read as "no filter"."""
+    pid = test_project.id
+    _host(db_session, pid, "10.24.7.1")
+    db_session.commit()
+    for q in ("conclusion:needs_evidence", "has:changed_since_review OR conclusion:needs_evidence",
+              "NOT conclusion:no_issue"):
+        r = client.get(f"/api/v1/projects/{pid}/hosts/", params={"q": q})
+        assert r.status_code == 400, (q, r.status_code, r.text)
+        assert "Unknown field 'conclusion'" in r.text, r.text
+
+    started = client.post(f"/api/v1/projects/{pid}/assist/start", json={})
+    assert started.status_code == 201, started.text
+    agent = client.get("/api/v1/agent/assist/hosts", params={"q": "conclusion:needs_evidence"},
+                       headers={"X-API-Key": started.json()["api_key"]})
+    assert agent.status_code == 400, agent.text
+    assert "Unknown field 'conclusion'" in agent.text
+
+    # Not offered either: the catalogue autocomplete and the help read from,
+    # and its examples, name no such word.
+    from app.services.host_query_dsl import FIELD_BUILDERS, schema
+    assert "conclusion" not in FIELD_BUILDERS
+    catalogue = schema()
+    assert "conclusion" not in {f["name"] for f in catalogue["fields"]}
+    assert "conclusion" not in str(catalogue["examples"])
+    assert "needs" not in next(f for f in catalogue["fields"] if f["name"] == "follow")["description"]
 
 
 def test_changed_since_review_count_is_its_hosts_list(client, db_session, test_project, test_user):
@@ -457,22 +527,20 @@ def test_changed_since_review_count_is_its_hosts_list(client, db_session, test_p
 
     followups = client.get(_wb(pid)).json()["followups"]
     mine = _host_ips(client, pid, "follow:revisit")
-    assert mine == {r["ip_address"] for r in followups["items"]} == {"10.24.0.2", "10.24.0.3", "10.24.0.4"}
+    assert mine == {r["ip_address"] for r in followups["items"]} == {"10.24.0.3", "10.24.0.4"}
     assert len(mine) == followups["total"]
 
-    team_wide = _host_ips(client, pid, "has:changed_since_review OR conclusion:needs_evidence")
+    team_wide = _host_ips(client, pid, "has:changed_since_review")
     assert team_wide == mine | theirs | {"10.24.0.1"}
-    # Narrowing the team-wide predicates to hosts the caller reviewed is NOT
+    # Narrowing the team-wide predicate to hosts the caller reviewed is NOT
     # the caller's list: 10.24.0.1 changed after the teammate's review only.
-    assert "10.24.0.1" in _host_ips(
-        client, pid, "follow:reviewed (has:changed_since_review OR conclusion:needs_evidence)",
-    )
+    assert "10.24.0.1" in _host_ips(client, pid, "follow:reviewed has:changed_since_review")
 
-    # A review that went back In Review is not concluded: it leaves the list.
-    r = client.post(f"/api/v1/projects/{pid}/hosts/{hosts['open_q'].id}/follow", json={"status": "in_review"})
+    # A review that went back In Review is not finished: it leaves the list.
+    r = client.post(f"/api/v1/projects/{pid}/hosts/{hosts['ported'].id}/follow", json={"status": "in_review"})
     assert r.status_code == 200, r.text
-    assert _host_ips(client, pid, "follow:revisit") == {"10.24.0.3", "10.24.0.4"}
-    assert client.get(_wb(pid)).json()["followups"]["total"] == 2
+    assert _host_ips(client, pid, "follow:revisit") == {"10.24.0.4"}
+    assert client.get(_wb(pid)).json()["followups"]["total"] == 1
 
 
 def test_the_agents_followups_are_its_operators(db_session, client, test_project, test_user):
@@ -483,11 +551,11 @@ def test_the_agents_followups_are_its_operators(db_session, client, test_project
     hosts = _seed_followups(client, db_session, pid)
     _teammates_followups(db_session, pid, hosts)
     wb = compute_workbench(db_session, test_user, test_project, include_investigate=False)
-    assert {r.ip_address for r in wb.followups.items} == {"10.24.0.2", "10.24.0.3", "10.24.0.4"}
-    assert wb.followups.total == 3
+    assert {r.ip_address for r in wb.followups.items} == {"10.24.0.3", "10.24.0.4"}
+    assert wb.followups.total == 2
 
 
-def test_still_reviewed_restamps_the_review_and_keeps_the_conclusion(
+def test_still_reviewed_restamps_the_review_and_keeps_its_note_and_a_stored_conclusion(
     client, db_session, test_project, test_user,
 ):
     pid = test_project.id
@@ -539,9 +607,11 @@ def test_still_reviewed_is_all_or_nothing(client, db_session, test_project, test
         f.id: f.reviewed_at for f in db_session.query(models.HostFollow).all()
     }
 
-    # A good host beside: an open question, someone else's review, another
-    # project's host, a host that does not exist.
-    for bad in (hosts["open_q"].id, theirs.id, foreign.id, 999_999):
+    # A good host beside: someone else's review, another project's host, a
+    # host that does not exist.  (A review that an older version concluded
+    # "needs evidence" used to be refused too; it is an ordinary finished
+    # review now — `test_a_stored_needs_evidence_conclusion_lists_nothing`.)
+    for bad in (theirs.id, foreign.id, 999_999):
         r = client.post(_wb(pid, "/followups/still-reviewed"),
                         json={"host_ids": [hosts["ported"].id, bad]})
         assert r.status_code == 409, r.text

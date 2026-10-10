@@ -321,22 +321,6 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
         models.Host.project_id == project_id, models.Host.id.in_(tested_host_ids(project_id)),
     ).count()
 
-    # Open assessment questions — reviewed hosts whose review concluded "needs
-    # more evidence" (v2.373.0).  An EXPLICIT record, never inferred from
-    # unowned findings; the same set as the `conclusion:needs_evidence` filter
-    # (host_query_predicates.review_conclusion_predicate).
-    needs_evidence_hosts = (
-        db.query(func.count(func.distinct(models.HostFollow.host_id)))
-        .join(models.Host, models.HostFollow.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == project_id,
-            models.HostFollow.status == models.FollowStatus.REVIEWED.value,
-            models.HostFollow.review_conclusion == "needs_evidence",
-        )
-        .scalar()
-        or 0
-    )
-
     signals = _gather_signals(
         db, project_id, project_att=project_att, site_att=site_att, systemic=systemic,
         unowned_by_sev=unowned_by_sev, review_pct=review_pct,
@@ -423,7 +407,6 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
                 "condition_count": len(systemic.get("conditions", [])),
             },
             "detected_exposure": {"vuln_count": int(detected_vulns)},
-            "open_questions": {"needs_evidence_hosts": int(needs_evidence_hosts)},
         },
         # Provenance — how many scans, and days since the last import.  NOT a
         # freshness judgment: a project is one assessment window, so its

@@ -322,12 +322,20 @@ def test_scan_update_notifies_reviewer_of_updated_host_only(db_session, test_pro
     assert n.host_id == updated.id
 
 
-def test_review_conclusion_stored_on_reviewed_and_cleared_on_reopen(db_session, test_project):
-    """§9 — marking Reviewed records the conclusion + summary (and stamps the
-    reviewer's assignment); re-opening to In Review clears the stale outcome."""
+def test_reviewed_records_no_conclusion_and_reopening_clears_a_stored_one(db_session, test_project):
+    """Marking Reviewed stamps the reviewer's assignment and the review's date
+    — and records NO conclusion: the write takes none (it was required until
+    the owner's decision of 2026-10-10; this test pinned that it was stored).
+    Re-opening to In Review still clears what an older review left, so a
+    re-opened review does not carry an outcome that no longer stands."""
+    import inspect
+
     from app.db import models
     from app.db.models import FollowStatus
     from app.services.host_follow_service import HostFollowService
+
+    assert list(inspect.signature(HostFollowService.set_follow_status).parameters) == [
+        "self", "host_id", "user_id", "status"]
 
     user = _make_user(db_session, "rev5")
     host = models.Host(project_id=test_project.id, ip_address="10.9.0.1", state="up")
@@ -335,18 +343,23 @@ def test_review_conclusion_stored_on_reviewed_and_cleared_on_reopen(db_session, 
     db_session.flush()
 
     svc = HostFollowService(db_session)
-    reviewed = svc.set_follow_status(
-        host.id, user.id, FollowStatus.REVIEWED,
-        review_conclusion="finding_created", review_summary="promoted a finding",
-    )
+    reviewed = svc.set_follow_status(host.id, user.id, FollowStatus.REVIEWED)
     assert reviewed.status == FollowStatus.REVIEWED
-    assert reviewed.review_conclusion == "finding_created"
-    assert reviewed.review_summary == "promoted a finding"
+    assert reviewed.review_conclusion is None
+    assert reviewed.review_summary is None
+    assert reviewed.reviewed_at is not None
     assert reviewed.assigned_at is not None  # reviewing = it's mine
+
+    # A row as an older review left it.
+    reviewed.review_conclusion, reviewed.review_summary = "finding_created", "promoted a finding"
+    db_session.commit()
+    again = svc.set_follow_status(host.id, user.id, FollowStatus.REVIEWED)
+    assert (again.review_conclusion, again.review_summary) == ("finding_created", "promoted a finding")
 
     reopened = svc.set_follow_status(host.id, user.id, FollowStatus.IN_REVIEW)
     assert reopened.review_conclusion is None
     assert reopened.review_summary is None
+    assert reopened.reviewed_at is None
 
 
 def test_scan_update_skips_when_only_follower_is_uploader(db_session, test_project):

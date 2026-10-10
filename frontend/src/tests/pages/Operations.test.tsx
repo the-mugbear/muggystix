@@ -203,7 +203,7 @@ const testRow = (id: number, reason = 'triage') => ({
 });
 const followRow = {
   host_id: 21, ip_address: '10.8.0.2', hostname: 'app01',
-  reviewed_at: '2026-09-01T00:00:00Z', review_conclusion: 'no_issue', review_summary: null,
+  reviewed_at: '2026-09-01T00:00:00Z', review_summary: null,
   reasons: [{ kind: 'new_ports', text: '1 open port first seen after the review (8443)' }],
 };
 const queueRow = {

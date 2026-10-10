@@ -42,20 +42,21 @@ class HostFollowService:
             .first()
         )
 
-    def set_follow_status(
-        self,
-        host_id: int,
-        user_id: int,
-        status: FollowStatus,
-        review_conclusion: Optional[str] = None,
-        review_summary: Optional[str] = None,
-    ) -> HostFollow:
-        follow = self.get_follow(host_id, user_id)
-        if follow:
-            follow.status = status
-        else:
-            follow = HostFollow(host_id=host_id, user_id=user_id, status=status)
-            self.db.add(follow)
+    @staticmethod
+    def apply_review_status(follow: HostFollow, status: FollowStatus, user_id: int) -> None:
+        """What setting a review status does to ``user_id``'s row — the ONE
+        implementation, for one host (``set_follow_status``: the page's control,
+        an agent) and for many (``POST /hosts/bulk/follow``).  The caller
+        commits.
+
+        Finishing a review records no conclusion (owner, 2026-10-10: one click,
+        like starting one).  ``review_conclusion`` is never SET; a row that
+        carries one from before keeps it while it stays Reviewed — marking it
+        Reviewed again leaves the conclusion and the note alone — and loses
+        both when the review is re-opened, which is the reviewer saying it no
+        longer stands.
+        """
+        follow.status = status
         # Taking a host into review makes that user its reviewer of record —
         # which operators read as "this host is mine".  Stamp ownership so the
         # "Assigned to me" filter (keyed on assigned_at) reflects it, mirroring
@@ -65,18 +66,35 @@ class HostFollowService:
         if status_value in ("in_review", "reviewed") and follow.assigned_at is None:
             follow.assigned_at = func.now()
             follow.assigned_by_id = user_id
-        # Review conclusion (§9) only belongs on a Reviewed host; clear it when
-        # the host moves back to in_review/watching so a re-opened review doesn't
-        # carry a stale outcome.
         if status_value == "reviewed":
-            follow.review_conclusion = review_conclusion
-            follow.review_summary = review_summary
             # The baseline "changed since review" is measured against.
             follow.reviewed_at = datetime.now(timezone.utc)
         else:
             follow.review_conclusion = None
             follow.review_summary = None
             follow.reviewed_at = None
+
+    def set_follow_status(self, host_id: int, user_id: int, status: FollowStatus) -> HostFollow:
+        follow = self.get_follow(host_id, user_id)
+        if not follow:
+            follow = HostFollow(host_id=host_id, user_id=user_id, status=status)
+            self.db.add(follow)
+        self.apply_review_status(follow, status, user_id)
+        self.db.commit()
+        self.db.refresh(follow)
+        return follow
+
+    def set_review_note(self, host_id: int, user_id: int, note: Optional[str]) -> Optional[HostFollow]:
+        """The reviewer's optional note on their OWN finished review of a host
+        (``host_follows.review_summary``); ``None`` removes it.  Nothing else
+        moves — not ``reviewed_at``, so writing a note never takes a host out
+        of "Changed since review".  Returns ``None`` when ``user_id`` has no
+        finished review of the host: a note is on a review, and there is none.
+        """
+        follow = self.get_follow(host_id, user_id)
+        if not follow or getattr(follow.status, "value", follow.status) != FollowStatus.REVIEWED.value:
+            return None
+        follow.review_summary = note
         self.db.commit()
         self.db.refresh(follow)
         return follow
@@ -85,15 +103,14 @@ class HostFollowService:
         """"Still reviewed" (v2.450.0): the reviewer looked at what changed
         after their review and the review stands — move ``reviewed_at`` to
         now on ``user_id``'s OWN finished reviews of these hosts, leaving the
-        conclusion and summary as they are.  The baseline "changed since
-        review" is measured against moves; nothing else does.
+        note (and a conclusion recorded before they were retired) as it is.
+        The baseline "changed since review" is measured against moves; nothing
+        else does.
 
         All or nothing, in ONE statement: the conditions are in the UPDATE's
-        WHERE, and a host that did not qualify — not in the project, no
-        finished review of the caller's, or concluded ``needs_evidence``
-        (an open question is not answered by looking again: re-open it or
-        change the conclusion) — rolls the whole call back.  Returns the host
-        ids that could NOT be stamped; empty means every one was.
+        WHERE, and a host that did not qualify — not in the project, or no
+        finished review of the caller's — rolls the whole call back.  Returns
+        the host ids that could NOT be stamped; empty means every one was.
         """
         wanted = list(dict.fromkeys(host_ids))
         in_project = (
@@ -106,7 +123,6 @@ class HostFollowService:
                 HostFollow.user_id == user_id,
                 HostFollow.host_id.in_(in_project),
                 HostFollow.status == FollowStatus.REVIEWED,
-                HostFollow.review_conclusion.is_distinct_from("needs_evidence"),
             )
             .values(reviewed_at=datetime.now(timezone.utc))
             .returning(HostFollow.host_id)

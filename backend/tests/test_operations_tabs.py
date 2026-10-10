@@ -288,16 +288,27 @@ def test_the_workbench_preview_is_unchanged_by_paging(client, db_session, test_p
 def test_changed_tab_count_is_the_list_it_pages_through(client, db_session, test_project, test_user):
     pid = test_project.id
     now = datetime.now(timezone.utc)
-    open_q = [_host(db_session, pid, f"10.42.0.{i}") for i in range(1, 28)]
-    for i, h in enumerate(open_q):
+    # More than a page of reviews whose host changed afterwards: an open port
+    # first seen after the review (the only thing, with a critical / high
+    # observation, that lists a finished review).
+    changed = [_host(db_session, pid, f"10.42.0.{i}") for i in range(1, 28)]
+    for i, h in enumerate(changed):
         db_session.add(models.HostFollow(
             host_id=h.id, user_id=test_user.id, status=FollowStatus.REVIEWED,
-            review_conclusion="needs_evidence", reviewed_at=now - timedelta(hours=i // 5),
+            # Several share a timestamp: the order must still be total.
+            reviewed_at=now - timedelta(hours=1 + i // 5),
         ))
+        db_session.add(models.Port(host_id=h.id, port_number=8443, protocol="tcp", state="open", first_seen=now))
     clean = _host(db_session, pid, "10.42.1.1")              # reviewed, nothing changed
     db_session.add(models.HostFollow(
-        host_id=clean.id, user_id=test_user.id, status=FollowStatus.REVIEWED,
-        review_conclusion="no_issue", reviewed_at=now,
+        host_id=clean.id, user_id=test_user.id, status=FollowStatus.REVIEWED, reviewed_at=now,
+    ))
+    # Reviewed, nothing changed, and carrying the conclusion an older version
+    # recorded: it used to be listed for that alone, and is not.
+    legacy = _host(db_session, pid, "10.42.1.2")
+    db_session.add(models.HostFollow(
+        host_id=legacy.id, user_id=test_user.id, status=FollowStatus.REVIEWED,
+        review_conclusion="needs_evidence", reviewed_at=now,
     ))
     db_session.commit()
 
@@ -310,7 +321,8 @@ def test_changed_tab_count_is_the_list_it_pages_through(client, db_session, test
     assert {p["total"] for p in pages} == {27}
     listed = [i["host_id"] for p in pages for i in p["items"]]
     assert len(set(listed)) == 27
-    assert set(listed) == _host_ids(client, pid, "follow:revisit") == {h.id for h in open_q}
+    assert set(listed) == _host_ids(client, pid, "follow:revisit") == {h.id for h in changed}
+    assert legacy.id not in listed and clean.id not in listed
 
 
 def test_the_changed_list_says_when_it_failed(client, test_project, monkeypatch):
@@ -369,10 +381,13 @@ def test_the_light_call_has_the_full_calls_counts_and_fewer_statements(
     host = _host(db_session, pid, "10.44.0.1")
     db_session.add(models.HostFollow(host_id=host.id, user_id=test_user.id, status=FollowStatus.IN_REVIEW))
     reviewed = _host(db_session, pid, "10.44.0.2")
+    # Changed since its review (a port first seen after it): one follow-up.
     db_session.add(models.HostFollow(
         host_id=reviewed.id, user_id=test_user.id, status=FollowStatus.REVIEWED,
-        review_conclusion="needs_evidence", reviewed_at=datetime.now(timezone.utc),
+        reviewed_at=datetime.now(timezone.utc) - timedelta(days=1),
     ))
+    db_session.add(models.Port(host_id=reviewed.id, port_number=8443, protocol="tcp", state="open",
+                               first_seen=datetime.now(timezone.utc)))
     _test(db_session, pid, host.id, "high")
     _test(db_session, pid, reviewed.id, "critical")
     db_session.add(Finding(project_id=pid, title="needs me", severity="high", status="open",

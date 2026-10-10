@@ -231,9 +231,9 @@ def get_my_followups(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Hosts the caller reviewed that changed after that review, or that they
-    concluded "needs more evidence" — the hosts ``follow:revisit`` lists;
-    oldest review first.  ``total`` is the whole list whatever the page.
+    """Hosts the caller reviewed that changed after that review (an open port
+    or a critical / high scanner observation since) — the hosts
+    ``follow:revisit`` lists; oldest review first.  ``total`` is the whole list whatever the page.
 
     A failure is a 503 that says so — never an empty list, which would read
     as "nothing changed"."""
@@ -308,13 +308,12 @@ def mark_still_reviewed(
 ):
     """Move ``reviewed_at`` to now on the CALLER'S OWN finished reviews of
     these hosts (v2.450.0), so they leave "Changed since review" until they
-    change again.  The conclusion and summary are untouched.  Who may: whoever
+    change again.  The review's note is untouched.  Who may: whoever
     may set their own review status (``POST /hosts/{id}/follow``) — a review
     is its reviewer's; nobody re-stamps someone else's.
 
-    All or nothing: if any host is not in the project, has no finished review
-    of the caller's, or was concluded ``needs_evidence`` (re-open it or change
-    the conclusion instead), nothing is written and the 409 names them
+    All or nothing: if any host is not in the project or has no finished
+    review of the caller's, nothing is written and the 409 names them
     (``detail.host_ids``).
     """
     refused = HostFollowService(db).restamp_reviews(project.id, current_user.id, body.host_ids)
@@ -324,8 +323,7 @@ def mark_still_reviewed(
             detail={
                 "message": (
                     f"{len(refused)} of {len(set(body.host_ids))} hosts have no finished review of "
-                    "yours that can be confirmed (not reviewed by you, or concluded “needs more "
-                    "evidence”). Nothing was changed."
+                    "yours that can be confirmed. Nothing was changed."
                 ),
                 "host_ids": refused,
             },

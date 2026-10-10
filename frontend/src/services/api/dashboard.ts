@@ -274,16 +274,15 @@ export interface WorkbenchResponse {
   my_work?: MyWorkTotals;
 }
 
-// v2.359.0 — a reviewed host left every queue for good. Two kinds are not
-// done: a review concluded "needs more evidence", and a host that changed
-// AFTER it was reviewed.  v2.451.0 — every row is the CALLER'S own review
-// (one row per host); a teammate's is never listed.
+// v2.359.0 — a reviewed host left every queue for good. One kind is not
+// done: a host that changed AFTER it was reviewed.  v2.451.0 — every row is
+// the CALLER'S own review (one row per host); a teammate's is never listed.
 export interface ReviewFollowupRow {
   host_id: number;
   ip_address: string;
   hostname: string | null;
   reviewed_at: string | null;
-  review_conclusion: string | null;
+  /** The reviewer's optional note on the review. */
   review_summary: string | null;
   reasons: Array<{ kind: string; text: string }>;
 }

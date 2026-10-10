@@ -665,18 +665,20 @@ def main() -> None:
         lead("PATCH", f"/findings/{spread[0].finding_id}/endpoints/{spread[0].id}", json={"host_status": "remediated"})
         print(f"finding {spread[0].finding_id}: one endpoint remediated")
 
-    # --- A finished review that still needs evidence -----------------------
-    # (Posture's "still needs evidence"; the DSL's conclusion:needs_evidence.)
-    concluded = db.query(models.HostFollow).join(models.Host, models.Host.id == models.HostFollow.host_id).filter(
+    # --- A finished review, with the reviewer's note ------------------------
+    # (One call marks it Reviewed — no conclusion; the note is a second,
+    # optional one.)
+    finished = db.query(models.HostFollow).join(models.Host, models.Host.id == models.HostFollow.host_id).filter(
         models.Host.project_id == pid, models.HostFollow.user_id == users["acc-lead"].id).first()
-    if concluded is None:
+    if finished is None:
         target = (
             db.query(models.Host).filter(models.Host.project_id == pid, models.Host.state == "up")
             .order_by(models.Host.ip_address).offset(31).first()
         )
-        lead("POST", f"/hosts/{target.id}/follow",
-             json={"status": "reviewed", "review_conclusion": "needs_evidence"})
-        print(f"{target.ip_address}: reviewed, concluded needs_evidence")
+        lead("POST", f"/hosts/{target.id}/follow", json={"status": "reviewed"})
+        lead("PATCH", f"/hosts/{target.id}/follow",
+             json={"review_summary": f"{MARK} Checked the exposed services by hand; nothing to add."})
+        print(f"{target.ip_address}: reviewed, with a note")
 
     # --- An issued client report -------------------------------------------
     if not db.query(Report).filter(Report.project_id == pid, Report.status == ReportStatus.ISSUED).first():

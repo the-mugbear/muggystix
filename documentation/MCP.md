@@ -136,7 +136,7 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 | "What is mine? What changed since I was last here?" | `assist_get_workbench` — the operator's Operations page (see below) |
 | "Which findings are waiting on me — all of them?" | `assist_list_my_findings` — whole and paged, `need=decide\|write`; `total` is the size of the list the call pages |
 | "What should we look at next?" | `assist_list_worth_a_look` — Operations' "Untouched, with a reason" queue |
-| "Which hosts do I have in review? What is the team already reviewing? Which reviewed hosts changed since?" | `assist_list_hosts q=follow:mine` (the operator's own) · `q=follow:in_review` (ANY teammate's) · `q=follow:revisit` (the operator's own finished reviews that are not done) · `q=has:changed_since_review OR conclusion:needs_evidence` (the same for any teammate's reviews) |
+| "Which hosts do I have in review? What is the team already reviewing? Which reviewed hosts changed since?" | `assist_list_hosts q=follow:mine` (the operator's own) · `q=follow:in_review` (ANY teammate's) · `q=follow:revisit` (the operator's own finished reviews whose host changed afterwards) · `q=has:changed_since_review` (the same for any teammate's reviews) |
 | "Where does the engagement stand?" | `assist_list_hosts q=has:tested` and `q=has:untouched has:critical` → `total` · `assist_get_terrain` by address block · `assist_get_posture` / `assist_get_coverage` for the assessment |
 | "Which ranges has nobody touched?" | `assist_get_terrain` |
 | "What is still unassessed in segment Y?" | `assist_list_evidence_gaps` |
@@ -161,7 +161,7 @@ The assist surface is meant to answer whatever an analyst asks about a project.
   `has_scopes` (a scope has at least one subnet entry), `scope_rows`,
   `only_scope_id`.
 * `since_last_visit`, `blockers` (imports that need someone) and `followups`
-  (the operator's own finished reviews that changed or still need evidence).
+  (the operator's own finished reviews whose host changed afterwards).
 * There are no project-wide measures and no team roster in it: those are the
   `total` of a Hosts query, as the table above says.
 

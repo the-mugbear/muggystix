@@ -259,7 +259,7 @@ describe('HostInspector — a late completion is for the host it was sent for', 
     await waitFor(() => expect(screen.getByText('10.0.0.1')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /Start review/ }));
     // (A mutation sends its request a tick after the click.)
-    await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(1, 1, 'in_review', undefined));
+    await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(1, 1, 'in_review'));
 
     rerender(<MemoryRouter><HostInspector hostId={2} onFollowChange={onFollowChange} /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText('10.0.0.2')).toBeInTheDocument());
@@ -271,7 +271,10 @@ describe('HostInspector — a late completion is for the host it was sent for', 
     // Host 2 is still not reviewed …
     expect(screen.getByText('Not reviewed')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Start review/ })).toBeEnabled();
-    expect(screen.queryByRole('button', { name: /Mark reviewed$/ })).not.toBeInTheDocument();
+    // (An unreviewed host offers "Mark reviewed" too since it became one
+    // click, so the state is read from the badge and the status's own action.)
+    expect(screen.queryByText('In Review')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Clear status' })).not.toBeInTheDocument();
     // … and the list's row for host 1 is told what was saved.
     expect(onFollowChange).toHaveBeenCalledWith(1, saved);
     expect(onFollowChange).not.toHaveBeenCalledWith(2, expect.anything());

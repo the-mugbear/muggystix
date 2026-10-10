@@ -4,15 +4,14 @@
  * The READER'S OWN reviewed hosts that are not done (5.330.0 — Operations is
  * the reader's page; it listed every teammate's reviews, marked "by you"):
  * the host gained open ports or critical / high scanner observations after
- * the reader's review, or the reader concluded "needs more evidence".  The
- * team-wide lists are on Hosts (`has:changed_since_review`,
- * `conclusion:needs_evidence`).  Two answers:
+ * the reader's review — and nothing else (a review records no conclusion, so
+ * there is no "needs more evidence" row: such a host stays In Review).  The
+ * team-wide list is on Hosts (`has:changed_since_review`).  Two answers:
  *
  *  - **Still reviewed** — "I saw the change; my review stands": the review
- *    date moves to now, the conclusion stays.  Never on a "needs more
- *    evidence" conclusion (an open question is not answered by looking again).
+ *    date moves to now, its note stays.
  *  - **Re-open review** — back In Review, with a confirming second click: it
- *    clears the conclusion.
+ *    clears the review's date and note.
  *
  * One line per host, a selection column and both actions in bulk.  Readers (a
  * role that cannot write) get the rows and the links, no checkboxes and no
@@ -37,7 +36,6 @@ import { useToast } from '../../contexts/ToastContext';
 import { useListCursor } from '../../hooks/useListCursor';
 import { useProjectId } from '../../hooks/useProjectId';
 import { formatApiError } from '../../utils/apiErrors';
-import { cn } from '../../utils/cn';
 import { buildHostsUrl } from '../../utils/drilldownLinks';
 import { isPageShortcutEvent } from '../../utils/keyboard';
 import { CHANGED_SINCE_REVIEW_QUERY, fromOperationsQueue } from '../../utils/operationsQueue';
@@ -56,9 +54,6 @@ const BULK_CONCURRENCY = 6;
 
 /** One row per host: every row is the reader's own review. */
 const rowKey = (row: ReviewFollowupRow) => String(row.host_id);
-/** "Still reviewed" is not an answer to an open question. */
-export const canConfirmReview = (row: ReviewFollowupRow) =>
-  row.review_conclusion !== 'needs_evidence';
 
 const ago = (iso: string | null) => (iso ? formatRelativeTime(iso, { style: 'compact' }) : '');
 const hosts = (n: number) => `${n.toLocaleString()} host${n === 1 ? '' : 's'}`;
@@ -84,8 +79,8 @@ export const ChangedSinceReviewSection: React.FC<{
   const keys = React.useMemo(() => rows.map(rowKey), [rows]);
   const selection = useRowSelection(keys);
   const [outcome, setOutcome] = React.useState<string | null>(null);
-  // Re-opening a finished review clears its conclusion, which no undo puts
-  // back exactly: it asks for a second click (one row, or the bulk button).
+  // Re-opening a finished review clears its date and its note, which no undo
+  // puts back exactly: it asks for a second click (one row, or the bulk button).
   const [armed, setArmed] = React.useState<string | null>(null);
   React.useEffect(() => {
     if (armed == null) return undefined;
@@ -160,7 +155,6 @@ export const ChangedSinceReviewSection: React.FC<{
   };
 
   const picked = rows.filter((r) => selection.isSelected(rowKey(r)));
-  const confirmable = picked.filter(canConfirmReview);
   const pickedHostIds = picked.map((r) => r.host_id);
 
   // One call per host, a few at a time: the batch is one action, and it
@@ -203,16 +197,14 @@ export const ChangedSinceReviewSection: React.FC<{
   return (
     <div className="min-w-0">
       <p className="mb-sm text-caption text-muted-foreground">
-        Hosts you reviewed that are not done: the host gained open ports or critical / high scanner
-        observations after your review, or you concluded{' '}
-        <span className="font-medium text-foreground">“Needs more evidence”</span>.
-        A teammate’s reviews are not listed here.
+        Hosts you reviewed that gained open ports or critical / high scanner observations after
+        your review. A teammate’s reviews are not listed here.
       </p>
       <ListBody
         rows={loaded}
         state={state}
         what="the hosts you reviewed"
-        empty="Nothing here — a host you reviewed shows when it gains open ports or critical / high scanner observations after your review, or when you conclude “needs more evidence”."
+        empty="Nothing here — a host you reviewed shows when it gains open ports or critical / high scanner observations after your review."
       >
         {() => (
         <div>
@@ -220,17 +212,15 @@ export const ChangedSinceReviewSection: React.FC<{
             <BulkBar count={picked.length} noun="review" onClear={selection.clear} outcome={outcome}>
               <Button
                 size="sm" variant="outline" className="h-7"
-                disabled={bulkBusy || confirmable.length === 0}
-                onClick={() => stillReviewed(confirmable, null)}
-                title={confirmable.length < picked.length
-                  ? `${picked.length - confirmable.length} of the selected reviews cannot be confirmed here: concluded “needs more evidence”.`
-                  : 'You looked at what changed and your review stands: the review date moves to now, the conclusion stays.'}
+                disabled={bulkBusy || picked.length === 0}
+                onClick={() => stillReviewed(picked, null)}
+                title="You looked at what changed and your review stands: the review date moves to now, its note stays."
               >
-                Still reviewed ({confirmable.length})
+                Still reviewed ({picked.length})
               </Button>
               <Button size="sm" variant="outline" className="h-7" disabled={bulkBusy} onClick={reopenMany}>
                 {armed === 'bulk'
-                  ? `Click to confirm — clears ${picked.length} conclusion${picked.length === 1 ? '' : 's'}`
+                  ? `Click to confirm — re-opens ${picked.length} review${picked.length === 1 ? '' : 's'}`
                   : `Re-open review (${pickedHostIds.length})`}
               </Button>
             </BulkBar>
@@ -311,23 +301,23 @@ export const ChangedSinceReviewSection: React.FC<{
                     {canWrite && (
                       <TableCell className="whitespace-nowrap py-xxs text-right align-middle">
                         {/* Gives way to the confirmation, which needs the width. */}
-                        {canConfirmReview(row) && armed !== key && (
+                        {armed !== key && (
                           <Button
                             size="sm" variant="ghost" className="h-7 text-info"
                             disabled={busyKey === key || bulkBusy}
                             onClick={() => stillReviewed([row], key)}
-                            title="You looked at what changed and your review stands: the review date moves to now, the conclusion stays."
+                            title="You looked at what changed and your review stands: the review date moves to now, its note stays."
                           >
                             Still reviewed
                           </Button>
                         )}
                         <Button
-                          size="sm" variant="ghost" className={cn('h-7', !canConfirmReview(row) && 'text-info')}
+                          size="sm" variant="ghost" className="h-7"
                           disabled={busyKey === key || bulkBusy}
                           onClick={() => reopenOne(row)}
-                          title="Put this host back In Review. It returns to your queue and your conclusion is cleared — click again to confirm."
+                          title="Put this host back In Review. It returns to your queue and the review’s note is cleared — click again to confirm."
                         >
-                          {armed === key ? 'Confirm: clears the conclusion' : 'Re-open review'}
+                          {armed === key ? 'Confirm: re-open the review' : 'Re-open review'}
                         </Button>
                       </TableCell>
                     )}

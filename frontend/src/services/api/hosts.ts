@@ -305,20 +305,16 @@ export interface HostListResponse {
   vulnerability_error?: boolean;
 }
 
-/** §9 review-completion outcomes recorded when a host is marked Reviewed. */
-export type ReviewConclusion =
-  | 'no_issue'
-  | 'finding_created'
-  | 'needs_evidence'
-  | 'out_of_scope'
-  | 'duplicate';
-
 export interface HostFollowInfo {
   status: FollowStatus;
   last_viewed_at?: string | null;
   created_at: string;
   updated_at?: string | null;
-  review_conclusion?: ReviewConclusion | null;
+  /** READ ONLY — what a review recorded when marking a host Reviewed still
+   *  asked for a conclusion.  Nothing sets it; a row that carries one keeps
+   *  showing it (`utils/reviewConclusion`). */
+  review_conclusion?: string | null;
+  /** The reviewer's optional note on a finished review (`setReviewNote`). */
   review_summary?: string | null;
 }
 
@@ -560,9 +556,19 @@ export const followHost = async (
   projectId: number,
   hostId: number,
   status: FollowStatus,
-  review?: { review_conclusion?: ReviewConclusion; review_summary?: string },
 ): Promise<HostFollowInfo> => {
-  const response = await api.post(`${projectPath(projectId)}/hosts/${hostId}/follow`, { status, ...review });
+  const response = await api.post(`${projectPath(projectId)}/hosts/${hostId}/follow`, { status });
+  return response.data;
+};
+
+/** The optional note on the caller's own finished review of a host; `null`
+ *  (or blank) removes it.  Nothing else about the review moves. */
+export const setReviewNote = async (
+  projectId: number,
+  hostId: number,
+  note: string | null,
+): Promise<HostFollowInfo> => {
+  const response = await api.patch(`${projectPath(projectId)}/hosts/${hostId}/follow`, { review_summary: note });
   return response.data;
 };
 

@@ -30,9 +30,8 @@ export interface OperationsNavState {
 // pins count == list for every one of them.
 
 /** "Changed since review": a finished review of the CALLER'S whose host
- *  changed after it, or that concluded "needs more evidence" (5.330.0 — it
- *  was `has:changed_since_review OR conclusion:needs_evidence`, every
- *  teammate's reviews; that is still the team-wide list). */
+ *  changed after it (`has:changed_since_review` is the team-wide list — any
+ *  teammate's review). */
 export const CHANGED_SINCE_REVIEW_QUERY = 'follow:revisit';
 /** The hosts the CALLER has In Review (`follow:in_review` is the team's). */
 export const MY_REVIEW_QUERY = 'follow:mine';

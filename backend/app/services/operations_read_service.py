@@ -229,16 +229,15 @@ class InvestigationQueueResponse(BaseModel):
 # Review follow-ups (v2.359.0) — reviewed hosts that are not actually done.
 #
 # "Worth a look" lists hosts nobody has touched, so the first note or review
-# removes a host from it for good.  Two kinds of unresolved work fell out of
-# every queue that way: a review concluded "needs more evidence" (an open
-# question recorded as a closed state), and a host that CHANGED after it was
-# reviewed (the conclusion predates the evidence).  Both resurface here, to
-# their REVIEWER and nobody else (v2.451.0: Operations is the reader's own
-# page; it listed every teammate's reviews, and the team-wide lists remain
-# ``has:changed_since_review`` and ``conclusion:needs_evidence`` on Hosts).
+# removes a host from it for good.  One kind of unresolved work fell out of
+# every queue that way: a host that CHANGED after it was reviewed (the review
+# predates the evidence).  It resurfaces here, to its REVIEWER and nobody
+# else (v2.451.0: Operations is the reader's own page; the team-wide list
+# remains ``has:changed_since_review`` on Hosts).  A review records no
+# conclusion, so there is no "needs more evidence" half: a host that needs
+# more evidence stays In Review.
 # Two answers: "Still reviewed" (the review stands as of now) and re-opening
-# it (In Review), which returns the host to the personal queue and clears the
-# conclusion.
+# it (In Review), which returns the host to the personal queue.
 # ---------------------------------------------------------------------------
 
 class ReviewFollowupRow(BaseModel):
@@ -248,9 +247,9 @@ class ReviewFollowupRow(BaseModel):
     ip_address: str
     hostname: Optional[str] = None
     reviewed_at: Optional[datetime] = None
-    review_conclusion: Optional[str] = None
+    #: The reviewer's optional note on the review.
     review_summary: Optional[str] = None
-    # needs_evidence | new_ports | new_vulns — each with its own sentence.
+    # new_ports | new_vulns — each with its own sentence.
     reasons: List[InvestigateReason] = Field(default_factory=list)
 
 
@@ -277,8 +276,8 @@ def compute_review_followups(
     A teammate's review is never listed (v2.451.0), whatever happened to the
     host after it.  Measured against ``HostFollow.reviewed_at`` — never ``updated_at``, which
     every view of the host bumps.  A row reviewed before that column existed
-    and never backfilled (NULL) is reported for ``needs_evidence`` only: with
-    no baseline there is nothing to call "since".
+    and never backfilled (NULL) is never listed: with no baseline there is
+    nothing to call "since".
 
     The list IS ``follow:revisit`` (``P.my_review_followup_predicate``): the
     count is that predicate counted, and the page is that predicate ordered
@@ -308,8 +307,7 @@ def compute_review_followups(
     # entities: a row shows an address, a name and what the review said.
     page = (
         db.query(
-            HostFollow.id, HostFollow.reviewed_at, HostFollow.review_conclusion,
-            HostFollow.review_summary,
+            HostFollow.id, HostFollow.reviewed_at, HostFollow.review_summary,
             models.Host.id, models.Host.ip_address, models.Host.hostname,
             func.count().over().label("total"),
         )
@@ -319,7 +317,7 @@ def compute_review_followups(
             HostFollow.user_id == current_user.id,
             HostFollow.status == FollowStatus.REVIEWED,
         )
-        # The oldest conclusion first (it has been unresolved longest).  The
+        # The oldest review first (it has been unresolved longest).  The
         # host id makes the order total, so two pages never share or skip a row.
         .order_by(HostFollow.reviewed_at.asc().nulls_last(), models.Host.id)
         .offset(max(0, offset))
@@ -358,13 +356,8 @@ def compute_review_followups(
         return f"{n} {one if n == 1 else (many or one + 's')}"
 
     rows: List[ReviewFollowupRow] = []
-    for follow_id, reviewed_at, conclusion, summary, host_id, ip_address, hostname, _total_ in page:
+    for follow_id, reviewed_at, summary, host_id, ip_address, hostname, _total_ in page:
         reasons: List[InvestigateReason] = []
-        if conclusion == "needs_evidence":
-            reasons.append(InvestigateReason(
-                kind="needs_evidence",
-                text="Concluded “needs more evidence” — the question is still open",
-            ))
         ports = new_ports.get(follow_id)
         if ports:
             shown = ", ".join(str(p) for p in ports[:_FOLLOWUP_PORT_SAMPLE])
@@ -385,7 +378,6 @@ def compute_review_followups(
             ip_address=str(ip_address),
             hostname=hostname,
             reviewed_at=reviewed_at,
-            review_conclusion=conclusion,
             review_summary=summary,
             reasons=reasons,
         ))

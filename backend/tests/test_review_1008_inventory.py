@@ -368,8 +368,11 @@ def test_a_malformed_agent_query_is_still_a_400(client, parity_estate):
 
 @pytest.fixture
 def followup_estate(db_session, test_project, test_user):
-    """40 finished reviews of the caller's: 12 need evidence, 5 gained a port
-    after the review, 3 gained a critical after it, 20 are simply done."""
+    """40 finished reviews of the caller's: 12 gained a HIGH observation after
+    the review, 5 a port, 3 a critical — the 20 listed — and 20 are simply
+    done.  Every second "done" one carries the ``needs_evidence`` conclusion
+    an older version recorded: it used to list a review by itself, and does
+    not (the totals below would be 30)."""
     pid = test_project.id
     scan = _scan(db_session, pid)
     now = datetime.now(timezone.utc)
@@ -377,16 +380,17 @@ def followup_estate(db_session, test_project, test_user):
     for n in range(40):
         host = _host(db_session, pid, f"10.65.0.{n + 1}")
         reviewed_at = now - timedelta(days=40 - n)
-        kind = "evidence" if n < 12 else "port" if n < 17 else "vuln" if n < 20 else "done"
+        kind = "high" if n < 12 else "port" if n < 17 else "vuln" if n < 20 else "done"
         db_session.add(models.HostFollow(
             host_id=host.id, user_id=test_user.id, status=FollowStatus.REVIEWED, reviewed_at=reviewed_at,
-            review_conclusion="needs_evidence" if kind == "evidence" else "no_issue",
+            review_conclusion="needs_evidence" if kind == "done" and n % 2 else "no_issue",
         ))
         if kind == "port":
             _port(db_session, host, 8080, first_seen=reviewed_at + timedelta(hours=1))
             _port(db_session, host, 22, first_seen=reviewed_at - timedelta(days=1))
-        if kind == "vuln":
-            _vuln(db_session, host, scan, VulnerabilitySeverity.CRITICAL,
+        if kind in ("vuln", "high"):
+            _vuln(db_session, host, scan,
+                  VulnerabilitySeverity.CRITICAL if kind == "vuln" else VulnerabilitySeverity.HIGH,
                   created_at=reviewed_at + timedelta(hours=1))
         if kind != "done":
             listed.append(host.id)
@@ -436,12 +440,12 @@ def test_a_followup_page_reads_its_own_rows_only(db_session, test_project, test_
             db_session, test_user, test_project, limit=5, offset=10),
         test_user, test_project,
     )
-    # Oldest review first: rows 11–15 of the list, i.e. two that need evidence
-    # and three that gained a port.
+    # Oldest review first: rows 11–15 of the list, i.e. two that gained a high
+    # observation and three that gained a port.
     assert [row.host_id for row in result.items] == listed[10:15]
     assert result.total == 20
     assert [row.reasons[0].kind for row in result.items] == [
-        "needs_evidence", "needs_evidence", "new_ports", "new_ports", "new_ports"]
+        "new_vulns", "new_vulns", "new_ports", "new_ports", "new_ports"]
     assert "8080" in result.items[2].reasons[0].text and "22" not in result.items[2].reasons[0].text
     assert len(seen) == 3, "\n".join(seen)
     assert " LIMIT " in seen[0] and " OFFSET " in seen[0] and "ORDER BY" in seen[0]

@@ -25,7 +25,7 @@
  * untouched with a critical observation — the terrain's sentence states both),
  * "Where the team has been" and the Exposure block (scanner observations by
  * severity, the three scope states) are on Posture; teammates' reviews are on
- * Hosts (`has:changed_since_review`, `conclusion:needs_evidence`); every
+ * Hosts (`has:changed_since_review`); every
  * session of the project is on Agent Sessions.  Earlier (5.329.0) the Runs
  * list, the recent-activity column and the Project state section went
  * (Agent Sessions, Collaboration and Posture hold them).

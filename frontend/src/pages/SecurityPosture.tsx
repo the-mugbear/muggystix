@@ -27,7 +27,7 @@ import {
 } from '../services/api';
 import { downloadSystemicReport, gridCellHostsHref } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
-import { buildFindingsUrl, buildHostsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
+import { buildFindingsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
 import { formatApiError } from '../utils/apiErrors';
 import { invalidateReads, queryErrorText } from '../lib/query';
 import { safeFallback } from '../utils/uiStyles';
@@ -231,10 +231,12 @@ const PostureConclusion: React.FC<{ data: PostureResponse }> = ({ data }) => {
 };
 
 // ---------------------------------------------------------------------------
-// Context strip — at most four quiet, linked measures on ONE baseline. They
+// Context strip — three quiet, linked measures on ONE baseline. They
 // support the conclusion; they are not the page. (Were four stat cards, each
 // with its own icon, meter and border; "Ownership" is gone — an unassigned
-// finding is a row under Decisions, not a measure of the estate.)
+// finding is a row under Decisions, not a measure of the estate — and so is
+// "Still needs evidence": a review records no conclusion, and a host that
+// needs more evidence stays In Review.)
 // ---------------------------------------------------------------------------
 // The measure itself is shared with Oversight (components/posture/PostureMeasure).
 const Measure = PostureMeasure;
@@ -246,9 +248,8 @@ const ContextStrip: React.FC<{ data: PostureResponse }> = ({ data }) => {
   const sev = h.active_exposure.by_severity;
   const criticalHigh = (sev.critical ?? 0) + (sev.high ?? 0);
   const unreviewed = h.review_coverage.total - h.review_coverage.reviewed;
-  const needsEvidence = h.open_questions?.needs_evidence_hosts ?? 0;
   return (
-    <div className="grid gap-y-md divide-border sm:grid-cols-2 lg:grid-cols-4 lg:divide-x">
+    <div className="grid gap-y-md divide-border sm:grid-cols-3 sm:divide-x">
       <Measure
         label="Critical / high findings, active"
         info="Promoted findings of critical or high severity that are under investigation or confirmed. Scanner observations nobody has judged are counted beside it, never added to it."
@@ -283,16 +284,6 @@ const ContextStrip: React.FC<{ data: PostureResponse }> = ({ data }) => {
             <> · <Link to={reviewedHostsUrl(false)} className="whitespace-nowrap text-info hover:underline">{unreviewed.toLocaleString()} unreviewed →</Link></>
           )}
         </p>
-      </Measure>
-
-      <Measure
-        label="Still needs evidence"
-        info="Hosts whose review concluded “needs more evidence” — an explicit record that a question is still open, not something inferred from counts. A host that went back into review no longer counts."
-        value={needsEvidence.toLocaleString()}
-        to={needsEvidence > 0 ? buildHostsUrl({ q: 'conclusion:needs_evidence' }) : undefined}
-        toLabel={`${needsEvidence} hosts still needing evidence — view`}
-      >
-        <p className={MEASURE_CAPTION_CLASS}>{needsEvidence === 0 ? 'no open questions recorded' : 'open questions from finished reviews'}</p>
       </Measure>
 
       <Measure

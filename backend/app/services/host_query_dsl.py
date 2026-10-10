@@ -50,7 +50,6 @@ from sqlalchemy.sql.selectable import Exists
 
 from app.db.models import FollowStatus
 from app.db.models_auth import User
-from app.schemas.schemas import REVIEW_CONCLUSIONS
 from app.services import host_query_predicates as P
 from app.services.misconfig_checks import CHECKS, KINDS
 from app.services.host_query_common import InvalidSubnet, escape_like  # noqa: F401  (parity w/ predicates)
@@ -614,16 +613,6 @@ def _b_gap(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     return P.evidence_gap_predicate(wanted)
 
 
-def _b_conclusion(ctx: BuildCtx, values: List[str]) -> ColumnElement:
-    wanted = [v.lower() for v in values]
-    unknown = [v for v in wanted if v not in REVIEW_CONCLUSIONS]
-    if unknown:
-        raise DSLError(
-            f"Unknown review conclusion '{unknown[0]}' (one of: {', '.join(sorted(REVIEW_CONCLUSIONS))})"
-        )
-    return P.review_conclusion_predicate(wanted)
-
-
 def _b_assigned(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     preds = []
     for v in values:
@@ -787,11 +776,8 @@ _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES),
               description="Review state — in_review / reviewed / none / in_review_any (any teammate's), "
                           "mine (you have it In Review), or revisit (a finished review of yours that "
-                          "is not done: it concluded “needs more evidence”, or the host gained an open "
-                          "port or a critical / high scanner observation after it)."),
-    FieldSpec("conclusion", _b_conclusion, value_source="enum", enum_values=sorted(REVIEW_CONCLUSIONS),
-              description="What a finished review concluded — e.g. `conclusion:needs_evidence` "
-                          "is every reviewed host whose question is still open."),
+                          "is not done: the host gained an open port or a critical / high scanner "
+                          "observation after it)."),
     FieldSpec("assigned", _b_assigned, aliases=["assignee"], value_source="user",
               description="Host assignment — “me”, “any”, “none”, a username, or a user id."),
     FieldSpec("scan", _b_scan, value_source="scan",

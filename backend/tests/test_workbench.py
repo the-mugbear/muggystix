@@ -67,11 +67,15 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
     _make_vuln(db_session, host.id, scan.id, VulnerabilitySeverity.CRITICAL)
     # A reviewed host, so the review follow-ups run all three of their
     # statements rather than returning after the first.
+    # (Changed since its review: a port first seen after it — the one thing
+    # that lists a finished review.)
     reviewed = _make_host(db_session, test_project.id, "10.9.9.2")
     db_session.add(models.HostFollow(
         host_id=reviewed.id, user_id=1, status=models.FollowStatus.REVIEWED,
-        review_conclusion="needs_evidence", reviewed_at=datetime.now(timezone.utc),
+        reviewed_at=datetime.now(timezone.utc) - timedelta(days=1),
     ))
+    db_session.add(models.Port(host_id=reviewed.id, port_number=8443, protocol="tcp", state="open",
+                               first_seen=datetime.now(timezone.utc)))
     # v2.450.0 — a finding that needs its owner, and a test to claim, so "My
     # work" runs its per-row lookups (hosts, pending proposals) too.
     from app.db.models_findings import Finding, FindingHost
@@ -264,19 +268,24 @@ def test_failed_investigation_queue_is_reported_unavailable(client, test_project
     assert "my_queue" in body and "since_last_visit" in body
 
 
-def _review(client, project, host, conclusion="no_issue", summary=None):
-    r = client.post(
-        f"/api/v1/projects/{project.id}/hosts/{host.id}/follow",
-        json={"status": "reviewed", "review_conclusion": conclusion, "review_summary": summary},
-    )
+def _review(client, project, host, note=None):
+    """Mark the host Reviewed as the page does — the status and nothing else —
+    and, when given, write the optional note with its own call."""
+    url = f"/api/v1/projects/{project.id}/hosts/{host.id}/follow"
+    r = client.post(url, json={"status": "reviewed"})
     assert r.status_code == 200, r.text
+    if note is not None:
+        r = client.patch(url, json={"review_summary": note})
+        assert r.status_code == 200, r.text
     return r
 
 
-def test_review_followups_resurface_open_questions_and_changes(client, db_session, test_project):
-    """A reviewed host left every queue for good.  Two kinds are not done: a
-    review concluded "needs more evidence", and a host that changed after it
-    was reviewed.  A clean, unchanged review stays out."""
+def test_review_followups_resurface_changes_and_nothing_else(client, db_session, test_project):
+    """A reviewed host left every queue for good.  ONE kind is not done: a
+    host that changed after it was reviewed.  A clean, unchanged review stays
+    out — and so does a review that an older version concluded "needs more
+    evidence": that half is gone (a review records no conclusion; a host that
+    needs more evidence stays In Review)."""
     clean = _make_host(db_session, test_project.id, "10.8.0.1")
     open_q = _make_host(db_session, test_project.id, "10.8.0.2")
     changed = _make_host(db_session, test_project.id, "10.8.0.3")
@@ -285,8 +294,13 @@ def test_review_followups_resurface_open_questions_and_changes(client, db_sessio
     db_session.commit()
 
     _review(client, test_project, clean)
-    _review(client, test_project, open_q, "needs_evidence", "waiting on the creds test")
-    _review(client, test_project, changed)
+    _review(client, test_project, open_q)
+    _review(client, test_project, changed, note="looked at ssh")
+    # What a row written before conclusions were retired looks like.
+    legacy = db_session.query(models.HostFollow).filter_by(host_id=open_q.id).one()
+    legacy.review_conclusion = "needs_evidence"
+    legacy.review_summary = "waiting on the creds test"
+    db_session.commit()
 
     # After the review: a new open port and a new critical observation.
     later = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -299,11 +313,11 @@ def test_review_followups_resurface_open_questions_and_changes(client, db_sessio
     body = client.get(_url(test_project.id)).json()
     assert body["followups_unavailable"] is False
     rows = {r["ip_address"]: r for r in body["followups"]["items"]}
-    assert set(rows) == {"10.8.0.2", "10.8.0.3"}
-    assert body["followups"]["total"] == 2
-
-    assert [r["kind"] for r in rows["10.8.0.2"]["reasons"]] == ["needs_evidence"]
-    assert rows["10.8.0.2"]["review_summary"] == "waiting on the creds test"
+    assert set(rows) == {"10.8.0.3"}
+    assert body["followups"]["total"] == 1
+    # The row carries the reviewer's note, and no conclusion field at all.
+    assert rows["10.8.0.3"]["review_summary"] == "looked at ssh"
+    assert "review_conclusion" not in rows["10.8.0.3"]
 
     kinds = {r["kind"]: r["text"] for r in rows["10.8.0.3"]["reasons"]}
     assert set(kinds) == {"new_ports", "new_vulns"}

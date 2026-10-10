@@ -12,9 +12,9 @@ from app.db import models
 from app.db.models import HostFollow
 from app.db.models_auth import User
 from app.api.deps import get_current_user
-from app.api.deps import get_current_project
-from app.db.models_project import Project
-from app.schemas.schemas import HostFollowInfo, HostFollowUpdate
+from app.api.deps import get_current_project, require_project_role
+from app.db.models_project import Project, ProjectRole
+from app.schemas.schemas import HostFollowInfo, HostFollowUpdate, HostReviewNoteUpdate
 from app.services.host_follow_service import HostFollowService
 # CR4-2 — serializer moved to the service layer (was defined here and
 # imported back by host_serialization, a service -> router dependency).
@@ -42,9 +42,41 @@ def follow_host(
     follow_service = HostFollowService(db)
     follow = follow_service.set_follow_status(
         host_id, current_user.id, models.FollowStatus(payload.status),
-        review_conclusion=payload.review_conclusion,
-        review_summary=payload.review_summary,
     )
+    return _serialize_follow(follow)
+
+
+@router.patch(
+    "/{host_id:int}/follow",
+    response_model=HostFollowInfo,
+    summary="Write or remove the note on your finished review of a host",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
+def set_review_note(
+    host_id: int,
+    payload: HostReviewNoteUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """The optional note on the CALLER'S OWN finished review of this host
+    (``review_summary``); blank or null removes it.  Never required, and
+    nothing else moves: the review's date is untouched, so a note does not
+    take a host out of "Changed since review".
+
+    409 when the caller has no finished review of the host — a note is on a
+    review; mark the host Reviewed first.
+    """
+    host = db.query(models.Host).filter(models.Host.id == host_id, models.Host.project_id == project.id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    follow = HostFollowService(db).set_review_note(host_id, current_user.id, payload.review_summary)
+    if follow is None:
+        raise HTTPException(
+            status_code=409,
+            detail="You have no finished review of this host — mark it Reviewed, then add the note.",
+        )
     return _serialize_follow(follow)
 
 

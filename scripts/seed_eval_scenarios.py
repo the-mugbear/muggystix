@@ -415,11 +415,8 @@ def s06_review_queue(c: Ctx, sc):
         port(c, h, sc, 22, "ssh", product="OpenSSH", version="8.9")
         follow(c, h, FollowStatus.IN_REVIEW, updated=ago(hours=i), assigned=True)
 
-    need = host(c, "s06n", "10.77.2.70", "s06-needs-evidence.eval.test", sc, os_name="Debian 12", os_family="Linux")
-    port(c, need, sc, 443, "https", product="nginx", version="1.22")
-    follow(c, need, FollowStatus.REVIEWED, updated=ago(days=4), reviewed_at=ago(days=4),
-           conclusion="needs_evidence", summary="Could not reach 443 from the jump host; need a scan from inside the VLAN.")
-
+    # A review records no conclusion any more.  This row keeps one written the
+    # old way (``no_action``) on purpose: stored conclusions are still shown.
     changed = host(c, "s06c", "10.77.2.71", "s06-changed-since-review.eval.test", sc,
                    os_name="Windows Server 2019", os_family="Windows")
     port(c, changed, sc, 445, "microsoft-ds")
@@ -429,10 +426,11 @@ def s06_review_queue(c: Ctx, sc):
     c.note("s06", "My work: queues, and Next following them",
            "/operations → My work → 'Hosts I am reviewing' lists the five, with 'Open all 5 in Hosts' "
            "(follow:mine). Open one: the host page reads '1 of 5 in Hosts I am reviewing' and Next reaches all five.",
-           f"'Changed since review' lists /hosts/{need.id} (concluded 'needs evidence' — Re-open review only) and "
-           f"/hosts/{changed.id} (a port first seen after the review — 'Still reviewed' takes it off the list, "
-           "keeping the conclusion).",
-           "Complete a review from the inspector: 'Save and next unreviewed' is offered inside a queue.")
+           f"'Changed since review' lists /hosts/{changed.id} (a port first seen after the review — 'Still "
+           "reviewed' takes it off the list, keeping the review's note). Its page still shows the conclusion "
+           "an older review recorded ('No action needed') and the note beside the review state.",
+           "Finish a review from the inspector: 'Mark reviewed' is one click, no dialog; 'Reviewed, next "
+           "unreviewed' is offered beside it inside a queue.")
 
 
 def s07_since_last_visit(c: Ctx, sc_new):

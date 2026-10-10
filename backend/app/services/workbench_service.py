@@ -141,8 +141,8 @@ class WorkbenchResponse(BaseModel):
     # empty placeholder and must read as "unavailable", never as "no work".
     investigate_unavailable: bool = False
     # v2.359.0 — the CALLER'S reviewed hosts that are not done (v2.451.0: a
-    # teammate's review is not listed): concluded "needs more evidence", or
-    # changed after the review.  Same failure contract as the
+    # teammate's review is not listed): the host changed after the review.
+    # Same failure contract as the
     # queue above: unavailable is said, never rendered as "nothing owed".
     followups: ReviewFollowupsResponse = Field(default_factory=ReviewFollowupsResponse)
     followups_unavailable: bool = False

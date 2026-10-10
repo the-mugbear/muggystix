@@ -143,9 +143,9 @@ service:
 * `my_findings` lists only the findings that NEED their owner, each with
   `needs` — a confirmed, written-up finding is not listed, so "findings I own"
   is `assist_list_findings owner=me`.
-* `followups` — the OPERATOR'S OWN finished reviews that changed or still need
-  evidence, one row per host. The team-wide question is
-  `q=has:changed_since_review OR conclusion:needs_evidence`.
+* `followups` — the OPERATOR'S OWN finished reviews whose host gained an open
+  port or a critical / high observation afterwards, one row per host. The
+  team-wide question is `q=has:changed_since_review`.
 * `setup` — whether the project has anything in it yet (`has_hosts`,
   `has_scopes`, `scope_rows`, `only_scope_id`); `since_last_visit`; `blockers`.
 * No project-wide measures and no team roster: "hosts tested", "untouched with

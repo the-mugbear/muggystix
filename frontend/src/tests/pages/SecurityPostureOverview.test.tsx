@@ -69,7 +69,6 @@ const response = {
     ownership: { owned: 5, unowned: 2, total: 7, pct: 71 },
     systemic: { adopted: true, blind_spot_count: 1, condition_count: 4 },
     detected_exposure: { vuln_count: 431 },
-    open_questions: { needs_evidence_hosts: 6 },
   },
   evidence: { scan_count: 9, scan_staleness_days: 2 },
   priorities: [
@@ -219,13 +218,25 @@ describe('SecurityPosture — overview', () => {
     expect(screen.getByText(/111 of 120 hosts inside scoped subnets/)).toBeInTheDocument();
   });
 
-  it('shows four measures, each opening the set it counts — and no remediation or ownership tile', async () => {
+  it('shows three measures, each opening the set it counts — and no remediation or ownership tile', async () => {
     await renderPage();
     expect(screen.getByRole('link', { name: /3 critical or high active findings/ })).toHaveAttribute('href', '/findings?status=active');
     expect(screen.getByText(/431 scanner observations/)).toBeInTheDocument();
-    const needs = screen.getByRole('link', { name: /6 hosts still needing evidence/ });
-    expect(new URL(needs.getAttribute('href')!, 'http://x').searchParams.get('q')).toBe('conclusion:needs_evidence');
+    expect(screen.getByRole('link', { name: 'Reviewed hosts — view' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Widespread weaknesses — open Patterns' })).toBeInTheDocument();
     expect(screen.queryByText(/Remediated|Reopened|Ownership/)).toBeNull();
+  });
+
+  // A review records no conclusion any more (owner decision 2026-10-10), so
+  // there is no "reviewed hosts that still need evidence" to count: the
+  // measure is gone, and so is its link to the retired `conclusion:` query
+  // word — which the Hosts page would now refuse as an unknown field.
+  it('has no "still needs evidence" measure, and no link uses the retired conclusion: word', async () => {
+    await renderPage();
+    expect(screen.getByRole('link', { name: 'Reviewed hosts — view' })).toBeInTheDocument();
+    expect(screen.queryByText(/needs evidence|needing evidence/i)).toBeNull();
+    const hrefs = screen.getAllByRole('link').map((a) => decodeURIComponent(a.getAttribute('href') ?? ''));
+    expect(hrefs.filter((h) => h.includes('conclusion:'))).toEqual([]);
   });
 
   it('ranks the disproportionate segment first and explains the selected row in a sentence', async () => {

@@ -239,7 +239,7 @@ const Feedback: React.FC = () => {
         <div className="min-w-0 flex-1">
           <h1 className="text-page-title font-semibold">Agent feedback</h1>
           <p className="text-metadata text-muted-foreground">
-            What agents reported at the end of their sessions, from every project. Check a claim against the
+            What agents reported when something got in their way, from every project. Check a claim against the
             session's own API calls before acting on it.
           </p>
         </div>

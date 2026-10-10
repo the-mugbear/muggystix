@@ -61,10 +61,12 @@ def _seed(db, pid):
         source=VulnerabilitySource.MANUAL, host_id=high.id, scan_id=scan.id,
         exploitable=True,  # tier 3, "exploit available" — a second queue row
     ))
+    # Reviewed a day ago; its open port is first seen now — "changed since
+    # review", so the follow-ups section has a row on both doors.
     reviewed = _host(db, pid, "10.60.1.3", ports=(22,))
     db.add(models.HostFollow(
         host_id=reviewed.id, user_id=1, status=models.FollowStatus.REVIEWED,
-        review_conclusion="needs_evidence", reviewed_at=datetime.now(timezone.utc),
+        reviewed_at=datetime.now(timezone.utc) - timedelta(days=1),
     ))
     mine = _host(db, pid, "10.60.1.4", ports=(3389,))
     db.add(models.HostFollow(host_id=mine.id, user_id=1, status=models.FollowStatus.IN_REVIEW))

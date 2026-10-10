@@ -872,19 +872,6 @@ def follow_predicate(status: str, current_user: User) -> ColumnElement:
     )
 
 
-def review_conclusion_predicate(conclusions: Sequence[str]) -> ColumnElement:
-    """Host whose review CONCLUDED one of these (v2.373.0) — team-level, like
-    ``follow_predicate``: any teammate's Reviewed row counts.  A conclusion
-    left on a row that has since gone back to In Review does not: the review
-    is open again, so nothing is concluded.  ``needs_evidence`` is the
-    Posture overview's "still needs evidence" count, and this is its list."""
-    return _host_has(
-        HostFollow.host_id,
-        HostFollow.status == FollowStatus.REVIEWED.value,
-        HostFollow.review_conclusion.in_(list(conclusions)),
-    )
-
-
 # --- changed since review ---------------------------------------------------
 # What "the host changed after it was reviewed" means, ONCE: an open port
 # first seen after ``HostFollow.reviewed_at``, or a critical / high scanner
@@ -941,12 +928,15 @@ def changed_since_review_predicate(db: Session) -> ColumnElement:
 
 def my_review_followup_predicate(current_user: User) -> ColumnElement:
     """Host with a finished review of the CALLER'S that is not the end of the
-    matter (v2.451.0, ``follow:revisit``): that review concluded "needs more
-    evidence", or the host changed after it.  Both halves are tested on the
-    SAME follow row — the caller's — which is why this is one predicate and
-    not ``has:changed_since_review OR conclusion:needs_evidence`` narrowed by
-    a "reviewed by me" value: a host the caller reviewed cleanly, and that
-    changed after a TEAMMATE'S older review, is not the caller's to re-check.
+    matter (v2.451.0, ``follow:revisit``): the host changed after it — an
+    open port first seen, or a critical / high scanner observation recorded,
+    after ``reviewed_at``.  Nothing else makes a finished review "not done":
+    a review records no conclusion, and a host that needs more evidence stays
+    In Review.  The change is tested on the SAME follow row — the caller's —
+    which is why this is its own predicate and not ``has:changed_since_review``
+    narrowed by a "reviewed by me" value: a host the caller reviewed after the
+    change, and that changed after a TEAMMATE'S older review, is not the
+    caller's to re-check.
 
     Operations' "Changed since review" (``compute_review_followups``) builds
     its rows from the same conditions on the same rows, so the section's count
@@ -968,7 +958,7 @@ def my_review_followup_predicate(current_user: User) -> ColumnElement:
             hf.host_id == models.Host.id,
             hf.user_id == current_user.id,
             hf.status == FollowStatus.REVIEWED.value,
-            or_(hf.review_conclusion == "needs_evidence", new_port, new_vuln),
+            or_(new_port, new_vuln),
         )
         .correlate(models.Host)
     )

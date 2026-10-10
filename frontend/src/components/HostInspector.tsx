@@ -66,9 +66,10 @@ import type {
   FindingHostStatus,
   FindingStatus,
   HostVulnerability,
-  ReviewConclusion,
 } from '../services/api';
 import { buildHostsUrl } from '../utils/drilldownLinks';
+import { storedReviewConclusionLabel } from '../utils/reviewConclusion';
+import { ReviewNote } from './host-inspector/ReviewNote';
 import { buildSameVulnQuery, buildExploitOnPortsQuery } from '../utils/vulnQuery';
 import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
 import { getConnectionHelpers, ConnectionHelper } from '../utils/connectionHelpers';
@@ -130,19 +131,6 @@ import { Textarea } from './ui/textarea';
 import {
   ENDPOINT_STATUS_LABEL, STATUS_LABEL as FINDING_STATUS_LABEL,
 } from '../utils/findingStatus';
-
-// §9 review-completion outcomes — what "reviewed" actually concluded, recorded
-// when a reviewer marks a host done. Order = how they're offered in the dialog.
-const REVIEW_CONCLUSION_ORDER: ReviewConclusion[] = [
-  'no_issue', 'finding_created', 'needs_evidence', 'out_of_scope', 'duplicate',
-];
-const REVIEW_CONCLUSION_LABEL: Record<ReviewConclusion, string> = {
-  no_issue: 'No actionable issue',
-  finding_created: 'Finding created',
-  needs_evidence: 'Needs more evidence',
-  out_of_scope: 'Out of scope',
-  duplicate: 'Duplicate asset',
-};
 
 // One line per issue since v5.240.0, so the preview can afford most hosts'
 // whole list (the largest host here carries 26).
@@ -387,12 +375,6 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     recordView(hostId);
   };
 
-  // §9 review-completion dialog (opened by "Mark reviewed").
-  const [reviewCompletionOpen, setReviewCompletionOpen] = useState(false);
-  // No conclusion until the reviewer chooses one (owner decision 2026-10-10):
-  // a preselected "No actionable issue" was recorded by one unthinking click.
-  const [reviewConclusion, setReviewConclusion] = useState<ReviewConclusion | null>(null);
-  const [reviewSummaryText, setReviewSummaryText] = useState('');
   // v2.43.0 — MONO-2: thread grouping for <NoteThread>.  MUST live above
   // the conditional early returns (loading / !host) so the hook count is
   // stable across the first-paint-with-skeleton → data-loaded transition.
@@ -710,24 +692,23 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     pendingImagesRef.current.forEach((p) => URL.revokeObjectURL(p.url));
   }, []);
 
-  type FollowChange = {
-    status: FollowStatus | 'none';
-    review?: { review_conclusion?: ReviewConclusion; review_summary?: string };
+  type FollowChange = { status: FollowStatus | 'none' };
+  // The server's answer about the reader's review, onto the cached host; the
+  // list's row is told too (the callback names the host).
+  const putFollow = (response: Host['follow']) => {
+    onFollowChange?.(hostId, response ?? null);
+    putHost((previous) => ({ ...previous, follow: response ?? null }));
   };
   const follow = useMutation({
-    mutationFn: ({ status, review }: FollowChange): Promise<Host['follow']> => (
-      status === 'none' ? unfollowHost(projectId, hostId).then(() => null) : followHost(projectId, hostId, status, review)
+    mutationFn: ({ status }: FollowChange): Promise<Host['follow']> => (
+      status === 'none' ? unfollowHost(projectId, hostId).then(() => null) : followHost(projectId, hostId, status)
     ),
-    // The list's row is told either way (the callback names the host).
-    onSuccess: (response) => {
-      onFollowChange?.(hostId, response ?? null);
-      putHost((previous) => ({ ...previous, follow: response ?? null }));
-    },
+    onSuccess: putFollow,
   });
   const followLoading = follow.isPending;
-  const updateFollow = (status: FollowChange['status'], review?: FollowChange['review'], onSaved?: () => void) => {
+  const updateFollow = (status: FollowChange['status'], onSaved?: () => void) => {
     // The toasts say "this host", so only while the reader is still on it.
-    follow.mutate({ status, review }, {
+    follow.mutate({ status }, {
       onSuccess: () => {
         if (status === 'none') toast.info('Removed from your follow list', { autoHideMs: 2000 });
         else toast.success(`Marked as ${FOLLOW_STATUS_META[status].label}`, { autoHideMs: 2000 });
@@ -737,22 +718,13 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     });
   };
 
-  const openReviewCompletion = () => {
-    setReviewConclusion(null);
-    setReviewSummaryText('');
-    setReviewCompletionOpen(true);
-  };
-  // `advance`: save, then move to the next host nobody has started — the
-  // conclusion and the next task were two separate trips through the queue
-  // chrome.  Only after the save succeeded: a failed save must not carry the
-  // operator away from the host whose conclusion was lost.
-  const submitReviewCompletion = (advance = false) => {
-    if (reviewConclusion == null) return;
-    setReviewCompletionOpen(false);
-    updateFollow('reviewed', {
-      review_conclusion: reviewConclusion,
-      review_summary: reviewSummaryText.trim() || undefined,
-    }, advance ? onNextUnreviewed : undefined);
+  // Finishing a review is ONE click, like starting one (owner decision
+  // 2026-10-10): no dialog, no conclusion — a host that needs more evidence
+  // stays In Review.  `advance`: then move to the next host nobody has
+  // started.  Only after the save succeeded: a failed save must not carry the
+  // reader away from the host that was not marked.
+  const markReviewed = (advance = false) => {
+    updateFollow('reviewed', advance ? onNextUnreviewed : undefined);
   };
 
   const addPendingImages = useCallback((files: File[]) => {
@@ -977,6 +949,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   // unfiltered): a UDP port nmap could not settle was on no list at all.
   const filteredPorts = host.ports.filter((port) => port.state !== 'open' && port.state !== 'closed');
   const followInfo = host.follow;
+  const storedConclusion = storedReviewConclusionLabel(followInfo?.review_conclusion);
   const followHelperText = followStatus
     ? FOLLOW_STATUS_META[followStatus].description
     : 'Select a review status to keep track of this host.';
@@ -1345,7 +1318,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
               <RotateCcw className="size-3.5" aria-hidden /> Re-open review
             </Button>
           ) : followStatus === 'in_review' ? (
-            <Button size="sm" disabled={followLoading} onClick={openReviewCompletion}>
+            <Button size="sm" disabled={followLoading} onClick={() => markReviewed()}>
               <CheckCircle2 className="size-3.5" aria-hidden /> Mark reviewed
             </Button>
           ) : (
@@ -1357,8 +1330,16 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
           {/* 5.303.0 — the off-path transitions as quiet buttons: the "⋯"
               menu they lived in held one item on almost every host. */}
           {followStatus !== 'in_review' && followStatus !== 'reviewed' && (
-            <Button size="sm" variant="ghost" disabled={followLoading} onClick={openReviewCompletion}>
-              Mark reviewed…
+            <Button size="sm" variant="ghost" disabled={followLoading} onClick={() => markReviewed()}>
+              Mark reviewed
+            </Button>
+          )}
+          {/* Only inside a queue (the Hosts side sheet passes the step): mark
+              it Reviewed and go to the next host nobody has started. */}
+          {followStatus !== 'reviewed' && onNextUnreviewed && (
+            <Button size="sm" variant="ghost" disabled={followLoading} onClick={() => markReviewed(true)}
+              title="Mark this host Reviewed, then open the next host nobody has started">
+              Reviewed, next unreviewed
             </Button>
           )}
           {followStatus && (
@@ -1597,24 +1578,33 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
               </dl>
             )}
 
-          {/* Review detail — only what exists: the conclusion, what changed
-              since, when, and who else is on this host. The status and its
-              action are in the title row; an unreviewed host that nobody else
-              follows renders nothing here. */}
+          {/* Review detail — only what exists: the reviewer's note (optional;
+              writers can add or edit it), a conclusion an older review
+              recorded (displayed, never asked for), what changed since, when,
+              and who else is on this host. The status and its action are in
+              the title row; an unreviewed host that nobody else follows
+              renders nothing here. */}
           {/* v5.246.0 — a bare "Updated <time>" no longer holds this row open:
               for a host merely In review it was a divided row carrying one
               timestamp. The time still shows whenever the row has a reason. */}
-          {((followStatus === 'reviewed' && followInfo?.review_conclusion)
+          {((followStatus === 'reviewed'
+              && (storedConclusion || followInfo?.review_summary || canManageEntries))
             || newEvidenceSinceReview || otherFollowers.length > 0 || followersError) && (
           <div className="space-y-xs border-t border-border pt-xs">
-            <div className="flex flex-wrap items-center gap-sm">
-              <div className="flex flex-wrap items-center gap-xs">
-                {followStatus === 'reviewed' && followInfo?.review_conclusion && (
-                  <span className="text-caption font-medium text-foreground"
-                    title={followInfo.review_summary ?? undefined}>
-                    {REVIEW_CONCLUSION_LABEL[followInfo.review_conclusion]
-                      ?? followInfo.review_conclusion}
+            <div className="flex min-w-0 flex-wrap items-center gap-sm">
+              <div className="flex min-w-0 flex-wrap items-center gap-xs">
+                {followStatus === 'reviewed' && storedConclusion && (
+                  <span className="min-w-0 break-words text-caption font-medium text-foreground">
+                    {storedConclusion}
                   </span>
+                )}
+                {followStatus === 'reviewed' && (
+                  <ReviewNote
+                    hostId={hostId}
+                    note={followInfo?.review_summary ?? null}
+                    canEdit={canManageEntries}
+                    onSaved={putFollow}
+                  />
                 )}
                 {newEvidenceSinceReview && sinceReview && (
                   sinceReview.reobservedOnly ? (
@@ -1866,59 +1856,6 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
           )}
         </div>
       </InspectorSection>
-
-      {/* §9 — review-completion dialog. Marking a host Reviewed records WHAT
-          the reviewer concluded so "reviewed" is an auditable outcome. */}
-      <Dialog open={reviewCompletionOpen} onOpenChange={(v) => { if (!v) setReviewCompletionOpen(false); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Complete review</DialogTitle>
-            <DialogDescription>
-              Record what this review concluded. It's kept on the host's review state and shown to
-              the team.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-sm">
-            <div>
-              <Label htmlFor="review-conclusion" className="text-caption">Conclusion</Label>
-              <Select value={reviewConclusion ?? ''} onValueChange={(v) => setReviewConclusion(v as ReviewConclusion)}>
-                <SelectTrigger id="review-conclusion"><SelectValue placeholder="Choose a conclusion" /></SelectTrigger>
-                <SelectContent>
-                  {REVIEW_CONCLUSION_ORDER.map((c) => (
-                    <SelectItem key={c} value={c}>{REVIEW_CONCLUSION_LABEL[c]}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label htmlFor="review-summary" className="text-caption">Summary (optional)</Label>
-              <Textarea
-                id="review-summary"
-                rows={3}
-                placeholder="What you checked and why you concluded this…"
-                value={reviewSummaryText}
-                onChange={(e) => setReviewSummaryText(e.target.value)}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setReviewCompletionOpen(false)}>Cancel</Button>
-            <Button
-              variant={onNextUnreviewed ? 'outline' : 'default'}
-              disabled={followLoading || reviewConclusion == null}
-              onClick={() => submitReviewCompletion(false)}
-            >
-              <CheckCircle2 className="size-3.5" aria-hidden /> Mark reviewed
-            </Button>
-            {/* Only inside a queue (the Hosts side sheet passes the step). */}
-            {onNextUnreviewed && (
-              <Button disabled={followLoading || reviewConclusion == null} onClick={() => submitReviewCompletion(true)}>
-                <CheckCircle2 className="size-3.5" aria-hidden /> Save and next unreviewed
-              </Button>
-            )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* §11 — vuln triage confirm. Promotion fans out across every project
           host sharing the plugin_id, so show that blast radius (and capture

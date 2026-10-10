@@ -26,6 +26,7 @@ from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.schemas.schemas import ReviewStateToSet
 from app.services import host_query
+from app.services.host_follow_service import HostFollowService
 from app.services.webhook_dispatcher import stage_dispatch
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -302,13 +303,16 @@ def bulk_follow(
         .filter(HostFollow.user_id == current_user.id, HostFollow.host_id.in_(host_ids))
         .all()
     }
+    # The same write as the single-host route, per row (it used to set the
+    # status alone: a host marked Reviewed from the bulk bar had no
+    # ``reviewed_at``, so it could never be "changed since review").
     status = FollowStatus(payload.status)
     for h in host_ids:
         follow = existing.get(h)
-        if follow:
-            follow.status = status
-        else:
-            db.add(HostFollow(host_id=h, user_id=current_user.id, status=status))
+        if not follow:
+            follow = HostFollow(host_id=h, user_id=current_user.id, status=status)
+            db.add(follow)
+        HostFollowService.apply_review_status(follow, status, current_user.id)
 
     db.commit()
     return BulkResult(affected=len(host_ids), requested=len(payload.host_ids))

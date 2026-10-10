@@ -95,7 +95,12 @@ class HostFollowInfo(BaseModel):
     last_viewed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
-    # §9 — the recorded review outcome (present only when status=reviewed).
+    # READ ONLY, and only on a Reviewed row.  ``review_conclusion`` is what a
+    # review recorded while marking a host Reviewed still asked for one
+    # (no_issue | finding_created | needs_evidence | out_of_scope | duplicate
+    # | no_action); nothing sets it any more, and a row that carries one keeps
+    # showing it.  ``review_summary`` is the reviewer's optional note
+    # (``PATCH /hosts/{id}/follow``).
     review_conclusion: Optional[str] = None
     review_summary: Optional[str] = None
 
@@ -194,11 +199,6 @@ class NoteActivitySummary(BaseModel):
     recent_notes: List[NoteActivityEntry] = []
 
 
-REVIEW_CONCLUSIONS = {
-    "no_issue", "finding_created", "needs_evidence", "out_of_scope", "duplicate",
-}
-
-
 #: What a host's review status can be SET to, on every door — the page's
 #: control, the bulk bar, an agent: the review states the pages offer
 #: (``engagement_metrics_service.REVIEW_STATES``, the one list).  The retired
@@ -209,17 +209,20 @@ ReviewStateToSet = Literal[tuple(s.value for s in REVIEW_STATES)]  # type: ignor
 
 
 class HostFollowUpdate(BaseModel):
+    """A review status, and nothing else: finishing a review is one click and
+    records no conclusion (owner, 2026-10-10)."""
     status: ReviewStateToSet
-    # §9 review completion — recorded when status=reviewed (ignored otherwise).
-    review_conclusion: Optional[str] = None
+
+
+class HostReviewNoteUpdate(BaseModel):
+    """The reviewer's optional note on their finished review.  Blank or null
+    removes it."""
     review_summary: Optional[str] = Field(None, max_length=4000)
 
-    @field_validator("review_conclusion")
+    @field_validator("review_summary")
     @classmethod
-    def _valid_conclusion(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in REVIEW_CONCLUSIONS:
-            raise ValueError(f"review_conclusion must be one of {sorted(REVIEW_CONCLUSIONS)}")
-        return v
+    def _blank_is_none(cls, v: Optional[str]) -> Optional[str]:
+        return (v or "").strip() or None
 
 
 class AnnotationCreate(AnnotationBase):

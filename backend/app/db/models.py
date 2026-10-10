@@ -1089,14 +1089,20 @@ class HostFollow(Base):
     last_viewed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    # Review completion (§9): when the reviewer marks this host Reviewed they
-    # record WHAT they concluded — so "reviewed" is an auditable outcome, not a
-    # bare bookmark. Carried on the reviewer's own follow row; cleared when the
-    # host leaves the reviewed state. Values: no_issue | finding_created |
-    # needs_evidence | out_of_scope | duplicate.
+    # ``review_conclusion`` is LEGACY, kept to be displayed: marking a host
+    # Reviewed used to ask what the review concluded (no_issue |
+    # finding_created | needs_evidence | out_of_scope | duplicate, and the
+    # older no_action).  Finishing a review is one click now (owner,
+    # 2026-10-10) and nothing sets the column; a row that carries a value
+    # keeps it while it stays Reviewed and loses it when the review is
+    # re-opened.  No query, count or list reads it.  Kept until the owner
+    # decides the stored values are no longer worth showing — dropping it is
+    # a migration.
     review_conclusion = Column(String(32), nullable=True)
+    # The reviewer's optional note on their finished review
+    # (``PATCH /hosts/{id}/follow``); cleared with the review.
     review_summary = Column(Text, nullable=True)
-    # v2.359.0 — WHEN the conclusion was recorded.  ``updated_at`` cannot say:
+    # v2.359.0 — WHEN the review was finished.  ``updated_at`` cannot say:
     # it is bumped by every write to the row, including ``last_viewed_at`` each
     # time the reviewer opens the host, so "changed since review" measured
     # against it would reset whenever somebody looked.  Set with the status
