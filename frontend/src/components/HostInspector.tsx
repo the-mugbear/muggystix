@@ -263,7 +263,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   const toast = useToast();
   const { user } = useAuth();
   // The PROJECT role (analyst+), not the account role every member has (R32).
-  const { canWrite: canManageEntries } = useProjectRole();
+  const { canWrite: canManageEntries, isProjectAdmin } = useProjectRole();
 
   // Pivot a vuln to the host inventory filtered to every host with the same
   // vulnerability. When the parent supplies onQueryHosts (the Hosts SideSheet)
@@ -1851,6 +1851,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
               currentUserId={user?.id ?? null}
               hostId={hostId}
               canManageNotes={canManageEntries}
+              isProjectAdmin={isProjectAdmin}
             />
           )}
           {hiddenNoteCount > 0 && (

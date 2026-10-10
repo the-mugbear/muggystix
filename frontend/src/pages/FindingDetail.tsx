@@ -719,6 +719,7 @@ const FindingDetail: React.FC = () => {
       <div id="section-comments" style={jumpTargetStyle}>
         <FindingCommentThread
           findingId={finding.id} canManage={canManage} reportMarking={reportMarking}
+          isProjectAdmin={!!finding.viewer_is_project_admin}
         />
       </div>
 

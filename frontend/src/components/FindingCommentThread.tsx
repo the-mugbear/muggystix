@@ -17,7 +17,9 @@ import {
   deleteFindingNote,
   uploadFindingNoteAttachment,
 } from '../services/api';
-import NoteAttachments, { type NoteAttachmentsHandle, type ReportMarking } from './host-inspector/NoteAttachments';
+import NoteAttachments, {
+  mayDeleteAttachment, type NoteAttachmentsHandle, type ReportMarking,
+} from './host-inspector/NoteAttachments';
 import { DiscussionText } from './MentionText';
 import MentionTextarea from './MentionTextarea';
 import { Button } from './ui/button';
@@ -35,6 +37,9 @@ interface FindingCommentThreadProps {
   findingId: number;
   /** Analyst+ — gates the compose/reply/attach affordances. */
   canManage: boolean;
+  /** The viewer administers the project (the server's word): may delete an
+   *  image someone else attached.  Not said = not offered. */
+  isProjectAdmin?: boolean;
   /** v5.260.0 — the images' "In report" mark (see NoteAttachments). */
   reportMarking?: ReportMarking;
 }
@@ -74,7 +79,9 @@ interface PendingFile {
   noteId?: number;
 }
 
-const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, canManage, reportMarking }) => {
+const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({
+  findingId, canManage, isProjectAdmin = false, reportMarking,
+}) => {
   const toast = useToast();
   const projectId = useProjectId();
   const { user } = useAuth();
@@ -375,6 +382,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
           noteId={note.id}
           attachments={note.attachments ?? []}
           canManage={canManage}
+          canDelete={(att) => mayDeleteAttachment(att, { id: user?.id, isProjectAdmin })}
           uploadFn={(file) => uploadFindingNoteAttachment(projectId, findingId, note.id, file)}
           reportMarking={reportMarking}
         />

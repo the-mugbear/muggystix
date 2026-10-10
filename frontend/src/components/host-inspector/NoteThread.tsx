@@ -10,7 +10,7 @@ import { DiscussionText } from '../MentionText';
 import MentionTextarea from '../MentionTextarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { cn } from '../../utils/cn';
-import NoteAttachments, { type NoteAttachmentsHandle } from './NoteAttachments';
+import NoteAttachments, { mayDeleteAttachment, type NoteAttachmentsHandle } from './NoteAttachments';
 
 // v5.241.0 — a note's actions are 28px, not 36px: five full-size icon buttons
 // and a select made every note's header the tallest thing in it.
@@ -53,8 +53,11 @@ export interface NoteThreadProps {
   onEditDetails?: (note: Annotation) => void;
   /** Host id — needed to attach/serve note image evidence. */
   hostId: number;
-  /** Analyst+ — gates attach/delete of evidence images (display always on). */
+  /** Analyst+ — gates attaching evidence images (display always on). */
   canManageNotes: boolean;
+  /** The viewer administers the project: may delete an image someone else
+   *  attached (the uploader always may).  Not said = not offered. */
+  isProjectAdmin?: boolean;
   /** v5.264.0 — the viewer: their notes sit on the right. */
   currentUserId?: number | null;
 }
@@ -81,6 +84,7 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
   onEditDetails,
   hostId,
   canManageNotes,
+  isProjectAdmin = false,
   currentUserId,
 }) => {
   const attachRef = useRef<NoteAttachmentsHandle>(null);
@@ -200,6 +204,7 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
           noteId={note.id}
           attachments={note.attachments ?? []}
           canManage={canManageNotes}
+          canDelete={(att) => mayDeleteAttachment(att, { id: currentUserId, isProjectAdmin })}
         />
       </MessageBubble>
       {replyTo?.id === note.id && (

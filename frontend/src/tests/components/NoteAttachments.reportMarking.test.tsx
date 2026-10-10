@@ -14,7 +14,7 @@ vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
 import * as api from '../../services/api';
 import { blobFor, installBlobUrls } from '../helpers/blobUrls';
 import { readsOnScreen } from '../helpers/readsOnScreen';
-import NoteAttachments from '../../components/host-inspector/NoteAttachments';
+import NoteAttachments, { mayDeleteAttachment } from '../../components/host-inspector/NoteAttachments';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -232,7 +232,7 @@ describe('NoteAttachments — captions and placement on a finding', () => {
     render(
       <>
         <ReadsOnScreen />
-        <NoteAttachments noteId={5} canManage
+        <NoteAttachments noteId={5} canManage canDelete={() => true}
           attachments={[att(1, { include_in_report: true })]}
           reportMarking={{ canMark: () => true, placement: placement({ 1: ['description'] }) }} />
       </>,
@@ -348,5 +348,38 @@ describe('NoteAttachments — captions and placement on a finding', () => {
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Delete/ })).not.toBeInTheDocument();
     expect(screen.getByText('In report')).toBeInTheDocument();
+  });
+});
+
+/**
+ * Walkthrough as an analyst, 2026-10-10: every analyst was offered "Delete"
+ * on an image someone else attached, and the server refuses that (uploader
+ * or project admin only).  A write control the server would refuse is hidden.
+ */
+describe('NoteAttachments — who is offered Delete', () => {
+  const images = [att(1, { uploaded_by_id: 7 }), att(2, { uploaded_by_id: 9 }), att(3, { uploaded_by_id: null })];
+  const offered = () => screen.queryAllByRole('button', { name: /^Delete / }).map((b) => b.getAttribute('aria-label'));
+
+  it('an analyst: their own image and one with no recorded uploader — not a colleague\'s', () => {
+    render(<NoteAttachments noteId={5} canManage attachments={images}
+      canDelete={(a) => mayDeleteAttachment(a, { id: 7, isProjectAdmin: false })} />);
+    expect(offered()).toEqual(['Delete shot-1.png', 'Delete shot-3.png']);
+  });
+
+  it('a project admin: every image', () => {
+    render(<NoteAttachments noteId={5} canManage attachments={images}
+      canDelete={(a) => mayDeleteAttachment(a, { id: 7, isProjectAdmin: true })} />);
+    expect(offered()).toEqual(['Delete shot-1.png', 'Delete shot-2.png', 'Delete shot-3.png']);
+  });
+
+  it('a caller that does not say who is looking offers only what anyone may delete', () => {
+    render(<NoteAttachments noteId={5} canManage attachments={images} />);
+    expect(offered()).toEqual(['Delete shot-3.png']);
+  });
+
+  it('a reader: none', () => {
+    render(<NoteAttachments noteId={5} canManage={false} attachments={images}
+      canDelete={() => true} />);
+    expect(offered()).toEqual([]);
   });
 });

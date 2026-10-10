@@ -28,8 +28,15 @@ interface NoteAttachmentsProps {
   hostId?: number;
   noteId: number;
   attachments: NoteAttachment[];
-  /** Analyst+ — gates the attach/delete affordances (display is always on). */
+  /** Analyst+ — gates the attach affordance (display is always on). */
   canManage: boolean;
+  /**
+   * Whether THIS viewer may delete an image: its uploader or a project admin
+   * (the server's rule; `mayDeleteAttachment`).  A caller that does not say
+   * is offered a delete only on an image with no recorded uploader — never
+   * a control the server would refuse.
+   */
+  canDelete?: (attachment: NoteAttachment) => boolean;
   /**
    * Override the upload call so the same component serves other annotation
    * targets (e.g. a finding's comment thread). Defaults to the host-note
@@ -89,9 +96,22 @@ const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
  * needs the bearer token, so a bare <img src> wouldn't load) — through
  * `hooks/useAttachmentImages`, the cache the finding page uses too.
  */
+const hasNoUploader = (attachment: NoteAttachment): boolean => attachment.uploaded_by_id == null;
+
+/**
+ * The server's rule for deleting a note's image (`DELETE
+ * /hosts/notes/attachments/{id}`): its uploader, a project admin, or anyone
+ * who may write when no uploader was recorded.
+ */
+export const mayDeleteAttachment = (
+  attachment: NoteAttachment,
+  viewer: { id: number | null | undefined; isProjectAdmin: boolean },
+): boolean =>
+  viewer.isProjectAdmin || hasNoUploader(attachment) || (viewer.id != null && attachment.uploaded_by_id === viewer.id);
+
 const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(({
-  hostId, noteId, attachments, canManage, uploadFn, externalTrigger = false, onBusyChange,
-  reportMarking,
+  hostId, noteId, attachments, canManage, canDelete = hasNoUploader, uploadFn, externalTrigger = false,
+  onBusyChange, reportMarking,
 }, ref) => {
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -324,7 +344,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
                     </span>
                   )}
                 </button>
-                {canManage && (
+                {canManage && canDelete(att) && (
                   <button
                     type="button"
                     onClick={() => onDelete(att.id)}
