@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
-  keepPreviousData, useInfiniteQuery, useMutation, useMutationState, useQuery, useQueryClient, type InfiniteData,
+  keepPreviousData, useMutation, useMutationState, useQuery, useQueryClient,
 } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -21,8 +21,9 @@ import {
   Upload,
   PauseCircle,
 } from 'lucide-react';
+import { useListQuery } from '../hooks/useListQuery';
 import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
-import { invalidateReads, pollEvery, queryErrorText, rememberFor, useLastSettled } from '../lib/query';
+import { invalidateReads, pollEvery, rememberFor, useLastSettled } from '../lib/query';
 import { INGESTION_JOB_READS } from '../utils/ingestionReads';
 import {
   anyStillRunning, bannerRows, completedScanIds, jobIdsToAsk, mergeFollowed, settledJobs,
@@ -126,6 +127,9 @@ const JOB_STATUS_LABEL: Record<string, string> = {
  *  by id; as all files it is the files themselves, already in order. */
 interface HistoryPage {
   flat: boolean;
+  /** What the page is counted by — where the next one starts: the files
+   *  themselves as all files, the order's entries grouped by upload. */
+  items: Array<ImportHistoryEntry | Scan>;
   entries: ImportHistoryEntry[];
   scans: Scan[];
   batches: ScanBatchSummary[];
@@ -399,37 +403,46 @@ export default function Scans() {
   //   All files: one flat, sortable list of every imported file.
   // A new filter keeps the rows on screen until its own arrive; a failure is
   // said as one (it used to read "No scans uploaded yet").
-  const historyQuery = useInfiniteQuery<HistoryPage, unknown, InfiniteData<HistoryPage, number>, unknown[], number>({
-    queryKey: showBatchFiles
-      ? ['getScans', projectId, { ...listFilters, sortBy, sortOrder, unbatched: false }, { limit: SCAN_LIMIT }]
-      : ['getImportHistory', projectId, listFilters, { limit: HISTORY_PAGE }],
-    queryFn: async ({ pageParam, signal }) => {
+  // On the list hook (`useListQuery`), with what this list needs of it: each
+  // page states its own end (`hasMore` — the history's `has_more`; for all
+  // files, which has no total, "a full page came back"); every loaded page is
+  // read (`responses`); and the previous rows stay only WHILE another filter
+  // loads (`keepPrevious: 'loading'`) — after a failed read on a new filter
+  // only the error and Retry show.
+  const historyList = useListQuery<ImportHistoryEntry | Scan, HistoryPage>(
+    showBatchFiles ? 'getScans' : 'getImportHistory',
+    async ({ offset, limit, signal }): Promise<HistoryPage> => {
       if (showBatchFiles) {
-        const files = await getScans(projectId, pageParam, SCAN_LIMIT, {
+        const files = await getScans(projectId, offset, limit, {
           ...listFilters, sortBy, sortOrder, unbatched: false, signal,
         });
         return {
-          flat: true, entries: [], scans: files, batches: [], partial: false, total: null,
-          hasMore: files.length === SCAN_LIMIT,
+          flat: true, items: files, entries: [], scans: files, batches: [], partial: false, total: null,
+          hasMore: files.length === limit,
         };
       }
       const page = await getImportHistory(projectId, {
-        ...listFilters, ...(pageParam > 0 ? { skip: pageParam } : {}), limit: HISTORY_PAGE, signal,
+        ...listFilters, ...(offset > 0 ? { skip: offset } : {}), limit, signal,
       });
       const rows = await hydrateHistoryRows(projectId, page.items, listFilters, { getScans, getScanBatches });
       return {
-        flat: false, entries: page.items, scans: rows.scans, batches: rows.batches, partial: rows.partial,
+        flat: false, items: page.items, entries: page.items, scans: rows.scans, batches: rows.batches,
+        partial: rows.partial,
         total: typeof page.total === 'number' ? page.total : null,
         hasMore: page.has_more,
       };
     },
-    initialPageParam: 0,
-    getNextPageParam: (last, pages) => (last.hasMore
-      ? pages.reduce((n, page) => n + (page.flat ? page.scans.length : page.entries.length), 0)
-      : undefined),
-    placeholderData: keepPreviousData,
-  });
-  const historyPages = historyQuery.data?.pages;
+    showBatchFiles
+      ? [projectId, { ...listFilters, sortBy, sortOrder, unbatched: false }]
+      : [projectId, listFilters],
+    {
+      pageSize: showBatchFiles ? SCAN_LIMIT : HISTORY_PAGE,
+      keepPrevious: 'loading',
+      within: projectId,
+      errorMessage: showBatchFiles ? 'Could not load the imported scans.' : 'Could not load the import history.',
+    },
+  );
+  const historyPages = historyList.responses;
   // v5.239.0 — the import history's ORDER (batches and single files together,
   // newest first), from the server; `scans` and `batches` hold the rows.
   const history = useMemo(() => historyPages?.flatMap((page) => page.entries) ?? [], [historyPages]);
@@ -445,28 +458,27 @@ export default function Scans() {
   // The skeleton is for the first read only.  A read that failed with nothing
   // to show and is being tried again keeps the page — and what it said went
   // wrong — until the answer arrives: the upload review may be open on it.
-  const loading = historyQuery.isPending && historyQuery.errorUpdateCount === 0;
-  const retryingFailedLoad = historyQuery.isPending && historyQuery.errorUpdateCount > 0;
-  // A failed "Load more" is a toast; it is not a failure of the list on screen.
-  const failedNow = historyQuery.isFetchNextPageError
-    ? null
-    : queryErrorText(
-      historyQuery.error,
-      showBatchFiles ? 'Could not load the imported scans.' : 'Could not load the import history.',
-    );
+  // (`retrying` is the hook's; with rows of the previous filter on screen it
+  // is that filter loading again, not this.)
+  const retryingFailedLoad = historyList.retrying && historyPages === null;
+  const loading = historyPages === null && historyList.failure === null && !retryingFailedLoad;
+  // A failed "Load more" is a toast; it is not a failure of the list on screen
+  // (the hook's `error` leaves it out).
+  const failedNow = historyList.error;
   const lastFailure = useRef<string | null>(null);
   if (failedNow) lastFailure.current = failedNow;
   else if (!retryingFailedLoad) lastFailure.current = null;
   const historyError = failedNow ?? (retryingFailedLoad ? lastFailure.current : null);
-  const hasMoreScans = historyQuery.hasNextPage;
-  const loadingMore = historyQuery.isFetchingNextPage;
-  const { fetchNextPage } = historyQuery;
+  const hasMoreScans = historyList.hasMore;
+  const loadingMore = historyList.loadingMore;
+  const { loadMore } = historyList;
   const loadMoreScans = useCallback(async () => {
-    const result = await fetchNextPage();
-    if (result.isFetchNextPageError) {
-      toast.error(formatApiError(result.error, 'Could not load more of the import history'));
+    try {
+      await loadMore();
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not load more of the import history'));
     }
-  }, [fetchNextPage, toast]);
+  }, [loadMore, toast]);
 
   // Filter-aware totals for the lead and the tool counts — counted server-side
   // so they reflect every matching file, not just the loaded pages.  Its own

@@ -112,6 +112,18 @@ describe('usePagedList — the page in the address', () => {
     expect(router.state.location.search).toBe('?page=2');
   });
 
+  // The default: a link that names a page under OTHER filters is still a new
+  // list — first page, and the page leaves the address.  (Hosts and the audit
+  // log say otherwise for themselves: `keepAddressPage`, below.)
+  it('by default a pushed link with new filters and a page starts from the first page', async () => {
+    const { router } = open('/list?f=a');
+    await waitFor(() => expect(first()).toBe('a:1'));
+    await act(async () => { await router.navigate('/list?f=b&page=2'); });
+    await waitFor(() => expect(first()).toBe('b:1'));
+    await waitFor(() => expect(router.state.location.search).toBe('?f=b'));
+    expect(offsets()).toEqual(['a@0', 'b@0']);
+  });
+
   it('reads anything but a whole page number ≥ 2 as the first page', () => {
     const page = (s: string) => pageFromParams(new URLSearchParams(s));
     expect(page('')).toBe(0);
@@ -126,5 +138,166 @@ describe('usePagedList — the page in the address', () => {
     expect(page('page=0x10')).toBe(0);
     expect(page('page=2.0')).toBe(0);
     expect(page('page=4')).toBe(3);
+  });
+});
+
+/**
+ * `keepAddressPage` — for a list a LINK may open on a filter and a page
+ * together (Hosts, the audit log): the address's page is the page whenever
+ * the deps changed with the address, and a control of the page starts from
+ * the first by leaving `page` out of its one write.
+ */
+describe('usePagedList — keepAddressPage', () => {
+  let setFilter!: (next: string) => void;
+  const Kept: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
+    const [params, setParams] = useSearchParams();
+    const filter = params.get('f') ?? 'a';
+    // The page's own control: ONE write, the filter in and the page out.
+    setFilter = (next) => setParams((prev) => {
+      const out = new URLSearchParams(prev);
+      out.set('f', next);
+      out.delete('page');
+      return out;
+    }, { replace: true });
+    list = usePagedList<Row>(
+      'getRows', (req) => fetchRows(filter, req), [filter, refreshKey],
+      { page: useUrlPage(), keepAddressPage: true },
+    );
+    return <p data-testid="first">{list.rows ? `${list.rows[0]?.filter}:${list.rows[0]?.id}` : 'loading'}</p>;
+  };
+  const settle = () => act(async () => { await new Promise((resolve) => { setTimeout(resolve, 30); }); });
+
+  it('a link that names new filters AND a page opens that page, asks for it only, and the address keeps it', async () => {
+    const { router } = open('/list?f=a', <Kept />);
+    await waitFor(() => expect(first()).toBe('a:1'));
+    // A pushed navigation — not Back, not the page's own control.
+    await act(async () => { await router.navigate('/list?f=b&page=3'); });
+    await waitFor(() => expect(first()).toBe('b:51'));
+    expect(router.state.historyAction).toBe('PUSH');
+    await settle();
+    expect(router.state.location.search).toBe('?f=b&page=3');
+    expect(offsets()).toEqual(['a@0', 'b@50']);
+  });
+
+  it('a filter changed by the page’s own control starts from the first page, in one request and one write', async () => {
+    const { router } = open('/list?f=a&page=3', <Kept />);
+    await waitFor(() => expect(first()).toBe('a:51'));
+    act(() => setFilter('b'));
+    await waitFor(() => expect(first()).toBe('b:1'));
+    await settle();
+    expect(router.state.location.search).toBe('?f=b');
+    // Not "page 3 of the new filter" on the way.
+    expect(offsets()).toEqual(['a@50', 'b@0']);
+  });
+
+  it('Back is the filter and the page that were left', async () => {
+    const { router } = open('/list?f=a&page=3', <Kept />);
+    await waitFor(() => expect(first()).toBe('a:51'));
+    await act(async () => { await router.navigate('/list?f=b&page=2'); });
+    await waitFor(() => expect(first()).toBe('b:26'));
+    await act(async () => { await router.navigate(-1); });
+    await waitFor(() => expect(first()).toBe('a:51'));
+    expect(router.state.location.search).toBe('?f=a&page=3');
+  });
+
+  it('deps that changed while the address did not (a refresh) still start from the first page', async () => {
+    let refresh: () => void = () => {};
+    const Refreshable: React.FC = () => {
+      const [key, setKey] = React.useState(0);
+      refresh = () => setKey((n) => n + 1);
+      return <Kept refreshKey={key} />;
+    };
+    const { router } = open('/list?page=3', <Refreshable />);
+    await waitFor(() => expect(first()).toBe('a:51'));
+    act(() => refresh());
+    await waitFor(() => expect(first()).toBe('a:1'));
+    await waitFor(() => expect(router.state.location.search).toBe(''));
+    expect(offsets()).toEqual(['a@50', 'a@0']);
+  });
+
+  it('a page the address names past the end steps back to the last page that exists', async () => {
+    const { router } = open('/list?f=a&page=99', <Kept />);
+    await waitFor(() => expect(first()).toBe('a:51'));
+    expect(router.state.location.search).toBe('?f=a&page=3');
+  });
+});
+
+/**
+ * A page that writes its whole address itself is the ONE writer: it hands the
+ * hook its own reading of the page and its own writer, and does not mount
+ * `useUrlPage`.  With `enabled: false` nothing is read — or written — for an
+ * address the page is about to replace.
+ */
+describe('usePagedList — the page’s own address writer, and `enabled`', () => {
+  const writes: string[] = [];
+  let commit!: (patch: { f?: string; page?: number }) => void;
+  let setEnabled!: (on: boolean) => void;
+  const Owner: React.FC<{ startEnabled?: boolean }> = ({ startEnabled = true }) => {
+    const [params, setParams] = useSearchParams();
+    const [enabled, setOn] = React.useState(startEnabled);
+    setEnabled = setOn;
+    const filter = params.get('f') ?? 'a';
+    const page = pageFromParams(params);
+    // Filters and page in one write, as Hosts' `commit` does.
+    commit = (patch) => {
+      const out = new URLSearchParams();
+      out.set('f', patch.f ?? filter);
+      const next = patch.page ?? 0;
+      if (next > 0) out.set('page', String(next + 1));
+      writes.push(`?${out.toString()}`);
+      setParams(out, { replace: true });
+    };
+    const setPage = (next: number) => commit({ page: next });
+    list = usePagedList<Row>(
+      'getRows', (req) => fetchRows(filter, req), [filter],
+      { page: { page, setPage, search: params.toString() }, keepAddressPage: true, enabled },
+    );
+    return <p data-testid="first">{list.rows ? `${list.rows[0]?.filter}:${list.rows[0]?.id}` : 'loading'}</p>;
+  };
+  const settle = () => act(async () => { await new Promise((resolve) => { setTimeout(resolve, 30); }); });
+
+  it('pages through the caller’s writer, and writes nothing of its own for a filter the caller changed', async () => {
+    writes.length = 0;
+    const { router } = open('/list?f=a', <Owner />);
+    await waitFor(() => expect(first()).toBe('a:1'));
+    act(() => list.setPage(2));
+    await waitFor(() => expect(first()).toBe('a:51'));
+    expect(router.state.location.search).toBe('?f=a&page=3');
+
+    act(() => commit({ f: 'b' }));
+    await waitFor(() => expect(first()).toBe('b:1'));
+    await settle();
+    // Every write of the address was the caller's: the page turn, the filter.
+    expect(writes).toEqual(['?f=a&page=3', '?f=b']);
+    expect(offsets()).toEqual(['a@0', 'a@50', 'b@0']);
+  });
+
+  it('the step back from a page past the end goes through the caller’s writer too', async () => {
+    writes.length = 0;
+    const { router } = open('/list?f=a&page=99', <Owner />);
+    await waitFor(() => expect(first()).toBe('a:51'));
+    expect(writes).toEqual(['?f=a&page=3']);
+    expect(router.state.location.search).toBe('?f=a&page=3');
+  });
+
+  it('parked, it asks for nothing and writes nothing; enabled on the address that replaced the first, it asks for that one only', async () => {
+    writes.length = 0;
+    const { router } = open('/list', <Owner startEnabled={false} />);
+    await settle();
+    expect(first()).toBe('loading');
+    expect(list.loading).toBe(false);
+    expect(offsets()).toEqual([]);
+    // A reload asked of a parked list asks for nothing either.
+    await act(async () => { await list.reload(); });
+    expect(offsets()).toEqual([]);
+
+    // The page replaces its address (a restored session's filters and page),
+    // then lets the list read.
+    act(() => { commit({ f: 'restored', page: 1 }); setEnabled(true); });
+    await waitFor(() => expect(first()).toBe('restored:26'));
+    await settle();
+    expect(offsets()).toEqual(['restored@25']);
+    expect(writes).toEqual(['?f=restored&page=2']);
+    expect(router.state.location.search).toBe('?f=restored&page=2');
   });
 });

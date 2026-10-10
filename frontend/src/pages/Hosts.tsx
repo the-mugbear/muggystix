@@ -35,7 +35,9 @@ import type {
   HostListResponse,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
-import { queryErrorText, useLastSettled } from '../lib/query';
+import { useLastSettled } from '../lib/query';
+import type { ListPage } from '../hooks/useListQuery';
+import { usePagedList } from '../hooks/usePagedList';
 import { formatApiError } from '../utils/apiErrors';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useProjectId } from '../hooks/useProjectId';
@@ -566,12 +568,6 @@ export default function Hosts() {
   // dialogs and the bulk bar are handed the same reference (a fresh object
   // every render would break their memo).
   const queryContext = useMemo(() => hostQueryContext(filters, sortBy), [filters, sortBy]);
-  // …and with the page: what the list asks for, and so its query key.  All of
-  // it comes from the address, except the rows per page (the viewer's own).
-  const listParams = useMemo(
-    () => ({ ...queryContext, skip: page * rowsPerPage, limit: rowsPerPage, include_total: true }),
-    [queryContext, page, rowsPerPage],
-  );
 
   // Bulk-selection safety: the selected-set (and any "select all matching")
   // is only meaningful for the result set it was made against. When the
@@ -606,40 +602,54 @@ export default function Hosts() {
   }, [filterSignature, isInitialized]);
 
   // --- The rows ----------------------------------------------------------
-  // One query per address (conditions, sort, page) and rows-per-page.
-  const hostsKey = useMemo(() => ['getHosts', projectId, listParams] as const, [projectId, listParams]);
-  const hostsQuery = useQuery({
-    queryKey: hostsKey,
-    queryFn: ({ signal }) => getHosts(projectId, listParams, signal),
-    // Nothing is read for the bare address a restored session's filters are
-    // about to replace.
-    enabled: isInitialized,
-  });
+  // One page of the list per address (conditions, sort, page) and
+  // rows-per-page, on `usePagedList`:
+  //  - the page is the ADDRESS's (`keepAddressPage`): `/hosts?q=…&page=4`
+  //    opens page 4, and a control of this page starts from the first by
+  //    writing the address without it (`commit`);
+  //  - this page is the one writer of its address, so the hook is handed its
+  //    reading and its writer instead of `useUrlPage()`;
+  //  - nothing is read for the bare address a restored session's filters are
+  //    about to replace (`enabled`);
+  //  - a page past the end steps back to the last one that exists (the hook's).
+  const listPage = useMemo(
+    () => ({ page, setPage: (next: number) => { commit({ page: next }); }, search: location.search }),
+    [page, commit, location.search],
+  );
+  const list = usePagedList<Host, HostListResponse & ListPage<Host>>(
+    'getHosts',
+    async ({ offset, limit, signal }) => {
+      const answer = await getHosts(projectId, { ...queryContext, skip: offset, limit, include_total: true }, signal);
+      return { ...answer, total: answer.total ?? 0 };
+    },
+    [projectId, queryContext],
+    {
+      pageSize: rowsPerPage,
+      page: listPage,
+      keepAddressPage: true,
+      enabled: isInitialized,
+      within: projectId,
+      errorMessage: 'Failed to fetch hosts. Please try again.',
+    },
+  );
   // What is on screen: this address's rows once they are in.  Until then —
   // and after a read that failed — the rows that were shown STAY (a filter
-  // change must not collapse the table and snap the scroll to the top), with
-  // the conditions they were counted under (see the page clamp).
-  // (An answer is this address's, so the conditions of the moment are its own.)
-  const answered = useMemo(
-    () => hostsQuery.data && { response: hostsQuery.data, signature: filterSignature },
-    [hostsQuery.data, filterSignature],
-  );
-  const shown = useLastSettled(answered, { resetKey: projectId }) ?? null;
-  const hosts = shown?.response.items ?? NO_HOSTS;
-  const totalHosts = shown?.response.total ?? 0;
-  const totalFor = shown?.signature ?? null;
+  // change must not collapse the table and snap the scroll to the top).
+  const shown = list.lastResponse;
+  const hosts = shown?.items ?? NO_HOSTS;
+  const totalHosts = shown?.total ?? 0;
   // Every host in the project, whatever the filters — null until known.
-  const projectTotal = shown?.response.project_total ?? null;
-  const vulnError = shown?.response.vulnerability_error ?? false;
-  const loading = !isInitialized || hostsQuery.isFetching;
-  const listError = loading ? null : queryErrorText(hostsQuery.error, 'Failed to fetch hosts. Please try again.');
+  const projectTotal = shown?.project_total ?? null;
+  const vulnError = shown?.vulnerability_error ?? false;
+  const loading = !isInitialized || list.loading;
+  const listError = loading ? null : list.error;
   // True once a first read of the list has settled.  Gates the full-page
   // skeleton so it only shows on initial load — never on a refetch whose
   // current result happens to be empty (e.g. toggling a filter that matches
   // 0 hosts, or rapid toggling), which would otherwise replace the whole
   // page and snap the scroll to the top.
   const hasFetchedOnceRef = useRef(false);
-  if (hostsQuery.data || hostsQuery.error) hasFetchedOnceRef.current = true;
+  if (list.response || list.error) hasFetchedOnceRef.current = true;
 
   // --- Filter facets: the options and counts the filter editors offer ------
   // One query, keyed by the conditions the options are counted under: the
@@ -1249,12 +1259,10 @@ export default function Hosts() {
 
   // A host's review status as the server just returned it, put into the rows
   // of the list on screen (no second read of the page).
+  const { mapRows } = list;
   const applyFollowUpdate = useCallback((hostId: number, followInfo: HostFollowInfo | null) => {
-    queryClient.setQueryData<HostListResponse>(hostsKey, (list) => (list && {
-      ...list,
-      items: list.items.map((host) => (host.id === hostId ? { ...host, follow: followInfo } : host)),
-    }));
-  }, [queryClient, hostsKey]);
+    mapRows((host) => (host.id === hostId ? { ...host, follow: followInfo } : host));
+  }, [mapRows]);
 
   const follow = useMutation({
     mutationFn: ({ hostId, status }: { hostId: number; status: FollowStatus | 'none' }): Promise<HostFollowInfo | null> =>
@@ -1274,7 +1282,7 @@ export default function Hosts() {
   const updatingHostId = follow.isPending ? follow.variables.hostId : null;
   // Said above the list too, until the list is next read or a status is set.
   const followError = follow.isError
-    && follow.submittedAt > Math.max(hostsQuery.dataUpdatedAt, hostsQuery.errorUpdatedAt)
+    && follow.submittedAt > Math.max(list.loadedAt?.getTime() ?? 0, list.failedAt?.getTime() ?? 0)
     ? formatApiError(follow.error, 'Unable to update review status. Please try again.')
     : null;
   const error = listError ?? (loading ? null : followError);
@@ -1336,16 +1344,6 @@ export default function Hosts() {
     }
     lastFiltersRef.current = filters;
   }, [filters, isInitialized]);
-
-
-  useEffect(() => {
-    // Only against the total of the list on screen: before its first read —
-    // or when the address has just named other conditions — the total is not
-    // this list's, and the page the address names would be cut to it.
-    if (loading || totalFor !== filterSignature) return;
-    const maxPage = Math.max(Math.ceil(totalHosts / rowsPerPage) - 1, 0);
-    if (page > maxPage) setPage(maxPage);
-  }, [page, rowsPerPage, totalHosts, loading, totalFor, filterSignature, setPage]);
 
   // -------------------------------------------------------------------------
   // DataTable columns — extracted to useHostColumns hook (v2.43.0 — MONO-1).
@@ -1770,7 +1768,7 @@ export default function Hosts() {
               {showingStaleResults &&
                 ' Showing previous results — they may not match the current filters; bulk actions and export are paused until a refresh succeeds.'}
             </span>
-            <Button variant="outline" size="sm" onClick={() => { void hostsQuery.refetch(); }}>
+            <Button variant="outline" size="sm" onClick={() => { void list.reload(); }}>
               Retry
             </Button>
           </AlertDescription>
@@ -1939,7 +1937,7 @@ export default function Hosts() {
                     selectedIps={selectedIps}
                     totalMatching={totalHosts}
                     // The server's cap, from the same answer as the total.
-                    bulkCap={shown?.response.bulk_select_cap ?? null}
+                    bulkCap={shown?.bulk_select_cap ?? null}
                     queryContext={queryContext}
                     onClear={() => setRowSelection({})}
                     // The bar re-reads the rows and the facets it changed.

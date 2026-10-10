@@ -15,12 +15,14 @@
  * work and its controls) first, then the history — one row per session, its work under it, each opening the session
  * page (`/agent-sessions/:id`) — and the analytics last.
  */
-import React, { useCallback, useMemo, useState } from 'react';
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
+import React, { useCallback, useMemo } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Bot, ChevronRight, Loader2, Play, RefreshCw, Search } from 'lucide-react';
 import {
+  AgentSessionFilters,
   AgentSessionKind,
+  AgentSessionListResponse,
   AgentSessionRow,
   AgentActivitySummary,
   listAgentSessions,
@@ -30,6 +32,7 @@ import {
 } from '../services/api';
 import { useAgentSessionControls } from '../hooks/useAgentSessionControls';
 import { useCanStartAgentSession } from '../hooks/useCanStartAgentSession';
+import { useListQuery, type ListPage } from '../hooks/useListQuery';
 import { useProjectId } from '../hooks/useProjectId';
 import { invalidateReads, pollEvery, queryErrorText } from '../lib/query';
 import { safeFallback } from '../utils/uiStyles';
@@ -87,6 +90,8 @@ import {
 } from '../utils/agentRuns';
 
 const NO_SESSIONS: AgentSessionRow[] = [];
+/** Sessions per read of the history, and per "Load older sessions". */
+const HISTORY_PAGE = 200;
 
 /** A live key with no call for this long is said to be quiet. */
 const QUIET_AFTER_MS = 15 * 60_000;
@@ -418,10 +423,6 @@ const StartSessionButton: React.FC = () => (
 const ProjectActivity: React.FC = () => {
   const queryClient = useQueryClient();
   const projectId = useProjectId();
-  // Grows on "Load older sessions" so the history isn't silently capped.
-  const [limit, setLimit] = useState(200);
-  // `GET /agent-sessions` takes `limit` up to this (its `le=1000`).
-  const HISTORY_MAX = 1000;
   // Refresh and the analytics' Retry: every read on the page, by its API
   // function's name (the live list and the history are both
   // `listAgentSessions`).  An ended or resumed session asks for them again
@@ -470,27 +471,48 @@ const ProjectActivity: React.FC = () => {
   const live: AgentSessionRow[] | null = liveQuery.data?.sessions ?? null;
   const liveError = queryErrorText(liveQuery.error, 'Could not load the live sessions.');
 
-  // The history, under the URL's filters.  The rows on screen stay while
-  // another filter, or a longer page, loads.
+  // The history, under the URL's filters, 200 sessions at a time
+  // (`useListQuery`: "Load older sessions" asks for the next 200 by `offset`,
+  // so no answer is ever longer than the route allows and there is no last
+  // page the reader cannot get past).  The rows on screen stay while another
+  // filter loads; after a FAILED read on a new filter only the error shows.
   const historyFilters = useMemo(() => {
-    const filters: Record<string, string | number> = { limit };
+    const filters: AgentSessionFilters = {};
     if (kindFilter) filters.kind = kindFilter;
     if (modelFilter) filters.model = modelFilter;
     if (toolFilter) filters.tool = toolFilter;
     return filters;
-  }, [kindFilter, modelFilter, toolFilter, limit]);
-  const historyQuery = useQuery({
-    queryKey: ['listAgentSessions', projectId, historyFilters],
-    queryFn: ({ signal }) => listAgentSessions(projectId, historyFilters, { signal }),
-    placeholderData: keepPreviousData,
-  });
-  const rows = historyQuery.data?.sessions ?? NO_SESSIONS;
-  const total = historyQuery.data?.total ?? 0;
+  }, [kindFilter, modelFilter, toolFilter]);
+  const history = useListQuery<AgentSessionRow, AgentSessionListResponse & ListPage<AgentSessionRow>>(
+    'listAgentSessions',
+    async ({ offset, limit, signal }) => {
+      const answer = await listAgentSessions(
+        projectId, { ...historyFilters, limit, ...(offset > 0 ? { offset } : {}) }, { signal },
+      );
+      return { ...answer, items: answer.sessions };
+    },
+    [projectId, historyFilters],
+    {
+      pageSize: HISTORY_PAGE,
+      keepPrevious: 'loading',
+      within: projectId,
+      // A session that started while the reader paged moves every later one
+      // down by one: the next page would hand the last row out again.
+      dedupeBy: (row) => `${row.kind}-${row.id}`,
+      errorMessage: 'Failed to load agent sessions.',
+    },
+  );
+  const rows = history.rows ?? NO_SESSIONS;
+  const { total } = history;
   // A count that is not known is not 0: "…" until the history has answered,
   // "—" when it could not be read (and nothing of it is on screen).
-  const historyCount = historyQuery.data
+  const historyCount = history.rows
     ? `${rows.length} of ${total} shown`
-    : historyQuery.isError ? '—' : '…';
+    : history.error ? '—' : '…';
+  const { loadMore } = history;
+  // A failed "Load older" is said in the page's alert (`loadMoreError`); the
+  // rows that were listed stay.
+  const loadOlder = useCallback(() => { void loadMore().catch(() => undefined); }, [loadMore]);
 
   const summaryQuery = useQuery({
     queryKey: ['getAgentSessionSummary', projectId],
@@ -508,10 +530,12 @@ const ProjectActivity: React.FC = () => {
   const apiSummaryError = apiSummaryQuery.isError;
   const apiSummary: AgentActivitySummary | null = apiSummaryError ? null : apiSummaryQuery.data ?? null;
 
-  const loading = historyQuery.isFetching || summaryQuery.isFetching || apiSummaryQuery.isFetching;
-  const error = queryErrorText(historyQuery.error ?? summaryQuery.error, 'Failed to load agent sessions.');
+  const loading = history.loading || history.loadingMore || summaryQuery.isFetching || apiSummaryQuery.isFetching;
+  const error = history.error
+    ?? history.loadMoreError
+    ?? queryErrorText(summaryQuery.error, 'Failed to load agent sessions.');
   // As of the OLDER of the history and its roll-up, once both are here.
-  const historyAt = historyQuery.dataUpdatedAt;
+  const historyAt = history.loadedAt?.getTime() ?? 0;
   const summaryAt = summaryQuery.dataUpdatedAt;
   const lastFetched = useMemo(
     () => (historyAt && summaryAt ? new Date(Math.min(historyAt, summaryAt)) : null),
@@ -655,19 +679,14 @@ const ProjectActivity: React.FC = () => {
         actions={(
           <>
             {loading && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
-            {/* The server lists at most HISTORY_MAX sessions in one answer: the
-                fifth "Load older" used to ask for 1,200 and be refused (422).
-                Past that the filters are the way to older ones — said, not a
-                button that fails. */}
-            {rows.length < total && !loading && (limit < HISTORY_MAX ? (
-              <Button size="sm" variant="outline" onClick={() => setLimit((l) => Math.min(l + 200, HISTORY_MAX))}>
+            {/* Each click asks for the next HISTORY_PAGE by offset — never one
+                answer longer than the route allows (the fifth click used to
+                ask for 1,200 in one and be refused, 422). */}
+            {history.hasMore && !loading && (
+              <Button size="sm" variant="outline" onClick={loadOlder}>
                 Load older sessions
               </Button>
-            ) : (
-              <span className="text-caption text-muted-foreground">
-                The {HISTORY_MAX.toLocaleString()} newest are listed — narrow the filters for older ones.
-              </span>
-            ))}
+            )}
           </>
         )}
       >
@@ -818,7 +837,7 @@ const ProjectActivity: React.FC = () => {
               );
             })}
             {/* A history that could not be read is said above, not as "none". */}
-            {!loading && !historyQuery.isError && rows.length === 0 && (
+            {!loading && !history.error && rows.length === 0 && (
               <TableRow>
                 <TableCell colSpan={7} className="py-xl text-center">
                   <Search className="mx-auto mb-xs size-9 text-muted-foreground/50" aria-hidden />

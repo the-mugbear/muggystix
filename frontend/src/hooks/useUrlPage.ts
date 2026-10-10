@@ -10,6 +10,12 @@ import { useNavigationType, useSearchParams } from 'react-router-dom';
  *
  * Choosing a page REPLACES the history entry: paging is not a place Back
  * should stop at.
+ *
+ * A page that writes its whole address itself (Hosts: conditions, sort and
+ * page in one `commit`) does not call this hook — a second writer of the
+ * address would lose the first write of a tick.  It hands `usePagedList` the
+ * same shape built from its own reading and its own writer:
+ * `{ page, setPage, search }` with `keepAddressPage`.
  */
 export interface UrlPage {
   /** Zero-based; anything but a whole number ≥ 2 in the address is the first page. */
@@ -17,8 +23,9 @@ export interface UrlPage {
   setPage: (page: number) => void;
   /** The address's query — it differs after every navigation that changed it. */
   search: string;
-  /** The address was last reached by Back / Forward (or by opening it). */
-  byHistory: boolean;
+  /** The address was last reached by Back / Forward (or by opening it).  Not
+   *  read under `keepAddressPage`, where every address is its own page. */
+  byHistory?: boolean;
 }
 
 /** The ONE reading of a page in the address: digits only, so `2 `, `1e3`,

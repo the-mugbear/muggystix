@@ -209,6 +209,59 @@ describe('usePagedList', () => {
     expect(result.current.total).toBe(50);
   });
 
+  it('`enabled: false` parks it — nothing asked, not by reload either — and it reads once enabled', async () => {
+    const fetch = server('a');
+    const { result, rerender } = renderHook(
+      ({ enabled }) => usePagedList<Row>('getRows', fetch, ['a'], { enabled }),
+      { initialProps: { enabled: false } },
+    );
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 20); }); });
+    expect(result.current.rows).toBeNull();
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBeNull();
+    await act(async () => { await result.current.reload(); });
+    expect(fetch).not.toHaveBeenCalled();
+
+    rerender({ enabled: true });
+    await waitFor(() => expect(result.current.rows).toHaveLength(25));
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('mapRows replaces a row of the page on screen in place, with no second read', async () => {
+    const fetch = server('a');
+    const { result } = renderHook(() => usePagedList<Row>('getRows', fetch, ['a']));
+    await waitFor(() => expect(result.current.rows).toHaveLength(25));
+    act(() => result.current.setPage(1));
+    await waitFor(() => expect(result.current.rows?.[0]?.id).toBe(26));
+    const calls = fetch.mock.calls.length;
+
+    act(() => result.current.mapRows((row) => (row.id === 27 ? { ...row, filter: 'changed' } : row)));
+    await waitFor(() => expect(result.current.rows?.[1]?.filter).toBe('changed'));
+    expect(result.current.rows?.map((r) => r.id)).toEqual(Array.from({ length: 25 }, (_, i) => 26 + i));
+    expect(result.current.rows?.[1]).toEqual({ id: 27, filter: 'changed' });
+    expect(result.current.rows?.[0]?.filter).toBe('a');
+    expect(result.current.total).toBe(60);
+    expect(fetch.mock.calls.length).toBe(calls);
+  });
+
+  it('failedAt says when a read of the page on screen last failed, beside loadedAt', async () => {
+    let fail = false;
+    const good = server('a');
+    const fetch = vi.fn(async (req: ListPageRequest) => {
+      if (fail) throw new Error('down');
+      return good(req);
+    });
+    const { result } = renderHook(() => usePagedList<Row>('getRows', fetch, ['a']));
+    await waitFor(() => expect(result.current.rows).toHaveLength(25));
+    expect(result.current.loadedAt).toBeInstanceOf(Date);
+    expect(result.current.failedAt).toBeNull();
+
+    fail = true;
+    await act(async () => { await result.current.reload(); });
+    await waitFor(() => expect(result.current.failedAt).toBeInstanceOf(Date));
+    expect(result.current.failedAt!.getTime()).toBeGreaterThanOrEqual(result.current.loadedAt!.getTime());
+  });
+
   it('keeps the last response while the next page loads (filter chips must not blink)', async () => {
     const fetch = server('a');
     const { result } = renderHook(() => usePagedList<Row>('getRows', fetch, ['a']));

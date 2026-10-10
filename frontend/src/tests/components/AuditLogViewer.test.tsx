@@ -183,6 +183,53 @@ describe('AuditLogViewer', () => {
     expect(mocked.listAuditLogs).toHaveBeenCalledTimes(1);
   });
 
+  // The table must not collapse between two pages of the trail.
+  it('keeps the page on screen, with its own range, until the next one answers', async () => {
+    let answer: (page: unknown) => void = () => undefined;
+    mocked.listAuditLogs.mockImplementation(({ skip }: { skip: number }) => (
+      skip === 0
+        ? Promise.resolve({ logs: [row({ action: 'first_page_event' })], total: 101, skip: 0, limit: AUDIT_PAGE_SIZE })
+        : new Promise((resolve) => { answer = resolve; })
+    ));
+    mount();
+    await screen.findByText('1–20 of 101');
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(mocked.listAuditLogs).toHaveBeenCalledWith(expect.objectContaining({ skip: 20 }), expect.any(AbortSignal)));
+    // Still the first page, and it says so; the pager waits.
+    expect(screen.getByText('first_page_event')).toBeInTheDocument();
+    expect(screen.getByText('1–20 of 101')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    expect(screen.queryByText(/Loading audit log/)).toBeNull();
+
+    answer({ logs: [row({ id: 2, action: 'second_page_event' })], total: 101, skip: 20, limit: AUDIT_PAGE_SIZE });
+    expect(await screen.findByText('21–40 of 101')).toBeInTheDocument();
+    expect(screen.getByText('second_page_event')).toBeInTheDocument();
+    expect(screen.queryByText('first_page_event')).toBeNull();
+  });
+
+  // The most misleading state an audit trail can show is "nothing happened".
+  it('a failed read is said — never "no events", and never rows', async () => {
+    mocked.listAuditLogs.mockRejectedValue(new Error('boom'));
+    mount();
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load audit log.');
+    expect(screen.queryByText(/No audit events match/)).toBeNull();
+    expect(screen.queryByRole('table')).toBeNull();
+  });
+
+  it('a failed Refresh is said, and the rows that were shown go with it; the next Refresh brings them back', async () => {
+    mount();
+    await screen.findByText('1–20 of 101');
+    mocked.listAuditLogs.mockRejectedValueOnce(new Error('boom'));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load audit log.');
+    expect(screen.queryByRole('table')).toBeNull();
+    expect(screen.queryByText(/No audit events match/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByText('1–20 of 101')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('a new resource type starts from the first page, in one request', async () => {
     mount();
     await screen.findByText('1–20 of 101');

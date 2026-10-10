@@ -43,13 +43,44 @@ import { pollEvery, queryErrorText, useLastSettled } from '../lib/query';
  *     `isPrevious` is true: they are not the answer to what is asked now.  The
  *     page dims them or makes them inert, and reads `isPrevious && error` as
  *     "this could not be loaded", never as the new list.
+ *     What stays when the NEW list's read fails is the caller's to state:
+ *     `keepPrevious: 'loading'` keeps the previous rows only WHILE the new
+ *     list loads — once that read has failed, `rows` are `null` and only the
+ *     error is left to show (Scans, the session history: the owner's rule
+ *     that a failed read on a new filter shows the error and Retry, not the
+ *     filter that was left).  A retry of it is loading again.
  *   - `dedupeBy`: a row whose key was already seen in an earlier page is
  *     dropped (offset paging over a list that moves can hand a row out twice).
+ *
+ * And three things a list may need that are not rows:
+ *   - a page that states its own end (`hasMore` on the page object — an
+ *     endpoint that answers "there is more" and need not count, or has no
+ *     total at all) decides whether a next page exists; without it the hook
+ *     compares the rows loaded with `total`.  Either way the answer is
+ *     `hasMore`.
+ *   - `responses` is EVERY loaded page's response, in order, for a page made
+ *     of more than its rows (the import history: an order plus the rows it
+ *     names, and whether a part of them could not be read).
+ *   - `retrying` is true while a read that FAILED with nothing to show is
+ *     being tried again — the page keeps what it said went wrong instead of
+ *     going back to its first-load skeleton.
  */
 export interface ListPage<T> {
   items: T[];
   total: number;
 }
+
+/** A page of a list whose END the server states: `hasMore` decides whether a
+ *  next page is offered, and a `total` is optional (not every list is
+ *  counted). */
+export interface OpenListPage<T> {
+  items: T[];
+  total?: number | null;
+  hasMore: boolean;
+}
+
+/** Either kind of page. */
+export type AnyListPage<T> = ListPage<T> | OpenListPage<T>;
 
 export interface ListPageRequest {
   offset: number;
@@ -57,7 +88,12 @@ export interface ListPageRequest {
   signal: AbortSignal;
 }
 
-export type ListFetcher<T, P extends ListPage<T> = ListPage<T>> = (request: ListPageRequest) => Promise<P>;
+export type ListFetcher<T, P extends AnyListPage<T> = ListPage<T>> = (request: ListPageRequest) => Promise<P>;
+
+/** What the page states about its own end, if it does. */
+const statedHasMore = (page: AnyListPage<unknown>): boolean | undefined => (
+  'hasMore' in page && typeof page.hasMore === 'boolean' ? page.hasMore : undefined
+);
 
 export interface UseListQueryOptions<T = unknown> {
   /** Rows per page (and per "load more").  Default 50. */
@@ -75,18 +111,24 @@ export interface UseListQueryOptions<T = unknown> {
   within?: unknown;
   /** While new `deps` load, and when that read fails, `rows` / `total` /
    *  `response` stay the previous deps' and `isPrevious` says so.  Default
-   *  false: the rows are the current deps' or `null`. */
-  keepPrevious?: boolean;
+   *  false: the rows are the current deps' or `null`.  `'loading'`: only while
+   *  they load — after a FAILED read of the new deps nothing is kept. */
+  keepPrevious?: boolean | 'loading';
   /** A row's identity: a row whose key an earlier row already had is dropped
    *  from `rows`.  (`total` is the server's and is not changed by it.) */
   dedupeBy?: (row: T) => unknown;
 }
 
-export interface ListQuery<T, P extends ListPage<T> = ListPage<T>> {
+export interface ListQuery<T, P extends AnyListPage<T> = ListPage<T>> {
   /** `null` until a first page has loaded for the current `deps` — or, with
    *  `keepPrevious`, the previous deps' rows until then (see `isPrevious`). */
   rows: T[] | null;
+  /** The last loaded page's `total`; 0 when the list states none. */
   total: number;
+  /** A next page exists for the list on screen: the last page said so
+   *  (`hasMore`), or fewer rows are loaded than its `total`.  False over the
+   *  previous deps' rows — there is nothing to append to. */
+  hasMore: boolean;
   /** A read of the loaded rows (first load, new deps, a reload, the poll) is in flight. */
   loading: boolean;
   /** Why the last read failed; cleared by the next success. */
@@ -94,6 +136,9 @@ export interface ListQuery<T, P extends ListPage<T> = ListPage<T>> {
   /** The failure behind `error`, as it was thrown — for a page that words it
    *  by what the reader was doing, or tells one failure from the next. */
   failure: unknown;
+  /** A read of the current `deps` that failed with nothing loaded is being
+   *  tried again (`error` is null meanwhile: the page keeps its own words). */
+  retrying: boolean;
   /** Re-read the loaded rows in place.  Resolves when it settles. */
   reload: () => Promise<void>;
   /** Append the next page.  Rejects if it fails (the caller toasts, or shows
@@ -108,6 +153,9 @@ export interface ListQuery<T, P extends ListPage<T> = ListPage<T>> {
   isPrevious: boolean;
   /** The first page's response, whole. */
   response: P | null;
+  /** Every loaded page's response, in order (the previous deps' under
+   *  `isPrevious`); `null` when `rows` are. */
+  responses: P[] | null;
   /** The last first-page response of ANY deps this list has shown. */
   lastResponse: P | null;
   /** When the rows were last read successfully. */
@@ -117,7 +165,7 @@ export interface ListQuery<T, P extends ListPage<T> = ListPage<T>> {
   mapRows: (update: (row: T) => T) => void;
 }
 
-export function useListQuery<T, P extends ListPage<T> = ListPage<T>>(
+export function useListQuery<T, P extends AnyListPage<T> = ListPage<T>>(
   name: string,
   fetcher: ListFetcher<T, P>,
   deps: ReadonlyArray<unknown>,
@@ -138,7 +186,10 @@ export function useListQuery<T, P extends ListPage<T> = ListPage<T>>(
     initialPageParam: 0,
     getNextPageParam: (last, pages) => {
       const loaded = pages.reduce((n, page) => n + page.items.length, 0);
-      return last.items.length > 0 && loaded < last.total ? loaded : undefined;
+      // The server's own word, where the page carries it; else the count.
+      const stated = statedHasMore(last);
+      if (stated !== undefined) return stated ? loaded : undefined;
+      return last.items.length > 0 && loaded < (last.total ?? 0) ? loaded : undefined;
     },
     enabled,
     ...pollEvery(poll),
@@ -148,7 +199,10 @@ export function useListQuery<T, P extends ListPage<T> = ListPage<T>>(
   // The last pages any deps brought (this component's: `useLastSettled`).  A
   // parked hook shows nothing, kept or not.
   const lastPages = useLastSettled(pages, { resetKey: within });
-  const shown = pages ?? (keepPrevious && enabled ? lastPages : undefined);
+  // `'loading'`: a FAILED read of the current deps leaves nothing of the
+  // previous ones (and a retry of it is loading again).
+  const keptNow = keepPrevious === 'loading' ? !query.isError : keepPrevious;
+  const shown = pages ?? (keptNow && enabled ? lastPages : undefined);
   const isPrevious = !pages && shown !== undefined;
   // The caller's function is new on every render; the rows are not.
   const identity = useRef(dedupeBy);
@@ -215,16 +269,19 @@ export function useListQuery<T, P extends ListPage<T> = ListPage<T>>(
   const failure = query.isFetchNextPageError && !isPrevious ? null : (query.error ?? null);
   return {
     rows,
-    total: shown?.length ? shown[shown.length - 1].total : 0,
+    total: shown?.length ? shown[shown.length - 1].total ?? 0 : 0,
+    hasMore: query.hasNextPage,
     loading: query.isFetching && !query.isFetchingNextPage,
     error: queryErrorText(failure, errorMessage),
     failure,
+    retrying: query.isLoading && query.errorUpdateCount > 0,
     reload, loadMore,
     loadingMore: query.isFetchingNextPage,
     loadMoreError: moreFailure && moreFailure.queryKey === queryKey
       ? queryErrorText(moreFailure.error, errorMessage) : null,
     isPrevious,
     response: shown?.[0] ?? null,
+    responses: shown ?? null,
     lastResponse: lastPages?.[0] ?? null,
     loadedAt: query.dataUpdatedAt ? new Date(query.dataUpdatedAt) : null,
     mapRows,

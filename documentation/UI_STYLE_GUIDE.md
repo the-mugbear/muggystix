@@ -611,6 +611,22 @@ the last answer:
   them inert (no checkbox, picker or cursor acts on them), and reads
   `isPrevious && error` as "this could not be loaded".  A scope's subnets
   under its search box, a test's evidence.
+- **`keepPrevious: 'loading'`** — the same while another filter loads, but
+  once that read has FAILED nothing of the previous filter is kept: `rows`
+  are `null` and the page shows the error and Retry alone.  What stays under
+  a failed new filter is the caller's choice, stated here; the Scans import
+  history and the Agent Sessions history choose this.
+- **`hasMore`** — whether a next page exists.  A page object may state it
+  itself (`{ items, hasMore }`, a `total` optional): an endpoint that answers
+  "there is more" (the import history's `has_more`), or a list with no total
+  at all (every imported file: "a full page came back").  Without it the
+  hook compares the rows loaded with `total`.
+- **`responses`** — every loaded page's response, in order, for a page that
+  is more than its rows (the import history: the order, the rows it names,
+  and whether part of a page could not be read).  `response` is the first.
+- **`retrying`** — a read that failed with nothing to show is being tried
+  again: the page keeps what it said went wrong instead of returning to its
+  first-load skeleton.
 - **`lastResponse`** — the last first-page response of any filter, for what
   must not blink while the next list loads: filter chips and their counts, a
   filter's options.  (`response` is the current filter's, or `null`.)
@@ -656,7 +672,25 @@ page from `hooks/useUrlPage` (`{ pageSize, page: useUrlPage() }`): `?page=`,
 1-based and left out for the first page, replaced (not pushed) when the
 reader pages.  New deps — a filter, a tab — start from page 1, and a link to
 a tab or a filter never carries `page`.  Remediation, Remediation deadlines,
-the Operations tabs and Names do.
+the Operations tabs, Names, Segments, Ingestion Results, the audit log and
+Hosts do.  A page the address names past the end steps back to the last page
+that exists — the hook's doing, on every one of them; a page writes no clamp
+of its own.
+
+Two of them are opened by links that name filters AND a page
+(`/hosts?q=…&page=4`; a same-page link on the audit log), and that page must
+open.  They pass **`keepAddressPage: true`**: the page is the address's
+whenever the filters changed together with the address — a link, Back, the
+page's own control — and the hook does not take it out.  A control of such a
+page therefore starts from page 1 by leaving `page` out of the ONE address
+write that changes the filter (which is also one request instead of two).
+Filters that change while the address does not still return to page 1.
+Two more options go with it: **`enabled: false`** parks the list — nothing
+read, nothing written — for a page about to replace its own address (Hosts
+putting a restored session's filters into it); and a page that writes its
+whole address in one place (Hosts' `commit`) hands the hook its own
+`{ page, setPage, search }` instead of `useUrlPage()`, so the address keeps
+one writer.
 
 **A filter has one owner: the address.**  A committed filter — a chip, a
 select, a sort, a tab, a search that was asked — is read from the URL on
@@ -902,7 +936,9 @@ From the codebase review of 2026-10-07 (5.339.0).
 - **A reader keeps their place.** A paged list keeps its page in the URL
   (`?page=`, omitted for 1; `hooks/useUrlPage`, §39) and rows-per-page as a
   per-viewer preference (`localStorage`, or `?per=`); a filter or sort change
-  still returns to page 1. A cross-project page (Portfolio, Oversight,
+  still returns to page 1 (on Hosts and the audit log a LINK that names
+  filters and a page opens that page — §39, `keepAddressPage`), and a page
+  past the end steps back to the last one that exists. A cross-project page (Portfolio, Oversight,
   Remediation deadlines) keeps its filters when the reader switches project;
   a project page drops them, because they name the previous project's ids. A narrowing that came from the URL (`?host=`, `?finding=`) is always
   shown as a removable chip naming what it narrows to.

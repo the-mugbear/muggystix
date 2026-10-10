@@ -11,8 +11,8 @@
  * since 5.350.0; a section of System Settings before) and not a project one.
  * Login attempts and user administration aren't project events.
  */
-import React, { useEffect } from 'react';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { AlertCircle, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
 import {
@@ -21,7 +21,8 @@ import {
   getAuditStats,
   listAuditLogs,
 } from '../services/api';
-import { queryErrorText } from '../lib/query';
+import type { ListPage } from '../hooks/useListQuery';
+import { usePagedList } from '../hooks/usePagedList';
 import { useUrlPage } from '../hooks/useUrlPage';
 import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { formatAuditDetails } from '../utils/auditDetails';
@@ -62,44 +63,39 @@ const AuditLogViewer: React.FC = () => {
   // once the typing stops (it was asked once per keystroke).
   const resource = useUrlSearchDraft('resource');
   const resourceType = resource.value;
-  const { page: pageIndex, setPage } = useUrlPage();
-  const asked = pageIndex * PAGE_SIZE;
 
-  const params = {
-    skip: asked,
-    limit: PAGE_SIZE,
+  const filters = {
     ...(actionFilter !== 'all' ? { action: actionFilter } : {}),
     ...(resourceType ? { resource_type: resourceType } : {}),
   };
-  const query = useQuery({
-    queryKey: ['listAuditLogs', params],
-    queryFn: ({ signal }) => listAuditLogs(params, signal),
-    // The page on screen stays until the next one answers.
-    placeholderData: keepPreviousData,
-  });
-  const loading = query.isFetching;
+  // One page at a time, the page in the address (`usePagedList`).  A link may
+  // name filters AND a page (`keepAddressPage`): it opens that page.  A page
+  // the address names past the end (an old link) steps back to the last page
+  // that exists — the hook's — never "no events match" over a trail that has
+  // some.
+  const list = usePagedList<AuditLogRow, AuditLogPage & ListPage<AuditLogRow>>(
+    'listAuditLogs',
+    async ({ offset, limit, signal }) => {
+      const answer = await listAuditLogs({ skip: offset, limit, ...filters }, signal);
+      return { ...answer, items: answer.logs };
+    },
+    [filters],
+    { pageSize: PAGE_SIZE, page: useUrlPage(), keepAddressPage: true, errorMessage: 'Failed to load audit log.' },
+  );
+  const asked = list.page * PAGE_SIZE;
+  const loading = list.loading;
   // A failed fetch must not render as an empty (i.e. "nothing happened")
   // audit trail — that is the most misleading possible state here: it is said,
   // and the rows that were shown go with it.
-  const error = queryErrorText(query.error, 'Failed to load audit log.');
-  const page: AuditLogPage | null = query.isError ? null : query.data ?? null;
-  const rows: AuditLogRow[] = page?.logs ?? [];
+  const { error } = list;
+  // The page on screen stays until the next one answers.
+  const page = error ? null : list.response ?? list.lastResponse;
+  const rows: AuditLogRow[] = page?.items ?? [];
   const total = page?.total ?? 0;
   // The rows on screen are the ones the server answered with, which is the
   // previous page while the next is on its way.
-  const skip = query.isPlaceholderData ? page?.skip ?? asked : asked;
-  const reload = (nextSkip: number) => {
-    if (nextSkip === asked) void query.refetch();
-    else setPage(Math.floor(nextSkip / PAGE_SIZE));
-  };
-  // A page the address names past the end (an old link) steps back to the
-  // last page that exists — never "no events match" over a trail that has some.
-  const pastTheEnd = !!query.data && !query.isPlaceholderData && asked > 0
-    && query.data.logs.length === 0 && query.data.total > 0;
-  const answeredTotal = query.data?.total ?? 0;
-  useEffect(() => {
-    if (pastTheEnd) setPage(Math.max(0, Math.ceil(answeredTotal / PAGE_SIZE) - 1));
-  }, [pastTheEnd, answeredTotal, setPage]);
+  const skip = list.response ? asked : page?.skip ?? asked;
+  const shownPage = Math.floor(skip / PAGE_SIZE);
 
   // Stats are a nicety; the table is the feature — a failure shows none.
   const { data: stats = null } = useQuery({
@@ -141,7 +137,7 @@ const AuditLogViewer: React.FC = () => {
         </>
       }
       actions={
-        <Button size="sm" variant="outline" onClick={() => reload(asked)} disabled={loading}>
+        <Button size="sm" variant="outline" onClick={() => { void list.reload(); }} disabled={loading}>
           <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} aria-hidden />
           Refresh
         </Button>
@@ -287,14 +283,14 @@ const AuditLogViewer: React.FC = () => {
                 <Button
                   size="sm" variant="outline"
                   disabled={skip === 0 || loading}
-                  onClick={() => reload(Math.max(0, skip - PAGE_SIZE))}
+                  onClick={() => list.setPage(shownPage - 1)}
                 >
                   Previous
                 </Button>
                 <Button
                   size="sm" variant="outline"
                   disabled={pageEnd >= total || loading}
-                  onClick={() => reload(skip + PAGE_SIZE)}
+                  onClick={() => list.setPage(shownPage + 1)}
                 >
                   Next
                 </Button>

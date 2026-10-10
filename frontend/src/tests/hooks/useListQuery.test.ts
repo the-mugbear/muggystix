@@ -10,7 +10,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ListPage, ListPageRequest, useListQuery } from '../../hooks/useListQuery';
+import { ListPage, ListPageRequest, OpenListPage, useListQuery } from '../../hooks/useListQuery';
 
 type Row = { id: number; filter: string };
 type Deferred<T> = { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void };
@@ -665,5 +665,258 @@ describe('useListQuery — lastResponse, loadMoreError, dedupeBy', () => {
     await doing(() => result.current.loadMore());
     expect(result.current.rows).toHaveLength(100);
     expect(result.current.rows?.filter((r) => r.id === 50)).toHaveLength(2);
+  });
+});
+
+describe('useListQuery — hasMore: the count, or the page’s own word', () => {
+  it('with a total, hasMore is "fewer rows loaded than the total"', async () => {
+    const fetcher = vi.fn(async ({ offset, limit }: ListPageRequest): Promise<ListPage<Row>> => ({
+      items: rows('a', offset + 1, Math.max(0, Math.min(limit, 60 - offset))), total: 60,
+    }));
+    const { result } = renderHook(() => useListQuery<Row>('listRows', fetcher, []));
+    await waitFor(() => expect(result.current.rows).toHaveLength(50));
+    expect(result.current.hasMore).toBe(true);
+    await doing(() => result.current.loadMore());
+    expect(result.current.rows).toHaveLength(60);
+    expect(result.current.hasMore).toBe(false);
+  });
+
+  // An endpoint that answers "there is more" and has no total at all (every
+  // imported file), or one whose total is beside the point.
+  it('a page that states `hasMore` decides it — no total needed — and the next page starts where the rows end', async () => {
+    type Open = OpenListPage<Row>;
+    const fetcher = vi.fn(async ({ offset, limit }: ListPageRequest): Promise<Open> => ({
+      items: rows('a', offset + 1, Math.max(0, Math.min(limit, 120 - offset))),
+      hasMore: offset + limit < 120,
+    }));
+    const { result } = renderHook(() => useListQuery<Row, Open>('listRows', fetcher, [], { pageSize: 50 }));
+    await waitFor(() => expect(result.current.rows).toHaveLength(50));
+    expect(result.current.hasMore).toBe(true);
+    // A list that is not counted states no total: 0, never a guess.
+    expect(result.current.total).toBe(0);
+
+    await doing(() => result.current.loadMore());
+    expect(result.current.hasMore).toBe(true);
+    await doing(() => result.current.loadMore());
+    expect(result.current.rows).toHaveLength(120);
+    expect(result.current.hasMore).toBe(false);
+    // Nothing further is asked for.
+    await doing(() => result.current.loadMore());
+    expect(asked(fetcher)).toEqual(['0+50', '50+50', '100+50']);
+  });
+
+  it('the page’s word wins over its total, either way', async () => {
+    type Open = OpenListPage<Row>;
+    // "No more" under a total that says otherwise; "more" under one that says done.
+    const done = async ({ offset }: ListPageRequest): Promise<Open> => ({ items: rows('a', offset + 1, 10), total: 500, hasMore: false });
+    const more = async ({ offset }: ListPageRequest): Promise<Open> => ({ items: rows('b', offset + 1, 10), total: 10, hasMore: true });
+    const { result } = renderHook(() => ({
+      done: useListQuery<Row, Open>('listDone', done, []),
+      more: useListQuery<Row, Open>('listMore', more, []),
+    }));
+    await waitFor(() => expect(result.current.done.rows).toHaveLength(10));
+    await waitFor(() => expect(result.current.more.rows).toHaveLength(10));
+    expect(result.current.done.hasMore).toBe(false);
+    expect(result.current.done.total).toBe(500);
+    expect(result.current.more.hasMore).toBe(true);
+  });
+});
+
+describe('useListQuery — responses', () => {
+  it('gives every loaded page’s response in order, re-read with the rows, and `response` stays the first', async () => {
+    type Page = ListPage<Row> & { offsetAsked: number; note: string };
+    let generation = 1;
+    const fetcher = vi.fn(async (req: ListPageRequest): Promise<Page> => ({
+      ...(await server('a')(req)), offsetAsked: req.offset, note: `read ${generation}`,
+    }));
+    const { result } = renderHook(() => useListQuery<Row, Page>('listRows', fetcher, []));
+    expect(result.current.responses).toBeNull();
+    await waitFor(() => expect(result.current.rows).toHaveLength(50));
+    expect(result.current.responses?.map((p) => p.offsetAsked)).toEqual([0]);
+
+    await doing(() => result.current.loadMore());
+    expect(result.current.responses?.map((p) => p.offsetAsked)).toEqual([0, 50]);
+    expect(result.current.response).toBe(result.current.responses?.[0]);
+
+    generation = 2;
+    await doing(() => result.current.reload());
+    expect(result.current.responses?.map((p) => p.note)).toEqual(['read 2', 'read 2']);
+  });
+
+  it('under keepPrevious they are the previous list’s pages while the new one loads', async () => {
+    type Page = ListPage<Row> & { of: string };
+    const slow = deferred<Page>();
+    const fetcher = (filter: string) => async (req: ListPageRequest): Promise<Page> => (
+      filter === 'b' ? slow.promise : { ...(await server(filter)(req)), of: filter }
+    );
+    const { result, rerender } = renderHook(
+      ({ filter }) => useListQuery<Row, Page>('listRows', fetcher(filter), [filter], { keepPrevious: true }),
+      { initialProps: { filter: 'a' } },
+    );
+    await waitFor(() => expect(result.current.rows).toHaveLength(50));
+    rerender({ filter: 'b' });
+    expect(result.current.isPrevious).toBe(true);
+    expect(result.current.responses?.map((p) => p.of)).toEqual(['a']);
+    await act(async () => { slow.resolve({ items: rows('b', 1, 3), total: 3, of: 'b' }); });
+    await waitFor(() => expect(result.current.responses?.map((p) => p.of)).toEqual(['b']));
+  });
+});
+
+describe('useListQuery — retrying', () => {
+  it('is true only while a read that failed with nothing loaded is tried again', async () => {
+    let fail = true;
+    const gate = { wait: null as Promise<void> | null };
+    const fetcher = vi.fn(async (req: ListPageRequest) => {
+      if (gate.wait) await gate.wait;
+      if (fail) throw new Error('down');
+      return server('a')(req);
+    });
+    const { result } = renderHook(() => useListQuery<Row>('listRows', fetcher, []));
+    // The first read is not a retry.
+    expect(result.current.loading).toBe(true);
+    expect(result.current.retrying).toBe(false);
+    await waitFor(() => expect(result.current.error).toBe('Could not load the list.'));
+    expect(result.current.retrying).toBe(false);
+
+    // Tried again: no error to show meanwhile, and the hook says which wait this is.
+    let release!: () => void;
+    gate.wait = new Promise<void>((resolve) => { release = resolve; });
+    fail = false;
+    let retry!: Promise<void>;
+    act(() => { retry = result.current.reload(); });
+    await waitFor(() => expect(result.current.retrying).toBe(true));
+    expect(result.current.rows).toBeNull();
+    expect(result.current.error).toBeNull();
+
+    gate.wait = null;
+    release();
+    await doing(() => retry);
+    expect(result.current.retrying).toBe(false);
+    expect(result.current.rows).toHaveLength(50);
+  });
+
+  it('is false for a reload of rows already on screen, failed or not, and for "Show more"', async () => {
+    let fail = false;
+    const fetcher = async (req: ListPageRequest) => {
+      if (fail) throw new Error('down');
+      return server('a')(req);
+    };
+    const seen: boolean[] = [];
+    const { result } = renderHook(() => {
+      const list = useListQuery<Row>('listRows', fetcher, []);
+      seen.push(list.retrying);
+      return list;
+    });
+    await waitFor(() => expect(result.current.rows).toHaveLength(50));
+    await doing(() => result.current.loadMore());
+    fail = true;
+    await doing(() => result.current.reload());
+    expect(result.current.error).toBe('Could not load the list.');
+    await doing(() => result.current.reload());
+    fail = false;
+    await doing(() => result.current.reload());
+    expect(result.current.rows).toHaveLength(100);
+    expect(seen.every((value) => value === false)).toBe(true);
+  });
+});
+
+describe('useListQuery — keepPrevious: \'loading\'', () => {
+  const failingB = () => {
+    const state = { fail: true };
+    const down = new Error('down');
+    const fetcher = (filter: string) => async (req: ListPageRequest) => {
+      if (filter === 'b' && state.fail) throw down;
+      return server(filter)(req);
+    };
+    return { state, down, fetcher };
+  };
+
+  it('keeps the previous rows while the new list loads, flagged, exactly as `true` does', async () => {
+    const slow = deferred<ListPage<Row>>();
+    const fetcher = (filter: string) => (filter === 'b' ? () => slow.promise : server(filter));
+    const { result, rerender } = renderHook(
+      ({ filter }) => useListQuery<Row>('listRows', fetcher(filter), [filter], { keepPrevious: 'loading' }),
+      { initialProps: { filter: 'a' } },
+    );
+    await waitFor(() => expect(result.current.rows).toHaveLength(50));
+    rerender({ filter: 'b' });
+    expect(result.current.isPrevious).toBe(true);
+    expect(result.current.rows?.every((r) => r.filter === 'a')).toBe(true);
+    expect(result.current.loading).toBe(true);
+    // Nothing to append to while the rows are the previous list's.
+    expect(result.current.hasMore).toBe(false);
+
+    await act(async () => { slow.resolve({ items: rows('b', 1, 2), total: 2 }); });
+    await waitFor(() => expect(result.current.isPrevious).toBe(false));
+    expect(result.current.rows?.map((r) => r.filter)).toEqual(['b', 'b']);
+  });
+
+  it('a FAILED new filter leaves only the error: no rows, no previous list', async () => {
+    const { down, fetcher } = failingB();
+    const { result, rerender } = renderHook(
+      ({ filter }) => useListQuery<Row>('listRows', fetcher(filter), [filter], {
+        keepPrevious: 'loading', errorMessage: 'Could not load the things.',
+      }),
+      { initialProps: { filter: 'a' } },
+    );
+    await waitFor(() => expect(result.current.rows).toHaveLength(50));
+
+    rerender({ filter: 'b' });
+    await waitFor(() => expect(result.current.error).toBe('Could not load the things.'));
+    expect(result.current.failure).toBe(down);
+    expect(result.current.rows).toBeNull();
+    expect(result.current.responses).toBeNull();
+    expect(result.current.response).toBeNull();
+    expect(result.current.total).toBe(0);
+    expect(result.current.isPrevious).toBe(false);
+    // What must not blink is still there for the page that wants it.
+    expect(result.current.lastResponse?.items[0]?.filter).toBe('a');
+  });
+
+  it('a retry of it is loading again — the previous rows meanwhile — and then the list that was asked for', async () => {
+    const retried = deferred<ListPage<Row>>();
+    let attempts = 0;
+    const fetcher = (filter: string) => async (req: ListPageRequest) => {
+      if (filter !== 'b') return server(filter)(req);
+      attempts += 1;
+      if (attempts === 1) throw new Error('down');
+      return retried.promise;
+    };
+    const { result, rerender } = renderHook(
+      ({ filter }) => useListQuery<Row>('listRows', fetcher(filter), [filter], { keepPrevious: 'loading' }),
+      { initialProps: { filter: 'a' } },
+    );
+    await waitFor(() => expect(result.current.rows).toHaveLength(50));
+    rerender({ filter: 'b' });
+    await waitFor(() => expect(result.current.error).toBeTruthy());
+    expect(result.current.rows).toBeNull();
+
+    let retry!: Promise<void>;
+    await act(async () => { retry = result.current.reload(); await Promise.resolve(); });
+    await waitFor(() => expect(result.current.loading).toBe(true));
+    expect(result.current.isPrevious).toBe(true);
+    expect(result.current.rows?.every((r) => r.filter === 'a')).toBe(true);
+    expect(result.current.error).toBeNull();
+    // The hook still says which wait this is, for a page that keeps its words.
+    expect(result.current.retrying).toBe(true);
+    retried.resolve({ items: rows('b', 1, 4), total: 4 });
+    await doing(() => retry);
+    expect(result.current.isPrevious).toBe(false);
+    expect(result.current.rows?.every((r) => r.filter === 'b')).toBe(true);
+  });
+
+  it('a failed RELOAD of the list on screen keeps its own rows, with the error', async () => {
+    let fail = false;
+    const fetcher = async (req: ListPageRequest) => {
+      if (fail) throw new Error('down');
+      return server('a')(req);
+    };
+    const { result } = renderHook(() => useListQuery<Row>('listRows', fetcher, [], { keepPrevious: 'loading' }));
+    await waitFor(() => expect(result.current.rows).toHaveLength(50));
+    fail = true;
+    await doing(() => result.current.reload());
+    expect(result.current.error).toBe('Could not load the list.');
+    expect(result.current.rows).toHaveLength(50);
+    expect(result.current.isPrevious).toBe(false);
   });
 });

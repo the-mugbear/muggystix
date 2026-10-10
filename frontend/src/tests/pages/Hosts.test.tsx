@@ -395,6 +395,53 @@ describe('Hosts', () => {
     expect(mockedApi.getHosts).toHaveBeenLastCalledWith(1, expect.objectContaining({ skip: 0 }), expect.anything());
   });
 
+  // An old link, or a list that shrank: never an empty table over hosts that exist.
+  it('a page the address names past the end steps back to the last page that exists', async () => {
+    // 30 hosts: two pages of 25.
+    routerState.search = '?sort_by=critical_vulns&sort_order=desc&page=9';
+    renderHosts();
+    await waitFor(() => expect(routerState.search).toContain('page=2'));
+    expect(routerState.search).toContain('sort_by=critical_vulns');
+    await waitFor(() => expect(mockedApi.getHosts).toHaveBeenLastCalledWith(
+      1, expect.objectContaining({ skip: 25, limit: 25 }), expect.anything(),
+    ));
+    // The page asked for, then the last one — nothing else.
+    expect(mockedApi.getHosts.mock.calls.map(([, p]) => (p as { skip: number }).skip)).toEqual([200, 25]);
+    await findHostsTable();
+    expect(within(screen.getByRole('table')).getAllByRole('row').length - 1).toBe(5);
+  });
+
+  // The table must not collapse (and the scroll snap to the top) between two
+  // pages or two filters, and a read that fails leaves what was shown.
+  it('keeps the rows on screen while the next page loads, and when its read fails — said, with Retry', async () => {
+    const user = userEvent.setup({ skipHover: true });
+    let fail: (reason: unknown) => void = () => undefined;
+    renderHosts();
+    await findHostsTable();
+    expect(screen.getAllByText('10.0.0.20').length).toBeGreaterThan(0);
+
+    mockedApi.getHosts.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    await user.click(screen.getByLabelText('Next page'));
+    await waitFor(() => expect(mockedApi.getHosts).toHaveBeenLastCalledWith(
+      1, expect.objectContaining({ skip: 25 }), expect.anything(),
+    ));
+    // Still the first page's rows, and no error yet.
+    expect(screen.getAllByText('10.0.0.20').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Failed to fetch hosts/)).toBeNull();
+
+    await act(async () => { fail(new Error('boom')); });
+    expect(await screen.findByText(/Failed to fetch hosts\. Please try again\. Showing previous results/)).toBeInTheDocument();
+    expect(screen.getAllByText('10.0.0.20').length).toBeGreaterThan(0);
+
+    // Retry asks for the page that failed, not the one on screen.
+    const reads = mockedApi.getHosts.mock.calls.length;
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(mockedApi.getHosts.mock.calls.length).toBe(reads + 1));
+    expect(mockedApi.getHosts).toHaveBeenLastCalledWith(1, expect.objectContaining({ skip: 25 }), expect.anything());
+    await waitFor(() => expect(screen.queryByText(/Failed to fetch hosts/)).toBeNull());
+    expect(screen.queryByText('10.0.0.20')).toBeNull();
+  });
+
   it('remembers rows per page for the viewer, and works when nothing is stored', async () => {
     writeHostsPageSize(50);
     const { unmount } = renderHosts();
@@ -1287,6 +1334,22 @@ describe('Hosts — streamlined table', () => {
     expect(states).toEqual(['In review', 'Reviewed', 'Not started']);
     // No filled "Review" chip per row: the menu trigger is a labelled text control.
     expect(screen.getByRole('button', { name: 'Change review for 10.9.0.43' })).toHaveClass('opacity-0');
+  });
+
+  // The server's answer goes onto the row on screen: the list is not read again.
+  it('a review status set on a row shows on that row at once, with no second read of the list', async () => {
+    mockedApi.followHost.mockResolvedValue({ status: 'in_review' });
+    const { container } = renderHosts();
+    await screen.findByText('10.9.0.43');
+    const reads = mockedApi.getHosts.mock.calls.length;
+    const states = () => [...container.querySelectorAll('[data-review-state]')].map((el) => el.textContent);
+    expect(states()).toEqual(['In review', 'Reviewed', 'Not started']);
+
+    const setFollow = columnArgs.calls[columnArgs.calls.length - 1].onFollowChange as (id: number, status: string) => void;
+    act(() => { setFollow(43, 'in_review'); });
+    await waitFor(() => expect(states()).toEqual(['In review', 'Reviewed', 'In review']));
+    expect(mockedApi.followHost).toHaveBeenCalledWith(1, 43, 'in_review');
+    expect(mockedApi.getHosts.mock.calls.length).toBe(reads);
   });
 
   it('names the test-workflow state instead of colouring the row border', async () => {

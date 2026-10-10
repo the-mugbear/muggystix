@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { queryErrorText, useLastSettled } from '../lib/query';
 import type { ListPage, ListPageRequest } from './useListQuery';
@@ -28,6 +28,24 @@ import type { UrlPage } from './useUrlPage';
  *
  * A page's main list keeps its page in the address: pass
  * `{ page: useUrlPage() }` (`?page=`, left out for the first).
+ *
+ * Three options, for the lists that need them:
+ *   - `keepAddressPage` (with `page`): use it where a LINK may name a filter
+ *     and a page together (`/hosts?q=…&page=4`, a same-page link on the audit
+ *     log) and must open that page.  The page is then the address's whenever
+ *     the deps changed WITH the address — by a link, Back, or the page's own
+ *     control — and the hook does not take it out.  So a control that changes
+ *     a filter leaves `page` out of its ONE address write, which is how it
+ *     starts from the first page (and in one request).  Deps that changed
+ *     while the address did not (a Refresh counter, a value kept elsewhere)
+ *     still return to the first page.
+ *   - `enabled: false` parks the list: nothing is asked for, `rows` stay
+ *     `null` and the address is not written — for a page that is about to
+ *     replace its own address (Hosts putting a restored session's filters
+ *     into it) and must not read the list of the address it is leaving.
+ *   - `page` need not come from `useUrlPage()`: a page that writes its whole
+ *     address in one place hands its own `{ page, setPage, search }`, and is
+ *     then the one writer — the hook's only writes are `setPage` calls.
  */
 export interface PagedList<T, P extends ListPage<T>> {
   /** `null` until this page has loaded (loading, or failed — see `error`). */
@@ -49,6 +67,12 @@ export interface PagedList<T, P extends ListPage<T>> {
   lastResponse: P | null;
   /** When the page on screen was last read successfully. */
   loadedAt: Date | null;
+  /** When a read of the page on screen last failed — with `loadedAt`, "has the
+   *  list been read since then?" for a message that lasts until it has. */
+  failedAt: Date | null;
+  /** Replace rows of the page on screen in place (a row the server just
+   *  returned), with no second read. */
+  mapRows: (update: (row: T) => T) => void;
 }
 
 export interface PagedListOptions {
@@ -57,6 +81,13 @@ export interface PagedListOptions {
   /** Keep the page in the address instead of in the component
    *  (`useUrlPage()`): it survives a reload and Back from a row's own page. */
   page?: UrlPage;
+  /** With `page`: an address that names a page is shown on that page, new
+   *  filters or not (see the header).  Default false: new deps start from the
+   *  first page unless the reader went Back / Forward to them. */
+  keepAddressPage?: boolean;
+  /** False parks the hook: nothing is fetched, `rows` stay null and the
+   *  address is left alone.  Default true. */
+  enabled?: boolean;
   /** What `lastResponse` belongs to — the project, for one project's list
    *  (`within: projectId`): it is forgotten when this changes. */
   within?: unknown;
@@ -66,8 +97,9 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
   name: string,
   fetchPage: (request: ListPageRequest) => Promise<P>,
   deps: ReadonlyArray<unknown>,
-  { pageSize = 25, errorMessage, page: url, within }: PagedListOptions = {},
+  { pageSize = 25, errorMessage, page: url, keepAddressPage = false, enabled = true, within }: PagedListOptions = {},
 ): PagedList<T, P> {
+  const queryClient = useQueryClient();
   // The page belongs to the deps it was chosen under: with new deps it is the
   // first page at once, with no render in which the old page number is asked
   // of the new list.
@@ -75,12 +107,14 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
   const [chosen, setChosen] = useState({ page: 0, key: depsKey });
   // In the address, the page is the address's while the deps are the ones it
   // was read under.  New deps start from the first page — and take the page
-  // out of the address — unless they came WITH an address the reader went
-  // back or forward to, whose page is then the one they left.
+  // out of the address — unless they came WITH an address whose page is the
+  // reader's: one they went back or forward to (the page they left), or, under
+  // `keepAddressPage`, any address at all (a link names its page; a control
+  // of the page left it out).
   const [read, setRead] = useState({ key: depsKey, search: url?.search });
-  const wentBack = !!url && url.byHistory && url.search !== read.search;
+  const withItsAddress = !!url && url.search !== read.search && (keepAddressPage || !!url.byHistory);
   const page = url
-    ? (read.key === depsKey || wentBack ? url.page : 0)
+    ? (read.key === depsKey || withItsAddress ? url.page : 0)
     : (chosen.key === depsKey ? chosen.page : 0);
   // …and it is forgotten with them: returning to an earlier filter (All →
   // one kind → All) starts from the first page too, not the page that was
@@ -90,13 +124,15 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
       setChosen((c) => (c.key === depsKey ? c : { page: 0, key: depsKey }));
       return;
     }
-    if (read.key !== depsKey && !wentBack && url.page !== 0) {
+    // A parked list writes nothing: its address is someone else's to replace.
+    if (!enabled) return;
+    if (read.key !== depsKey && !withItsAddress && url.page !== 0) {
       // Runs again once the address has lost its page.
       url.setPage(0);
       return;
     }
     if (read.key !== depsKey || read.search !== url.search) setRead({ key: depsKey, search: url.search });
-  }, [depsKey, url, read, wentBack]);
+  }, [depsKey, url, read, withItsAddress, enabled]);
   const setUrlPage = url?.setPage;
   const setPage = useCallback(
     (next: number) => {
@@ -106,21 +142,28 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
     [depsKey, setUrlPage],
   );
 
+  // The same shape as every other key (`[apiFn, projectId, …args]`), so a
+  // write can address this list — or one page of it — apart from another
+  // reader of the same function.  (It was the deps as one JSON string.)
+  const queryKey = [name, ...deps, { page, pageSize }];
   const query = useQuery<P>({
-    // The same shape as every other key (`[apiFn, projectId, …args]`), so a
-    // write can address this list — or one page of it — apart from another
-    // reader of the same function.  (It was the deps as one JSON string.)
     // eslint-disable-next-line @tanstack/query/exhaustive-deps -- the key is its parts; the fetcher's inputs are `deps`
-    queryKey: [name, ...deps, { page, pageSize }],
+    queryKey,
     queryFn: ({ signal }) => fetchPage({ offset: page * pageSize, limit: pageSize, signal }),
+    enabled,
   });
   const response = query.data ?? null;
   const rows = response ? response.items : null;
   const total = response ? response.total : 0;
   const { refetch } = query;
-  const reload = useCallback(async () => { await refetch(); }, [refetch]);
+  // A parked hook asks for nothing, by any door (`refetch` ignores `enabled`).
+  const reload = useCallback(async () => {
+    if (!enabled) return;
+    await refetch();
+  }, [enabled, refetch]);
 
-  // The page on screen no longer exists (its rows were dealt with).
+  // The page on screen no longer exists (its rows were dealt with, or the
+  // address named a page past the end).
   useEffect(() => {
     if (rows !== null && rows.length === 0 && total > 0 && page > 0) {
       setPage(Math.max(0, Math.ceil(total / pageSize) - 1));
@@ -128,6 +171,13 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
   }, [rows, total, page, pageSize, setPage]);
 
   const lastResponse = useLastSettled(response, { resetKey: within }) ?? null;
+
+  // The page on screen NOW, whenever the rows are mapped.
+  const onScreen = useRef(queryKey);
+  onScreen.current = queryKey;
+  const mapRows = useCallback((update: (row: T) => T) => {
+    queryClient.setQueryData<P>(onScreen.current, (old) => (old && { ...old, items: old.items.map(update) }));
+  }, [queryClient]);
 
   return {
     rows, total,
@@ -138,5 +188,7 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
     response,
     lastResponse,
     loadedAt: query.dataUpdatedAt ? new Date(query.dataUpdatedAt) : null,
+    failedAt: query.errorUpdatedAt ? new Date(query.errorUpdatedAt) : null,
+    mapRows,
   };
 }

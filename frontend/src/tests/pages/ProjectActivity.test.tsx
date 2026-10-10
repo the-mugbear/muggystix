@@ -492,6 +492,169 @@ describe('Agent Sessions — filters in the URL', () => {
   });
 });
 
+/**
+ * The history as a LIST: 200 sessions at a time, "Load older sessions" for
+ * the next 200.  What the reader sees was pinned here while the page kept a
+ * growing `limit` of its own, and held through its move onto
+ * `hooks/useListQuery` (plan B27) — the server below answers either way of
+ * asking (a longer `limit`, or the next `offset`).
+ */
+describe('Agent Sessions — the history a page at a time', () => {
+  type Filters = { kind?: string; status?: string; limit?: number; offset?: number };
+  const ended = (n: number) => session({
+    id: 5000 - n, status: 'ended', end_reason: 'agent', key_expires_at: null, can_end: false, can_resume: false,
+    purpose: `session ${n}`,
+  });
+  /** `count` ended sessions, newest first, cut by `limit` / `offset`. */
+  const historyOf = (count: number, filters: Filters) => {
+    const from = filters.offset ?? 0;
+    const sessions = Array.from({ length: count }, (_, i) => ended(i + 1)).slice(from, from + (filters.limit ?? 200));
+    return { project_id: 1, sessions, total: count };
+  };
+  const isLive = (filters: Filters) => filters.kind === 'project' && filters.status === 'active';
+  const count = () => screen.getByTestId('history-count').textContent;
+  const older = () => screen.queryByRole('button', { name: 'Load older sessions' });
+
+  beforeEach(() => {
+    project.my_role = 'analyst';
+    mockedApi.listAgentSessions.mockReset();
+    mockedApi.getAgentSessionSummary.mockReset();
+    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: [] });
+    mockedApi.getAgentActivitySummary.mockReset();
+    mockedApi.getAgentActivitySummary.mockResolvedValue(emptyActivity);
+  });
+
+  it('lists the 200 newest, and "Load older sessions" adds the rest beneath them — then is gone', async () => {
+    mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Filters = {}) => (
+      isLive(filters) ? { project_id: 1, sessions: [], total: 0 } : historyOf(250, filters)
+    ));
+    renderPage();
+    await waitFor(() => expect(count()).toBe('200 of 250 shown'));
+    expect(screen.getAllByTestId('run-row')).toHaveLength(200);
+
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Load older sessions' }));
+    await waitFor(() => expect(count()).toBe('250 of 250 shown'));
+    const rows = screen.getAllByTestId('run-row');
+    expect(rows).toHaveLength(250);
+    // In the server's order, the older ones after the ones that were shown.
+    expect(within(rows[0]).getByText('session 1')).toBeInTheDocument();
+    expect(within(rows[199]).getByText('session 200')).toBeInTheDocument();
+    expect(within(rows[249]).getByText('session 250')).toBeInTheDocument();
+    await waitFor(() => expect(older()).toBeNull());
+  });
+
+  it('offers nothing older when every session is listed', async () => {
+    mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Filters = {}) => (
+      isLive(filters) ? { project_id: 1, sessions: [], total: 0 } : historyOf(3, filters)
+    ));
+    renderPage();
+    await waitFor(() => expect(count()).toBe('3 of 3 shown'));
+    expect(older()).toBeNull();
+  });
+
+  it('the rows on screen stay while another filter loads, with their count, then give way to its own', async () => {
+    const user = userEvent.setup();
+    let answer: (value: unknown) => void = () => undefined;
+    mockedApi.listAgentSessions.mockImplementation((_projectId: number, filters: Filters = {}) => {
+      if (isLive(filters)) return Promise.resolve({ project_id: 1, sessions: [], total: 0 });
+      if (filters.kind === 'assist') return new Promise((resolve) => { answer = resolve; });
+      return Promise.resolve(historyOf(2, filters));
+    });
+    renderPage();
+    await waitFor(() => expect(count()).toBe('2 of 2 shown'));
+
+    await user.click(screen.getByLabelText('Filter sessions by kind'));
+    await user.click(await screen.findByRole('option', { name: 'Legacy assist' }));
+    await waitFor(() => expect(mockedApi.listAgentSessions).toHaveBeenCalledWith(
+      1, expect.objectContaining({ kind: 'assist' }), { signal: expect.any(AbortSignal) },
+    ));
+    expect(screen.getByText('session 1')).toBeInTheDocument();
+    expect(count()).toBe('2 of 2 shown');
+
+    answer({ project_id: 1, sessions: [legacyRun({ generated_by_model: 'Only assist', generated_by_tool: null })], total: 1 });
+    expect(await screen.findByText('Only assist')).toBeInTheDocument();
+    expect(screen.queryByText('session 1')).toBeNull();
+    expect(count()).toBe('1 of 1 shown');
+  });
+
+  // --- What the move onto the list hook changed ------------------------------
+  const historyCalls = () => mockedApi.listAgentSessions.mock.calls
+    .map((call) => call[1] as Filters).filter((filters) => !isLive(filters));
+
+  // It grew ONE answer by 200 a click; the fifth asked for 1,200 and the
+  // route refuses more than 1,000.
+  it('asks for older sessions by offset, 200 at a time — never one longer answer', async () => {
+    mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Filters = {}) => (
+      isLive(filters) ? { project_id: 1, sessions: [], total: 0 } : historyOf(450, filters)
+    ));
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(count()).toBe('200 of 450 shown'));
+    await user.click(await screen.findByRole('button', { name: 'Load older sessions' }));
+    await waitFor(() => expect(count()).toBe('400 of 450 shown'));
+    await user.click(await screen.findByRole('button', { name: 'Load older sessions' }));
+    await waitFor(() => expect(count()).toBe('450 of 450 shown'));
+    expect(historyCalls()).toEqual([{ limit: 200 }, { limit: 200, offset: 200 }, { limit: 200, offset: 400 }]);
+    expect(screen.queryByText(/newest are listed/)).toBeNull();
+  });
+
+  it('a failed "Load older" is said, and the sessions already listed stay; the next attempt adds the older ones', async () => {
+    let fail = true;
+    mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Filters = {}) => {
+      if (isLive(filters)) return { project_id: 1, sessions: [], total: 0 };
+      if (filters.offset && fail) throw new Error('boom');
+      return historyOf(250, filters);
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(count()).toBe('200 of 250 shown'));
+
+    await user.click(await screen.findByRole('button', { name: 'Load older sessions' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load agent sessions.');
+    expect(count()).toBe('200 of 250 shown');
+    expect(screen.getAllByTestId('run-row')).toHaveLength(200);
+
+    fail = false;
+    await user.click(await screen.findByRole('button', { name: 'Load older sessions' }));
+    await waitFor(() => expect(count()).toBe('250 of 250 shown'));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('another filter starts from its own newest 200, however far the reader had gone', async () => {
+    mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Filters = {}) => (
+      isLive(filters) ? { project_id: 1, sessions: [], total: 0 } : historyOf(450, filters)
+    ));
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(count()).toBe('200 of 450 shown'));
+    await user.click(await screen.findByRole('button', { name: 'Load older sessions' }));
+    await waitFor(() => expect(count()).toBe('400 of 450 shown'));
+
+    await user.click(screen.getByLabelText('Filter sessions by kind'));
+    await user.click(await screen.findByRole('option', { name: 'Legacy assist' }));
+    await waitFor(() => expect(historyCalls()[historyCalls().length - 1]).toEqual({ kind: 'assist', limit: 200 }));
+    await waitFor(() => expect(count()).toBe('200 of 450 shown'));
+  });
+
+  it('a failed read on another filter is said, counted as "—", and leaves none of the rows of the filter that was left', async () => {
+    const user = userEvent.setup();
+    mockedApi.listAgentSessions.mockImplementation(async (_projectId: number, filters: Filters = {}) => {
+      if (isLive(filters)) return { project_id: 1, sessions: [], total: 0 };
+      if (filters.kind === 'assist') throw new Error('boom');
+      return historyOf(2, filters);
+    });
+    renderPage();
+    await waitFor(() => expect(count()).toBe('2 of 2 shown'));
+
+    await user.click(screen.getByLabelText('Filter sessions by kind'));
+    await user.click(await screen.findByRole('option', { name: 'Legacy assist' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load agent sessions.');
+    expect(count()).toBe('—');
+    expect(screen.queryByText('session 1')).toBeNull();
+    expect(screen.queryAllByTestId('run-row')).toHaveLength(0);
+  });
+});
+
 describe('fillCallDays', () => {
   it('fills the window with zero days, oldest first, ending today', () => {
     const days = fillCallDays([{ day: '2026-09-28', calls: 3, errors: 0 }], 3, new Date('2026-09-29T12:00:00Z'));
