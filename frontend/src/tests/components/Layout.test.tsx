@@ -18,7 +18,14 @@ vi.mock('../../contexts/AuthContext', () => ({
 }));
 let project: { id: number; name: string; status: string; my_role?: string } | null = null;
 let isAdmin = false;
-vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: project }) }));
+let otherProjects: { id: number; name: string; status: string; my_role?: string }[] = [];
+vi.mock('../../contexts/ProjectContext', () => ({
+  useProject: () => ({ currentProject: project, projects: [...(project ? [project] : []), ...otherProjects] }),
+}));
+let remediationTracked = false;
+vi.mock('../../hooks/useRemediationPolicy', () => ({
+  useRemediationPolicy: () => ({ enabled: remediationTracked, error: null, retry: vi.fn() }),
+}));
 vi.mock('../../contexts/ThemeContext', () => ({
   useAppTheme: () => ({ themeName: 'light', setThemeName: vi.fn(), availableThemes: [] }),
 }));
@@ -38,7 +45,40 @@ describe('Layout shell', () => {
   beforeEach(() => {
     project = { id: 1, name: 'Demo — Insights Eval', status: 'active' };
     isAdmin = false;
+    otherProjects = [];
+    remediationTracked = false;
     document.title = 'BlueStick';
+  });
+
+  // Analyst walkthrough 2026-10-10: the entry was offered to everyone, and
+  // for someone who administers no project the page's whole content was
+  // "You administer no project, so there is nothing to follow up here".
+  it('offers Remediation deadlines only to someone who administers a project, where remediation is tracked', () => {
+    // Beside Portfolio, above the project's own navigation.
+    const offered = () => screen.queryAllByRole('link', { name: 'Remediation deadlines' }).length > 0;
+    project = { id: 1, name: 'Demo', status: 'active', my_role: 'analyst' };
+    remediationTracked = true;
+    const first = renderAt('/hosts');
+    expect(offered()).toBe(false);
+    first.unmount();
+
+    // An admin of ANOTHER project than the one on screen.
+    otherProjects = [{ id: 2, name: 'Theirs', status: 'active', my_role: 'admin' }];
+    const second = renderAt('/hosts');
+    expect(offered()).toBe(true);
+    second.unmount();
+
+    // A global administrator administers every project.
+    otherProjects = [];
+    isAdmin = true;
+    const third = renderAt('/hosts');
+    expect(offered()).toBe(true);
+    third.unmount();
+
+    // Not tracked: nobody is offered it.
+    remediationTracked = false;
+    renderAt('/hosts');
+    expect(offered()).toBe(false);
   });
 
   it('names the page and the project in the browser title', () => {

@@ -39,7 +39,7 @@ export const ProductObservationGroup: React.FC<ProductObservationGroupProps> = (
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          aria-label={`${name}: ${issueCount} issues from one product`}
+          aria-label={`${name}: ${issueCount} observations from one product`}
           className="flex min-w-0 flex-1 items-center gap-xs rounded py-xxs text-left hover:bg-accent/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Chevron className="size-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -53,7 +53,7 @@ export const ProductObservationGroup: React.FC<ProductObservationGroupProps> = (
           <h4 className="min-w-0 truncate text-metadata font-medium text-foreground" title={name}>
             {name}
           </h4>
-          <span className="shrink-0 text-caption text-muted-foreground">· {issueCount} issues</span>
+          <span className="shrink-0 text-caption text-muted-foreground">· {issueCount} observations</span>
         </button>
 
         <p className="max-w-[40%] shrink-0 truncate text-caption text-muted-foreground">
@@ -67,7 +67,7 @@ export const ProductObservationGroup: React.FC<ProductObservationGroupProps> = (
           <Badge
             variant="destructive"
             className="shrink-0"
-            title={`${product.exploitableCount} of these issues have a known exploit`}
+            title={`${product.exploitableCount} of these observations report a known exploit`}
           >
             {product.exploitableCount} Exploit
           </Badge>
@@ -80,7 +80,7 @@ export const ProductObservationGroup: React.FC<ProductObservationGroupProps> = (
             {product.closingVersion
               ? `Every check here names a fixed version; ${product.product} ${product.closingVersion} or later satisfies all of them. `
               : ''}
-            Each issue below is still judged on its own.
+            Each observation below is still judged on its own.
           </p>
           {product.groups.map((group) => (
             <VulnerabilityGroup key={`${hostId}:${group.key}`} group={group} {...rowProps} />

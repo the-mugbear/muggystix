@@ -43,6 +43,7 @@ import FindingCommentThread, { useFindingCommentCount } from '../components/Find
 import AddFindingHostsDialog from '../components/AddFindingHostsDialog';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { usePageSubject } from '../hooks/usePageSubject';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useFindingImages } from '../hooks/useFindingImages';
@@ -126,6 +127,9 @@ const FindingDetail: React.FC = () => {
   // The skeleton shows only while there is no finding yet.
   const findingQuery = useQuery({ queryKey: findingKey(projectId, id), queryFn: ({ signal }) => getFinding(projectId, id, signal) });
   const finding = findingQuery.data ?? null;
+  // The finding's title leads the browser tab ("Finding · <project>" was
+  // every finding's).
+  usePageSubject(finding?.title);
   // M2 — history is ancillary: its own query, it never gates the finding.
   const historyQuery = useQuery({ queryKey: findingHistoryKey(projectId, id), queryFn: ({ signal }) => getFindingHistory(projectId, id, signal) });
   const history = historyQuery.data ?? [];

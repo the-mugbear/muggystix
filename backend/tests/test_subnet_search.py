@@ -91,3 +91,46 @@ def test_subnet_search_escapes_like_wildcards(client, db_session, test_project):
     # Only the row with an actual '%' character matches.
     assert r["subnets_total"] == 1
     assert r["subnets"][0]["description"] == "10% capacity"
+
+
+def test_the_scope_page_lists_every_subnet_of_the_project(client, db_session, test_project):
+    """The page treats a project as having ONE scope, but a project can hold
+    more (older data; a seed).  The second scope's subnets were then on no
+    page: the Acceptance project's tile said "Subnets 12" over a table of 9
+    (analyst walkthrough 2026-10-10).  The page's read lists the project's
+    subnets, each with the scope it is in — what an edit or a delete names —
+    and its total is the coverage tile's."""
+    first = _default_scope_id(client, test_project.id)
+    second = models.Scope(project_id=test_project.id, name="Older scope")
+    db_session.add(second)
+    db_session.flush()
+    _seed(db_session, first, [("10.0.0.0/24", "A"), ("10.0.1.0/24", "B")])
+    _seed(db_session, second.id, [("10.77.1.0/24", "East")])
+
+    base = f"/api/v1/projects/{test_project.id}/scopes"
+    page = client.get(f"{base}/default", params={"subnets_limit": 200}).json()
+    assert page["id"] == first
+    assert {(s["cidr"], s["scope_id"]) for s in page["subnets"]} == {
+        ("10.0.0.0/24", first), ("10.0.1.0/24", first), ("10.77.1.0/24", second.id)}
+    assert page["subnets_total"] == 3 == client.get(f"{base}/coverage").json()["total_subnets"]
+    # Search and paging are over the same set.
+    assert client.get(f"{base}/default", params={"subnets_limit": 200, "subnets_search": "East"}).json()["subnets_total"] == 1
+    assert len(client.get(f"{base}/default", params={"subnets_limit": 2}).json()["subnets"]) == 2
+    # One scope by its id is still that scope alone.
+    alone = client.get(f"{base}/{second.id}", params={"subnets_limit": 200, "with_findings_only": "false"}).json()
+    assert (alone["subnets_total"], [s["cidr"] for s in alone["subnets"]]) == (1, ["10.77.1.0/24"])
+
+    # The same for the domains declared in scope (the tile said 4 over a list of 3).
+    ScopeDomain = models.ScopeDomain
+    db_session.add_all([
+        ScopeDomain(scope_id=first, domain="example.com", include_subdomains=True),
+        ScopeDomain(scope_id=second.id, domain="eval.test", include_subdomains=False),
+    ])
+    db_session.flush()
+    domains = client.get(f"{base}/{first}/domains").json()
+    assert {(d["domain"], d["scope_id"]) for d in domains["items"]} == {("example.com", first), ("eval.test", second.id)}
+    assert domains["total"] == 2 == client.get(f"{base}/coverage").json()["total_domains"]
+    # A removal names the scope the entry is in.
+    theirs = next(d for d in domains["items"] if d["scope_id"] == second.id)
+    assert client.delete(f"{base}/{second.id}/domains/{theirs['id']}").status_code == 200
+    assert client.get(f"{base}/{first}/domains").json()["total"] == 1

@@ -256,6 +256,26 @@ describe('FindingReportTextCard — a new finding is ready to write', () => {
     expect(screen.getByRole('button', { name: /Draft empty sections/ })).toBeInTheDocument();
   });
 
+  // Analyst walkthrough 2026-10-10: an analyst on someone else's finding
+  // could change its status, severity and owner, and found no way to write
+  // its text — with nothing saying the text is its author's.
+  it('tells a writer who is not the author whose text it is, and still offers a draft', () => {
+    render(<FindingReportTextCard finding={{ ...(blank as object), created_by_name: 'Ana Ortiz' } as never} canEdit={false} canPropose />);
+    expect(screen.getByTestId('report-text-not-yours')).toHaveTextContent(
+      "Written by the finding's author (Ana Ortiz) or a project admin — you can propose text for them to review.",
+    );
+    expect(screen.queryByLabelText('Description')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Draft empty sections/ })).toBeInTheDocument();
+  });
+
+  it('says nothing of the kind to the author, or to a reader who cannot write at all', () => {
+    const { unmount } = render(<FindingReportTextCard finding={blank} canEdit />);
+    expect(screen.queryByTestId('report-text-not-yours')).not.toBeInTheDocument();
+    unmount();
+    render(<FindingReportTextCard finding={blank} canEdit={false} canPropose={false} />);
+    expect(screen.queryByTestId('report-text-not-yours')).not.toBeInTheDocument();
+  });
+
   it('stays read-only for someone who may not edit it', () => {
     render(<FindingReportTextCard finding={blank} canEdit={false} canPropose={false} />);
     expect(screen.queryByLabelText('Description')).not.toBeInTheDocument();

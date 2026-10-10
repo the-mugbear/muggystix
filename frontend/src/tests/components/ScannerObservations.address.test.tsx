@@ -110,7 +110,7 @@ describe('ScannerObservations — the search box follows the address (real route
       expect(screen.getByText('51–100 of 120')).toBeInTheDocument();
       expect(screen.getByText('page 2 of 3')).toBeInTheDocument();
 
-      fireEvent.click(screen.getByRole('button', { name: 'Next 50 issues' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Next 50 observations' }));
       await pass(20);
       expect(router.state.location.search).toBe('?view=observations&page=3');
       expect(router.state.historyAction).toBe('REPLACE');
@@ -133,11 +133,11 @@ describe('ScannerObservations — the search box follows the address (real route
     it('an issue ticked on one page is still selected, and counted, on the next', async () => {
       await open('/findings?view=observations');
       fireEvent.click(screen.getByRole('checkbox', { name: 'Select Issue 0' }));
-      expect(screen.getByTestId('observations-bulk-slot')).toHaveTextContent('1 issue selected');
-      fireEvent.click(screen.getByRole('button', { name: 'Next 50 issues' }));
+      expect(screen.getByTestId('observations-bulk-slot')).toHaveTextContent('1 observation selected');
+      fireEvent.click(screen.getByRole('button', { name: 'Next 50 observations' }));
       await pass(20);
       expect(screen.getByText('Issue 50')).toBeInTheDocument();
-      expect(screen.getByTestId('observations-bulk-slot')).toHaveTextContent('1 issue selected');
+      expect(screen.getByTestId('observations-bulk-slot')).toHaveTextContent('1 observation selected');
     });
   });
 

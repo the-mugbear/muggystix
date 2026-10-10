@@ -312,6 +312,48 @@ def test_what_an_observation_says_can_be_read_without_opening_a_host(client, db_
     assert client.get(_url(test_project, "/detail"), params={"issue_key": "title:no such issue"}).status_code == 404
 
 
+def test_an_observation_is_dismissed_from_the_list_on_the_ticked_hosts_or_on_all(client, db_session, test_project, estate):
+    """The list offered Promote alone: a false positive could only be marked
+    from one of the observation's hosts (analyst walkthrough 2026-10-10; the
+    owner: "a dismissal can apply to all other hosts that have the same issue
+    … let's allow it").  It is the host page's own dismissal — this host(s)
+    only, or every host carrying it — reached from the list."""
+    hosts = estate["hosts"]
+    rows = {r["title"]: r for r in client.get(_url(test_project)).json()["items"]}
+    smb, tls = rows["SMB Signing not required"], rows["TLS Version 1.0 Protocol Detection"]
+
+    # Two of SMB's three hosts: those endpoints are false positives (on the
+    # issue's finding, made for them if there was none) and the third host
+    # still waits.
+    some = client.post(_url(test_project, "/dismiss"), json={
+        "issue_key": smb["issue_key"], "host_ids": [hosts[0].id, hosts[1].id], "reason": "signing is enforced by GPO"})
+    assert some.status_code == 200, some.text
+    assert some.json()["host_count"] == 2
+    finding = db_session.get(Finding, some.json()["finding_id"])
+    states = dict(db_session.query(FindingHost.host_id, FindingHost.host_status)
+                  .filter(FindingHost.finding_id == finding.id).all())
+    assert states == {hosts[0].id: "false_positive", hosts[1].id: "false_positive"}
+    # The third host is not on the finding, and its row still waits in the list.
+    assert hosts[2].id not in states
+    after = {r["title"]: r for r in client.get(_url(test_project)).json()["items"]}
+    assert (after["SMB Signing not required"]["host_count"], after["SMB Signing not required"]["judged_host_count"]) == (3, 2)
+
+    # No hosts named = every host carrying it: the issue is a false positive.
+    whole = client.post(_url(test_project, "/dismiss"), json={"issue_key": tls["issue_key"]})
+    assert whole.status_code == 200, whole.text
+    assert whole.json()["host_count"] == 2
+    db_session.expire_all()
+    assert db_session.get(Finding, whole.json()["finding_id"]).status == FindingStatus.FALSE_POSITIVE.value
+    left = {r["title"]: (r["host_count"], r["judged_host_count"]) for r in client.get(_url(test_project)).json()["items"]}
+    assert "TLS Version 1.0 Protocol Detection" not in left, left
+
+    # Refused whole: an unknown observation, a host that does not carry it, an empty list.
+    for body in ({"issue_key": "title:no such"},
+                 {"issue_key": smb["issue_key"], "host_ids": [999999]},
+                 {"issue_key": smb["issue_key"], "host_ids": []}):
+        assert client.post(_url(test_project, "/dismiss"), json=body).status_code == 422, body
+
+
 def test_another_projects_observation_has_no_detail_here(client, db_session, test_project, estate):
     other = Project(name="Other", slug="other-obs-detail")
     db_session.add(other)

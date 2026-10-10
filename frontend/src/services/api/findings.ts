@@ -536,6 +536,17 @@ export const getObservationIssueHosts = async (
   return response.data;
 };
 
+/** Mark one issue a false positive from the list — the host page's dismissal:
+ *  `host_ids` omitted = every host carrying it (the issue's finding becomes a
+ *  false positive); given = those hosts' endpoints only. */
+export const dismissObservationIssue = async (
+  projectId: number,
+  body: { issue_key: string; host_ids?: number[]; reason?: string },
+): Promise<{ issue_key: string; finding_id: number; host_count: number }> => {
+  const response = await api.post(`${projectPath(projectId)}/scanner-observations/dismiss`, body);
+  return response.data;
+};
+
 /** What a scanner wrote about an issue: the most severe row that has a
  *  description speaks for it, and `source` is the scanner whose words they are. */
 export interface ObservationIssueDetail {

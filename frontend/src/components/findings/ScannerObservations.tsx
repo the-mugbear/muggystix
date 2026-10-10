@@ -17,9 +17,10 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
+import { Ban, ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
 
 import {
+  dismissObservationIssue,
   getObservationIssueDetail,
   getObservationIssueHosts,
   getObservationIssues,
@@ -48,6 +49,7 @@ import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../ListFi
 import { cn } from '../../utils/cn';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Switch } from '../ui/switch';
+import { Textarea } from '../ui/textarea';
 import AgentTaskButton from '../agent-sessions/AgentTaskButton';
 import { PagedFooter } from '../operations/QueueParts';
 import { agentInstruction } from '../../utils/agentRuns';
@@ -282,7 +284,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
       const created = res.results.filter((r) => r.created).length;
       const joined = res.results.length - created;
       toast.success(
-        `Promoted ${plural(res.results.length, 'issue')}: ${plural(created, 'new finding')}`
+        `Promoted ${plural(res.results.length, 'observation')}: ${plural(created, 'new finding')}`
         + (joined ? `, ${joined} joined an existing finding` : ''),
       );
       setConfirmOpen(false);
@@ -295,7 +297,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
       void queryClient.invalidateQueries({ queryKey: ['listFindings'] });
       return queryClient.invalidateQueries({ queryKey: ['getObservationIssues'] });
     },
-    onError: (err) => toast.error(formatApiError(err, 'Could not promote the selected issues')),
+    onError: (err) => toast.error(formatApiError(err, 'Could not promote the selected observations')),
   });
   const promoting = promotion.isPending;
   const promote = () => promotion.mutate(
@@ -304,6 +306,39 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
       return hosts ? { issue_key: i.issue_key, host_ids: Array.from(hosts) } : { issue_key: i.issue_key };
     }),
   );
+
+  // Marking the ONE ticked observation a false positive: on the hosts ticked
+  // under it, or — none unticked — on every host carrying it.
+  const [dismissOpen, setDismissOpen] = useState(false);
+  const [dismissReason, setDismissReason] = useState('');
+  const toDismiss = chosen.length === 1 ? chosen[0] : null;
+  const dismissHosts = toDismiss ? hostChoice.get(toDismiss.issue_key) : undefined;
+  const dismissal = useMutation({
+    mutationFn: (body: { issue_key: string; host_ids?: number[]; reason?: string }) =>
+      dismissObservationIssue(projectId, body),
+    onSuccess: (res, sent) => {
+      toast.success(sent.host_ids
+        ? `Marked a false positive on ${plural(res.host_count, 'host')}`
+        : `Marked a false positive on every host carrying it (${res.host_count.toLocaleString()})`);
+      setDismissOpen(false);
+      setSelected(new Map());
+      setHostChoice(new Map());
+      setExpanded(new Set());
+      void queryClient.invalidateQueries({ queryKey: ['listFindings'] });
+      return queryClient.invalidateQueries({ queryKey: ['getObservationIssues'] });
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not mark it a false positive')),
+  });
+  const dismissing = dismissal.isPending;
+  const dismiss = () => {
+    if (!toDismiss) return;
+    const reason = dismissReason.trim();
+    dismissal.mutate({
+      issue_key: toDismiss.issue_key,
+      ...(dismissHosts ? { host_ids: Array.from(dismissHosts) } : {}),
+      ...(reason ? { reason } : {}),
+    });
+  };
 
   const waiting = (i: ObservationIssue) => i.host_count - i.judged_host_count;
 
@@ -365,7 +400,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
         </div>
         <div className="flex items-center gap-xs">
           <Switch id="observations-judged" checked={includeJudged} onCheckedChange={(v) => setIncludeJudged(v === true)} />
-          <Label htmlFor="observations-judged" className="text-metadata">Include issues already covered</Label>
+          <Label htmlFor="observations-judged" className="text-metadata">Include observations already covered</Label>
         </div>
       </ListFilterBar>
 
@@ -383,17 +418,25 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
           <span className="min-w-0 truncate text-metadata" aria-live="polite">
             {chosen.length > 0 ? (
               <>
-                <strong>{plural(chosen.length, 'issue')}</strong> selected · {plural(chosenHosts, 'host')}
+                <strong>{plural(chosen.length, 'observation')}</strong> selected · {plural(chosenHosts, 'host')}
               </>
             ) : (
               <span className="text-muted-foreground">
-                Tick issues to promote them to findings — on every host, or only the hosts you tick under one
+                Tick observations to promote them to findings — on every host, or only the hosts you tick under one
               </span>
             )}
           </span>
           {chosen.length > 0 && (
             <>
               <Button size="sm" className="shrink-0" onClick={() => setConfirmOpen(true)}>Promote to findings</Button>
+              {/* The host page's dismissal, reached from the list (5.379.0).
+                  One observation at a time: a false positive is a judgment
+                  of one thing, with its own reason. */}
+              {chosen.length === 1 && (
+                <Button size="sm" variant="outline" className="shrink-0" onClick={() => { setDismissReason(''); setDismissOpen(true); }}>
+                  <Ban className="size-3.5" aria-hidden /> Mark false positive…
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="ghost"
@@ -417,12 +460,14 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
         <p className="text-metadata text-muted-foreground">
           {includeJudged
             ? 'No scanner observation matches these filters.'
-            : 'Nothing waits: every matching issue is already covered by a finding on each of its hosts.'}
+            : 'Nothing waits: every matching observation is already covered by a finding on each of its hosts.'}
         </p>
       ) : (
         <>
           <p className="mb-xs text-caption text-muted-foreground" data-testid="observations-count">
-            {plural(total, 'issue')}{minHosts > 1 ? ` carried by ${minHosts} or more hosts` : ''}
+            {/* "Distinct": each is counted once however many hosts carry it —
+                Posture's and Portfolio's figures count it once per host. */}
+            {plural(total, 'distinct scanner observation')}{minHosts > 1 ? ` carried by ${minHosts} or more hosts` : ''}
             {exploitable ? ' with an exploit reported' : ''}
             {includeJudged ? '' : `${exploitable ? ' and' : ' with'} hosts not yet judged`}
             {' · '}{sort === 'hosts' ? 'most hosts first' : 'most severe first'}
@@ -434,7 +479,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                   {canManage && (
                     <TableHead className="w-10">
                       <Checkbox
-                        aria-label="Select every issue shown"
+                        aria-label="Select every observation shown"
                         // Some of the issues shown = the dash; a click then
                         // selects the REST (an issue already selected keeps
                         // the hosts it was narrowed to).
@@ -446,7 +491,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                       />
                     </TableHead>
                   )}
-                  <TableHead>Issue</TableHead>
+                  <TableHead>Scanner observation</TableHead>
                   <TableHead className="w-28">Severity</TableHead>
                   <TableHead className="w-40">Hosts</TableHead>
                   <TableHead className="w-28 text-right"><span className="sr-only">Hosts carrying it</span></TableHead>
@@ -621,7 +666,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
             <PagedFooter
               pager={{ page: list.page, pageSize: PAGE, total, onPage: list.setPage }}
               shown={issues.length}
-              noun="issues"
+              noun="observations"
             />
           )}
         </>
@@ -630,10 +675,10 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
       <Dialog open={confirmOpen} onOpenChange={(v) => !promoting && setConfirmOpen(v)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Promote {plural(chosen.length, 'issue')} to findings</DialogTitle>
+            <DialogTitle>Promote {plural(chosen.length, 'observation')} to findings</DialogTitle>
             <DialogDescription>
-              Each issue is recorded as a confirmed finding on the hosts listed. Record it only where it has been
-              verified. An issue that already has a finding joins it, and that finding&apos;s status is left as it is.
+              Each observation is recorded as a confirmed finding on the hosts listed. Record it only where it has been
+              verified. One that already has a finding joins it, and that finding&apos;s status is left as it is.
             </DialogDescription>
           </DialogHeader>
           <DialogBody>
@@ -655,7 +700,41 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
             <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={promoting}>Cancel</Button>
             <Button onClick={promote} disabled={promoting}>
               {promoting && <Loader2 className="size-4 animate-spin" aria-hidden />}
-              Promote {plural(chosen.length, 'issue')}
+              Promote {plural(chosen.length, 'observation')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={dismissOpen && toDismiss !== null} onOpenChange={(v) => !dismissing && setDismissOpen(v)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Mark as a false positive</DialogTitle>
+            <DialogDescription>
+              <span className="block break-words font-medium text-foreground">{toDismiss?.title}</span>
+              {toDismiss && (dismissHosts
+                ? `On the ${plural(dismissHosts.size, 'host')} ticked under it, of ${toDismiss.host_count.toLocaleString()}: those are recorded as false positives and the others still wait.`
+                : `On every host carrying it (${toDismiss.host_count.toLocaleString()}): its finding is recorded as a false positive. To dismiss it on some hosts only, open its Details and untick the others first.`)}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody>
+            <Label htmlFor="observation-dismiss-reason">Reason</Label>
+            <p className="text-caption text-muted-foreground">Optional. Kept on the finding&apos;s history.</p>
+            <Textarea
+              id="observation-dismiss-reason"
+              className="mt-xxs"
+              rows={3}
+              maxLength={2000}
+              value={dismissReason}
+              onChange={(e) => setDismissReason(e.target.value)}
+              placeholder="How it was ruled out"
+            />
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDismissOpen(false)} disabled={dismissing}>Cancel</Button>
+            <Button onClick={dismiss} disabled={dismissing}>
+              {dismissing && <Loader2 className="size-4 animate-spin" aria-hidden />}
+              Mark false positive
             </Button>
           </DialogFooter>
         </DialogContent>

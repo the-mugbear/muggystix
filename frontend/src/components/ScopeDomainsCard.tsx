@@ -187,7 +187,9 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = 
   };
 
   const remove = useMutation({
-    mutationFn: (row: ScopeDomainRow) => deleteScopeDomain(projectId, scopeId, row.id),
+    // The list is the project's entries: a row is removed from the scope it
+    // is in, which the row states.
+    mutationFn: (row: ScopeDomainRow) => deleteScopeDomain(projectId, row.scope_id, row.id),
     onSuccess: (_void, row) => {
       toast.success(`Removed ${row.domain} from scope`);
       return scopeChanged();

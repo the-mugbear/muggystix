@@ -444,6 +444,68 @@ def issue_detail(db: Session, project_id: int, issue_key: str) -> Optional[Issue
 
 
 @dataclass
+class DismissOutcome:
+    issue_key: str
+    finding_id: int
+    host_count: int
+
+
+def dismiss_issue(
+    db: Session, project_id: int, actor_id: int, issue_key: str,
+    host_ids: Optional[Sequence[int]] = None, reason: Optional[str] = None,
+) -> DismissOutcome:
+    """Mark one issue a false positive from the list — on every host carrying
+    it (``host_ids`` None), or on the hosts named.
+
+    It is the host page's dismissal reached from the list — the same two
+    service functions: issue-wide, ``FindingService.promote_vulnerability``
+    with the false-positive status (the issue's finding becomes one, on every
+    host this list counts); host by host, ``finding_actions
+    .promote_or_dismiss_vulnerability(scope="host")`` (each named host's
+    endpoint becomes one and an existing finding's own status is left alone).  Checked
+    whole before anything is written; the hosts are taken in id order so two
+    requests over the same issue lock in the same order.  The caller commits.
+    """
+    # Imported here: finding_actions is the click's function, and it imports
+    # the finding service this module also uses.
+    from app.services.finding_actions import promote_or_dismiss_vulnerability
+
+    rows = [v for _k, v in _project_rows(db, project_id, _key(), Vulnerability).filter(_key_is(issue_key)).all()]
+    if not rows:
+        raise ObservationError(f"No scanner observation in this project is the issue '{issue_key}'.")
+    by_host: Dict[int, Vulnerability] = {}
+    for v in sorted(rows, key=lambda v: (-_RANK.get(v.severity, 0), v.id)):
+        by_host.setdefault(v.host_id, v)  # the most severe row on each host, oldest first
+    fp = FindingStatus.FALSE_POSITIVE.value
+    if host_ids is None:
+        rep = min(rows, key=lambda v: (-_RANK.get(v.severity, 0), v.id))
+        # The hosts are THIS list's — every host whose row has the issue's
+        # stored key — named outright, as the bulk promotion names them: the
+        # service's own "every host" resolves a title-keyed row by plugin id
+        # and would leave out hosts another tool reported it on.
+        finding, _created = FindingService(db).promote_vulnerability(
+            vuln=rep, project_id=project_id, actor_id=actor_id,
+            status=fp, summary=reason, host_ids=sorted(by_host), on_join="set",
+        )
+        return DismissOutcome(issue_key=issue_key, finding_id=finding.id, host_count=len(by_host))
+    chosen = sorted(dict.fromkeys(host_ids))
+    if not chosen:
+        raise ObservationError("Choose at least one host.")
+    outside = [h for h in chosen if h not in by_host]
+    if outside:
+        raise ObservationError(
+            f"Host(s) {', '.join(map(str, outside))} do not carry the issue '{rows[0].title}'."
+        )
+    finding = None
+    for host_id in chosen:
+        finding = promote_or_dismiss_vulnerability(
+            db, vuln=by_host[host_id], project_id=project_id, actor_id=actor_id,
+            status=fp, summary=reason, scope="host",
+        )
+    return DismissOutcome(issue_key=issue_key, finding_id=finding.id, host_count=len(chosen))
+
+
+@dataclass
 class PromoteItem:
     issue_key: str
     host_ids: Optional[List[int]] = None

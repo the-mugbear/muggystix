@@ -2,7 +2,7 @@ import logging
 from typing import List, Optional
 from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, aliased
 from pydantic import BaseModel
 from app.db import models
@@ -348,8 +348,14 @@ def _serialize_scope_with_subnets(
     subnets_skip: int,
     subnets_limit: Optional[int],
     subnets_search: Optional[str] = None,
+    project_wide: bool = False,
 ) -> dict:
     """Build the ScopeSchema payload with a server-paginated subnets array.
+
+    ``project_wide`` (the Scope page's read, ``GET /scopes/default``) lists
+    the subnets of EVERY scope of the scope's project: the page shows a project
+    as one scope, and a second scope's subnets were otherwise on no page while
+    the coverage tile counted them.  Each row carries its own ``scope_id``.
 
     Shared by ``GET /scopes/default`` and ``GET /scopes/{scope_id}``.
     ``with_findings_only`` restricts to subnets with at least one correlated
@@ -371,7 +377,12 @@ def _serialize_scope_with_subnets(
             Subnet.description.ilike(like, escape="\\"),
         )
 
-    subnet_q = db.query(Subnet).filter(Subnet.scope_id == scope.id)
+    # ONE statement of which subnets are listed, for the page and both counts.
+    listed = (
+        Subnet.scope_id.in_(select(Scope.id).where(Scope.project_id == scope.project_id))
+        if project_wide else Subnet.scope_id == scope.id
+    )
+    subnet_q = db.query(Subnet).filter(listed)
     if search_filter is not None:
         subnet_q = subnet_q.filter(search_filter)
     if with_findings_only:
@@ -385,7 +396,7 @@ def _serialize_scope_with_subnets(
             db.query(func.count(func.distinct(Subnet.id)))
             .select_from(Subnet)
             .outerjoin(HostSubnetMapping)
-            .filter(Subnet.scope_id == scope.id)
+            .filter(listed)
             .group_by(Subnet.id)
             .having(func.count(HostSubnetMapping.id) > 0)
         )
@@ -393,7 +404,7 @@ def _serialize_scope_with_subnets(
             total_q = total_q.filter(search_filter)
         subnets_total_count = total_q.count()
     else:
-        total_q = db.query(func.count(Subnet.id)).filter(Subnet.scope_id == scope.id)
+        total_q = db.query(func.count(Subnet.id)).filter(listed)
         if search_filter is not None:
             total_q = total_q.filter(search_filter)
         subnets_total_count = total_q.scalar() or 0
@@ -492,7 +503,8 @@ def get_default_scope(
     """
     scope = get_or_create_default_scope(db, project.id, user_id=current_user.id)
     return _serialize_scope_with_subnets(
-        db, scope, with_findings_only, subnets_skip, subnets_limit, subnets_search
+        db, scope, with_findings_only, subnets_skip, subnets_limit, subnets_search,
+        project_wide=True,
     )
 
 
@@ -984,8 +996,15 @@ def _scope_domain_rows(db: Session, project_id: int, domains: List[ScopeDomain])
     ]
 
 
-def _scope_domain_page(db: Session, project_id: int, scope_id: int, skip: int, limit: int) -> ScopeDomainPage:
-    q = db.query(ScopeDomain).filter(ScopeDomain.scope_id == scope_id)
+def _scope_domain_page(db: Session, project_id: int, skip: int, limit: int) -> ScopeDomainPage:
+    """The PROJECT's domain-scope entries (the Scope page's list, and what an
+    add answers with — one set, so the answer can stand in for the list).  The
+    page shows a project as one scope; a second scope's entries were on no
+    page while the coverage tile counted them.  Each row says its ``scope_id``,
+    which a removal names.  (The agents read one scope's entries by its id,
+    through their own route.)"""
+    q = db.query(ScopeDomain).filter(
+        ScopeDomain.scope_id.in_(select(Scope.id).where(Scope.project_id == project_id)))
     total = q.with_entities(func.count(ScopeDomain.id)).scalar() or 0
     rows = q.order_by(ScopeDomain.domain.asc()).offset(skip).limit(limit).all()
     page = ScopeDomainPage.build(_scope_domain_rows(db, project_id, rows), total, skip, limit)
@@ -1015,8 +1034,8 @@ def list_scope_domains(
 ):
     """Paged: a bulk import with declare-scope can create thousands of
     entries, and the per-entry name counts are computed for the page only."""
-    scope = _load_scope_or_404(db, scope_id, project.id)
-    return _scope_domain_page(db, project.id, scope.id, skip, limit)
+    _load_scope_or_404(db, scope_id, project.id)
+    return _scope_domain_page(db, project.id, skip, limit)
 
 
 @router.post(
@@ -1043,7 +1062,7 @@ def add_scope_domains(
     )
     db.commit()
     # First page only — the caller re-lists to page through a large set.
-    page = _scope_domain_page(db, project.id, scope.id, 0, 100)
+    page = _scope_domain_page(db, project.id, 0, 100)
     return ScopeDomainBatchResponse(
         added=added, updated=updated, invalid=invalid,
         domains=page.items, total=page.total,

@@ -27,7 +27,7 @@ vi.mock('../../services/api', () => ({
   markAllNotificationsRead: vi.fn().mockResolvedValue(0),
 }));
 
-import Activity from '../../pages/Activity';
+import Activity, { excerpt } from '../../pages/Activity';
 
 describe('Activity page smoke', () => {
   it('renders without crashing', async () => {
@@ -40,6 +40,15 @@ describe('Activity page smoke', () => {
   it('says there is nothing unread when opened from the Mentions button', async () => {
     render(<MemoryRouter initialEntries={['/activity?mentions=mine']}><Activity /></MemoryRouter>);
     expect(await screen.findByText(/No unread notifications/)).toBeInTheDocument();
+  });
+
+  // Analyst walkthrough 2026-10-10: a preview read "## [seed] Assessment SMB
+  // … **null session**" — the note renders as Markdown where it lives.
+  it('a preview drops Markdown marks and keeps the words and the mention', () => {
+    expect(excerpt('## Assessment\n\nSMB accepts a **null session**. `445/tcp` open — see [the note](https://x.test), @alice\n- one\n1. two'))
+      .toBe('Assessment SMB accepts a null session. 445/tcp open — see the note, @alice one two');
+    expect(excerpt('snake_case and 2 * 3 stay')).toBe('snake_case and 2 * 3 stay');
+    expect(excerpt('x'.repeat(300))).toHaveLength(201);
   });
 
   it('does not show that line on a plain visit', async () => {

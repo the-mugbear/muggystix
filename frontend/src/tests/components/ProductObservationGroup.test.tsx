@@ -42,7 +42,7 @@ describe('ProductObservationGroup', () => {
         </TooltipProvider>
       </MemoryRouter>,
     );
-    const header = screen.getByRole('button', { name: /Apache Tomcat 9\.0\.13: 2 issues/ });
+    const header = screen.getByRole('button', { name: /Apache Tomcat 9\.0\.13: 2 observations/ });
     expect(header).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByText(/fixed in 9\.0\.120/)).toBeInTheDocument();
     expect(screen.getByText('1 Exploit')).toBeInTheDocument();

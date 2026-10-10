@@ -133,7 +133,11 @@ const Findings: React.FC = () => {
         {/* v5.267.0 — one line; the vocabulary (v5.225.0, the three
             populations named the same way everywhere) sits on the (i). */}
         <p className="flex flex-wrap items-center gap-xxs text-metadata text-muted-foreground">
-          The issues triaged in this project — the record reports are built from.
+          {/* Scanner observations are what has NOT been triaged yet: the
+              findings line does not describe that view. */}
+          {view === 'observations'
+            ? 'What the scanners reported that nobody has judged yet — promote one to make it a finding.'
+            : 'The issues triaged in this project — the record reports are built from.'}
           <InfoTip
             label="What the statuses mean"
             text={

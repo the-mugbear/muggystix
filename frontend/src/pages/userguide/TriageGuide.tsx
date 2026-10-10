@@ -130,7 +130,7 @@ const sections: GuideSection[] = [
           <li><strong>Share &amp; save</strong> — <strong>Copy link</strong> reproduces the exact view; <strong>Save view</strong> stores it as a named view.</li>
         </UnorderedList>
         <Para>
-          Click any host to open it: ports and services, weaknesses (scanner observations), its
+          Click any host to open it: ports and services, scanner observations, its
           tests and their evidence, scan history, the discussion thread, and connection-helper
           commands. Its assessment line says, per kind of evidence, whether the host was assessed —
           and, for vulnerability scans, whether the scan authenticated: <em>credentialed</em>,{' '}
@@ -201,7 +201,9 @@ const sections: GuideSection[] = [
           hand — <em>Add finding</em> in a host&rsquo;s Findings section, for an issue no scanner row
           or test result on that host stands for. The <strong>Findings</strong> page (Findings hub) lists findings; its{' '}
           <strong>Scanner observations</strong> view lists the raw rows grouped by issue across
-          hosts, 50 to a page, and promotes several at once. <em>Details</em> on a row shows what
+          hosts, 50 to a page, and promotes several at once. With one ticked, <em>Mark false
+          positive</em> dismisses it as the host page does — on every host carrying it, or only on
+          the hosts left ticked under it — with an optional reason. <em>Details</em> on a row shows what
           the scanner wrote about it — its description and remediation, and which scanner&rsquo;s
           words they are — above the hosts carrying it; what a scanner printed for one particular
           host is on that host&rsquo;s page.
@@ -272,7 +274,7 @@ const sections: GuideSection[] = [
           Notes are discussion: a host's <strong>Discussion</strong> section and a finding's
           comments are where the team asks, answers and hands over. They are not the record of
           work. Work is a <strong>test</strong> on the host and the result recorded on it; a
-          finding is made by promoting a weakness or a test result that showed an issue. The{' '}
+          finding is made by promoting a scanner observation or a test result that showed an issue. The{' '}
           <strong>Collaboration</strong> page shows every discussion in the project, latest first.
         </Para>
         <UnorderedList>

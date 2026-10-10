@@ -145,6 +145,55 @@ def get_scanner_observation_detail(
     return IssueDetailOut(**vars(detail))
 
 
+class DismissIn(BaseModel):
+    issue_key: str = Field(..., min_length=1, max_length=600)
+    # Omitted = every host carrying the issue.
+    host_ids: Optional[List[int]] = Field(default=None, max_length=10000)
+    # Asked for, never required — as on the host page.
+    reason: Optional[str] = Field(default=None, max_length=2000)
+
+
+class DismissOut(BaseModel):
+    issue_key: str
+    finding_id: int
+    host_count: int
+
+
+@router.post(
+    "/scanner-observations/dismiss",
+    response_model=DismissOut,
+    summary="Mark one issue a false positive, on every host carrying it or on the named ones (analyst)",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
+def dismiss_scanner_observation_issue(
+    body: DismissIn,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
+):
+    """The host page's "Mark false positive", from the list: with no
+    ``host_ids`` the issue is a false positive on every host; with them, those
+    hosts' endpoints are and the finding's own status is left alone."""
+    try:
+        outcome = svc.dismiss_issue(
+            db, project.id, current_user.id, body.issue_key,
+            host_ids=body.host_ids, reason=(body.reason or "").strip() or None,
+        )
+    except svc.ObservationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    db.commit()
+    log_audit_event(
+        db, user_id=current_user.id, action="scanner_observation_dismissed",
+        resource_type="project", resource_id=str(project.id),
+        details={
+            "finding_id": outcome.finding_id, "hosts": outcome.host_count,
+            "scope": "issue" if body.host_ids is None else "hosts",
+        },
+    )
+    return DismissOut(**vars(outcome))
+
+
 @router.post(
     "/scanner-observations/promote",
     response_model=PromoteResponse,

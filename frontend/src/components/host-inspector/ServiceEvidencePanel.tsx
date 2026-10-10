@@ -42,13 +42,19 @@ interface Props {
   evidence: ServiceEvidence;
 }
 
+/** Nothing was recorded for the port beyond what its row already says.  ONE
+ *  definition: the panel says so, and the Services table gives such a row no
+ *  expander (it opened onto that sentence and nothing else). */
+export const nothingBeyondIdentification = (port: Port | null, evidence: ServiceEvidence): boolean =>
+  evidence.weaknesses.length + evidence.access.length + evidence.web.length
+    + evidence.paths.length + (port?.scripts ?? []).length === 0;
+
 const ServiceEvidencePanel: React.FC<Props> = ({ hostId, port, evidence }) => {
   const [showFailed, setShowFailed] = useState(false);
   const [showAllPaths, setShowAllPaths] = useState(false);
   const access = summariseAccess(foldNetexecRows(evidence.access).map((o) => ({ ...o, auth_success: o.latest.auth_success })));
   const scripts = port?.scripts ?? [];
-  const nothing = evidence.weaknesses.length + evidence.access.length + evidence.web.length
-    + evidence.paths.length + scripts.length === 0;
+  const nothing = nothingBeyondIdentification(port, evidence);
 
   if (nothing) {
     return (
@@ -61,7 +67,7 @@ const ServiceEvidencePanel: React.FC<Props> = ({ hostId, port, evidence }) => {
   return (
     <div className="space-y-sm">
       {evidence.weaknesses.length > 0 && (
-        <Block title={`Weaknesses (${evidence.weaknesses.length})`}>
+        <Block title={`Scanner observations (${evidence.weaknesses.length})`}>
           <ul className="space-y-xxs">
             {evidence.weaknesses.map((v) => (
               <li key={v.id} className="flex min-w-0 items-center gap-xs text-metadata">
@@ -70,7 +76,7 @@ const ServiceEvidencePanel: React.FC<Props> = ({ hostId, port, evidence }) => {
                   {v.severity ?? 'unknown'}
                 </Badge>
                 <button type="button" className={`${linkButton} min-w-0 truncate text-left text-metadata text-foreground`}
-                  title={`${v.title ?? ''} — open in Weaknesses`}
+                  title={`${v.title ?? ''} — open in Scanner observations`}
                   onClick={() => openIssue(v.issue_key)}>
                   {v.title ?? 'Untitled observation'}
                 </button>

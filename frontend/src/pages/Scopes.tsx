@@ -353,6 +353,12 @@ const Scopes: React.FC = () => {
   });
   const savingSubnet = saveSubnet.isPending;
 
+  // The list is the PROJECT's subnets (5.379.0): a project may hold a second
+  // scope, whose rows were on no page.  An edit or a delete names the scope
+  // the row is in, which the row states.
+  const scopeOf = (subnetId: number): number =>
+    scope?.subnets.find((s) => s.id === subnetId)?.scope_id ?? scope?.id ?? 0;
+
   const handleSaveSubnet = (subnetId: number) => {
     if (!scope) return;
     if (!isIpOrCidr(editCidrDraft)) {
@@ -361,7 +367,7 @@ const Scopes: React.FC = () => {
     }
     setEditCidrError(null);
     saveSubnet.mutate({
-      scopeId: scope.id,
+      scopeId: scopeOf(subnetId),
       subnetId,
       cidr: editCidrDraft.trim(),
       description: editDescDraft.trim(),
@@ -466,7 +472,7 @@ const Scopes: React.FC = () => {
       confirmLabel: 'Delete',
     });
     if (!ok) return;
-    removeSubnet.mutate({ scopeId: scope.id, subnetId, cidr });
+    removeSubnet.mutate({ scopeId: scopeOf(subnetId), subnetId, cidr });
   };
 
   const upload = useMutation({

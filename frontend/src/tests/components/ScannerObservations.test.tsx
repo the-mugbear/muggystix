@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../services/api', () => ({
   getObservationIssues: vi.fn(),
+  dismissObservationIssue: vi.fn(),
   getObservationIssueDetail: vi.fn(),
   getObservationIssueHosts: vi.fn(),
   promoteObservationIssues: vi.fn(),
@@ -94,13 +95,13 @@ describe('ScannerObservations', () => {
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText('2 of 3 hosts')).toBeInTheDocument();
     expect(within(dialog).getByText(/all 2 hosts · joins finding #12/)).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Promote 2 issues' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Promote 2 observations' }));
 
     await waitFor(() => expect(mocked.promoteObservationIssues).toHaveBeenCalledWith(1, [
       { issue_key: SMB.issue_key, host_ids: [1, 2] },
       { issue_key: TLS.issue_key },
     ]));
-    expect(toastMock.success).toHaveBeenCalledWith('Promoted 2 issues: 1 new finding, 1 joined an existing finding');
+    expect(toastMock.success).toHaveBeenCalledWith('Promoted 2 observations: 1 new finding, 1 joined an existing finding');
     await waitFor(() => expect(mocked.getObservationIssues).toHaveBeenCalledTimes(2)); // refreshed
   });
 
@@ -118,7 +119,7 @@ describe('ScannerObservations', () => {
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select SMB Signing not required' }));
     fireEvent.click(screen.getByRole('button', { name: 'Promote to findings' }));
-    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Promote 1 issue' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Promote 1 observation' }));
     await waitFor(() => expect(mocked.promoteObservationIssues).toHaveBeenCalledWith(1, [{ issue_key: SMB.issue_key }]));
   });
 
@@ -205,7 +206,7 @@ describe('ScannerObservations', () => {
   it('marks a ticked issue, shows "some" on the header box, and a click there selects the rest', async () => {
     renderIt();
     await screen.findByText('SMB Signing not required');
-    const header = screen.getByRole('checkbox', { name: 'Select every issue shown' });
+    const header = screen.getByRole('checkbox', { name: 'Select every observation shown' });
     const rowOf = (title: string) => screen.getByRole('checkbox', { name: `Select ${title}` }).closest('tr')!;
     expect(header).toHaveAttribute('aria-checked', 'false');
 
@@ -231,7 +232,7 @@ describe('ScannerObservations', () => {
     await screen.findByText('SMB Signing not required');
     const slot = screen.getByTestId('observations-bulk-slot');
     const slotClass = slot.className;
-    expect(slot).toHaveTextContent('Tick issues to promote them to findings');
+    expect(slot).toHaveTextContent('Tick observations to promote them to findings');
     const table = screen.getByRole('table');
     const precedingBefore = table.closest('.overflow-x-auto')!.parentElement!.children.length;
 
@@ -239,7 +240,7 @@ describe('ScannerObservations', () => {
 
     expect(screen.getByTestId('observations-bulk-slot')).toBe(slot);
     expect(slot.className).toBe(slotClass);
-    expect(slot).toHaveTextContent('1 issue selected');
+    expect(slot).toHaveTextContent('1 observation selected');
     expect(within(slot).getByRole('button', { name: 'Promote to findings' })).toBeInTheDocument();
     expect(table.closest('.overflow-x-auto')!.parentElement!.children.length).toBe(precedingBefore);
   });
@@ -275,6 +276,42 @@ describe('ScannerObservations', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show what the scanner wrote about TLS Version/ }));
     expect(await screen.findByText(/Couldn't load what the scanner wrote/)).toBeInTheDocument();
     expect((await screen.findAllByRole('link', { name: '10.9.0.1' })).length).toBe(2);
+  });
+
+  // The owner, 2026-10-10: a dismissal that applies to every host carrying
+  // the observation is allowed from here — it existed only on a host's page.
+  it('marks the one ticked observation a false positive: on every host, or on the hosts ticked under it', async () => {
+    mocked.dismissObservationIssue.mockResolvedValue({ issue_key: SMB.issue_key, finding_id: 31, host_count: 3 });
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+    // Nothing ticked, or two ticked: not offered.
+    expect(screen.queryByRole('button', { name: /Mark false positive/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select SMB Signing not required' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select TLS Version 1.0 Protocol Detection' }));
+    expect(screen.queryByRole('button', { name: /Mark false positive/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select TLS Version 1.0 Protocol Detection' }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Mark false positive/ }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('On every host carrying it (3)');
+    fireEvent.change(within(dialog).getByLabelText('Reason'), { target: { value: '  enforced by GPO ' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Mark false positive' }));
+    await waitFor(() => expect(mocked.dismissObservationIssue).toHaveBeenCalledWith(1, {
+      issue_key: SMB.issue_key, reason: 'enforced by GPO',
+    }));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Marked a false positive on every host carrying it (3)'));
+
+    // Narrowed to two of its three hosts: exactly those are named, and no reason is sent when none was given.
+    mocked.dismissObservationIssue.mockResolvedValue({ issue_key: SMB.issue_key, finding_id: 31, host_count: 2 });
+    fireEvent.click(screen.getByRole('button', { name: /Show what the scanner wrote about SMB Signing/ }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Include 10.9.0.3' }));
+    fireEvent.click(screen.getByRole('button', { name: /Mark false positive/ }));
+    const again = await screen.findByRole('dialog');
+    expect(again).toHaveTextContent('On the 2 hosts ticked under it, of 3');
+    fireEvent.click(within(again).getByRole('button', { name: 'Mark false positive' }));
+    await waitFor(() => expect(mocked.dismissObservationIssue).toHaveBeenLastCalledWith(1, {
+      issue_key: SMB.issue_key, host_ids: [1, 2],
+    }));
   });
 
   it('a list that fits one page has no pager', async () => {

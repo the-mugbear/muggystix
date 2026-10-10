@@ -145,8 +145,17 @@ const dayKey = (ts: string) => {
   return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 };
 
-const excerpt = (text: string, max = 200) => {
-  const one = (text || '').replace(/\s+/g, ' ').trim();
+/** A one-line preview of a note.  The note itself renders as Markdown where
+ *  it lives; here its marks are dropped, so a preview does not read
+ *  "## Assessment **SMB**" (the words stay, and so does an @mention). */
+export const excerpt = (text: string, max = 200) => {
+  const plain = (text || '')
+    .replace(/```+/g, ' ')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')        // an image → its caption
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')         // a link → its text
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/gm, '') // heading, quote, list marks
+    .replace(/(\*\*|__|~~|`)/g, '');
+  const one = plain.replace(/\s+/g, ' ').trim();
   return one.length > max ? `${one.slice(0, max)}…` : one;
 };
 

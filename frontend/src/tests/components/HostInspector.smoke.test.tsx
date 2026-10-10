@@ -234,8 +234,8 @@ describe('HostInspector — promoting a scanner observation', () => {
     });
     render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
     const note = await screen.findByTestId('observation-grouping');
-    expect(note).toHaveTextContent('2 issues · from 3 scanner rows');
-    expect(screen.getByRole('button', { name: 'About issues and scanner rows' })).toBeInTheDocument();
+    expect(note).toHaveTextContent('2 observations · from 3 scanner rows');
+    expect(screen.getByRole('button', { name: 'About observations and scanner rows' })).toBeInTheDocument();
     expect(screen.queryByText(/from 3 scanner observations/)).not.toBeInTheDocument();
   });
 

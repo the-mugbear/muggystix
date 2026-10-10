@@ -97,6 +97,7 @@ import HostConflictsPanel from './host-inspector/HostConflictsPanel';
 import { groupByProduct, groupVulnerabilities } from '../utils/vulnGrouping';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { usePageSubject } from '../hooks/usePageSubject';
 import { useProjectId } from '../hooks/useProjectId';
 import { useObjectUrls } from '../lib/objectUrls';
 import { queryErrorText, useLastSettled } from '../lib/query';
@@ -238,6 +239,12 @@ export interface HostInspectorProps {
    * conclusion dialog (v5.237.0).
    */
   onNextUnreviewed?: () => void;
+  /**
+   * This inspector IS the page (the standalone host page): the host's address
+   * leads the browser tab's title.  Not set inside the Hosts page's sheet,
+   * where the page is still the list.
+   */
+  namesThePage?: boolean;
 }
 
 /**
@@ -258,6 +265,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   onQueryHosts,
   onDirtyChange,
   onNextUnreviewed,
+  namesThePage = false,
 }) => {
   const navigate = useNavigate();
   const toast = useToast();
@@ -320,6 +328,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   // The host stays on screen while the wider read is made, and when it fails
   // (this inspector is one host's for its whole life: it is keyed by the host).
   const host = useLastSettled(hostQuery.data) ?? null;
+  usePageSubject(namesThePage ? host?.ip_address : null);
   const informationalPending = showInformational && hostQuery.data === undefined;
   const loadingInformational = informationalPending && hostQuery.isFetching;
   const informationalFailed = informationalPending && hostQuery.isError && !hostQuery.isFetching;
@@ -1066,8 +1075,8 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   const observationsSection = hasVulnerabilities ? (
     <InspectorSection
       id="host-detail-vulnerabilities"
-      title="Weaknesses"
-      titleHint="Scanner observations on this host, grouped by issue — one row per weakness whichever tool reported it (nmap, NetExec, Nessus…). Not yet judged: promote an issue to make it a finding under investigation."
+      title="Scanner observations"
+      titleHint="What the scanners reported on this host — one row per observation whichever tool reported it (nmap, NetExec, Nessus…). Not yet judged: promote one to make it a finding under investigation."
       icon={<ShieldAlert className="size-4 shrink-0 text-destructive" aria-hidden />}
       // Rows are issues, so the count is issues. When scanners overlapped,
       // say so rather than showing a number that doesn't match the rows.
@@ -1079,11 +1088,11 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
           {totalVulnerabilities > vulnGroups.length && (
             <span className="inline-flex min-w-0 items-center gap-xxs text-caption text-muted-foreground" data-testid="observation-grouping">
               <span className="min-w-0 truncate">
-                {vulnGroups.length} {vulnGroups.length === 1 ? 'issue' : 'issues'} · from {totalVulnerabilities} scanner rows
+                {vulnGroups.length} {vulnGroups.length === 1 ? 'observation' : 'observations'} · from {totalVulnerabilities} scanner rows
               </span>
               <InfoTip
-                label="About issues and scanner rows"
-                text="Scanners can report the same issue more than once on a host (on several ports, or from more than one scanner). Rows of the same issue are grouped into one line, so there are fewer issues than scanner rows."
+                label="About observations and scanner rows"
+                text="Scanners can report the same thing more than once on a host (on several ports, or from more than one scanner). Rows of the same observation are grouped into one line, so there are fewer observations than scanner rows."
               />
             </span>
           )}

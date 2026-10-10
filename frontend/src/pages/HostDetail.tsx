@@ -230,6 +230,7 @@ export default function HostDetail() {
 
       <HostInspector
         hostId={numericHostId}
+        namesThePage
         onDirtyChange={(dirty) => { dirtyRef.current = dirty; }}
       />
       {confirmEl}

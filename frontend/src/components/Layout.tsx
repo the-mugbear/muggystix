@@ -12,6 +12,7 @@ import { useAppTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useRoleGate } from '../hooks/useProjectRole';
 import { useRemediationPolicy } from '../hooks/useRemediationPolicy';
+import { useCurrentPageSubject } from '../hooks/usePageSubject';
 import { useHorizontalOverflowGuard } from '../hooks/useHorizontalOverflowGuard';
 import { useProject } from '../contexts/ProjectContext';
 import PendingProposalsButton from './proposals/PendingProposalsButton';
@@ -197,9 +198,15 @@ export default function Layout({ children }: LayoutProps) {
   // the account role.  The same gate ProtectedRoute applies to the route.
   const allowed = useRoleGate();
   const { enabled: remediationEnabled } = useRemediationPolicy();
-  const { currentProject } = useProject();
+  const { currentProject, projects } = useProject();
+  // A global admin administers every project (`my_role` says 'admin' for
+  // them); a project whose role is not stated counts as "may" — an unknown
+  // role shows the entry and lets the page decide.
+  const administersAProject = hasPermission('admin')
+    || projects.some((p) => p.my_role === 'admin' || p.my_role === undefined);
 
-  // The bell's count: the reader's unread mentions across their projects,
+  // The bell's count: the reader's unread NOTIFICATIONS across their projects
+  // (every kind — it was labelled "mentions", which is one of them),
   // re-read every minute while the tab is visible and half as often while
   // the server is failing (`pollEvery`).  A failed read keeps the last count.
   const notificationsOn = isAuthenticated && !!currentProject;
@@ -355,10 +362,12 @@ export default function Layout({ children }: LayoutProps) {
 
   // v5.294.0 — every page names itself in the browser tab (it was always
   // "BlueStick"): "Hosts · Demo — Insights Eval · BlueStick".
+  // A detail page's record leads once the page has stated it (5.379.0).
   const projectName = currentProject?.name ?? null;
+  const pageSubject = useCurrentPageSubject();
   React.useEffect(() => {
-    document.title = documentTitleFor(location.pathname, projectName);
-  }, [location.pathname, projectName]);
+    document.title = documentTitleFor(location.pathname, projectName, pageSubject);
+  }, [location.pathname, projectName, pageSubject]);
 
   // Visible children for the active hub — filtered by role so users
   // don't see secondary tabs they can't navigate to. Memoised so
@@ -425,9 +434,11 @@ export default function Layout({ children }: LayoutProps) {
             // (5.258.0); the route and the API are admin-gated as well.
             { to: '/oversight', label: 'Oversight', Icon: Gauge, show: hasPermission('admin') },
             // Remediation deadlines across the reader's projects (5.340.0):
-            // only where the installation tracks remediation; the page says
-            // so when the reader administers no project.
-            { to: '/remediation-deadlines', label: 'Remediation deadlines', Icon: CalendarClock, show: remediationEnabled },
+            // only where the installation tracks remediation, and only for
+            // someone who administers a project (5.379.0) — for anyone else
+            // the page's whole content was "You administer no project".  The
+            // route stays reachable and still says so.
+            { to: '/remediation-deadlines', label: 'Remediation deadlines', Icon: CalendarClock, show: remediationEnabled && administersAProject },
           ].filter((l) => l.show).map(({ to, label, Icon }) => (
             <NavLink
               key={to}
@@ -686,7 +697,7 @@ export default function Layout({ children }: LayoutProps) {
                 // `mentions=mine` filter pre-applied so the user lands
                 // on what the badge was promising, not the full feed.
                 onClick={() => navigate('/activity?mentions=mine')}
-                aria-label="Mentions"
+                aria-label="Notifications"
                 className="relative"
               >
                 <BellRingsIcon className="size-4" />
@@ -707,8 +718,8 @@ export default function Layout({ children }: LayoutProps) {
                     {unreadCount > 99 ? '99+' : unreadCount}
                     <span className="sr-only">
                       {notificationsStale
-                        ? ' unread mentions (count may be stale — server unreachable)'
-                        : ' unread mentions'}
+                        ? ' unread notifications (count may be stale — server unreachable)'
+                        : ' unread notifications'}
                     </span>
                   </span>
                 )}
@@ -718,8 +729,8 @@ export default function Layout({ children }: LayoutProps) {
               {notificationsStale
                 ? `Counts may be stale — server unreachable. Last known: ${unreadCount} unread.`
                 : unreadCount > 0
-                ? `${unreadCount} unread mention${unreadCount !== 1 ? 's' : ''} — open Activity to review`
-                : 'No unread mentions'}
+                ? `${unreadCount} unread notification${unreadCount !== 1 ? 's' : ''} — open Collaboration to read ${unreadCount !== 1 ? 'them' : 'it'}`
+                : 'No unread notifications'}
             </TooltipContent>
           </Tooltip>
 

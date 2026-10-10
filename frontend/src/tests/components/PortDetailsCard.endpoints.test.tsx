@@ -232,7 +232,7 @@ describe('PortDetailsCard — density', () => {
     expect(screen.getAllByText('raw text')).toHaveLength(2);
 
     fireEvent.click(screen.getByRole('button', { name: 'Show what is known about port 443' }));
-    expect(screen.getByText('Weaknesses (2)')).toBeInTheDocument();
+    expect(screen.getByText('Scanner observations (2)')).toBeInTheDocument();
     expect(screen.getByText('Exposed Tomcat Manager')).toBeInTheDocument();
   });
 
@@ -347,9 +347,11 @@ describe('PortDetailsCard — default order', () => {
     const head = screen.getAllByRole('columnheader', { name: /Port/ })[0];
     expect(head).toHaveAttribute('aria-sort', 'ascending');
     const table = head.closest('table') as HTMLTableElement;
-    const order = within(table)
-      .getAllByRole('button', { name: /what is known about port \d+$/ })
-      .map((b) => Number(/port (\d+)$/.exec(b.getAttribute('aria-label')!)![1]));
+    // These ports have nothing recorded beyond their row, so they have no
+    // expander (5.379.0: it opened onto one sentence saying so).
+    const order = Array.from(table.querySelectorAll('[data-testid^="port-"][data-testid$="-bare"]'))
+      .map((el) => Number(/^port-(\d+)-bare$/.exec(el.getAttribute('data-testid')!)![1]));
     expect(order).toEqual([21, 23, 80, 139]);
+    expect(within(table).queryByRole('button', { name: /what is known about port/ })).toBeNull();
   });
 });

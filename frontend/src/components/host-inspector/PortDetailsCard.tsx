@@ -32,7 +32,7 @@ import { SEVERITY_BADGE_VARIANT, type Severity } from '../../utils/severity';
 import {
   evidenceForPort, summariseAccess, unplacedEvidence, worstSeverity, type ServiceEvidence,
 } from '../../utils/serviceEvidence';
-import ServiceEvidencePanel from './ServiceEvidencePanel';
+import ServiceEvidencePanel, { nothingBeyondIdentification } from './ServiceEvidencePanel';
 import { getConnectionHelpers, isSafeHostname, type ConnectionHelper } from '../../utils/connectionHelpers';
 import {
   EXPIRY_WARN_DAYS, daysUntil, endpointsByPort, summariseEndpointTls,
@@ -447,11 +447,26 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                 const version = port.service_product && port.service_version
                   ? `${port.service_product} ${port.service_version}`
                   : port.service_product || '';
-                const open = isExpanded(port);
+                // A port with nothing recorded beyond its row has nothing to
+                // open: no expander (it used to open onto one sentence).
+                const bare = nothingBeyondIdentification(port, evidenceFor(port));
+                const open = !bare && isExpanded(port);
                 return (
                   <React.Fragment key={port.id}>
                   <TableRow className={open ? 'border-b-0' : undefined}>
                     <TableCell className="whitespace-nowrap font-mono text-metadata">
+                      {bare ? (
+                        <span
+                          className="inline-flex items-center gap-xxs"
+                          title={port.reason ? `${port.state || 'open'} — ${port.reason}` : 'Nothing beyond the service identification was recorded for this port'}
+                          data-testid={`port-${port.port_number}-bare`}
+                        >
+                          {/* Keeps the number in line with the rows that open. */}
+                          <span className="inline-block size-3 shrink-0" aria-hidden />
+                          {port.port_number}
+                          <span className="text-muted-foreground">/{port.protocol}</span>
+                        </span>
+                      ) : (
                       <button
                         type="button"
                         onClick={() => toggle(port)}
@@ -466,6 +481,7 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                         {port.port_number}
                         <span className="text-muted-foreground">/{port.protocol}</span>
                       </button>
+                      )}
                     </TableCell>
                     <TableCell
                       className="truncate"

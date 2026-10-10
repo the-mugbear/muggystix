@@ -498,10 +498,17 @@ export function pageLabelFor(pathname: string): string {
   return 'Page not found';
 }
 
+/** How much of a record's name leads the tab title: a finding's title is
+ *  free text, and the page and project must still be readable after it. */
+const SUBJECT_MAX = 60;
+
 /** "Hosts · Demo — Insights Eval · BlueStick"; the project is left out on a
- *  cross-project page or when none is selected. */
-export function documentTitleFor(pathname: string, projectName?: string | null): string {
+ *  cross-project page or when none is selected.  A detail page's record
+ *  leads when the page has stated it (`hooks/usePageSubject`):
+ *  "10.10.2.42 · Host · Demo · BlueStick". */
+export function documentTitleFor(pathname: string, projectName?: string | null, subject?: string | null): string {
   const parts = [pageLabelFor(pathname)];
+  if (subject) parts.unshift(subject.length > SUBJECT_MAX ? `${subject.slice(0, SUBJECT_MAX - 1)}…` : subject);
   if (projectName && !isCrossProjectPath(pathname)) parts.push(projectName);
   parts.push('BlueStick');
   return parts.join(' · ');

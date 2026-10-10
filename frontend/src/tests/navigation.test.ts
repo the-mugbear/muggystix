@@ -172,6 +172,12 @@ describe('navigation manifest', () => {
     expect(documentTitleFor('/reference/user-guide/triage', 'Demo')).toBe('User guide · BlueStick');
     expect(documentTitleFor('/nope', 'Demo')).toBe('Page not found · Demo · BlueStick');
     expect(documentTitleFor('/hosts', null)).toBe('Hosts · BlueStick');
+    // A detail page's record leads once the page has stated it: several open
+    // host or finding tabs were all "Host · Demo" / "Finding · Demo".
+    expect(documentTitleFor('/hosts/7', 'Demo', '10.10.2.42')).toBe('10.10.2.42 · Host · Demo · BlueStick');
+    expect(documentTitleFor('/findings/37', 'Demo', 'x'.repeat(200)))
+      .toBe(`${'x'.repeat(59)}… · Finding · Demo · BlueStick`);
+    expect(documentTitleFor('/findings/37', 'Demo', null)).toBe('Finding · Demo · BlueStick');
     // No manifest page falls through to "Page not found".
     for (const page of NAV_PAGES) {
       expect(pageLabelFor(page.path), page.path).not.toBe('Page not found');

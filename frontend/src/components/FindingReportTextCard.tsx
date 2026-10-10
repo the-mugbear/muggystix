@@ -171,6 +171,9 @@ const FindingReportTextCard: React.FC<Props> = ({
   // Empty sections an AI draft may fill and nobody has drafted yet.
   const undrafted = DRAFTABLE.filter((k) => !(text?.[k] ?? '').trim() && draftsFor(k).length === 0);
   const waiting = [...drafts.values()].reduce((n, list) => n + list.length, 0);
+  // A writer of the project who is neither this finding's author nor a
+  // project admin: the server refuses their edit, so the page says whose it is.
+  const notTheirs = canPropose && !canEdit;
 
   // Draft the required sections still empty as proposals — the same review
   // path an agent's drafts take; nothing is written until one is accepted.
@@ -260,10 +263,18 @@ const FindingReportTextCard: React.FC<Props> = ({
           </>
         )}
         // Only what is specific to THIS finding is said under the heading.
-        description={missing.length > 0 || waiting > 0 ? (
+        description={missing.length > 0 || waiting > 0 || notTheirs ? (
           <>
             {missing.length > 0 && (
               <>Still empty: <span className="text-foreground">{missing.join(', ')}</span>.{' '}</>
+            )}
+            {/* Why there is no Edit here: status, severity and owner above are
+                any analyst's, so the missing control read as a fault. */}
+            {notTheirs && (
+              <span data-testid="report-text-not-yours">
+                Written by the finding&apos;s author{finding.created_by_name ? ` (${finding.created_by_name})` : ''} or
+                a project admin — you can propose text for them to review.{' '}
+              </span>
             )}
             {waiting > 0 && (
               <span className="text-info">{waiting === 1 ? '1 draft is' : `${waiting} drafts are`} waiting for review in the sections below.</span>
