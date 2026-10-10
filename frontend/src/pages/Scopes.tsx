@@ -198,8 +198,9 @@ const Scopes: React.FC = () => {
   const subnetSearch = subnetBox.value;
 
   // v2.86.0 — subnet labels.  The project-wide catalogue is one read, shared
-  // with the manager dialog (the same key): what the dialog changes is here
-  // without a callback.  selectedSubnetIds drives the bulk-apply affordance
+  // with the manager dialog and each row's label editor (the same key): what
+  // the dialog changes is here without a callback, and the editors take what
+  // this read holds rather than asking once per row.  selectedSubnetIds drives the bulk-apply affordance
   // that appears in the toolbar once any subnet is checked.
   const [labelManagerOpen, setLabelManagerOpen] = useState(false);
   const [siteManagerOpen, setSiteManagerOpen] = useState(false);
@@ -428,7 +429,6 @@ const Scopes: React.FC = () => {
         subnetId={subnet.id}
         subnetCidr={subnet.cidr}
         currentLabels={subnetLabels}
-        catalogue={labelCatalogue}
         onSaved={(next) => applyLabelEdit(subnet.id, next)}
       >
         <Button

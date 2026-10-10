@@ -3,7 +3,8 @@
  * compact rows, removal in the row's menu, rows under their network (the
  * server's segment), the state bar, and a bounded number of mounted rows.
  */
-import React, { useState } from 'react';
+import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -73,13 +74,19 @@ const finding = (hosts: FindingHostInfo[]): Finding => {
 };
 
 const onRemove = vi.fn();
+// The harness holds the finding already (never stale): nothing reads it.
+const neverAsked = (): Promise<Finding> => Promise.reject(new Error('the finding is not read in this test'));
 const Harness: React.FC<{ initial: Finding; focus?: number | null; canManage?: boolean }> = ({
   initial, focus = null, canManage = true,
 }) => {
-  const [current, setCurrent] = useState(initial);
+  // The page's part: its one read of the finding, which a change's answer is
+  // put on by the table itself (plan B3).
+  const { data: current } = useQuery({
+    queryKey: ['getFinding', 1, initial.id], queryFn: neverAsked, initialData: initial, staleTime: Infinity,
+  });
   return (
     <MemoryRouter>
-      <FindingEndpoints finding={current} canManage={canManage} focusEndpointId={focus} onRemove={onRemove} onChanged={setCurrent} />
+      <FindingEndpoints finding={current} canManage={canManage} focusEndpointId={focus} onRemove={onRemove} />
     </MemoryRouter>
   );
 };

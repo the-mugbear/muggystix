@@ -82,12 +82,22 @@ export const RemediationAssignFromReportDialog: React.FC<{
   // The dry run, keyed by exactly what it asks: only the answer for this
   // report and this date is ever shown or confirmed.  With no date sent, the
   // server answers with the report's issue day.
-  const dryRun = { report_id: reportId as number, dry_run: true, ...(typed ? { assigned_on: typed } : {}) };
-  const preview = useQuery({
-    queryKey: ['assignRemediationFromReport', projectId, dryRun],
-    queryFn: ({ signal }) => assignRemediationFromReport(projectId, dryRun, undefined, signal),
-    enabled: reportId != null && !future,
+  const issueDayRun = { report_id: reportId as number, dry_run: true };
+  const onIssueDay = useQuery({
+    queryKey: ['assignRemediationFromReport', projectId, issueDayRun],
+    queryFn: ({ signal }) => assignRemediationFromReport(projectId, issueDayRun, undefined, signal),
+    enabled: reportId != null,
   });
+  // A typed day that IS the issue day the server answered with is the answer
+  // already here: it is not asked for a second time under another key (B30).
+  const otherDay = typed && typed !== onIssueDay.data?.assigned_on ? typed : '';
+  const otherDayRun = { ...issueDayRun, assigned_on: otherDay };
+  const onOtherDay = useQuery({
+    queryKey: ['assignRemediationFromReport', projectId, otherDayRun],
+    queryFn: ({ signal }) => assignRemediationFromReport(projectId, otherDayRun, undefined, signal),
+    enabled: reportId != null && !!otherDay && !future,
+  });
+  const preview = otherDay ? onOtherDay : onIssueDay;
   const shown = preview.data ?? null;
   const previewError = queryErrorText(preview.error, 'Could not work out what this would change. Nothing was written.');
   // '' until the dry run has said which day the report was issued on.

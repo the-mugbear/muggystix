@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { Loader2, MoreHorizontal, Plus, Trash2 } from 'lucide-react';
 
 import {
   addScopeDomains,
   deleteScopeDomain,
   listScopeDomains,
+  ScopeDomainBatchResponse,
   ScopeDomainPage,
   ScopeDomainRow,
 } from '../services/api';
@@ -109,8 +110,41 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = 
   };
 
   // A domain entry changes this list, and where the hosts stand against the
-  // scope (name-reachable hosts move between states): the page's reads.
-  const scopeChanged = () => invalidateReads(queryClient, 'listScopeDomains', 'getScopeCoverage', 'getDefaultScope');
+  // scope (name-reachable hosts move between states).  It changes nothing
+  // `getDefaultScope` answers with — the scope's SUBNETS: name scope never
+  // confers subnet scope — so that list is not read again.
+  const scopeChanged = () => invalidateReads(queryClient, 'listScopeDomains', 'getScopeCoverage');
+
+  // An add answers with the scope's domains as they now stand: the first page
+  // (the server's 100, which is this list's PAGE), the entry count and the
+  // names in scope.  When the first page is all the reader has loaded, that
+  // answer IS the list on screen: it goes onto the cached list and only the
+  // coverage is read again.  With more pages loaded the answer is not the
+  // whole of it, and the list is read again as before (every loaded page).
+  // (A read of the list on its way when the answer lands may be older than
+  // it: then, too, the list is read again rather than written over.)
+  const showAnswer = (res: ScopeDomainBatchResponse) => {
+    const listKey = ['listScopeDomains', projectId, scopeId];
+    if (queryClient.isFetching({ queryKey: listKey }) > 0) return scopeChanged();
+    let shown = false;
+    queryClient.setQueriesData<InfiniteData<ScopeDomainPage, number>>(
+      { queryKey: listKey },
+      (old) => {
+        const firstPageWhole = res.domains.length >= Math.min(PAGE, res.total);
+        if (!old || old.pages.length !== 1 || !firstPageWhole) return old;
+        shown = true;
+        const items = res.domains.slice(0, PAGE);
+        return {
+          ...old,
+          pages: [{
+            ...old.pages[0], items, total: res.total, has_more: items.length < res.total,
+            names_in_scope_total: res.names_in_scope_total,
+          }],
+        };
+      },
+    );
+    return shown ? invalidateReads(queryClient, 'getScopeCoverage') : scopeChanged();
+  };
 
   const add = useMutation({
     mutationFn: (entries: string[]) => addScopeDomains(
@@ -136,7 +170,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, canEdit = 
         setDomainInput('');
         toast.success(parts.length ? parts.join(', ') : 'Already in scope');
       }
-      return scopeChanged();
+      return showAnswer(res);
     },
     onError: (err) => setDomainError(formatApiError(err, 'Failed to add domains.')),
   });

@@ -357,8 +357,11 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   const isAdmin = user?.role === 'admin';
   const currentUser = user ? { id: user.id, name: user.full_name || user.username } : null;
   const queryClient = useQueryClient();
-  // The form while it is open: started from the stored defaults by Edit.
-  const [draft, setDraft] = useState<ReportProfile | null>(null);
+  // The form while it is open (null = closed) holds only what the reader
+  // changed, laid over the stored defaults — never a copy of them: a field
+  // that was not touched follows the profile, and nothing is copied out of
+  // the query into state.
+  const [edits, setEdits] = useState<Partial<ReportProfile> | null>(null);
   const roster = useProjectRoster({ enabled: canEdit });
 
   const projectId = useProjectId();
@@ -380,12 +383,23 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   const profile: ReportProfile | null = (templatesQuery.data && profileQuery.data) ?? null;
   const problems: ReportTemplateProblem[] = problemsQuery.data ?? NO_PROBLEMS;
   const error = queryErrorText(profileQuery.error ?? templatesQuery.error, 'Could not load the report defaults.');
+  const draft: ReportProfile | null = profile && edits ? { ...profile, ...edits } : null;
+  // Only the fields that differ from what is stored are edits (lists by
+  // their content).
+  const setDraft = (next: ReportProfile) => {
+    if (!profile) return;
+    setEdits(Object.fromEntries(
+      (Object.keys(next) as Array<keyof ReportProfile>)
+        .filter((k) => JSON.stringify(next[k]) !== JSON.stringify(profile[k]))
+        .map((k) => [k, next[k]]),
+    ) as Partial<ReportProfile>);
+  };
 
   const savingDefaults = useMutation({
     mutationFn: (next: ReportProfile) => saveReportProfile(projectId, { ...cleanSettings(next), template: next.template }),
     onSuccess: (saved) => {
       queryClient.setQueryData(['getReportProfile', projectId], saved);
-      setDraft(null);
+      setEdits(null);
       toast.success('Report defaults saved. Existing drafts keep their own details.');
     },
     onError: (err) => toast.error(formatApiError(err, 'Could not save the report defaults.')),
@@ -401,7 +415,7 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
       title="Defaults for new reports"
       description="Every new draft starts from these; each report can change its own copy."
       actions={canEdit && profile && !draft ? (
-        <Button variant="ghost" size="sm" onClick={() => setDraft(profile)}>
+        <Button variant="ghost" size="sm" onClick={() => setEdits({})}>
           <Pencil className="size-4" aria-hidden /> Edit
         </Button>
       ) : undefined}
@@ -442,7 +456,7 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
             <Button type="submit" size="sm" disabled={saving}>
               {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save defaults
             </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(null)} disabled={saving}>Cancel</Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setEdits(null)} disabled={saving}>Cancel</Button>
           </div>
         </form>
       )}

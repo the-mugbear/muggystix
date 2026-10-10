@@ -176,6 +176,63 @@ describe('Reports list', () => {
   });
 });
 
+// B31 — the form held a full copy of the profile; it holds the reader's edits
+// over the stored defaults.  What it shows, sends and forgets is pinned here.
+describe('Defaults for new reports', () => {
+  const stored = { ...settings, classification: 'Confidential', template: 'pentest' };
+  beforeEach(() => {
+    mocked.listClientReports.mockResolvedValue({ items: [], latest_issued_id: null, can_create: true, can_issue: true });
+    mocked.getReportProfile.mockResolvedValue(stored);
+  });
+  const openForm = async () => {
+    renderList();
+    await screen.findByText('Defaults for new reports');
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    return screen.findByLabelText('Client');
+  };
+
+  it('opens on the stored defaults and saves them whole, with what was changed', async () => {
+    mocked.saveReportProfile.mockResolvedValue({ ...stored, client_name: 'Acme Ltd' });
+    const client = await openForm();
+    expect(client).toHaveValue('Example Corp');
+    expect(screen.getByLabelText('Classification')).toHaveValue('Confidential');
+    fireEvent.change(client, { target: { value: 'Acme Ltd' } });
+    expect(screen.getByLabelText('Client')).toHaveValue('Acme Ltd');
+    // A second field keeps the first one's edit.
+    fireEvent.change(screen.getByLabelText('Engagement type'), { target: { value: 'Internal' } });
+    expect(screen.getByLabelText('Client')).toHaveValue('Acme Ltd');
+    fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }));
+    await waitFor(() => expect(mocked.saveReportProfile).toHaveBeenCalledTimes(1));
+    expect(mocked.saveReportProfile).toHaveBeenCalledWith(1, {
+      ...stored, client_name: 'Acme Ltd', engagement_type: 'Internal',
+    });
+    // The form closes on the server's answer, with no second read.
+    expect(await screen.findByText('Acme Ltd')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save defaults' })).not.toBeInTheDocument();
+    expect(mocked.getReportProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it('Cancel forgets the edits: the form opens on the stored defaults again', async () => {
+    const client = await openForm();
+    fireEvent.change(client, { target: { value: 'Somebody else' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByText('Example Corp')).toBeInTheDocument();
+    expect(mocked.saveReportProfile).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(await screen.findByLabelText('Client')).toHaveValue('Example Corp');
+  });
+
+  it('a save that fails keeps the form and what was typed', async () => {
+    mocked.saveReportProfile.mockRejectedValue(new Error('HTTP 500'));
+    const client = await openForm();
+    fireEvent.change(client, { target: { value: 'Acme Ltd' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }));
+    await waitFor(() => expect(mocked.saveReportProfile).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save defaults' })).toBeEnabled());
+    expect(screen.getByLabelText('Client')).toHaveValue('Acme Ltd');
+  });
+});
+
 describe('Report detail — draft', () => {
   it('shows what the draft contains and what is missing', async () => {
     mocked.getClientReport.mockResolvedValue(report());

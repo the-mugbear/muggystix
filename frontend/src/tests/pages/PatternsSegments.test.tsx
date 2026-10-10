@@ -2,20 +2,21 @@
  * Patterns and Segments (5.262.0) — the Posture layout: each page opens with
  * the answer in one sentence, has no cards, and every figure keeps its link.
  */
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const systemicMock = vi.fn();
 const subnetsMock = vi.fn();
 const postureMock = vi.fn();
+const briefingMock = vi.fn();
 // Stand-in link builders: the real ones live beside the API client, which
 // cannot load in jsdom.
 vi.mock('../../services/api', () => ({
   getSystemicInsights: () => systemicMock(),
   getSubnetInsights: (...a: unknown[]) => subnetsMock(...a),
   getPosture: () => postureMock(),
-  downloadSystemicReport: vi.fn(),
+  downloadSystemicReport: (...a: unknown[]) => briefingMock(...a),
   conditionHostsHref: (k: string, cidr?: string) => `/hosts?condition=${k}${cidr ? `&subnet=${cidr}` : ''}`,
   familyCellHostsHref: (keys: string[]) => `/hosts?conditions=${keys.join(',')}`,
   subnetHostsHref: (cidr: string) => `/hosts?subnet=${cidr}`,
@@ -30,10 +31,10 @@ vi.mock('../../contexts/ProjectContext', () => ({
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 1, role: 'member' }, hasPermission: () => true }),
 }));
-vi.mock('../../contexts/ToastContext', () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
-}));
+const toastMock = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }));
+vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
 
+import { formatApiError } from '../../utils/apiErrors';
 import Patterns from '../../pages/Patterns';
 import Segments from '../../pages/Segments';
 import { TooltipProvider } from '../../components/ui/tooltip';
@@ -78,6 +79,30 @@ describe('Patterns', () => {
     wrap(<Patterns />);
     expect(await screen.findByRole('button', { name: /Create briefing/ })).toBeInTheDocument();
     projectRole.value = undefined;
+  });
+
+  // B2 (e) — the briefing is one hook for the three pages that offer it.
+  it('Create briefing asks for the estate-wide report once, and is not offered again while it is made', async () => {
+    let done: () => void = () => undefined;
+    briefingMock.mockReset().mockReturnValue(new Promise<void>((resolve) => { done = resolve; }));
+    wrap(<Patterns />);
+    const button = await screen.findByRole('button', { name: /Create briefing/ });
+    fireEvent.click(button);
+    await waitFor(() => expect(briefingMock).toHaveBeenCalledTimes(1));
+    expect(briefingMock).toHaveBeenCalledWith(1);
+    expect(button).toBeDisabled();
+    await act(async () => { done(); });
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(toastMock.error).not.toHaveBeenCalled();
+  });
+
+  it('a briefing that cannot be made is said, with the server’s reason', async () => {
+    toastMock.error.mockClear();
+    briefingMock.mockReset().mockRejectedValue(new Error('boom'));
+    wrap(<Patterns />);
+    fireEvent.click(await screen.findByRole('button', { name: /Create briefing/ }));
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledTimes(1));
+    expect(toastMock.error).toHaveBeenCalledWith(formatApiError(new Error('boom'), 'Could not create the briefing.'));
   });
 
   it('names the estate-wide weakness first, once, without cards or an opaque score', async () => {
@@ -143,6 +168,24 @@ describe('Segments', () => {
     wrap(<Segments />);
     expect(await screen.findByRole('button', { name: 'Create briefing for HQ' })).toBeInTheDocument();
     projectRole.value = undefined;
+  });
+
+  // B2 (e) — one site's briefing: asked for by name, every site's button
+  // waits while it is made, and a failure names the site.
+  it('a site’s briefing asks for that site; a failure names it', async () => {
+    toastMock.error.mockClear();
+    let fail: (e: unknown) => void = () => undefined;
+    briefingMock.mockReset().mockReturnValue(new Promise<void>((_resolve, reject) => { fail = reject; }));
+    wrap(<Segments />);
+    const button = await screen.findByRole('button', { name: 'Create briefing for HQ' });
+    fireEvent.click(button);
+    await waitFor(() => expect(briefingMock).toHaveBeenCalledTimes(1));
+    expect(briefingMock).toHaveBeenCalledWith(1, 'HQ');
+    expect(button).toBeDisabled();
+    await act(async () => { fail(new Error('boom')); });
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledTimes(1));
+    expect(toastMock.error).toHaveBeenCalledWith(formatApiError(new Error('boom'), 'Could not create the briefing for HQ.'));
+    await waitFor(() => expect(button).toBeEnabled());
   });
 
   it('opens on the Site lens when sites exist, and names the worst one', async () => {

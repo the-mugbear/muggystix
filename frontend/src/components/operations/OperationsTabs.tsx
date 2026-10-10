@@ -18,6 +18,7 @@
  * A count that is not known reads "—" — never 0.
  */
 import React from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import {
   getInvestigationQueue,
@@ -45,7 +46,7 @@ import FindingsNeedingMeTable from './FindingsNeedingMeTable';
 import MyTestsTable from './MyTestsTable';
 import ReviewHostsTable from './ReviewHostsTable';
 import UntouchedQueueSection from './UntouchedQueueSection';
-import type { ListState, Pager } from './QueueParts';
+import { queueTotalKey, type ListState, type Pager } from './QueueParts';
 
 /** Every tab pages the same way, and keeps its page in the address (only the
  *  open tab's panel is mounted, so `?page=` is that tab's). */
@@ -158,10 +159,27 @@ const PickUpPanel: React.FC<PanelProps & {
   onTier: (tier: number | null) => void;
 }> = ({ canWrite, tier, onTier }) => {
   const projectId = useProjectId();
+  const queryClient = useQueryClient();
   const list = usePagedList<InvestigateRow, InvestigationQueueResponse & ListPage<InvestigateRow>>(
     'getInvestigationQueue',
     async (req) => {
-      const r = await getInvestigationQueue(projectId, tier, req);
+      // The tab's count is this answer's `queue_total` while the tab is open
+      // (the page does not run the ranking a second time for it): each
+      // answer is put where the page reads the count, and a read that failed
+      // leaves the count not known ("—"), never the previous number.
+      let r: InvestigationQueueResponse;
+      try {
+        r = await getInvestigationQueue(projectId, tier, req);
+      } catch (error) {
+        if (!req.signal.aborted) {
+          // (The time stays that of the last count that WAS read: the page's
+          // "updated" must not move for a read that failed.)
+          const key = queueTotalKey(projectId);
+          queryClient.setQueryData(key, null, { updatedAt: queryClient.getQueryState(key)?.dataUpdatedAt ?? 0 });
+        }
+        throw error;
+      }
+      queryClient.setQueryData(queueTotalKey(projectId), r);
       // The size of the list being paged: the whole queue, or the tier's hosts.
       return { ...r, total: tier != null ? (r.tier_counts?.[tier - 1] ?? r.items.length) : r.queue_total };
     },

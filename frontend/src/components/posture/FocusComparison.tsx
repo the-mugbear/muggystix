@@ -9,7 +9,7 @@
  * The arithmetic and its rules live in utils/postureConcentration.ts; this file
  * only draws them. Every figure is a direct label — nothing is hover-only.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowUpRight } from 'lucide-react';
 
@@ -57,16 +57,32 @@ const RateBar: React.FC<{ r: ConcentrationRow }> = ({ r }) => {
 export const FocusComparison: React.FC<{ heatmap: PostureHeatmap }> = ({ heatmap }) => {
   const families = useMemo(() => heatmap.rows.filter((r) => r.affected_total > 0), [heatmap]);
   const lead = useMemo(() => leadingFamily(heatmap.rows, heatmap.segments), [heatmap]);
-  const [familyKey, setFamilyKey] = useState<string | null>(lead?.family ?? null);
+  const leadKey = lead?.family ?? null;
+  // The reader's measure, until the data's leading measure is another one:
+  // the page then opens on that.  Put back in the render that sees the new
+  // lead (React's "adjust state when a prop changes") — it was an effect,
+  // which drew the old choice once more first.
+  const [familyKey, setFamilyKey] = useState<string | null>(leadKey);
+  const [leadSeen, setLeadSeen] = useState<string | null>(leadKey);
+  if (leadSeen !== leadKey) {
+    setLeadSeen(leadKey);
+    setFamilyKey(leadKey);
+  }
   const family = families.find((f) => f.family === familyKey) ?? lead;
   const ranked = useMemo(
     () => (family ? rankConcentration(family, heatmap.segments) : []),
     [family, heatmap.segments],
   );
+  // The reader's segment belongs to the measure it was chosen under: another
+  // measure (chosen, or brought by new data) falls back to its own leading
+  // segment, and coming back does too.
+  const shownFamily = family?.family ?? null;
   const [segmentKey, setSegmentKey] = useState<string | null>(null);
-  // New data or another measure: fall back to that measure's leading segment.
-  useEffect(() => { setSegmentKey(null); }, [family?.family]);
-  useEffect(() => { setFamilyKey(lead?.family ?? null); }, [lead?.family]);
+  const [familySeen, setFamilySeen] = useState<string | null>(shownFamily);
+  if (familySeen !== shownFamily) {
+    setFamilySeen(shownFamily);
+    setSegmentKey(null);
+  }
 
   if (!family) return null;
   const shown = ranked.slice(0, TOP_ROWS);

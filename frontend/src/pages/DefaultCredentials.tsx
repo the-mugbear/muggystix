@@ -1,5 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
+import { useUrlPage } from '../hooks/useUrlPage';
+import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { copyToClipboard as copyText } from '../utils/clipboard';
 import { parseCsv } from '../utils/csv';
 import {
@@ -43,6 +46,8 @@ interface CredentialEntry {
 }
 
 const NO_CREDENTIALS: CredentialEntry[] = [];
+const PAGE_SIZES = [10, 25, 50, 100];
+const DEFAULT_PAGE_SIZE = 25;
 
 /** The sheet shipped with the app (a file of the build, not an API route). */
 const loadDefaultCredentials = async (signal: AbortSignal): Promise<CredentialEntry[]> => {
@@ -74,10 +79,6 @@ const DefaultCredentials: React.FC = () => {
   const credentials = sheet.data ?? NO_CREDENTIALS;
   const loading = sheet.isPending;
   const error = sheet.error ? 'Failed to load default credentials data' : null;
-  const [selectedVendor, setSelectedVendor] = useState<string>('');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(25);
 
   const vendors = useMemo(() => {
     const set = new Set<string>();
@@ -86,6 +87,38 @@ const DefaultCredentials: React.FC = () => {
     }
     return Array.from(set).sort();
   }, [credentials]);
+
+  // The list's state lives in the address (`?vendor=`, `?search=`, `?per=`,
+  // `?page=`; UI_STYLE_GUIDE §39, as on the SBOM page): a reload, a shared
+  // link and Back show the same rows.  It is read from the address on every
+  // render and changed by writing it; a value the address cannot mean is the
+  // default.  Only the text being typed in the search box is state.
+  const [params, setParams] = useSearchParams();
+  const searchBox = useUrlSearchDraft('search');
+  const searchTerm = searchBox.value;
+  const vendorParam = params.get('vendor') ?? '';
+  const selectedVendor = vendors.includes(vendorParam) ? vendorParam : '';
+  const perParam = Number(params.get('per'));
+  const rowsPerPage = PAGE_SIZES.includes(perParam) ? perParam : DEFAULT_PAGE_SIZE;
+  const { page: askedPage, setPage } = useUrlPage();
+  // One write per change, replacing the entry; a filter or another page size
+  // changes which rows a page holds, so each starts from the first (`page` is
+  // dropped) — there is no effect to reset it.  A default is left out.
+  const writeParams = useCallback((updates: Record<string, string | null>) => {
+    setParams((prev) => {
+      const out = new URLSearchParams(prev);
+      Object.entries(updates).forEach(([k, v]) => (v == null ? out.delete(k) : out.set(k, v)));
+      out.delete('page');
+      return out;
+    }, { replace: true });
+  }, [setParams]);
+  const setSelectedVendor = (v: string) => writeParams({ vendor: v || null });
+  const setRowsPerPage = (n: number) => writeParams({ per: n === DEFAULT_PAGE_SIZE ? null : String(n) });
+  // One write for both filters; the box then agrees with the address.
+  const clearFilters = () => {
+    writeParams({ vendor: null, search: null });
+    searchBox.setDraft('');
+  };
 
   const filtered = useMemo(() => {
     let out = credentials;
@@ -105,12 +138,9 @@ const DefaultCredentials: React.FC = () => {
   }, [credentials, selectedVendor, searchTerm]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / rowsPerPage));
+  // A page the address names past the end shows the last one.
+  const page = Math.min(askedPage, totalPages - 1);
   const pageRows = filtered.slice(page * rowsPerPage, (page + 1) * rowsPerPage);
-
-  // Reset to page 0 when filters change
-  useEffect(() => {
-    setPage(0);
-  }, [selectedVendor, searchTerm, rowsPerPage]);
 
   const copyToClipboard = async (text: string, label: string) => {
     if (await copyText(text)) {
@@ -179,8 +209,8 @@ const DefaultCredentials: React.FC = () => {
                 <Input
                   id="dc-search"
                   type="search"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
+                  value={searchBox.draft}
+                  onChange={(e) => searchBox.setDraft(e.target.value)}
                   placeholder="Search vendor, username, or password…"
                   className="pl-xl"
                 />
@@ -189,11 +219,8 @@ const DefaultCredentials: React.FC = () => {
             <div className="flex items-center gap-sm md:col-span-2">
               <Button
                 variant="ghost"
-                onClick={() => {
-                  setSelectedVendor('');
-                  setSearchTerm('');
-                }}
-                disabled={!selectedVendor && !searchTerm}
+                onClick={clearFilters}
+                disabled={!selectedVendor && !searchTerm && !searchBox.draft}
               >
                 Clear
               </Button>
@@ -309,7 +336,7 @@ const DefaultCredentials: React.FC = () => {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {[10, 25, 50, 100].map((n) => (
+                  {PAGE_SIZES.map((n) => (
                     <SelectItem key={n} value={String(n)}>
                       {n}
                     </SelectItem>
@@ -325,7 +352,7 @@ const DefaultCredentials: React.FC = () => {
                 variant="outline"
                 size="icon"
                 disabled={page === 0}
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                onClick={() => setPage(Math.max(0, page - 1))}
                 aria-label="Previous page"
               >
                 <ChevronLeft className="size-4" aria-hidden />
@@ -334,7 +361,7 @@ const DefaultCredentials: React.FC = () => {
                 variant="outline"
                 size="icon"
                 disabled={page >= totalPages - 1}
-                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
                 aria-label="Next page"
               >
                 <ChevronRight className="size-4" aria-hidden />

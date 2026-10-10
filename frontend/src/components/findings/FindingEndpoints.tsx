@@ -23,7 +23,7 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
 
 import {
@@ -47,6 +47,7 @@ import { selectAllState } from '../../utils/selection';
 import { LIST_CURSOR_CLASS } from '../../hooks/useListCursor';
 import { useProjectId } from '../../hooks/useProjectId';
 import EndpointStateBar from './EndpointStateBar';
+import { putFinding } from './findingCache';
 import { jumpTargetStyle } from '../SectionJumpBar';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -98,8 +99,6 @@ interface Props {
   finding: Finding;
   /** Project analyst or above: may change endpoint states and remove a row. */
   canManage: boolean;
-  /** The finding as the server returned it after a change. */
-  onChanged: (updated: Finding) => void;
   onRemove: (row: FindingHostInfo) => void;
   /** An endpoint row to bring into view (`?endpoint=` — a proposal's link). */
   focusEndpointId?: number | null;
@@ -111,11 +110,16 @@ interface Props {
 }
 
 const FindingEndpoints: React.FC<Props> = ({
-  finding, canManage, onChanged, onRemove, focusEndpointId = null,
+  finding, canManage, onRemove, focusEndpointId = null,
   proposals = NO_PROPOSALS, canDecide = false, onProposalDecided,
 }) => {
   const toast = useToast();
   const projectId = useProjectId();
+  const queryClient = useQueryClient();
+  // A change's answer is the finding as it then stood: it goes onto the
+  // page's cached finding (which is where `finding` comes from), and the
+  // history the change appended to is read again.
+  const applyAnswer = (updated: Finding) => putFinding(queryClient, projectId, updated, { history: true });
   const rootRef =useRef<HTMLDivElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [stateFilter, setStateFilter] = useState<EndpointStateFilter>('all');
@@ -293,7 +297,7 @@ const FindingEndpoints: React.FC<Props> = ({
       try {
         // The route answers with the finding: the row is updated from it, not
         // from a second read of thousands of endpoints.
-        onChanged(await setEndpoint.mutateAsync({ rowId: row.id, hostStatus }));
+        applyAnswer(await setEndpoint.mutateAsync({ rowId: row.id, hostStatus }));
         // A row given its own state is no longer part of "these, together".
         setSelected((prev) => {
           if (!prev.has(row.id)) return prev;
@@ -348,7 +352,7 @@ const FindingEndpoints: React.FC<Props> = ({
       }
     });
     const done = doneIds.length;
-    if (latest) onChanged(latest);
+    if (latest) applyAnswer(latest);
     // Only what this request changed leaves the selection: what it could not
     // change stays ticked, and so does anything ticked since it started.
     if (done > 0) {

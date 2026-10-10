@@ -9,6 +9,7 @@
  *    array on every render (`subnet.labels ?? []`, a re-read of the scope) —
  *    so any render of the page took back what the reader had just changed.
  */
+import { useQuery } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -68,10 +69,13 @@ describe('SubnetLabelManagerDialog — a failed read', () => {
 
 describe('SubnetLabelEditorPopover — the selection is the reader’s while it is open', () => {
   const catalogue = [label(1, 'PCI'), label(2, 'DMZ')];
+  // The editor reads the project's catalogue itself (plan B22; the page used
+  // to hand it down).
+  beforeEach(() => { api.listSubnetLabels.mockResolvedValue(catalogue); });
   // As the Scope page does: a NEW array of the subnet's labels on every render.
   const Row = ({ onSaved = vi.fn() }: { onSaved?: (next: unknown) => void }) => (
     <SubnetLabelEditorPopover
-      subnetId={7} subnetCidr="10.0.0.0/24" catalogue={catalogue} onSaved={onSaved}
+      subnetId={7} subnetCidr="10.0.0.0/24" onSaved={onSaved}
       currentLabels={[{ id: 1, name: 'PCI', color: null }]}
     >
       <button type="button">Edit labels</button>
@@ -103,5 +107,52 @@ describe('SubnetLabelEditorPopover — the selection is the reader’s while it 
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit labels' }));
     expect(await screen.findByRole('button', { name: 'Remove PCI' })).toBeInTheDocument();
+  });
+});
+
+// Plan B22 — every row's editor reads the catalogue's key itself.  That must
+// not cost a request per row: the page's read is the one that asks, rows that
+// mount later take what is there, and a change to a label reaches them all.
+describe('SubnetLabelEditorPopover — a table of rows and the one catalogue', () => {
+  // The Scope page's own read of the catalogue (its "Apply label…" menu).
+  const PageRead = () => {
+    useQuery({ queryKey: ['listSubnetLabels', 1], queryFn: () => api.listSubnetLabels(1) });
+    return null;
+  };
+  const Table = ({ rows }: { rows: number[] }) => (
+    <>
+      <PageRead />
+      {rows.map((id) => (
+        <SubnetLabelEditorPopover
+          key={id} subnetId={id} subnetCidr={`10.0.${id}.0/24`} onSaved={vi.fn()}
+          currentLabels={[{ id: 2, name: 'DMZ', color: null }]}
+        >
+          <button type="button">Edit labels for {id}</button>
+        </SubnetLabelEditorPopover>
+      ))}
+    </>
+  );
+
+  it('asks once for the page and its rows, not again for a row that appears later, and follows a change', async () => {
+    api.listSubnetLabels.mockResolvedValue([label(1, 'PCI'), label(2, 'DMZ')]);
+    api.replaceSubnetLabels.mockResolvedValue([]);
+    const { rerender } = render(<Table rows={[1, 2, 3]} />);
+    await waitFor(() => expect(api.listSubnetLabels).toHaveBeenCalledTimes(1));
+
+    // "Load more" brought another subnet.
+    rerender(<Table rows={[1, 2, 3, 4]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit labels for 4' }));
+    expect(await screen.findByRole('button', { name: 'Remove DMZ' })).toBeInTheDocument();
+    expect(api.listSubnetLabels).toHaveBeenCalledTimes(1);
+
+    // A save changes the catalogue's counts: it is read again — once, not per row.
+    api.listSubnetLabels.mockResolvedValue([label(1, 'PCI'), label(2, 'Perimeter')]);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.replaceSubnetLabels).toHaveBeenCalledWith(1, 4, [2]));
+    await waitFor(() => expect(api.listSubnetLabels).toHaveBeenCalledTimes(2));
+    // …and a row opened afterwards names the label as it now is.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit labels for 1' }));
+    expect(await screen.findByRole('button', { name: 'Remove Perimeter' })).toBeInTheDocument();
+    expect(api.listSubnetLabels).toHaveBeenCalledTimes(2);
   });
 });

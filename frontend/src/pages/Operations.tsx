@@ -43,7 +43,7 @@ import {
   getInvestigationQueue,
   markWorkbenchSeen,
 } from '../services/api';
-import type { FindingNeed, MyTaskReason } from '../services/api';
+import type { FindingNeed, InvestigationQueueResponse, MyTaskReason } from '../services/api';
 import { useProject } from '../contexts/ProjectContext';
 import { projectRoleAtLeast } from '../utils/projectRole';
 import { useProjectId } from '../hooks/useProjectId';
@@ -53,7 +53,7 @@ import { invalidateReads, pollEvery, queryErrorText } from '../lib/query';
 import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
 import AgentSessionsLine from '../components/operations/AgentSessionsLine';
 import OperationsTabs from '../components/operations/OperationsTabs';
-import { OPERATIONS_READS } from '../components/operations/QueueParts';
+import { OPERATIONS_READS, QUEUE_TOTAL_ONLY, queueTotalKey } from '../components/operations/QueueParts';
 import LastUpdated from '../components/LastUpdated';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -81,8 +81,6 @@ const oldestLoad = (...loadedAt: number[]): Date | null => {
 /** The light workbench call: every tab's count, the blockers and the
  *  since-last-visit diff — no rows, and not the queue. */
 const LIGHT_WORKBENCH = { includeInvestigate: false, includeRows: false } as const;
-/** The queue's size: one row is asked for, the totals are whole-queue. */
-const QUEUE_TOTAL_ONLY = { limit: 1 } as const;
 /** How often the page's COUNTS are read again while it is open (owner,
  *  2026-10-10).  The two count reads only — never the list on screen: that
  *  re-read is the reader's (Refresh, a page, an action). */
@@ -257,6 +255,15 @@ const Operations: React.FC = () => {
     || projectRoleAtLeast(currentProject.my_role, 'analyst');
 
   const queryClient = useQueryClient();
+
+  // The tab, the Pick up tier, the Tests kind and the Findings need live in
+  // the URL, so a link to "the exploitable criticals", "what is free to
+  // claim" or "what needs a decision" can be shared, survives a reload, and
+  // Back / Forward walk the tabs.  Nothing is remembered anywhere else.
+  const [pageParams, setPageParams] = useSearchParams();
+  const urlTab = tabFromParams(pageParams);
+  const tier = tierFromParams(pageParams);
+
   // Two independent reads, in parallel; each isolates its own failure, so
   // an outage shows as counts that "could not be checked" instead of
   // blanking the page.  The light workbench read is asked again once a
@@ -291,26 +298,47 @@ const Operations: React.FC = () => {
   // be loaded (with Retry), and each list still answers for itself.
   const showWork = setup ? setup.has_hosts : workbenchQuery.isError;
 
+  // With no `?tab=`, the first non-empty tab in bar order opens.  Decided
+  // ONCE, when the counts first arrive (or fail): finishing the last finding
+  // must not move the reader to another tab under their hands.  It is kept
+  // in the render that first has the counts (it was an effect, which showed
+  // one frame of the bar with no tab selected).
+  const [defaultTab, setDefaultTab] = useState<OperationsTab | null>(null);
+  if (defaultTab == null && !workbenchQuery.isPending) {
+    setDefaultTab(workbench ? firstNonEmptyTab(operationsTabCounts(workbench, null)) : 'findings');
+  }
+  const tab = urlTab ?? defaultTab;
+  // The Pick up list is the one on screen — or will be as soon as the counts
+  // say the project has hosts (a project without any shows no tab bar, so
+  // no count either).
+  const pickupListOpen = tab === 'pickup';
+
   // The untouched queue's SIZE, on its own request (v5.304.1: on a large
   // project the queue was most of the workbench's time).  null = not known —
   // loading, or it could not be computed (a 503) — and never shown as 0.
-  const pickupQuery = useQuery({
-    queryKey: ['getInvestigationQueue', projectId, null, QUEUE_TOTAL_ONLY],
+  //
+  // While the Pick up tab is open its own list answers this (C2): every page
+  // of the list states the whole queue's `queue_total`, so the page does not
+  // run the ranking a second time for the same moment.  The list puts each
+  // answer under this key (`OperationsTabs.PickUpPanel`; `null` when its read
+  // failed — not known, "—").  An address that names the tab asks for no
+  // count at all; a tab opened by default is decided after the counts, whose
+  // request has left by then.
+  const pickupQuery = useQuery<InvestigationQueueResponse | null>({
+    queryKey: queueTotalKey(projectId),
     queryFn: ({ signal }) => getInvestigationQueue(projectId, null, { ...QUEUE_TOTAL_ONLY, signal }),
+    enabled: !pickupListOpen,
+    // This query's own lifecycle: an answer the list just gave is not asked
+    // for again when the reader leaves the tab (the default would, as for a
+    // reader that mounts later); a count the list could not give is.  Refresh
+    // and an action still read it again — they invalidate it.
+    staleTime: (query) => (query.state.data ? Infinity : 0),
     // NOT polled: this runs the queue's ranking statement, the costliest read
     // of the page on a large project.  Its badge follows Refresh and the
     // reader's own actions, as before.
   });
   const pickupTotal: number | null = pickupQuery.isError ? null : pickupQuery.data?.queue_total ?? null;
   const pickupLoading = pickupQuery.isPending;
-
-  // The tab, the Pick up tier, the Tests kind and the Findings need live in
-  // the URL, so a link to "the exploitable criticals", "what is free to
-  // claim" or "what needs a decision" can be shared, survives a reload, and
-  // Back / Forward walk the tabs.  Nothing is remembered anywhere else.
-  const [pageParams, setPageParams] = useSearchParams();
-  const urlTab = tabFromParams(pageParams);
-  const tier = tierFromParams(pageParams);
   const testKind = testKindFromParams(pageParams);
   const findingNeed = needFromParams(pageParams);
   const setTab = useCallback((tab: OperationsTab) => {
@@ -356,9 +384,11 @@ const Operations: React.FC = () => {
   const sinceError = queryErrorText(acknowledge.error, 'Could not save the acknowledgement. Try again.');
 
   // Retry on the counts' failure: the page's two reads again.
+  // (While the Pick up list is open the queue's count is that list's, which
+  // has its own Retry.)
   const reload = () => {
     void workbenchQuery.refetch();
-    void pickupQuery.refetch();
+    if (!pickupListOpen) void pickupQuery.refetch();
   };
 
   // The page Refresh reaches everything on it: the two reads above, the
@@ -407,16 +437,6 @@ const Operations: React.FC = () => {
   // The tab bar's counts: the workbench's own totals and the queue's.
   const counts: OperationsTabCounts = operationsTabCounts(workbench, pickupTotal);
 
-  // With no `?tab=`, the first non-empty tab in bar order opens.  Decided
-  // ONCE, when the counts first arrive (or fail): finishing the last finding
-  // must not move the reader to another tab under their hands.
-  const [defaultTab, setDefaultTab] = useState<OperationsTab | null>(null);
-  const countsSettled = !workbenchQuery.isPending;
-  useEffect(() => {
-    if (defaultTab != null || !countsSettled) return;
-    setDefaultTab(workbench ? firstNonEmptyTab(operationsTabCounts(workbench, null)) : 'findings');
-  }, [defaultTab, workbench, countsSettled]);
-  const tab = urlTab ?? defaultTab;
   // A link that opens a tab of this page, keeping the page's parameters.
   const toTab = (target: OperationsTab, filter?: TabFilter | null) => tabSearch(pageParams, target, filter);
   // One freshness for the page: the OLDEST of its counts' loads (a read that

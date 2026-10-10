@@ -51,6 +51,7 @@ import { Label } from './ui/label';
 import MarkdownField from './MarkdownField';
 import SafeMarkdown from './SafeMarkdown';
 import FieldDraftsReview from './proposals/FieldDraftsReview';
+import { putFinding } from './findings/findingCache';
 
 export const REPORT_TEXT_FIELDS: Array<{ key: FindingReportTextField; label: string; hint: string; rows: number }> = [
   { key: 'description', label: 'Description', hint: 'What the issue is, in the client’s terms.', rows: 6 },
@@ -94,7 +95,6 @@ interface Props {
   canEdit: boolean;
   /** Analyst+: may ask for an AI draft (a proposal changes nothing). */
   canPropose?: boolean;
-  onSaved: (finding: Finding) => void;
   /** Open in the editor (the Reports page's "missing report text" links). */
   startEditing?: boolean;
   /** 5.317.0 — "Work on this with your agent" (the page supplies it, so the
@@ -117,7 +117,7 @@ interface Props {
 const NO_DRAFTS = new Map<string, Proposal[]>();
 
 const FindingReportTextCard: React.FC<Props> = ({
-  finding, canEdit, canPropose = canEdit, onSaved, startEditing = false, agentAction, images,
+  finding, canEdit, canPropose = canEdit, startEditing = false, agentAction, images,
   drafts = NO_DRAFTS, canDecide = false, onProposalDecided, onDirtyChange,
 }) => {
   const toast = useToast();
@@ -206,7 +206,12 @@ const FindingReportTextCard: React.FC<Props> = ({
     mutationFn: (payload: FindingReportTextUpdate) => updateFinding(projectId, finding.id, payload),
     onMutate: () => setError(null),
     onSuccess: (updated) => {
-      onSaved(updated);
+      // The route answers with the finding: it goes onto the page's cached
+      // record (report text is not a status change — the history stands).
+      // Saved text may place or release an image: where each one is placed
+      // is read again.
+      putFinding(queryClient, projectId, updated, { history: false });
+      void invalidateReads(queryClient, 'getFindingImages');
       setDraft(null);
       toast.success('Report text saved.');
     },

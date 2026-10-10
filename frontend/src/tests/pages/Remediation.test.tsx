@@ -283,6 +283,30 @@ describe('Remediation', () => {
     ));
   });
 
+  // B3 — the lead is read where it is shown (it was page state an effect
+  // filled).  What it says belongs to the ANSWER on screen: "in this
+  // selection" comes with the filtered answer, not with the click.
+  it('the lead follows the answer on screen: its counts and "in this selection" arrive together', async () => {
+    show();
+    const lead = await screen.findByText(/due within 7 days/);
+    expect(lead).toHaveTextContent('1 overdue and 0 due within 7 days, of 2 open findings on hosts in this project.');
+    let answer: (v: unknown) => void = () => undefined;
+    listRemediation.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    fireEvent.click(screen.getByRole('button', { name: '1 high overdue: show them' }));
+    await waitFor(() => expect(listRemediation).toHaveBeenLastCalledWith(
+      1, expect.objectContaining({ severity: 'high' }), expect.anything()));
+    // Still the answer that is on screen, said as what it was asked for.
+    expect(lead).toHaveTextContent('of 2 open findings on hosts in this project.');
+    const narrowed = page([row(1, { state: 'overdue', due_on: '2026-11-02', days_left: -8 })]);
+    await act(async () => {
+      answer({ ...narrowed, state_counts: { ...narrowed.state_counts, not_assigned: 0, closed: 0 } });
+    });
+    await waitFor(() => expect(lead).toHaveTextContent(
+      '1 overdue and 0 due within 7 days, of 1 open finding on a host in this selection.'));
+    // Nothing left to assign in the selection: the link that starts the clock goes.
+    expect(screen.queryByRole('button', { name: 'Start the clock from a report…' })).not.toBeInTheDocument();
+  });
+
   it('says the list could not be loaded, never that it is empty', async () => {
     listRemediation.mockRejectedValue(new Error('boom'));
     show();

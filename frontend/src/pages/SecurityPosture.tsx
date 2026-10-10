@@ -15,7 +15,7 @@
  * (loading / error / empty) renders a safe fallback; no page-level overflow.
  */
 import React, { useCallback, useMemo } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
   AlertTriangle, ArrowUpRight, Clock, FileText, HelpCircle, Loader2, RefreshCw,
@@ -25,13 +25,12 @@ import {
 import {
   getPosture, type PostureResponse, type PriorityItem, type Severity,
 } from '../services/api';
-import { downloadSystemicReport, gridCellHostsHref } from '../services/api';
-import { useToast } from '../contexts/ToastContext';
+import { gridCellHostsHref } from '../services/api';
 import { buildFindingsUrl, reviewedHostsUrl } from '../utils/drilldownLinks';
-import { formatApiError } from '../utils/apiErrors';
 import { invalidateReads, queryErrorText } from '../lib/query';
 import { safeFallback } from '../utils/uiStyles';
 import { useProjectId } from '../hooks/useProjectId';
+import { useSystemicBriefing } from '../hooks/useSystemicBriefing';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
@@ -103,16 +102,12 @@ const SecurityPosture: React.FC = () => {
     [posture.dataUpdatedAt],
   );
 
-  const toast = useToast();
   const { canExport } = useProjectRole();
   // "Create briefing" — the executive systemic report, from this page rather
   // than via the Hosts export detour. Synchronous standalone HTML; the
   // Overview has no site selection, so it is estate-wide here (Segments
   // offers the per-site variant).
-  const briefing = useMutation({
-    mutationFn: () => downloadSystemicReport(projectId),
-    onError: (e) => toast.error(formatApiError(e, 'Could not create the briefing.')),
-  });
+  const briefing = useSystemicBriefing();
   // Refresh and Retry: the posture, and the sections further down that read
   // for themselves ("Where the team has been" — only once it has been asked
   // for — and "Scanner observations and scope").
@@ -131,8 +126,8 @@ const SecurityPosture: React.FC = () => {
             {/* The briefing is a report (`/reports/systemic.html`, AUDITOR on
                 the server): not offered to a project viewer. */}
             {canExport && (
-              <Button size="sm" variant="outline" onClick={() => briefing.mutate()} disabled={briefing.isPending}>
-                {briefing.isPending
+              <Button size="sm" variant="outline" onClick={() => briefing.create()} disabled={briefing.pending}>
+                {briefing.pending
                   ? <Loader2 className="size-3.5 animate-spin" aria-hidden />
                   : <FileText className="size-3.5" aria-hidden />}
                 Create briefing

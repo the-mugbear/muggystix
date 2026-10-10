@@ -130,6 +130,34 @@ describe('Segments — the page of subnets lives in the address (real router)', 
     expect(router.state.location.search).toBe('?page=3');
   });
 
+  it('the page on screen stays while the next one loads; a next page that fails says so with Retry (B5)', async () => {
+    open('/segments');
+    await screen.findByText('Showing 1–50 of 120 subnets, worst first');
+    let fail: (e: unknown) => void = () => undefined;
+    subnetsMock.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    // The rows that were read stay under the page that was asked for.
+    expect(await screen.findByText('Showing 51–100 of 120 subnets, worst first')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '10.9.0.0/24' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    expect(screen.queryByText('Ranking segments…')).not.toBeInTheDocument();
+
+    await act(async () => { fail(new Error('HTTP 500')); });
+    expect(await screen.findByText("Couldn't load the segments")).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '10.9.0.0/24' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Retry/ }));
+    expect(await screen.findByRole('link', { name: '10.9.50.0/24' })).toBeInTheDocument();
+    expect(last()).toEqual([50, 50]);
+  });
+
+  it('a first read that fails says so with Retry, never an empty page', async () => {
+    subnetsMock.mockRejectedValueOnce(new Error('HTTP 500'));
+    open('/segments');
+    expect(await screen.findByText("Couldn't load the segments")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Retry/ }));
+    expect(await screen.findByText('Showing 1–50 of 120 subnets, worst first')).toBeInTheDocument();
+  });
+
   it('a page the address cannot mean is the first', async () => {
     open('/segments?page=abc');
     expect(await screen.findByText('Showing 1–50 of 120 subnets, worst first')).toBeInTheDocument();

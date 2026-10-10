@@ -4,6 +4,7 @@
  * shown, and copied, the first part only.
  */
 import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import DefaultCredentials from '../../pages/DefaultCredentials';
@@ -25,7 +26,8 @@ describe('DefaultCredentials', () => {
       'Zyx,root,<blank>',
       '',
     ].join('\n'));
-    render(<TooltipProvider><DefaultCredentials /></TooltipProvider>);
+    // (Under a router since B33: the page keeps its list state in the address.)
+    render(<MemoryRouter><TooltipProvider><DefaultCredentials /></TooltipProvider></MemoryRouter>);
 
     expect(await screen.findByText('pa,ss"word')).toBeInTheDocument();
     expect(screen.queryByText('"pa')).not.toBeInTheDocument();

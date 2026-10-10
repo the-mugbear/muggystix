@@ -695,6 +695,46 @@ describe('Hosts', () => {
     expect(screen.queryByText(/Project default view applied/)).not.toBeInTheDocument();
   });
 
+  // What the session remembers of the view the filters started from
+  // (`hostBaseView`): its name, with the filters it describes.
+  describe('a reload names the view the filters started from', () => {
+    const storeBaseView = (extra: Record<string, unknown> = {}) => sessionStorage.setItem(
+      projectScopedKey('hostBaseView'),
+      JSON.stringify({ name: 'Proxies', filters: JSON.stringify([['ports', ['8080']]]), ...extra }),
+    );
+
+    it('as "<name> · Modified", and keeps it stored', async () => {
+      storeBaseView();
+      routerState.search = '?ports=8080';
+      renderHosts();
+      await findHostsTable();
+      expect(screen.getByRole('button', { name: /^View: Proxies · Modified/ })).toBeInTheDocument();
+      expect(JSON.parse(sessionStorage.getItem(projectScopedKey('hostBaseView')) as string))
+        .toMatchObject({ name: 'Proxies', filters: JSON.stringify([['ports', ['8080']]]) });
+    });
+
+    it('a saved view still unmodified is named as itself', async () => {
+      mockedApi.listHostFilterViews.mockResolvedValue([{
+        id: 7, name: 'Proxies', filter_json: { filters: { ports: ['8080'] } },
+        created_at: '2026-09-01T00:00:00Z', updated_at: null,
+      }]);
+      storeBaseView({ viewId: 7 });
+      routerState.search = '?ports=8080';
+      renderHosts();
+      await findHostsTable();
+      expect(await screen.findByRole('button', { name: 'View: Proxies' })).toBeInTheDocument();
+    });
+
+    it('never for other filters than the ones it was stored with', async () => {
+      storeBaseView();
+      routerState.search = '?ports=22';
+      renderHosts();
+      await findHostsTable();
+      expect(screen.getByRole('button', { name: /^View: Custom filters/ })).toBeInTheDocument();
+      await waitFor(() => expect(sessionStorage.getItem(projectScopedKey('hostBaseView'))).toBeNull());
+    });
+  });
+
   it('forwards a command-bar query as the q param to getHosts', async () => {
     const user = userEvent.setup({ skipHover: true });
     renderHosts();
@@ -856,6 +896,109 @@ describe('Hosts', () => {
     expect(calls[calls.length - 1]?.[0]).toBe(1);
     const lastParams = calls[calls.length - 1]?.[1] as Record<string, any> | undefined;
     expect(lastParams).toMatchObject({ has_critical_vulns: true });
+  });
+
+  // What the filter options (the facets) are asked for, and when.  They are
+  // the page's heaviest read after the list itself.
+  describe('the filter options', () => {
+    const facetCalls = () => mockedApi.getHostFilterData.mock.calls;
+    const lastFacetParams = () => facetCalls()[facetCalls().length - 1]?.[1] as Record<string, unknown> | undefined;
+    const settle = (ms = 500) => act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+
+    it('are asked for only once the list has answered', async () => {
+      let answer: (value: unknown) => void = () => {};
+      mockedApi.getHosts.mockImplementation((_projectId: number, params?: Record<string, any>) => (
+        new Promise((resolve) => { answer = () => resolve(buildHostResponse(params)); })
+      ));
+      renderHosts();
+      await waitFor(() => expect(mockedApi.getHosts).toHaveBeenCalled());
+      await settle(50);
+      expect(facetCalls()).toHaveLength(0);
+
+      await act(async () => { answer(undefined); });
+      await waitFor(() => expect(facetCalls()).toHaveLength(1));
+      expect(facetCalls()[0][0]).toBe(1);
+      expect(lastFacetParams()).toBeUndefined();
+    });
+
+    it('are not counted again for a new filter while the popover is closed; opening it counts them under the filters of now', async () => {
+      const user = userEvent.setup({ skipHover: true });
+      renderHosts();
+      await findHostsTable();
+      await waitFor(() => expect(facetCalls()).toHaveLength(1));
+
+      act(() => { navigateSpy('/hosts?has_critical_vulns=true'); });
+      await waitFor(() => expect(mockedApi.getHosts).toHaveBeenLastCalledWith(
+        1, expect.objectContaining({ has_critical_vulns: true }), expect.anything(),
+      ));
+      await settle();
+      expect(facetCalls()).toHaveLength(1);
+
+      await user.click(screen.getByRole('button', { name: /Add filter/i }));
+      await waitFor(() => expect(facetCalls().length).toBeGreaterThan(1));
+      expect(lastFacetParams()).toMatchObject({ has_critical_vulns: true });
+    });
+
+    it('follow a new filter while the popover is open, and a new page or sort asks for nothing', async () => {
+      const user = userEvent.setup({ skipHover: true });
+      renderHosts();
+      await findHostsTable();
+      await waitFor(() => expect(facetCalls()).toHaveLength(1));
+      await user.click(screen.getByRole('button', { name: /Add filter/i }));
+      await settle();
+
+      act(() => { navigateSpy('/hosts?has_critical_vulns=true'); });
+      await waitFor(() => expect(lastFacetParams()).toMatchObject({ has_critical_vulns: true }));
+      await settle();
+      const counted = facetCalls().length;
+
+      act(() => { navigateSpy('/hosts?has_critical_vulns=true&sort_by=ip_address&page=2'); });
+      await waitFor(() => expect(mockedApi.getHosts).toHaveBeenLastCalledWith(
+        1, expect.objectContaining({ sort_by: 'ip_address', skip: 25 }), expect.anything(),
+      ));
+      await settle();
+      expect(facetCalls()).toHaveLength(counted);
+    });
+
+    it('are read again on return to the tab while the popover is open', async () => {
+      const user = userEvent.setup({ skipHover: true });
+      renderHosts();
+      await findHostsTable();
+      await waitFor(() => expect(facetCalls()).toHaveLength(1));
+      await user.click(screen.getByRole('button', { name: /Add filter/i }));
+      await settle();
+      const before = facetCalls().length;
+
+      act(() => { document.dispatchEvent(new Event('visibilitychange', { bubbles: true })); });
+      await waitFor(() => expect(facetCalls().length).toBeGreaterThan(before));
+    });
+
+    // The counts are shown only in the popover: closed, a return to the tab
+    // costs no facet read, and opening it is the read (it used to re-read on
+    // every return, through a visibility listener of the page's own).
+    it('are not read on return to the tab while the popover is closed', async () => {
+      renderHosts();
+      await findHostsTable();
+      await waitFor(() => expect(facetCalls()).toHaveLength(1));
+      await settle(50);
+
+      act(() => { document.dispatchEvent(new Event('visibilitychange', { bubbles: true })); });
+      await settle();
+      expect(facetCalls()).toHaveLength(1);
+    });
+
+    it('a failed read is said, and Retry asks again', async () => {
+      const user = userEvent.setup({ skipHover: true });
+      mockedApi.getHostFilterData.mockRejectedValueOnce(new Error('boom'));
+      renderHosts();
+      await findHostsTable();
+      const retry = await screen.findByRole('button', { name: 'Retry' });
+      expect(facetCalls()).toHaveLength(1);
+
+      await user.click(retry);
+      await waitFor(() => expect(facetCalls()).toHaveLength(2));
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull());
+    });
   });
 
   it('paginates the desktop inventory table and renders the next page', async () => {

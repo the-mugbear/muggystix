@@ -7,7 +7,7 @@
  * server-side through GET /hosts/ids, so we never ship thousands of ids
  * up from the client).
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Tag as TagIcon, UserPlus, Eye, X, Copy, Check, ClipboardList } from 'lucide-react';
 import ProposeTestsDialog from './ProposeTestsDialog';
@@ -126,7 +126,13 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   const projectId = useProjectId();
   const toast = useToast();
   const queryClient = useQueryClient();
-  const [allMatching, setAllMatching] = useState(false);
+  // "All matching" belongs to the page selection it was chosen over — the
+  // number of checked rows at that moment.  Another number is the checked
+  // rows again (the displayed count stays honest), from the same render, and
+  // it does not come back when the number does.
+  const [allMatchingOver, setAllMatchingOver] = useState<number | null>(null);
+  if (allMatchingOver !== null && allMatchingOver !== selectedIds.length) setAllMatchingOver(null);
+  const allMatching = allMatchingOver === selectedIds.length;
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [copiedIps, setCopiedIps] = useState(false);
   // v5.221.0 — hand the selection to the agent as a fixed list (design review
@@ -159,12 +165,6 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   const [checkedTagIds, setCheckedTagIds] = useState<Set<number>>(new Set());
   const [newTagName, setNewTagName] = useState('');
 
-  // Leaving select-all-matching when the page selection changes keeps the
-  // displayed count honest.
-  useEffect(() => {
-    setAllMatching(false);
-  }, [selectedIds.length]);
-
   // The server resolves at most `bulkCap` ids — its own number, stated in the
   // list's answer beside the total (5.365.0: the bar kept a copy of it).  Above
   // it, "all matching" is not what would be acted on, so nothing here may say
@@ -178,8 +178,9 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   const canSelectAll = bulkCap != null && !allMatching
     && totalMatching > selectedIds.length && selectedIds.length > 0;
 
-  // "Every matching host" as ids: asked of the server when an action (or the
-  // hand-off to an agent) needs them, under the filters of that moment.
+  // "Every matching host" as ids: asked of the server when an action needs
+  // them, under the filters of that moment.  (The hand-off to an agent reads
+  // them itself, as a query the dialog can cancel: ProposeTestsDialog.)
   const { mutateAsync: readMatchingIds } = useMutation({
     mutationFn: () => getMatchingHostIds(projectId, queryContext),
   });
@@ -284,7 +285,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
       </Badge>
 
       {canSelectAll && (
-        <Button size="sm" variant="ghost" className="shrink-0" onClick={() => setAllMatching(true)} disabled={working}>
+        <Button size="sm" variant="ghost" className="shrink-0" onClick={() => setAllMatchingOver(selectedIds.length)} disabled={working}>
           {matchingIsCapped
             ? `Select the first ${capWords} of ${totalMatching.toLocaleString()} matching`
             : `Select all ${totalMatching.toLocaleString()} matching`}
@@ -466,7 +467,9 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
       <ProposeTestsDialog
         open={planDialogOpen}
         onOpenChange={setPlanDialogOpen}
-        resolveIds={resolveIds}
+        selectedIds={selectedIds}
+        allMatching={allMatching}
+        queryContext={queryContext}
         selectionSummary={describeSelection(effectiveCount, allMatching, queryContext)}
         sampleIps={allMatching ? [] : selectedIps}
       />

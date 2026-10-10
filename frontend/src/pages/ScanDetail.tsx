@@ -109,8 +109,7 @@ const ScanDetail: React.FC = () => {
     for (const q of [...required, summaryQuery]) void q.refetch();
   };
 
-  // `getScan` is untyped in the client.
-  const scan: any = scanQuery.data ?? null;
+  const scan = scanQuery.data ?? null;
   const hosts: ScanHost[] = hostsQuery.data ?? [];
   const snapshots: ScanHostSnapshot[] = snapshotsQuery.data?.items ?? [];
   const dnsRecords: DNSRecord[] = dnsQuery.data?.items ?? [];

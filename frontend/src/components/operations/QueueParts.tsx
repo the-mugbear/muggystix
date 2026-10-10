@@ -43,6 +43,17 @@ export const OPERATIONS_READS = [
   'getMyFindingsPage', 'getMyReviewHostsPage', 'getMyTestsPage', 'getReviewFollowupsPage',
 ] as const;
 
+/** The queue's size asked for by itself: one row, the totals are whole-queue. */
+export const QUEUE_TOTAL_ONLY = { limit: 1 } as const;
+/** The key of the Pick up tab's COUNT (`pages/Operations`).  While the tab is
+ *  open its own list answers it: `queue_total` is taken before the tier
+ *  filter and the page cut, so every page of the list states the whole
+ *  queue's size, and the ranking is not run a second time for the same
+ *  moment (`OperationsTabs.PickUpPanel` puts each answer here; `null` = the
+ *  list could not be read, so the count is not known). */
+export const queueTotalKey = (projectId: number) =>
+  ['getInvestigationQueue', projectId, null, QUEUE_TOTAL_ONLY] as const;
+
 /** After an action in a list: the counts and the list on screen are read
  *  again, in place (only what is on screen is asked for — a tab that is not
  *  open has no read to repeat). */

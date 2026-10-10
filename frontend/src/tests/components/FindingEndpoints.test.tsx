@@ -9,7 +9,8 @@
  * answer is applied ("responses apply in the order sent" dropped an answer
  * whose request was sent first and committed last).
  */
-import React, { useState } from 'react';
+import React, { useEffect } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -96,19 +97,31 @@ const deferred = <T,>(): Deferred<T> => {
   return { promise, resolve, reject };
 };
 
-const onChanged = vi.fn();
+// Each answer that was put on the page's cached finding (plan B3: the table
+// writes it itself; it used to hand the answer to the page through a prop).
+const applied = vi.fn();
 const onRemove = vi.fn();
 let setFromOutside: (f: Finding) => void = () => undefined;
 
+// The page's part: its one read of the finding (`['getFinding', project, id]`),
+// which is where the table's rows come from.  It holds the finding already
+// and is never stale: nothing here reads it from the server.
+const neverAsked = (): Promise<Finding> => Promise.reject(new Error('the finding is not read in this test'));
 const Harness: React.FC<{ initial: Finding; focus?: number | null }> = ({ initial, focus = null }) => {
-  const [current, setCurrent] = useState(initial);
-  setFromOutside = setCurrent;
+  const queryClient = useQueryClient();
+  const key = ['getFinding', 1, initial.id];
+  const { data: current } = useQuery({
+    queryKey: key, queryFn: neverAsked, initialData: initial, staleTime: Infinity,
+  });
+  setFromOutside = (f) => queryClient.setQueryData(key, f);
+  useEffect(() => queryClient.getQueryCache().subscribe((event) => {
+    if (event.type === 'updated' && event.action.type === 'success' && event.query.queryKey[0] === 'getFinding') {
+      applied(event.action.data);
+    }
+  }), [queryClient]);
   return (
     <MemoryRouter>
-      <FindingEndpoints
-        finding={current} canManage focusEndpointId={focus} onRemove={onRemove}
-        onChanged={(f) => { onChanged(f); setCurrent(f); }}
-      />
+      <FindingEndpoints finding={current} canManage focusEndpointId={focus} onRemove={onRemove} />
     </MemoryRouter>
   );
 };
@@ -215,13 +228,14 @@ describe('FindingEndpoints — the selection is of rows the filter shows (S3)', 
     expect(box(1)).not.toBeChecked();
   });
 
-  it('a ticked row someone else moved out of the filter is not acted on', () => {
+  it('a ticked row someone else moved out of the filter is not acted on', async () => {
     const start = finding([endpoint(1), endpoint(2)]);
     render(<Harness initial={start} />);
     fireEvent.click(chip(/Still present/));
     fireEvent.click(box(1));
     fireEvent.click(box(2));
-    act(() => setFromOutside(withState(start, { 2: 'false_positive' })));
+    // The page's finding was read again and came back changed.
+    await act(async () => { setFromOutside(withState(start, { 2: 'false_positive' })); });
     expect(bar()).toHaveTextContent('1 selected');
     expect(screen.getByRole('button', { name: 'Set 1 endpoint' })).toBeInTheDocument();
   });
@@ -289,7 +303,7 @@ describe('FindingEndpoints — requests in flight (M4 / M5)', () => {
 
     await act(async () => { second.resolve(withState(start, { 1: 'retest', 2: 'remediated' })); });
     // Every answer is applied: none is "older news" when they come in turn.
-    expect(onChanged).toHaveBeenCalledTimes(2);
+    expect(applied).toHaveBeenCalledTimes(2);
     expect(stateOf(2).value).toBe('remediated');
     expect(stateOf(1).value).toBe('retest');
     expect(stateOf(2)).not.toBeDisabled();
@@ -371,7 +385,7 @@ describe('FindingEndpoints — requests in flight (M4 / M5)', () => {
     expect(stateOf(2).value).toBe('open');
     expect(stateOf(3).value).toBe('false_positive');
     expect(stateOf(3)).not.toBeDisabled();
-    expect(onChanged).toHaveBeenCalledTimes(2);
+    expect(applied).toHaveBeenCalledTimes(2);
     expect(setFindingEndpointStatus).toHaveBeenCalledTimes(3);
   });
 
@@ -434,7 +448,7 @@ describe('FindingEndpoints — a proposed endpoint change sits on its row', () =
     render(
       <MemoryRouter>
         <FindingEndpoints finding={finding([endpoint(1), endpoint(2)])} canManage canDecide
-          onChanged={vi.fn()} onRemove={vi.fn()} proposals={new Map([[2, [pr]]])} onProposalDecided={onProposalDecided} />
+          onRemove={vi.fn()} proposals={new Map([[2, [pr]]])} onProposalDecided={onProposalDecided} />
       </MemoryRouter>,
     );
     const row = document.querySelector('[data-endpoint-row="2"]') as HTMLElement;

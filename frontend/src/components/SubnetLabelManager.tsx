@@ -116,6 +116,32 @@ const ColorPicker: React.FC<{
   </div>
 );
 
+// --- The project's label catalogue ----------------------------------------
+
+/**
+ * The project's subnet labels (`listSubnetLabels`) — ONE key, read by the
+ * Scope page (its "Apply label…" menu), the manager dialog and every row's
+ * editor, so what one changes the others show without a callback.
+ *
+ * `settled` is for a reader that is one of many and is not the one that keeps
+ * the catalogue current — a row's editor, mounted once per subnet: it takes
+ * the answer the page already holds and never asks for it again by itself
+ * (`staleTime` on its own observer; a row that mounts later — a search, "Load
+ * more" — would otherwise ask once each).  A change to a label still reaches
+ * it: the writers invalidate the key.
+ */
+const useLabelCatalogue = ({ enabled = true, settled = false }: { enabled?: boolean; settled?: boolean } = {}) => {
+  const projectId = useProjectId();
+  return useQuery({
+    queryKey: ['listSubnetLabels', projectId],
+    queryFn: ({ signal }) => listSubnetLabels(projectId, signal),
+    enabled,
+    ...(settled ? { staleTime: Infinity } : {}),
+  });
+};
+
+const NO_CATALOGUE: SubnetLabelWithCounts[] = [];
+
 // --- Project-wide label CRUD dialog --------------------------------------
 
 interface SubnetLabelManagerDialogProps {
@@ -134,11 +160,7 @@ export const SubnetLabelManagerDialog: React.FC<SubnetLabelManagerDialogProps> =
   // The project's catalogue — the same read as the Scope page's (one key), so
   // a label created here is in the page's "Apply label…" menu without a
   // callback.  Read again each time the dialog opens.
-  const catalogue = useQuery({
-    queryKey: ['listSubnetLabels', projectId],
-    queryFn: ({ signal }) => listSubnetLabels(projectId, signal),
-    enabled: open,
-  });
+  const catalogue = useLabelCatalogue({ enabled: open });
   const labels = catalogue.data ?? [];
   const loading = catalogue.isFetching;
   // A failed read is said in the list with Retry — never shown as "No labels yet".
@@ -359,9 +381,6 @@ interface SubnetLabelEditorPopoverProps {
   subnetId: number;
   subnetCidr: string;
   currentLabels: SubnetLabelInfo[];
-  // Project label catalogue — owner-supplied (the page's one read of it), so
-  // a table of subnets does not ask for it once per row.
-  catalogue: SubnetLabelWithCounts[];
   // The subnet's labels as the server now has them: the owner puts them on
   // its row.  The catalogue's counts are re-read here.
   onSaved: (next: SubnetLabelInfo[]) => void;
@@ -370,11 +389,15 @@ interface SubnetLabelEditorPopoverProps {
 }
 
 export const SubnetLabelEditorPopover: React.FC<SubnetLabelEditorPopoverProps> = ({
-  subnetId, subnetCidr, currentLabels, catalogue, onSaved, children,
+  subnetId, subnetCidr, currentLabels, onSaved, children,
 }) => {
   const toast = useToast();
   const queryClient = useQueryClient();
   const projectId = useProjectId();
+  // The project's catalogue, read here (it was handed down by the page): the
+  // page's own read of the same key is the one that asks, so a table of
+  // subnets does not ask for it once per row.
+  const catalogue = useLabelCatalogue({ settled: true }).data ?? NO_CATALOGUE;
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>(() => currentLabels.map((l) => String(l.id)));
 

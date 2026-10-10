@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
+import { getMatchingHostIds } from '../../services/api';
+import { useToast } from '../../contexts/ToastContext';
 import { queryErrorText } from '../../lib/query';
 import { agentInstruction } from '../../utils/agentRuns';
 import AgentTaskButton from '../agent-sessions/AgentTaskButton';
@@ -25,8 +27,8 @@ import {
  * v5.221.0).
  *
  * The selection becomes a FIXED host list the moment the dialog opens —
- * resolved through `resolveIds` (the checked rows, or every host matching
- * the current filters) — and that list is what the operator's agent is
+ * the checked rows, or every host matching the current filters as the server
+ * resolves them (`GET /hosts/ids`) — and that list is what the operator's agent is
  * handed: a task naming exactly these host ids (AgentTaskButton). The agent
  * proposes individual tests on each host, which appear on the host's page;
  * nothing waits on approval and there is no plan to open.
@@ -36,47 +38,32 @@ import {
  *  past this it is a wall of numbers (10,000 ids ≈ 60 KB). */
 export const AGENT_TASK_MAX_HOSTS = 200;
 
-export interface ProposeTestsDialogProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  /** Resolves the selection to its fixed id list (may hit the server). */
-  resolveIds: () => Promise<number[]>;
+/** The Hosts filters, as `GET /hosts/ids` takes them. */
+type HostIdsQuery = Parameters<typeof getMatchingHostIds>[1];
+
+interface SelectionProps {
+  /** The checked rows' ids — the list itself, unless `allMatching`. */
+  selectedIds: number[];
+  /** Every host matching `queryContext` instead: the server resolves the ids
+   *  as the dialog opens. */
+  allMatching: boolean;
+  /** The Hosts filters the selection was made under. */
+  queryContext: HostIdsQuery;
   /** How the selection was made, shown beside the count. */
   selectionSummary: string;
   /** IPs of the checked rows on this page, shown as a sample of the targets. */
   sampleIps: string[];
 }
 
-const ProposeTestsDialog: React.FC<ProposeTestsDialogProps> = ({
-  open,
-  onOpenChange,
-  resolveIds,
-  selectionSummary,
-  sampleIps,
-}) => {
-  const canUseAgent = useCanStartAgentSession();
+export interface ProposeTestsDialogProps extends SelectionProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+const ProposeTestsDialog: React.FC<ProposeTestsDialogProps> = ({ open, onOpenChange, ...selection }) => {
+  // Kept across openings: closing to adjust the selection does not cost the
+  // reader what they wrote.
   const [what, setWhat] = useState('');
-
-  // Resolve the fixed list once per opening: the read runs while the dialog
-  // is open, and each opening asks again — the list of the opening before is
-  // never shown as this one's.
-  // (`resolveIds` is the caller's, bound to the project it rendered in; the key
-  // names that project so one project's list never answers another's.)
-  const projectId = useProjectId();
-  const resolved = useQuery({
-    queryKey: ['getMatchingHostIds', projectId, 'proposeTests', selectionSummary],
-    queryFn: () => resolveIds(),
-    enabled: open,
-  });
-  const resolving = open && resolved.isFetching;
-  const ids = resolving || resolved.isError ? null : resolved.data ?? null;
-  const resolveError = resolving ? null : queryErrorText(resolved.error, 'Could not resolve the selection.');
-
-  const count = ids?.length ?? 0;
-  const tooMany = count > AGENT_TASK_MAX_HOSTS;
-  const shownIps = sampleIps.slice(0, 8);
-  const moreIps = Math.max(count - shownIps.length, 0);
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="lg">
@@ -87,6 +74,54 @@ const ProposeTestsDialog: React.FC<ProposeTestsDialogProps> = ({
             selection is taken as a fixed list now — changing the Hosts filters later does not change it.
           </DialogDescription>
         </DialogHeader>
+        {/* Mounted only while the dialog is open (the content is not rendered
+            otherwise), so its read belongs to this opening. */}
+        <ResolvedSelection {...selection} what={what} onWhatChange={setWhat} onCancel={() => onOpenChange(false)} />
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+/** The selection as the fixed list this opening hands over, and the hand-off. */
+const ResolvedSelection: React.FC<SelectionProps & {
+  what: string;
+  onWhatChange: (what: string) => void;
+  onCancel: () => void;
+}> = ({ selectedIds, allMatching, queryContext, selectionSummary, sampleIps, what, onWhatChange, onCancel }) => {
+  const canUseAgent = useCanStartAgentSession();
+  const projectId = useProjectId();
+  const toast = useToast();
+
+  // "Every matching host" is read once per opening, as this component mounts:
+  // each opening asks again — the list of the opening before is never shown
+  // as this one's — and closing the dialog cancels a read still in flight
+  // (the query's signal reaches the request).
+  const matching = useQuery({
+    queryKey: ['getMatchingHostIds', projectId, queryContext],
+    queryFn: ({ signal }) => getMatchingHostIds(projectId, queryContext, signal),
+    enabled: allMatching,
+  });
+  // The server's cap cut the list: said once per answer, as the bulk actions say it.
+  const { data: matched } = matching;
+  useEffect(() => {
+    if (matched?.capped) {
+      toast.warning(`Acting on the first ${matched.ids.length} of ${matched.total} matches (capped).`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per answer, whatever the toast object's identity
+  }, [matched]);
+  const resolving = allMatching && matching.isFetching;
+  const ids = !allMatching ? selectedIds : resolving || matching.isError ? null : matched?.ids ?? null;
+  const resolveError = !allMatching || resolving
+    ? null
+    : queryErrorText(matching.error, 'Could not resolve the selection.');
+
+  const count = ids?.length ?? 0;
+  const tooMany = count > AGENT_TASK_MAX_HOSTS;
+  const shownIps = sampleIps.slice(0, 8);
+  const moreIps = Math.max(count - shownIps.length, 0);
+
+  return (
+    <>
         <DialogBody className="flex flex-col gap-md">
           <div className="min-w-0 rounded-panel border border-border p-sm">
             <p className="text-metadata font-semibold">
@@ -131,7 +166,7 @@ const ProposeTestsDialog: React.FC<ProposeTestsDialogProps> = ({
             <Textarea
               id="pt-what"
               value={what}
-              onChange={(e) => setWhat(e.target.value)}
+              onChange={(e) => onWhatChange(e.target.value)}
               maxLength={2000}
               rows={3}
               placeholder="e.g. Confirm the critical vulnerabilities; check SMB signing and anonymous shares."
@@ -142,7 +177,7 @@ const ProposeTestsDialog: React.FC<ProposeTestsDialogProps> = ({
           </div>
         </DialogBody>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={onCancel}>
             Cancel
           </Button>
           <AgentTaskButton
@@ -154,8 +189,7 @@ const ProposeTestsDialog: React.FC<ProposeTestsDialogProps> = ({
             disabled={resolving || count === 0 || tooMany}
           />
         </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    </>
   );
 };
 

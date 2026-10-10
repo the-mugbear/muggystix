@@ -89,8 +89,15 @@ export interface RemediationWorkListProps {
   projects?: Array<{
     project_id: number; name: string; archived: boolean; states: Record<RemediationState, number>;
   }>;
-  /** Told each page that loads, for the page's lead sentence. */
+  /** Told each page that loads, for the page's lead sentence — the
+   *  cross-project page only, until it reads through `children` too. */
   onLoaded?: (page: RemediationPage, filtered: boolean) => void;
+  /** The page around the list, drawn with what the list has loaded: the
+   *  answer on screen (null until the first), whether it was asked for under
+   *  a filter, and the list itself to place.  The page's lead, and anything
+   *  else that reads the answer, is rendered here — never copied into the
+   *  page's state. */
+  children?: (loaded: { page: RemediationPage | null; filtered: boolean; list: React.ReactNode }) => React.ReactNode;
   /** `scope="all"`: open a row's host or finding in ITS project (the page
    *  switches project first).  A row whose project cannot be opened — an
    *  archived one, or one the reader is not in — stays text. */
@@ -101,7 +108,7 @@ export interface RemediationWorkListProps {
 }
 
 export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
-  scope, canWrite, policy, projects, onLoaded, canOpen, onOpen, where = 'in this project',
+  scope, canWrite, policy, projects, onLoaded, canOpen, onOpen, where = 'in this project', children,
 }) => {
   const toast = useToast();
   const across = scope === 'all';
@@ -208,6 +215,18 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   const counts = list.lastResponse?.state_counts ?? null;
   const all = counts ? REMEDIATION_STATES.reduce((sum, s) => sum + counts[s], 0) : null;
 
+  // What the page says about the list (its lead) is of the ANSWER on screen:
+  // the answer, and whether it was asked for under a filter — kept in the
+  // render that first has it, so "in this selection" arrives with the
+  // selection's counts and not with the click.
+  const [answered, setAnswered] = useState<{ page: RemediationPage; filtered: boolean } | null>(null);
+  if (list.lastResponse && answered?.page !== list.lastResponse) {
+    setAnswered({ page: list.lastResponse, filtered });
+  }
+  // (hazard — removable: `onLoaded` copies the answer into the PAGE's state
+  // from an effect.  `pages/Remediation` reads it through `children` instead;
+  // `pages/RemediationDeadlines` is the one caller left, and the prop and
+  // this effect go when it does the same.)
   useEffect(() => {
     if (list.lastResponse) onLoaded?.(list.lastResponse, filtered);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -386,7 +405,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     </button>
   );
 
-  return (
+  const body = (
     <div className="min-w-0">
       <div className="mb-sm flex min-w-0 flex-wrap items-center gap-sm">
         <div role="tablist" aria-label="How the list is shown" className="flex items-center gap-xs">
@@ -877,6 +896,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
         projectId={across ? timeline?.project_id : undefined} />
     </div>
   );
+  return children ? <>{children({ page: answered?.page ?? null, filtered: answered?.filtered ?? false, list: body })}</> : body;
 };
 
 export default RemediationWorkList;

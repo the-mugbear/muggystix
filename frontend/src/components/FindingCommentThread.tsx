@@ -37,9 +37,28 @@ interface FindingCommentThreadProps {
   canManage: boolean;
   /** v5.260.0 — the images' "In report" mark (see NoteAttachments). */
   reportMarking?: ReportMarking;
-  /** How many comments the thread holds, for the page's jump bar; null while
-   *  that is not known (never loaded). */
-  onCount?: (count: number | null) => void;
+}
+
+const notesKeyOf = (projectId: number, findingId: number) => ['getFindingNotes', projectId, findingId] as const;
+
+/**
+ * How many comments the finding's thread holds — for where the page shows it
+ * (its jump bar); null while that is not known (never loaded).
+ *
+ * It reads the thread's own query and asks for nothing itself
+ * (`enabled: false`): the thread, on the same page, is the reader that
+ * fetches, so the count is the thread's number at every moment — after a
+ * post, a delete, a failed re-read — and costs no request.
+ */
+export function useFindingCommentCount(findingId: number): number | null {
+  const projectId = useProjectId();
+  const { data } = useQuery({
+    queryKey: notesKeyOf(projectId, findingId),
+    queryFn: ({ signal }) => getFindingNotes(projectId, findingId, signal),
+    enabled: false,
+    select: (notes) => notes.length,
+  });
+  return data ?? null;
 }
 
 /** A file waiting to be attached. `error` is set when its upload against
@@ -55,7 +74,7 @@ interface PendingFile {
   noteId?: number;
 }
 
-const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, canManage, reportMarking, onCount }) => {
+const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, canManage, reportMarking }) => {
   const toast = useToast();
   const projectId = useProjectId();
   const { user } = useAuth();
@@ -70,7 +89,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const queryClient = useQueryClient();
-  const notesKey = ['getFindingNotes', projectId, findingId];
+  const notesKey = notesKeyOf(projectId, findingId);
   const query = useQuery({ queryKey: notesKey, queryFn: ({ signal }) => getFindingNotes(projectId, findingId, signal) });
   // `notes === null` = never loaded successfully; distinct from "loaded, and
   // there are none" so a failed fetch is never presented as an empty record
@@ -89,9 +108,6 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
     if (images) void invalidateReads(queryClient, 'getFindingImages');
     return queryClient.invalidateQueries({ queryKey: notesKey });
   };
-
-  const noteCount = notes ? notes.length : null;
-  useEffect(() => { onCount?.(noteCount); }, [onCount, noteCount]);
 
   // A notification links to /findings/:id#note-:noteId — bring that comment
   // into view once the thread has loaded.

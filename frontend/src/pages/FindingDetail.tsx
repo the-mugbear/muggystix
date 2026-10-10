@@ -39,7 +39,7 @@ import { agentInstruction } from '../utils/agentRuns';
 import FindingProposalsPanel from '../components/proposals/FindingProposalsPanel';
 import FindingEvidence from '../components/FindingEvidence';
 import NoteAttachments from '../components/host-inspector/NoteAttachments';
-import FindingCommentThread from '../components/FindingCommentThread';
+import FindingCommentThread, { useFindingCommentCount } from '../components/FindingCommentThread';
 import AddFindingHostsDialog from '../components/AddFindingHostsDialog';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -55,6 +55,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import FindingEndpoints from '../components/findings/FindingEndpoints';
+import { findingHistoryKey, findingKey, putFinding } from '../components/findings/findingCache';
 import SectionJumpBar, { JumpEntry, jumpTargetStyle } from '../components/SectionJumpBar';
 import { useFindingProposals } from '../hooks/useFindingProposals';
 import type { OnProposalDecided } from '../hooks/useProposalDecision';
@@ -118,13 +119,15 @@ const FindingDetail: React.FC = () => {
   };
 
   const queryClient = useQueryClient();
-  // The finding is ONE query.  A write route that answers with the finding
-  // replaces it (`replaceFinding`); the others read it again (`reread`).
+  // The finding is ONE query.  Every write route answers with the finding,
+  // and whatever sent the write — this page, the endpoint table, the report
+  // text, the "Add hosts" dialog — puts that answer on this record itself
+  // (`putFinding`): no second read of thousands of endpoints.
   // The skeleton shows only while there is no finding yet.
-  const findingQuery = useQuery({ queryKey: ['getFinding', projectId, id], queryFn: ({ signal }) => getFinding(projectId, id, signal) });
+  const findingQuery = useQuery({ queryKey: findingKey(projectId, id), queryFn: ({ signal }) => getFinding(projectId, id, signal) });
   const finding = findingQuery.data ?? null;
   // M2 — history is ancillary: its own query, it never gates the finding.
-  const historyQuery = useQuery({ queryKey: ['getFindingHistory', projectId, id], queryFn: ({ signal }) => getFindingHistory(projectId, id, signal) });
+  const historyQuery = useQuery({ queryKey: findingHistoryKey(projectId, id), queryFn: ({ signal }) => getFindingHistory(projectId, id, signal) });
   const history = historyQuery.data ?? [];
   const historyLoading = historyQuery.isFetching;
   const historyError = queryErrorText(historyQuery.error, 'History unavailable.');
@@ -134,24 +137,10 @@ const FindingDetail: React.FC = () => {
   const [summaryText, setSummaryText] = useState('');
   const [addHostsOpen, setAddHostsOpen] = useState(false);
 
-  // The endpoint routes (and rename, owner, report text) answer with the
-  // finding, so a change updates the page from the response (C2: no second
-  // read of thousands of endpoints); only the history, which an endpoint
-  // change appended to, is re-read.
-  const replaceFinding = useCallback((updated: Finding, appendsHistory = true) => {
-    queryClient.setQueryData(['getFinding', projectId, id], updated);
-    if (appendsHistory) void queryClient.invalidateQueries({ queryKey: ['getFindingHistory', projectId, id] });
-  }, [queryClient, projectId, id]);
-
-  // Background refresh after an edit: content stays mounted; a failed refresh
-  // keeps what is on screen and says so rather than blanking the page.
-  // Returns why the page could not refresh, or null.
-  const refetchFinding = findingQuery.refetch;
-  const refetchHistory = historyQuery.refetch;
-  const reread = useCallback(async (): Promise<{ error: unknown } | null> => {
-    const [f, h] = await Promise.all([refetchFinding(), refetchHistory()]);
-    return f.isError ? { error: f.error } : h.isError ? { error: h.error } : null;
-  }, [refetchFinding, refetchHistory]);
+  // A write of this page's own: the answer goes on the record (C2); the
+  // history is read again only when the write appended to it.
+  const replaceFinding = (updated: Finding, appendsHistory = true) =>
+    putFinding(queryClient, projectId, updated, { history: appendsHistory });
 
   // An accepted proposal changed the finding (text, an endpoint).  The
   // decision asks for the finding, its history, its images and the pending
@@ -160,7 +149,7 @@ const FindingDetail: React.FC = () => {
   const proposalDecided = useCallback<OnProposalDecided>((updated, settled) => {
     if (updated.status !== 'accepted') return;
     void settled.then(() => {
-      const failed = [['getFinding', projectId, id], ['getFindingHistory', projectId, id]]
+      const failed = [findingKey(projectId, id), findingHistoryKey(projectId, id)]
         .some((key) => queryClient.getQueryState(key)?.status === 'error');
       if (failed) toast.warning('Accepted, but the page could not refresh — reload to see the change.');
     });
@@ -208,23 +197,46 @@ const FindingDetail: React.FC = () => {
     return hostNotes.filter((n) => inThread.has(n.id)).sort((a, b) => a.id - b.id);
   }, [hostNotes, evidenceRootId]);
 
-  // C2 — a status or severity edit is saved, then the finding and its history
-  // are read again in the background: the page stays mounted (so the comment
-  // composer keeps its draft) and only the edited control shows it is busy —
-  // until that read is back.
-  const rereadAfterSave = async () => {
-    const failed = await reread();
-    if (failed) toast.warning(formatApiError(failed.error, 'Saved, but the page could not refresh — reload to see the change.'));
+  // C2 — a status or severity edit shows at once from the route's answer: the
+  // page stays mounted (so the comment composer keeps its draft), the finding
+  // is not read a second time, and only the edited control shows it is busy —
+  // for a status until its history trail is back.
+  //
+  // One case reads the finding again instead.  The answer is the finding as
+  // it stood when THIS change committed; if the record was written or is
+  // being read while the request was out (a proposal accepted meanwhile),
+  // which of the two is newer is not known, and laying the answer over it
+  // could put the page back to an older finding.  `sentOver` is the record
+  // the request was sent over.
+  const refetchFinding = findingQuery.refetch;
+  const refetchHistory = historyQuery.refetch;
+  const warnNotRefreshed = (error: unknown) =>
+    toast.warning(formatApiError(error, 'Saved, but the page could not refresh — reload to see the change.'));
+  const showAnswer = async (updated: Finding, sentOver: Finding | undefined, appendsHistory: boolean) => {
+    const record = queryClient.getQueryState<Finding>(findingKey(projectId, id));
+    if (record?.fetchStatus === 'idle' && record.data === sentOver) {
+      replaceFinding(updated, false);
+      if (!appendsHistory) return;
+      const h = await refetchHistory();
+      if (h.isError) warnNotRefreshed(h.error);
+      return;
+    }
+    const [f, h] = await Promise.all([refetchFinding(), refetchHistory()]);
+    if (f.isError) warnNotRefreshed(f.error);
+    else if (h.isError) warnNotRefreshed(h.error);
   };
+  const recordAsSent = () => ({ sentOver: queryClient.getQueryData<Finding>(findingKey(projectId, id)) });
   const statusChange = useMutation({
     mutationFn: (v: { status: FindingStatus; summary?: string }) => setFindingStatus(projectId, id, v.status, v.summary),
-    onSuccess: rereadAfterSave, // status + history trail together
+    onMutate: recordAsSent,
+    onSuccess: (updated, _v, sent) => showAnswer(updated, sent.sentOver, true), // status + history trail together
     onError: (err) => toast.error(formatApiError(err, 'Failed to update status.')),
   });
   const severityChange = useMutation({
     mutationFn: (severity: FindingSeverity) => updateFinding(projectId, id, { severity }),
-    onSuccess: async (_updated, severity) => {
-      await rereadAfterSave(); // headline badge + rollups
+    onMutate: recordAsSent,
+    onSuccess: async (updated, severity, sent) => {
+      await showAnswer(updated, sent.sentOver, false); // headline badge; severity is not on the history trail
       toast.success(`Severity reclassified to ${SEVERITY_LABEL[severity]}.`);
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to update severity.')),
@@ -397,7 +409,7 @@ const FindingDetail: React.FC = () => {
 
   // The jump bar: one entry per section, in page order.  The bar leaves out
   // any whose section renders nothing, so each is named here unconditionally.
-  const [commentCount, setCommentCount] = useState<number | null>(null);
+  const commentCount = useFindingCommentCount(id);
   const pendingProposals = proposals.items?.length ?? 0;
   const emptyReportSections = finding ? missingReportText(finding.report_text).length : 0;
   const hostCount = finding?.host_count ?? 0;
@@ -410,17 +422,6 @@ const FindingDetail: React.FC = () => {
     { id: 'section-comments', label: 'Comments & evidence', count: commentCount ? commentCount.toLocaleString() : null },
     { id: 'section-history', label: 'Disposition history' },
   ], [pendingProposals, hostCount, emptyReportSections, commentCount]);
-
-  // Added hosts: say how many were new — the server skips any already on
-  // the finding (e.g. added by someone else since the dialog opened).
-  const handleHostsAdded = (updated: Finding, requested: number[]) => {
-    const before = new Set(finding?.hosts.map((h) => h.host_id) ?? []);
-    const added = new Set(updated.hosts.map((h) => h.host_id).filter((id) => !before.has(id)));
-    const skipped = requested.filter((id) => !added.has(id)).length;
-    replaceFinding(updated);
-    const addedText = `Added ${added.size} host${added.size === 1 ? '' : 's'}`;
-    toast.success(skipped ? `${addedText} · ${skipped} already affected` : `${addedText}.`);
-  };
 
   if (!finding && findingQuery.isFetching) return <DetailSkeleton />;
   if (!finding) {
@@ -614,7 +615,6 @@ const FindingDetail: React.FC = () => {
             key={finding.id}
             finding={finding}
             canManage={canManage}
-            onChanged={replaceFinding}
             onRemove={(row) => void handleRemoveEndpoint(row)}
             focusEndpointId={focusEndpointId}
             proposals={proposals.byEndpoint}
@@ -653,8 +653,6 @@ const FindingDetail: React.FC = () => {
 
       <FindingReportTextCard
         finding={finding} canEdit={canModify} canPropose={canManage}
-        // Saved text may place or release an image: re-read where each one is.
-        onSaved={(f) => { replaceFinding(f, false); reloadImages(); }}
         images={findingImages}
         drafts={proposals.textByField}
         canDecide={canManage}
@@ -707,7 +705,6 @@ const FindingDetail: React.FC = () => {
                       noteId={note.id}
                       attachments={note.attachments}
                       canManage={false}
-                      onChanged={() => {}}
                       reportMarking={reportMarking}
                     />
                   )}
@@ -721,7 +718,7 @@ const FindingDetail: React.FC = () => {
 
       <div id="section-comments" style={jumpTargetStyle}>
         <FindingCommentThread
-          findingId={finding.id} canManage={canManage} reportMarking={reportMarking} onCount={setCommentCount}
+          findingId={finding.id} canManage={canManage} reportMarking={reportMarking}
         />
       </div>
 
@@ -811,7 +808,6 @@ const FindingDetail: React.FC = () => {
           open={addHostsOpen}
           onOpenChange={setAddHostsOpen}
           finding={finding}
-          onAdded={handleHostsAdded}
         />
       )}
     </div>

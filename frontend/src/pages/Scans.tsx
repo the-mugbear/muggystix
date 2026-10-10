@@ -44,7 +44,6 @@ import {
   getScanCommandExplanation,
   getScanBatches,
   getImportHistory,
-  getScanInventoryMarker,
 } from '../services/api';
 import type {
   Scan,
@@ -68,6 +67,7 @@ import {
   type HostsWithWorkRefusal,
 } from '../utils/scanDeletion';
 import HostsWithWorkWarning from '../components/scans/HostsWithWorkWarning';
+import { useScanInventoryMarker } from '../components/scans/useScanInventoryMarker';
 // From the barrel, like every other call here: a direct submodule import
 // bypasses a page test's mock and loads the real HTTP client.
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -151,9 +151,6 @@ const ACTIVE_QUEUE_POLL_MS = 5000;
 const AUTO_QUEUE_POLL_MS = 15_000;
 const holdsActiveJob = (jobs: IngestionJob[] | undefined): boolean =>
   !!jobs?.some((j) => j.status === 'queued' || j.status === 'processing');
-
-const markerKeyOf = (marker: { count: number; latest_id?: number | null }): string =>
-  `${marker.count}:${marker.latest_id ?? ''}`;
 
 export default function Scans() {
   const navigate = useNavigate();
@@ -623,24 +620,14 @@ export default function Scans() {
 
   // v5.207.0 — refresh when ANY scan lands. The job polling above only
   // follows uploads this tab submitted, so scans from an agent or another
-  // tab raised counters elsewhere while this list stayed stale. Polls a
-  // count + newest-id marker (one indexed query) while the tab is visible;
-  // the first answer is the baseline.
-  const markerQuery = useQuery({
-    queryKey: ['getScanInventoryMarker', projectId],
-    queryFn: ({ signal }) => getScanInventoryMarker(projectId, signal),
-    ...pollEvery(15_000),
-  });
-  const markerKey = markerQuery.data ? markerKeyOf(markerQuery.data) : null;
-  const inventoryMarkerRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (markerKey === null) return;
-    if (inventoryMarkerRef.current !== null && inventoryMarkerRef.current !== markerKey) {
-      refreshInventory();
-      refreshQueue();
-    }
-    inventoryMarkerRef.current = markerKey;
-  }, [markerKey, refreshInventory, refreshQueue]);
+  // tab raised counters elsewhere while this list stayed stale.  The marker
+  // (a count + the newest id, polled while the tab is visible; the first
+  // answer is the baseline) and its baseline are `useScanInventoryMarker`'s.
+  const inventoryMoved = useCallback(() => {
+    refreshInventory();
+    refreshQueue();
+  }, [refreshInventory, refreshQueue]);
+  const inventoryMarker = useScanInventoryMarker(projectId, inventoryMoved);
 
   const groupedScans = useMemo(
     () =>
@@ -744,7 +731,6 @@ export default function Scans() {
     setDeleteDialogOpen(true);
   };
   const { refetch: reloadImpact } = impactQuery;
-  const { refetch: reloadMarker } = markerQuery;
   const deletion = useMutation({
     mutationFn: ({ scan, confirmed }: { scan: Scan; confirmed: boolean }) =>
       (confirmed ? deleteScan(projectId, scan.id, { confirmHostsWithWork: true }) : deleteScan(projectId, scan.id)),
@@ -756,9 +742,7 @@ export default function Scans() {
       refreshInventory();
       // The inventory marker moves with this delete, and the lists are being
       // read again already: its new value is the baseline, not a change.
-      void reloadMarker().then((marker) => {
-        if (marker.data) inventoryMarkerRef.current = markerKeyOf(marker.data);
-      });
+      inventoryMarker.rebase();
     },
     onError: async (err, { scan }) => {
       const refusal = hostsWithWorkRefusal(err);

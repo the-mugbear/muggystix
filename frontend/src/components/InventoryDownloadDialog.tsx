@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertCircle, Download, FileDown, Loader2 } from 'lucide-react';
 import {
@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from './ui/dialog';
 import { pollEvery, queryErrorText } from '../lib/query';
+import { useOpeningKey } from '../hooks/useOpeningKey';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useAuth } from '../contexts/AuthContext';
@@ -76,14 +77,32 @@ const NO_JOBS: ReportJob[] = [];
 const JOB_POLL_MS = 2500;
 const jobError = (job: ReportJob) => job.error_message || job.last_error || null;
 
-const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open, onClose, filters, totalHosts }) => {
+const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = (props) => {
+  // The JSON job started from this dialog — kept ACROSS openings on purpose:
+  // the dialog can be closed and reopened while the job runs.  Its row in the
+  // list is the source of truth for status; this id only decides which job
+  // gets the "preparing / ready / failed" panel.
+  const [trackedJobId, setTrackedJobId] = useState<number | null>(null);
+  // Everything else is one opening's (a refusal, an action in flight): the
+  // body is keyed by its opening, so each one starts clean.
+  return (
+    <InventoryDownloadBody
+      key={useOpeningKey(props.open)}
+      {...props}
+      trackedJobId={trackedJobId}
+      onTrack={setTrackedJobId}
+    />
+  );
+};
+
+const InventoryDownloadBody: React.FC<InventoryDownloadDialogProps & {
+  trackedJobId: number | null;
+  onTrack: (jobId: number | null) => void;
+}> = ({ open, onClose, filters, totalHosts, trackedJobId, onTrack: setTrackedJobId }) => {
   const projectId = useProjectId();
   const queryClient = useQueryClient();
-  // The JSON job started from this dialog.  Its row in the list below is the
-  // source of truth for status; this id only decides which job gets the
-  // "preparing / ready / failed" panel.
-  const [trackedJobId, setTrackedJobId] = useState<number | null>(null);
-  // The one line for an action that was refused; the next action clears it.
+  // The one line for an action of this opening that was refused; the next
+  // download or queueing clears it.
   const [error, setError] = useState<string | null>(null);
   // Retry / cancel / dismiss are a project analyst's, or the person's who
   // asked for that job (R32).  A job that does not say who asked for it keeps
@@ -109,10 +128,6 @@ const InventoryDownloadDialog: React.FC<InventoryDownloadDialogProps> = ({ open,
   // that the status shown may be stale.
   const listStale = queryErrorText(jobsQuery.error, 'Could not refresh the status.');
   const refreshRecentJobs = () => queryClient.invalidateQueries({ queryKey: ['listReportJobs'] });
-
-  useEffect(() => {
-    if (open) setError(null);
-  }, [open]);
 
   const activeFilters = useMemo(() => describeInventoryFilters(filters), [filters]);
 

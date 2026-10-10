@@ -9,14 +9,20 @@ import {
   validateHostQuery,
   type HostQueryHistoryEntry,
 } from '../../services/api';
+import { useToast } from '../../contexts/ToastContext';
 import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { useProjectId } from '../../hooks/useProjectId';
+import { rememberFor } from '../../lib/query';
+import { formatApiError } from '../../utils/apiErrors';
 
 const DEBOUNCE_MS = 350;
+/** How long the DSL schema is kept after it was read (it changes only with
+ *  the server's version). */
+const SCHEMA_REMEMBER_MS = 30 * 60_000;
 const NO_HISTORY: HostQueryHistoryEntry[] = [];
 
 /**
- * Backs the Hosts command bar: loads the DSL schema once, debounce-validates
+ * Backs the Hosts command bar: loads the DSL schema (remembered), debounce-validates
  * the draft query (lint + live match count) against the backend, and owns the
  * recent-queries history (list / record / delete / clear).
  *
@@ -28,10 +34,17 @@ const NO_HISTORY: HostQueryHistoryEntry[] = [];
 export function useQueryAssist(draft: string) {
   const projectId = useProjectId();
   const queryClient = useQueryClient();
-  // Non-fatal when it fails: the command bar degrades to free typing.
+  const toast = useToast();
+  // The query language's fields: the same for every visit to the page, so
+  // the answer is REMEMBERED (lib/query's default asks at every mount) — a
+  // return to Hosts within `SCHEMA_REMEMBER_MS` asks nothing.  Non-fatal when
+  // it fails: the command bar degrades to free typing, and a failure is not
+  // remembered — the next visit asks again (`retryOnMount`).
   const schema = useQuery({
     queryKey: ['getHostQuerySchema', projectId],
     queryFn: ({ signal }) => getHostQuerySchema(projectId, signal),
+    ...rememberFor(SCHEMA_REMEMBER_MS),
+    retryOnMount: true,
   }).data ?? null;
   // Best-effort: a failed read is an empty history.
   const history = useQuery({
@@ -67,10 +80,15 @@ export function useQueryAssist(draft: string) {
   const { refetch } = check;
   const retryValidation = useCallback(() => { void refetch(); }, [refetch]);
 
-  // The history's writes are best-effort: a failure is not said.
+  // A history action the reader TOOK and that was refused is said (remove and
+  // clear used to fail silently: a ✕ that did nothing).  Recording a query is
+  // the page's doing, on every search: its failure is logged for whoever
+  // looks, never put in front of a reader who only asked for a list.  None of
+  // them stops the search itself.
   const { mutate: record } = useMutation({
     mutationFn: ({ q, resultCount }: { q: string; resultCount?: number | null }) => recordHostQuery(projectId, q, resultCount),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['listHostQueryHistory', projectId] }),
+    onError: (err) => console.warn('recordHostQuery failed:', formatApiError(err, 'not recorded')),
   });
   const recordQuery = useCallback((q: string, resultCount?: number | null) => {
     const text = q.trim();
@@ -84,11 +102,13 @@ export function useQueryAssist(draft: string) {
         ['listHostQueryHistory', projectId], (entries) => entries?.filter((h) => h.id !== id),
       );
     },
+    onError: (err) => toast.error(formatApiError(err, 'That query could not be removed from your recent queries.')),
   });
 
   const { mutate: clearHistory } = useMutation({
     mutationFn: () => clearHostQueryHistory(projectId),
     onSuccess: () => { queryClient.setQueryData<HostQueryHistoryEntry[]>(['listHostQueryHistory', projectId], []); },
+    onError: (err) => toast.error(formatApiError(err, 'Your recent queries could not be cleared.')),
   });
 
   return { schema, validation, validatedQuery, validating, validationError, retryValidation, history, recordQuery, removeHistory, clearHistory };

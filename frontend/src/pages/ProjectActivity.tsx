@@ -420,6 +420,8 @@ const ProjectActivity: React.FC = () => {
   const projectId = useProjectId();
   // Grows on "Load older sessions" so the history isn't silently capped.
   const [limit, setLimit] = useState(200);
+  // `GET /agent-sessions` takes `limit` up to this (its `le=1000`).
+  const HISTORY_MAX = 1000;
   // Refresh and the analytics' Retry: every read on the page, by its API
   // function's name (the live list and the history are both
   // `listAgentSessions`).  An ended or resumed session asks for them again
@@ -653,11 +655,19 @@ const ProjectActivity: React.FC = () => {
         actions={(
           <>
             {loading && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
-            {rows.length < total && !loading && (
-              <Button size="sm" variant="outline" onClick={() => setLimit((l) => l + 200)}>
+            {/* The server lists at most HISTORY_MAX sessions in one answer: the
+                fifth "Load older" used to ask for 1,200 and be refused (422).
+                Past that the filters are the way to older ones — said, not a
+                button that fails. */}
+            {rows.length < total && !loading && (limit < HISTORY_MAX ? (
+              <Button size="sm" variant="outline" onClick={() => setLimit((l) => Math.min(l + 200, HISTORY_MAX))}>
                 Load older sessions
               </Button>
-            )}
+            ) : (
+              <span className="text-caption text-muted-foreground">
+                The {HISTORY_MAX.toLocaleString()} newest are listed — narrow the filters for older ones.
+              </span>
+            ))}
           </>
         )}
       >

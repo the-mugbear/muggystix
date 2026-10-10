@@ -415,6 +415,29 @@ describe('E — start the clock from a report', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 
+  // B30 — typing the day the server already answered for asked for it again.
+  it('a typed day that is the report’s issue day is the answer already shown: no further dry run', async () => {
+    listClientReports.mockResolvedValue({ items: [report(2)], latest_issued_id: 2, can_create: true, can_issue: true });
+    assignRemediationFromReport.mockImplementation(async (_project: number, body: { dry_run?: boolean; assigned_on?: string }) =>
+      answer({ dry_run: !!body.dry_run, assigned_on: body.assigned_on ?? '2026-10-02', assigned: body.assigned_on === '2026-10-05' ? 40 : 42 }));
+    show();
+    fireEvent.click(await start());
+    const dialog = await screen.findByRole('dialog');
+    const day = () => within(dialog).getByLabelText('Assigned on');
+    await waitFor(() => expect(within(dialog).getByTestId('rem-afr-preview')).toHaveTextContent('42 findings on hosts'));
+    fireEvent.change(day(), { target: { value: '2026-10-05' } });
+    await waitFor(() => expect(within(dialog).getByTestId('rem-afr-preview')).toHaveTextContent('40 findings on hosts'));
+    expect(assignRemediationFromReport).toHaveBeenCalledTimes(2);
+
+    fireEvent.change(day(), { target: { value: '2026-10-02' } });
+    // At once, from the answer the dialog opened with.
+    expect(within(dialog).getByTestId('rem-afr-preview')).toHaveTextContent('42 findings on hosts');
+    expect(day()).toHaveValue('2026-10-02');
+    expect(assignRemediationFromReport).toHaveBeenCalledTimes(2);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Set the assigned date' }));
+    await waitFor(() => expect(assignRemediationFromReport).toHaveBeenLastCalledWith(1, { report_id: 2, assigned_on: '2026-10-02' }));
+  });
+
   it('says so when the project has no issued report, with a way to Reports, and writes nothing', async () => {
     listClientReports.mockResolvedValue({
       items: [report(3, { status: 'draft', number: null, issued_at: null })], latest_issued_id: null, can_create: true, can_issue: true,

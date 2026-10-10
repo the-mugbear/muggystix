@@ -37,6 +37,7 @@ import type {
 import { useToast } from '../contexts/ToastContext';
 import { queryErrorText, useLastSettled } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { LIST_CURSOR_CLASS } from '../hooks/useListCursor';
@@ -76,8 +77,9 @@ import {
   type SavedHostFilterState,
 } from '../utils/hostFiltersFromUrl';
 import {
-  HOSTS_PAGE_PARAM, HOSTS_PAGE_SIZES, hostsPageFromUrl, readHostsPageSize, writeHostsPageSize,
+  HOSTS_PAGE_PARAM, HOSTS_PAGE_SIZES, readHostsPageSize, writeHostsPageSize,
 } from '../utils/hostsPaging';
+import { pageFromParams } from '../hooks/useUrlPage';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import {
@@ -269,6 +271,49 @@ function hostsSearch({ filters, sortBy, page }: HostsListState): string {
   });
 }
 
+// --- What the session remembers of the Hosts view ------------------------
+// Four keys, per project, read and written through these and nowhere else:
+//   hostFiltersState         the conditions, to seed a bare /hosts
+//   hostBaseView             the view they started from, with the filters it names
+//   projectDefaultName       the project default is what is applied (the banner)
+//   projectDefaultDismissed  the reader chose "show everything" over the default
+// The page works the same when storage is unavailable.
+type SessionKey = 'hostFiltersState' | 'hostBaseView' | 'projectDefaultName' | 'projectDefaultDismissed';
+const sessionRead = (name: SessionKey): string | null => {
+  try {
+    return sessionStorage.getItem(projectScopedKey(name));
+  } catch {
+    return null;
+  }
+};
+/** `null` forgets it. */
+const sessionWrite = (name: SessionKey, value: string | null): void => {
+  try {
+    if (value === null) sessionStorage.removeItem(projectScopedKey(name));
+    else sessionStorage.setItem(projectScopedKey(name), value);
+  } catch {
+    /* remembered for this visit only */
+  }
+};
+/** The conditions, in the legacy 3-key shape so older sessions / older
+ *  frontends still load these blobs cleanly (v4.51.0 folded followFilter and
+ *  onlyWithNotes into the filters; they are split back out here, and at the
+ *  saved-view boundary). */
+const rememberFilters = (filters: HostFilterOptions): void => {
+  const { followFilter, onlyWithNotes, ...filtersOnly } = filters;
+  sessionWrite('hostFiltersState', JSON.stringify({
+    filters: filtersOnly,
+    followFilter: followFilter ?? 'all',
+    onlyWithNotes: onlyWithNotes === true,
+  }));
+};
+
+/** The last view applied (saved or built-in) with how to apply it again.
+ *  `reapply` is absent for a base restored by name after a reload.
+ *  `exactFilters` (canonical) marks a base the picker can recognise itself —
+ *  a starter query — so it reads "<name>" until edited, not "· Modified". */
+type BaseView = { name: string; reapply?: () => void; exactFilters?: string };
+
 type Updater<T> = T | ((previous: T) => T);
 const resolve = <T,>(next: Updater<T> | undefined, previous: T): T =>
   next === undefined ? previous : typeof next === 'function' ? (next as (p: T) => T)(previous) : next;
@@ -286,22 +331,6 @@ export default function Hosts() {
   // the server (`host_filter_views`: promote and `DELETE /default-view`), so
   // both controls follow `isProjectAdmin` — true for a global admin as well.
   const { canExport, isProjectAdmin: canSetProjectDefault } = useProjectRole();
-  // Name of the project-default view currently applied (drives the banner);
-  // null when none.  Persisted to session storage so the banner survives a page
-  // refresh (the restored filters ARE the default) — without it an analyst on a
-  // restored session saw a filtered list with no hint a default was hiding hosts.
-  const [appliedProjectDefault, setAppliedProjectDefault] = useState<string | null>(null);
-  // Set the banner AND persist it (or clear both). The init effect restores it.
-  const setProjectDefaultBanner = useCallback((name: string | null) => {
-    setAppliedProjectDefault(name);
-    try {
-      const key = projectScopedKey('projectDefaultName');
-      if (name) sessionStorage.setItem(key, name);
-      else sessionStorage.removeItem(key);
-    } catch {
-      /* ignore */
-    }
-  }, []);
   const queryClient = useQueryClient();
   // --- The list's state is the address -----------------------------------
   // Conditions, sort and page are READ from `location.search` on every render
@@ -316,19 +345,65 @@ export default function Hosts() {
     const urlParams = new URLSearchParams(location.search);
     let savedState: SavedHostFilterState | null = null;
     try {
-      const raw = sessionStorage.getItem(projectScopedKey('hostFiltersState'));
+      const raw = sessionRead('hostFiltersState');
       savedState = raw ? JSON.parse(raw) : null;
     } catch {
       savedState = null;
     }
     const restored = hostFiltersFromUrl(urlParams, savedState);
+    const { filters: initialFilters, restoredFromSession } = restored;
+    const hasConditions = Object.keys(initialFilters).length > 0;
+
+    // The "project default applied" banner after a refresh: the restored
+    // filters ARE the default.  Only when the filters being opened ARE the
+    // session's (the default or its edits).  A link that brings its own query
+    // used to keep the banner — "hosts outside it are not listed" over a list
+    // that was not the default view at all (acceptance feedback #31,
+    // 2026-10-02).
+    let projectDefault: string | null = null;
+    try {
+      const named = sessionRead('projectDefaultName');
+      const filtersAreTheSessions = restoredFromSession
+        || canonicalFilters(initialFilters) === canonicalFilters(savedState?.filters ?? {});
+      if (named && filtersAreTheSessions && hasConditions) projectDefault = named;
+    } catch {
+      /* a stored blob that is not what this page wrote: no banner */
+    }
+
+    // The view the filters started from, so the picker reads "<name> ·
+    // Modified" after a reload as it did before it (it read "Custom
+    // filters").  The default is that view when it is what is applied
+    // (Chrome pass 2026-09-26).  Otherwise only the stored name survives —
+    // Reset needs the view — and it is stored with the filters it describes,
+    // so a link that brings other filters never inherits the name.
+    let baseView: BaseView | null = projectDefault ? { name: projectDefault } : null;
+    let activeViewId: number | null = null;
+    if (!projectDefault && hasConditions) {
+      try {
+        const stored = JSON.parse(sessionRead('hostBaseView') ?? 'null');
+        if (stored?.name && stored.filters === canonicalFilters(initialFilters)) {
+          baseView = {
+            name: stored.name,
+            exactFilters: typeof stored.exactFilters === 'string' ? stored.exactFilters : undefined,
+          };
+          // A saved view still unmodified stays named as itself, not "· Modified".
+          if (typeof stored.viewId === 'number') activeViewId = stored.viewId;
+        }
+      } catch { /* ignore */ }
+    }
     return {
-      savedState,
-      filters: restored.filters,
-      restoredFromSession: restored.restoredFromSession,
+      projectDefault,
+      baseView,
+      activeViewId,
+      // v5.290.0 — a nav link to a bare /hosts reopens the session's filters;
+      // say so, unless the project-default banner already explains them.
+      restoredNotice: restoredFromSession && !projectDefault,
+      // The project default is applied by itself only when the reader has no
+      // filter context of their own and did not choose "show everything".
+      autoApplyDefault: !hasConditions && sessionRead('projectDefaultDismissed') !== '1',
       // The address the session's filters are put into.
-      restoreSearch: restored.restoredFromSession
-        ? hostsSearch({ filters: restored.filters, sortBy: DEFAULT_SORT, page: hostsPageFromUrl(urlParams) })
+      restoreSearch: restoredFromSession
+        ? hostsSearch({ filters: initialFilters, sortBy: DEFAULT_SORT, page: pageFromParams(urlParams, HOSTS_PAGE_PARAM) })
         : null,
     };
   });
@@ -336,11 +411,21 @@ export default function Hosts() {
   // for the bare address they are about to replace.
   const [restoring, setRestoring] = useState(opened.restoreSearch !== null);
   const isInitialized = !restoring;
+  // Name of the project-default view currently applied (drives the banner);
+  // null when none.  Remembered for the session so the banner survives a page
+  // refresh — without it an analyst on a restored session saw a filtered list
+  // with no hint a default was hiding hosts.
+  const [appliedProjectDefault, setAppliedProjectDefault] = useState<string | null>(opened.projectDefault);
+  // Set the banner AND remember it (or clear both).
+  const setProjectDefaultBanner = useCallback((name: string | null) => {
+    setAppliedProjectDefault(name);
+    sessionWrite('projectDefaultName', name || null);
+  }, []);
 
   const parsed = useMemo(() => {
     const urlParams = new URLSearchParams(location.search);
     const fromUrl = hostFiltersFromUrl(urlParams, null);
-    return { filters: fromUrl.filters, sortBy: fromUrl.sortBy ?? DEFAULT_SORT, page: hostsPageFromUrl(urlParams) };
+    return { filters: fromUrl.filters, sortBy: fromUrl.sortBy ?? DEFAULT_SORT, page: pageFromParams(urlParams, HOSTS_PAGE_PARAM) };
   }, [location.search]);
   const { sortBy, page } = parsed;
   // The same object while the conditions are the same: a new page or sort is
@@ -352,15 +437,12 @@ export default function Hosts() {
   filtersRef.current = filters;
 
   // Saved Hosts page filter views (per-user, per-project): which one is what
-  // the list shows, and the last view applied (saved or built-in) with how to
-  // apply it again.  `reapply` is absent for a base restored by name after a
-  // reload.  `exactFilters` (canonical) marks a base the picker can recognise
-  // itself — a starter query — so it reads "<name>" until edited, not
-  // "· Modified".
-  const [activeViewId, setActiveViewId] = useState<number | null>(null);
-  const [baseView, setBaseView] = useState<{ name: string; reapply?: () => void; exactFilters?: string } | null>(null);
+  // the list shows, and the last view applied (`BaseView`).  All three start
+  // from what the session remembered of the filters the page opened with.
+  const [activeViewId, setActiveViewId] = useState<number | null>(opened.activeViewId);
+  const [baseView, setBaseView] = useState<BaseView | null>(opened.baseView);
   // A bare /hosts visit reopened the session's filters; said until they change.
-  const [showRestoredNotice, setShowRestoredNotice] = useState(false);
+  const [showRestoredNotice, setShowRestoredNotice] = useState(opened.restoredNotice);
 
   // What the next write starts from.  It is the address's state as of the
   // render that first saw that address; two writes in one handler (new
@@ -412,56 +494,14 @@ export default function Hosts() {
     if (Object.keys(pendingRef.current.filters).length === 0) setBaseView(null);
     setProjectDefaultBanner(null);
   }, [commit, setProjectDefaultBanner]);
-  // --- Filter facets: the options and counts the filter editors offer ------
-  // The conditions as the facet endpoint takes them: the list's, without sort
-  // and paging; undefined when there are none (the full, unscoped facet set).
-  const liveFacetParams = useMemo((): FacetParams | undefined => {
-    const { sort_by: _sb, sort_order: _so, ...filterOnly } = hostQueryContext(filters, DEFAULT_SORT);
-    return Object.keys(filterOnly).length > 0 ? filterOnly : undefined;
-  }, [filters]);
-  // What the facets are counted under.  NOT derived from the address: they
-  // follow the list's conditions only when asked to (after the first list,
-  // while the filter popover is open, on return to the tab, on Retry — the
-  // effects below), so this is the conditions as of the last time they were
-  // asked for.  `null`: not asked yet.
-  const [facetScope, setFacetScope] = useState<{ params: FacetParams | undefined } | null>(null);
-  const facetsQuery = useQuery({
-    queryKey: ['getHostFilterData', projectId, facetScope?.params ?? null],
-    queryFn: ({ signal }) => getHostFilterData(projectId, facetScope?.params, signal),
-    enabled: facetScope !== null,
-  });
-  // We keep the last-known-good `filterData` — across a failed refresh and
-  // across a change of conditions — so the dropdowns degrade gracefully
-  // rather than emptying out, and a chip keeps its name.
-  const filterData = useLastSettled(facetsQuery.data, { resetKey: projectId }) ?? null;
-  // Surfaced inline near the filter panel when the cascading filter
-  // metadata call fails — previously the failure was console-only, so
-  // users interacted with partially-stale dropdowns with no signal.  The
-  // reader may dismiss a failure; the next one is said again.
-  const [dismissedFacetError, setDismissedFacetError] = useState<unknown>(null);
-  const filterDataError = facetsQuery.error && facetsQuery.error !== dismissedFacetError
-    ? formatApiError(facetsQuery.error, 'Filter options failed to refresh — dropdowns may be stale.')
-    : null;
-  // True while facet options are in flight. Facets load AFTER the host list
-  // (see the deferred read below), so without this flag an analyst can't tell
-  // a still-loading combobox ("No ports seen yet.") from genuinely empty data.
-  const filterDataLoading = facetScope === null || facetsQuery.isFetching;
-  /** Count the facets under the conditions of NOW: a read under new
-   *  conditions, or a re-read when they are the ones already counted.
-   *  EVERY refresh goes through this so facet options/counts always agree
-   *  with the filtered table (initial load, cascading refresh, Retry,
-   *  visibility). */
-  const refreshFacets = () => {
-    setFacetScope({ params: liveFacetParams });
-    // Reaches the query only when these conditions are the ones on screen;
-    // under new ones there is none yet, and the state above starts it.
-    void queryClient.refetchQueries({ queryKey: ['getHostFilterData', projectId, liveFacetParams ?? null], exact: true });
-  };
-  // The visibilitychange listener is registered once (deps []), so it reads
-  // this through a ref to avoid a stale closure scoping facets to the wrong
-  // (initial) filter set.
-  const refreshFacetsRef = useRef(refreshFacets);
-  refreshFacetsRef.current = refreshFacets;
+  // The "+ Add filter" popover: open/closed, and which field's editor it shows
+  // (null = the catalog).  The filter options below are read while it is open.
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [filterFieldId, setFilterFieldId] = useState<string | null>(null);
+  const openFilterEditor = useCallback((fieldId: string | null) => {
+    setFilterFieldId(fieldId);
+    setFilterOpen(true);
+  }, []);
   const [inventoryDialogOpen, setInventoryDialogOpen] = useState(false);
   // `?reports=1` (the "JSON is ready" notification's deep link; the parameter
   // keeps its name so links already sent still work) opens the download
@@ -512,29 +552,13 @@ export default function Hosts() {
   const [confirmEl, confirm] = useConfirm();
   const commandBarRef = useRef<HostCommandBarHandle>(null);
 
-  const scanLookup = useMemo(() => {
-    const map = new Map<string, { label: string }>();
-    if (filterData?.scans) {
-      filterData.scans.forEach((scan) => {
-        const key = scan.id?.toString();
-        if (!key) return;
-        const labelBase = scan.filename || `Scan #${scan.id}`;
-        const tool = scan.tool_name ? ` • ${scan.tool_name}` : '';
-        map.set(key, { label: `${labelBase}${tool}` });
-      });
-    }
-    return map;
-  }, [filterData?.scans]);
-
   const clearAllFilters = useCallback(() => {
     setFilters({});
     setPage(0);
     // An explicit "show everything" has to survive a refresh: with no filters
     // left the auto-apply would otherwise bring the project default straight
     // back, and the operator's cleared list would silently be filtered again.
-    try {
-      sessionStorage.setItem(projectScopedKey('projectDefaultDismissed'), '1');
-    } catch { /* ignore */ }
+    sessionWrite('projectDefaultDismissed', '1');
   }, [setFilters, setPage]);
 
   // The conditions and the sort as the API takes them.  One object per
@@ -617,107 +641,79 @@ export default function Hosts() {
   const hasFetchedOnceRef = useRef(false);
   if (hostsQuery.data || hostsQuery.error) hasFetchedOnceRef.current = true;
 
-  // v2.86.5 — defer the initial filter-facets read until AFTER the
-  // host list has resolved.  Pre-fix this fired on mount, racing the
-  // /hosts/ request and contending for the same workers; the
-  // facets-data query is the heavier of the two (it aggregates across
-  // every host's ports / services / OS / scans / tags / subnet labels /
-  // technologies).  Now: wait for `loading` (the host list) to flip to
-  // false, then ask.  This makes the table paint perceptibly faster
-  // since the chrome + table appear before the filter combobox options
-  // arrive.  The combobox controls show "Loading…" until filterData
-  // resolves, which is the existing behaviour for cascading refreshes.
-  useEffect(() => {
-    if (loading) return;
-    if (filterData !== null) return;
-    refreshFacets();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- once the list has loaded, until the facets have
-  }, [loading]);
+  // --- Filter facets: the options and counts the filter editors offer ------
+  // One query, keyed by the conditions the options are counted under: the
+  // list's, without sort, page and rows-per-page (audit H18 — none of those
+  // re-reads the dropdown options); undefined when there are none (the full,
+  // unscoped facet set).
+  const liveFacetParams = useMemo((): FacetParams | undefined => {
+    const { sort_by: _sb, sort_order: _so, ...filterOnly } = hostQueryContext(filters, DEFAULT_SORT);
+    return Object.keys(filterOnly).length > 0 ? filterOnly : undefined;
+  }, [filters]);
+  // While the popover is open a run of edits is one read: the conditions
+  // once they have been still for 400 ms.
+  const settledFacetParams = useDebouncedValue(liveFacetParams, 400);
+  const facetParams = filterOpen ? settledFacetParams : liveFacetParams;
+  // WHEN it is asked is this query's own (lib/query's defaults otherwise):
+  //  - not before the list has answered (v2.86.5): it is the heavier of the
+  //    two reads — it aggregates every host's ports, services, OS, scans,
+  //    tags, labels and technologies — and asked together they contend for
+  //    the same workers, so the table painted later;
+  //  - after that, once, whatever the popover: chips and the query bar's
+  //    suggestions take their names from it;
+  //  - then only while the "+ Add filter" popover is open (#49): the counts
+  //    are shown nowhere else, so a filter changed through the chips or the
+  //    query bar costs no facet read.  Opening the popover reads them under
+  //    the conditions of now;
+  //  - and again on return to the tab while it is open.
+  const facetsKnownRef = useRef(false);
+  const listAnswered = hasFetchedOnceRef.current;
+  const facetsQuery = useQuery({
+    queryKey: ['getHostFilterData', projectId, facetParams ?? null],
+    queryFn: ({ signal }) => getHostFilterData(projectId, facetParams, signal),
+    // A function: asked at the moment of each decision, so the first answer
+    // counts from the render that received it.
+    enabled: () => listAnswered && (filterOpen || !facetsKnownRef.current),
+    refetchOnWindowFocus: true,
+  });
+  // We keep the last-known-good `filterData` — across a failed refresh and
+  // across a change of conditions — so the dropdowns degrade gracefully
+  // rather than emptying out, and a chip keeps its name.
+  const filterData = useLastSettled(facetsQuery.data, { resetKey: projectId }) ?? null;
+  facetsKnownRef.current = filterData !== null;
+  // Surfaced inline near the filter panel when the cascading filter
+  // metadata call fails — previously the failure was console-only, so
+  // users interacted with partially-stale dropdowns with no signal.  The
+  // reader may dismiss a failure; the next one is said again.
+  const [dismissedFacetError, setDismissedFacetError] = useState<unknown>(null);
+  const filterDataError = facetsQuery.error && facetsQuery.error !== dismissedFacetError
+    ? formatApiError(facetsQuery.error, 'Filter options failed to refresh — dropdowns may be stale.')
+    : null;
+  // True while facet options are in flight, or not asked for yet (they load
+  // AFTER the host list): without it an analyst can't tell a still-loading
+  // combobox ("No ports seen yet.") from genuinely empty data.
+  const filterDataLoading = facetsQuery.isFetching || (filterData === null && !facetsQuery.error);
 
-  // The "+ Add filter" popover: open/closed, and which field's editor it shows
-  // (null = the catalog).  Lives above the cascading-facet effect, which gates
-  // on it.
-  const [filterOpen, setFilterOpen] = useState(false);
-  const [filterFieldId, setFilterFieldId] = useState<string | null>(null);
-  const openFilterEditor = useCallback((fieldId: string | null) => {
-    setFilterFieldId(fieldId);
-    setFilterOpen(true);
-  }, []);
-
-  // Cascading refresh: when filters change (debounced 400ms), refetch
-  // facet counts so the combobox trailing-count chips reflect the new
-  // result set.  It depends only on the conditions (audit H18): a sort,
-  // page or rows-per-page change must not re-read the dropdown options.
-  // Also gated on `filterData` having already loaded once, so
-  // the initial post-load fetch above isn't double-fired.
-  //
-  // #49 — those cascading counts only render inside the filter editors, so
-  // only refetch while the popover is open.  When it's closed (filtering via
-  // the review chips / query bar), a filter change no longer fires a heavy
-  // facet query; opening the popover re-runs this effect and refreshes the
-  // counts.  Chip labels rely on the one-shot initial load (names don't change
-  // with filters), so they're unaffected.
-  useEffect(() => {
-    if (filterData === null || !filterOpen) return;
-    const timer = setTimeout(() => refreshFacets(), 400);
-    return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional narrowing per audit H18
-  }, [filters, filterOpen]);
-
-  // Once, on opening: name the view the opening filters belong to, and put a
-  // restored session's filters into the address.
-  useEffect(() => {
-    const { filters: initialFilters, restoredFromSession, savedState } = opened;
-
-    // Re-show the "project default applied" banner after a refresh: the
-    // restored filters ARE the default.
-    let restoredDefault: string | null = null;
-    try {
-      restoredDefault = sessionStorage.getItem(projectScopedKey('projectDefaultName'));
-      // Only when the filters being restored ARE the session's (the default
-      // or its edits).  A link that brings its own query used to keep the
-      // banner — "hosts outside it are not listed" over a list that was not
-      // the default view at all (acceptance feedback #31, 2026-10-02).
-      const filtersAreTheSessions = restoredFromSession
-        || canonicalFilters(initialFilters) === canonicalFilters(savedState?.filters ?? {});
-      if (restoredDefault && filtersAreTheSessions && Object.keys(initialFilters).length > 0) {
-        setAppliedProjectDefault(restoredDefault);
-        // The default is also where later edits start: "<name> · Modified",
-        // not "Custom filters" (Chrome pass 2026-09-26).
-        setBaseView({ name: restoredDefault });
-      } else {
-        restoredDefault = null;
-      }
-    } catch {
-      /* ignore */
+  const scanLookup = useMemo(() => {
+    const map = new Map<string, { label: string }>();
+    if (filterData?.scans) {
+      filterData.scans.forEach((scan) => {
+        const key = scan.id?.toString();
+        if (!key) return;
+        const labelBase = scan.filename || `Scan #${scan.id}`;
+        const tool = scan.tool_name ? ` • ${scan.tool_name}` : '';
+        map.set(key, { label: `${labelBase}${tool}` });
+      });
     }
+    return map;
+  }, [filterData?.scans]);
 
-    // v5.290.0 — a nav link to a bare /hosts reopens the session's filters;
-    // say so, unless the project-default banner already explains them.
-    if (restoredFromSession && !restoredDefault) setShowRestoredNotice(true);
-    // The view the restored filters started from, so the picker reads
-    // "<name> · Modified" after a reload as it did before it (it read
-    // "Custom filters").  Only its name survives; Reset needs the view.
-    // Stored with the filters it describes, so a link that brings other
-    // filters never inherits the name.
-    if (!restoredDefault && Object.keys(initialFilters).length > 0) {
-      try {
-        const stored = JSON.parse(sessionStorage.getItem(projectScopedKey('hostBaseView')) ?? 'null');
-        if (stored?.name && stored.filters === canonicalFilters(initialFilters)) {
-          setBaseView({
-            name: stored.name,
-            exactFilters: typeof stored.exactFilters === 'string' ? stored.exactFilters : undefined,
-          });
-          // A saved view still unmodified stays named as itself, not "· Modified".
-          if (typeof stored.viewId === 'number') setActiveViewId(stored.viewId);
-        }
-      } catch { /* ignore */ }
-    }
-    if (opened.restoreSearch !== null) {
-      writtenSearchRef.current = opened.restoreSearch;
-      navigate({ search: opened.restoreSearch }, { replace: true });
-      setRestoring(false);
-    }
+  // Once, on opening: put a restored session's filters into the address.
+  useEffect(() => {
+    if (opened.restoreSearch === null) return;
+    writtenSearchRef.current = opened.restoreSearch;
+    navigate({ search: opened.restoreSearch }, { replace: true });
+    setRestoring(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- on opening only
   }, []);
 
@@ -876,21 +872,13 @@ export default function Hosts() {
 
   // Auto-apply the project default only on a bare /hosts visit (no
   // URL/saved-session filter, not dismissed this session) — decided as the
-  // page opens, applied once, when the default arrives.
-  const autoApplyDefaultRef = useRef<boolean | null>(null);
+  // page opens (`opened.autoApplyDefault`), applied once, when the default
+  // arrives.
+  const autoApplyDefaultRef = useRef(opened.autoApplyDefault);
   useEffect(() => {
-    if (!isInitialized) return;
-    if (autoApplyDefaultRef.current === null) {
-      // Only when the user has no filter context of their own.
-      let autoApply = Object.keys(filters).length === 0;
-      try {
-        if (sessionStorage.getItem(projectScopedKey('projectDefaultDismissed')) === '1') autoApply = false;
-      } catch { /* ignore */ }
-      autoApplyDefaultRef.current = autoApply;
-    }
     // Not answered yet.  Once it is, the decision is spent: a default an
     // admin sets later in the visit is offered, never applied by itself.
-    if (defaultViewQuery.isPending || !autoApplyDefaultRef.current) return;
+    if (!isInitialized || defaultViewQuery.isPending || !autoApplyDefaultRef.current) return;
     autoApplyDefaultRef.current = false;
     if (!projectDefaultView) return;
     applyViewFilters(projectDefaultView, { quiet: true });
@@ -905,49 +893,22 @@ export default function Hosts() {
     if (!projectDefaultView) return;
     applyViewFilters(projectDefaultView, { quiet: true });
     setProjectDefaultBanner(projectDefaultView.name);
-    try {
-      sessionStorage.removeItem(projectScopedKey('projectDefaultDismissed'));
-    } catch { /* ignore */ }
+    sessionWrite('projectDefaultDismissed', null);
   };
   const projectDefaultActive = projectDefaultView !== null
     && (appliedProjectDefault !== null || activeViewId === projectDefaultView.id);
 
+  // The session follows the list: the conditions on screen — whoever wrote
+  // the address (this page, a link, Back) — and the base view's name with the
+  // filters it now describes (see `opened`).
   useEffect(() => {
     if (!isInitialized) return;
-    if (typeof window !== 'undefined') {
-      // Persist in the legacy 3-key shape so older sessions / older
-      // frontends still load these blobs cleanly (see v4.51.0 note).
-      const { followFilter: ff, onlyWithNotes: own, ...filtersOnly } = filters;
-      const stateToPersist = {
-        filters: filtersOnly,
-        followFilter: ff ?? 'all',
-        onlyWithNotes: own === true,
-      };
-      sessionStorage.setItem(projectScopedKey('hostFiltersState'), JSON.stringify(stateToPersist));
-    }
-  }, [filters, isInitialized]);
-
-  // The base view's name, with the filters it now describes (see the restore).
-  useEffect(() => {
-    if (!isInitialized) return;
-    try {
-      const key = projectScopedKey('hostBaseView');
-      if (baseView) {
-        sessionStorage.setItem(key, JSON.stringify({
-          name: baseView.name, filters: canonicalFilters(filters), viewId: activeViewId,
-          exactFilters: baseView.exactFilters,
-        }));
-      } else sessionStorage.removeItem(key);
-    } catch { /* ignore */ }
+    rememberFilters(filters);
+    sessionWrite('hostBaseView', baseView && JSON.stringify({
+      name: baseView.name, filters: canonicalFilters(filters), viewId: activeViewId,
+      exactFilters: baseView.exactFilters,
+    }));
   }, [baseView, filters, activeViewId, isInitialized]);
-
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (!document.hidden) refreshFacetsRef.current();
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, []);
 
   const handleFiltersChange = (newFilters: HostFilterOptions) => {
     setFilters(newFilters);
@@ -1077,15 +1038,7 @@ export default function Hosts() {
   // cell that kept an earlier copy still saves the list context of NOW (the
   // v4.7.5 stale-callback bug, see useHostColumns' dependency note).
   const openInspector = useCallback((hostId: number) => {
-    if (typeof window !== 'undefined') {
-      const { followFilter: ff, onlyWithNotes: own, ...filtersOnly } = filtersRef.current;
-      const stateToPersist = {
-        filters: filtersOnly,
-        followFilter: ff ?? 'all',
-        onlyWithNotes: own === true,
-      };
-      sessionStorage.setItem(projectScopedKey('hostFiltersState'), JSON.stringify(stateToPersist));
-    }
+    rememberFilters(filtersRef.current);
     setInspectedHostId(hostId);
   }, []);
   // The table's rows are memoised; an inline arrow here would be a new prop
@@ -1105,15 +1058,7 @@ export default function Hosts() {
   // accepts, base64'd so a stray `&` in a search term doesn't fight
   // the query parser.
   const navigateToStandalone = (hostId: number) => {
-    if (typeof window !== 'undefined') {
-      const { followFilter: ff, onlyWithNotes: own, ...filtersOnly } = filters;
-      const stateToPersist = {
-        filters: filtersOnly,
-        followFilter: ff ?? 'all',
-        onlyWithNotes: own === true,
-      };
-      sessionStorage.setItem(projectScopedKey('hostFiltersState'), JSON.stringify(stateToPersist));
-    }
+    rememberFilters(filters);
     const returnTo = `${location.pathname}${location.search}` || '/hosts';
     const hostIds = hosts.map((h) => h.id);
     const currentIndex = hostIds.indexOf(hostId);
@@ -1558,7 +1503,7 @@ export default function Hosts() {
                 variant="outline"
                 size="sm"
                 disabled={filterDataLoading}
-                onClick={refreshFacets}
+                onClick={() => { void facetsQuery.refetch(); }}
               >
                 <RefreshCw className={`size-3.5 ${filterDataLoading ? 'animate-spin' : ''}`} aria-hidden />
                 Retry

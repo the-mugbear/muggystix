@@ -15,8 +15,8 @@
  * action cells truncate or clamp; every state (loading / error / not-adopted /
  * empty) renders a safe fallback.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query';
+import React, { useCallback, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Copy, Download, FileText, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 
@@ -25,7 +25,6 @@ import {
   getPosture,
   conditionHostsHref,
   subnetHostsHref,
-  downloadSystemicReport,
   type SubnetInsight,
   type SubnetInsightsResponse,
   type PostureSite,
@@ -33,7 +32,6 @@ import {
 import { buildFindingsUrl, buildHostsUrl } from '../utils/drilldownLinks';
 import SeverityBar from '../components/ui/SeverityBar';
 import { tierHsl, TIER_LABEL } from '../components/posture/postureTheme';
-import { formatApiError } from '../utils/apiErrors';
 import { queryErrorText } from '../lib/query';
 import { copyToClipboard, downloadTextFile } from '../utils/clipboard';
 import { useToast } from '../contexts/ToastContext';
@@ -42,6 +40,9 @@ import { useProject } from '../contexts/ProjectContext';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useUrlPage } from '../hooks/useUrlPage';
+import { usePagedList } from '../hooks/usePagedList';
+import type { ListPage } from '../hooks/useListQuery';
+import { useSystemicBriefing } from '../hooks/useSystemicBriefing';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { InfoTip } from '../components/ui/info-tip';
@@ -55,6 +56,8 @@ type Lens = 'site' | 'subnet';
 type Exposure = { active_findings: number; by_severity: Partial<Record<'critical' | 'high' | 'medium' | 'low' | 'info', number>> };
 
 const PAGE_SIZE = 50;
+/** A page of subnets as the paged list reads it (`items` = its `subnets`). */
+type SubnetPage = SubnetInsightsResponse & ListPage<SubnetInsight>;
 const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
 // Render the current page of subnets as a shareable Markdown table.
@@ -144,51 +147,51 @@ const Segments: React.FC = () => {
       return out;
     }, { replace: true });
   }, [setParams]);
-  const { page, setPage } = useUrlPage();
-  const offset = page * PAGE_SIZE;
-  const setOffset = useCallback((next: number) => setPage(Math.floor(next / PAGE_SIZE)), [setPage]);
-
   // (A project switch starts over — first page, the lens chosen again, the
   // new project's reads — because `Layout` remounts the page per project and
   // a project page drops its query.)
 
-  // Two reads, each failing on its own: the subnets a page at a time (the
-  // page on screen stays while the next one loads), and the posture, for its
-  // sites.
-  const subnetsQuery = useQuery({
-    queryKey: ['getSubnetInsights', projectId, PAGE_SIZE, offset],
-    queryFn: ({ signal }) => getSubnetInsights(projectId, PAGE_SIZE, offset, signal),
-    placeholderData: keepPreviousData,
-  });
+  // Two reads, each failing on its own: the subnets a page at a time, and the
+  // posture, for its sites (there is no lighter read of them: the sites are
+  // ranked by the posture's own function).  The subnets are the one paged
+  // list of the page (`usePagedList` + `useUrlPage`): a page the address
+  // names past the end (an old link; subnets were removed) steps back to the
+  // last page that exists — never "no hosts are mapped".
+  const subnets = usePagedList<SubnetInsight, SubnetPage>(
+    'getSubnetInsights',
+    async ({ offset: from, limit, signal }) => {
+      const r = await getSubnetInsights(projectId, limit, from, signal);
+      return { ...r, items: r.subnets };
+    },
+    [projectId],
+    { pageSize: PAGE_SIZE, page: useUrlPage(), within: projectId, errorMessage: 'Could not load the subnets.' },
+  );
   const postureQuery = useQuery({
     queryKey: ['getPosture', projectId],
     queryFn: ({ signal }) => getPosture(projectId, { signal }),
   });
-  const subnetData = subnetsQuery.data ?? null;
-  // A page the address names past the end (an old link; subnets were removed)
-  // steps back to the last page that exists — never "no hosts are mapped".
-  const pastTheEnd = !!subnetData && !subnetsQuery.isPlaceholderData && offset > 0
-    && subnetData.subnets.length === 0 && subnetData.total > 0;
-  const subnetTotal = subnetData?.total ?? 0;
-  useEffect(() => {
-    if (pastTheEnd) setPage(Math.max(0, Math.ceil(subnetTotal / PAGE_SIZE) - 1));
-  }, [pastTheEnd, subnetTotal, setPage]);
-  const subnetError = queryErrorText(subnetsQuery.error, 'Could not load the subnets.');
+  const offset = subnets.page * PAGE_SIZE;
+  const { setPage } = subnets;
+  const setOffset = useCallback((next: number) => setPage(Math.floor(next / PAGE_SIZE)), [setPage]);
+  const subnetError = subnets.error;
+  // The page on screen stays while the next one loads; a page that could not
+  // be read shows the failure, not the page before it.
+  const subnetData = subnets.response ?? (subnetError ? null : subnets.lastResponse);
   const posture = postureQuery.data;
   const sites: PostureSite[] | null = useMemo(
     () => (posture ? (posture.sites.adopted ? posture.sites.items : []) : null),
     [posture],
   );
   const sitesError = queryErrorText(postureQuery.error, 'Could not load the sites.');
-  const loading = subnetsQuery.isFetching || postureQuery.isFetching;
-  const latestLoad = Math.max(subnetsQuery.dataUpdatedAt, postureQuery.dataUpdatedAt);
+  const loading = subnets.loading || postureQuery.isFetching;
+  const latestLoad = Math.max(subnets.loadedAt?.getTime() ?? 0, postureQuery.dataUpdatedAt);
   const loadedAt = useMemo(() => (latestLoad ? new Date(latestLoad) : null), [latestLoad]);
-  const { refetch: refetchSubnets } = subnetsQuery;
+  const { reload: reloadSubnets } = subnets;
   const { refetch: refetchPosture } = postureQuery;
   const reload = useCallback(() => {
-    void refetchSubnets();
+    void reloadSubnets();
     void refetchPosture();
-  }, [refetchSubnets, refetchPosture]);
+  }, [reloadSubnets, refetchPosture]);
 
   // Open on Site when the project defines sites, else on Subnet — until the
   // operator picks a lens.
@@ -203,14 +206,18 @@ const Segments: React.FC = () => {
 
   const handleDownloadJson = useCallback(() => {
     if (!subnetData) return;
+    // The server's answer as it came: `items` is the paged list's own name
+    // for `subnets`, not part of it.
+    const answer: Partial<SubnetPage> = { ...subnetData };
+    delete answer.items;
     downloadTextFile(`subnet_insights_${new Date().toISOString().split('T')[0]}.json`,
-      JSON.stringify(subnetData, null, 2), 'application/json');
+      JSON.stringify(answer, null, 2), 'application/json');
   }, [subnetData]);
 
   const totals = subnetData?.totals;
   // Nothing is drawn before BOTH have answered once: which lens opens depends
   // on the sites.
-  const firstLoad = subnetsQuery.isPending || postureQuery.isPending;
+  const firstLoad = (!subnetData && !subnetError) || postureQuery.isPending;
 
   return (
     <div className="space-y-md p-md md:p-lg">
@@ -340,19 +347,14 @@ const SegmentsLead: React.FC<{
 };
 
 const SiteTable: React.FC<{ sites: PostureSite[] | null; error: string | null; onRetry: () => void }> = ({ sites, error, onRetry }) => {
-  const toast = useToast();
   // The briefing is a report (`/reports/systemic.html`, AUDITOR on the
   // server): not offered to a project viewer.
   const { canExport } = useProjectRole();
   // Per-site briefing: the executive systemic report scoped to one site — what
   // a site owner takes to their meeting.
-  const projectId = useProjectId();
-  const briefing = useMutation({
-    mutationFn: (site: string) => downloadSystemicReport(projectId, site),
-    onError: (e, site) => toast.error(formatApiError(e, `Could not create the briefing for ${site}.`)),
-  });
-  const createSiteBriefing = (site: string) => briefing.mutate(site);
-  const briefingSite = briefing.isPending ? briefing.variables : null;
+  const briefing = useSystemicBriefing();
+  const createSiteBriefing = briefing.create;
+  const briefingSite = briefing.pendingSite;
 
   if (error) {
     return (
@@ -399,7 +401,7 @@ const SiteTable: React.FC<{ sites: PostureSite[] | null; error: string | null; o
                   {s.owner_name ? `Owner ${s.owner_name}` : ''}
                   {canExport && s.site && !s.unassigned && (
                     <button type="button" onClick={() => createSiteBriefing(s.site as string)}
-                      disabled={briefingSite !== null} aria-label={`Create briefing for ${s.site}`}
+                      disabled={briefing.pending} aria-label={`Create briefing for ${s.site}`}
                       className={`${s.owner_name ? 'ml-xs ' : ''}inline-flex items-center gap-xxs rounded text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60`}>
                       {briefingSite === s.site ? <Loader2 className="size-3 animate-spin" aria-hidden /> : <FileText className="size-3" aria-hidden />}
                       Briefing

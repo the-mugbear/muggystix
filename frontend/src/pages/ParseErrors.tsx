@@ -12,10 +12,10 @@ import {
   Copy,
   Loader2,
 } from 'lucide-react';
-import { pageFromParams } from '../hooks/useUrlPage';
+import { usePagedList } from '../hooks/usePagedList';
+import { useUrlPage } from '../hooks/useUrlPage';
 import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { useConfirm } from '../hooks/useConfirm';
-import { ListPage, useListQuery } from '../hooks/useListQuery';
 import { useProjectRole } from '../hooks/useProjectRole';
 import {
   discardIngestionJob,
@@ -36,7 +36,7 @@ import {
 } from '../components/ui/select';
 import { useToast } from '../contexts/ToastContext';
 import { useProjectId } from '../hooks/useProjectId';
-import { invalidateReads } from '../lib/query';
+import { invalidateReads, useLastSettled } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { INGESTION_JOB_READS } from '../utils/ingestionReads';
 import { Badge } from '../components/ui/badge';
@@ -193,20 +193,22 @@ const ParseErrors: React.FC = () => {
   const jobReadsChanged = useJobReadsChanged();
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
-  const [detailDialogOpen, setDetailDialogOpen] = useState(false);
+  // "View Details": the job whose recorded parse error the reader asked to
+  // see.  The dialog is open while the server's answer for it is on hand.
+  const [detailFor, setDetailFor] = useState<{ jobId: number; parseErrorId: number } | null>(null);
   // URL-backed (B15: search, sort, direction and page joined `status`), so a
   // filtered view can be shared and survives a reload, and so other surfaces
   // can deep-link one (the queue health card links here for failed / queued /
   // in-flight jobs).  Replace, not push: typing must not fill the history.
-  // Changing a filter or the sort drops `page` — the result set can shrink
-  // below the current page.
-  const setParams = useCallback((changes: Record<string, string | null>, keepPage = false) => {
+  // Changing a filter or the sort drops `page` in the SAME write — the result
+  // set can shrink below the current page.
+  const setParams = useCallback((changes: Record<string, string | null>) => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       for (const [key, value] of Object.entries(changes)) {
         if (value === null || value === '') next.delete(key); else next.set(key, value);
       }
-      if (!keepPage) next.delete('page');
+      next.delete('page');
       return next.toString() === prev.toString() ? prev : next;
     }, { replace: true });
   }, [setSearchParams]);
@@ -233,11 +235,9 @@ const ParseErrors: React.FC = () => {
   // v5.135.0 — the page used to request skip:0/limit:100 unconditionally and
   // discard the `total` the endpoint already returns, so anything past the
   // 100th upload was unreachable by browsing and the truncation was invisible.
-  // 1-based in the URL (`?page=2`), 0-based here.
-  // Only a positive whole number is a page (`pageFromParams`, the one parser):
-  // `?page=1.5` used to send `skip=12.5`.
-  const page = pageFromParams(searchParams);
-  const setPage = (next: number) => setParams({ page: next > 0 ? String(next + 1) : null }, true);
+  // The page is in the address (`useUrlPage`: `?page=2`, 1-based, left out for
+  // the first; only a positive whole number is a page — `?page=1.5` used to
+  // send `skip=12.5`), and one page is read at a time (`usePagedList`).
   // Fixed: no control has ever changed it (it was state with an unused setter).
   // v5.288.0 — 25, like the other lists (was 50).
   const pageSize = 25;
@@ -248,20 +248,20 @@ const ParseErrors: React.FC = () => {
   // effect below waits for (v5.289.0: a "Superseded — imported by job #N"
   // link changes the filter AND names a row in one navigation).
   const appliedSearch = urlSearch;
-  const list = useListQuery<IngestionResultItem, ListPage<IngestionResultItem> & IngestionResultsResponse>(
+  const list = usePagedList<IngestionResultItem, IngestionResultsResponse>(
     'getIngestionResults',
-    ({ limit, signal }) => getIngestionResults(projectId, {
-      skip: page * pageSize,
+    ({ offset, limit, signal }) => getIngestionResults(projectId, {
+      skip: offset,
       limit,
       status: statusFilter === 'all' ? undefined : statusFilter,
       search: appliedSearch || undefined,
       sortBy,
       sortOrder,
     }, signal),
-    [projectId, statusFilter, appliedSearch, sortBy, sortOrder, page],
-    { pageSize, errorMessage: 'Failed to load ingestion results.' },
+    [projectId, statusFilter, appliedSearch, sortBy, sortOrder],
+    { pageSize, page: useUrlPage(), within: projectId, errorMessage: 'Failed to load ingestion results.' },
   );
-  const { loading, error, loadedAt } = list;
+  const { loading, error, loadedAt, page, setPage } = list;
   const loadData = list.reload;
   // The chips keep their last counts while the next query loads.
   const summary = list.lastResponse?.summary;
@@ -270,15 +270,31 @@ const ParseErrors: React.FC = () => {
   // synthesized from row data ("No details available"): operators believed
   // they were inspecting backend data. The failure is said, and the dialog
   // opens only on what the server returned.
-  const parseErrorDetail = useMutation({
-    mutationFn: ({ parseErrorId }: { jobId: number; parseErrorId: number }) => getParseError(projectId, parseErrorId),
-    onSuccess: () => setDetailDialogOpen(true),
-    onError: (err, { jobId }) => toast.error(
-      formatApiError(err, `Couldn't load full details for ingestion #${jobId}.`),
-      { id: `pe-detail-${jobId}` },
-    ),
+  //
+  // It is a READ, so a query: keyed by the parse error the reader asked to
+  // see (`detailFor`), cancelled when they ask for another, and gone from the
+  // cache once the dialog is closed — opening it again reads it again.
+  const detailErrorId = detailFor?.parseErrorId ?? null;
+  const parseErrorDetail = useQuery({
+    queryKey: ['getParseError', projectId, detailErrorId],
+    queryFn: ({ signal }) => getParseError(projectId, detailErrorId as number, signal),
+    enabled: detailErrorId !== null,
   });
-  const selectedParseError = parseErrorDetail.data ?? null;
+  const openParseError = detailFor ? parseErrorDetail.data ?? null : null;
+  // What the dialog's body shows — the last one opened, so that it does not
+  // empty while the dialog closes.
+  const selectedParseError = useLastSettled(openParseError) ?? null;
+  // A lookup that failed is said, and that is the end of it: nothing is left
+  // waiting to open, and "View Details" asks again.
+  const detailError = detailFor ? parseErrorDetail.error : null;
+  useEffect(() => {
+    if (!detailFor || !detailError) return;
+    toast.error(
+      formatApiError(detailError, `Couldn't load full details for ingestion #${detailFor.jobId}.`),
+      { id: `pe-detail-${detailFor.jobId}` },
+    );
+    setDetailFor(null);
+  }, [detailFor, detailError, toast]);
   const handleViewParseError = (item: IngestionResultItem) => {
     // item.id is the INGESTION JOB id; this endpoint wants a ParseError id.
     // They are independent sequences that overlap, so passing the job id
@@ -292,7 +308,7 @@ const ParseErrors: React.FC = () => {
       );
       return;
     }
-    parseErrorDetail.mutate({ jobId: item.id, parseErrorId: item.parse_error_id });
+    setDetailFor({ jobId: item.id, parseErrorId: item.parse_error_id });
   };
 
   // Open and scroll to the row the caller linked to, once it has loaded. The
@@ -784,7 +800,7 @@ const ParseErrors: React.FC = () => {
       </section>
 
       {/* Parse-error detail dialog */}
-      <Dialog open={detailDialogOpen} onOpenChange={(next) => !next && setDetailDialogOpen(false)}>
+      <Dialog open={openParseError !== null} onOpenChange={(next) => !next && setDetailFor(null)}>
         {/* Audit RSP·M16 — use the size prop instead of bypassing it
             with max-w-3xl, and wrap the long body in DialogBody so the
             footer stays pinned while the body scrolls. */}
@@ -795,7 +811,7 @@ const ParseErrors: React.FC = () => {
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => setDetailDialogOpen(false)}
+                onClick={() => setDetailFor(null)}
                 aria-label="Close dialog"
               >
                 <CloseIcon className="size-4" aria-hidden />
@@ -877,7 +893,7 @@ const ParseErrors: React.FC = () => {
             </DialogBody>
           )}
           <DialogFooter>
-            <Button onClick={() => setDetailDialogOpen(false)}>Close</Button>
+            <Button onClick={() => setDetailFor(null)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

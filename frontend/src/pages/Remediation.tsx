@@ -60,14 +60,7 @@ export const RemediationLead: React.FC<{
 const Remediation: React.FC = () => {
   const { isProjectAdmin: canWrite } = useProjectRole();
   const { policy, enabled, loading, error: policyError, retry: retryPolicy } = useRemediationPolicy();
-  const [page, setPage] = useState<RemediationPage | null>(null);
-  const [filtered, setFiltered] = useState(false);
   const [fromReport, setFromReport] = useState(false);
-  // Offered to a project admin while something has no assigned date — and
-  // only by a server that knows the route (it is the one that sends
-  // `flag_counts`), so an older one is never asked for it.
-  const canStartClock = canWrite && page != null && page.flag_counts !== undefined
-    && page.state_counts.not_assigned > 0;
 
   if (!enabled) {
     return (
@@ -87,45 +80,55 @@ const Remediation: React.FC = () => {
     );
   }
 
+  // The page is drawn AROUND its list, with what the list has loaded: the
+  // lead's counts, the link that starts the clock and the dialog's "today"
+  // are read from the answer on screen where they are shown (they were page
+  // state the list filled from an effect).
   return (
-    <div className="flex flex-col gap-lg p-md md:p-lg">
-      <div className="min-w-0">
-        <h1 className="text-page-title">Remediation</h1>
-        <p className="mt-xxs max-w-4xl text-metadata text-muted-foreground">
-          <RemediationLead page={page} filtered={filtered} dueSoonDays={policy?.due_soon_days ?? 7} where="in this project" />
-          {canStartClock && (
-            <>
-              {' '}
-              <button type="button" className="text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                title="Give the findings an issued report lists that report’s day as their assigned date"
-                onClick={() => setFromReport(true)}>
-                Start the clock from a report…
-              </button>
-            </>
-          )}
-        </p>
-      </div>
+    <RemediationWorkList scope="project" canWrite={canWrite} policy={policy}>
+      {({ page, filtered, list }) => {
+        // Offered to a project admin while something has no assigned date —
+        // and only by a server that knows the route (it is the one that sends
+        // `flag_counts`), so an older one is never asked for it.
+        const canStartClock = canWrite && page != null && page.flag_counts !== undefined
+          && page.state_counts.not_assigned > 0;
+        return (
+          <div className="flex flex-col gap-lg p-md md:p-lg">
+            <div className="min-w-0">
+              <h1 className="text-page-title">Remediation</h1>
+              <p className="mt-xxs max-w-4xl text-metadata text-muted-foreground">
+                <RemediationLead page={page} filtered={filtered} dueSoonDays={policy?.due_soon_days ?? 7} where="in this project" />
+                {canStartClock && (
+                  <>
+                    {' '}
+                    <button type="button" className="text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      title="Give the findings an issued report lists that report’s day as their assigned date"
+                      onClick={() => setFromReport(true)}>
+                      Start the clock from a report…
+                    </button>
+                  </>
+                )}
+              </p>
+            </div>
 
-      <PostureSection
-        title="Findings on hosts"
-        description={policy ? `${timelineSummary(policy)}, counted from the day a finding is assigned.` : undefined}
-      >
-        <RemediationWorkList
-          scope="project"
-          canWrite={canWrite}
-          policy={policy}
-          onLoaded={(next, isFiltered) => { setPage(next); setFiltered(isFiltered); }}
-        />
-      </PostureSection>
+            <PostureSection
+              title="Findings on hosts"
+              description={policy ? `${timelineSummary(policy)}, counted from the day a finding is assigned.` : undefined}
+            >
+              {list}
+            </PostureSection>
 
-      <PostureSection title="Over time">
-        <RemediationTrend scope="project" />
-      </PostureSection>
+            <PostureSection title="Over time">
+              <RemediationTrend scope="project" />
+            </PostureSection>
 
-      {fromReport && (
-        <RemediationAssignFromReportDialog today={page?.as_of} onClose={() => setFromReport(false)} />
-      )}
-    </div>
+            {fromReport && (
+              <RemediationAssignFromReportDialog today={page?.as_of} onClose={() => setFromReport(false)} />
+            )}
+          </div>
+        );
+      }}
+    </RemediationWorkList>
   );
 };
 

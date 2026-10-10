@@ -133,13 +133,24 @@ const AddressTerrainSection: React.FC = () => {
     writeOpen(!was);
     return !was;
   });
-  const [hovered, setHovered] = useState<number | null>(null);
-  const [selected, setSelected] = useState<number | null>(null);
   const sceneRef = useRef<TerrainSceneHandle>(null);
 
   const layout = useMemo(() => (data ? layoutTerrain(data.blocks) : null), [data]);
   const summary = useMemo(() => (data ? summariseTerrain(data.blocks) : null), [data]);
-  useEffect(() => { setSelected(null); setHovered(null); }, [layout]);
+  // The block pointed at and the block chosen are positions in ONE answer's
+  // layout, so they are kept with it: under another answer there is none
+  // (it was an effect that cleared both a render late).
+  const [cursor, setCursor] = useState<{
+    of: typeof layout; hovered: number | null; selected: number | null;
+  }>({ of: null, hovered: null, selected: null });
+  const hovered = cursor.of === layout ? cursor.hovered : null;
+  const selected = cursor.of === layout ? cursor.selected : null;
+  const setHovered = useCallback((next: number | null) => setCursor((was) => ({
+    of: layout, hovered: next, selected: was.of === layout ? was.selected : null,
+  })), [layout]);
+  const setSelected = useCallback((next: number | null) => setCursor((was) => ({
+    of: layout, hovered: was.of === layout ? was.hovered : null, selected: next,
+  })), [layout]);
 
   const blocks = useMemo(() => layout?.placed.map((p) => p.block) ?? [], [layout]);
   // The map's readout follows the pointer or the keyboard; with neither it

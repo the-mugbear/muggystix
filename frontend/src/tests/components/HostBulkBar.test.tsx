@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import HostBulkBar from '../../components/hosts/HostBulkBar';
@@ -11,6 +12,16 @@ vi.mock('../../services/api', () => ({
   getMatchingHostIds: vi.fn(),
   listHostTags: vi.fn(),
   listProjectMembers: vi.fn(),
+}));
+
+// "Propose tests" ends in the Start Agent Session dialog; here it only has to
+// show the task it was given.
+vi.mock('../../hooks/useMyAssistSessions', () => ({
+  useMyAssistSessions: () => ({ sessions: [], loading: false, failed: false, refresh: vi.fn() }),
+}));
+vi.mock('../../hooks/useCanStartAgentSession', () => ({ useCanStartAgentSession: () => true }));
+vi.mock('../../components/StartAssistDialog', () => ({
+  default: ({ instruction }: { instruction?: string }) => <div data-testid="agent-task">{instruction}</div>,
 }));
 
 import * as api from '../../services/api';
@@ -57,6 +68,36 @@ describe('HostBulkBar — selection scope', () => {
     expect(screen.getByText(/Every host matching the current filters, on every page/)).toBeInTheDocument();
   });
 
+  // "All matching" belongs to the page selection it was chosen over: another
+  // number of checked rows is the checked rows again — and stays so when the
+  // number comes back.
+  it('a changed page selection leaves "all matching", and does not return to it', async () => {
+    const user = userEvent.setup();
+    const bar = (ids: number[]) => (
+      <HostBulkBar
+        selectedIds={ids}
+        selectedIps={ids.map((id) => `10.0.0.${id}`)}
+        totalMatching={120}
+        bulkCap={SERVER_CAP}
+        queryContext={{}}
+        onClear={vi.fn()}
+        onApplied={vi.fn()}
+      />
+    );
+    const { rerender } = render(bar([1, 2]));
+    await user.click(screen.getByRole('button', { name: 'Select all 120 matching' }));
+    expect(screen.getByText('120 selected')).toBeInTheDocument();
+
+    rerender(bar([1, 2, 3]));
+    expect(screen.getByText('3 selected')).toBeInTheDocument();
+    expect(screen.getByText('checked rows only')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Select all 120 matching' })).toBeInTheDocument();
+
+    rerender(bar([1, 3]));
+    expect(screen.getByText('2 selected')).toBeInTheDocument();
+    expect(screen.getByText('checked rows only')).toBeInTheDocument();
+  });
+
   it('never calls a capped subset "all": the button, the count and the note name the cap up front', async () => {
     const user = userEvent.setup();
     const total = SERVER_CAP + 2000;
@@ -93,6 +134,69 @@ describe('HostBulkBar — selection scope', () => {
     expect(screen.getByText('2 selected')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /matching$/ })).not.toBeInTheDocument();
     expect(screen.getByText('checked rows only')).toBeInTheDocument();
+  });
+});
+
+// The hand-off to an agent names a FIXED list: the checked rows, or — over
+// "all matching" — the ids the server resolves under the list's filters as
+// the dialog opens.
+describe('HostBulkBar — Propose tests', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocked.listHostTags.mockResolvedValue([]);
+    mocked.listProjectMembers.mockResolvedValue([]);
+  });
+  const renderWith = (queryContext: Record<string, string>) => render(
+    <MemoryRouter>
+      <HostBulkBar
+        selectedIds={[1, 2]}
+        selectedIps={['10.0.0.1', '10.0.0.2']}
+        totalMatching={3}
+        bulkCap={SERVER_CAP}
+        queryContext={queryContext}
+        onClear={vi.fn()}
+        onApplied={vi.fn()}
+      />
+    </MemoryRouter>,
+  );
+
+  it('the checked rows are handed over as they are, with no request', async () => {
+    const user = userEvent.setup();
+    renderWith({ q: 'port:22' });
+    await user.click(screen.getByRole('button', { name: /Propose tests/ }));
+    expect(await screen.findByText(/^2 hosts/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Hand to your agent/ }));
+    expect((await screen.findByTestId('agent-task')).textContent).toContain('host ids): 1, 2.');
+    expect(mocked.getMatchingHostIds).not.toHaveBeenCalled();
+  });
+
+  it('"all matching" is resolved by the server under the list’s filters, at each opening', async () => {
+    const user = userEvent.setup();
+    mocked.getMatchingHostIds.mockResolvedValue({ ids: [7, 8, 9], total: 3, capped: false, cap: SERVER_CAP });
+    renderWith({ q: 'port:22' });
+    await user.click(screen.getByRole('button', { name: 'Select all 3 matching' }));
+    await user.click(screen.getByRole('button', { name: /Propose tests/ }));
+    expect(await screen.findByText(/^3 hosts/)).toBeInTheDocument();
+    expect(mocked.getMatchingHostIds).toHaveBeenCalledTimes(1);
+    expect(mocked.getMatchingHostIds.mock.calls[0][1]).toEqual({ q: 'port:22' });
+    await user.click(screen.getByRole('button', { name: /Hand to your agent/ }));
+    expect((await screen.findByTestId('agent-task')).textContent).toContain('host ids): 7, 8, 9.');
+  });
+
+  it('what the reader wrote stays for the next opening, and the list is asked for again', async () => {
+    const user = userEvent.setup();
+    mocked.getMatchingHostIds.mockResolvedValue({ ids: [7, 8, 9], total: 3, capped: false, cap: SERVER_CAP });
+    renderWith({});
+    await user.click(screen.getByRole('button', { name: 'Select all 3 matching' }));
+    await user.click(screen.getByRole('button', { name: /Propose tests/ }));
+    await screen.findByText(/^3 hosts/);
+    await user.type(screen.getByLabelText(/What to test/), 'SMB signing');
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByLabelText(/What to test/)).not.toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: /Propose tests/ }));
+    expect(await screen.findByLabelText(/What to test/)).toHaveValue('SMB signing');
+    await waitFor(() => expect(mocked.getMatchingHostIds).toHaveBeenCalledTimes(2));
   });
 });
 

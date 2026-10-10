@@ -39,7 +39,7 @@ const finding = {
 // for the finding page's pending proposals and the top bar's count.
 const { reread, ReadsOnScreen } = readsOnScreen({ listProposals: 'proposals', getProposalSummary: 'count' });
 const renderDrafting = () => render(
-  <><ReadsOnScreen /><FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} /></>,
+  <><ReadsOnScreen /><FindingReportTextCard finding={finding} canEdit /></>,
 );
 
 beforeEach(() => {
@@ -107,16 +107,16 @@ describe('FindingReportTextCard — drafting', () => {
   });
 
   it('lets an analyst who is not the author draft, but not edit', () => {
-    render(<FindingReportTextCard finding={finding} canEdit={false} canPropose onSaved={vi.fn()} />);
+    render(<FindingReportTextCard finding={finding} canEdit={false} canPropose />);
     expect(screen.getByRole('button', { name: /Draft empty sections/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument();
   });
 
   it('opens in the editor when asked, and offers nothing to someone who may not edit', () => {
-    const { unmount } = render(<FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} startEditing />);
+    const { unmount } = render(<FindingReportTextCard finding={finding} canEdit startEditing />);
     expect(screen.getByLabelText('Impact')).toBeInTheDocument();
     unmount();
-    render(<FindingReportTextCard finding={finding} canEdit={false} onSaved={vi.fn()} startEditing />);
+    render(<FindingReportTextCard finding={finding} canEdit={false} startEditing />);
     expect(screen.queryByLabelText('Impact')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Draft empty sections/ })).not.toBeInTheDocument();
   });
@@ -132,7 +132,7 @@ describe('FindingReportTextCard — v5.290.0 the written text is shown rendered,
   }) as never;
 
   it('renders **bold** as bold instead of printing the asterisks', () => {
-    render(<FindingReportTextCard finding={withText('Seen on **filesrv-01** only.')} canEdit onSaved={vi.fn()} />);
+    render(<FindingReportTextCard finding={withText('Seen on **filesrv-01** only.')} canEdit />);
     const dd = screen.getByTestId('report-text-description');
     expect(dd.querySelector('strong')?.textContent).toBe('filesrv-01');
     expect(dd.textContent).not.toContain('**');
@@ -142,8 +142,7 @@ describe('FindingReportTextCard — v5.290.0 the written text is shown rendered,
     const { container } = render(
       <FindingReportTextCard
         finding={withText('<img src=x onerror="alert(1)"> and ![shot](https://evil.example/x.png)')}
-        canEdit onSaved={vi.fn()}
-      />,
+        canEdit      />,
     );
     expect(container.querySelector('img')).toBeNull();
     const dd = screen.getByTestId('report-text-description');
@@ -153,7 +152,7 @@ describe('FindingReportTextCard — v5.290.0 the written text is shown rendered,
   });
 
   it('keeps the editor a plain textarea holding the Markdown as written', () => {
-    render(<FindingReportTextCard finding={withText('Seen on **filesrv-01**.')} canEdit onSaved={vi.fn()} startEditing />);
+    render(<FindingReportTextCard finding={withText('Seen on **filesrv-01**.')} canEdit startEditing />);
     expect(screen.getByLabelText('Description')).toHaveValue('Seen on **filesrv-01**.');
   });
 
@@ -161,7 +160,7 @@ describe('FindingReportTextCard — v5.290.0 the written text is shown rendered,
   const toolbar = () => within(screen.getByRole('toolbar', { name: 'Description formatting' }));
 
   it('inserts a table on lines of its own and previews it as the report prints it', () => {
-    render(<FindingReportTextCard finding={withText('Before.')} canEdit onSaved={vi.fn()} startEditing />);
+    render(<FindingReportTextCard finding={withText('Before.')} canEdit startEditing />);
     const box = screen.getByLabelText('Description') as HTMLTextAreaElement;
     box.setSelectionRange(7, 7);
     fireEvent.click(toolbar().getByRole('button', { name: 'Table' }));
@@ -176,7 +175,7 @@ describe('FindingReportTextCard — v5.290.0 the written text is shown rendered,
   });
 
   it('warns about a table straight after text, and adds the blank line', () => {
-    render(<FindingReportTextCard finding={withText('Totals:\n| A | B |\n| - | - |\n| 1 | 2 |')} canEdit onSaved={vi.fn()} startEditing />);
+    render(<FindingReportTextCard finding={withText('Totals:\n| A | B |\n| - | - |\n| 1 | 2 |')} canEdit startEditing />);
     expect(screen.getByText(/The table on line 2 follows a line of text/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add the blank line' }));
     expect(screen.getByLabelText('Description')).toHaveValue('Totals:\n\n| A | B |\n| - | - |\n| 1 | 2 |');
@@ -186,7 +185,7 @@ describe('FindingReportTextCard — v5.290.0 the written text is shown rendered,
   // Found in the Chrome pass: a padded small button squeezed each icon to
   // 4px wide, so the toolbar showed dots.
   it('draws the toolbar as icon buttons with no side padding', () => {
-    render(<FindingReportTextCard finding={withText('x')} canEdit onSaved={vi.fn()} startEditing />);
+    render(<FindingReportTextCard finding={withText('x')} canEdit startEditing />);
     const bold = toolbar().getByRole('button', { name: 'Bold' });
     expect(bold.className).toContain('size-7');
     expect(bold.className).not.toMatch(/\bpx-/);
@@ -195,7 +194,7 @@ describe('FindingReportTextCard — v5.290.0 the written text is shown rendered,
   });
 
   it('makes the selection bold with Ctrl+B', () => {
-    render(<FindingReportTextCard finding={withText('Seen on filesrv-01.')} canEdit onSaved={vi.fn()} startEditing />);
+    render(<FindingReportTextCard finding={withText('Seen on filesrv-01.')} canEdit startEditing />);
     const box = screen.getByLabelText('Description') as HTMLTextAreaElement;
     box.setSelectionRange(8, 18);
     fireEvent.keyDown(box, { key: 'b', ctrlKey: true });
@@ -207,12 +206,12 @@ describe('FindingReportTextCard — 5.317.0 work on this with your agent', () =>
   const agentButton = <button type="button">Work on this with your agent</button>;
 
   it('offers the agent task to anyone who may propose, and hides it while editing', () => {
-    render(<FindingReportTextCard finding={finding} canEdit={false} canPropose onSaved={vi.fn()} agentAction={agentButton} />);
+    render(<FindingReportTextCard finding={finding} canEdit={false} canPropose agentAction={agentButton} />);
     expect(screen.getByRole('button', { name: /Work on this with your agent/ })).toBeInTheDocument();
   });
 
   it('is not offered to someone who may not propose', () => {
-    render(<FindingReportTextCard finding={finding} canEdit={false} canPropose={false} onSaved={vi.fn()} agentAction={agentButton} />);
+    render(<FindingReportTextCard finding={finding} canEdit={false} canPropose={false} agentAction={agentButton} />);
     expect(screen.queryByRole('button', { name: /Work on this with your agent/ })).not.toBeInTheDocument();
   });
 
@@ -249,7 +248,7 @@ describe('FindingReportTextCard — a new finding is ready to write', () => {
   } as never;
 
   it('opens in the editor when nothing the report needs is written', () => {
-    render(<FindingReportTextCard finding={blank} canEdit onSaved={vi.fn()} />);
+    render(<FindingReportTextCard finding={blank} canEdit />);
     expect(screen.getByLabelText('Description')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save report text' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument();
@@ -258,14 +257,14 @@ describe('FindingReportTextCard — a new finding is ready to write', () => {
   });
 
   it('stays read-only for someone who may not edit it', () => {
-    render(<FindingReportTextCard finding={blank} canEdit={false} canPropose={false} onSaved={vi.fn()} />);
+    render(<FindingReportTextCard finding={blank} canEdit={false} canPropose={false} />);
     expect(screen.queryByLabelText('Description')).not.toBeInTheDocument();
     expect(screen.getAllByText('Not written yet').length).toBeGreaterThan(0);
     expect(screen.queryByRole('button', { name: /Write it/ })).not.toBeInTheDocument();
   });
 
   it('a partly written finding reads first, and an empty section opens the editor there', async () => {
-    render(<FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} />);
+    render(<FindingReportTextCard finding={finding} canEdit />);
     expect(screen.queryByLabelText('Impact')).not.toBeInTheDocument();
     expect(screen.getByText('TLS 1.0 is accepted.')).toBeInTheDocument();
     fireEvent.click(within(screen.getByTestId('report-text-impact')).getByRole('button', { name: /Not written yet\. Write it/ }));
@@ -274,7 +273,7 @@ describe('FindingReportTextCard — a new finding is ready to write', () => {
   });
 
   it('Cancel returns to reading', () => {
-    render(<FindingReportTextCard finding={blank} canEdit onSaved={vi.fn()} />);
+    render(<FindingReportTextCard finding={blank} canEdit />);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByLabelText('Description')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Edit$/ })).toBeInTheDocument();
@@ -300,7 +299,7 @@ describe('FindingReportTextCard — drafts waiting (5.334.0)', () => {
     },
   } as never;
   const renderCard = (props: Record<string, unknown>) => render(
-    <MemoryRouter><FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} canDecide {...props} /></MemoryRouter>,
+    <MemoryRouter><FindingReportTextCard finding={finding} canEdit canDecide {...props} /></MemoryRouter>,
   );
 
   it('a section with drafts shows them beside its current text, not “Not written yet”', () => {
@@ -368,12 +367,12 @@ describe('FindingReportTextCard — drafts waiting (5.334.0)', () => {
 
   it('the editor a new finding opens by itself closes when drafts arrive, so the drafts show', () => {
     const { rerender } = render(
-      <MemoryRouter><FindingReportTextCard finding={empty} canEdit onSaved={vi.fn()} canDecide /></MemoryRouter>,
+      <MemoryRouter><FindingReportTextCard finding={empty} canEdit canDecide /></MemoryRouter>,
     );
     expect(screen.getByLabelText('Description')).toBeInTheDocument();
     rerender(
       <MemoryRouter>
-        <FindingReportTextCard finding={empty} canEdit onSaved={vi.fn()} canDecide
+        <FindingReportTextCard finding={empty} canEdit canDecide
           drafts={new Map([['description', [draft(1, 'description', 'TLS 1.0 is accepted.')]]])} />
       </MemoryRouter>,
     );
@@ -420,7 +419,7 @@ describe('FindingReportTextCard — unsaved text is guarded', () => {
 
   it('asks before a reload or a tab close only while the editor holds a change', () => {
     const onDirtyChange = vi.fn();
-    render(<FindingReportTextCard finding={written} canEdit onSaved={vi.fn()} onDirtyChange={onDirtyChange} />);
+    render(<FindingReportTextCard finding={written} canEdit onDirtyChange={onDirtyChange} />);
     expect(unload()).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
     // Open but untouched: nothing to lose.
@@ -435,7 +434,7 @@ describe('FindingReportTextCard — unsaved text is guarded', () => {
   });
 
   it('Cancel with a change asks first, keeps the text on "no" and drops it on Discard', async () => {
-    render(<FindingReportTextCard finding={written} canEdit onSaved={vi.fn()} />);
+    render(<FindingReportTextCard finding={written} canEdit />);
     fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
     fireEvent.change(screen.getByLabelText('Impact'), { target: { value: 'Rewritten.' } });
 
@@ -455,7 +454,7 @@ describe('FindingReportTextCard — unsaved text is guarded', () => {
 
   it('a saved editor leaves nothing to guard', async () => {
     updateFinding.mockResolvedValue(written);
-    render(<FindingReportTextCard finding={written} canEdit onSaved={vi.fn()} />);
+    render(<FindingReportTextCard finding={written} canEdit />);
     fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
     fireEvent.change(screen.getByLabelText('Impact'), { target: { value: 'Rewritten.' } });
     fireEvent.click(screen.getByRole('button', { name: /Save report text/ }));

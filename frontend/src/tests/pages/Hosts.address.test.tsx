@@ -104,6 +104,16 @@ describe('Hosts — the list is its address (real router)', () => {
     expect(router.state.location.search).toBe('?has_critical_vulns=true&ports=22,443&sort_by=ip_address&page=3');
   });
 
+  // The page in the address has the one reading every list has
+  // (`hooks/useUrlPage` `pageFromParams`): digits only.
+  it.each([
+    ['page=2', 25], ['page=1', 0], ['page=abc', 0], ['page=-3', 0], ['page=2.0', 0], ['page=1e1', 0],
+  ])('reads ?%s as skip %i', async (query, skip) => {
+    open(`/hosts?has_critical_vulns=true&${query}`);
+    await findHostsTable();
+    expect(last()).toMatchObject({ has_critical_vulns: true, skip });
+  });
+
   it('a page change replaces the address, and the list read back from it is the one asked for', async () => {
     const user = userEvent.setup({ skipHover: true });
     const router = open('/hosts?has_critical_vulns=true');

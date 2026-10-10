@@ -888,6 +888,59 @@ describe('Operations page', () => {
       expect(tab(/^Pick up/)).toHaveTextContent('Pick up112');
     });
 
+    describe('the Pick up tab’s count while its list is open (C2)', () => {
+      const countCalls = () => mockedApi.getInvestigationQueue.mock.calls.filter((c) => c[2]?.limit === 1).length;
+
+      it('an address that names the tab runs the ranking once: the count is the list’s own queue_total', async () => {
+        withWork();
+        renderPage('/operations?tab=pickup&tier=2');
+        expect(await screen.findByText('1–1 of 30')).toBeInTheDocument();
+        // The whole queue's size, from the tier's answer — and the lead's too.
+        await waitFor(() => expect(tab(/^Pick up/)).toHaveTextContent('Pick up112'));
+        expect(screen.getByRole('link', { name: '112 untouched hosts have a reason to look' })).toBeInTheDocument();
+        expect(mockedApi.getInvestigationQueue).toHaveBeenCalledTimes(1);
+        expect(countCalls()).toBe(0);
+      });
+
+      it('leaving the tab does not ask for the count the list just gave; Refresh does', async () => {
+        withWork();
+        renderPage('/operations?tab=pickup');
+        await waitFor(() => expect(tab(/^Pick up/)).toHaveTextContent('Pick up112'));
+        openTab(/^Hosts/);
+        await screen.findByRole('link', { name: '10.9.0.1' });
+        expect(tab(/^Pick up/)).toHaveTextContent('Pick up112');
+        expect(countCalls()).toBe(0);
+        mockedApi.getInvestigationQueue.mockResolvedValue({ ...busyQueue, queue_total: 118 });
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh Operations' }));
+        await waitFor(() => expect(tab(/^Pick up/)).toHaveTextContent('Pick up118'));
+        expect(countCalls()).toBe(1);
+      });
+
+      it('while the list loads the count is "…"; a list that fails leaves it "—", never 0', async () => {
+        withWork();
+        let fail: (e: unknown) => void = () => undefined;
+        mockedApi.getInvestigationQueue.mockReturnValue(new Promise((_resolve, reject) => { fail = reject; }));
+        renderPage('/operations?tab=pickup');
+        await waitFor(() => expect(tab(/^Findings/)).toHaveTextContent('Findings24'));
+        expect(tab(/^Pick up/)).toHaveTextContent('Pick up…');
+        await act(async () => { fail(new Error('HTTP 503')); });
+        await waitFor(() => expect(tab(/^Pick up/)).toHaveTextContent('Pick up—'));
+        expect(tab(/^Pick up/)).toHaveAccessibleName('Pick up: could not be checked');
+        expect(countCalls()).toBe(0);
+        // The count the list could not give is asked for once the list is left.
+        mockedApi.getInvestigationQueue.mockResolvedValue(busyQueue);
+        openTab(/^Hosts/);
+        await waitFor(() => expect(tab(/^Pick up/)).toHaveTextContent('Pick up112'));
+        expect(countCalls()).toBe(1);
+      });
+
+      it('a tab opened by default keeps the count’s own request (it left with the counts)', async () => {
+        renderPage();
+        await screen.findByText(/^Nothing here — every host has been touched by someone/);
+        expect(countCalls()).toBe(1);
+      });
+    });
+
     it('the Pick up footer never offers the 251 untouched hosts as this list of 112', async () => {
       withWork();
       renderPage('/operations?tab=pickup');

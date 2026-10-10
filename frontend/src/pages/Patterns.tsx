@@ -20,7 +20,7 @@
  * renders a safe fallback.
  */
 import React, { useCallback, useMemo } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Copy, Download, FileText, Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 
@@ -29,12 +29,11 @@ import {
   conditionHostsHref,
   familyCellHostsHref,
   subnetHostsHref,
-  downloadSystemicReport,
   type SystemicInsightsResponse,
   type SystemicCondition,
   type SystemicFamily,
 } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { useSystemicBriefing } from '../hooks/useSystemicBriefing';
 import { queryErrorText } from '../lib/query';
 import { copyToClipboard, downloadTextFile } from '../utils/clipboard';
 import { useToast } from '../contexts/ToastContext';
@@ -187,11 +186,8 @@ const Patterns: React.FC = () => {
       JSON.stringify(data, null, 2), 'application/json');
   }, [data]);
 
-  const briefing = useMutation({
-    mutationFn: () => downloadSystemicReport(projectId),
-    onError: (e) => toast.error(formatApiError(e, 'Could not create the briefing.')),
-  });
-  const exporting = briefing.isPending;
+  const briefing = useSystemicBriefing();
+  const exporting = briefing.pending;
 
   const estate = data?.estate;
   const families = useMemo(() => data?.family_summary ?? [], [data]);
@@ -220,7 +216,7 @@ const Patterns: React.FC = () => {
               server): not offered to a project viewer.  Copy and JSON are of
               what this page already shows. */}
           {canExport && (
-            <Button size="sm" variant="outline" onClick={() => briefing.mutate()} disabled={loading || exporting}>
+            <Button size="sm" variant="outline" onClick={() => briefing.create()} disabled={loading || exporting}>
               {exporting ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <FileText className="size-3.5" aria-hidden />}
               Create briefing
             </Button>

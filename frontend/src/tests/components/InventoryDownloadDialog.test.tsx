@@ -106,6 +106,32 @@ describe('InventoryDownloadDialog', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  // An opening starts clean of the last one's refusal — and still follows the
+  // JSON that was started from this dialog.
+  it('a refusal is not carried to the next opening; the JSON started here is still followed', async () => {
+    const queued = job(7, 'queued');
+    mocked.enqueueInventoryJson.mockResolvedValue(queued);
+    mocked.listReportJobs.mockResolvedValue([queued]);
+    mocked.downloadInventoryCsv.mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 503'), { response: { status: 503, data: {} } }),
+    );
+    const dialog = (open: boolean) => (
+      <InventoryDownloadDialog open={open} onClose={() => {}} filters={{}} totalHosts={10} />
+    );
+    const { rerender } = render(dialog(true));
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare JSON' }));
+    await screen.findByTestId('tracked-job-running');
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }));
+    expect(await screen.findByText(/server is having trouble/i)).toBeInTheDocument();
+
+    rerender(dialog(false));
+    await waitFor(() => expect(screen.queryByText('Download inventory')).toBeNull());
+    rerender(dialog(true));
+    expect(await screen.findByTestId('tracked-job-running')).toHaveTextContent(/queued/);
+    expect(screen.queryByText(/server is having trouble/i)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Download CSV' })).toBeEnabled();
+  });
+
   it('reopening shows a JSON prepared earlier and downloads it without closing', async () => {
     mocked.listReportJobs.mockResolvedValue([job(9, 'completed')]);
     mocked.downloadReportJob.mockResolvedValue(undefined);

@@ -6,7 +6,7 @@
  * across several queries before adding.
  */
 import React, { useMemo, useState } from 'react';
-import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, RefreshCw, Search, X } from 'lucide-react';
 
 import { Finding, Host, addFindingHosts, getHosts } from '../services/api';
@@ -14,6 +14,8 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useOpeningKey } from '../hooks/useOpeningKey';
 import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
+import { useToast } from '../contexts/ToastContext';
+import { putFinding } from './findings/findingCache';
 import { Button } from './ui/button';
 import { Checkbox } from './ui/checkbox';
 import {
@@ -32,9 +34,9 @@ interface Picked {
 export interface AddFindingHostsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The finding as the page shows it; the add's answer replaces it in the
+   *  page's cache (`getFinding`), so the page needs no callback. */
   finding: Finding;
-  /** Called with the updated finding and the ids that were requested. */
-  onAdded: (updated: Finding, requested: number[]) => void;
 }
 
 // A fresh dialog each time it opens: its search, selection and any refusal
@@ -43,8 +45,10 @@ const AddFindingHostsDialog: React.FC<AddFindingHostsDialogProps> = (props) => (
   <AddFindingHostsBody key={useOpeningKey(props.open)} {...props} />
 );
 
-const AddFindingHostsBody: React.FC<AddFindingHostsDialogProps> = ({ open, onOpenChange, finding, onAdded }) => {
+const AddFindingHostsBody: React.FC<AddFindingHostsDialogProps> = ({ open, onOpenChange, finding }) => {
   const projectId = useProjectId();
+  const queryClient = useQueryClient();
+  const toast = useToast();
   const [query, setQuery] = useState('');
   const debounced = useDebouncedValue(query.trim(), 250);
   const [picked, setPicked] = useState<Map<number, Picked>>(new Map());
@@ -64,7 +68,15 @@ const AddFindingHostsBody: React.FC<AddFindingHostsDialogProps> = ({ open, onOpe
   const add = useMutation({
     mutationFn: (ids: number[]) => addFindingHosts(projectId, finding.id, ids),
     onSuccess: (updated, ids) => {
-      onAdded(updated, ids);
+      // Say how many were new — the server skips any already on the finding
+      // (added by someone else since the dialog opened, say).
+      const added = new Set(updated.hosts.map((h) => h.host_id).filter((id) => !attached.has(id)));
+      const skipped = ids.filter((id) => !added.has(id)).length;
+      // The route answers with the finding: it goes onto the page's cached
+      // record, and the history the add appended to is read again.
+      putFinding(queryClient, projectId, updated, { history: true });
+      const addedText = `Added ${added.size} host${added.size === 1 ? '' : 's'}`;
+      toast.success(skipped ? `${addedText} · ${skipped} already affected` : `${addedText}.`);
       onOpenChange(false);
     },
   });

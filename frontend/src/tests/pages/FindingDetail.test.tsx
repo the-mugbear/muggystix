@@ -81,7 +81,8 @@ beforeEach(() => {
   mocked.getFindingHistory.mockResolvedValue([]);
   mocked.getFindingNotes.mockResolvedValue([]);
   mocked.listProjectMembers.mockResolvedValue([]);
-  mocked.setFindingStatus.mockResolvedValue(undefined);
+  // The status route answers with the finding (its status as asked for).
+  mocked.setFindingStatus.mockImplementation(async (_p: number, _id: number, status: string) => finding({ status }));
 });
 
 describe('FindingDetail — C2: metadata edits keep the comment draft', () => {
@@ -93,18 +94,54 @@ describe('FindingDetail — C2: metadata edits keep the comment draft', () => {
     const composer = screen.getByLabelText('New comment');
     fireEvent.change(composer, { target: { value: 'repro: openssl s_client …' } });
 
-    // After the change, the refresh returns the new status.
-    mocked.getFinding.mockResolvedValue(finding({ status: 'confirmed' }));
+    // The route answers with the finding as it now stands (plan B16: the page
+    // shows that answer; it used to read the whole finding a second time).
+    mocked.setFindingStatus.mockResolvedValue(finding({ status: 'confirmed', title: 'Weak TLS on portal' }));
+    mocked.getFindingHistory.mockResolvedValue([
+      { id: 1, from_status: 'open', to_status: 'confirmed', changed_by_id: 1, changed_by_name: 'tester', summary: null, created_at: '2026-08-02T00:00:00Z' },
+    ]);
     await user.click(screen.getByLabelText('Finding status'));
     await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
 
     await waitFor(() => expect(mocked.setFindingStatus).toHaveBeenCalledWith(1, 7, 'confirmed', undefined));
-    // Refresh happened (finding + history re-fetched) …
-    await waitFor(() => expect(mocked.getFinding).toHaveBeenCalledTimes(2));
+    // The page shows the new status and its history trail …
+    await waitFor(() => expect(screen.getByLabelText('Finding status')).toHaveTextContent('Confirmed'));
+    expect(await screen.findByText(/tester ·/)).toBeInTheDocument();
+    expect(mocked.getFindingHistory).toHaveBeenCalledTimes(2);
+    // … from the answer: the finding (every endpoint of it) is not read again.
+    expect(mocked.getFinding).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByLabelText('Saving status')).not.toBeInTheDocument());
+    expect(toastMock.warning).not.toHaveBeenCalled();
     // … and the draft the analyst typed is still in the still-mounted composer.
     expect(screen.getByLabelText('New comment')).toHaveValue('repro: openssl s_client …');
     // The whole-page skeleton never replaced the content.
     expect(screen.getByText('Weak TLS on portal')).toBeInTheDocument();
+  });
+
+  it('a severity change shows the answer at once, without reading the finding or its history again', async () => {
+    const user = userEvent.setup();
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    mocked.updateFinding.mockResolvedValue(finding({ severity: 'low' }));
+    await user.click(screen.getByLabelText('Finding severity'));
+    await user.click(await screen.findByRole('option', { name: 'Low' }));
+    await waitFor(() => expect(mocked.updateFinding).toHaveBeenCalledWith(1, 7, { severity: 'low' }));
+    await waitFor(() => expect(screen.getByLabelText('Finding severity')).toHaveTextContent('Low'));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Severity reclassified to Low.'));
+    expect(mocked.getFinding).toHaveBeenCalledTimes(1);
+    expect(mocked.getFindingHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('a status change whose history cannot be read again says so and keeps the new status', async () => {
+    const user = userEvent.setup();
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    mocked.setFindingStatus.mockResolvedValue(finding({ status: 'confirmed' }));
+    mocked.getFindingHistory.mockRejectedValue(new Error('down'));
+    await user.click(screen.getByLabelText('Finding status'));
+    await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
+    await waitFor(() => expect(toastMock.warning).toHaveBeenCalledTimes(1));
+    expect(screen.getByLabelText('Finding status')).toHaveTextContent('Confirmed');
   });
 });
 
@@ -532,19 +569,23 @@ describe('FindingDetail — each proposal is reviewed where it applies (5.334.0)
     expect(screen.getByText('Weak TLS on portal')).toBeInTheDocument();
   });
 
-  // The two refreshes share one lane: the status change's slower re-read used
-  // to land after the accept's and put the page back to the older finding.
-  it('a slow refresh never lands over a newer one', async () => {
+  // A status change and an accept overlap.  The status change's slower
+  // refresh used to land after the accept's and put the page back to the
+  // older finding; since plan B16 what lands late is the status route's own
+  // ANSWER (the finding as it stood when the status committed), and the same
+  // must hold: it is never laid over a record that was written meanwhile.
+  it('a slow answer never lands over a newer finding', async () => {
     const user = userEvent.setup();
     mocked.acceptProposal.mockResolvedValue({ ...proposal({ id: 1, kind: 'finding_text', field: 'recommendation' }), status: 'accepted' });
     renderAt('/findings/7');
     const drafts = await screen.findByTestId('drafts-recommendation');
 
     let landOlder!: (f: unknown) => void;
-    mocked.getFinding.mockImplementationOnce(() => new Promise((resolve) => { landOlder = resolve; }));
+    mocked.setFindingStatus.mockImplementationOnce(() => new Promise((resolve) => { landOlder = resolve; }));
     await user.click(screen.getByLabelText('Finding status'));
     await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
-    await waitFor(() => expect(mocked.getFinding).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mocked.setFindingStatus).toHaveBeenCalledTimes(1));
+    expect(screen.getByLabelText('Saving status')).toBeInTheDocument();
 
     mocked.getFinding.mockResolvedValue(finding({ title: 'After the accept', status: 'confirmed' }));
     fireEvent.click(within(drafts).getByRole('button', { name: /^Accept$/ }));
@@ -553,8 +594,40 @@ describe('FindingDetail — each proposal is reviewed where it applies (5.334.0)
     await act(async () => { landOlder(finding({ title: 'Before the accept', status: 'confirmed' })); });
     expect(screen.getByText('After the accept')).toBeInTheDocument();
     expect(screen.queryByText('Before the accept')).not.toBeInTheDocument();
-    // The status control is released by the read that superseded its own.
-    expect(screen.queryByLabelText('Saving status')).not.toBeInTheDocument();
+    // Neither is known to be the newer, so the finding was read once more …
+    await waitFor(() => expect(mocked.getFinding).toHaveBeenCalledTimes(3));
+    // … and that read releases the status control.
+    await waitFor(() => expect(screen.queryByLabelText('Saving status')).not.toBeInTheDocument());
+    expect(screen.getByText('After the accept')).toBeInTheDocument();
+    expect(toastMock.warning).not.toHaveBeenCalled();
+  });
+
+  // The other way round: the answer lands while an older read of the finding
+  // is still on its way.  That read must not then put the old status back.
+  it('an answer that lands during a read of the finding is not overwritten by that read', async () => {
+    const user = userEvent.setup();
+    mocked.acceptProposal.mockResolvedValue({ ...proposal({ id: 1, kind: 'finding_text', field: 'recommendation' }), status: 'accepted' });
+    renderAt('/findings/7');
+    const drafts = await screen.findByTestId('drafts-recommendation');
+
+    let answer!: (f: unknown) => void;
+    mocked.setFindingStatus.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    await user.click(screen.getByLabelText('Finding status'));
+    await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
+    await waitFor(() => expect(mocked.setFindingStatus).toHaveBeenCalledTimes(1));
+
+    // The accept's re-read was taken before the status committed, and is slow.
+    let landOlderRead!: (f: unknown) => void;
+    mocked.getFinding.mockImplementationOnce(() => new Promise((resolve) => { landOlderRead = resolve; }));
+    fireEvent.click(within(drafts).getByRole('button', { name: /^Accept$/ }));
+    await waitFor(() => expect(mocked.getFinding).toHaveBeenCalledTimes(2));
+
+    mocked.getFinding.mockResolvedValue(finding({ title: 'Both changes', status: 'confirmed' }));
+    await act(async () => { answer(finding({ status: 'confirmed' })); });
+    expect(await screen.findByText('Both changes')).toBeInTheDocument();
+    await act(async () => { landOlderRead(finding({ title: 'Read before the status', status: 'open' })); });
+    expect(screen.queryByText('Read before the status')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Finding status')).toHaveTextContent('Confirmed');
   });
 });
 
@@ -711,6 +784,32 @@ describe('FindingDetail — report text (v5.260.0)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save report text' }));
     await waitFor(() => expect(mocked.updateFinding).toHaveBeenCalledWith(1, 7, { impact: 'Traffic can be read.' }));
     expect(await screen.findByText('Traffic can be read.')).toBeInTheDocument();
+  });
+
+  // Plan B3 — the card puts the save's answer on the page's finding itself
+  // (it used to hand it to the page).  What the reader sees is the same: the
+  // saved text, from the answer and not from a second read of the finding;
+  // and where each image is placed is read again, since saved text may place
+  // or release one.
+  it('a save shows the server’s answer without reading the finding again, and reads its images again', async () => {
+    mocked.getFinding.mockResolvedValue(finding({ can_modify: true, report_text: reportText() }));
+    mocked.updateFinding.mockResolvedValue(
+      finding({ can_modify: true, report_text: reportText({ impact: 'As the server stored it.' }) }),
+    );
+    renderAt('/findings/7');
+    await screen.findByText('TLS 1.0 is enabled.');
+    await waitFor(() => expect(mocked.getFindingImages).toHaveBeenCalledTimes(1));
+    const history = mocked.getFindingHistory.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
+    fireEvent.change(screen.getByLabelText('Impact'), { target: { value: 'what was typed' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save report text' }));
+    expect(await screen.findByText('As the server stored it.')).toBeInTheDocument();
+    expect(screen.getByText('recommendation')).toBeInTheDocument(); // "Still empty" follows the answer
+    await waitFor(() => expect(mocked.getFindingImages).toHaveBeenCalledTimes(2));
+    expect(mocked.getFinding).toHaveBeenCalledTimes(1);
+    // Report text is not a status change: the history is not read again.
+    expect(mocked.getFindingHistory.mock.calls.length).toBe(history);
+    expect(toastMock.success).toHaveBeenCalledWith('Report text saved.');
   });
 
   const image57 = {
@@ -923,6 +1022,31 @@ describe('FindingDetail — the jump bar', () => {
     await waitFor(async () => expect(await entries()).toEqual([
       'Affected hosts3', 'Report text2 empty', 'Comments & evidence2', 'Disposition history',
     ]));
+  });
+
+  // Plan B3 — the count is read where it is shown (the thread used to report
+  // it to the page from an effect).  Unknown is no count, never 0; a posted
+  // comment moves it.
+  it('the comment count follows the thread: none while unknown, then the thread’s own number', async () => {
+    let answer!: (notes: unknown[]) => void;
+    mocked.getFindingNotes.mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
+    const note = (id: number) => ({
+      id, parent_id: null, body: `note ${id}`, author_id: 1, author_name: 'tester',
+      created_at: `2026-10-01T1${id}:00:00Z`, attachments: [],
+    });
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    await waitFor(async () => expect(await entries()).toContain('Comments & evidence'));
+    await act(async () => { answer([note(1)]); });
+    await waitFor(async () => expect(await entries()).toContain('Comments & evidence1'));
+
+    mocked.createFindingNote.mockResolvedValue(note(2));
+    mocked.getFindingNotes.mockResolvedValue([note(1), note(2)]);
+    fireEvent.change(screen.getByLabelText('New comment'), { target: { value: 'note 2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Comment' }));
+    await waitFor(async () => expect(await entries()).toContain('Comments & evidence2'));
+    // One reader's worth of requests: the first read and the one after the post.
+    expect(mocked.getFindingNotes).toHaveBeenCalledTimes(2);
   });
 
   it('offers Proposals and Test evidence when the page shows them', async () => {

@@ -365,8 +365,9 @@ export const getScansSummary = async (
   return response.data;
 };
 
-export const getScan = async (projectId: number, scanId: number, signal?: AbortSignal) => {
-  const response = await api.get(`${projectPath(projectId)}/scans/${scanId}`, { signal });
+/** One scan: the list row's fields, plus `scan_info` (the scanned port lists). */
+export const getScan = async (projectId: number, scanId: number, signal?: AbortSignal): Promise<Scan> => {
+  const response = await api.get<Scan>(`${projectPath(projectId)}/scans/${scanId}`, { signal });
   return response.data;
 };
 
