@@ -968,6 +968,12 @@ def enforce_agent_operator_access(
         )
     request.state.key_operator_is_admin = operator_is_admin
     if operator_is_admin:
+        # A global admin's authority does not come from a membership, but the
+        # membership they DO hold is still said (``agent_identity``): left
+        # unset it read ``project_role: null`` whether or not they were a
+        # member, and an agent took null for "not a member" (acceptance
+        # preflight 2026-10-10, feedback #38).  Already loaded with the key.
+        request.state.key_operator_role = membership_role
         return agent
 
     if membership_role is None:

@@ -220,8 +220,12 @@ def test_identity_advertises_the_same_answer_the_write_gate_gives(
 def test_identity_reports_a_global_admin_as_unbounded_by_project_role(
     client, db_session, test_project
 ):
-    """A global admin has no membership row, so ``project_role`` is None — and
-    reporting None must not be read as "cannot write". The flag carries it."""
+    """A global admin's authority is the flag, never the membership — and the
+    membership they do hold is still said.  It read ``project_role: null``
+    whether or not they were a member, which an agent took for "not a member"
+    (acceptance preflight 2026-10-10, feedback #38)."""
+    from app.db.models_project import ProjectMembership
+
     user = _member(db_session, test_project, ProjectRole.VIEWER.value)
     user.role = UserRole.ADMIN
     db_session.commit()
@@ -229,6 +233,15 @@ def test_identity_reports_a_global_admin_as_unbounded_by_project_role(
 
     body = client.get("/api/v1/agent/identity", headers={"X-API-Key": raw}).json()
     assert body["operator"]["is_global_admin"] is True
+    assert body["operator"]["project_role"] == "viewer"     # what they hold, not what they may do
+    assert body["can_write_project_data"] is True
+
+    # With no membership at all the role is None, and nothing else changes.
+    db_session.query(ProjectMembership).filter_by(project_id=test_project.id, user_id=user.id).delete()
+    db_session.commit()
+    body = client.get("/api/v1/agent/identity", headers={"X-API-Key": raw}).json()
+    assert body["operator"]["is_global_admin"] is True
+    assert body["operator"]["project_role"] is None
     assert body["can_write_project_data"] is True
 
 

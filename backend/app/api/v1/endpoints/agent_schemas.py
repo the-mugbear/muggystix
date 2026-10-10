@@ -225,9 +225,10 @@ class ScopeBrief(BaseModel):
     domains: List[ScopeDomainBrief] = Field(default_factory=list)
     domain_total: int = 0
     domains_truncated: bool = False
-    # Distinct names in the project's inventory covered by ANY domain entry
-    # (deduplicated across nested entries).  Project-wide — a project has one
-    # conceptual scope — so every ScopeBrief in a project carries the same value.
+    # Distinct names in the project's inventory covered by THIS scope's domain
+    # entries (deduplicated across nested entries).  It was the project-wide
+    # figure repeated on every row until 2.483.1 — two scopes covering 12 and
+    # 1 names each read 13.  A name two scopes cover counts in each.
     names_in_scope_total: int = 0
 
     model_config = ConfigDict(from_attributes=True)
@@ -281,8 +282,11 @@ class AgentIdentityOperator(BaseModel):
     # global admin (who bypasses project roles entirely).  Naming the operator
     # without naming their authority left the agent exactly where the removed
     # capability list left it: able to learn what it may write only by writing
-    # and reading the 403.  ``project_role`` is None for a global admin, who has
-    # no membership row to report.
+    # and reading the 403.  ``project_role`` is the operator's MEMBERSHIP in
+    # this project and nothing else: a global admin who is also a member reads
+    # their membership's role, one who is not reads None — and either way
+    # ``is_global_admin`` is what their authority comes from.  None alone
+    # never means "may not act here".
     project_role: Optional[str] = None
     is_global_admin: bool = False
 

@@ -2192,7 +2192,8 @@ def list_assist_scopes(
 
     Each scope also carries its declared ``domains`` (same 100
     cap, ``domain_total`` / ``domains_truncated``) and
-    ``names_in_scope_total`` (distinct inventory names any entry covers).
+    ``names_in_scope_total`` (distinct inventory names THIS scope's entries
+    cover — a name two scopes cover counts in each).
     Name scope is independent of subnet scope: an in-scope name does not
     make the address it resolves to subnet-in-scope, and an in-scope
     subnet does not make names in scope.
@@ -2235,8 +2236,9 @@ def list_assist_scopes(
         bucket = domains_by_scope.setdefault(scope_id, [])
         if len(bucket) < _SUBNET_CAP:
             bucket.append(ScopeDomainBrief(domain=domain, include_subdomains=bool(include_sub)))
-    names_in_scope_total = (
-        dns_name_service.scope_domains_covered_names_total(db, request.state.agent_project_id) if domain_rows else 0
+    names_by_scope = (
+        dns_name_service.scope_covered_names_by_scope(db, request.state.agent_project_id, scope_ids)
+        if domain_rows else {}
     )
     return [
         ScopeBrief(
@@ -2249,7 +2251,7 @@ def list_assist_scopes(
             domains=domains_by_scope.get(s.id, []),
             domain_total=domain_total_by_scope.get(s.id, 0),
             domains_truncated=domain_total_by_scope.get(s.id, 0) > _SUBNET_CAP,
-            names_in_scope_total=names_in_scope_total,
+            names_in_scope_total=names_by_scope.get(s.id, 0),
         )
         for s in scopes
     ]

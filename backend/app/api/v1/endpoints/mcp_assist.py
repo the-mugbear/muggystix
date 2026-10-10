@@ -495,7 +495,29 @@ def _check_value(name: str, arg: str, prop: Dict[str, Any], value: Any) -> None:
     subclass of ``int`` in Python, so it is excluded from integer/number
     explicitly.  ``enum``, ``minimum`` / ``maximum`` and ``minLength`` are
     checked because the registry declares them; nothing else is inferred.
+
+    The check goes all the way down (acceptance run 2026-10-10, feedback #40):
+    an object's ``properties`` / ``required`` / closed ``additionalProperties``
+    and a list's ``items`` / ``minItems`` / ``maxItems`` are held to the same
+    rules, with the place named (``tests[0].priority``).  Stopping at the top
+    level let ``{"tests": [{"priority": "bogus"}]}`` through to the endpoint,
+    whose 422 came back as a tool error instead of the -32602 the advertised
+    schema promises.
     """
+    for key in ("anyOf", "oneOf"):
+        variants = prop.get(key)
+        if variants:
+            shared = {k: v for k, v in prop.items() if k not in ("anyOf", "oneOf")}
+            first: Optional[_InvalidParams] = None
+            for variant in variants:
+                try:
+                    _check_value(name, arg, {**shared, **variant}, value)
+                    return
+                except _InvalidParams as exc:
+                    first = first or exc
+            raise first  # type: ignore[misc]  # ``variants`` is not empty
+    for part in prop.get("allOf", ()):
+        _check_value(name, arg, part, value)
     declared = prop.get("type")
     if declared in _JSON_TYPES:
         ok = isinstance(value, _JSON_TYPES[declared])
@@ -525,6 +547,37 @@ def _check_value(name: str, arg: str, prop: Dict[str, Any], value: Any) -> None:
         raise _InvalidParams(
             f"Invalid params for {name}: argument {arg!r} must not be empty"
         )
+    if isinstance(value, dict) and isinstance(prop.get("properties"), dict):
+        inner = prop["properties"]
+        if prop.get("additionalProperties") is False:
+            unknown = sorted(set(value) - set(inner))
+            if unknown:
+                raise _InvalidParams(
+                    f"Invalid params for {name}: argument {arg!r} has unknown field(s) "
+                    f"{', '.join(unknown)}. Accepted: {', '.join(sorted(inner)) or 'none'}"
+                )
+        missing = sorted(k for k in prop.get("required", ()) if value.get(k) is None)
+        if missing:
+            raise _InvalidParams(
+                f"Invalid params for {name}: argument {arg!r} is missing required field(s) "
+                f"{', '.join(missing)}"
+            )
+        for key, item in value.items():
+            if item is not None and key in inner:
+                _check_value(name, f"{arg}.{key}", inner[key], item)
+    if isinstance(value, list):
+        if "minItems" in prop and len(value) < prop["minItems"]:
+            raise _InvalidParams(
+                f"Invalid params for {name}: argument {arg!r} needs at least {prop['minItems']} item(s)"
+            )
+        if "maxItems" in prop and len(value) > prop["maxItems"]:
+            raise _InvalidParams(
+                f"Invalid params for {name}: argument {arg!r} takes at most {prop['maxItems']} item(s)"
+            )
+        if isinstance(prop.get("items"), dict):
+            for index, item in enumerate(value):
+                if item is not None:
+                    _check_value(name, f"{arg}[{index}]", prop["items"], item)
 
 
 def _validate_arguments(name: str, spec: Dict[str, Any], arguments: Dict[str, Any]) -> None:

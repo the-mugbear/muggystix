@@ -107,7 +107,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     "agent_identity": {
         "description": (
             "What your API key is: its session and project, the operator you act "
-            "for and their project role, whether you may write project data "
+            "for and their project role (`project_role` is their membership "
+            "here, null when they hold none; `is_global_admin` means they may "
+            "do everything regardless), whether you may write project data "
             "(`can_write_project_data`), and when the key expires "
             "(`key_expires_at`, `renewable_until`). Call this first."
         ),
@@ -812,8 +814,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "(each capped at 100 with *_total / *_truncated). Name scope is "
             "independent of subnet scope — a name in scope does not put the "
             "address it resolves to in scope, and vice versa. "
-            "names_in_scope_total is the deduplicated count of inventory names "
-            "the domain entries cover."
+            "Each scope's names_in_scope_total is the deduplicated count of "
+            "inventory names that scope's own domain entries cover."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scopes",

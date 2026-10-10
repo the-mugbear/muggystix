@@ -634,9 +634,9 @@ def list_scopes(
             domains_by_scope.setdefault(scope_id, []).append(
                 ScopeDomainBrief(domain=domain, include_subdomains=bool(include_sub))
             )
-    names_in_scope_total = (
-        dns_name_service.scope_domains_covered_names_total(db, agent.project_id)
-        if domains_by_scope else 0
+    names_by_scope = (
+        dns_name_service.scope_covered_names_by_scope(db, agent.project_id, [s.id for s in scopes])
+        if domains_by_scope else {}
     )
     return [
         ScopeBrief(
@@ -649,7 +649,7 @@ def list_scopes(
             subnet_total=len(s.subnets),
             domains=domains_by_scope.get(s.id, []),
             domain_total=len(domains_by_scope.get(s.id, [])),
-            names_in_scope_total=names_in_scope_total,
+            names_in_scope_total=names_by_scope.get(s.id, 0),
         )
         for s in scopes
     ]

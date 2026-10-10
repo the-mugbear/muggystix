@@ -1506,6 +1506,37 @@ def test_agent_scopes_carry_every_domain_too(client, test_project, db_session):
     assert scope["names_in_scope_total"] == assist["names_in_scope_total"] == 3
 
 
+def test_each_scope_row_counts_the_names_its_own_entries_cover(client, test_project, db_session):
+    """Acceptance run 2026-10-10 (feedback #41): the project-wide count was
+    put on every scope row, so two scopes covering 3 names and 1 name both
+    read 4.  A row says its own; a name two scopes cover counts in each, and
+    a nested pair of entries counts a name once."""
+    from app.db import models
+    from app.services import dns_name_service as svc
+
+    first, _ = _seed_names(db_session, test_project)          # covers portal, a.lab, ghost.lab
+    second = models.Scope(project_id=test_project.id, name="second")
+    empty = models.Scope(project_id=test_project.id, name="third, no domains")
+    db_session.add_all([second, empty])
+    db_session.flush()
+    svc.upsert_scope_domains(
+        db_session, second,
+        # other.example.com is its own; a.lab is the first scope's too; the
+        # wildcard and its exact descendant are one name.
+        [("other.example.com", False, None), ("*.lab.example.com", False, None), ("a.lab.example.com", False, None)],
+    )
+    db_session.commit()
+    headers = _auth_headers(_start_session(client, test_project.id)["api_key"])
+
+    for path in ("/api/v1/agent/assist/scopes", "/api/v1/agent/scopes"):
+        rows = {row["id"]: row for row in client.get(path, headers=headers).json()}
+        assert rows[first.id]["names_in_scope_total"] == 3, path
+        assert rows[second.id]["names_in_scope_total"] == 3, path     # other, a.lab, ghost.lab
+        assert rows[empty.id]["names_in_scope_total"] == 0, path
+    # The project's own figure is the union, and is not a row's number.
+    assert svc.scope_domains_covered_names_total(db_session, test_project.id) == 4
+
+
 def test_assist_context_reports_domain_and_name_counts(client, test_project, db_session):
     _seed_names(db_session, test_project)
     headers = _auth_headers(_start_session(client, test_project.id)["api_key"])

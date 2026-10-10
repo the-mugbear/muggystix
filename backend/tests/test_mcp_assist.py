@@ -543,6 +543,52 @@ def test_arguments_are_checked_against_the_advertised_schema(client):
     assert result["isError"] is True and "host_id, ip" in result["content"][0]["text"]
 
 
+def test_arguments_are_checked_all_the_way_down(client):
+    """Acceptance run 2026-10-10 (feedback #40): the check stopped at the top
+    level, so a test object with an unknown field, a priority outside the
+    enum, or only a host id went to the endpoint and came back as a tool
+    error holding its 422 — not the -32602 the advertised schema promises.
+    Each refusal names the place."""
+    from app.api.v1.endpoints.mcp_tools import TOOLS
+
+    items = TOOLS["host_tests_propose"]["input_schema"]["properties"]["tests"]["items"]
+    # What this test relies on the tool advertising.
+    assert items["additionalProperties"] is False and items.get("required")
+    assert "enum" in items["properties"]["priority"]
+    good = {"host_id": 1, "tool": "curl", "description": "Anonymous FTP", "rationale": "ftp is open",
+            "request_key": "acceptance-f1"}
+    assert set(items["required"]) <= set(good)
+
+    def refused(test: dict) -> str:
+        resp = _rpc(client, {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "host_tests_propose", "arguments": {"tests": [good, test]}},
+        })
+        body = resp.json()
+        assert body.get("error", {}).get("code") == -32602, body
+        return body["error"]["message"]
+
+    assert "unknown" in refused({**good, "unknown": True}) and "tests[1]" in refused({**good, "unknown": True})
+    assert "tests[1].priority" in refused({**good, "priority": "bogus"})
+    assert "missing required" in refused({"host_id": 1})
+    assert "tests[1].host_id" in refused({**good, "host_id": "seven"})
+
+    # A list where an object belongs, and an object where the list belongs.
+    resp = _rpc(client, {
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "host_tests_propose", "arguments": {"tests": good}},
+    })
+    assert resp.json()["error"]["code"] == -32602
+
+    # A well-formed batch is not refused by the check: without a key it gets
+    # as far as authentication.
+    resp = _rpc(client, {
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "host_tests_propose", "arguments": {"tests": [good]}},
+    })
+    assert resp.status_code == 401 or "error" not in resp.json() or resp.json()["error"]["code"] != -32602
+
+
 # ---------------------------------------------------------------------------
 # Client-facing metadata
 # ---------------------------------------------------------------------------
