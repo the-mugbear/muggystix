@@ -169,6 +169,7 @@ const sections: GuideSection[] = [
           <li><Mono>has:changed_since_review OR conclusion:needs_evidence</Mono> — the same question for the whole team: any reviewed host that is not done.</li>
           <li><Mono>has:untouched AND has:critical</Mono> — hosts with a critical scanner observation that nobody has taken into review, been assigned, noted, tested or put in a finding: Operations' "Pick up" tab starts from these.</li>
           <li><Mono>vulnscan:uncredentialed</Mono> — hosts assessed by a vulnerability scan that did not authenticate (<Mono>credentialed</Mono> and <Mono>unstated</Mono> are the other two values).</li>
+          <li><Mono>gap:vuln_assessment</Mono> — hosts no vulnerability scan has covered. <Mono>gap:</Mono> takes each kind of evidence the Evidence page counts (<Mono>port_discovery</Mono>, <Mono>service_detection</Mono>, <Mono>os_detection</Mono>, <Mono>web_tls</Mono>, <Mono>auth_smb_ad</Mono>, <Mono>validation</Mono>): the hosts it applies to that nothing imported so far provides it for. A Hosts row names its gaps under "Not assessed".</li>
           <li><Mono>cve:CVE-2021-44228 OR vuln:"log4j"</Mono> — Log4Shell exposure by CVE or title.</li>
           <li><Mono>port:445 AND os:Windows AND label:"PCI"</Mono> — SMB-exposed Windows hosts in PCI subnets.</li>
           <li><Mono>service:http AND has:web AND NOT tag:reviewed</Mono> — un-reviewed web services.</li>

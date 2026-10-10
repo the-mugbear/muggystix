@@ -27,3 +27,39 @@ def test_scope_subnets_carry_host_counts(client, db_session, test_project):
         counts = {s["cidr"]: s["host_count"] for s in body["subnets"]}
         expected = {"10.5.0.0/24": 2, "10.6.0.0/24": 0}
         assert counts == ({"10.6.0.0/24": 0} if qs else expected), qs
+
+
+def test_each_subnet_says_how_many_of_its_hosts_no_vulnerability_scan_covered(client, db_session, test_project):
+    """Plan A6: the count beside a subnet's hosts is the Evidence page's rule,
+    and it opens exactly its hosts — the row's link is the subnet filter plus
+    ``gap:vuln_assessment``."""
+    scope = models.Scope(project_id=test_project.id, name="ignored")
+    db_session.add(scope)
+    db_session.commit()
+    busy = models.Subnet(scope_id=scope.id, cidr="10.5.0.0/24")
+    done = models.Subnet(scope_id=scope.id, cidr="10.6.0.0/24")
+    nessus = models.Scan(project_id=test_project.id, filename="v.nessus", tool_name="Nessus")
+    db_session.add_all([busy, done, nessus])
+    db_session.commit()
+
+    def host(ip, subnet, scanned):
+        h = models.Host(project_id=test_project.id, ip_address=ip, state="up")
+        db_session.add(h)
+        db_session.flush()
+        db_session.add(models.HostSubnetMapping(host_id=h.id, subnet_id=subnet.id))
+        if scanned:
+            db_session.add(models.HostScanHistory(host_id=h.id, scan_id=nessus.id))
+
+    for ip, scanned in (("10.5.0.1", True), ("10.5.0.2", False), ("10.5.0.3", False)):
+        host(ip, busy, scanned)
+    host("10.6.0.1", done, True)
+    db_session.commit()
+
+    body = client.get(f"/api/v1/projects/{test_project.id}/scopes/default").json()
+    assert {s["cidr"]: (s["host_count"], s["not_vuln_assessed_count"]) for s in body["subnets"]} == {
+        "10.5.0.0/24": (3, 2), "10.6.0.0/24": (1, 0),
+    }
+    listed = client.get(f"/api/v1/projects/{test_project.id}/hosts/",
+                        params={"subnets": "10.5.0.0/24", "q": "gap:vuln_assessment"}).json()
+    assert listed["total"] == 2
+    assert {h["ip_address"] for h in listed["items"]} == {"10.5.0.2", "10.5.0.3"}

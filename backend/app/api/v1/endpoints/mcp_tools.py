@@ -442,7 +442,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "`credentialed` {credentialed, not_credentialed, "
             "credentials_not_stated}: of the assessed hosts, how many a scanner "
             "logged in to (list them with assist_list_hosts "
-            "q=vulnscan:credentialed | uncredentialed | unstated). The three scope "
+            "q=vulnscan:credentialed | uncredentialed | unstated). A domain's gap "
+            "as a host list is assist_list_hosts q=gap:<domain key>. The three scope "
             "states are not here: assist_count_hosts q=scope:subnet / scope:name / "
             "scope:none."
         ),

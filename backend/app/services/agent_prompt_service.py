@@ -30,23 +30,17 @@ logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.22.0"
+PROMPT_VERSION = "4.23.0"
 
 # What PROMPT_VERSION changed (the current version only).  Read by people
 # working on BlueStick; it is not sent to agents.
 PROMPT_CHANGES = (
-    "The session prompt is less than half its length and says each rule once: "
-    "who the agent acts for, the read-back, the five safety rules, the "
-    "connection, key expiry, what a session does, where the guide is, feedback "
-    "and the end of the session. The per-scanner 'Guidance:' lines are gone — a "
-    "configured scanner integration is listed with its address and credentials "
-    "only, and nothing is printed when none is configured. The MCP opening "
-    "instructions now carry the same rules, rendered from the same source "
-    "(they had drifted and lacked four of them). The 401 handling is corrected: "
-    "`recoverable` is under `detail`, a revoked key carries no such field, and "
-    "the renewal address is given in full. The feedback block is the trigger "
-    "and a minimal body; the full shape is the guide's. The guide is "
-    "reorganised by task."
+    "The host query has a new word, `gap:<kind of evidence>` (port_discovery, "
+    "service_detection, os_detection, vuln_assessment, web_tls, auth_smb_ad, "
+    "validation): the hosts that kind of evidence applies to and that nothing "
+    "imported so far provides it for — an Evidence gap as a host list. The "
+    "guide's query reference and the coverage tool's description name it. "
+    "Nothing else an agent is told changed."
 )
 
 

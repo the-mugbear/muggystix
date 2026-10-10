@@ -37,6 +37,8 @@ export interface Subnet {
   labels?: SubnetLabelInfo[];
   // Hosts mapped to this subnet — sent by the scope-detail endpoints only.
   host_count?: number | null;
+  // Of those, the hosts no vulnerability scan has covered (Evidence's rule).
+  not_vuln_assessed_count?: number | null;
 }
 
 export interface SubnetFileUploadResponse {
@@ -225,7 +227,7 @@ export const getScopeCoverage = async (projectId: number, limit: number = 25, si
 };
 
 export const getScopeHostList = async (
-  projectId: number, scopeId: number, format: 'txt' | 'csv' | 'json' = 'txt', signal?: AbortSignal,
+  projectId: number, scopeId: number, format: 'txt' | 'csv' | 'json' | 'web' = 'txt', signal?: AbortSignal,
 ): Promise<string> => {
   const response = await api.get(`${projectPath(projectId)}/export/scope/${scopeId}?format_type=${format}`, { responseType: 'text', signal });
   return response.data;

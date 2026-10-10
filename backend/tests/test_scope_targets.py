@@ -169,6 +169,26 @@ def test_web_targets_download_yields_urls(client, db_session, test_project, scop
     assert set(resp.text.split()) == {"http://10.99.1.4/", "https://10.99.1.4/"}
 
 
+def test_a_person_downloads_the_same_web_targets_an_agent_does(client, db_session, test_project, scope):
+    """Plan A6: the URL list existed only on the agents' door.  The people's
+    scope export has it as ``format_type=web`` — the same builder, so the two
+    files are the same bytes — and another project's scope is still a 404."""
+    _seed_hosts(db_session, test_project, scope, ["10.99.1.4", "10.99.1.20"], ports=(22, 80, 443))
+    agents = _get(client, _key(client, test_project), scope.id, "web-targets.txt")
+    people = client.get(f"/api/v1/projects/{test_project.id}/export/scope/{scope.id}?format_type=web")
+    assert people.status_code == 200, people.text
+    assert people.text == agents.text and people.text.count("\n") == 4
+    assert "web-targets.txt" in people.headers["content-disposition"]
+
+    from app.db.models_project import Project
+    other = Project(name="other-web", slug="other-web", description="x")
+    db_session.add(other)
+    db_session.commit()
+    theirs = _scope(db_session, other, "theirs", "10.99.2.0/24")
+    assert client.get(
+        f"/api/v1/projects/{test_project.id}/export/scope/{theirs.id}?format_type=web").status_code == 404
+
+
 def _brief(port, service, tunnel=None, method=None, ip="192.168.7.245"):
     from app.services.scope_targets_service import ScopeHostBrief, ScopePortBrief
     return ScopeHostBrief(

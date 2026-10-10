@@ -223,6 +223,9 @@ export interface Host {
   weakness_labels?: Record<string, string>;
   /** v2.423.0 — the misconfiguration checks recorded on the host; list rows. */
   check_ids?: string[];
+  /** The kinds of evidence that apply to the host and nothing imported so far
+   *  provides (list rows): Evidence's gaps, per host. `key` is a `gap:` value. */
+  evidence_gaps?: Array<{ key: string; label: string }>;
   primary_subnet?: string | null;
   primary_site?: string | null;
   // v2.344.0 — the three-state coverage on the list row (the detail card's

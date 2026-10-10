@@ -36,6 +36,9 @@ const EXPORT_FORMATS = [
   { value: 'txt', label: 'IP List', description: 'One IP address per line' },
   { value: 'csv', label: 'CSV', description: 'IP, hostname, and state columns' },
   { value: 'json', label: 'JSON', description: 'Structured host data' },
+  // The web targets an agent gets as web-targets.txt, from the same builder:
+  // a port identified as HTTP, https where it is TLS-wrapped or named so.
+  { value: 'web', label: 'Web URLs', description: 'One http/https URL per line, from identified web ports' },
 ] as const;
 
 type ExportFormat = (typeof EXPORT_FORMATS)[number]['value'];
@@ -80,7 +83,7 @@ export default function ScopeExport({ open, onClose, scopeId, scopeName }: Scope
 
   const downloadOutput = () => {
     const safeName = scopeName.replace(/\s+/g, '_').replace(/[/\\]/g, '-').slice(0, 40);
-    downloadTextFile(`${safeName}_hosts.${outputFormat}`, output);
+    downloadTextFile(outputFormat === 'web' ? `${safeName}_web-targets.txt` : `${safeName}_hosts.${outputFormat}`, output);
   };
 
   const entryCount = output
@@ -148,7 +151,7 @@ export default function ScopeExport({ open, onClose, scopeId, scopeName }: Scope
           <div className="space-y-xs">
             <div className="flex items-center justify-between">
               <h3 className="text-subheading">
-                {entryCount} host{entryCount === 1 ? '' : 's'} · {outputFormatLabel}
+                {entryCount} {outputFormat === 'web' ? 'URL' : 'host'}{entryCount === 1 ? '' : 's'} · {outputFormatLabel}
               </h3>
               <div className="flex items-center gap-xxs">
                 <Tooltip>

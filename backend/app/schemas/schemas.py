@@ -575,6 +575,10 @@ class Host(HostBase):
     weakness_labels: Dict[str, str] = {}
     # The misconfiguration checks recorded on the host (list rows only).
     check_ids: List[str] = []
+    # The kinds of evidence that apply to the host and that nothing imported
+    # so far provides — the Evidence page's gaps, per host (list rows only):
+    # `[{key, label}]`, `key` being a value of the query's `gap:`.
+    evidence_gaps: List[Dict[str, str]] = []
     # Most-specific (longest-prefix) subnet CIDR + its site that this host
     # falls in, or null when no subnet contains it.  Surfaced in the Host
     # column so an operator sees where the host lives without opening it.
@@ -976,6 +980,9 @@ class Subnet(SubnetBase):
     # Hosts mapped to this subnet. Filled by the scope-detail endpoints only;
     # None elsewhere (create/update responses) means "not computed", not 0.
     host_count: Optional[int] = None
+    # Of those, the hosts no vulnerability scan has covered (the Evidence
+    # page's rule; `gap:vuln_assessment` in the Hosts query). Same endpoints.
+    not_vuln_assessed_count: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -413,8 +413,23 @@ def _serialize_scope_with_subnets(
         .group_by(HostSubnetMapping.subnet_id)
         .all()
     ) if page_ids else {}
+    # ...and how many of those no vulnerability scan has covered: the Evidence
+    # page's rule (`gap:vuln_assessment` in the Hosts query, which the row's
+    # link adds to its subnet filter).  One more grouped query per page.
+    from app.db.models import Host as _Host
+    from app.services.evidence_service import evidence_gap_condition
+    unassessed_counts = dict(
+        db.query(HostSubnetMapping.subnet_id, func.count(HostSubnetMapping.id))
+        .join(_Host, _Host.id == HostSubnetMapping.host_id)
+        .filter(HostSubnetMapping.subnet_id.in_(page_ids), evidence_gap_condition("vuln_assessment"))
+        .group_by(HostSubnetMapping.subnet_id)
+        .all()
+    ) if page_ids else {}
     subnets = [
-        SubnetSchema.model_validate(s).model_copy(update={"host_count": host_counts.get(s.id, 0)})
+        SubnetSchema.model_validate(s).model_copy(update={
+            "host_count": host_counts.get(s.id, 0),
+            "not_vuln_assessed_count": unassessed_counts.get(s.id, 0),
+        })
         for s in subnet_rows
     ]
 

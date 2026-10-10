@@ -678,6 +678,11 @@ def get_hosts_v2(
         )
         project_has_scope = project_has_any_scope(db, project.id)
 
+    # The kinds of evidence each listed host still lacks — the Evidence page's
+    # gaps, host by host (`gap:<kind>` in the query lists them); one statement.
+    from app.services.evidence_service import DOMAIN_LABELS, host_evidence_gaps
+    evidence_gap_map = host_evidence_gaps(db, host_ids)
+
     serialized_hosts = []
     for host in hosts:
         # Review #5 — pass the windowed discoveries + aggregate note_count so
@@ -707,6 +712,9 @@ def get_hosts_v2(
         serialized["issue_counts"] = issue_count_map.get(host.id)
         serialized["weakness_flags"] = weakness_flag_map.get(host.id, [])
         serialized["check_ids"] = check_id_map.get(host.id, [])
+        serialized["evidence_gaps"] = [
+            {"key": key, "label": DOMAIN_LABELS[key]} for key in evidence_gap_map.get(host.id, [])
+        ]
         _loc = host_location_map.get(host.id)
         serialized["primary_subnet"] = _loc["subnet"] if _loc else None
         serialized["primary_site"] = _loc["site"] if _loc else None

@@ -53,8 +53,8 @@ def export_scope_hosts(
     scope_id: int,
     format_type: str = Query(
         default="txt",
-        pattern="^(txt|csv|json)$",
-        description="Output format: txt (one IP per line), csv, or json",
+        pattern="^(txt|csv|json|web)$",
+        description="Output format: txt (one IP per line), csv, json, or web (one http/https URL per line)",
     ),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
@@ -62,13 +62,27 @@ def export_scope_hosts(
     """Export hosts belonging to a scope.
 
     Default format is ``txt`` — one IP per line, suitable for feeding
-    into other tools.
+    into other tools.  ``web`` is the scope's web targets, one URL per line:
+    the agents' ``web-targets.txt``, from the same builder.
     """
     from app.db import models as m
 
     scope = db.query(m.Scope).filter(m.Scope.id == scope_id, m.Scope.project_id == project.id).first()
     if not scope:
         raise HTTPException(status_code=404, detail=f"Scope {scope_id} not found")
+
+    if format_type == "web":
+        from app.db.session import disable_statement_timeout
+        from app.services.scope_targets_service import iter_scope_web_targets
+
+        # The builder reads the scope's hosts in batches; a large scope is
+        # more than one statement's worth of the API limit.
+        disable_statement_timeout(db)
+        web_name = scope.name.replace(" ", "_").replace("/", "-")[:40]
+        return PlainTextResponse(
+            content="".join(iter_scope_web_targets(db, scope.id)),
+            headers={"Content-Disposition": f"attachment; filename={web_name}_web-targets.txt"},
+        )
 
     rows = db.execute(sql_text("""
         SELECT DISTINCT h.ip_address, h.hostname, h.state

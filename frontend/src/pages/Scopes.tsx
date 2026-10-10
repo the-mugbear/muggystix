@@ -610,7 +610,11 @@ const Scopes: React.FC = () => {
               <InfoTip
                 label="How scope coverage is decided"
                 text="Coverage is by address: a host is in scope when a declared subnet contains it. An in-scope name never makes the address it resolves to in scope."
-              />
+              />{' '}
+              {/* What has been collected on these hosts is Evidence's page. */}
+              <Link to="/posture/evidence" className="rounded text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                What has been collected
+              </Link>
             </PostureLead>
             <div className="grid gap-y-md divide-border sm:grid-cols-3 lg:grid-cols-5 lg:divide-x">
               <PostureMeasure
@@ -835,10 +839,10 @@ const Scopes: React.FC = () => {
               {/* UX review 2026-09-24 — the fixed columns left Description,
                   the one operators type into, 82px (its header ran into
                   "Site") and the table 44px wider than the page, Actions cut
-                  off. Now: 296px of fixed columns plus 43% for subnet / site /
+                  off. Now: 312px of fixed columns plus 43% for subnet / site /
                   labels, so Description keeps ~225px beside the sidebar and
-                  ~170px at the 820px floor, and the table fits. */}
-              <Table style={{ tableLayout: 'fixed' }} className="min-w-[820px]">
+                  ~165px at the 840px floor, and the table fits. */}
+              <Table style={{ tableLayout: 'fixed' }} className="min-w-[840px]">
                 <TableHeader>
                   <TableRow>
                     {canWrite && (
@@ -855,7 +859,8 @@ const Scopes: React.FC = () => {
                       </TableHead>
                     )}
                     <TableHead className="w-[15%]">Subnet / IP</TableHead>
-                    <TableHead className="w-16 text-right">Hosts</TableHead>
+                    {/* w-20, not w-16: "12 unscanned" sits under the count. */}
+                    <TableHead className="w-20 text-right">Hosts</TableHead>
                     <TableHead>Description</TableHead>
                     {/* A typical site name ("DMZ / Internet-facing") wraps
                         to two lines at most. */}
@@ -925,6 +930,18 @@ const Scopes: React.FC = () => {
                           </TableCell>
                           <TableCell className="text-right tabular-nums text-metadata">
                             {subnet.host_count != null ? subnet.host_count.toLocaleString() : '—'}
+                            {/* How far collection has got in this subnet: the
+                                hosts no vulnerability scan has covered, opening
+                                exactly them (the subnet filter + Evidence's gap). */}
+                            {(subnet.not_vuln_assessed_count ?? 0) > 0 && (
+                              <Link
+                                to={`/hosts?subnets=${encodeURIComponent(subnet.cidr)}&q=${encodeURIComponent('gap:vuln_assessment')}`}
+                                title={`${subnet.not_vuln_assessed_count!.toLocaleString()} of ${(subnet.host_count ?? 0).toLocaleString()} hosts in ${subnet.cidr} have no vulnerability scan — show them`}
+                                className="block text-caption text-primary hover:underline focus:outline-none focus-visible:underline"
+                              >
+                                {subnet.not_vuln_assessed_count!.toLocaleString()} unscanned
+                              </Link>
+                            )}
                           </TableCell>
                           {isEditing ? (
                             // v5.289.0 — the Description column is the table's

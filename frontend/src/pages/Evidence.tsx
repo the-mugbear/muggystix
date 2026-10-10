@@ -44,6 +44,7 @@ import PostureSection from '../components/posture/PostureSection';
 import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
 import PostureEmpty from '../components/posture/PostureEmpty';
 import { cn } from '../utils/cn';
+import { buildHostsUrl } from '../utils/drilldownLinks';
 
 const GAP_PREVIEW = 12;
 /** Matrix columns shown before "the rest are on Segments" (largest first). */
@@ -174,6 +175,17 @@ const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ sel
           {gaps.total > gaps.items.length && (
             <p className="mt-xxs text-caption text-muted-foreground">
               Showing the first {gaps.items.length} of {gaps.total.toLocaleString()} — Copy and Propose tests act on these {gaps.items.length}.
+            </p>
+          )}
+          {/* The whole-project gap is a Hosts query, so it opens there with every
+              filter and action of that page.  A cell is a segment of it, and
+              no query names a segment exactly: no link then. */}
+          {!selection.segment && gaps.total > 0 && (
+            <p className="mt-xxs text-caption">
+              <Link to={buildHostsUrl({ q: `gap:${selection.domain}` })}
+                className="rounded text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                Open all {gaps.total.toLocaleString()} in Hosts
+              </Link>
             </p>
           )}
           <div className="mt-xs flex flex-wrap gap-xs">

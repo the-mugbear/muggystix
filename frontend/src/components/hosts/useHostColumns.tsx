@@ -829,6 +829,17 @@ export function useHostColumns({
               ) : openCount > 0 ? (
                 <span className="text-caption text-muted-foreground">services not probed</span>
               ) : null}
+              {/* What is still to collect on this host: the Evidence page's
+                  gaps, host by host (the query's `gap:` lists each).  A state
+                  of the assessment, never an age. */}
+              {(host.evidence_gaps?.length ?? 0) > 0 && (
+                <span
+                  className="line-clamp-2 break-words text-caption text-muted-foreground"
+                  title={`Applies to this host and nothing imported so far provides it:\n${host.evidence_gaps!.map((g) => `${g.label} (gap:${g.key})`).join('\n')}`}
+                >
+                  Not assessed: {host.evidence_gaps!.map((g) => g.label).join(' · ')}
+                </span>
+              )}
             </div>
           );
         },

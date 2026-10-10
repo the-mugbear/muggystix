@@ -179,6 +179,16 @@ def vuln_scan_credentialed_predicate(values: Sequence[str]) -> ColumnElement:
     return or_(*conditions) if conditions else false()
 
 
+def evidence_gap_predicate(domains: Sequence[str]) -> ColumnElement:
+    """Host that one of the evidence ``domains`` applies to and nothing has
+    assessed for it — the hosts of that Evidence gap.  The rule is
+    ``evidence_service.evidence_gap_condition``; never a second copy here."""
+    from app.services.evidence_service import evidence_gap_condition
+
+    conditions = [evidence_gap_condition(d) for d in domains]
+    return or_(*conditions) if conditions else false()
+
+
 # ---------------------------------------------------------------------------
 # Port-dimension predicates
 # ---------------------------------------------------------------------------

@@ -97,9 +97,15 @@ describe('Evidence — domain × segment matrix', () => {
     // One host listed of 18: the buttons say what they act on.
     expect(within(matrix).getByText(/Showing the first 1 of 18 — Copy and Propose tests act on these 1/)).toBeInTheDocument();
 
+    // A cell is a segment of the gap: no Hosts query names it exactly, so no link.
+    expect(within(matrix).queryByRole('link', { name: /Open all .* in Hosts/ })).toBeNull();
+
     // The whole-project figure opens the domain without a segment.
     fireEvent.click(within(matrix).getByRole('button', { name: /Web \/ TLS, whole project: 9 of 30/ }));
     await waitFor(() => expect(gapsMock).toHaveBeenLastCalledWith(1, 'web_tls', expect.objectContaining({ segment: undefined })));
+    // ...and that list IS a Hosts query (plan A8).
+    expect(await within(matrix).findByRole('link', { name: 'Open all 18 in Hosts' }))
+      .toHaveAttribute('href', '/hosts?q=gap%3Aweb_tls');
   });
 
   // From the first real screenshot: "Vulnerability assessment · Outside scoped

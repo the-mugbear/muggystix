@@ -604,6 +604,16 @@ def _b_vulnscan(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     return P.vuln_scan_credentialed_predicate(values)
 
 
+def _b_gap(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    from app.services.evidence_service import DOMAIN_LABELS
+
+    wanted = [v.strip().lower() for v in values]
+    unknown = [v for v in wanted if v not in DOMAIN_LABELS]
+    if unknown:
+        raise DSLError(f"Unknown gap value '{unknown[0]}' — use one of: " + ", ".join(DOMAIN_LABELS))
+    return P.evidence_gap_predicate(wanted)
+
+
 def _b_conclusion(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     wanted = [v.lower() for v in values]
     unknown = [v for v in wanted if v not in REVIEW_CONCLUSIONS]
@@ -758,6 +768,22 @@ _FIELD_SPECS: List[FieldSpec] = [
               },
               description="Whether the vulnerability scan of an assessed host authenticated: "
                           "credentialed, uncredentialed or unstated."),
+    # Plan A8 — the Evidence page's "N of M eligible hosts not assessed" opens
+    # exactly these hosts, and a host row names the same gaps.
+    FieldSpec("gap", _b_gap, value_source="enum",
+              enum_values=["port_discovery", "service_detection", "os_detection", "vuln_assessment",
+                           "web_tls", "auth_smb_ad", "validation"],
+              enum_descriptions={
+                  "port_discovery": "No port recorded — listed, but no port scan reached it.",
+                  "service_detection": "Has ports, none with an identified service.",
+                  "os_detection": "Has ports, no operating system identified.",
+                  "vuln_assessment": "No vulnerability scanner covered it and it carries no scanner observation.",
+                  "web_tls": "Exposes a web port, no web interface fingerprinted.",
+                  "auth_smb_ad": "Exposes SMB / LDAP / Kerberos, no SMB-signing or NetExec observation.",
+                  "validation": "Carries a finding, no executed test result.",
+              },
+              description="Evidence gap: a kind of evidence that applies to the host and that nothing "
+                          "imported so far provides (the Evidence page's gaps). Not a judgment of age."),
     FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES),
               description="Review state — in_review / reviewed / none / in_review_any (any teammate's), "
                           "mine (you have it In Review), or revisit (a finished review of yours that "

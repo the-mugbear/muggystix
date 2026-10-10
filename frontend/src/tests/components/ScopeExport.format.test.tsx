@@ -69,6 +69,19 @@ describe('ScopeExport — the output keeps the format that produced it', () => {
     expect(screen.getByRole('heading', { name: '2 hosts · CSV' })).toBeInTheDocument();
   });
 
+  // Plan A6: the URL list an agent gets as web-targets.txt, for a person.
+  it('web URLs are counted as URLs and saved as a web target file', async () => {
+    const urls = 'https://10.0.0.1/\nhttp://10.0.0.2:8080/\n';
+    api.getScopeHostList.mockResolvedValue(urls);
+    show();
+    pick('web');
+    fireEvent.click(screen.getByRole('button', { name: 'Generate list' }));
+    expect(await screen.findByRole('heading', { name: '2 URLs · Web URLs' })).toBeInTheDocument();
+    expect(api.getScopeHostList).toHaveBeenCalledWith(1, 3, 'web');
+    fireEvent.click(screen.getByRole('button', { name: 'Download scope export as file' }));
+    expect(download.downloadTextFile).toHaveBeenCalledWith('DMZ_east_web-targets.txt', urls);
+  });
+
   it('generating again takes the format picked then', async () => {
     api.getScopeHostList.mockResolvedValueOnce('10.0.0.1\n10.0.0.2\n10.0.0.3\n');
     show();

@@ -23,13 +23,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from sqlalchemy import and_, case, exists, func, or_, select
+from sqlalchemy import and_, case, exists, func, or_, select, true
 from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models_vulnerability import Vulnerability
 from app.db.models_findings import Finding, FindingHost
 from app.db.models_confidence import NetexecResult
+from app.db.models_proposals import EvidenceRecord
 from app.services.host_test_queries import tested_host_ids
 from app.schemas.metric import ratio_metric
 from app.services import scope_coverage
@@ -316,6 +317,90 @@ def assessed_host_ids(
         "validation": validated,
     }
     return {key: builders[key]() for key in (domains if domains is not None else builders)}
+
+
+# --- The same rules as host predicates (plan A8, 2026-10-10) -----------------
+#
+# ``eligible_host_ids`` / ``assessed_host_ids`` answer for a whole project at
+# once (the Evidence page).  A LIST of hosts needs the rule per host: the
+# Hosts query's ``gap:<domain>`` and the gaps a host row names.  These are
+# those rules as correlated predicates on ``hosts``;
+# ``tests/test_evidence_gap_predicates.py`` pins each one to the set above,
+# domain by domain, so there is still one definition of "eligible" and of
+# "assessed" (the pattern ``vuln_assessed_condition`` set).
+
+def _host_has(host_id_column, *conditions):
+    return exists().where(host_id_column == models.Host.id, *conditions).correlate(models.Host)
+
+
+def domain_eligible_condition(domain: str):
+    """``hosts`` predicate: the domain applies to the host."""
+    if domain in ("port_discovery", "vuln_assessment"):
+        return true()
+    if domain in ("service_detection", "os_detection"):
+        return _host_has(models.Port.host_id)
+    if domain == "web_tls":
+        return _host_has(models.Port.host_id, or_(
+            models.Port.port_number.in_(_WEB_PORTS), models.Port.service_name.ilike("http%"),
+        ))
+    if domain == "auth_smb_ad":
+        return _host_has(models.Port.host_id, models.Port.port_number.in_(_AUTH_PORTS))
+    if domain == "validation":
+        return _host_has(
+            FindingHost.host_id, FindingHost.finding_id == Finding.id,
+            Finding.project_id == models.Host.project_id,
+        )
+    raise ValueError(f"unknown evidence domain: {domain!r}")
+
+
+def domain_assessed_condition(domain: str):
+    """``hosts`` predicate: the host carries evidence in the domain.  Never
+    NULL, so ``~`` of it is the plain negation."""
+    if domain == "port_discovery":
+        return _host_has(models.Port.host_id)
+    if domain == "service_detection":
+        return _host_has(models.Port.host_id, models.Port.service_name.isnot(None))
+    if domain == "os_detection":
+        return func.coalesce(models.Host.os_name, "") != ""
+    if domain == "vuln_assessment":
+        return vuln_assessed_condition()
+    if domain == "web_tls":
+        return _host_has(models.WebInterface.host_id, models.WebInterface.project_id == models.Host.project_id)
+    if domain == "auth_smb_ad":
+        return or_(models.Host.smb_signing.isnot(None), _host_has(NetexecResult.host_id))
+    if domain == "validation":
+        return (
+            tested_host_ids(models.Host.project_id)
+            .where(EvidenceRecord.host_id == models.Host.id)
+            .correlate(models.Host)
+            .exists()
+        )
+    raise ValueError(f"unknown evidence domain: {domain!r}")
+
+
+def evidence_gap_condition(domain: str):
+    """``hosts`` predicate: the domain applies to the host and nothing has
+    assessed it — a host of the Evidence page's gap for ``domain``."""
+    return and_(domain_eligible_condition(domain), ~domain_assessed_condition(domain))
+
+
+def host_evidence_gaps(db: Session, host_ids: Iterable[int]) -> Dict[int, List[str]]:
+    """Per host, the domains (keys, in display order) it is a gap of — one
+    statement for a page of hosts.  A host with no gap is absent."""
+    ids = list(host_ids)
+    if not ids:
+        return {}
+    keys = [d["key"] for d in EVIDENCE_DOMAINS]
+    rows = db.execute(
+        select(models.Host.id, *[evidence_gap_condition(k).label(k) for k in keys])
+        .where(models.Host.id.in_(ids))
+    ).all()
+    out: Dict[int, List[str]] = {}
+    for row in rows:
+        gaps = [k for k, is_gap in zip(keys, row[1:]) if is_gap]
+        if gaps:
+            out[row[0]] = gaps
+    return out
 
 
 # What closes each domain's gap: a collection step (run a tool against the
