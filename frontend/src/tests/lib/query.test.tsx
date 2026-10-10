@@ -415,20 +415,23 @@ describe('useFailureStreak — failures in a row since the last answer', () => {
     fail = true;
     for (const expected of [1, 2, 3]) {
       await act(async () => { await result.current.refetch(); });
-      // (The component hears of it a tick after the read settles.)
-      await waitFor(() => expect(result.current.streak).toBe(expected));
+      // Asserted straight after the awaited read, with no `waitFor`: this is
+      // ALSO the test of setupTests' notify manager (5.366.0).  With the
+      // library's default — notify from a timer, outside `act` — the
+      // component had not heard yet and this read 0 ("expected +0 to be 1").
+      expect(result.current.streak).toBe(expected);
       // The last answer stays: it is what "may be out of date".
       expect(result.current.data).toBe('3 unread');
     }
 
     fail = false;
     await act(async () => { await result.current.refetch(); });
-    await waitFor(() => expect(result.current.streak).toBe(0));
+    expect(result.current.streak).toBe(0);
 
     // One blip after an answer is one, not four.
     fail = true;
     await act(async () => { await result.current.refetch(); });
-    await waitFor(() => expect(result.current.streak).toBe(1));
+    expect(result.current.streak).toBe(1);
     expect(read).toHaveBeenCalledTimes(6);
   });
 });

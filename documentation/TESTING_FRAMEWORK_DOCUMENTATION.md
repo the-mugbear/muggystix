@@ -132,10 +132,14 @@ The contract is UI_STYLE_GUIDE §48; this is how a test meets it.
   the `wrapper` (see `tests/pages/Scans.commandDetail.test.tsx`).
 - **Mock the API barrel, never the library.** `vi.mock('../../services/api', …)` as before. Do
   not mock `@tanstack/react-query`: a mocked `useQuery` proves nothing about what the reader sees.
-- **Await what the reader sees.** A query's answer reaches the page a tick after the mocked
-  promise resolves, and a mutation sends its request a tick after the click: use `findBy…` /
-  `waitFor`, not a synchronous assertion right after the event. With fake timers advance with
-  `await vi.advanceTimersByTimeAsync(n)`.
+- **Await what the reader sees.** A mutation sends its request a tick after the click, and a
+  mocked promise resolves when it resolves: use `findBy…` / `waitFor`, not a synchronous
+  assertion right after the event. What a test may rely on (5.366.0, `setupTests.ts`): the
+  query library tells components of an answer in a microtask and inside `act`, so after
+  `await act(async () => { await thatPromise; })` the component HAS heard — no extra tick, no
+  `waitFor` for that one fact. (By default the library notifies from a timer outside `act`;
+  assertions made straight after an awaited answer then passed or failed by timing.) With fake
+  timers advance with `await vi.advanceTimersByTimeAsync(n)`.
 - **A project-scoped call names its project FIRST** (5.353.0): the test's mocked `useProject`
   gives `{ currentProject: { id: 1 } }` and an exact-argument assertion starts with that id —
   `toHaveBeenCalledWith(1, filters, expect.any(AbortSignal))`. A test that renders with no

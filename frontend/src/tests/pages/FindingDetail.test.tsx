@@ -272,7 +272,9 @@ describe('FindingDetail — many endpoints', () => {
     expect(mocked.getFinding).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Set 100 endpoints to remediated here.'));
     expect(screen.queryByRole('group', { name: 'Set the selected endpoints' })).toBeNull();
-  });
+    // 100 rows mounted and ticked: 2 s alone, 4.6–5.5 s in a full run beside
+    // every other file — it met the default 5 s limit once.
+  }, 15_000);
 
   it('selects every endpoint MATCHING the filter, sends them 500 to a call, and says what a refused call left unchanged', async () => {
     const user = userEvent.setup();

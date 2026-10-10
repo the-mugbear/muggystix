@@ -152,6 +152,44 @@ describe('HostInspector note composer — draft bound to host, recoverable attac
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:img-1');
   });
 
+  // 5.366.0 — "a retry is in flight" is its own fact.  It was the word
+  // "Uploading…" stored in the image's `error`, so the reason for the failure
+  // was lost during a retry and every reader of `error` had to know the word.
+  it('a retry in flight says Uploading… and cannot be pressed twice; failing again, the reason is back', async () => {
+    api.createAnnotation.mockResolvedValue({ id: 77, body: 'evidence', status: 'open', attachments: [] });
+    let failRetry!: (error: unknown) => void;
+    api.uploadNoteAttachment
+      .mockRejectedValueOnce({ response: { status: 413, data: { detail: 'The image is too large.' } } })
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { failRetry = reject; }));
+
+    render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText('10.0.0.1')).toBeInTheDocument());
+    const textarea = screen.getByLabelText('Note');
+    pasteImage(textarea, new File(['png'], 'shot.png', { type: 'image/png' }));
+    await screen.findByAltText('Pasted image 1');
+    fireEvent.change(textarea, { target: { value: 'evidence' } });
+    fireEvent.click(screen.getByRole('button', { name: /save note/i }));
+    expect(await screen.findByText(/Note saved · 1 attachment failed/)).toBeInTheDocument();
+    expect(screen.getByAltText('Pasted image 1')).toHaveAttribute('title', 'The image is too large.');
+
+    const retry = screen.getByRole('button', { name: /retry uploading pasted image 1/i });
+    fireEvent.click(retry);
+    await waitFor(() => expect(retry).toHaveTextContent('Uploading…'));
+    expect(retry).toBeDisabled();
+    // Not counted as failed while it is being tried again.
+    expect(screen.queryByText(/1 attachment failed/)).not.toBeInTheDocument();
+    fireEvent.click(retry);
+    expect(api.uploadNoteAttachment).toHaveBeenCalledTimes(2);
+
+    await act(async () => { failRetry({ response: { status: 503, data: { detail: 'Storage is unavailable.' } } }); });
+    await waitFor(() => expect(retry).toHaveTextContent('Retry'));
+    expect(retry).not.toBeDisabled();
+    expect(screen.getByAltText('Pasted image 1')).toHaveAttribute('title', 'Storage is unavailable.');
+    expect(screen.getByText(/1 attachment failed/)).toBeInTheDocument();
+    // Still the one note.
+    expect(api.createAnnotation).toHaveBeenCalledTimes(1);
+  });
+
   it('v5.290.0: after saving, says who a mention notified and which @name reached nobody', async () => {
     api.createAnnotation.mockResolvedValue({
       id: 90, body: '@eval-ben @eval-ana look', status: 'open', attachments: [],

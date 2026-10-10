@@ -218,10 +218,15 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   };
 
   // Optimistic: the mark flips at once and the thread reloads behind it.
-  const [reportOverride, setReportOverride] = useState<Record<number, boolean>>({});
+  // The flip is held only AGAINST the server value it was made over (`was`):
+  // once the thread's re-read brings another value, the server's is shown.
+  // (It was a bare boolean kept for the life of the component, so a later
+  // change by someone else stayed hidden behind it.)
+  const [reportOverride, setReportOverride] = useState<Record<number, { include: boolean; was: boolean }>>({});
   const mark = useMutation({
-    mutationFn: ({ id, include }: { id: number; include: boolean }) => setNoteAttachmentInReport(projectId, id, include),
-    onMutate: ({ id, include }) => setReportOverride((m) => ({ ...m, [id]: include })),
+    mutationFn: ({ id, include }: { id: number; include: boolean; was: boolean }) =>
+      setNoteAttachmentInReport(projectId, id, include),
+    onMutate: ({ id, include, was }) => setReportOverride((m) => ({ ...m, [id]: { include, was } })),
     onSuccess: (_stored, { id }) => {
       refuse(id, null);
       changed();
@@ -237,7 +242,22 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
       toast.error(message);
     },
   });
-  const onMark = (att: NoteAttachment, include: boolean) => mark.mutate({ id: att.id, include });
+  const onMark = (att: NoteAttachment, include: boolean) =>
+    mark.mutate({ id: att.id, include, was: !!att.include_in_report });
+  // The thread has been read again with another value for an image: its flip
+  // has done its job and is forgotten (so it cannot come back if the value
+  // later returns to what it was made over).
+  const answered = attachments.filter((a) => {
+    const flip = reportOverride[a.id];
+    return flip != null && flip.was !== !!a.include_in_report;
+  });
+  if (answered.length > 0) {
+    setReportOverride((m) => {
+      const next = { ...m };
+      answered.forEach((a) => { delete next[a.id]; });
+      return next;
+    });
+  }
 
   const remove = useMutation({
     mutationFn: (id: number) => deleteNoteAttachment(projectId, id),
@@ -371,7 +391,9 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
             );
             if (!reportMarking) return <React.Fragment key={att.id}>{thumbnail}</React.Fragment>;
 
-            const inReport = reportOverride[att.id] ?? !!att.include_in_report;
+            const stored = !!att.include_in_report;
+            const flipped = reportOverride[att.id];
+            const inReport = flipped && flipped.was === stored ? flipped.include : stored;
             const canMark = reportMarking.canMark(att);
             const placement = reportMarking.placement?.(att);
             const line = placement ? placementLine({ ...placement, in_report: inReport }) : null;

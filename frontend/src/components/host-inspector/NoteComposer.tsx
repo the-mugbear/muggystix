@@ -21,8 +21,11 @@ import MentionTextarea from '../MentionTextarea';
 
 export interface ComposerImage {
   url: string;
-  /** Set once the upload failed (or 'Uploading…' during a retry). */
+  /** Why the upload failed — set once it has, and kept while a retry runs. */
   error?: string;
+  /** A retry of the upload is in flight.  (It was the word "Uploading…"
+   *  stored in `error`: a failure and "in flight" were one field.) */
+  uploading?: boolean;
 }
 
 export interface NoteComposerProps {
@@ -97,10 +100,10 @@ export const NoteComposer: React.FC<NoteComposerProps> = ({
               <img
                 src={img.url}
                 alt={`Pasted image ${idx + 1}`}
-                title={img.error}
+                title={img.uploading ? 'Uploading…' : img.error}
                 className={cn(
                   'size-16 rounded-control border object-cover',
-                  img.error ? 'border-destructive' : 'border-border',
+                  img.error && !img.uploading ? 'border-destructive' : 'border-border',
                 )}
               />
               <button
@@ -112,17 +115,17 @@ export const NoteComposer: React.FC<NoteComposerProps> = ({
               >
                 <X className="size-3" aria-hidden />
               </button>
-              {img.error && (
+              {(img.error || img.uploading) && (
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
                   className="h-6 px-xs text-caption"
                   onClick={() => onRetryImage(idx)}
-                  disabled={submitting || img.error === 'Uploading…'}
+                  disabled={submitting || img.uploading}
                   aria-label={`Retry uploading pasted image ${idx + 1}`}
                 >
-                  {img.error === 'Uploading…' ? 'Uploading…' : 'Retry'}
+                  {img.uploading ? 'Uploading…' : 'Retry'}
                 </Button>
               )}
             </div>

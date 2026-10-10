@@ -3,7 +3,19 @@
 // expect(element).toHaveTextContent(/react/i)
 // learn more: https://github.com/testing-library/jest-dom
 import '@testing-library/jest-dom';
+import { notifyManager } from '@tanstack/react-query';
+import { act } from '@testing-library/react';
 import { vi } from 'vitest';
+
+// A query tells its components of an answer through the library's notify
+// manager — by default from a timer, a task AFTER the promise the test
+// awaited, and outside `act`.  A test that asserted straight after resolving
+// an answer was therefore right or wrong by timing (fixed by hand four times
+// before 5.366.0, each a failure seen only in a full run).  In tests the
+// notification is made in a microtask and inside `act`: the component has
+// heard by the time the test's own `await` returns.
+notifyManager.setScheduler(queueMicrotask);
+notifyManager.setNotifyFunction((notify) => { act(notify); });
 
 // Mock axios for API calls
 vi.mock('axios');

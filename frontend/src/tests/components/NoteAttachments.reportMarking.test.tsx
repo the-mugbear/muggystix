@@ -53,6 +53,26 @@ describe('NoteAttachments — report marking (v5.260.0)', () => {
     expect(box).toHaveAttribute('data-state', 'checked');
   });
 
+  // 5.366.0 — the flip was a bare boolean kept for the life of the component:
+  // once the reader had ticked an image, a later change made by someone else
+  // (the thread read again with another value) stayed hidden behind it.
+  it('after a mark, what the thread says next is shown — a later change by someone else is not hidden', async () => {
+    mocked.setNoteAttachmentInReport.mockResolvedValue(att(1, { include_in_report: true }));
+    const props = { noteId: 5, canManage: true, onChanged: vi.fn(), reportMarking: { canMark: () => true } };
+    const { rerender } = render(<NoteAttachments {...props} attachments={[att(1)]} />);
+    const box = () => screen.getByRole('checkbox', { name: 'Include shot-1.png in the report' });
+    fireEvent.click(box());
+    await waitFor(() => expect(mocked.setNoteAttachmentInReport).toHaveBeenCalledTimes(1));
+    expect(box()).toHaveAttribute('data-state', 'checked');
+
+    // The thread is read again and agrees.
+    rerender(<NoteAttachments {...props} attachments={[att(1, { include_in_report: true })]} />);
+    expect(box()).toHaveAttribute('data-state', 'checked');
+    // Later, someone else took it out of the report.
+    rerender(<NoteAttachments {...props} attachments={[att(1, { include_in_report: false })]} />);
+    expect(box()).toHaveAttribute('data-state', 'unchecked');
+  });
+
   it('puts the mark back when the server refuses', async () => {
     mocked.setNoteAttachmentInReport.mockRejectedValue(new Error('403'));
     render(

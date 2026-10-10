@@ -196,7 +196,10 @@ const NO_FOLLOWERS: HostFollowerEntry[] = [];
 interface PendingImage {
   file: File;
   url: string;
+  /** Why its upload failed (kept while a retry runs). */
   error?: string;
+  /** A retry is in flight. */
+  uploading?: boolean;
   /** The saved note this file belongs to once its upload failed — retry
    *  targets THIS id, never a later note's (a queue-wide id was wrong when
    *  two notes in a row had failures). */
@@ -814,7 +817,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
       // Keep the failed files (with their previews) so they can be retried
       // against the note that now exists — the clipboard is gone, this is
       // the only copy (UX review C3).
-      setPendingImages((prev) => [...prev.filter((p) => p.error), ...failed]);
+      setPendingImages((prev) => [...prev.filter((p) => p.noteId != null), ...failed]);
       setNoteBody('');
       setNoteError(null);
     },
@@ -825,9 +828,9 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
       setNoteError('Add a short note before saving.');
       return;
     }
-    // Files still bound to an earlier note's retry queue stay with that note;
-    // only fresh files go on the new one.
-    postNote.mutate({ body: noteBody.trim(), images: pendingImages.filter((p) => !p.error) });
+    // Files still bound to an earlier note's retry queue stay with that note
+    // (`noteId` — failed or being retried); only fresh files go on the new one.
+    postNote.mutate({ body: noteBody.trim(), images: pendingImages.filter((p) => p.noteId == null) });
   };
 
   // Retry one failed attachment against the note it was meant for.  Never
@@ -836,7 +839,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     mutationFn: ({ target, noteId }: { target: PendingImage; noteId: number }) =>
       uploadNoteAttachment(projectId, hostId, noteId, target.file),
     onMutate: ({ target }) => setPendingImages(
-      (prev) => prev.map((p) => (p.url === target.url ? { ...p, error: 'Uploading…' } : p)),
+      (prev) => prev.map((p) => (p.url === target.url ? { ...p, uploading: true } : p)),
     ),
     onSuccess: (attachment, { target, noteId }) => {
       URL.revokeObjectURL(target.url);
@@ -850,7 +853,9 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
       }));
     },
     onError: (e, { target }) => setPendingImages(
-      (prev) => prev.map((p) => (p.url === target.url ? { ...p, error: formatApiError(e, 'Upload failed.') } : p)),
+      (prev) => prev.map((p) => (
+        p.url === target.url ? { ...p, uploading: false, error: formatApiError(e, 'Upload failed.') } : p
+      )),
     ),
   });
   const retryPendingImage = (idx: number) => {
@@ -859,7 +864,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
     retryImage.mutate({ target, noteId: target.noteId });
   };
 
-  const failedAttachmentCount = pendingImages.filter((p) => p.error && p.error !== 'Uploading…').length;
+  const failedAttachmentCount = pendingImages.filter((p) => p.error && !p.uploading).length;
 
   const deleteNote = useMutation({
     mutationFn: (noteId: number) => deleteAnnotation(projectId, hostId, noteId),
