@@ -30,17 +30,17 @@ logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.23.0"
+PROMPT_VERSION = "4.24.0"
 
 # What PROMPT_VERSION changed (the current version only).  Read by people
 # working on BlueStick; it is not sent to agents.
 PROMPT_CHANGES = (
-    "The host query has a new word, `gap:<kind of evidence>` (port_discovery, "
-    "service_detection, os_detection, vuln_assessment, web_tls, auth_smb_ad, "
-    "validation): the hosts that kind of evidence applies to and that nothing "
-    "imported so far provides it for — an Evidence gap as a host list. The "
-    "guide's query reference and the coverage tool's description name it. "
-    "Nothing else an agent is told changed."
+    "The scanner-observation reads say more: the issue list takes "
+    "`exploitable=true` and each issue says whether a scanner reports an "
+    "exploit for it; each host of an issue carries `tests_to_do` and "
+    "`tests_recorded` for the tests naming that issue there. The guide's row "
+    "and the two tool descriptions say so. Nothing else an agent is told "
+    "changed. (4.23.0 added the host query word `gap:<kind of evidence>`.)"
 )
 
 

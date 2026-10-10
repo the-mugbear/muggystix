@@ -27,6 +27,8 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Host, Port
 from app.db.models_findings import Finding, FindingHost, FindingSource, FindingStatus
+from app.db.models_host_tests import ACTIVE_TEST_STATUSES, TESTED_OUTCOMES, HostTest
+from app.db.models_proposals import EvidenceRecord
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.services.engagement_metrics_service import join_judged, observation_judged_on_host
 from app.services.finding_service import FindingService
@@ -171,6 +173,9 @@ class IssueRow:
     # v2.415.0 — misconfiguration (a catalog check) / vulnerability /
     # informational (misconfig_checks.vuln_kind, at the issue's severity).
     kind: str = KIND_VULNERABILITY
+    # A scanner says an exploit exists for it, on at least one host.  A lead
+    # for what to test first — not a statement that it was exploited.
+    exploitable: bool = False
 
 
 @dataclass
@@ -191,6 +196,7 @@ def list_issues(
     limit: int = 50,
     kind: Optional[str] = None,
     sort: str = "severity",
+    exploitable: bool = False,
 ) -> IssuePage:
     """One row per issue, most severe first, then the most hosts left to judge.
 
@@ -201,6 +207,8 @@ def list_issues(
 
     By default an issue every host of which a finding already covers is left
     out: this is the list of what still waits.  ``include_judged`` shows it.
+    ``exploitable`` keeps the issues a scanner reports an exploit for on at
+    least one host (each row says so either way).
     """
     key = _key()
     rank = func.max(_rank())
@@ -213,9 +221,10 @@ def list_issues(
     # query still, no second pass over the groups.
     title = _of_most_severe_row(db, Vulnerability.title)
     cve = func.coalesce(_of_most_severe_row(db, Vulnerability.cve_id), func.max(Vulnerability.cve_id))
+    has_exploit = func.bool_or(func.coalesce(Vulnerability.exploitable, false()))
     query = base.with_entities(
         key.label("issue_key"), rank.label("rank"), hosts.label("hosts"), judged.label("judged"),
-        title.label("title"), cve.label("cve_id"),
+        title.label("title"), cve.label("cve_id"), has_exploit.label("exploitable"),
     )
     if search and search.strip():
         # Escaped like every other search: "100%" and "a_b" are text.
@@ -246,6 +255,8 @@ def list_issues(
         query = query.having(hosts > judged)
     if min_hosts > 1:
         query = query.having(hosts >= min_hosts)
+    if exploitable:
+        query = query.having(has_exploit)
 
     # The total rides on the page as a window over the groups: counting in a
     # second query ran the whole aggregation twice.  A page past the end has
@@ -293,6 +304,7 @@ def list_issues(
             finding_status=f.status if f else None,
             kind=(KIND_MISCONFIGURATION if r.issue_key.startswith("check:")
                   else KIND_INFORMATIONAL if int(r.rank or 0) <= info_rank else KIND_VULNERABILITY),
+            exploitable=bool(r.exploitable),
         ))
     return IssuePage(items=items, total=int(total))
 
@@ -306,6 +318,11 @@ class IssueHost:
     ports: List[int]
     judged: bool
     endpoint_status: Optional[str]
+    # Tests that name THIS issue on the host (``host_tests.issue_key``): still
+    # to do (proposed / in progress), and results recorded for one (the
+    # "tested" outcomes — a failed attempt is not a test).
+    tests_to_do: int = 0
+    tests_recorded: int = 0
 
 
 def issue_host_total(db: Session, project_id: int, issue_key: str) -> int:
@@ -357,12 +374,31 @@ def issue_hosts(
             .filter(FindingHost.finding_id == finding.id, FindingHost.host_id.in_(host_ids))
             .all()
         )
+    # Where testing of this issue stands on each host: two grouped statements
+    # for the page (planned / tested are ``host_test_queries``' definitions,
+    # narrowed to the tests that name this issue).
+    to_do = dict(
+        db.query(HostTest.host_id, func.count(HostTest.id))
+        .filter(HostTest.project_id == project_id, HostTest.host_id.in_(host_ids),
+                HostTest.issue_key == issue_key, HostTest.status.in_(ACTIVE_TEST_STATUSES))
+        .group_by(HostTest.host_id)
+        .all()
+    )
+    recorded = dict(
+        db.query(HostTest.host_id, func.count(EvidenceRecord.id))
+        .join(EvidenceRecord, EvidenceRecord.host_test_id == HostTest.id)
+        .filter(HostTest.project_id == project_id, HostTest.host_id.in_(host_ids),
+                HostTest.issue_key == issue_key, EvidenceRecord.outcome.in_(TESTED_OUTCOMES))
+        .group_by(HostTest.host_id)
+        .all()
+    )
     return [
         IssueHost(
             host_id=r.id, ip_address=r.ip_address, hostname=r.hostname,
             severity=_SEVERITY_OF_RANK.get(int(r.rank or 0), "unknown"),
             ports=sorted(ports.get(r.id, ())), judged=bool(r.judged),
             endpoint_status=endpoint.get(r.id),
+            tests_to_do=int(to_do.get(r.id, 0)), tests_recorded=int(recorded.get(r.id, 0)),
         )
         for r in rows
     ]

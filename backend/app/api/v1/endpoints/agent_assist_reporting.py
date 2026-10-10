@@ -89,6 +89,7 @@ def list_assist_scanner_observations(
                                 description="misconfiguration | vulnerability | informational"),
     sort: Literal["severity", "hosts"] = Query(
         "severity", description="severity: most severe first (default); hosts: most widespread first"),
+    exploitable: bool = Query(False, description="Only issues a scanner reports an exploit for"),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -96,7 +97,7 @@ def list_assist_scanner_observations(
     try:
         page = observations.list_issues(
             db, request.state.agent_project_id, search=search, severity=severity, include_judged=include_judged,
-            min_hosts=min_hosts, skip=start, limit=limit, kind=kind, sort=sort,
+            min_hosts=min_hosts, skip=start, limit=limit, kind=kind, sort=sort, exploitable=exploitable,
         )
     except observations.ObservationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

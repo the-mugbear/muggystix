@@ -150,6 +150,50 @@ describe('ScannerObservations', () => {
     );
   });
 
+  // Plan A7 — what to test first is asked of the server, over every issue.
+  it('asks the server for the exploit filter and the order, from the address and from the controls', async () => {
+    render(
+      <MemoryRouter initialEntries={['/findings?view=observations&obs_exploit=1&obs_sort=hosts']}>
+        <ScannerObservations canManage />
+      </MemoryRouter>,
+    );
+    await screen.findByText('SMB Signing not required');
+    expect(mocked.getObservationIssues).toHaveBeenCalledWith(
+      1, expect.objectContaining({ exploitable: true, sort: 'hosts' }), expect.any(AbortSignal),
+    );
+    expect(screen.getByTestId('observations-count')).toHaveTextContent('with an exploit reported and hosts not yet judged · most hosts first');
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Exploit reported' }));
+    await waitFor(() => expect(mocked.getObservationIssues).toHaveBeenLastCalledWith(
+      1, expect.objectContaining({ exploitable: false, sort: 'hosts' }), expect.any(AbortSignal),
+    ));
+  });
+
+  it('marks an issue with a reported exploit, and says where testing of it stands on each host', async () => {
+    mocked.getObservationIssues.mockResolvedValue({ items: [{ ...SMB, exploitable: true }, TLS], total: 2 });
+    mocked.getObservationIssueHosts.mockResolvedValue([
+      { host_id: 1, ip_address: '10.9.0.1', hostname: null, severity: 'medium', ports: [445], judged: false, endpoint_status: null, tests_to_do: 2, tests_recorded: 0 },
+      { host_id: 2, ip_address: '10.9.0.2', hostname: null, severity: 'medium', ports: [445], judged: false, endpoint_status: null, tests_to_do: 1, tests_recorded: 1 },
+      { host_id: 3, ip_address: '10.9.0.3', hostname: null, severity: 'medium', ports: [], judged: false, endpoint_status: null, tests_to_do: 0, tests_recorded: 3 },
+      { host_id: 4, ip_address: '10.9.0.4', hostname: null, severity: 'medium', ports: [], judged: false, endpoint_status: null },
+    ]);
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+    expect(screen.getAllByText(/exploit reported/)).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show the hosts carrying SMB Signing not required' }));
+    const state = async (ip: string) => (await screen.findByText(ip)).closest('li')!;
+    expect(await state('10.9.0.1')).toHaveTextContent('2 tests planned');
+    expect(await state('10.9.0.2')).toHaveTextContent('tested · 1 to do');
+    expect((await state('10.9.0.3')).textContent).toMatch(/tested$/);
+    expect(await state('10.9.0.4')).toHaveTextContent('no test');
+
+    // The hosts ticked are what the agent is handed: untick one and it is three.
+    expect(screen.getByRole('button', { name: /Ask agent to propose tests on the ticked 4 hosts/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Include 10.9.0.4' }));
+    expect(screen.getByRole('button', { name: /Ask agent to propose tests on the ticked 3 hosts/ })).toBeInTheDocument();
+  });
+
   // Visual pass 2026-10-01 — a ticked issue's row is marked, and the header
   // box says "some" until every issue shown is ticked.
   it('marks a ticked issue, shows "some" on the header box, and a click there selects the rest', async () => {

@@ -685,7 +685,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "judged — a row with judged_host_count > 0 is partly judged; "
             "include_judged adds the fully judged ones. total counts all matching "
             "issues; read has_more and page with offset. severity narrows to one "
-            "severity. assist_list_observation_hosts lists one issue's hosts."
+            "severity; exploitable=true keeps issues a scanner reports an exploit "
+            "for (each row says `exploitable` — a report, not proof it was "
+            "exploited). assist_list_observation_hosts lists one issue's hosts."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scanner-observations",
@@ -701,7 +703,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "description": (
             "The hosts carrying one scanner issue (issue_key from "
             "assist_list_scanner_observations), by address: ports, severity, and "
-            "whether a finding covers it on that host (judged, endpoint_status). "
+            "whether a finding covers it on that host (judged, endpoint_status), "
+            "and the tests naming this issue there (tests_to_do, tests_recorded). "
             "total is every host carrying the issue; read has_more and page with offset."
         ),
         "method": "GET",

@@ -103,6 +103,66 @@ def test_hosts_of_one_issue(client, test_project, estate):
     assert not any(h["judged"] for h in hosts)
 
 
+def test_exploitable_narrows_to_issues_a_scanner_reports_an_exploit_for(client, db_session, test_project, estate):
+    """Plan A7.  One exploitable row on ONE of an issue's hosts makes the issue
+    exploitable; every row says which it is; the agents' read takes the same
+    word and gives the same rows."""
+    _vuln(db_session, estate["hosts"][2], estate["scan"].id, "SMB Signing not required", exploitable=True,
+          source="openvas")
+    everything = client.get(_url(test_project)).json()["items"]
+    assert {r["issue_key"]: r["exploitable"] for r in everything} == {
+        "title:smb signing not required": True,
+        "title:tls version 1.0 protocol detection": False,
+        "cve:CVE-2023-38408": False,
+    }
+    only = client.get(_url(test_project), params={"exploitable": "true"}).json()
+    assert only["total"] == 1 and [r["issue_key"] for r in only["items"]] == ["title:smb signing not required"]
+    assert only["items"][0]["host_count"] == 3  # the issue's hosts, not only the exploitable row's
+
+    key = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={}).json()["api_key"]
+    agents = client.get("/api/v1/agent/assist/scanner-observations", params={"exploitable": "true"},
+                        headers={"X-API-Key": key}).json()
+    assert agents["total"] == 1 and agents["items"] == only["items"]
+
+
+def test_each_host_of_an_issue_says_where_testing_of_it_stands(client, db_session, test_project, estate):
+    """Plan A7.  Tests that name THIS issue on the host: still to do, and
+    results recorded.  A test of another issue, a dismissed test and a failed
+    attempt count for nothing."""
+    from app.db.models_host_tests import HostTest
+    from app.db.models_proposals import EvidenceRecord
+
+    smb = "title:smb signing not required"
+    a, b, c = estate["hosts"]
+
+    made = []
+
+    def test_row(host, status, issue=smb):
+        made.append(1)
+        key = f"a7-{len(made)}"
+        t = HostTest(project_id=test_project.id, host_id=host.id, tool="nxc", description="d", command="c",
+                     rationale="r", status=status, issue_key=issue, issue_title="t", source="person",
+                     request_key=key, request_hash=key)
+        db_session.add(t)
+        db_session.flush()
+        return t
+
+    test_row(a, "proposed")
+    test_row(a, "in_progress")
+    test_row(a, "dismissed")
+    test_row(a, "proposed", issue="title:tls version 1.0 protocol detection")
+    done = test_row(b, "done")
+    for outcome in ("finding", "failed"):
+        db_session.add(EvidenceRecord(project_id=test_project.id, host_id=b.id, host_test_id=done.id, tool="nxc",
+                                      outcome=outcome, summary="s", executed_at=datetime.now(timezone.utc)))
+    db_session.commit()
+
+    hosts = client.get(_url(test_project, "/hosts"), params={"issue_key": smb}).json()
+    assert {h["ip_address"]: (h["tests_to_do"], h["tests_recorded"]) for h in hosts} == {
+        "10.9.0.1": (2, 0), "10.9.0.2": (0, 1), "10.9.0.3": (0, 0),
+    }
+
+
 def test_bulk_promote_all_hosts_and_a_subset(client, db_session, test_project, estate):
     h1, h2, h3 = estate["hosts"]
     r = client.post(_url(test_project, "/promote"), json={"items": [

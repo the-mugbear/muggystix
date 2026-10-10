@@ -36,6 +36,9 @@ class IssueRowOut(BaseModel):
     finding_status: Optional[str] = None
     # v2.415.0 — misconfiguration / vulnerability / informational.
     kind: str = "vulnerability"
+    # A scanner reports an exploit for it on at least one host (a lead, not a
+    # statement that it was exploited).
+    exploitable: bool = False
 
 
 class IssuePageOut(BaseModel):
@@ -51,6 +54,9 @@ class IssueHostOut(BaseModel):
     ports: List[int] = Field(default_factory=list)
     judged: bool
     endpoint_status: Optional[str] = None
+    # Tests naming this issue on the host: still to do, and results recorded.
+    tests_to_do: int = 0
+    tests_recorded: int = 0
 
 
 class PromoteItemIn(BaseModel):
@@ -86,13 +92,14 @@ def list_scanner_observation_issues(
                                 description="misconfiguration | vulnerability | informational"),
     sort: Literal["severity", "hosts"] = Query(
         "severity", description="severity: most severe first (default); hosts: most widespread first"),
+    exploitable: bool = Query(False, description="Only issues a scanner reports an exploit for"),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
     try:
         page = svc.list_issues(
             db, project.id, search=search, severity=severity, include_judged=include_judged,
-            min_hosts=min_hosts, skip=skip, limit=limit, kind=kind, sort=sort,
+            min_hosts=min_hosts, skip=skip, limit=limit, kind=kind, sort=sort, exploitable=exploitable,
         )
     except svc.ObservationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

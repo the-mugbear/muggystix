@@ -472,6 +472,9 @@ export interface ObservationIssue {
   /** v5.298.0 — misconfiguration (a catalog check, whichever tool reported
    *  it) / vulnerability / informational. */
   kind?: WeaknessKind;
+  /** A scanner reports an exploit for it on at least one host — a lead for
+   *  what to test first, not a statement that it was exploited. */
+  exploitable?: boolean;
 }
 
 export type WeaknessKind = 'misconfiguration' | 'vulnerability' | 'informational';
@@ -484,6 +487,9 @@ export interface ObservationIssueHost {
   ports: number[];
   judged: boolean;
   endpoint_status: string | null;
+  /** Tests naming THIS issue on the host: still to do, and results recorded. */
+  tests_to_do?: number;
+  tests_recorded?: number;
 }
 
 export interface ObservationIssueFilters {
@@ -494,6 +500,10 @@ export interface ObservationIssueFilters {
   skip?: number;
   limit?: number;
   kind?: WeaknessKind;
+  /** Only issues a scanner reports an exploit for. */
+  exploitable?: boolean;
+  /** `hosts` = most widespread first; omitted = most severe first. */
+  sort?: 'severity' | 'hosts';
 }
 
 export const getObservationIssues = async (
@@ -508,6 +518,8 @@ export const getObservationIssues = async (
       include_judged: filters.includeJudged || undefined,
       min_hosts: filters.minHosts && filters.minHosts > 1 ? filters.minHosts : undefined,
       kind: filters.kind || undefined,
+      exploitable: filters.exploitable || undefined,
+      sort: filters.sort === 'hosts' ? 'hosts' : undefined,
       skip: filters.skip || undefined,
       limit: filters.limit ?? 50,
     },

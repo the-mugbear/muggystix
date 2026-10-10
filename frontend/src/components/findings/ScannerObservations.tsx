@@ -42,6 +42,8 @@ import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../ListFi
 import { cn } from '../../utils/cn';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Switch } from '../ui/switch';
+import AgentTaskButton from '../agent-sessions/AgentTaskButton';
+import { agentInstruction } from '../../utils/agentRuns';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 
 const PAGE = 50;
@@ -51,6 +53,15 @@ const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 const NO_ISSUES: ObservationIssue[] = [];
 
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+
+/** Where testing of the issue stands on one of its hosts, in the words the
+ *  Hosts row uses (`testWorkState`): tested, tested with more to do, planned. */
+export const issueTestState = (h: Pick<ObservationIssueHost, 'tests_to_do' | 'tests_recorded'>): string => {
+  const toDo = h.tests_to_do ?? 0;
+  const recorded = h.tests_recorded ?? 0;
+  if (recorded > 0) return toDo > 0 ? `tested · ${toDo} to do` : 'tested';
+  return toDo > 0 ? `${plural(toDo, 'test')} planned` : 'no test';
+};
 
 interface Props {
   /** Analyst or above: may select and promote. */
@@ -89,6 +100,13 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const setMinHosts = (v: number) => setParam('obs_min', String(v), '1');
   const setIncludeJudged = (v: boolean) => setParam('obs_judged', v ? '1' : '0', '0');
   const setKind = (v: string) => setParam('obs_kind', v, 'all');
+  // Plan A7 — what to test first: issues with a known exploit, and the most
+  // widespread ones.  Both are the server's (a filter and an order over ALL
+  // issues, not over the rows loaded so far).
+  const exploitable = params.get('obs_exploit') === '1';
+  const setExploitable = (v: boolean) => setParam('obs_exploit', v ? '1' : '0', '0');
+  const sort: 'severity' | 'hosts' = params.get('obs_sort') === 'hosts' ? 'hosts' : 'severity';
+  const setSort = (v: string) => setParam('obs_sort', v, 'severity');
 
   // Selection spans loads: issue_key → the issue, and the hosts ticked under
   // it (absent = every host carrying it).
@@ -101,8 +119,9 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
     () => ({
       search, severity: severity === 'all' ? undefined : severity, minHosts, includeJudged,
       kind: kind === 'all' ? undefined : (kind as WeaknessKind),
+      exploitable, sort,
     }),
-    [search, severity, minHosts, includeJudged, kind],
+    [search, severity, minHosts, includeJudged, kind, exploitable, sort],
   );
 
   // The filters are the list's key: a page that lands after they changed
@@ -235,7 +254,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
     loading || error ? 0 : issues.length,
     (i) => toggleExpanded(issues[i]),
     // A promotion re-reads the list (the judged issue may leave it).
-    { resetKey: `${search}|${severity}|${minHosts}|${includeJudged}|${kind}`, getId: (i) => issues[i]?.issue_key },
+    { resetKey: `${search}|${severity}|${minHosts}|${includeJudged}|${kind}|${exploitable}|${sort}`, getId: (i) => issues[i]?.issue_key },
   );
 
   return (
@@ -275,6 +294,17 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
             <SelectItem value="10">10 or more hosts</SelectItem>
           </SelectContent>
         </Select>
+        <Select value={sort} onValueChange={setSort}>
+          <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-48')} aria-label="Order"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="severity">Most severe first</SelectItem>
+            <SelectItem value="hosts">Most hosts first</SelectItem>
+          </SelectContent>
+        </Select>
+        <div className="flex items-center gap-xs">
+          <Switch id="observations-exploit" checked={exploitable} onCheckedChange={(v) => setExploitable(v === true)} />
+          <Label htmlFor="observations-exploit" className="text-metadata">Exploit reported</Label>
+        </div>
         <div className="flex items-center gap-xs">
           <Switch id="observations-judged" checked={includeJudged} onCheckedChange={(v) => setIncludeJudged(v === true)} />
           <Label htmlFor="observations-judged" className="text-metadata">Include issues already covered</Label>
@@ -335,7 +365,9 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
         <>
           <p className="mb-xs text-caption text-muted-foreground" data-testid="observations-count">
             {plural(total, 'issue')}{minHosts > 1 ? ` carried by ${minHosts} or more hosts` : ''}
-            {includeJudged ? '' : ' with hosts not yet judged'} · most severe first
+            {exploitable ? ' with an exploit reported' : ''}
+            {includeJudged ? '' : `${exploitable ? ' and' : ' with'} hosts not yet judged`}
+            {' · '}{sort === 'hosts' ? 'most hosts first' : 'most severe first'}
           </p>
           <div className="overflow-x-auto">
             <Table className="min-w-[48rem] table-fixed">
@@ -390,6 +422,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                           <p className="truncate text-caption text-muted-foreground">
                             {[
                               issue.kind === 'misconfiguration' ? 'misconfiguration' : null,
+                              issue.exploitable ? 'exploit reported' : null,
                               issue.cve_id, issue.sources.join(', '),
                             ].filter(Boolean).join(' · ')}
                           </p>
@@ -488,10 +521,31 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                                             ? `On the finding · ${ENDPOINT_STATUS_LABEL[(h.endpoint_status ?? 'open') as FindingHostStatus] ?? h.endpoint_status}`
                                             : <span className="text-muted-foreground">not yet judged</span>}
                                         </span>
+                                        {/* Where testing of THIS issue stands on the host. */}
+                                        <span className="w-36 shrink-0 truncate text-caption text-muted-foreground"
+                                          title="Tests on this host that name this issue: results recorded, and tests proposed or in progress">
+                                          {issueTestState(h)}
+                                        </span>
                                       </li>
                                     );
                                   })}
                                 </ul>
+                                {/* The hosts ticked here, handed to the operator's
+                                    agent: a fixed list, never "every host of the
+                                    issue" beyond the ones on screen. */}
+                                {(() => {
+                                  const picked = shown.filter((h) => (narrowed ? narrowed.has(h.host_id) : true));
+                                  if (picked.length === 0) return null;
+                                  return (
+                                    <div className="mt-xs flex flex-wrap items-center gap-xs">
+                                      <AgentTaskButton
+                                        label={`Ask agent to propose tests on ${cut ? 'these' : 'the ticked'} ${plural(picked.length, 'host')}`}
+                                        title="Hand these hosts and this issue to your agent, to propose a test that would confirm it on each"
+                                        instruction={agentInstruction.proposeTestsForIssue(picked.map((h) => h.host_id), issue.title)}
+                                      />
+                                    </div>
+                                  );
+                                })()}
                               </>
                               );
                             })()}

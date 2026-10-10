@@ -39,6 +39,7 @@ describe('agentInstruction', () => {
       agentInstruction.proposeTestForObservation(1, 5, 'TLS 1.0 enabled'),
       agentInstruction.runHostTests(1),
       agentInstruction.collectEvidence([1, 2], 'Web / TLS'),
+      agentInstruction.proposeTestsForIssue([1, 2], 'TLS 1.0 enabled'),
       agentInstruction.reviewFinding(3, ['impact']),
       WRAP_UP_PROMPT,
     ].join('\n');
@@ -53,6 +54,14 @@ describe('agentInstruction', () => {
     expect(text).toContain(`"Web / 'TLS'"`);
     expect(text).toContain('show me each command before you run it');
     expect(text).toContain('upload the output to this session');
+  });
+
+  it('proposeTestsForIssue names the fixed hosts and the issue, links each test to its observation, and runs nothing', () => {
+    const text = agentInstruction.proposeTestsForIssue([4, 6], 'SMB "signing" not required');
+    expect(text).toContain('on each of these hosts only (host ids): 4, 6:');
+    expect(text).toContain(`"SMB 'signing' not required"`);
+    expect(text).toContain('vulnerability_id');
+    expect(text).toContain('Do not run anything yet.');
   });
 
   it('reviewFinding asks for evidence ids, and never a guess', () => {

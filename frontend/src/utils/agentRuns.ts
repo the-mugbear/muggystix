@@ -213,6 +213,15 @@ export const agentInstruction = {
     + 'check the tests already on the host (host_tests_list) so you do not duplicate one, then use '
     + `host_tests_propose with vulnerability_id ${vulnerabilityId}: the exact command, what output would confirm it, `
     + 'and why. Do not run anything yet.',
+  /** The same, for ONE issue on a fixed list of its hosts (Scanner
+   *  observations).  The page knows the issue and the hosts, not each host's
+   *  row id, so the agent reads it (`assist_get_host_vulnerabilities`). */
+  proposeTestsForIssue: (hostIds: number[], title: string): string =>
+    'Propose a test in BlueStick that would confirm or rule out this scanner observation on each of these hosts '
+    + `only (host ids): ${hostIds.join(', ')}: "${title.replace(/"/g, "'").slice(0, 200)}". For each host, read the `
+    + 'observation (assist_get_host_vulnerabilities gives its vulnerability_id) and what the host exposes, check '
+    + 'the tests already on it (host_tests_list) so you do not duplicate one, then use host_tests_propose with '
+    + 'that vulnerability_id: the exact command, what output would confirm it, and why. Do not run anything yet.',
   /** Run the tests already proposed on one host and record what came back.
    *  The steps are the route's: claim the test (`in_progress`), record the
    *  evidence against it (`host_test_id` and `request_key` — the server
