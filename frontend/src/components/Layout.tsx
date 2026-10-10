@@ -44,7 +44,6 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { pollEvery, useFailureStreak } from '../lib/query';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
-import logger from '../utils/logger';
 import { HUBS, documentTitleFor, isCrossProjectPath, resolveActiveHub } from '../config/navigation';
 
 interface LayoutProps {
@@ -206,18 +205,9 @@ export default function Layout({ children }: LayoutProps) {
   const notificationsOn = isAuthenticated && !!currentProject;
   const unread = useQuery({
     queryKey: ['getUnreadNotificationCount'],
-    queryFn: async () => {
-      try {
-        return await getUnreadNotificationCount();
-      } catch (err) {
-        // Silent visually (the badge stays at last-known) but logged
-        // for triage — pre-fix this catch was completely swallowed.
-        logger.warn('NOTIFICATIONS', 'unread-count poll failed', {
-          message: (err as Error | undefined)?.message,
-        });
-        throw err;
-      }
-    },
+    // Silent visually (the badge stays at last-known); a failure is logged
+    // where every failed read is (`lib/query`).
+    queryFn: ({ signal }) => getUnreadNotificationCount(signal),
     enabled: notificationsOn,
     ...pollEvery(60_000),
   });

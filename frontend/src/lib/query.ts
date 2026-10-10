@@ -30,12 +30,33 @@
  *     Retry (`refetch`).  A list that must stay current polls (`pollEvery`).
  */
 import { useRef } from 'react';
-import { QueryClient, type Query } from '@tanstack/react-query';
+import { QueryCache, QueryClient, type Query } from '@tanstack/react-query';
 
 import { formatApiError } from '../utils/apiErrors';
+import logger from '../utils/logger';
 
-export function createQueryClient(): QueryClient {
+/**
+ * THE log line for a read that failed (owner decision 2026-10-10): which
+ * read, and with what — one place, so no `queryFn` wraps its request in a
+ * `try` to write its own.  The failure is said on screen by whoever shows the
+ * read; this is for the browser console, when someone is asked to look.
+ * Arguments are not logged (a filter can hold a host name), a cancelled
+ * request is not a failure, and a re-read failing again is logged again.
+ */
+function logFailedRead(error: unknown, query: Query<unknown, unknown, unknown>): void {
+  const failure = error as { name?: string; code?: string; message?: string; response?: { status?: number } } | null;
+  if (failure?.name === 'CanceledError' || failure?.name === 'CancelledError' || failure?.code === 'ERR_CANCELED') return;
+  logger.warn('READ', `${String(query.queryKey[0])} failed`, {
+    status: failure?.response?.status ?? null,
+    message: failure?.message ?? String(error),
+  });
+}
+
+export function createQueryClient({ logFailures = false }: { logFailures?: boolean } = {}): QueryClient {
   return new QueryClient({
+    // Off by default: a test's client would fill the run's output with the
+    // failures its cases cause on purpose.
+    queryCache: logFailures ? new QueryCache({ onError: logFailedRead }) : undefined,
     defaultOptions: {
       queries: {
         retry: false,
@@ -57,7 +78,7 @@ export function createQueryClient(): QueryClient {
 }
 
 /** The app's client.  Tests get a fresh one per render (setupTests). */
-export const queryClient = createQueryClient();
+export const queryClient = createQueryClient({ logFailures: true });
 
 /**
  * Options for a query that must stay current: re-read every `ms` while the

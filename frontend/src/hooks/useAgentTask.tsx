@@ -5,17 +5,26 @@
  * paste it — opening the Start Agent Session dialog to show one line was a
  * detour. With none, that dialog opens with the task, as before. A caller
  * renders `dialog` once and calls `give(task)` from as many controls as it has.
+ *
+ * 5.363.0 (owner decision 2026-10-10) — whether to copy or to open the dialog
+ * is still decided by a read made AT THE CLICK, never by a list that may be a
+ * minute old.  That read is the same cache entry as "your sessions"
+ * (`myAssistSessionsRead`), and the dialog shows that list itself: a Start, an
+ * End or a Resume reaches it like every other reader.  (The hook kept the
+ * click's answer in state, and the dialog and its panel each had a callback
+ * whose only job was to tell it to ask again.)
  */
 import React, { useCallback, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 
 import StartAssistDialog from '../components/StartAssistDialog';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
-import { listAgentSessions, type AgentSessionRow } from '../services/api';
-import { hasLiveKey, myActiveSessionFilters } from '../utils/agentRuns';
+import type { AgentSessionRow } from '../services/api';
+import { hasLiveKey } from '../utils/agentRuns';
 import { copyToClipboard } from '../utils/clipboard';
 import { useCanStartAgentSession } from './useCanStartAgentSession';
+import { myAssistSessionsRead, useMyAssistSessions } from './useMyAssistSessions';
 import { useProjectId } from './useProjectId';
 
 export interface AgentTask {
@@ -29,31 +38,29 @@ export const useAgentTask = (): AgentTask => {
   const allowed = useCanStartAgentSession();
   const { user } = useAuth();
   const toast = useToast();
-  const [instruction, setInstruction] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<AgentSessionRow[]>([]);
-
-  // Asked at the moment of the click, not read from a list that may be a
-  // minute old: whether to copy or to open the dialog turns on it.
+  const queryClient = useQueryClient();
   const projectId = useProjectId();
-  const { mutateAsync: lookUp } = useMutation({
-    mutationFn: (userId: number) => listAgentSessions(projectId, myActiveSessionFilters(userId)),
-  });
+  const [instruction, setInstruction] = useState<string | null>(null);
+  // The dialog's "your sessions": read only while the dialog is open.
+  const { sessions } = useMyAssistSessions({ enabled: instruction != null });
 
-  /** This operator's sessions whose key still works (as `useMyAssistSessions`). */
+  /** This operator's sessions whose key still works, as of now. */
   const mine = useCallback(async (): Promise<AgentSessionRow[]> => {
     if (user?.id == null) return [];
     try {
-      const { sessions: rows } = await lookUp(user.id);
+      const { sessions: rows } = await queryClient.fetchQuery({
+        ...myAssistSessionsRead(projectId, user.id),
+        staleTime: 0,
+      });
       const now = Date.now();
       return rows.filter((s) => hasLiveKey(s, now));
     } catch {
       return [];
     }
-  }, [user?.id, lookUp]);
+  }, [user?.id, projectId, queryClient]);
 
   const give = useCallback(async (task: string) => {
     const live = await mine();
-    setSessions(live);
     if (live.length > 0 && await copyToClipboard(task)) {
       toast.success(`Task copied — paste it to your agent (session #${live[0].id} is live).`, { autoHideMs: 6000 });
       return;
@@ -66,7 +73,6 @@ export const useAgentTask = (): AgentTask => {
       open
       onOpenChange={(next) => { if (!next) setInstruction(null); }}
       mySessions={sessions}
-      onSessionsChanged={async () => { setSessions(await mine()); }}
       instruction={instruction}
     />
   ) : null;

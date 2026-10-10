@@ -32,10 +32,6 @@ import { formatRelativeTime } from '../utils/relativeTime';
 
 export interface AssistSessionsPanelProps {
   sessions: AgentSessionRow[];
-  /** A session was ended here.  Only for a caller whose `sessions` are not a
-   *  query (`useAgentTask` asks at the click and keeps the answer): every
-   *  query of sessions is asked again by the End itself. */
-  onEnded?: () => void | Promise<void>;
   /** Called when a link leaves for a session's page, so the host dialog closes. */
   onNavigate?: () => void;
 }
@@ -66,7 +62,6 @@ const formatRemaining = (iso: string | null | undefined): { label: string; urgen
 
 export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
   sessions,
-  onEnded,
   onNavigate,
 }) => {
   const controls = useAgentSessionControls();
@@ -179,7 +174,7 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
                   variant="outline"
                   size="sm"
                   disabled={controls.isEnding(s.id)}
-                  onClick={() => void controls.requestEnd(s).then((ended) => { if (ended) void onEnded?.(); })}
+                  onClick={() => void controls.requestEnd(s)}
                   aria-label={`End agent session ${s.id}`}
                 >
                   {controls.isEnding(s.id) ? (

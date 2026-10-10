@@ -357,6 +357,50 @@ describe('useLastSettled — the last answer this component was given', () => {
   });
 });
 
+describe('a failed read is logged in one place (the app client)', () => {
+  const run = async (client: ReturnType<typeof createQueryClient>, queryFn: () => Promise<unknown>) => {
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(
+      () => useQuery({ queryKey: ['listThings', 7, { search: 'dc01.corp.example' }], queryFn }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    return result;
+  };
+
+  it('says which read and with what status — not its arguments; again when a re-read fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const down = Object.assign(new Error('Request failed with status code 503'), { response: { status: 503 } });
+      const result = await run(createQueryClient({ logFailures: true }), () => Promise.reject(down));
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [line, details] = warn.mock.calls[0];
+      expect(line).toContain('[READ] listThings failed');
+      expect(details).toEqual({ status: 503, message: 'Request failed with status code 503' });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('dc01.corp.example');
+
+      await act(async () => { await result.current.refetch(); });
+      await waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a cancelled request is not a failure, and a client made without the option logs nothing', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const cancelled = Object.assign(new Error('canceled'), { name: 'CanceledError', code: 'ERR_CANCELED' });
+      await run(createQueryClient({ logFailures: true }), () => Promise.reject(cancelled));
+      await run(createQueryClient(), () => Promise.reject(new Error('down')));
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe('useFailureStreak — failures in a row since the last answer', () => {
   it('counts each failed re-read, and starts again at the next answer', async () => {
     let fail = false;

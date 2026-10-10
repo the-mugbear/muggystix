@@ -573,7 +573,9 @@ describe('useListQuery — lastResponse, loadMoreError, dedupeBy', () => {
     expect(result.current.lastResponse?.chips).toBe('chips of a from 0');
 
     await doing(async () => { slow.resolve({ items: rows('b', 1, 1), total: 1, chips: 'chips of b' }); });
-    expect(result.current.lastResponse?.chips).toBe('chips of b');
+    // (The component hears of the answer a tick after it settles: asserted
+    // straight after, this failed about once in several full runs.)
+    await waitFor(() => expect(result.current.lastResponse?.chips).toBe('chips of b'));
   });
 
   it('loadMoreError says a failed "Show more" — of this list only — until the next attempt or a reload', async () => {

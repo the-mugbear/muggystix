@@ -8,7 +8,8 @@
  * second id and a server-derived status.
  */
 import React from 'react';
-import { act, render, renderHook, screen } from '@testing-library/react';
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { useQueryClient } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({ listAgentSessions: vi.fn() }));
@@ -23,7 +24,9 @@ vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentPr
 const can = vi.hoisted(() => ({ value: true }));
 vi.mock('../../hooks/useCanStartAgentSession', () => ({ useCanStartAgentSession: () => can.value }));
 vi.mock('../../components/StartAssistDialog', () => ({
-  default: ({ instruction }: { instruction?: string }) => <div data-testid="start-dialog">{instruction}</div>,
+  default: ({ instruction, mySessions = [] }: { instruction?: string; mySessions?: { id: number }[] }) => (
+    <div data-testid="start-dialog" data-sessions={mySessions.map((s) => s.id).join(',')}>{instruction}</div>
+  ),
 }));
 
 import { useAgentTask } from '../../hooks/useAgentTask';
@@ -55,10 +58,45 @@ describe('useAgentTask', () => {
     render(<Harness onReady={(g) => { give = g; }} />);
     await act(() => give('Propose tests for host 5'));
     // Asked of the server: this operator's active project sessions.
-    expect(api.listAgentSessions).toHaveBeenCalledWith(1, { kind: 'project', status: 'active', user_id: 7 });
+    expect(api.listAgentSessions).toHaveBeenCalledWith(
+      1, { kind: 'project', status: 'active', user_id: 7 }, expect.anything(),
+    );
     expect(copy).toHaveBeenCalledWith('Propose tests for host 5');
     expect(toast.success.mock.calls[0][0]).toContain('session #79');
     expect(screen.queryByTestId('start-dialog')).not.toBeInTheDocument();
+  });
+
+  // The decision is never made from a list that may be a minute old: a
+  // session that ended since the last click is not "live".
+  it('asks again at every click — a session ended in between opens the dialog, not a copy', async () => {
+    api.listAgentSessions.mockResolvedValue(listed(session()));
+    let give!: (t: string) => Promise<void>;
+    render(<Harness onReady={(g) => { give = g; }} />);
+    await act(() => give('first task'));
+    expect(copy).toHaveBeenCalledTimes(1);
+
+    api.listAgentSessions.mockResolvedValue(listed());
+    await act(() => give('second task'));
+    expect(copy).toHaveBeenCalledTimes(1);
+    expect(await screen.findByTestId('start-dialog')).toHaveTextContent('second task');
+  });
+
+  // 5.363.0 — the dialog's "your sessions" is the shared list, so a session
+  // started or ended elsewhere reaches it (it was the click's answer, kept in
+  // state, and two callbacks told the hook to ask again).
+  it('the dialog is given the shared list of sessions, which follows a change made elsewhere', async () => {
+    api.listAgentSessions.mockResolvedValue(listed());
+    let give!: (t: string) => Promise<void>;
+    let client!: ReturnType<typeof useQueryClient>;
+    const Probe = () => { client = useQueryClient(); return null; };
+    render(<><Probe /><Harness onReady={(g) => { give = g; }} /></>);
+    await act(() => give('a task'));
+    expect(await screen.findByTestId('start-dialog')).toHaveAttribute('data-sessions', '');
+
+    // Another surface started a session and said the lists are out of date.
+    api.listAgentSessions.mockResolvedValue(listed(session({ id: 91 })));
+    await act(async () => { await client.invalidateQueries({ queryKey: ['listAgentSessions'] }); });
+    await waitFor(() => expect(screen.getByTestId('start-dialog')).toHaveAttribute('data-sessions', '91'));
   });
 
   it('opens the start dialog with the task when no session of the caller is live', async () => {

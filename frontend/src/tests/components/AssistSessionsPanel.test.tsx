@@ -44,16 +44,16 @@ const session = (over: Partial<AgentSessionRow> = {}): AgentSessionRow => ({
 
 // 5.351.0 — an End no longer runs a caller's re-read (`onChanged`): it says
 // the reads of sessions are out of date, and whatever lists them reads again.
-// This stands in for the caller's list of the operator's sessions.  `onEnded`
-// remains for the one caller whose list is not a query (`useAgentTask`).
+// This stands in for the caller's list of the operator's sessions.  (5.363.0 —
+// `onEnded` is gone: its one caller, `useAgentTask`, reads the same list.)
 const { reread, ReadsOnScreen } = readsOnScreen({ listAgentSessions: 'sessions' });
 
-const renderPanel = (sessions: AgentSessionRow[], onEnded = vi.fn(), onNavigate = vi.fn()) =>
+const renderPanel = (sessions: AgentSessionRow[], onNavigate = vi.fn()) =>
   render(
     <MemoryRouter>
       <TooltipProvider>
         <ReadsOnScreen />
-        <AssistSessionsPanel sessions={sessions} onEnded={onEnded} onNavigate={onNavigate} />
+        <AssistSessionsPanel sessions={sessions} onNavigate={onNavigate} />
       </TooltipProvider>
     </MemoryRouter>,
   );
@@ -114,17 +114,15 @@ describe('AssistSessionsPanel', () => {
   });
 
   it('ends a session only after confirmation, then refreshes', async () => {
-    const onEnded = vi.fn();
-    renderPanel([session()], onEnded);
+    renderPanel([session()]);
 
     fireEvent.click(screen.getByRole('button', { name: /end agent session 12/i }));
     // Revoking a key mid-conversation is disruptive enough to confirm.
     fireEvent.click(await screen.findByRole('button', { name: /^end session$/i }));
 
     await waitFor(() => expect(endAgentSession).toHaveBeenCalledWith(1, 12));
-    // The lists of sessions are read again — once — and the caller is told.
+    // The lists of sessions are read again — once.
     await waitFor(() => expect(reread).toHaveBeenCalledWith('sessions'));
-    await waitFor(() => expect(onEnded).toHaveBeenCalledTimes(1));
     expect(reread).toHaveBeenCalledTimes(1);
     expect(success).toHaveBeenCalled();
   });
@@ -138,15 +136,13 @@ describe('AssistSessionsPanel', () => {
 
   it('surfaces a failure instead of silently appearing to succeed', async () => {
     endAgentSession.mockRejectedValue(new Error('boom'));
-    const onEnded = vi.fn();
-    renderPanel([session()], onEnded);
+    renderPanel([session()]);
 
     fireEvent.click(screen.getByRole('button', { name: /end agent session 12/i }));
     fireEvent.click(await screen.findByRole('button', { name: /^end session$/i }));
 
     await waitFor(() => expect(error).toHaveBeenCalled());
     expect(success).not.toHaveBeenCalled();
-    expect(onEnded).not.toHaveBeenCalled();
     expect(reread).not.toHaveBeenCalled();
   });
 
@@ -184,7 +180,7 @@ describe('AssistSessionsPanel', () => {
   // numbered like everywhere else.
   it('opens each session on its page and links to the full list, closing the dialog', () => {
     const onNavigate = vi.fn();
-    renderPanel([session({ id: 72 })], vi.fn(), onNavigate);
+    renderPanel([session({ id: 72 })], onNavigate);
     expect(screen.getByText('#72')).toBeInTheDocument();
     const open = screen.getByRole('link', { name: 'Open agent session 72' });
     expect(open).toHaveAttribute('href', '/agent-sessions/72');

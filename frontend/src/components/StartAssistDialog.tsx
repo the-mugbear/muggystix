@@ -62,10 +62,6 @@ export interface StartAssistDialogProps {
   /** The operator's own active sessions, shown above the start form so they
    *  can see (and revoke) a key they already hold. Omit to hide the panel. */
   mySessions?: AgentSessionRow[];
-  /** This dialog started or ended a session.  Only for a caller whose
-   *  `mySessions` are not a query (`useAgentTask` asks at the click and keeps
-   *  the answer): every query of sessions is asked again by the write itself. */
-  onSessionsChanged?: () => void | Promise<void>;
   /** A one-line task to give the agent (e.g. "Propose tests in BlueStick
    *  for these hosts only…"), shown to copy before and after the session
    *  starts. */
@@ -84,7 +80,6 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   onOpenChange,
   onSessionStarted,
   mySessions = [],
-  onSessionsChanged,
   instruction,
 }) => {
   const liveSession = instruction ? mySessions.find((s) => hasLiveKey(s, Date.now())) : undefined;
@@ -99,13 +94,9 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
     onSuccess: () => {
       // The new key is live the moment this returns — reflect it wherever the
       // operator's sessions are shown: every read of sessions (this dialog's
-      // own list, the rail, the Operations line), and a caller that keeps
-      // its list by hand.  A re-read that fails must not fail the start: the
-      // key in its answer is shown once.
+      // own list, the rail, the Operations line).  A re-read that fails does
+      // not fail the start: the key in its answer is shown once.
       void invalidateReads(queryClient, 'listAgentSessions');
-      try {
-        void Promise.resolve(onSessionsChanged?.()).catch(() => undefined);
-      } catch { /* the caller's re-read, not the start */ }
     },
   });
   const loading = start.isPending;
@@ -208,7 +199,6 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
               )}
               <AssistSessionsPanel
                 sessions={mySessions}
-                onEnded={onSessionsChanged}
                 onNavigate={() => { reset(); onOpenChange(false); }}
               />
               {mySessions.length === 0 && (

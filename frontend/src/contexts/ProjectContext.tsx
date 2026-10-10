@@ -143,14 +143,7 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
   const queryClient = useQueryClient();
   const list = useQuery({
     queryKey: PROJECTS_KEY,
-    queryFn: async () => {
-      try {
-        return await getProjects();
-      } catch (err) {
-        console.error('Failed to load projects:', err);
-        throw err;
-      }
-    },
+    queryFn: ({ signal }) => getProjects(signal),
   });
   const projects = list.data ?? NO_PROJECTS;
 

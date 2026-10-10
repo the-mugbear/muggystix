@@ -34,6 +34,16 @@ import { useProjectId } from './useProjectId';
 
 const NONE: AgentSessionRow[] = [];
 
+/** THE read of an operator's own active sessions: its key, and how it is
+ *  asked.  One definition, so a read made at a click (`useAgentTask`) and the
+ *  list a dialog shows are the same cache entry — a Start, End or Resume
+ *  reaches both. */
+export const myAssistSessionsRead = (projectId: number, userId: number) => ({
+  queryKey: ['listAgentSessions', projectId, myActiveSessionFilters(userId)] as const,
+  queryFn: ({ signal }: { signal?: AbortSignal }) =>
+    listAgentSessions(projectId, myActiveSessionFilters(userId), { signal }),
+});
+
 export interface UseMyAssistSessions {
   /** Live sessions started by the current user, newest first. */
   sessions: AgentSessionRow[];
@@ -51,8 +61,8 @@ export const useMyAssistSessions = (
   const on = enabled && userId != null;
   const projectId = useProjectId();
   const query = useQuery({
-    queryKey: ['listAgentSessions', projectId, userId == null ? null : myActiveSessionFilters(userId)],
-    queryFn: ({ signal }) => listAgentSessions(projectId, myActiveSessionFilters(userId as number), { signal }),
+    // (No user: never asked — `on` is false; the key only has to be one.)
+    ...myAssistSessionsRead(projectId, userId ?? 0),
     enabled: on,
   });
 
