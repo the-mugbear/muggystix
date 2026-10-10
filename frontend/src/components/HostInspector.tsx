@@ -1164,8 +1164,9 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
             />
           ) : (
             <VulnerabilityGroup
-              // Host-qualified: the inspector stays mounted across prev/next, and
-              // an issue shared by two hosts must not carry its open state over.
+              // Host-qualified, on top of the inspector's body being keyed by
+              // host: an issue shared by two hosts must never carry its open
+              // state over.
               key={`${host.id}:${item.group.key}`}
               group={item.group}
               {...rowProps}

@@ -274,8 +274,9 @@ export const HostTestRow: React.FC<{
   const projectId = useProjectId();
   const needsDecision = (test.unpromoted_findings ?? 0) > 0;
   const [open, setOpen] = useState(defaultOpen || needsDecision);
-  // A link can arrive while the row is already mounted (the inspector stays
-  // mounted across hosts and hash changes).
+  // A link can arrive while the row is already mounted: the address's hash
+  // can change with this host still on screen.  (Another host is another
+  // mount — the section is keyed by host.)
   useEffect(() => { if (defaultOpen) setOpen(true); }, [defaultOpen]);
   const [dismissing, setDismissing] = useState(false);
   const [reason, setReason] = useState('');
@@ -524,8 +525,8 @@ const SectionBody: React.FC<{ ctl: HostTestsController; onDirtyChange?: (dirty: 
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   // A test linked by the URL (`#host-test-12`) is shown whatever its status.
-  // Re-read on every navigation: the inspector stays mounted across hosts, so
-  // a hash read once at mount pointed at the previous link's test.
+  // Re-read on every navigation: the hash can change with this host still on
+  // screen, so a hash read once at mount pointed at the previous link's test.
   const location = useLocation();
   const linkedId = useMemo(() => {
     const match = typeof window !== 'undefined' ? window.location.hash.match(/^#host-test-(\d+)$/) : null;

@@ -116,7 +116,14 @@ const ProjectSettings: React.FC = () => {
   };
   const [edits, setEdits] = useState<Partial<Details>>({});
   const details: Details = { ...saved, ...edits };
-  const setDetails = (next: Details) => setEdits(next);
+  // Only the fields that differ from what is saved are edits.  (Keeping the
+  // whole form made every field an edit at the first keystroke: the others
+  // stopped following the project, and Save wrote their old values back.)
+  const setDetails = (next: Details) => setEdits(
+    Object.fromEntries(
+      (Object.keys(next) as Array<keyof Details>).filter((k) => next[k] !== saved[k]).map((k) => [k, next[k]]),
+    ) as Partial<Details>,
+  );
   const detailsDirty = JSON.stringify(details) !== JSON.stringify(saved);
 
   const detailsSave = useMutation({

@@ -34,12 +34,13 @@ vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, confirmMock]
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }));
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 let myRole = 'admin';
+let serverDescription: string | null = null;
 // A NEW object on every call, on purpose: the page must not loop or reset its
 // form when a refresh hands back an equal project.
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({
     currentProject: {
-      id: 3, name: 'Demo — Insights Eval', description: null, status: 'active',
+      id: 3, name: 'Demo — Insights Eval', description: serverDescription, status: 'active',
       start_date: null, end_date: null, my_role: myRole,
     },
     projects: [{ id: 3 }, { id: 4 }],
@@ -60,6 +61,7 @@ const renderPage = () => render(<MemoryRouter><ProjectSettings /></MemoryRouter>
 beforeEach(() => {
   vi.clearAllMocks();
   myRole = 'admin';
+  serverDescription = null;
   globalRole = 'member';
   apiMock.get.mockResolvedValue({ data: members });
   apiMock.put.mockResolvedValue({ data: {} });
@@ -91,6 +93,38 @@ describe('Project settings', () => {
     await waitFor(() => expect(updateProjectMock).toHaveBeenCalledWith(3, expect.objectContaining({
       start_date: new Date('2026-09-01').toISOString(), end_date: new Date('2026-09-19').toISOString(),
     })));
+  });
+
+  // Plan B34: the first keystroke copied the WHOLE form into "edits", so every
+  // other field stopped following the project — a description a teammate had
+  // just saved was shown stale, and Save then wrote the stale one back over it.
+  it('an edit to one field leaves the others following the project', async () => {
+    updateProjectMock.mockResolvedValue({});
+    const view = renderPage();
+    await screen.findByText('Ana');
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } });
+
+    // A teammate saves a description; the project list is read again.
+    serverDescription = 'Internal network, autumn.';
+    view.rerender(<MemoryRouter><ProjectSettings /></MemoryRouter>);
+    expect(screen.getByLabelText('Description')).toHaveValue('Internal network, autumn.');
+    // …and what this reader typed is still there.
+    expect(screen.getByLabelText('Name')).toHaveValue('Renamed');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save details' }));
+    await waitFor(() => expect(updateProjectMock).toHaveBeenCalledWith(3, expect.objectContaining({
+      name: 'Renamed', description: 'Internal network, autumn.',
+    })));
+  });
+
+  it('typing a field back to what is saved is no longer an edit', async () => {
+    renderPage();
+    await screen.findByText('Ana');
+    const save = screen.getByRole('button', { name: 'Save details' });
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } });
+    expect(save).toBeEnabled();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Demo — Insights Eval' } });
+    expect(save).toBeDisabled();
   });
 
   // Owner decision 47 (2026-10-10): a new member starts as a VIEWER on every
