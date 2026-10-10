@@ -55,7 +55,9 @@ const ROUTE_SKELETON: Array<{ pattern: string; kind: RouteSkeletonKind }> = [
   { pattern: '/portfolio', kind: 'cards' },
   { pattern: '/oversight', kind: 'cards' },
   { pattern: '/llm-settings', kind: 'cards' },
-  { pattern: '/integrations', kind: 'cards' },
+  // (Scanner Integrations is a section with one table since its card grid
+  // went: the list skeleton, said here so it is not put back among the cards.)
+  { pattern: '/integrations', kind: 'list' },
   { pattern: '/operations', kind: 'cards' },
   { pattern: '/inventory', kind: 'cards' },
   { pattern: '/workflows', kind: 'cards' },

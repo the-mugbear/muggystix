@@ -20,8 +20,8 @@ import {
   LLMProviderCreatePayload,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
-import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
+import { SettingsPage, useSecretSave, useSettingsReads } from '../components/settings/SecretSettingsShell';
 import { useConfirm } from '../hooks/useConfirm';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
@@ -99,19 +99,13 @@ const LLMSettings: React.FC = () => {
   });
   const providers: LLMProviderEntry[] = providersQuery.data ?? [];
   const types: LLMProviderTypeOption[] = typesQuery.data ?? [];
-  // The skeleton is for the FIRST load only (no providers read yet).  A later
-  // read — after a save, or Retry — keeps the rows on screen; if it fails they
-  // stay, with the failure said above them.
-  const loading = providersQuery.data === undefined && providersQuery.isFetching;
-  const failed = [providersQuery, typesQuery].find((q) => q.isError && !q.isFetching);
-  const error = queryErrorText(failed?.error, 'Failed to load LLM providers.');
-  // A failed load is said on the page, where the providers would be, with
-  // Retry — never as a toast over "No LLM providers configured yet."  Retry
-  // asks again for what failed; providers already read stay beside it.
-  const retryLoad = () => {
-    if (providersQuery.isError) void providersQuery.refetch();
-    if (typesQuery.isError) void typesQuery.refetch();
-  };
+  // The skeleton is for the FIRST load only; a failed load is said on the
+  // page, where the providers would be, with Retry — never as a toast over
+  // "No LLM providers configured yet." (`useSettingsReads`, shared with
+  // Scanner Integrations).
+  const { loading, error, retry: retryLoad } = useSettingsReads(
+    providersQuery, typesQuery, 'Failed to load LLM providers.',
+  );
 
   const [dialogOpen, setDialogOpen] = useState(false);
   // WHICH provider is being edited (null: a new one).  The provider itself is
@@ -142,9 +136,10 @@ const LLMSettings: React.FC = () => {
 
   const providersChanged = () => queryClient.invalidateQueries({ queryKey: ['listLLMProviders'] });
 
-  const save = useMutation({
-    // What is saved is what was handed over with the click, not whatever the
-    // form holds when the request is built.
+  // The save sends the API key as typed: nothing of it is kept once it has
+  // settled (`useSecretSave` — the one save shared with Scanner Integrations;
+  // this page's own save used to keep the key in the library's cache).
+  const { saving, save } = useSecretSave({
     mutationFn: async (
       { id, form }: { id: number | null; form: LLMProviderCreatePayload },
     ): Promise<'updated' | 'added'> => {
@@ -167,15 +162,14 @@ const LLMSettings: React.FC = () => {
       });
       return 'added';
     },
-    onSuccess: (outcome) => {
-      toast.success(outcome === 'updated' ? 'Provider updated.' : 'Provider added.');
+    savedText: { updated: 'Provider updated.', added: 'Provider added.' },
+    failedText: 'Failed to save provider.',
+    onSaved: () => {
       setDialogOpen(false);
       return providersChanged();
     },
-    onError: (err) => toast.error(formatApiError(err, 'Failed to save provider.')),
   });
-  const saving = save.isPending;
-  const handleSave = () => save.mutate({ id: editingId, form });
+  const handleSave = () => save({ id: editingId, form });
 
   // The edit dialog's "clear" beside a stored key: removed at once, not on Save.
   const clearKey = useMutation({
@@ -227,27 +221,21 @@ const LLMSettings: React.FC = () => {
   const urlError = validateBaseUrl(form.base_url);
 
   return (
-    <div className="p-md md:p-lg">
-      <div className="mb-md flex flex-col gap-xs sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-page-title">LLM Providers</h1>
-          <p className="mt-xxs text-metadata text-muted-foreground">
-            Configure API keys and base URLs for hosted and local LLMs. API keys are encrypted at
-            rest with a key derived from the app's SECRET_KEY.
-          </p>
-        </div>
+    // Every user manages their OWN providers: the add button is everyone's.
+    <SettingsPage
+      title="LLM Providers"
+      lead={<>
+        Configure API keys and base URLs for hosted and local LLMs. API keys are encrypted at
+        rest with a key derived from the app's SECRET_KEY.
+      </>}
+      action={(
         <Button onClick={openNew}>
           <Plus className="size-4" aria-hidden /> Add Provider
         </Button>
-      </div>
-
-      {error && (
-        <p role="alert" className="mb-md break-words text-metadata text-destructive">
-          {error}{' '}
-          <button type="button" className="text-info hover:underline" onClick={retryLoad}>Retry</button>
-        </p>
       )}
-
+      error={error}
+      onRetry={retryLoad}
+    >
       {loading ? (
         <CardListSkeleton count={3} cardHeight={200} />
       ) : providers.length === 0 ? !error && (
@@ -463,7 +451,7 @@ const LLMSettings: React.FC = () => {
       </Dialog>
 
       {confirmEl}
-    </div>
+    </SettingsPage>
   );
 };
 

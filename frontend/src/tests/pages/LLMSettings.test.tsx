@@ -7,6 +7,9 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createQueryClient } from '../../lib/query';
+import { heldByMutations, withClient } from '../helpers/heldByMutations';
+
 vi.mock('../../services/api', () => ({
   listLLMProviders: vi.fn(),
   listLLMProviderTypes: vi.fn(),
@@ -188,6 +191,37 @@ describe('LLM providers — the edit dialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(mocked.updateLLMProvider).toHaveBeenCalledWith(4, expect.objectContaining({ name: 'Work OpenAI' })));
     expect(mocked.createLLMProvider).not.toHaveBeenCalled();
+  });
+
+  // B2 (d) — the save sends the API key as typed: like the integration's, it
+  // is a `SECRET_MUTATION` that is reset once used (it was neither).
+  it('the API key that was typed is not held once the save has settled', async () => {
+    const KEY = 'sk-zebra-key-4471';
+    const client = createQueryClient();
+    render(<LLMSettings />, { wrapper: withClient(client) });
+    fireEvent.click(await screen.findByRole('button', { name: /Add Provider/ }));
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Work key' } });
+    fireEvent.change(screen.getByLabelText(/API Key/i), { target: { value: KEY } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocked.createLLMProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Work key', api_key: KEY }),
+    ));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(toast.success).toHaveBeenCalledWith('Provider added.');
+    await waitFor(() => expect(heldByMutations(client)).not.toContain(KEY));
+    expect(document.body.textContent).not.toContain(KEY);
+  });
+
+  it('a save that fails says why and keeps the dialog and what was typed', async () => {
+    mocked.createLLMProvider.mockRejectedValue({ response: { status: 409, data: { detail: 'That name is taken.' } } });
+    render(<LLMSettings />);
+    fireEvent.click(await screen.findByRole('button', { name: /Add Provider/ }));
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Work OpenAI' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('That name is taken.'));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByLabelText('Name')).toHaveValue('Work OpenAI');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
   });
 
   it('adds a new provider from the form', async () => {

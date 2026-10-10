@@ -88,6 +88,45 @@ describe('Scanner Integrations — a member reads, a global admin changes', () =
     expect(screen.getByRole('button', { name: 'Delete integration Client X Nessus' })).toBeInTheDocument();
   });
 
+  // Sections, not cards (UI_STYLE_GUIDE §7): one table, a row per integration.
+  it('lists the integrations as rows of one table — no card anywhere', async () => {
+    account.role = 'admin';
+    const LONG = `nessus-${'x'.repeat(200)}`;
+    mocked.listIntegrations.mockResolvedValue([
+      entry,
+      { ...entry, id: 5, name: LONG, base_url: null, has_secret: false, has_secret2: true, is_active: false },
+    ]);
+    const { container } = renderPage();
+    const table = await screen.findByRole('table', { name: 'Scanner integrations' });
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent))
+      .toEqual(['Scanner', 'Base URL', 'Stored secrets', 'Actions']);
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]).getByText('Client X Nessus')).toBeInTheDocument();
+    expect(within(rows[0]).getByText('https://nessus.example:8834')).toBeInTheDocument();
+    expect(within(rows[0]).getByText('Secret set')).toBeInTheDocument();
+    expect(within(rows[0]).getByRole('button', { name: 'Edit integration Client X Nessus' })).toBeInTheDocument();
+    // An unbounded name truncates with its full value on the title; no URL is a dash;
+    // an inactive scanner says so.
+    expect(within(rows[1]).getByText(LONG)).toHaveClass('truncate');
+    expect(within(rows[1]).getByText(LONG)).toHaveAttribute('title', LONG);
+    expect(within(rows[1]).getByText('—')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('No secret')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('Secondary secret')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('disabled')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Configured scanners\s*2/ })).toBeInTheDocument();
+    // The Card primitive is `rounded-panel border bg-card … shadow-raised`.
+    expect(container.querySelector('.bg-card.shadow-raised')).toBeNull();
+    expect(container.querySelector('.rounded-panel.border.bg-card')).toBeNull();
+  });
+
+  it('a member’s table has no Actions column', async () => {
+    renderPage();
+    const table = await screen.findByRole('table', { name: 'Scanner integrations' });
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent))
+      .toEqual(['Scanner', 'Base URL', 'Stored secrets']);
+  });
+
   it('says whose it was when the account that configured it is gone', async () => {
     mocked.listIntegrations.mockResolvedValue([{ ...entry, created_by: null }]);
     renderPage();

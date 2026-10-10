@@ -24,19 +24,21 @@ import {
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
-import { SECRET_MUTATION, queryErrorText } from '../lib/query';
+import { SECRET_MUTATION } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
+import { SettingsPage, useSecretSave, useSettingsReads } from '../components/settings/SecretSettingsShell';
+import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import { Button } from '../components/ui/button';
-import { Card, CardContent } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
-import { CardListSkeleton } from '../components/PageSkeleton';
 import { Switch } from '../components/ui/switch';
-import { Separator } from '../components/ui/separator';
 import { PasswordInput, validateBaseUrl } from '../components/ui/password-input';
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '../components/ui/table';
 import {
   Select,
   SelectContent,
@@ -128,19 +130,13 @@ const IntegrationSettings: React.FC = () => {
   });
   const integrations: IntegrationEntry[] = integrationsQuery.data ?? [];
   const types: Array<{ value: string; label: string }> = typesQuery.data ?? [];
-  // The skeleton is for the FIRST load only (no integrations read yet).  A
-  // later read — after a save, or Retry — keeps the rows on screen; if it
-  // fails they stay, with the failure said above them.
-  const loading = integrationsQuery.data === undefined && integrationsQuery.isFetching;
-  const failed = [integrationsQuery, typesQuery].find((q) => q.isError && !q.isFetching);
-  const error = queryErrorText(failed?.error, 'Failed to load integrations.');
-  // A failed load is said on the page, where the integrations would be, with
-  // Retry — never as a toast over "No integrations configured yet."  Retry
-  // asks again for what failed; integrations already read stay beside it.
-  const retryLoad = () => {
-    if (integrationsQuery.isError) void integrationsQuery.refetch();
-    if (typesQuery.isError) void typesQuery.refetch();
-  };
+  // The loading line is for the FIRST load only; a failed load is said on the
+  // page, where the integrations would be, with Retry — never as a toast over
+  // "No integrations configured yet." (`useSettingsReads`, shared with LLM
+  // Providers).
+  const { loading, error, retry: retryLoad } = useSettingsReads(
+    integrationsQuery, typesQuery, 'Failed to load integrations.',
+  );
 
   const [dialogOpen, setDialogOpen] = useState(false);
   // WHICH integration is being edited (null: a new one).  The integration
@@ -247,12 +243,9 @@ const IntegrationSettings: React.FC = () => {
 
   const integrationsChanged = () => queryClient.invalidateQueries({ queryKey: ['listIntegrations'] });
 
-  const save = useMutation({
-    // It carries the secrets as typed: nothing of it is kept once it has
-    // settled (`SECRET_MUTATION`, and the `reset` where it is called).
-    ...SECRET_MUTATION,
-    // What is saved is what was handed over with the click, not whatever the
-    // form holds when the request is built.
+  // The save carries the secrets as typed: nothing of it is kept once it has
+  // settled (`useSecretSave` — the one save shared with LLM Providers).
+  const { saving, save } = useSecretSave({
     mutationFn: async ({ id, form, extraConfig }: {
       id: number | null;
       form: IntegrationCreatePayload;
@@ -279,18 +272,14 @@ const IntegrationSettings: React.FC = () => {
       });
       return 'added';
     },
-    onSuccess: (outcome) => {
-      toast.success(outcome === 'updated' ? 'Integration updated.' : 'Integration added.');
+    savedText: { updated: 'Integration updated.', added: 'Integration added.' },
+    failedText: 'Failed to save integration.',
+    onSaved: () => {
       setDialogOpen(false);
       return integrationsChanged();
     },
-    onError: (err) => toast.error(formatApiError(err, 'Failed to save integration.')),
   });
-  const saving = save.isPending;
-  const handleSave = () => save.mutate(
-    { id: editingId, form, extraConfig: buildExtraConfig() },
-    { onSettled: () => save.reset() },
-  );
+  const handleSave = () => save({ id: editingId, form, extraConfig: buildExtraConfig() });
 
   // The edit dialog's "clear" beside a stored secret: removed at once, not on Save.
   const clearSecret = useMutation({
@@ -329,115 +318,138 @@ const IntegrationSettings: React.FC = () => {
   const urlError = validateBaseUrl(form.base_url);
 
   return (
-    <div className="p-md md:p-lg">
-      <div className="mb-md flex flex-col gap-xs sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-page-title">Scanner Integrations</h1>
-          <p className="mt-xxs text-metadata text-muted-foreground">
-            The scanners this installation has configured (Nessus, OpenVAS, Nuclei, Burp, etc),
-            for every project. Secrets are encrypted at rest and shown to no one here. An agent
-            can see that a scanner is configured and is told to ask its operator before using it;
-            it is given that scanner's credentials only when it then requests them, and every
-            request is recorded.
-            {!canManage && ' A global administrator adds and changes them.'}
-          </p>
-        </div>
-        {canManage && (
-          <Button onClick={openNew}>
-            <Plus className="size-4" aria-hidden /> Add Integration
-          </Button>
-        )}
-      </div>
-
-      {error && (
-        <p role="alert" className="mb-md break-words text-metadata text-destructive">
-          {error}{' '}
-          <button type="button" className="text-info hover:underline" onClick={retryLoad}>Retry</button>
-        </p>
-      )}
-
-      {loading ? (
-        <CardListSkeleton count={3} cardHeight={180} />
-      ) : integrations.length === 0 ? !error && (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-sm p-xxl text-center">
-            <KeyRound className="size-12 text-muted-foreground" aria-hidden />
-            <p className="text-metadata text-muted-foreground">No integrations configured yet.</p>
-            {canManage && (
-              <>
-                <p className="text-caption text-muted-foreground">
-                  Add one so that agents can see it and ask to use it.
-                </p>
-                <Button onClick={openNew}>
-                  <Plus className="size-4" aria-hidden /> Add Your First Integration
-                </Button>
-              </>
-            )}
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="grid grid-cols-1 gap-md sm:grid-cols-2 lg:grid-cols-3">
-          {integrations.map((r) => (
-            <Card key={r.id} className={r.is_active ? '' : 'opacity-60'}>
-              <CardContent className="p-md">
-                <div className="mb-xs flex items-start justify-between gap-xs">
-                  <div className="min-w-0">
-                    <p className="truncate text-subheading font-semibold">{r.name}</p>
-                    <p className="text-caption text-muted-foreground">{r.integration_type}</p>
-                  </div>
-                  {!r.is_active && <Badge variant="muted">disabled</Badge>}
-                </div>
-                {r.base_url && (
-                  <p className="text-metadata break-words">
-                    <strong className="text-foreground">URL:</strong> {r.base_url}
+    // Sections, not cards (UI_STYLE_GUIDE §7): the page's one explanation,
+    // then ONE table of the configured scanners, a row each with its actions
+    // (it was a card per integration).
+    <SettingsPage
+      title="Scanner Integrations"
+      lead={<>
+        The scanners this installation has configured (Nessus, OpenVAS, Nuclei, Burp, etc),
+        for every project. Secrets are encrypted at rest and shown to no one here. An agent
+        can see that a scanner is configured and is told to ask its operator before using it;
+        it is given that scanner's credentials only when it then requests them, and every
+        request is recorded.
+        {!canManage && ' A global administrator adds and changes them.'}
+      </>}
+      action={canManage ? (
+        <Button onClick={openNew}>
+          <Plus className="size-4" aria-hidden /> Add Integration
+        </Button>
+      ) : undefined}
+      error={error}
+      onRetry={retryLoad}
+    >
+      <PostureSection
+        title={<>
+          Configured scanners
+          {integrationsQuery.data && <SectionCount>{integrations.length.toLocaleString()}</SectionCount>}
+        </>}
+      >
+        {loading ? (
+          <div role="status" aria-label="Loading the integrations…" className="flex max-w-3xl flex-col gap-xs">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="h-6 animate-pulse rounded-control bg-muted" aria-hidden />
+            ))}
+          </div>
+        ) : integrations.length === 0 ? !error && (
+          // An empty state on a rule, not a centred card (§13).
+          <div className="flex max-w-2xl items-start gap-sm border-l-4 border-border py-xs pl-md">
+            <KeyRound className="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden />
+            <div className="min-w-0">
+              <p className="text-metadata text-muted-foreground">No integrations configured yet.</p>
+              {canManage && (
+                <>
+                  <p className="mt-xxs text-caption text-muted-foreground">
+                    Add one so that agents can see it and ask to use it.
                   </p>
-                )}
-                <div className="mt-xs flex flex-wrap gap-xxs">
-                  <Badge variant={r.has_secret ? 'success' : 'muted'}>
-                    {r.has_secret ? 'Secret set' : 'No secret'}
-                  </Badge>
-                  {r.has_secret2 && <Badge variant="success">Secondary secret</Badge>}
-                </div>
-                <p className="mt-xs truncate text-caption text-muted-foreground">
-                  Configured by {r.created_by ?? 'an account that has since been removed'}
-                </p>
-                {canManage && (<>
-                <Separator className="my-sm" />
-                <div className="flex gap-xxs">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => openEdit(r)}
-                        aria-label={`Edit integration ${r.name}`}
-                      >
-                        <Pencil className="size-4" aria-hidden />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Edit</TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleDelete(r)}
-                        aria-label={`Delete integration ${r.name}`}
-                        className="text-muted-foreground hover:text-destructive"
-                      >
-                        <Trash2 className="size-4" aria-hidden />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Delete</TooltipContent>
-                  </Tooltip>
-                </div>
-                </>)}
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+                  <Button size="sm" variant="outline" className="mt-sm" onClick={openNew}>
+                    <Plus className="size-4" aria-hidden /> Add Your First Integration
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table aria-label="Scanner integrations" className="min-w-[44rem]" style={{ tableLayout: 'fixed' }}>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[36%]">Scanner</TableHead>
+                  <TableHead>Base URL</TableHead>
+                  <TableHead className="w-[22%]">Stored secrets</TableHead>
+                  {canManage && <TableHead className="w-24 text-right">Actions</TableHead>}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {integrations.map((r) => (
+                  // An inactive scanner is not shown to agents: its row is dimmed and says so.
+                  <TableRow key={r.id} className={r.is_active ? undefined : 'opacity-60'}>
+                    <TableCell className="min-w-0 align-middle">
+                      <div className="flex min-w-0 items-center gap-xs">
+                        <span className="min-w-0 truncate font-medium text-foreground" title={r.name}>{r.name}</span>
+                        {!r.is_active && <Badge variant="muted" className="shrink-0">disabled</Badge>}
+                      </div>
+                      <div className="flex min-w-0 items-center gap-xs text-caption text-muted-foreground">
+                        <span className="shrink-0">{r.integration_type}</span>
+                        <span aria-hidden>·</span>
+                        <span className="min-w-0 truncate" title={r.created_by ?? undefined}>
+                          Configured by {r.created_by ?? 'an account that has since been removed'}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="min-w-0 align-middle">
+                      {r.base_url
+                        ? <span className="block truncate" title={r.base_url}>{r.base_url}</span>
+                        : <span className="text-muted-foreground">—</span>}
+                    </TableCell>
+                    <TableCell className="align-middle">
+                      <div className="flex flex-wrap gap-xxs">
+                        <Badge variant={r.has_secret ? 'success' : 'muted'}>
+                          {r.has_secret ? 'Secret set' : 'No secret'}
+                        </Badge>
+                        {r.has_secret2 && <Badge variant="success">Secondary secret</Badge>}
+                      </div>
+                    </TableCell>
+                    {canManage && (
+                      <TableCell className="align-middle">
+                        <div className="flex justify-end gap-xxs">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => openEdit(r)}
+                                aria-label={`Edit integration ${r.name}`}
+                              >
+                                <Pencil className="size-4" aria-hidden />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Edit</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleDelete(r)}
+                                aria-label={`Delete integration ${r.name}`}
+                                className="text-muted-foreground hover:text-destructive"
+                              >
+                                <Trash2 className="size-4" aria-hidden />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Delete</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </PostureSection>
 
       {/* Create / Edit dialog */}
       <Dialog open={dialogOpen} onOpenChange={(next) => !next && !saving && setDialogOpen(false)}>
@@ -671,7 +683,7 @@ const IntegrationSettings: React.FC = () => {
       </Dialog>
 
       {confirmEl}
-    </div>
+    </SettingsPage>
   );
 };
 
