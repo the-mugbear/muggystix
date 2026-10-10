@@ -97,13 +97,14 @@ def render_read_back(*, over_mcp: bool = False) -> str:
     """The mandatory "say your bounds back" block."""
     if over_mcp:
         reads = (
-            "Call agent_identity and assist_list_scopes (scope_list_subnets and "
-            "scope_list_domains for each scope)."
+            "Call agent_identity and assist_get_scope (scope_list_subnets and "
+            "scope_list_domains when it says a list is truncated)."
         )
     else:
         reads = (
-            "Read `GET /agent/identity` and `GET /agent/scopes` (with each "
-            "scope's `/subnets` and `/domains`)."
+            "Read `GET /agent/identity` and `GET /agent/assist/scope` (with "
+            "`GET /agent/scope/subnets` and `/agent/scope/domains` when it says "
+            "a list is truncated)."
         )
     lines = [
         f"{_title(_READ_BACK_TITLE, over_mcp)} {reads} Then, before any command "

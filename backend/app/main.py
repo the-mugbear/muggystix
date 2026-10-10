@@ -147,7 +147,7 @@ that operator, re-checked on every call; the operator drives the agent, and the
 agent does its own work in whatever order it needs (v2.433.0 — there is no
 approval step, approved-tool list or required sequence):
 
-- **Read a scope and upload scanner output** — `GET /agent/scopes/{id}/subnets`,
+- **Read the scope and upload scanner output** — `GET /agent/scope/subnets`,
   `/domains` and the target files (`hosts.ndjson`, `live-hosts.txt`,
   `web-targets.txt`); `POST /agent/uploads` (multipart), poll
   `GET /agent/uploads/{job_id}` (tag `agent-scope`).
@@ -166,7 +166,7 @@ the **operator's own project permissions**, re-checked on every call.
 1. **Agent queries project state** to answer ad-hoc questions —
    `GET /agent/assist/context` for a headline summary, then
    `GET /agent/assist/hosts` (Hosts-page filter vocabulary),
-   `GET .../scopes`, `GET .../scans`.
+   `GET .../scope`, `GET .../scans`.
 2. **Agent may also record findings** when the operator's role permits
    (analyst+): notes (`POST /agent/hosts/{id}/notes`), review status
    (`POST .../follow`), and hostname/OS corrections (`PATCH /agent/hosts/{id}`).
@@ -288,7 +288,7 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "agent-scope",
-        "description": "Scope reads and uploads.  `GET /agent/scopes/{scope_id}/subnets` and `/domains` say what is in scope; `hosts.ndjson`, `live-hosts.txt` and `web-targets.txt` are target files to save and feed to a scanner (project auditor or higher).  `POST /agent/uploads` (multipart) → `GET /agent/uploads/{job_id}`.",
+        "description": "Scope reads and uploads.  `GET /agent/scope/subnets` and `/agent/scope/domains` say what is in scope (a project has one scope, so no route names it); `hosts.ndjson`, `live-hosts.txt` and `web-targets.txt` are target files to save and feed to a scanner (project auditor or higher).  `POST /agent/uploads` (multipart) → `GET /agent/uploads/{job_id}`.",
     },
     {
         "name": "agent-assist",

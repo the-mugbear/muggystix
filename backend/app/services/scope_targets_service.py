@@ -84,21 +84,6 @@ def scope_host_ids(scope_id: int):
     )
 
 
-def project_scope_host_ids(project_id: int):
-    """Host ids mapped into ANY scope of the project — the Scope page's
-    membership: its table lists the subnets of every scope of the project
-    (``scopes._serialize_scope_with_subnets(project_wide=True)``), and its
-    export is the hosts in those subnets.  The same rule as ``scope_host_ids``
-    over the project's scopes; a host in two of them is listed once."""
-    return (
-        select(models.HostSubnetMapping.host_id)
-        .join(models.Subnet, models.Subnet.id == models.HostSubnetMapping.subnet_id)
-        .join(models.Scope, models.Scope.id == models.Subnet.scope_id)
-        .where(models.Scope.project_id == project_id)
-        .distinct()
-    )
-
-
 def _ip_order_by(db: Session) -> List[Any]:
     """Natural IP ordering on Postgres (via inet), lexical elsewhere.
 
@@ -118,13 +103,11 @@ def _ip_order_by(db: Session) -> List[Any]:
     ]
 
 
-def _scope_hosts_query(db: Session, scope_id: int, members=None):
-    """IP-ordered ``Host`` query for every host in a scope — or in
-    ``members``, a ``Select`` of host ids, when the caller means another
-    population (``project_scope_host_ids`` for the Scope page's export)."""
+def _scope_hosts_query(db: Session, scope_id: int):
+    """IP-ordered ``Host`` query for every host in a scope."""
     return (
         db.query(models.Host)
-        .filter(models.Host.id.in_(members if members is not None else scope_host_ids(scope_id)))
+        .filter(models.Host.id.in_(scope_host_ids(scope_id)))
         .order_by(*_ip_order_by(db))
     )
 
@@ -183,10 +166,9 @@ def _briefs_for_hosts(db: Session, host_rows: List[Any]) -> List[ScopeHostBrief]
 
 
 def iter_scope_hosts(
-    db: Session, scope_id: int, *, chunk_size: int = 500, members=None,
+    db: Session, scope_id: int, *, chunk_size: int = 500,
 ) -> Iterator[ScopeHostBrief]:
-    """Stream every host in the scope (or in ``members`` — see
-    ``_scope_hosts_query``), IP-ordered, in bounded memory.
+    """Stream every host in the scope, IP-ordered, in bounded memory.
 
     Only the ordered id list is held whole (8 bytes a row); host and port
     rows are fetched a chunk at a time, so peak memory is one chunk
@@ -194,7 +176,7 @@ def iter_scope_hosts(
     """
     host_ids = [
         row[0] for row in
-        _scope_hosts_query(db, scope_id, members).with_entities(models.Host.id).all()
+        _scope_hosts_query(db, scope_id).with_entities(models.Host.id).all()
     ]
     for start in range(0, len(host_ids), chunk_size):
         page = host_ids[start:start + chunk_size]
@@ -295,9 +277,9 @@ def iter_scope_live_hosts(db: Session, scope_id: int) -> Iterator[str]:
             yield address + "\n"
 
 
-def iter_scope_web_targets(db: Session, scope_id: int, *, members=None) -> Iterator[str]:
+def iter_scope_web_targets(db: Session, scope_id: int) -> Iterator[str]:
     """One URL per line — a ``-l`` / ``-f`` web target file."""
-    for brief in iter_scope_hosts(db, scope_id, members=members):
+    for brief in iter_scope_hosts(db, scope_id):
         for target in web_targets_from_hosts([brief]):
             yield target.url + "\n"
 

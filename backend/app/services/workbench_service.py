@@ -102,11 +102,10 @@ class ProjectSetup(BaseModel):
     #: every project gets at creation says nothing, and a domain alone does
     #: not count (owner, 2026-10-10: a domain-only project is still set up).
     has_scopes: bool = False
-    #: The project's scope ROWS, entries or not (0 only where the one from
-    #: creation was deleted).
+    #: The project's scope ROWS, entries or not: 0 until the scope is first
+    #: read or written, then 1 (a project has exactly one).
     scope_rows: int = 0
-    #: The scope's id when the project has exactly one — what a "scan the
-    #: scope" task names; null with none or several.
+    #: The scope's id once it exists; null before.
     only_scope_id: Optional[int] = None
 
 

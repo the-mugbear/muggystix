@@ -82,11 +82,11 @@ const csv = 'ip,hostname,state\n10.0.0.1,a,up\n10.0.0.2,b,up\n';
 const cases: Case[] = [
   {
     name: 'ScopeExport',
-    dialog: (open) => <ScopeExport open={open} onClose={vi.fn()} scopeId={3} scopeName="DMZ east" />,
+    dialog: (open) => <ScopeExport open={open} onClose={vi.fn()} scopeId={3} />,
     request: api.getScopeHostList,
     format: 'csv', answer: csv, text: csv,
     generate: 'Generate list', heading: '2 hosts · CSV',
-    copy: 'Copy scope export to clipboard', download: 'Download scope export as file', file: 'DMZ_east_hosts.csv',
+    copy: 'Copy scope export to clipboard', download: 'Download scope export as file', file: 'project-scope_hosts.csv',
   },
   {
     name: 'OutOfScopeExport',

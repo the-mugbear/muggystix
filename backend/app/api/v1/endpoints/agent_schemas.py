@@ -210,9 +210,8 @@ class ScopeDomainBrief(BaseModel):
 
 
 class ScopeBrief(BaseModel):
-    id: int
-    name: str
-    description: Optional[str] = None
+    """The project's one scope as an agent reads it.  It has no id and no name:
+    a project has exactly one, and no agent call names it."""
     subnets: List[str] = Field(default_factory=list)
     # ``subnets`` is capped (assist context budget); these let the agent tell a
     # truncated CIDR list from a complete one. ``subnet_total`` is the true
@@ -225,10 +224,8 @@ class ScopeBrief(BaseModel):
     domains: List[ScopeDomainBrief] = Field(default_factory=list)
     domain_total: int = 0
     domains_truncated: bool = False
-    # Distinct names in the project's inventory covered by THIS scope's domain
-    # entries (deduplicated across nested entries).  It was the project-wide
-    # figure repeated on every row until 2.483.1 — two scopes covering 12 and
-    # 1 names each read 13.  A name two scopes cover counts in each.
+    # Distinct names in the project's inventory covered by the declared domain
+    # entries (deduplicated across nested entries).
     names_in_scope_total: int = 0
 
     model_config = ConfigDict(from_attributes=True)

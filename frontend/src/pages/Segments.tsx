@@ -522,9 +522,7 @@ const SubnetRow: React.FC<{ s: SubnetInsight; open: boolean; onToggle: () => voi
         </td>
         <td className="py-xs pr-md">
           <Link to={subnetHostsHref(s.cidr)} title={`View hosts in ${s.cidr}`}
-            className="block truncate font-mono font-medium text-info hover:underline">{s.cidr}</Link>
-          <span className="block truncate text-caption text-muted-foreground" title={s.scope_name}>{safeFallback(s.scope_name, 'no scope')}</span>
-        </td>
+            className="block truncate font-mono font-medium text-info hover:underline">{s.cidr}</Link>        </td>
         <td className="py-xs pr-md">
           <div className="flex min-w-0 items-center gap-xs">
             <span className="min-w-0 truncate text-caption text-foreground" title={s.site ?? undefined}>

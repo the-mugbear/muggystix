@@ -27,7 +27,7 @@ def _host(db, project_id, ip, os_name=None):
 
 def _estate(db, project_id):
     """Two sites, one /24 subnet each; returns (scan, subnetA, subnetB)."""
-    scope = Scope(project_id=project_id, name="scope")
+    scope = Scope(project_id=project_id)
     db.add(scope)
     site1 = Site(project_id=project_id, name="HQ", criticality_tier=1)
     site2 = Site(project_id=project_id, name="Branch", criticality_tier=3)
@@ -135,7 +135,7 @@ def test_technology_monoculture_blind_spot(db_session, test_project):
     """A versioned technology concentrated estate-wide surfaces as a
     technology-monoculture blind spot; a version-less library does not."""
     pid = test_project.id
-    scope = Scope(project_id=pid, name="scope")
+    scope = Scope(project_id=pid)
     db_session.add(scope)
     db_session.flush()
     sn = Subnet(scope_id=scope.id, cidr="10.8.8.0/24", site=None, site_id=None)
@@ -171,7 +171,7 @@ def test_technology_monoculture_uses_latest_observation(db_session, test_project
     from app.services.systemic_insight_service import compute_systemic_insights
 
     pid = test_project.id
-    scope = Scope(project_id=pid, name="scope")
+    scope = Scope(project_id=pid)
     db_session.add(scope)
     db_session.flush()
     sn = Subnet(scope_id=scope.id, cidr="10.11.0.0/24", site=None, site_id=None)
@@ -208,7 +208,7 @@ def test_tiny_estate_never_yields_blind_spot(db_session, test_project):
     """A one-host estate with a weakness is a condition, never an "estate-wide
     blind spot" — a single host can't evidence an estate-level pattern."""
     pid = test_project.id
-    scope = Scope(project_id=pid, name="scope")
+    scope = Scope(project_id=pid)
     db_session.add(scope)
     db_session.flush()
     sn = Subnet(scope_id=scope.id, cidr="10.9.9.0/24", site=None, site_id=None)
@@ -232,7 +232,7 @@ def test_outlier_flagged_when_estate_median_is_zero(db_session, test_project):
     """A mostly-clean estate with one concentrated-issue subnet must still flag
     that subnet — the old rule required median_density>0 and suppressed it."""
     pid = test_project.id
-    scope = Scope(project_id=pid, name="scope")
+    scope = Scope(project_id=pid)
     db_session.add(scope)
     db_session.flush()
     bad = Subnet(scope_id=scope.id, cidr="10.5.5.0/24", site=None, site_id=None)
@@ -267,7 +267,7 @@ def test_host_inherits_site_from_labelled_parent_subnet(db_session, test_project
     (Unifies the resolver with the attention model; review B1.)"""
     from app.services.subnet_insight_service import resolve_host_locations
 
-    scope = Scope(project_id=test_project.id, name="scope")
+    scope = Scope(project_id=test_project.id)
     db_session.add(scope)
     site = Site(project_id=test_project.id, name="DC-East", criticality_tier=1)
     db_session.add(site)

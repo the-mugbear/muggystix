@@ -13,7 +13,6 @@ import { api, projectPath } from './client';
 
 export interface ScopeCoverageRow {
   scope_id: number;
-  scope_name: string;
   subnet_count: number;
   total_scoped_ips: number;
   discovered_in_scope: number;

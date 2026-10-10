@@ -38,7 +38,7 @@ import ScopeExport from '../../components/ScopeExport';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
 const show = () => render(
-  <TooltipProvider><ScopeExport open onClose={vi.fn()} scopeId={3} scopeName="DMZ east" /></TooltipProvider>,
+  <TooltipProvider><ScopeExport open onClose={vi.fn()} scopeId={3} /></TooltipProvider>,
 );
 const pick = (format: string) =>
   fireEvent.change(screen.getByRole('combobox', { name: 'Output format' }), { target: { value: format } });
@@ -58,13 +58,13 @@ describe('ScopeExport — the output keeps the format that produced it', () => {
     expect(await screen.findByRole('heading', { name: /^2 hosts/ })).toBeInTheDocument();
     // The Scope page's export is the project's: the hosts in the subnets of
     // every scope, which is what the page's table lists (review 2026-10-10).
-    expect(api.getScopeHostList).toHaveBeenCalledWith(1, 3, 'csv', { allScopes: true });
+    expect(api.getScopeHostList).toHaveBeenCalledWith(1, 3, 'csv');
 
     pick('txt');
     // Still the CSV: not recounted as an IP list (3), not saved as .txt.
     expect(screen.getByRole('heading', { name: /^2 hosts/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Download scope export as file' }));
-    expect(download.downloadTextFile).toHaveBeenCalledWith('DMZ_east_hosts.csv', csv);
+    expect(download.downloadTextFile).toHaveBeenCalledWith('project-scope_hosts.csv', csv);
     expect(screen.getByRole('heading', { name: '2 hosts · CSV' })).toBeInTheDocument();
 
     pick('json');
@@ -79,9 +79,9 @@ describe('ScopeExport — the output keeps the format that produced it', () => {
     pick('web');
     fireEvent.click(screen.getByRole('button', { name: 'Generate list' }));
     expect(await screen.findByRole('heading', { name: '2 URLs · Web URLs' })).toBeInTheDocument();
-    expect(api.getScopeHostList).toHaveBeenCalledWith(1, 3, 'web', { allScopes: true });
+    expect(api.getScopeHostList).toHaveBeenCalledWith(1, 3, 'web');
     fireEvent.click(screen.getByRole('button', { name: 'Download scope export as file' }));
-    expect(download.downloadTextFile).toHaveBeenCalledWith('DMZ_east_web-targets.txt', urls);
+    expect(download.downloadTextFile).toHaveBeenCalledWith('project-scope_web-targets.txt', urls);
   });
 
   it('generating again takes the format picked then', async () => {
@@ -96,6 +96,6 @@ describe('ScopeExport — the output keeps the format that produced it', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Generate list' }));
     expect(await screen.findByRole('heading', { name: '1 host · JSON' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Download scope export as file' }));
-    expect(download.downloadTextFile).toHaveBeenCalledWith('DMZ_east_hosts.json', json);
+    expect(download.downloadTextFile).toHaveBeenCalledWith('project-scope_hosts.json', json);
   });
 });

@@ -730,14 +730,17 @@ def seed(db, name: str, owner: User):
 
 
 def populate(db, project, owner: User):
-    """Every scenario, placed into ``project`` (its own scope, sites and
-    10.77.x subnets).  ``seed`` calls it on a project of its own;
-    seed_acceptance_fixtures.py calls it on the acceptance project."""
+    """Every scenario, placed into ``project`` (its sites and 10.77.x subnets,
+    in the project's ONE scope — the existing one when it has one).  ``seed``
+    calls it on a project of its own; seed_acceptance_fixtures.py calls it on
+    the acceptance project."""
     c = Ctx(db, project, owner)
 
-    scope = models.Scope(project_id=project.id, name="Eval scope")
-    db.add(scope)
-    db.flush()
+    scope = db.query(models.Scope).filter(models.Scope.project_id == project.id).first()
+    if scope is None:
+        scope = models.Scope(project_id=project.id)
+        db.add(scope)
+        db.flush()
     for site_name, tier, cidr in (("East", 1, "10.77.1.0/24"), ("West", 2, "10.77.2.0/24"), ("Lab", 4, "10.77.3.0/24")):
         site = models.Site(project_id=project.id, name=site_name, criticality_tier=tier)
         db.add(site)

@@ -27,7 +27,7 @@ from app.db.models_auth import APIKey
 
 def _scope_with_subnet(db, project):
     from app.db import models
-    scope = models.Scope(project_id=project.id, name="s1", description="")
+    scope = models.Scope(project_id=project.id, description="")
     db.add(scope)
     db.flush()
     db.add(models.Subnet(scope_id=scope.id, cidr="10.0.0.0/24"))

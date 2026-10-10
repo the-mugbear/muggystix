@@ -432,9 +432,14 @@ class ScanBatch(Base):
 class Scope(Base):
     __tablename__ = "scopes"
 
+    # A project has exactly ONE scope (owner, 2026-10-10; revision
+    # `e1b4c7d0a2f5`): the unique constraint is what makes a second impossible.
+    # It has no name — it is "the project's scope" (the column went with the
+    # same revision; it held `__default__` or a seed's label nobody chose).
+    __table_args__ = (UniqueConstraint("project_id", name="uq_scopes_project"),)
+
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
-    name = Column(String, nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     description = Column(Text)
     uploaded_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

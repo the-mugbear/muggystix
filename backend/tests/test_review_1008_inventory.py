@@ -489,7 +489,7 @@ def test_an_empty_scope_row_is_not_a_scope(client, db_session, test_project):
     db_session.commit()
     without_row = _coverage(client, pid)
 
-    scope = models.Scope(project_id=pid, name="empty")
+    scope = models.Scope(project_id=pid)
     db_session.add(scope)
     db_session.commit()
     assert _coverage(client, pid) == without_row == (0, 0, 0, 2)
@@ -504,7 +504,7 @@ def test_an_empty_scope_row_is_not_a_scope(client, db_session, test_project):
 
 def test_out_of_scope_only_is_scope_none(client, db_session, test_project):
     pid = test_project.id
-    scope = models.Scope(project_id=pid, name="s")
+    scope = models.Scope(project_id=pid)
     db_session.add(scope)
     db_session.flush()
     subnet = models.Subnet(scope_id=scope.id, cidr="10.67.0.0/24")

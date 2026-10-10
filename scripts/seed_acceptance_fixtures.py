@@ -20,7 +20,8 @@ The project is dense on purpose — a feature with no data cannot be judged:
   * the named-asset scenario (seed_named_assets: imported and unresolved
     names, domain scope, a load balancer with four vhosts, a rotated address,
     tests aimed at a name, tested bindings);
-  * every hand-placed scenario (seed_eval_scenarios: a second scope, web
+  * every hand-placed scenario (seed_eval_scenarios: its sites and subnets
+    in the project's one scope, web
     interfaces with screenshots, conflicts, blocked imports, the review
     queue, host tests with evidence, discussions);
   * every saved scanner file under backend/tests/fixtures/native, imported
@@ -338,10 +339,9 @@ def _seed_other_project(db, base_url: str, shared_ip: str) -> dict:
         print(f"second project import job {up['job_id']}: {job.status if job else 'not found'}")
     db.expire_all()
     host = db.query(models.Host).filter(models.Host.project_id == oid, models.Host.ip_address == shared_ip).first()
-    scope = db.query(models.Scope).filter(models.Scope.project_id == oid).order_by(models.Scope.id).first()
     ids = {
         "project_id": oid, "shared_ip": shared_ip,
-        "host_id": host.id if host else None, "scope_id": scope.id if scope else None,
+        "host_id": host.id if host else None,
         "job_id": job.id if job else None, "scan_id": job.scan_id if job else None,
         "finding_id": None, "attachment_id": None,
     }

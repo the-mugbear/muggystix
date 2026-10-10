@@ -59,7 +59,6 @@ class AgentApiCallRow(BaseModel):
     response_bytes: Optional[int] = None
     duration_ms: int
 
-    scope_id: Optional[int] = None
 
     referenced_host_ids: Optional[List[int]] = None
     referenced_target_ips: Optional[List[str]] = None

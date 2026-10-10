@@ -131,7 +131,7 @@ describe('Patterns', () => {
 });
 
 const subnet = (id: number, cidr: string, site: string | null, crit: number) => ({
-  subnet_id: id, cidr, scope_name: 'Corp', site, site_id: site ? 1 : null, criticality_tier: 1,
+  subnet_id: id, cidr, site, site_id: site ? 1 : null, criticality_tier: 1,
   host_count: 20, usable_addresses: 254, no_coverage: false,
   exposure: { raw_score: 1, weighted_score: 88, active_findings: crit + 2, by_severity: { critical: crit, high: 0, medium: 2, low: 0, info: 0 } },
   neglect: { unowned_active_findings: 1, unreviewed_hosts: 4 },

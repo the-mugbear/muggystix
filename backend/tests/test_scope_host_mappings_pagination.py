@@ -32,7 +32,7 @@ def test_scope_host_mappings_rejects_oversize_limit(client, test_project):
 
 def test_scope_host_mappings_subnet_id_filter(client, db_session, test_project):
     """subnet_id query param restricts the result to one subnet's mappings."""
-    scope = models.Scope(project_id=test_project.id, name="s", description="")
+    scope = models.Scope(project_id=test_project.id, description="")
     db_session.add(scope)
     db_session.flush()
     sa = models.Subnet(scope_id=scope.id, cidr="10.0.0.0/24", description="")
@@ -74,7 +74,7 @@ def test_scope_host_mappings_subnet_id_filter(client, db_session, test_project):
 
 def test_scope_host_mappings_skip_limit_paginate(client, db_session, test_project):
     """skip + limit page through the result set in order."""
-    scope = models.Scope(project_id=test_project.id, name="s", description="")
+    scope = models.Scope(project_id=test_project.id, description="")
     db_session.add(scope)
     db_session.flush()
     subnet = models.Subnet(scope_id=scope.id, cidr="10.0.0.0/24", description="")
@@ -177,7 +177,7 @@ def test_out_of_scope_is_derived_and_agrees_with_the_export(
     Asserting the two agree pins the invariant rather than the implementation:
     whichever way the derivation moves, it moves for both.
     """
-    scope = models.Scope(project_id=test_project.id, name="corp")
+    scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
     subnet = models.Subnet(scope_id=scope.id, cidr="10.0.0.0/24")

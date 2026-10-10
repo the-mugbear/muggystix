@@ -16,7 +16,7 @@ def _host_in_subnet(db, project_id, ip, subnet):
 
 def test_site_filter_matches_only_hosts_in_that_site(db_session, test_project, test_user):
     pid = test_project.id
-    scope = models.Scope(project_id=pid, name="sc")
+    scope = models.Scope(project_id=pid)
     db_session.add(scope)
     db_session.flush()
     east = models.Subnet(scope_id=scope.id, cidr="10.7.0.0/24", site="DC-East")

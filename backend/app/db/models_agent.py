@@ -354,12 +354,8 @@ class AgentApiCall(Base):
         nullable=True,
     )  # indexed via idx_agent_api_call_session_created
     # (``test_plan_id`` / ``execution_session_id`` went with their tables in
-    # v2.442.0; the path and its parameters still say what a call was about.)
-    scope_id = Column(
-        Integer,
-        ForeignKey("scopes.id", ondelete="SET NULL"),
-        nullable=True,
-    )
+    # v2.442.0, ``scope_id`` with the scope id in the agents' routes in
+    # 2.488.0; the path and its parameters still say what a call was about.)
     # (``assist_session_id`` — the v2.64.0 assist attribution — was folded into
     # ``agent_session_id`` by b8e2a5c7d1f3: one session column.)
 

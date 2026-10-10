@@ -46,7 +46,7 @@ def test_scope_host_mappings_envelope_has_more_boundary(
 ):
     """Confirms server-computed ``has_more`` at the exact boundary
     where ``skip + len(items) == total`` (last page, fits exactly)."""
-    scope = models.Scope(project_id=test_project.id, name="s", description="")
+    scope = models.Scope(project_id=test_project.id, description="")
     db_session.add(scope)
     db_session.flush()
     subnet = models.Subnet(scope_id=scope.id, cidr="10.0.0.0/24", description="")

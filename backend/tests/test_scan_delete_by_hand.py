@@ -517,7 +517,7 @@ def _names_fixture(db, pid, user):
     _observe(db, pid, "also-seen.example.com", "10.65.0.9", other)
     _observe(db, pid, "imported.example.com", "imported.example.com", None, "IMPORT")
     db.query(models.DNSName).filter_by(id=name_id["added-by-hand.example.com"]).update({"created_by_id": user.id})
-    scope = models.Scope(project_id=pid, name="default")
+    scope = models.Scope(project_id=pid)
     db.add(scope)
     db.flush()
     db.add_all([
@@ -595,7 +595,7 @@ def test_the_preview_counts_a_name_held_only_by_a_host_that_goes(client, db_sess
 def test_a_wildcard_under_an_in_scope_domain_is_kept(client, db_session, test_project, wildcard):
     pid = test_project.id
     target = _scan(db_session, pid, "target.json")
-    scope = models.Scope(project_id=pid, name="default")
+    scope = models.Scope(project_id=pid)
     db_session.add(scope)
     db_session.flush()
     db_session.add(models.ScopeDomain(scope_id=scope.id, domain="wild.example", include_subdomains=True))

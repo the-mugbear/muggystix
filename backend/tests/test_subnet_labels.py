@@ -40,7 +40,7 @@ def _make_project(db_session, slug: str) -> Project:
 
 def _make_scope_with_subnet(db_session, project_id: int, cidr: str) -> tuple[int, int]:
     """Return (scope_id, subnet_id) for a freshly-minted scope + subnet."""
-    scope = models.Scope(project_id=project_id, name="s", description="")
+    scope = models.Scope(project_id=project_id, description="")
     db_session.add(scope)
     db_session.flush()
     subnet = models.Subnet(scope_id=scope.id, cidr=cidr, description="")
@@ -231,12 +231,9 @@ class TestSubnetLabelAssignment:
         assert r.json() == []
 
     def test_bulk_apply_one_label_across_subnets(self, client, db_session, test_project):
-        _, s1 = _make_scope_with_subnet(db_session, test_project.id, "10.10.1.0/24")
-        scope2 = models.Scope(project_id=test_project.id, name="s2", description="")
-        db_session.add(scope2)
-        db_session.flush()
-        s2 = models.Subnet(scope_id=scope2.id, cidr="10.10.2.0/24", description="")
-        s3 = models.Subnet(scope_id=scope2.id, cidr="10.10.3.0/24", description="")
+        scope_id, s1 = _make_scope_with_subnet(db_session, test_project.id, "10.10.1.0/24")
+        s2 = models.Subnet(scope_id=scope_id, cidr="10.10.2.0/24", description="")
+        s3 = models.Subnet(scope_id=scope_id, cidr="10.10.3.0/24", description="")
         db_session.add_all([s2, s3])
         db_session.commit()
 
@@ -330,8 +327,11 @@ class TestHostsFilterBySubnetLabel:
     def _setup(self, db_session, project_id):
         """Two subnets, two hosts each; one host overlaps both subnets.
         Returns (label_a, label_b, host_in_a_only, host_in_b_only, host_in_both)."""
-        _, s_a = _make_scope_with_subnet(db_session, project_id, "10.20.1.0/24")
-        _, s_b = _make_scope_with_subnet(db_session, project_id, "10.20.2.0/24")
+        scope_id, s_a = _make_scope_with_subnet(db_session, project_id, "10.20.1.0/24")
+        subnet_b = models.Subnet(scope_id=scope_id, cidr="10.20.2.0/24", description="")
+        db_session.add(subnet_b)
+        db_session.commit()
+        s_b = subnet_b.id
 
         h_a_only = _make_host(db_session, project_id, "10.20.1.10")
         h_b_only = _make_host(db_session, project_id, "10.20.2.10")
@@ -403,10 +403,8 @@ class TestHostsFilterBySubnetLabel:
         S itself and via a second subnet that ALSO carries label_a).
         Naive COUNT(assignment) would say host_count=2; the right answer
         is 1."""
-        _, s_a = _make_scope_with_subnet(db_session, test_project.id, "10.30.1.0/24")
-        scope2 = models.Scope(project_id=test_project.id, name="s2", description="")
-        db_session.add(scope2); db_session.flush()
-        s_a2 = models.Subnet(scope_id=scope2.id, cidr="10.30.2.0/24", description="")
+        scope_id, s_a = _make_scope_with_subnet(db_session, test_project.id, "10.30.1.0/24")
+        s_a2 = models.Subnet(scope_id=scope_id, cidr="10.30.2.0/24", description="")
         db_session.add(s_a2); db_session.commit()
         s_a2_id = s_a2.id  # capture before any expire (savepoint rollback resets it)
         host = _make_host(db_session, test_project.id, "10.30.1.5")

@@ -89,7 +89,8 @@ def main() -> int:
             return 2
 
         # Index the project's subnets by normalized CIDR → [subnet_id, ...]
-        # (a CIDR can recur across scopes within one project).
+        # (a project has one scope; the list form tolerates two spellings
+        # of one network that normalize to the same CIDR).
         subnet_rows = (
             db.query(models.Subnet.id, models.Subnet.cidr)
             .join(models.Scope, models.Scope.id == models.Subnet.scope_id)

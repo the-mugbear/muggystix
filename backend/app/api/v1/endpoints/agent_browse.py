@@ -5,7 +5,7 @@ Read-only project/host/scan/scope browsing plus host notes and follow
 status.  Split out of agent_api.py.
 
 Every read is bounded by the key's project; nothing narrows one to a scope,
-and a scope's own hosts are read through /agent/scopes/{scope_id}/….  The
+and the scope's own hosts are read through /agent/scope/….  The
 inventory reads agents mostly use are /agent/assist/* (agent_assist.py).
 
 Also here: the recorded request for one configured scanner's credentials
@@ -49,7 +49,7 @@ from app.services.agent_session_service import (
 
 from app.api.v1.endpoints.agent_schemas import (
     PortBrief, VulnCounts, HostBrief, HostDetail,
-    ScanBrief, ScopeBrief, ScopeDomainBrief, ProjectInfo, AgentDashboard,
+    ScanBrief, ProjectInfo, AgentDashboard,
     AgentIdentity, AgentIdentityOperator,
     AgentNoteCreate, AgentNoteResponse, AgentFollowRequest, FOLLOW_CLEAR,
     AgentHostUpdate, AgentHostUpdateResponse,
@@ -608,51 +608,9 @@ def list_scans(
     return [ScanBrief.model_validate(s) for s in scans]
 
 
-@router.get("/scopes", response_model=List[ScopeBrief], summary="List scopes")
-def list_scopes(
-    agent: Agent = Depends(check_agent_rate_limit),
-    db: Session = Depends(get_db),
-):
-    """Every scope with ALL its subnets and domain entries (uncapped — the
-    assist read caps both at 100).  The session prompt sends an agent here for
-    the scope read-back, so the domain half must be here too: without it the
-    read-back named the subnets and silently left the in-scope names out."""
-    scopes = (
-        db.query(models.Scope)
-        .options(joinedload(models.Scope.subnets))
-        .filter(models.Scope.project_id == agent.project_id)
-        .all()
-    )
-    domains_by_scope: dict[int, list[ScopeDomainBrief]] = {}
-    if scopes:
-        for scope_id, domain, include_sub in (
-            db.query(models.ScopeDomain.scope_id, models.ScopeDomain.domain, models.ScopeDomain.include_subdomains)
-            .filter(models.ScopeDomain.scope_id.in_([s.id for s in scopes]))
-            .order_by(models.ScopeDomain.scope_id, models.ScopeDomain.domain)
-            .all()
-        ):
-            domains_by_scope.setdefault(scope_id, []).append(
-                ScopeDomainBrief(domain=domain, include_subdomains=bool(include_sub))
-            )
-    names_by_scope = (
-        dns_name_service.scope_covered_names_by_scope(db, agent.project_id, [s.id for s in scopes])
-        if domains_by_scope else {}
-    )
-    return [
-        ScopeBrief(
-            id=s.id,
-            name=s.name,
-            description=s.description,
-            subnets=[sub.cidr for sub in s.subnets],
-            # This route lists every subnet, so the total is the list's own
-            # length — left at the schema default it read "0 of 447".
-            subnet_total=len(s.subnets),
-            domains=domains_by_scope.get(s.id, []),
-            domain_total=len(domains_by_scope.get(s.id, [])),
-            names_in_scope_total=names_by_scope.get(s.id, 0),
-        )
-        for s in scopes
-    ]
+# (`GET /agent/scopes` — the uncapped list of scopes — went in 2.488.0: a
+# project has one scope, read at `/agent/assist/scope`, and its whole lists
+# are `/agent/scope/subnets` and `/agent/scope/domains`.)
 
 
 # ---------------------------------------------------------------------------

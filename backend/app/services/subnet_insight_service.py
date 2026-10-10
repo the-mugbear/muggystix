@@ -117,14 +117,14 @@ def _load_subnet_meta(db: Session, project_id: int) -> Dict[int, Dict[str, Any]]
     subnet_rows = (
         db.query(
             Subnet.id, Subnet.cidr, Subnet.description, Subnet.site,
-            Subnet.site_id, Scope.name,
+            Subnet.site_id,
         )
         .join(Scope, Subnet.scope_id == Scope.id)
         .filter(Scope.project_id == project_id)
         .all()
     )
     meta: Dict[int, Dict[str, Any]] = {}
-    for sid, cidr, desc, site, site_id, scope_name in subnet_rows:
+    for sid, cidr, desc, site, site_id in subnet_rows:
         try:
             prefixlen = ipaddress.ip_network(cidr, strict=False).prefixlen
         except ValueError:
@@ -135,7 +135,6 @@ def _load_subnet_meta(db: Session, project_id: int) -> Dict[int, Dict[str, Any]]
             "description": desc,
             "site": site,
             "site_id": site_id,
-            "scope_name": scope_name,
             "prefixlen": prefixlen,
             "usable_addresses": metrics.get("usable_addresses", 0),
         }
@@ -148,7 +147,7 @@ def resolve_host_locations(
     """Map each host to its ONE most-specific (longest-prefix) subnet, plus its
     INHERITED site.
 
-    Returns ``host_id -> {subnet_id, cidr, site, site_id, scope_name}`` for
+    Returns ``host_id -> {subnet_id, cidr, site, site_id}`` for
     every host that falls inside a scoped subnet (out-of-scope hosts are
     absent).  The SUBNET is most-specific-wins (a host in both a /16 and a /24
     resolves to the /24).  The SITE is inherited from the nearest *site-bearing*
@@ -188,7 +187,6 @@ def resolve_host_locations(
                 "cidr": m["cidr"],
                 "site": None,        # filled from the nearest site-bearing subnet below
                 "site_id": None,
-                "scope_name": m["scope_name"],
             }
         if (m.get("site") or "").strip() and (
             host_id not in best_site_prefix or pfx > best_site_prefix[host_id]
@@ -516,7 +514,6 @@ def compute_subnet_insights(
         out.append({
             "subnet_id": sid,
             "cidr": meta["cidr"],
-            "scope_name": meta["scope_name"],
             "site": meta["site"],
             "site_id": meta["site_id"],
             "criticality_tier": tier,

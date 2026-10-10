@@ -309,7 +309,7 @@ def test_dossier_scope_has_three_states(db_session, test_project, test_user):
     from datetime import datetime, timezone
     from app.services import dns_name_service as svc
 
-    scope = models.Scope(project_id=test_project.id, name="default")
+    scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
     db_session.add(models.Subnet(scope_id=scope.id, cidr="10.77.0.0/24"))

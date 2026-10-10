@@ -41,7 +41,7 @@ beforeEach(() => {
 describe('export dialogs — a refused request', () => {
   it('the scope export says the meaning of a 403, not the client error', async () => {
     api.getScopeHostList.mockRejectedValue(refused(403));
-    show(<ScopeExport open onClose={vi.fn()} scopeId={3} scopeName="DMZ" />);
+    show(<ScopeExport open onClose={vi.fn()} scopeId={3} />);
     fireEvent.click(screen.getByRole('button', { name: 'Generate list' }));
     expect(await screen.findByText('You do not have permission to perform this action.')).toBeInTheDocument();
     expect(screen.queryByText(/Request failed with status code/)).not.toBeInTheDocument();

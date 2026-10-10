@@ -124,7 +124,7 @@ class TestHostnameRule:
 # Import (DB)
 # ---------------------------------------------------------------------------
 def _scope(db, project):
-    s = models.Scope(project_id=project.id, name="default")
+    s = models.Scope(project_id=project.id)
     db.add(s)
     db.flush()
     return s

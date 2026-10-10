@@ -54,7 +54,7 @@ def test_weak_tls_is_encryption_trust_condition(db_session, test_project):
     from app.services.systemic_insight_service import compute_systemic_insights
 
     pid = test_project.id
-    scope = Scope(project_id=pid, name="s")
+    scope = Scope(project_id=pid)
     db_session.add(scope)
     db_session.flush()
     sn = Subnet(scope_id=scope.id, cidr="10.5.0.0/24", site=None, site_id=None)

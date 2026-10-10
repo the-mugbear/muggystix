@@ -239,7 +239,7 @@ def test_heatmap_present_with_scoped_estate(db_session, test_project):
     out0 = compute_posture(db_session, test_project.id, use_cache=False)
     assert out0["heatmap"] is None
 
-    scope = Scope(project_id=test_project.id, name="scope")
+    scope = Scope(project_id=test_project.id)
     db_session.add(scope)
     site = Site(project_id=test_project.id, name="HQ", criticality_tier=1)
     db_session.add(site)
@@ -283,7 +283,7 @@ def test_the_unassigned_cell_opens_exactly_the_hosts_it_counts(client, db_sessio
     inside a scoped subnet, no site inherited — not merely "not in a named site"."""
     from app.db.models import Scope, Subnet, Site, HostSubnetMapping
 
-    scope = Scope(project_id=test_project.id, name="scope")
+    scope = Scope(project_id=test_project.id)
     site = Site(project_id=test_project.id, name="HQ", criticality_tier=1)
     db_session.add_all([scope, site])
     db_session.flush()
@@ -329,7 +329,7 @@ def test_a_project_without_sites_is_compared_by_subnet(client, db_session, test_
     (the hosts filter matches a CIDR by containment) so count and list agree."""
     from app.db.models import Scope, Subnet, HostSubnetMapping
 
-    scope = Scope(project_id=test_project.id, name="scope")
+    scope = Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
     parent = Subnet(scope_id=scope.id, cidr="10.7.0.0/24")
@@ -376,7 +376,7 @@ def test_a_site_cell_list_excludes_another_sites_nested_subnet(client, db_sessio
     site's nested CIDR, and the frontend's query reconciles."""
     from app.db.models import Scope, Subnet, HostSubnetMapping, Site
 
-    scope = Scope(project_id=test_project.id, name="scope")
+    scope = Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
     campus = Site(project_id=test_project.id, name="Campus", criticality_tier=1)

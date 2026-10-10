@@ -39,7 +39,7 @@ def selects(db):
 
 
 def _scope(db, project):
-    scope = models.Scope(name="s", project_id=project.id)
+    scope = models.Scope(project_id=project.id)
     db.add(scope)
     db.flush()
     return scope

@@ -8,7 +8,6 @@ interface ScopeExportProps {
   open: boolean;
   onClose: () => void;
   scopeId: number;
-  scopeName: string;
 }
 
 const EXPORT_FORMATS = [
@@ -22,17 +21,15 @@ const EXPORT_FORMATS = [
 
 type ExportFormat = (typeof EXPORT_FORMATS)[number]['value'];
 
-/** Export a scope's hosts as text.  The dialog itself — format, generate,
- *  copy, download, and the rule that the text keeps the format it was made
- *  in — is `GeneratedTextDialog`. */
-export default function ScopeExport({ open, onClose, scopeId, scopeName }: ScopeExportProps) {
+/** Export the hosts in the project's scope as text.  The dialog itself —
+ *  format, generate, copy, download, and the rule that the text keeps the
+ *  format it was made in — is `GeneratedTextDialog`. */
+export default function ScopeExport({ open, onClose, scopeId }: ScopeExportProps) {
   // Asked for by the button, not by opening the dialog: an action, so its
   // answer, busy state and failure are the mutation's.
   const projectId = useProjectId();
   const generate = useMutation({
-    // The Scope page's export: its table lists the subnets of every scope of
-    // the project, so the target list is the hosts in all of them.
-    mutationFn: (format: ExportFormat) => getScopeHostList(projectId, scopeId, format, { allScopes: true }),
+    mutationFn: (format: ExportFormat) => getScopeHostList(projectId, scopeId, format),
     onError: (err) => console.error('Error fetching scope hosts:', err),
   });
 
@@ -41,7 +38,7 @@ export default function ScopeExport({ open, onClose, scopeId, scopeName }: Scope
       open={open}
       onClose={onClose}
       icon={<FolderTree className="size-5" aria-hidden />}
-      title={<>Export scope: {scopeName}</>}
+      title="Export project scope"
       formats={EXPORT_FORMATS}
       defaultFormat="txt"
       formatFieldId="scope-export-format"
@@ -53,15 +50,14 @@ export default function ScopeExport({ open, onClose, scopeId, scopeName }: Scope
         const entryCount = countEntries(text, format);
         return <>{entryCount} {format === 'web' ? 'URL' : 'host'}{entryCount === 1 ? '' : 's'} · {formatLabel}</>;
       }}
-      filename={({ format }) => {
-        const safeName = scopeName.replace(/\s+/g, '_').replace(/[/\\]/g, '-').slice(0, 40);
-        return format === 'web' ? `${safeName}_web-targets.txt` : `${safeName}_hosts.${format}`;
-      }}
+      filename={({ format }) => (
+        format === 'web' ? 'project-scope_web-targets.txt' : `project-scope_hosts.${format}`
+      )}
       copyLabel="Copy scope export to clipboard"
       downloadLabel="Download scope export as file"
     >
       <p className="text-metadata text-muted-foreground">
-        Export all hosts mapped to this scope and its subnets.
+        Export all hosts mapped to the project's scope entries.
       </p>
     </GeneratedTextDialog>
   );

@@ -32,7 +32,8 @@ unknown, the honest sentence is "not assessed", and §5 exists to say so.
 
 ## 1. What was assessed
 
-<!-- assist_get_context for the totals; assist_list_scopes for the ranges. -->
+<!-- assist_get_context for the totals; assist_get_scope for the ranges
+     (scope_list_subnets for the whole list when it says subnets_truncated). -->
 
 {{one paragraph: the ranges in scope, how many hosts were discovered, and the
 period the data covers. State the scope in CIDRs — a client can verify a CIDR,

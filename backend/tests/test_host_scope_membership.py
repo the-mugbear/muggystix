@@ -19,7 +19,7 @@ from app.services.scope_coverage import host_scope_membership
 
 
 def _scope(db, project_id):
-    scope = models.Scope(project_id=project_id, name="s")
+    scope = models.Scope(project_id=project_id)
     db.add(scope)
     db.flush()
     return scope

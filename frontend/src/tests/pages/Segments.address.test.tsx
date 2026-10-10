@@ -36,7 +36,7 @@ import { TooltipProvider } from '../../components/ui/tooltip';
 
 const TOTAL = 120;
 const subnet = (i: number) => ({
-  subnet_id: i + 1, cidr: `10.9.${i}.0/24`, scope_name: 'Corp', site: null, site_id: null, criticality_tier: null,
+  subnet_id: i + 1, cidr: `10.9.${i}.0/24`, site: null, site_id: null, criticality_tier: null,
   host_count: 20, usable_addresses: 254, no_coverage: false,
   exposure: { raw_score: 1, weighted_score: 1, active_findings: 1, by_severity: { critical: 0, high: 0, medium: 1, low: 0, info: 0 } },
   neglect: { unowned_active_findings: 0, unreviewed_hosts: 0 },

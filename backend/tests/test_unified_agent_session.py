@@ -15,7 +15,7 @@ from app.db.models_proposals import EvidenceRecord
 
 
 def _scope_with_subnet(db, project):
-    scope = models.Scope(project_id=project.id, name="s1", description="")
+    scope = models.Scope(project_id=project.id, description="")
     db.add(scope)
     db.flush()
     db.add(models.Subnet(scope_id=scope.id, cidr="10.0.0.0/24"))
@@ -71,10 +71,10 @@ def test_one_key_reaches_identity_scope_and_host_tests(client, test_project, db_
     assert ident["can_write_project_data"] is True  # admin operator
 
     # read a scope — same key, no new credential.
-    scope = _scope_with_subnet(db_session, test_project)
-    r = client.get(f"/api/v1/agent/scopes/{scope.id}/subnets", headers=_hdr(key))
+    _scope_with_subnet(db_session, test_project)
+    r = client.get("/api/v1/agent/scope/subnets", headers=_hdr(key))
     assert r.status_code == 200, r.text
-    assert "10.0.0.0/24" in r.json()["subnets"]
+    assert r.json()["subnets"] == ["10.0.0.0/24"]
 
     # the SAME key proposes a test on a host, attributed to this session.
     host = _host(db_session, test_project)

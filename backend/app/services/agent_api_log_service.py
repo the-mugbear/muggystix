@@ -591,11 +591,10 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
             api_key_id = getattr(request.state, "api_key_id", None)
             api_key_prefix = getattr(request.state, "api_key_prefix", None)
             # v2.337.0 — a key no longer binds a workflow or scope.  The
-            # durable attribution is the session id; ``scope_id`` is filled
-            # from what the call's PATH names.  (The plan and execution-run
-            # columns went with those objects in v2.442.0.)
+            # durable attribution is the session id.  (The plan and
+            # execution-run columns went with those objects in v2.442.0, the
+            # scope column with the scope id in the routes in 2.488.0.)
             agent_session_id = getattr(request.state, "agent_session_id", None)
-            scoped_scope_id = None
             # No route matched, so no dependency stamped the caller: read it
             # from the key (v2.444.0).  The row's path_template stays NULL,
             # which is how the diagnostics bundle counts "(unmatched route)".
@@ -654,16 +653,6 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 path_params, query_params, body_for_id_scan,
             )
 
-            # v2.433.1 — the scope reads name their scope in the path
-            # (/agent/scopes/{scope_id}/…).  Only on success: a refused id may
-            # name no scope at all, and the column is a foreign key.
-            scope_from_path = path_params.get("scope_id")
-            if scope_from_path is not None and response.status_code < 400:
-                try:
-                    scoped_scope_id = int(scope_from_path)
-                except (TypeError, ValueError):
-                    scoped_scope_id = None
-
             # Response size (Content-Length header if present; otherwise
             # we leave it null rather than buffer the streaming body).
             cl = response.headers.get("content-length")
@@ -699,7 +688,6 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 user_agent=request.headers.get("user-agent"),
                 project_id=project_id,
                 agent_session_id=agent_session_id,
-                scope_id=scoped_scope_id,
                 method=request.method,
                 path=request.url.path,
                 path_template=_path_template_from_route(request),

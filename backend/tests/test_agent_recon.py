@@ -15,7 +15,7 @@ import pytest
 def recon_scope(db_session, test_project):
     """A Scope with one Subnet so the scope reads return something."""
     from app.db import models
-    scope = models.Scope(name="scope-smoke", description="fixture", project_id=test_project.id)
+    scope = models.Scope(description="fixture", project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
     db_session.add(models.Subnet(scope_id=scope.id, cidr="10.99.0.0/24"))
@@ -58,20 +58,22 @@ def recon_key(db_session, test_agent, agent_session):
                  raw="nm_agent_scope_smoke_" + "r" * 28)
 
 
-def _subnets(client, key, scope_id, **q):
+def _subnets(client, key, **q):
     from urllib.parse import urlencode
     qs = ("?" + urlencode(q)) if q else ""
-    return client.get(f"/api/v1/agent/scopes/{scope_id}/subnets{qs}", headers={"X-API-Key": key})
+    return client.get(f"/api/v1/agent/scope/subnets{qs}", headers={"X-API-Key": key})
 
 
 # --- scope reads -----------------------------------------------------------
 
 def test_scope_subnets_read(client, recon_key, recon_scope):
-    r = _subnets(client, recon_key, recon_scope.id)
+    r = _subnets(client, recon_key)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["scope_id"] == recon_scope.id
+    # A project has one scope, so the answer does not name one.
+    assert "scope_id" not in body
     assert body["subnets"] == ["10.99.0.0/24"]
+    assert (body["total"], body["returned"], body["has_more"]) == (1, 1, False)
 
 
 def test_scope_domains_page(client, db_session, recon_key, recon_scope):
@@ -81,16 +83,32 @@ def test_scope_domains_page(client, db_session, recon_key, recon_scope):
             scope_id=recon_scope.id, domain=f"h{i:02d}.example.com", include_subdomains=False,
         ))
     db_session.commit()
-    p1 = client.get(f"/api/v1/agent/scopes/{recon_scope.id}/domains?offset=0&limit=5",
+    p1 = client.get("/api/v1/agent/scope/domains?offset=0&limit=5",
                     headers={"X-API-Key": recon_key}).json()
     assert p1["returned"] == 5 and p1["has_more"] is True
-    p3 = client.get(f"/api/v1/agent/scopes/{recon_scope.id}/domains?offset=10&limit=5",
+    assert "scope_id" not in p1
+    p3 = client.get("/api/v1/agent/scope/domains?offset=10&limit=5",
                     headers={"X-API-Key": recon_key}).json()
     assert p3["returned"] == 2 and p3["has_more"] is False
 
 
-def test_scope_read_unknown_scope_404(client, recon_key):
-    assert _subnets(client, recon_key, 999999).status_code == 404
+def test_scope_reads_of_a_project_with_no_scope_are_empty(client, db_session, test_project, recon_key):
+    """There is no scope id to get wrong any more, so there is no 404: a
+    project that declares no scope answers empty — and the read does not
+    create the scope."""
+    from app.db import models
+    headers = {"X-API-Key": recon_key}
+    r = _subnets(client, recon_key)
+    assert r.status_code == 200, r.text
+    assert (r.json()["total"], r.json()["subnets"], r.json()["has_more"]) == (0, [], False)
+    d = client.get("/api/v1/agent/scope/domains", headers=headers)
+    assert d.status_code == 200, d.text
+    assert (d.json()["total"], d.json()["domains"], d.json()["has_more"]) == (0, [], False)
+    for name in ("hosts.ndjson", "live-hosts.txt", "web-targets.txt", "named-targets.ndjson"):
+        f = client.get(f"/api/v1/agent/scope/{name}", headers=headers)
+        assert f.status_code == 200, (name, f.text)
+        assert f.text == "", name
+    assert db_session.query(models.Scope).filter(models.Scope.project_id == test_project.id).count() == 0
 
 
 # --- key auth --------------------------------------------------------------
@@ -99,20 +117,20 @@ def test_revoked_key_is_401(client, db_session, recon_key, recon_scope):
     from app.db.models_auth import APIKey
     db_session.query(APIKey).update({"is_active": False})
     db_session.commit()
-    assert _subnets(client, recon_key, recon_scope.id).status_code == 401
+    assert _subnets(client, recon_key).status_code == 401
 
 
 def test_expired_key_rejected_both_tz_forms(client, db_session, test_agent, agent_session, recon_scope):
     aware = _mint(db_session, test_agent=test_agent, agent_session_id=agent_session.id,
                   raw="nm_agent_expired_aware_" + "e" * 24,
                   expires_at=datetime.now(timezone.utc) - timedelta(hours=1))
-    r = _subnets(client, aware, recon_scope.id)
+    r = _subnets(client, aware)
     assert r.status_code == 401
     assert r.json()["detail"]["error"] == "key_expired"
     naive = _mint(db_session, test_agent=test_agent, agent_session_id=agent_session.id,
                   raw="nm_agent_expired_naive_" + "n" * 24,
                   expires_at=(datetime.now(timezone.utc) - timedelta(hours=1)).replace(tzinfo=None))
-    assert _subnets(client, naive, recon_scope.id).status_code == 401
+    assert _subnets(client, naive).status_code == 401
 
 
 def test_unrecognized_workflow_denied(client, db_session, test_agent, recon_scope):
@@ -123,7 +141,7 @@ def test_unrecognized_workflow_denied(client, db_session, test_agent, recon_scop
     db_session.flush()
     raw = _mint(db_session, test_agent=test_agent, agent_session_id=bogus.id,
                 raw="nm_agent_bogus_" + "b" * 24)
-    assert _subnets(client, raw, recon_scope.id).status_code == 403
+    assert _subnets(client, raw).status_code == 403
 
 
 # --- uploads ---------------------------------------------------------------

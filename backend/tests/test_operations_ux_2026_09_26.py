@@ -12,7 +12,7 @@ from app.services.host_query import build_filtered_host_query
 
 
 def _seed_scope(db, pid):
-    scope = models.Scope(project_id=pid, name="s")
+    scope = models.Scope(project_id=pid)
     db.add(scope)
     db.flush()
     subnet = models.Subnet(scope_id=scope.id, cidr="10.1.0.0/24")

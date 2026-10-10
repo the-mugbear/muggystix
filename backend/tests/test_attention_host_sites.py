@@ -11,7 +11,7 @@ from app.services.subnet_correlation import SubnetCorrelationService
 
 
 def _setup(db, project_id, subnet_specs):
-    scope = models.Scope(project_id=project_id, name="s")
+    scope = models.Scope(project_id=project_id)
     db.add(scope)
     db.flush()
     ids = {}

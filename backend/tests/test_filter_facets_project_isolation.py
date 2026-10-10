@@ -22,7 +22,7 @@ def _seed_project_with_subnets(db, *, name, slug, cidrs, populated_cidr=None):
     project = Project(name=name, slug=slug)
     db.add(project)
     db.commit()
-    scope = models.Scope(project_id=project.id, name=f"{slug}-scope")
+    scope = models.Scope(project_id=project.id)
     db.add(scope)
     db.commit()
     subnets = {}
@@ -72,7 +72,7 @@ def test_this_projects_empty_subnets_are_still_listed(client, db_session, test_p
     operator can filter by a scoped range that has not been discovered yet —
     fixing the leak must not take that away, or a scoping gap becomes
     invisible."""
-    scope = models.Scope(project_id=test_project.id, name="mine")
+    scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.commit()
     db_session.add(models.Subnet(scope_id=scope.id, cidr="172.31.9.0/24"))

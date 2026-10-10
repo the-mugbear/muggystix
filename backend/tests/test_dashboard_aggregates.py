@@ -104,15 +104,15 @@ def test_team_in_review_hosts_count_a_host_once_whoever_reviews_it(
 def test_coverage_per_scope_counts_match_batched_path(
     client, db_session, test_project,
 ):
-    """Each scope's ``discovered_in_scope`` should equal the actual
-    number of distinct mapped hosts.  The v2.86.12 batched GROUP BY
-    must produce the same per-scope counts the old per-scope query did."""
-    scope_a = models.Scope(project_id=test_project.id, name="A", description="")
-    scope_b = models.Scope(project_id=test_project.id, name="B", description="")
-    db_session.add_all([scope_a, scope_b])
+    """The scope's ``discovered_in_scope`` should equal the actual
+    number of distinct mapped hosts across its subnets (the v2.86.12 batched
+    GROUP BY).  It compared two scopes of one project until 2.488.0, which a
+    project can no longer hold; the count over two subnets is what is left."""
+    scope = models.Scope(project_id=test_project.id, description="")
+    db_session.add(scope)
     db_session.flush()
-    subnet_a = models.Subnet(scope_id=scope_a.id, cidr="10.0.0.0/24", description="")
-    subnet_b = models.Subnet(scope_id=scope_b.id, cidr="10.0.1.0/24", description="")
+    subnet_a = models.Subnet(scope_id=scope.id, cidr="10.0.0.0/24", description="")
+    subnet_b = models.Subnet(scope_id=scope.id, cidr="10.0.1.0/24", description="")
     db_session.add_all([subnet_a, subnet_b])
     db_session.flush()
     ha1 = _make_host(db_session, test_project.id, "10.0.0.5")
@@ -128,11 +128,10 @@ def test_coverage_per_scope_counts_match_batched_path(
     r = client.get(f"/api/v1/projects/{test_project.id}/coverage/")
     assert r.status_code == 200, r.text
     body = r.json()
-    scopes_by_name = {s["scope_name"]: s for s in body["scopes"]}
-    assert scopes_by_name["A"]["discovered_in_scope"] == 2
-    assert scopes_by_name["A"]["subnet_count"] == 1
-    assert scopes_by_name["B"]["discovered_in_scope"] == 1
-    assert scopes_by_name["B"]["subnet_count"] == 1
+    (row,) = body["scopes"]
+    assert row["scope_id"] == scope.id and "scope_name" not in row
+    assert row["discovered_in_scope"] == 3
+    assert row["subnet_count"] == 2
 
 
 def test_coverage_scope_with_no_subnets_returns_zero_counts(
@@ -140,14 +139,14 @@ def test_coverage_scope_with_no_subnets_returns_zero_counts(
 ):
     """A scope with zero subnets should appear with 0 counts (not be
     dropped from the response)."""
-    empty = models.Scope(project_id=test_project.id, name="empty", description="")
+    empty = models.Scope(project_id=test_project.id, description="")
     db_session.add(empty)
     db_session.flush()
 
     r = client.get(f"/api/v1/projects/{test_project.id}/coverage/")
     body = r.json()
-    scopes_by_name = {s["scope_name"]: s for s in body["scopes"]}
-    assert "empty" in scopes_by_name
-    assert scopes_by_name["empty"]["subnet_count"] == 0
-    assert scopes_by_name["empty"]["discovered_in_scope"] == 0
-    assert scopes_by_name["empty"]["coverage_percent"] is None
+    scopes_by_id = {s["scope_id"]: s for s in body["scopes"]}
+    assert empty.id in scopes_by_id
+    assert scopes_by_id[empty.id]["subnet_count"] == 0
+    assert scopes_by_id[empty.id]["discovered_in_scope"] == 0
+    assert scopes_by_id[empty.id]["coverage_percent"] is None

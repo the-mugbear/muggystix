@@ -34,7 +34,7 @@ const stats = {
 };
 const coverage = {
   project_id: 1, total_hosts: 142, total_scopes: 1,
-  scopes: [{ scope_id: 10, scope_name: 'Internal /24', subnet_count: 1, total_scoped_ips: 256, discovered_in_scope: 42, coverage_percent: 16.4 }],
+  scopes: [{ scope_id: 10, subnet_count: 1, total_scoped_ips: 256, discovered_in_scope: 42, coverage_percent: 16.4 }],
   hosts_in_subnet_scope: 128, hosts_name_scope_only: 2, hosts_outside_scope: 12,
 };
 
@@ -67,12 +67,11 @@ beforeEach(() => {
 describe('Posture — scanner observations and scope', () => {
   it('the three scope states add up to every host, each opening its own list', async () => {
     renderIt();
-    // 128 + 2 + 12 = 142; no scope names.
+    // 128 + 2 + 12 = 142.
     const scopeLine = (await screen.findByText('Scope')).parentElement as HTMLElement;
     expect(q(within(scopeLine).getByRole('link', { name: /128 in scope subnets/ }))).toBe('scope:subnet');
     expect(q(within(scopeLine).getByRole('link', { name: /2 reached only through an in-scope name/ }))).toBe('scope:name');
     expect(q(within(scopeLine).getByRole('link', { name: /12 outside scope/ }))).toBe('scope:none');
-    expect(screen.queryByText('Internal /24')).not.toBeInTheDocument();
     // On Posture it does not point at Posture.
     expect(screen.queryByRole('link', { name: /Posture/ })).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Findings' })).toHaveAttribute('href', '/findings');

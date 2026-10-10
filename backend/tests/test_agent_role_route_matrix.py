@@ -158,10 +158,10 @@ READ_FLOORS = {
     # Bulk exports (``export.py`` / ``reports.py`` gate their routers on AUDITOR).
     f"{_A}/assist/report-context.ndjson": "auditor",
     f"{_A}/assist/hosts.ndjson": "auditor",
-    f"{_A}/scopes/{{scope_id}}/hosts.ndjson": "auditor",
-    f"{_A}/scopes/{{scope_id}}/live-hosts.txt": "auditor",
-    f"{_A}/scopes/{{scope_id}}/web-targets.txt": "auditor",
-    f"{_A}/scopes/{{scope_id}}/named-targets.ndjson": "auditor",
+    f"{_A}/scope/hosts.ndjson": "auditor",
+    f"{_A}/scope/live-hosts.txt": "auditor",
+    f"{_A}/scope/web-targets.txt": "auditor",
+    f"{_A}/scope/named-targets.ndjson": "auditor",
     # Ingestion Results is an analyst page (every /parse-errors route).
     f"{_A}/assist/ingestion-issues": "analyst",
     f"{_A}/assist/uninterpreted-lines": "analyst",

@@ -94,7 +94,6 @@ class OsFilterItem(BaseModel):
 
 class SubnetFilterItem(BaseModel):
     cidr: str
-    scope_name: Optional[str] = None
     host_count: int = 0
 
 class ScanFilterItem(BaseModel):

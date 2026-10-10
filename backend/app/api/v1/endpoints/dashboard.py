@@ -1,7 +1,7 @@
 from typing import Dict
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, case
 from app.db.session import get_db, is_statement_timeout
 from app.db import models
@@ -161,15 +161,10 @@ def get_dashboard_stats(
     subnet_stats = []
 
     try:
-        # Get basic subnet info with scope names, scoped to project
+        # Basic subnet info, scoped to the project
         subnets = (
             db.query(models.Subnet)
             .join(models.Scope)
-            # Eager-load scope so `subnet.scope.name` in the loop below
-            # doesn't fire one lazy SELECT per subnet (the host-count
-            # lookup right below was de-N+1'd in v2.85.0; this access was
-            # missed).
-            .options(joinedload(models.Subnet.scope))
             .filter(models.Scope.project_id == project.id)
             .limit(20)
             .all()
@@ -203,7 +198,6 @@ def get_dashboard_stats(
             subnet_stats.append(SubnetStats(
                 id=subnet.id,
                 cidr=subnet.cidr,
-                scope_name=subnet.scope.name,
                 description=subnet.description,
                 host_count=host_count,
                 total_addresses=metrics['total_addresses'],

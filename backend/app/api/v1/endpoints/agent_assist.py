@@ -25,6 +25,7 @@ from sqlalchemy import func, literal, or_, select, tuple_
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload, Query as SAQuery
 
 from app.db.session import disable_statement_timeout, get_db, is_statement_timeout
+from app.services.default_scope import project_scope
 from app.services.operations_read_service import blocked_import_condition
 from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
 from app.services.vulnerability_service import VulnerabilityService
@@ -121,11 +122,11 @@ def get_assist_context(
 ):
     """Single endpoint giving the agent enough project-level
     grounding to answer ad-hoc questions without N+1 chatter:
-    project metadata, host count, scope list, recent scan summary.
+    project metadata, host count, scope entry counts, recent scan summary.
 
     Sized to fit comfortably in a typical agent context window
     (counts and headlines, not raw row dumps).  When the agent
-    needs detail it follows up with /assist/hosts or /assist/scopes.
+    needs detail it follows up with /assist/hosts or /assist/scope.
     """
     session = load_agent_session(db, request)
     project = db.query(Project).filter(Project.id == request.state.agent_project_id).first()
@@ -162,17 +163,12 @@ def get_assist_context(
         .all()
     )
 
-    # Scope list (capped at 50 — projects with many scopes get a
-    # follow-up call to /assist/scopes for the full list)
-    scopes = (
-        db.query(models.Scope)
-        .filter(models.Scope.project_id == project.id)
-        .order_by(models.Scope.name)
-        .limit(50)
-        .all()
-    )
-    scope_count_total = (
-        db.query(func.count(models.Scope.id))
+    # The project's one scope is not listed here (it has no name and nothing
+    # to choose): its entries are counted in `totals` and read from
+    # /assist/scope.
+    subnet_count_total = (
+        db.query(func.count(models.Subnet.id))
+        .join(models.Scope, models.Scope.id == models.Subnet.scope_id)
         .filter(models.Scope.project_id == project.id)
         .scalar()
         or 0
@@ -272,9 +268,9 @@ def get_assist_context(
             "host_count": host_count,
             "up_host_count": up_count,
             "open_port_count": open_port_count,
-            "scope_count": scope_count_total,
             "scan_count": scan_count_total,
-            # Declared domain-scope entries across the project's scopes.
+            # Declared scope entries: subnets / addresses, and domains.
+            "subnet_count": subnet_count_total,
             "domain_count": domain_count_total,
         },
         # Name scope is independent of subnet scope: an in-scope name does not
@@ -286,15 +282,6 @@ def get_assist_context(
             "in_scope": names_in_scope,
             "in_scope_unresolved": names_in_scope_unresolved,
         },
-        "scopes": [
-            {
-                "id": s.id,
-                "name": s.name,
-                "description": s.description,
-            }
-            for s in scopes
-        ],
-        "scopes_truncated": scope_count_total > len(scopes),
         "recent_scans": [
             {
                 "id": s.id,
@@ -555,7 +542,7 @@ def list_assist_hosts(
       only *filters*, it never mutates follow/assignment state.
 
     Project-wide: nothing narrows this read to a scope (a scope's own hosts
-    are ``/agent/scopes/{scope_id}/hosts.ndjson``).
+    are ``/agent/scope/hosts.ndjson``).
 
     v2.440.0 (diag 4) — returns ``{items, total, has_more, limit, offset}``:
     the bare list's length was read as "how many hosts", and a 500-row
@@ -1807,7 +1794,6 @@ class AssistVocabulary(BaseModel):
     tags: List[str] = []
     labels: List[str] = []
     sites: List[str] = []
-    scopes: List[str] = []
     usernames: List[str] = []
     finding_statuses: List[str] = []
     severities: List[str] = []
@@ -1838,7 +1824,6 @@ def assist_vocabulary(
 
     tags = _names(models.HostTag, models.HostTag.name, project_id=pid)
     sites = _names(models.Site, models.Site.name, project_id=pid)
-    scopes = _names(models.Scope, models.Scope.name, project_id=pid)
     labels = sorted({
         v for (v,) in db.query(models.SubnetLabel.name)
         .filter(models.SubnetLabel.project_id == pid).all() if v
@@ -1867,7 +1852,7 @@ def assist_vocabulary(
     # former silently returned nothing, and the latter were undiscoverable.
     from app.db.models_findings import FindingSeverity, FindingStatus
     return AssistVocabulary(
-        tags=tags, labels=labels, sites=sites, scopes=scopes, usernames=usernames,
+        tags=tags, labels=labels, sites=sites, usernames=usernames,
         finding_statuses=[s.value for s in FindingStatus],
         severities=[s.value for s in FindingSeverity],
     )
@@ -1920,7 +1905,6 @@ class AssistSegment(BaseModel):
     """
     cidr: str
     description: Optional[str] = None
-    scope_name: Optional[str] = None
     site: Optional[str] = None
     labels: List[str] = []
     criticality_tier: Optional[int] = None
@@ -2043,7 +2027,6 @@ def list_assist_segments(
         AssistSegment(
             cidr=row["cidr"],
             description=descriptions.get(row["subnet_id"]),
-            scope_name=row.get("scope_name"),
             site=row.get("site"),
             labels=sorted(labels.get(row["subnet_id"], [])),
             criticality_tier=row.get("criticality_tier"),
@@ -2124,7 +2107,7 @@ def list_assist_recent_notes(
     q = (
         db.query(
             models.Annotation, models.Host.ip_address,
-            Finding.title, models.Scan.filename, models.Scope.name,
+            Finding.title, models.Scan.filename,
             models.Port.port_number, port_host.ip_address,
         )
         .options(*note_load_options())
@@ -2155,7 +2138,7 @@ def list_assist_recent_notes(
     rows = q.order_by(models.Annotation.created_at.desc()).limit(limit).all()
     serialized = _assist_notes(db, [r[0] for r in rows])
     out = []
-    for note, (a, ip, f_title, scan_name, scope_name, port_no, port_ip) in zip(serialized, rows):
+    for note, (a, ip, f_title, scan_name, port_no, port_ip) in zip(serialized, rows):
         if a.host_id:
             target = {"kind": "host", "id": a.host_id, "label": ip}
         elif a.port_id:
@@ -2165,7 +2148,8 @@ def list_assist_recent_notes(
         elif a.scan_id:
             target = {"kind": "scan", "id": a.scan_id, "label": scan_name}
         elif a.scope_id:
-            target = {"kind": "scope", "id": a.scope_id, "label": scope_name}
+            # The project's one scope: nothing to tell apart, so no id or label.
+            target = {"kind": "scope", "id": None, "label": None}
         else:
             target = {"kind": "project", "id": a.project_id, "label": None}
         out.append(AssistRecentNote(
@@ -2175,89 +2159,65 @@ def list_assist_recent_notes(
 
 
 @router.get(
-    "/assist/scopes",
-    response_model=List[ScopeBrief],
-    summary="List project scopes with their subnet CIDRs and declared domains",
+    "/assist/scope",
+    response_model=ScopeBrief,
+    summary="The project's scope: its subnet CIDRs and declared domains",
 )
-def list_assist_scopes(
+def get_assist_scope(
     request: Request,
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """List scopes; per-scope subnet CIDRs included.  Capped at the
-    first 100 subnets per scope so a very-large scope's CIDR list
-    doesn't blow the agent context window.  The cap is now explicit:
-    each ScopeBrief carries ``subnet_total`` (the true count) and
-    ``subnets_truncated``, so an assist agent can tell a 100-CIDR scope
-    from a 1000-CIDR one and surface "list truncated" to the operator.
-    The whole list of one scope is ``GET /agent/scopes/{scope_id}/subnets``
-    (and ``/domains``).
+    """The project's ONE scope (a project has exactly one, with no name and no
+    id to pass anywhere): the first 100 subnet CIDRs and the first 100
+    declared domains, each with its true total (``subnet_total`` /
+    ``domain_total``) and a ``*_truncated`` flag, so a 100-CIDR scope can be
+    told from a 1000-CIDR one.  The whole lists are
+    ``GET /agent/scope/subnets`` and ``GET /agent/scope/domains``.  A project
+    that has declared nothing answers with empty lists and zero totals.
 
-    Each scope also carries its declared ``domains`` (same 100
-    cap, ``domain_total`` / ``domains_truncated``) and
-    ``names_in_scope_total`` (distinct inventory names THIS scope's entries
-    cover — a name two scopes cover counts in each).
-    Name scope is independent of subnet scope: an in-scope name does not
-    make the address it resolves to subnet-in-scope, and an in-scope
-    subnet does not make names in scope.
+    ``names_in_scope_total`` is the distinct inventory names the declared
+    domains cover.  Name scope is independent of subnet scope: an in-scope
+    name does not make the address it resolves to subnet-in-scope, and an
+    in-scope subnet does not make names in scope.
     """
-    scopes = (
-        db.query(models.Scope)
-        .filter(models.Scope.project_id == request.state.agent_project_id)
-        .order_by(models.Scope.name)
+    pid = request.state.agent_project_id
+    scope = project_scope(db, pid)
+    if scope is None:
+        return ScopeBrief()
+    _CAP = 100
+    subnet_total = (
+        db.query(func.count(models.Subnet.id)).filter(models.Subnet.scope_id == scope.id).scalar() or 0
+    )
+    cidrs = [
+        cidr for (cidr,) in db.query(models.Subnet.cidr)
+        .filter(models.Subnet.scope_id == scope.id)
+        .order_by(models.Subnet.cidr)
+        .limit(_CAP)
         .all()
-    )
-    if not scopes:
-        return []
-    scope_ids = [s.id for s in scopes]
-    # Per-scope subnet CIDR lists (cap each at 100 — see docstring).
-    subnet_rows = (
-        db.query(models.Subnet.scope_id, models.Subnet.cidr)
-        .filter(models.Subnet.scope_id.in_(scope_ids))
-        .order_by(models.Subnet.scope_id, models.Subnet.cidr)
-        .all()
-    )
-    _SUBNET_CAP = 100
-    cidrs_by_scope: dict[int, list[str]] = {}
-    total_by_scope: dict[int, int] = {}
-    for scope_id, cidr in subnet_rows:
-        total_by_scope[scope_id] = total_by_scope.get(scope_id, 0) + 1
-        bucket = cidrs_by_scope.setdefault(scope_id, [])
-        if len(bucket) < _SUBNET_CAP:
-            bucket.append(cidr)
-    # Per-scope domain lists, capped the same way.
-    domain_rows = (
-        db.query(models.ScopeDomain.scope_id, models.ScopeDomain.domain, models.ScopeDomain.include_subdomains)
-        .filter(models.ScopeDomain.scope_id.in_(scope_ids))
-        .order_by(models.ScopeDomain.scope_id, models.ScopeDomain.domain)
-        .all()
-    )
-    domains_by_scope: dict[int, list[ScopeDomainBrief]] = {}
-    domain_total_by_scope: dict[int, int] = {}
-    for scope_id, domain, include_sub in domain_rows:
-        domain_total_by_scope[scope_id] = domain_total_by_scope.get(scope_id, 0) + 1
-        bucket = domains_by_scope.setdefault(scope_id, [])
-        if len(bucket) < _SUBNET_CAP:
-            bucket.append(ScopeDomainBrief(domain=domain, include_subdomains=bool(include_sub)))
-    names_by_scope = (
-        dns_name_service.scope_covered_names_by_scope(db, request.state.agent_project_id, scope_ids)
-        if domain_rows else {}
-    )
-    return [
-        ScopeBrief(
-            id=s.id,
-            name=s.name,
-            description=s.description,
-            subnets=cidrs_by_scope.get(s.id, []),
-            subnet_total=total_by_scope.get(s.id, 0),
-            subnets_truncated=total_by_scope.get(s.id, 0) > _SUBNET_CAP,
-            domains=domains_by_scope.get(s.id, []),
-            domain_total=domain_total_by_scope.get(s.id, 0),
-            domains_truncated=domain_total_by_scope.get(s.id, 0) > _SUBNET_CAP,
-            names_in_scope_total=names_by_scope.get(s.id, 0),
-        )
-        for s in scopes
     ]
+    domain_total = (
+        db.query(func.count(models.ScopeDomain.id)).filter(models.ScopeDomain.scope_id == scope.id).scalar() or 0
+    )
+    domains = [
+        ScopeDomainBrief(domain=domain, include_subdomains=bool(include_sub))
+        for domain, include_sub in db.query(models.ScopeDomain.domain, models.ScopeDomain.include_subdomains)
+        .filter(models.ScopeDomain.scope_id == scope.id)
+        .order_by(models.ScopeDomain.domain)
+        .limit(_CAP)
+        .all()
+    ]
+    return ScopeBrief(
+        subnets=cidrs,
+        subnet_total=subnet_total,
+        subnets_truncated=subnet_total > _CAP,
+        domains=domains,
+        domain_total=domain_total,
+        domains_truncated=domain_total > _CAP,
+        names_in_scope_total=(
+            dns_name_service.scope_domains_covered_names_total(db, pid) if domain_total else 0
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

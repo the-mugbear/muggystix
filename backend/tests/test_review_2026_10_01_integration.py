@@ -139,10 +139,10 @@ STREAMED = [
     ("jwt", "/names/export?format=csv"),
     ("agent", "/assist/hosts.ndjson"),
     ("agent", "/assist/report-context.ndjson"),
-    ("scope", "hosts.ndjson"),
-    ("scope", "live-hosts.txt"),
-    ("scope", "web-targets.txt"),
-    ("scope", "named-targets.ndjson"),
+    ("agent", "/scope/hosts.ndjson"),
+    ("agent", "/scope/live-hosts.txt"),
+    ("agent", "/scope/web-targets.txt"),
+    ("agent", "/scope/named-targets.ndjson"),
 ]
 
 
@@ -152,7 +152,7 @@ def test_a_streamed_route_lifts_the_statement_timeout_for_its_session(client, db
     then leaves the limit off for the rest of it.  The suite's ``client``
     hands every request this one session, so the mark is visible here."""
     _host(db_session, test_project, "10.82.0.1")
-    scope = Scope(name="s", description="fixture", project_id=test_project.id)
+    scope = Scope(description="fixture", project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
     db_session.add(Subnet(scope_id=scope.id, cidr="10.82.0.0/24"))
@@ -166,10 +166,8 @@ def test_a_streamed_route_lifts_the_statement_timeout_for_its_session(client, db
 
     if kind == "jwt":
         response = client.get(f"{_base(test_project)}{path}")
-    elif kind == "agent":
-        response = client.get(f"/api/v1/agent{path}", headers=headers)
     else:
-        response = client.get(f"/api/v1/agent/scopes/{scope.id}/{path}", headers=headers)
+        response = client.get(f"/api/v1/agent{path}", headers=headers)
     assert response.status_code == 200, response.text[:300]
     assert db_session.info.get(_NO_TIMEOUT) is True, f"{path} runs under the API statement timeout"
     db_session.info.pop(_NO_TIMEOUT, None)

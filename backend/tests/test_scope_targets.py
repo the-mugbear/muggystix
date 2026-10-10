@@ -1,14 +1,14 @@
-"""A scope's target files, and the web-interface page past host detail's cap.
+"""The scope's target files, and the web-interface page past host detail's cap.
 
-``/agent/scopes/{scope_id}/hosts.ndjson|live-hosts.txt|web-targets.txt`` are
+``/agent/scope/hosts.ndjson|live-hosts.txt|web-targets.txt`` are
 what an agent redirects to a file and pipes into its scanners (``nmap -iL``,
 ``httpx -l``).  Ported from ``test_recon_bulk_download.py`` and
 ``test_recon_planning_contract.py`` (deleted with recon runs in v2.433.0,
 which took these guards with them although the files survived):
 
-* the files hold the scope's hosts and nothing else — a host from another
-  scope in a scanner's target file is a scan outside what the client
-  authorised;
+* the files hold the scope's hosts and nothing else — a host outside the
+  scope's subnets, or of another project, in a scanner's target file is a
+  scan outside what the client authorised;
 * ``live-hosts.txt`` is a usable ``-iL`` list, in IP order, and one bad
   address row cannot take the download down;
 * ``hosts.ndjson`` is complete and carries each host's ports;
@@ -32,8 +32,8 @@ def _key(client, project):
     return {"X-API-Key": r.json()["api_key"]}
 
 
-def _scope(db, project, name, cidr):
-    scope = Scope(name=name, description="fixture", project_id=project.id)
+def _scope(db, project, cidr):
+    scope = Scope(description="fixture", project_id=project.id)
     db.add(scope)
     db.flush()
     db.add(Subnet(scope_id=scope.id, cidr=cidr))
@@ -65,11 +65,22 @@ def _seed_hosts(db, project, scope, ips, *, ports=(22, 80)):
 
 @pytest.fixture
 def scope(db_session, test_project):
-    return _scope(db_session, test_project, "dl-scope", "10.99.1.0/24")
+    return _scope(db_session, test_project, "10.99.1.0/24")
 
 
-def _get(client, headers, scope_id, name):
-    return client.get(f"/api/v1/agent/scopes/{scope_id}/{name}", headers=headers)
+def _get(client, headers, name):
+    return client.get(f"/api/v1/agent/scope/{name}", headers=headers)
+
+
+def _foreign_project(db, slug, cidr, ips):
+    """Another project with its own scope and hosts in it."""
+    from app.db.models_project import Project
+    elsewhere = Project(name=slug, slug=slug, description="x")
+    db.add(elsewhere)
+    db.commit()
+    foreign = _scope(db, elsewhere, cidr)
+    _seed_hosts(db, elsewhere, foreign, ips)
+    return elsewhere, foreign
 
 
 # ---------------------------------------------------------------------------
@@ -77,32 +88,62 @@ def _get(client, headers, scope_id, name):
 # ---------------------------------------------------------------------------
 
 def test_downloads_keep_the_scope_bounding(client, db_session, test_project, scope):
-    other = _scope(db_session, test_project, "other-scope", "10.55.0.0/24")
-    _seed_hosts(db_session, test_project, other, ["10.55.0.9"])
-    _seed_hosts(db_session, test_project, scope, ["10.99.1.9"])
+    """The files are bounded to hosts mapped to the scope's subnets.  (Until
+    2.488.0 the outsider here was a host of a second scope of the same
+    project; a project has one scope now, so it is a host of the project that
+    no subnet of the scope holds — and a host of another project's scope.)"""
+    scan = _seed_hosts(db_session, test_project, scope, ["10.99.1.9"])
+    # In the project, with open web ports and a scan, but mapped to no subnet.
+    outside = models.Host(ip_address="10.55.0.9", state="up", project_id=test_project.id)
+    db_session.add(outside)
+    db_session.flush()
+    for p, service in ((22, "ssh"), (80, "http")):
+        db_session.add(models.Port(
+            host_id=outside.id, port_number=p, protocol="tcp", state="open", service_name=service,
+        ))
+    db_session.add(HostScanHistory(host_id=outside.id, scan_id=scan.id))
+    db_session.commit()
+    _foreign_project(db_session, "elsewhere-bounding", "10.66.0.0/24", ["10.66.0.1"])
     headers = _key(client, test_project)
 
     for name in ("live-hosts.txt", "hosts.ndjson", "web-targets.txt"):
-        body = _get(client, headers, scope.id, name).text
-        assert "10.99.1.9" in body, name
-        assert "10.55.0.9" not in body, f"out-of-scope host leaked into {name}"
+        resp = _get(client, headers, name)
+        assert resp.status_code == 200, (name, resp.text)
+        assert "10.99.1.9" in resp.text, name
+        assert "10.55.0.9" not in resp.text, f"out-of-scope host leaked into {name}"
+        assert "10.66.0.1" not in resp.text, f"another project's host leaked into {name}"
 
 
-def test_a_scope_of_another_project_is_not_found(client, db_session, test_project):
-    """Nothing binds a key to a scope any more, so this filter is the only
-    thing between a key and another project's hosts."""
-    from app.db.models_project import Project
-    elsewhere = Project(name="elsewhere", slug="elsewhere")
-    db_session.add(elsewhere)
-    db_session.commit()
-    foreign = _scope(db_session, elsewhere, "foreign", "10.66.0.0/24")
-    _seed_hosts(db_session, elsewhere, foreign, ["10.66.0.1"])
+def test_a_scope_of_another_project_is_never_read(client, db_session, test_project):
+    """No route names a scope, so the key's project is the only thing between
+    a key and another project's hosts — whether this project has a scope of
+    its own or (the case that could fall through to "any scope") none."""
+    _, foreign = _foreign_project(db_session, "elsewhere", "10.66.0.0/24", ["10.66.0.1"])
     headers = _key(client, test_project)
 
-    for name in ("live-hosts.txt", "hosts.ndjson", "web-targets.txt", "subnets"):
-        resp = _get(client, headers, foreign.id, name)
-        assert resp.status_code == 404, (name, resp.status_code)
-        assert "10.66.0.1" not in resp.text
+    def reads():
+        for name in ("live-hosts.txt", "hosts.ndjson", "web-targets.txt", "subnets"):
+            resp = _get(client, headers, name)
+            assert resp.status_code == 200, (name, resp.status_code)
+            assert "10.66.0" not in resp.text, f"another project's scope is in {name}"
+            yield name, resp
+
+    # This project declares no scope: every read is empty.
+    for name, resp in reads():
+        if name == "subnets":
+            assert resp.json()["subnets"] == [] and resp.json()["total"] == 0
+        else:
+            assert resp.text == "", name
+
+    # With its own scope, it reads its own and only its own.
+    mine = _scope(db_session, test_project, "10.99.1.0/24")
+    assert mine.id != foreign.id
+    _seed_hosts(db_session, test_project, mine, ["10.99.1.9"])
+    for name, resp in reads():
+        if name == "subnets":
+            assert resp.json()["subnets"] == ["10.99.1.0/24"]
+        else:
+            assert "10.99.1.9" in resp.text, name
 
 
 # ---------------------------------------------------------------------------
@@ -111,16 +152,17 @@ def test_a_scope_of_another_project_is_not_found(client, db_session, test_projec
 
 def test_live_hosts_download_is_a_usable_target_file(client, db_session, test_project, scope):
     _seed_hosts(db_session, test_project, scope, ["10.99.1.3", "10.99.1.1", "10.99.1.2"])
-    resp = _get(client, _key(client, test_project), scope.id, "live-hosts.txt")
+    resp = _get(client, _key(client, test_project), "live-hosts.txt")
     assert resp.status_code == 200
     assert resp.text == "10.99.1.1\n10.99.1.2\n10.99.1.3\n"
+    assert "scope-hosts.txt" in resp.headers["content-disposition"]
 
 
 def test_hosts_sort_numerically_not_lexicographically(client, db_session, test_project, scope):
     """IP order, not string order (which puts .100 before .2)."""
     _seed_hosts(db_session, test_project, scope, ["10.99.1.100", "10.99.1.2", "10.99.1.20"])
-    resp = _get(client, _key(client, test_project), scope.id, "live-hosts.txt")
-    assert resp.text.split() == ["10.99.1.2", "10.99.1.20", "10.99.1.100"]
+    resp = _get(client, _key(client, test_project), "live-hosts.txt")
+    assert resp.text.split() ==["10.99.1.2", "10.99.1.20", "10.99.1.100"]
 
 
 def test_an_unparseable_ip_address_does_not_take_down_the_download(
@@ -138,7 +180,7 @@ def test_an_unparseable_ip_address_does_not_take_down_the_download(
     db_session.add(HostScanHistory(host_id=bad.id, scan_id=scan.id))
     db_session.commit()
 
-    resp = _get(client, _key(client, test_project), scope.id, "live-hosts.txt")
+    resp = _get(client, _key(client, test_project), "live-hosts.txt")
     assert resp.status_code == 200, resp.text
     lines = resp.text.split()
     assert "10.99.1.5" in lines and "localhost" in lines
@@ -153,7 +195,7 @@ def test_an_unparseable_ip_address_does_not_take_down_the_download(
 def test_hosts_ndjson_streams_every_host_one_per_line(client, db_session, test_project, scope):
     ips = [f"10.99.1.{i}" for i in range(1, 41)]
     _seed_hosts(db_session, test_project, scope, ips)
-    resp = _get(client, _key(client, test_project), scope.id, "hosts.ndjson")
+    resp = _get(client, _key(client, test_project), "hosts.ndjson")
     assert resp.status_code == 200
     lines = [line for line in resp.text.splitlines() if line.strip()]
     assert len(lines) == len(ips), "every host, uncapped"
@@ -164,7 +206,7 @@ def test_hosts_ndjson_streams_every_host_one_per_line(client, db_session, test_p
 
 def test_web_targets_download_yields_urls(client, db_session, test_project, scope):
     _seed_hosts(db_session, test_project, scope, ["10.99.1.4"], ports=(80, 443))
-    resp = _get(client, _key(client, test_project), scope.id, "web-targets.txt")
+    resp = _get(client, _key(client, test_project), "web-targets.txt")
     assert resp.status_code == 200
     assert set(resp.text.split()) == {"http://10.99.1.4/", "https://10.99.1.4/"}
 
@@ -174,55 +216,20 @@ def test_a_person_downloads_the_same_web_targets_an_agent_does(client, db_sessio
     scope export has it as ``format_type=web`` — the same builder, so the two
     files are the same bytes — and another project's scope is still a 404."""
     _seed_hosts(db_session, test_project, scope, ["10.99.1.4", "10.99.1.20"], ports=(22, 80, 443))
-    agents = _get(client, _key(client, test_project), scope.id, "web-targets.txt")
+    agents = _get(client, _key(client, test_project), "web-targets.txt")
     people = client.get(f"/api/v1/projects/{test_project.id}/export/scope/{scope.id}?format_type=web")
     assert people.status_code == 200, people.text
     assert people.text == agents.text and people.text.count("\n") == 4
-    assert "web-targets.txt" in people.headers["content-disposition"]
+    assert "project-scope_web-targets.txt" in people.headers["content-disposition"]
+    assert "scope-web-targets.txt" in agents.headers["content-disposition"]
 
     from app.db.models_project import Project
     other = Project(name="other-web", slug="other-web", description="x")
     db_session.add(other)
     db_session.commit()
-    theirs = _scope(db_session, other, "theirs", "10.99.2.0/24")
+    theirs = _scope(db_session, other, "10.99.2.0/24")
     assert client.get(
         f"/api/v1/projects/{test_project.id}/export/scope/{theirs.id}?format_type=web").status_code == 404
-
-
-def test_the_scope_pages_export_covers_every_scope_of_the_project(client, db_session, test_project, scope):
-    """Review 2026-10-10 (H2): since 2.486.0 the Scope page's table lists the
-    subnets of EVERY scope of the project, but its "Project scope" export
-    still read the one scope whose id the page holds — a host mapped only to
-    a second scope was on the page and missing from the target list.
-    `all_scopes=true` is the page's export: the table's own membership (a
-    subnet of any scope of the project), in every format; without it one
-    scope's export is still that scope's."""
-    second = _scope(db_session, test_project, "second", "10.99.3.0/24")
-    _seed_hosts(db_session, test_project, scope, ["10.99.1.4"], ports=(80,))
-    _seed_hosts(db_session, test_project, second, ["10.99.3.7"], ports=(443,))
-    base = f"/api/v1/projects/{test_project.id}/export/scope/{scope.id}"
-
-    assert client.get(base, params={"format_type": "txt"}).text.split() == ["10.99.1.4"]
-    assert client.get(f"/api/v1/projects/{test_project.id}/export/scope/{second.id}",
-                      params={"format_type": "txt"}).text.split() == ["10.99.3.7"]
-
-    whole = client.get(base, params={"format_type": "txt", "all_scopes": "true"})
-    assert whole.status_code == 200, whole.text
-    assert whole.text.split() == ["10.99.1.4", "10.99.3.7"]
-    rows = client.get(base, params={"format_type": "json", "all_scopes": "true"}).json()
-    assert [r["ip_address"] for r in rows] == ["10.99.1.4", "10.99.3.7"]
-    assert "10.99.3.7" in client.get(base, params={"format_type": "csv", "all_scopes": "true"}).text
-    web = client.get(base, params={"format_type": "web", "all_scopes": "true"})
-    assert web.text.split() == ["http://10.99.1.4/", "https://10.99.3.7/"]
-
-    # Another project's hosts never come with it.
-    from app.db.models_project import Project
-    other = Project(name="other-export", slug="other-export", description="x")
-    db_session.add(other)
-    db_session.commit()
-    theirs = _scope(db_session, other, "theirs", "10.99.4.0/24")
-    _seed_hosts(db_session, other, theirs, ["10.99.4.9"], ports=(80,))
-    assert "10.99.4.9" not in client.get(base, params={"format_type": "txt", "all_scopes": "true"}).text
 
 
 def _brief(port, service, tunnel=None, method=None, ip="192.168.7.245"):

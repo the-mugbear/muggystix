@@ -1,16 +1,16 @@
 """
 Agent API — scope reads and scanner-output uploads.
 
-An agent reads a scope (its subnets, its in-scope domains, and the hosts the
-inventory already holds inside it), runs its own tools, and uploads the output
-to its session as results land.  The key is project-scoped and every read is
-keyed on ``scope_id`` directly.
+An agent reads the project's scope (its subnets, its in-scope domains, and the
+hosts the inventory already holds inside it), runs its own tools, and uploads
+the output to its session as results land.  The key is project-scoped and a
+project has exactly one scope, so no read names one (``/agent/scope/…``).
 """
 
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -24,6 +24,7 @@ from app.api.v1.endpoints.agent_schemas import (
     ReconUploadResponse, ReconJobStatus,
 )
 from app.api.v1.endpoints.agent_common import load_agent_session
+from app.services.default_scope import project_scope
 from app.services.scope_targets_service import (
     iter_scope_hosts_ndjson as _iter_scope_hosts_ndjson,
     iter_scope_live_hosts as _iter_scope_live_hosts,
@@ -44,44 +45,42 @@ def _seconds_between(start: Optional[datetime], end: Optional[datetime]) -> Opti
     return (end - start).total_seconds()
 
 
-def _load_scope(db: Session, agent: Agent, scope_id: int) -> models.Scope:
-    scope = (
-        db.query(models.Scope)
-        .filter(models.Scope.id == scope_id, models.Scope.project_id == agent.project_id)
-        .first()
-    )
-    if scope is None:
-        raise HTTPException(status_code=404, detail="Scope not found in this project")
-    return scope
+def _scope_id(db: Session, agent: Agent) -> int:
+    """The id of the project's ONE scope, for the builders that are keyed by
+    it — or 0, which no row has, when the project has declared nothing yet:
+    every read below then answers empty, never 404 (there is no scope to name
+    wrongly any more).  A read never creates the scope."""
+    scope = project_scope(db, agent.project_id)
+    return scope.id if scope is not None else 0
 
 
 # ---------------------------------------------------------------------------
-# Scope reads
+# Scope reads — the project has exactly one scope (2.488.0), so no route names
+# one: `/agent/scope/…`.  They were `/agent/scopes/{scope_id}/…`.
 # ---------------------------------------------------------------------------
 
 @router.get(
-    "/scopes/{scope_id}/subnets",
-    summary="Paginated CIDR list for a scope",
+    "/scope/subnets",
+    summary="The project's in-scope subnets and addresses, paginated",
 )
 def get_scope_subnets(
-    scope_id: int = Path(..., gt=0),
     offset: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=2000),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """The scope's subnet CIDRs, paginated — walk ``offset`` in ``limit``-sized
+    """The project's subnet CIDRs, paginated — walk ``offset`` in ``limit``-sized
     pages until ``subnets`` comes back empty.  Ordered by id so paging is
     deterministic."""
-    scope = _load_scope(db, agent, scope_id)
+    scope_id = _scope_id(db, agent)
     total = (
         db.query(func.count(models.Subnet.id))
-        .filter(models.Subnet.scope_id == scope.id)
+        .filter(models.Subnet.scope_id == scope_id)
         .scalar()
     ) or 0
     rows = (
         db.query(models.Subnet.cidr)
-        .filter(models.Subnet.scope_id == scope.id)
+        .filter(models.Subnet.scope_id == scope_id)
         .order_by(models.Subnet.id)
         .offset(offset)
         .limit(limit)
@@ -89,7 +88,6 @@ def get_scope_subnets(
     )
     cidrs = [r[0] for r in rows]
     return {
-        "scope_id": scope.id,
         "total": total,
         "offset": offset,
         "limit": limit,
@@ -100,29 +98,28 @@ def get_scope_subnets(
 
 
 @router.get(
-    "/scopes/{scope_id}/domains",
-    summary="Paginated in-scope domain list for a scope",
+    "/scope/domains",
+    summary="The project's in-scope domains, paginated",
 )
 def get_scope_domains(
-    scope_id: int = Path(..., gt=0),
     offset: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=2000),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """The scope's declared domains, paginated.  Each entry is
+    """The project's declared domains, paginated.  Each entry is
     ``{domain, include_subdomains}`` — an exact entry covers only that name,
     an include_subdomains entry covers every descendant.  A name being in
     scope never puts the address it resolves to in subnet scope."""
-    scope = _load_scope(db, agent, scope_id)
+    scope_id = _scope_id(db, agent)
     total = (
         db.query(func.count(models.ScopeDomain.id))
-        .filter(models.ScopeDomain.scope_id == scope.id)
+        .filter(models.ScopeDomain.scope_id == scope_id)
         .scalar()
     ) or 0
     rows = (
         db.query(models.ScopeDomain.domain, models.ScopeDomain.include_subdomains)
-        .filter(models.ScopeDomain.scope_id == scope.id)
+        .filter(models.ScopeDomain.scope_id == scope_id)
         .order_by(models.ScopeDomain.id)
         .offset(offset)
         .limit(limit)
@@ -130,7 +127,6 @@ def get_scope_domains(
     )
     domains = [{"domain": d, "include_subdomains": bool(sub)} for d, sub in rows]
     return {
-        "scope_id": scope.id,
         "total": total,
         "offset": offset,
         "limit": limit,
@@ -161,74 +157,67 @@ def _stream(db: Session, generator, media_type: str, filename: str) -> Streaming
 
 
 @router.get(
-    "/scopes/{scope_id}/hosts.ndjson",
+    "/scope/hosts.ndjson",
     dependencies=_EXPORT_READ,
     summary="Stream every in-scope host as newline-delimited JSON",
     response_class=StreamingResponse,
 )
 def download_scope_hosts_ndjson(
-    scope_id: int = Path(..., gt=0),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """Every host in the scope with its open-port detail, one JSON object per
-    line — redirect it to a file and process it locally."""
-    scope = _load_scope(db, agent, scope_id)
+    """Every host in the project's scope with its open-port detail, one JSON
+    object per line — redirect it to a file and process it locally."""
     return _stream(
-        db, _iter_scope_hosts_ndjson(db, scope.id),
+        db, _iter_scope_hosts_ndjson(db, _scope_id(db, agent)),
         "application/x-ndjson",
-        f"scope-{scope.id}-hosts.jsonl",
+        "scope-hosts.jsonl",
     )
 
 
 @router.get(
-    "/scopes/{scope_id}/live-hosts.txt",
+    "/scope/live-hosts.txt",
     dependencies=_EXPORT_READ,
     summary="Stream in-scope host IPs as a target file",
     response_class=StreamingResponse,
 )
 def download_scope_live_hosts(
-    scope_id: int = Path(..., gt=0),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """One IP per line, IP-sorted — a plain-text target list."""
-    scope = _load_scope(db, agent, scope_id)
     return _stream(
-        db, _iter_scope_live_hosts(db, scope.id),
+        db, _iter_scope_live_hosts(db, _scope_id(db, agent)),
         "text/plain",
-        f"scope-{scope.id}-hosts.txt",
+        "scope-hosts.txt",
     )
 
 
 @router.get(
-    "/scopes/{scope_id}/web-targets.txt",
+    "/scope/web-targets.txt",
     dependencies=_EXPORT_READ,
     summary="Stream derived http/https URLs as a target file",
     response_class=StreamingResponse,
 )
 def download_scope_web_targets(
-    scope_id: int = Path(..., gt=0),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     """One URL per line, derived from in-scope hosts' open web ports."""
-    scope = _load_scope(db, agent, scope_id)
     return _stream(
-        db, _iter_scope_web_targets(db, scope.id),
+        db, _iter_scope_web_targets(db, _scope_id(db, agent)),
         "text/plain",
-        f"scope-{scope.id}-web-targets.txt",
+        "scope-web-targets.txt",
     )
 
 
 @router.get(
-    "/scopes/{scope_id}/named-targets.ndjson",
+    "/scope/named-targets.ndjson",
     dependencies=_EXPORT_READ,
     summary="Stream every in-scope NAME with its current addresses and web evidence",
     response_class=StreamingResponse,
 )
 def download_scope_named_targets(
-    scope_id: int = Path(..., gt=0),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -244,11 +233,11 @@ def download_scope_named_targets(
     — test by name (Host header / SNI) where ``in_subnet_scope`` is false.
     Names only a certificate SAN or a shared address connect to are not
     listed."""
-    scope = _load_scope(db, agent, scope_id)
+    scope = project_scope(db, agent.project_id)
     return _stream(
-        db, _iter_scope_named_targets_ndjson(db, scope),
+        db, _iter_scope_named_targets_ndjson(db, scope) if scope is not None else iter(()),
         "application/x-ndjson",
-        f"scope-{scope.id}-named-targets.jsonl",
+        "scope-named-targets.jsonl",
     )
 
 
@@ -305,7 +294,7 @@ async def upload_scanner_output(
     session = load_agent_session(db, request)
 
     # Ingestion is a project-level pipeline: parsed hosts land at the project
-    # and are correlated to scopes downstream (HostSubnetMapping).
+    # and are correlated to the scope's subnets downstream (HostSubnetMapping).
     opts: Dict[str, Any] = {
         "project_id": agent.project_id,
         "agent_session_id": session.id,

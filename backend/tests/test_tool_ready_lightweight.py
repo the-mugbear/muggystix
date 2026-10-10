@@ -102,7 +102,7 @@ from app.services import dns_name_service as svc  # noqa: E402
 
 
 def _scope_with_domains(db, project, entries):
-    scope = models.Scope(project_id=project.id, name="default")
+    scope = models.Scope(project_id=project.id)
     db.add(scope)
     db.flush()
     svc.upsert_scope_domains(db, scope, [(d, sub, None) for d, sub in entries])

@@ -132,7 +132,7 @@ def test_evidence_matrix_locates_the_gap_and_a_cell_opens_exactly_its_hosts(clie
     from app.services.evidence_service import compute_evidence_coverage
 
     now = datetime.now(timezone.utc)
-    scope = models.Scope(project_id=test_project.id, name="s")
+    scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
     a = models.Subnet(scope_id=scope.id, cidr="10.8.3.0/24")
@@ -193,7 +193,7 @@ def test_scope_advice_comes_from_the_declared_scope_not_the_matrix_columns(db_se
     from app.services import dns_name_service
 
     now = datetime.now(timezone.utc)
-    scope = models.Scope(project_id=test_project.id, name="s")
+    scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
     # Domain-only scope: no subnet at all, so the matrix has only "unmapped".
@@ -219,7 +219,7 @@ def test_scope_advice_comes_from_the_declared_scope_not_the_matrix_columns(db_se
 
 def test_every_listed_host_outside_the_scope_gets_no_collection_advice(db_session, test_project):
     now = datetime.now(timezone.utc)
-    scope = models.Scope(project_id=test_project.id, name="s")
+    scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
     db_session.add(models.ScopeDomain(scope_id=scope.id, domain="example.com", include_subdomains=False))

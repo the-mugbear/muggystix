@@ -264,7 +264,7 @@ def child_estate(db_session, test_project, test_user):
     tag_ids = {}
     for project_id in (pid, other.id):
         scan = _scan(db_session, project_id, tool="httpx")
-        scope = Scope(project_id=project_id, name="s")
+        scope = Scope(project_id=project_id)
         tag = models.HostTag(project_id=project_id, name="crown")
         db_session.add_all([scope, tag])
         db_session.flush()
@@ -485,7 +485,7 @@ def test_issue_key_lookup_matches_the_coalesce_form(db_session, test_project):
 # ---------------------------------------------------------------------------
 
 def _two_site_estate(db_session, pid, hosts_per_site=3):
-    scope = Scope(project_id=pid, name="scope")
+    scope = Scope(project_id=pid)
     db_session.add(scope)
     sites = [Site(project_id=pid, name="HQ", criticality_tier=1),
              Site(project_id=pid, name="Branch", criticality_tier=3)]
@@ -599,7 +599,7 @@ def _mappings(db_session, subnet_ids):
 def test_correlate_subnets_reads_the_hosts_once_and_matches_the_one_by_one_result(db_session, test_project):
     pid = test_project.id
     other = _project(db_session, "r24-other")
-    scope = Scope(project_id=pid, name="s")
+    scope = Scope(project_id=pid)
     db_session.add(scope)
     db_session.flush()
     cidrs = ["10.24.0.0/24", "10.24.1.0/24", "10.24.0.0/16", "10.24.0.8/29", "172.16.0.0/12", "2001:db8::/64"]
@@ -649,7 +649,7 @@ def test_correlate_subnets_reads_the_hosts_once_and_matches_the_one_by_one_resul
 
 def test_adding_subnets_reads_the_hosts_once_however_many_are_added(client, db_session, test_project):
     pid = test_project.id
-    scope = Scope(project_id=pid, name="s")
+    scope = Scope(project_id=pid)
     db_session.add(scope)
     for n in range(1, 9):
         _host(db_session, pid, f"10.24.{n}.10")
@@ -685,7 +685,7 @@ def facet_cache():
 def facet_estate(db_session, test_project):
     pid = test_project.id
     scan = _scan(db_session, pid, "nessus")
-    scope = Scope(project_id=pid, name="s")
+    scope = Scope(project_id=pid)
     db_session.add(scope)
     db_session.flush()
     subnet = Subnet(scope_id=scope.id, cidr="10.18.0.0/24", site="HQ")
@@ -902,7 +902,7 @@ def wide_estate(db_session, test_project, test_user):
         db_session.add(HostNetworkAttribution(host_id=h[1].id, attribution_id=acme.id))
         db_session.add(HostNetworkAttribution(host_id=h[2].id, attribution_id=cloud.id))
 
-        scope = Scope(project_id=pid, name="wide")
+        scope = Scope(project_id=pid)
         tag = models.HostTag(project_id=pid, name="Crown")
         label = models.SubnetLabel(project_id=pid, name="DMZ")
         db_session.add_all([scope, tag, label])

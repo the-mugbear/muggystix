@@ -235,7 +235,7 @@ def seed(db, project, owner, manifest_dir):
 def _seed_body(db, project, owner, hostname_before):
     scope = db.query(models.Scope).filter(models.Scope.project_id == project.id).first()
     if scope is None:
-        scope = models.Scope(project_id=project.id, name="Demo scope")
+        scope = models.Scope(project_id=project.id)
         db.add(scope)
         db.flush()
     dedup = HostDeduplicationService(db)

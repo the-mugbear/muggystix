@@ -96,7 +96,7 @@ def test_one_session_key_reaches_host_test_and_scope_reads(client, db_session, t
     session is one project session, so its key reads host tests (test plans
     until v2.442.0) and scopes too."""
     from app.db import models
-    scope = models.Scope(project_id=test_project.id, name="s", description="")
+    scope = models.Scope(project_id=test_project.id, description="")
     db_session.add(scope)
     db_session.flush()
     db_session.add(models.Subnet(scope_id=scope.id, cidr="10.0.0.0/24"))
@@ -109,8 +109,9 @@ def test_one_session_key_reaches_host_test_and_scope_reads(client, db_session, t
     assert tests.status_code == 200, tests.text
     assert tests.json() == {"items": [], "total": 0, "has_more": False}
 
-    subnets = client.get(f"/api/v1/agent/scopes/{scope.id}/subnets", headers=headers)
+    subnets = client.get("/api/v1/agent/scope/subnets", headers=headers)
     assert subnets.status_code == 200, subnets.text
+    assert subnets.json()["subnets"] == ["10.0.0.0/24"]
 
 
 def test_an_assist_key_writes_exactly_what_its_operator_may(
@@ -918,7 +919,7 @@ def test_segments_rank_the_network_so_the_agent_does_not_have_to(
     from app.db.models import Host, Scope, Subnet, HostSubnetMapping
     from app.db.models_findings import Finding, FindingHost
 
-    scope = Scope(name="s", project_id=test_project.id)
+    scope = Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.commit()
     quiet = Subnet(scope_id=scope.id, cidr="10.20.0.0/24", description="quiet")
@@ -1065,7 +1066,7 @@ def test_patterns_surfaces_the_subnet_comparison_posture_does_not(
     segment_outliers, which is exactly the comparison an analyst asks for."""
     from app.db.models import Scope, Subnet
 
-    scope = Scope(project_id=test_project.id, name="Corp")
+    scope = Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.commit()
     db_session.add(Subnet(scope_id=scope.id, cidr="10.9.0.0/24"))
@@ -1221,7 +1222,7 @@ def test_segments_agree_with_the_subnet_insights_page(client, db_session, test_p
     from app.db.models import Scope, Subnet
     from app.services.subnet_insight_service import compute_subnet_insights
 
-    scope = Scope(project_id=test_project.id, name="segments-parity")
+    scope = Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.commit()
     # Deliberately overlapping: a /16 and a /24 inside it. This is the shape
@@ -1522,7 +1523,7 @@ def _seed_names(db_session, test_project):
     from app.db import models
     from app.services import dns_name_service as svc
 
-    scope = models.Scope(project_id=test_project.id, name="default")
+    scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
     svc.upsert_scope_domains(
@@ -1542,12 +1543,14 @@ def _seed_names(db_session, test_project):
     return scope, host
 
 
-def test_assist_scopes_carry_domains_and_dedup_names_total(client, test_project, db_session):
+def test_the_scope_read_carries_domains_and_dedup_names_total(client, test_project, db_session):
     _seed_names(db_session, test_project)
     headers = _auth_headers(_start_session(client, test_project.id)["api_key"])
-    resp = client.get("/api/v1/agent/assist/scopes", headers=headers)
+    resp = client.get("/api/v1/agent/assist/scope", headers=headers)
     assert resp.status_code == 200, resp.text
-    (scope,) = resp.json()
+    scope = resp.json()
+    # ONE object, and nothing in it names a scope (2.488.0).
+    assert not {"id", "name", "description"} & set(scope)
     assert scope["domains"] == [
         {"domain": "lab.example.com", "include_subdomains": True},
         {"domain": "portal.example.com", "include_subdomains": False},
@@ -1557,50 +1560,72 @@ def test_assist_scopes_carry_domains_and_dedup_names_total(client, test_project,
     assert scope["names_in_scope_total"] == 3
 
 
-def test_agent_scopes_carry_every_domain_too(client, test_project, db_session):
-    """The session prompt sends an agent to GET /agent/scopes for the scope
-    read-back; it listed the subnets and no in-scope name."""
+def test_the_scope_read_back_names_every_domain_through_the_whole_lists(client, test_project, db_session):
+    """The session prompt sends an agent to the scope read for its read-back;
+    the read once listed the subnets and no in-scope name.  The capped read
+    and the whole list (`/agent/scope/domains`) name the same entries."""
     _seed_names(db_session, test_project)
     headers = _auth_headers(_start_session(client, test_project.id)["api_key"])
-    (scope,) = client.get("/api/v1/agent/scopes", headers=headers).json()
-    (assist,) = client.get("/api/v1/agent/assist/scopes", headers=headers).json()
-    assert scope["domains"] == assist["domains"] == [
+    scope = client.get("/api/v1/agent/assist/scope", headers=headers).json()
+    whole = client.get("/api/v1/agent/scope/domains", headers=headers).json()
+    assert "scope_id" not in whole
+    assert sorted(scope["domains"], key=lambda d: d["domain"]) == sorted(
+        whole["domains"], key=lambda d: d["domain"],
+    ) == [
         {"domain": "lab.example.com", "include_subdomains": True},
         {"domain": "portal.example.com", "include_subdomains": False},
     ]
-    assert scope["domain_total"] == 2 and scope["domains_truncated"] is False
-    assert scope["names_in_scope_total"] == assist["names_in_scope_total"] == 3
+    assert scope["domain_total"] == whole["total"] == 2
 
 
-def test_each_scope_row_counts_the_names_its_own_entries_cover(client, test_project, db_session):
-    """Acceptance run 2026-10-10 (feedback #41): the project-wide count was
-    put on every scope row, so two scopes covering 3 names and 1 name both
-    read 4.  A row says its own; a name two scopes cover counts in each, and
-    a nested pair of entries counts a name once."""
-    from app.db import models
+def test_the_scope_reads_name_count_is_the_projects_and_counts_a_nested_name_once(client, test_project, db_session):
+    """Acceptance run 2026-10-10 (feedback #41) was about two scope ROWS each
+    showing the project-wide count.  There is one scope now, so its figure IS
+    the project's (`scope_domains_covered_names_total`); what still matters is
+    that a wildcard and its exact descendant count a name once."""
     from app.services import dns_name_service as svc
 
-    first, _ = _seed_names(db_session, test_project)          # covers portal, a.lab, ghost.lab
-    second = models.Scope(project_id=test_project.id, name="second")
-    empty = models.Scope(project_id=test_project.id, name="third, no domains")
-    db_session.add_all([second, empty])
-    db_session.flush()
+    scope, _ = _seed_names(db_session, test_project)          # covers portal, a.lab, ghost.lab
     svc.upsert_scope_domains(
-        db_session, second,
-        # other.example.com is its own; a.lab is the first scope's too; the
-        # wildcard and its exact descendant are one name.
-        [("other.example.com", False, None), ("*.lab.example.com", False, None), ("a.lab.example.com", False, None)],
+        db_session, scope,
+        # other.example.com is new; a.lab is already covered by the wildcard.
+        [("other.example.com", False, None), ("a.lab.example.com", False, None)],
     )
     db_session.commit()
     headers = _auth_headers(_start_session(client, test_project.id)["api_key"])
 
-    for path in ("/api/v1/agent/assist/scopes", "/api/v1/agent/scopes"):
-        rows = {row["id"]: row for row in client.get(path, headers=headers).json()}
-        assert rows[first.id]["names_in_scope_total"] == 3, path
-        assert rows[second.id]["names_in_scope_total"] == 3, path     # other, a.lab, ghost.lab
-        assert rows[empty.id]["names_in_scope_total"] == 0, path
-    # The project's own figure is the union, and is not a row's number.
-    assert svc.scope_domains_covered_names_total(db_session, test_project.id) == 4
+    read = client.get("/api/v1/agent/assist/scope", headers=headers).json()
+    assert read["domain_total"] == 4
+    assert read["names_in_scope_total"] == 4 == svc.scope_domains_covered_names_total(db_session, test_project.id)
+    assert client.get("/api/v1/agent/assist/context", headers=headers).json()["names"]["in_scope"] == 4
+
+
+def test_a_project_with_no_scope_reads_as_empty_and_the_scope_lists_are_gone(client, test_project, db_session):
+    """No scope is not an error and is never created by a read; the routes
+    that listed scopes, and the per-id paths, no longer exist (2.488.0)."""
+    from app.db import models
+
+    headers = _auth_headers(_start_session(client, test_project.id)["api_key"])
+    assert client.get("/api/v1/agent/assist/scope", headers=headers).json() == {
+        "subnets": [], "subnet_total": 0, "subnets_truncated": False,
+        "domains": [], "domain_total": 0, "domains_truncated": False,
+        "names_in_scope_total": 0,
+    }
+    for path, key in (("/api/v1/agent/scope/subnets", "subnets"), ("/api/v1/agent/scope/domains", "domains")):
+        body = client.get(path, headers=headers).json()
+        assert (body["total"], body[key]) == (0, []), path
+    for path in ("live-hosts.txt", "web-targets.txt", "hosts.ndjson", "named-targets.ndjson"):
+        resp = client.get(f"/api/v1/agent/scope/{path}", headers=headers)
+        assert (resp.status_code, resp.text) == (200, ""), path
+    assert db_session.query(models.Scope).filter(models.Scope.project_id == test_project.id).count() == 0
+
+    for gone in ("/api/v1/agent/scopes", "/api/v1/agent/assist/scopes", "/api/v1/agent/scopes/1/subnets"):
+        assert client.get(gone, headers=headers).status_code == 404, gone
+
+    ctx = client.get("/api/v1/agent/assist/context", headers=headers).json()
+    assert not {"scopes", "scopes_truncated"} & set(ctx) and "scope_count" not in ctx["totals"]
+    assert (ctx["totals"]["subnet_count"], ctx["totals"]["domain_count"]) == (0, 0)
+    assert "scopes" not in client.get("/api/v1/agent/assist/vocabulary", headers=headers).json()
 
 
 def test_assist_context_reports_domain_and_name_counts(client, test_project, db_session):

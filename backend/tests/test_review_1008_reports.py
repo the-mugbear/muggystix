@@ -543,10 +543,10 @@ def test_a_report_issued_before_it_kept_a_copy_still_refuses_a_changed_template(
 
 
 def test_discarding_a_draft_removes_what_a_failed_issue_copied(client, db_session, test_project, tiny, monkeypatch):
+    scope = models.Scope(project_id=test_project.id)
+    db_session.add(scope)
+    db_session.flush()
     for i in range(5):
-        scope = models.Scope(project_id=test_project.id, name=f"s{i}")
-        db_session.add(scope)
-        db_session.flush()
         db_session.add(models.Subnet(scope_id=scope.id, cidr=f"10.64.{i}.0/24"))
     db_session.commit()
     draft = client.post(_reports(test_project), json={"kind": "full"}).json()
@@ -564,7 +564,7 @@ def test_discarding_a_draft_removes_what_a_failed_issue_copied(client, db_sessio
 
 
 def _external_scope(db_session, project, n=5):
-    scope = models.Scope(project_id=project.id, name="s")
+    scope = models.Scope(project_id=project.id)
     db_session.add(scope)
     db_session.flush()
     for i in range(n):

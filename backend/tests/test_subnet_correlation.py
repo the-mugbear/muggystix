@@ -97,7 +97,7 @@ def test_project_without_subnets_clears_stale_mappings(db_session, test_project)
 
 
 def _scope_with_subnets(db, project_id, cidrs):
-    scope = models.Scope(project_id=project_id, name="s")
+    scope = models.Scope(project_id=project_id)
     db.add(scope)
     db.flush()
     subnets = {}

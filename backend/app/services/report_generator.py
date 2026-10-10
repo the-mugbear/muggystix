@@ -90,7 +90,7 @@ class ReportGenerator:
     # --- Site / subnet enrichment (shared by the CSV and the record) ------
 
     def _host_locations(self) -> Dict[int, Dict[str, Any]]:
-        """host_id → {subnet_id, cidr, site, site_id, scope_name} for the
+        """host_id → {subnet_id, cidr, site, site_id} for the
         project's in-scope hosts (most-specific subnet wins).  Single source
         with the subnet-insights view via ``resolve_host_locations``."""
         if self._host_loc_cache is None:
@@ -1152,17 +1152,13 @@ class ReportGenerator:
                     models.HostSubnetMapping.host_id,
                     models.Subnet.cidr,
                     models.Subnet.site,
-                    models.Scope.name,
                 )
                 .join(models.Subnet, models.HostSubnetMapping.subnet_id == models.Subnet.id)
-                .join(models.Scope, models.Subnet.scope_id == models.Scope.id)
                 .filter(models.HostSubnetMapping.host_id.in_(host_ids))
                 .all()
             )
-            for host_id, cidr, site, scope_name in subnet_rows:
-                subnet_map.setdefault(host_id, []).append(
-                    {"cidr": cidr, "site": site, "scope_name": scope_name}
-                )
+            for host_id, cidr, site in subnet_rows:
+                subnet_map.setdefault(host_id, []).append({"cidr": cidr, "site": site})
 
         host_confidence_map: Dict[int, List[HostConfidence]] = {}
         if host_ids:

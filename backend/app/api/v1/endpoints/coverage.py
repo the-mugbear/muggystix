@@ -66,7 +66,6 @@ class ScopeCoverage(BaseModel):
     any of the scope's subnets (via HostSubnetMapping).
     """
     scope_id: int
-    scope_name: str
     subnet_count: int = 0
     total_scoped_ips: int = 0
     discovered_in_scope: int = 0
@@ -237,7 +236,6 @@ def get_project_coverage(
         scopes_rows.append(
             ScopeCoverage(
                 scope_id=scope.id,
-                scope_name=scope.name,
                 subnet_count=len(subnets),
                 total_scoped_ips=total_ips,
                 discovered_in_scope=discovered,

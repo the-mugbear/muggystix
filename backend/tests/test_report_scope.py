@@ -32,7 +32,7 @@ def template_dir(tmp_path, monkeypatch):
 
 
 def _scope(db_session, project, cidrs, domains=(), site="HQ", description=None):
-    scope = models.Scope(project_id=project.id, name="s")
+    scope = models.Scope(project_id=project.id)
     db_session.add(scope)
     db_session.flush()
     for cidr in cidrs:

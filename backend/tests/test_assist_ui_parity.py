@@ -844,15 +844,29 @@ def test_a_hosts_scanner_rows_narrow_to_one_issue(client, db_session, test_proje
 
 
 def test_the_scope_list_counts_the_subnets_it_lists(client, db_session, test_project):
-    """``GET /agent/scopes`` answered ``subnet_total: 0`` beside 447 subnets:
-    the route lists every subnet and never set the total."""
-    scope = models.Scope(project_id=test_project.id, name="Internal")
+    """``GET /agent/scopes`` once answered ``subnet_total: 0`` beside 447
+    subnets.  The one scope read states the true total beside its capped list
+    (more than the cap here, so the two differ), and the paged route lists
+    them all."""
+    scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
-    db_session.add_all([models.Subnet(scope_id=scope.id, cidr=f"10.74.{i}.0/24") for i in range(3)])
+    db_session.add_all([
+        models.Subnet(scope_id=scope.id, cidr=f"10.74.{i}.0/24") for i in range(103)
+    ])
     db_session.commit()
-    (row,) = client.get("/api/v1/agent/scopes", headers=_assist(client, test_project.id)).json()
-    assert (len(row["subnets"]), row["subnet_total"], row["subnets_truncated"]) == (3, 3, False)
+    headers = _assist(client, test_project.id)
+    row = client.get("/api/v1/agent/assist/scope", headers=headers).json()
+    assert (len(row["subnets"]), row["subnet_total"], row["subnets_truncated"]) == (100, 103, True)
+    assert client.get("/api/v1/agent/assist/context", headers=headers).json()["totals"]["subnet_count"] == 103
+    listed = []
+    while True:
+        page = client.get("/api/v1/agent/scope/subnets", params={"offset": len(listed), "limit": 50}, headers=headers).json()
+        assert page["total"] == 103
+        if not page["subnets"]:
+            break
+        listed += page["subnets"]
+    assert len(set(listed)) == 103 and set(row["subnets"]) <= set(listed)
 
 
 def test_a_findings_scanner_rows_are_looked_up_by_id(client, db_session, test_project):

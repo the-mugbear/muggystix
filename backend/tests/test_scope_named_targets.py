@@ -1,4 +1,4 @@
-"""``/agent/scopes/{scope_id}/named-targets.ndjson`` — a scope's NAME scope.
+"""``/agent/scope/named-targets.ndjson`` — the project's NAME scope.
 
 Acceptance run 2026-09-30, finding R2: the scope target files are subnet
 scope, so a domain-scoped engagement's authorised names (portal/api/admin
@@ -13,7 +13,8 @@ tests pin what it must and must not say:
   says whether the address is itself in subnet scope;
 * a name with no address is listed as unresolved, with the reason;
 * web interfaces reached as the name are carried;
-* another project's scope is a 404, and the file has the bulk-export floor.
+* another project's names never appear (the key's project decides the scope —
+  no route names one), and the file has the bulk-export floor.
 """
 import json
 from datetime import datetime, timedelta, timezone
@@ -53,7 +54,7 @@ def named_scope(db_session, test_project):
     nothing has observed."""
     db = db_session
     pid = test_project.id
-    scope = Scope(name="named", description="fixture", project_id=pid)
+    scope = Scope(description="fixture", project_id=pid)
     db.add(scope)
     db.flush()
     subnet = Subnet(scope_id=scope.id, cidr="10.99.2.0/24")
@@ -113,15 +114,15 @@ def named_scope(db_session, test_project):
     return {"scope": scope, "shared": shared, "inside": inside}
 
 
-def _records(client, headers, scope_id):
-    resp = client.get(f"/api/v1/agent/scopes/{scope_id}/named-targets.ndjson", headers=headers)
+def _records(client, headers):
+    resp = client.get("/api/v1/agent/scope/named-targets.ndjson", headers=headers)
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith("application/x-ndjson")
     return {rec["name"]: rec for rec in (json.loads(l) for l in resp.text.splitlines() if l.strip())}
 
 
 def test_shared_address_lists_authorised_names_only(client, db_session, test_project, named_scope):
-    recs = _records(client, _key(client, test_project), named_scope["scope"].id)
+    recs = _records(client, _key(client, test_project))
 
     portal = recs["portal.example.test"]
     assert portal["scope_rule"] == {"domain": "portal.example.test", "include_subdomains": False, "match": "exact"}
@@ -142,7 +143,7 @@ def test_shared_address_lists_authorised_names_only(client, db_session, test_pro
 
 
 def test_address_also_in_subnet_scope_is_flagged(client, db_session, test_project, named_scope):
-    recs = _records(client, _key(client, test_project), named_scope["scope"].id)
+    recs = _records(client, _key(client, test_project))
     addr = recs["intranet.apps.example.test"]["addresses"]
     assert addr == [{
         "ip_address": INSIDE_IP, "record_type": "A", "last_observed": addr[0]["last_observed"],
@@ -156,7 +157,7 @@ def test_an_address_with_no_host_row_is_judged_by_cidr(client, db_session, test_
     names.record_observation(db_session, project_id=test_project.id, name="lab.apps.example.test",
                              record_type="A", value="10.99.2.77", observed_at=NOW)
     db_session.commit()
-    recs = _records(client, _key(client, test_project), named_scope["scope"].id)
+    recs = _records(client, _key(client, test_project))
     v6 = recs["new.apps.example.test"]["addresses"][0]
     assert (v6["record_type"], v6["host_id"], v6["in_subnet_scope"]) == ("AAAA", None, False)
     lab = recs["lab.apps.example.test"]["addresses"][0]
@@ -164,7 +165,7 @@ def test_an_address_with_no_host_row_is_judged_by_cidr(client, db_session, test_
 
 
 def test_unresolved_names_are_listed_with_a_reason(client, db_session, test_project, named_scope):
-    recs = _records(client, _key(client, test_project), named_scope["scope"].id)
+    recs = _records(client, _key(client, test_project))
 
     ghost = recs["ghost.apps.example.test"]
     assert ghost["unresolved"] is True and ghost["addresses"] == []
@@ -178,7 +179,7 @@ def test_unresolved_names_are_listed_with_a_reason(client, db_session, test_proj
 
 
 def test_web_evidence_is_carried(client, db_session, test_project, named_scope):
-    recs = _records(client, _key(client, test_project), named_scope["scope"].id)
+    recs = _records(client, _key(client, test_project))
     web = recs["portal.example.test"]["web"]
     assert len(web) == 1
     w = web[0]
@@ -193,35 +194,49 @@ def test_web_evidence_is_carried(client, db_session, test_project, named_scope):
 def test_ip_files_are_unchanged_by_name_scope(client, db_session, test_project, named_scope):
     """The shared address stays out of the subnet-scope files."""
     headers = _key(client, test_project)
-    sid = named_scope["scope"].id
-    live = client.get(f"/api/v1/agent/scopes/{sid}/live-hosts.txt", headers=headers).text
+    live = client.get("/api/v1/agent/scope/live-hosts.txt", headers=headers).text
     assert live.split() == [INSIDE_IP]
-    web = client.get(f"/api/v1/agent/scopes/{sid}/web-targets.txt", headers=headers).text
+    web = client.get("/api/v1/agent/scope/web-targets.txt", headers=headers).text
     assert SHARED_IP not in web and "portal" not in web
 
 
 def test_a_scope_without_domain_rules_is_empty(client, db_session, test_project):
-    scope = Scope(name="subnets-only", description="fixture", project_id=test_project.id)
+    scope = Scope(description="fixture", project_id=test_project.id)
     db_session.add(scope)
     db_session.commit()
-    resp = client.get(f"/api/v1/agent/scopes/{scope.id}/named-targets.ndjson",
+    resp = client.get("/api/v1/agent/scope/named-targets.ndjson",
                       headers=_key(client, test_project))
     assert resp.status_code == 200 and resp.text == ""
 
 
-def test_a_scope_of_another_project_is_not_found(client, db_session, test_project):
+def test_a_scope_of_another_project_is_never_read(client, db_session, test_project, named_scope):
+    """No route names a scope, so the key's project is the only thing that
+    picks one: another project's name rules and observations stay out of the
+    file, and this project's are all still there."""
+    before = _records(client, _key(client, test_project))
     elsewhere = Project(name="elsewhere-named", slug="elsewhere-named")
     db_session.add(elsewhere)
     db_session.flush()
-    foreign = Scope(name="foreign", description="fixture", project_id=elsewhere.id)
+    foreign = Scope(description="fixture", project_id=elsewhere.id)
     db_session.add(foreign)
     db_session.flush()
-    names.upsert_scope_domains(db_session, foreign, [("secret.example.test", False, None)])
+    names.upsert_scope_domains(db_session, foreign, [
+        ("secret.example.test", False, None),
+        # The same rule as this project's: its names are still theirs.
+        ("apps.example.test", True, None),
+    ])
+    names.record_observation(db_session, project_id=elsewhere.id, name="secret.example.test",
+                             record_type="A", value="203.0.113.99", observed_at=NOW)
+    names.record_observation(db_session, project_id=elsewhere.id, name="theirs.apps.example.test",
+                             record_type="A", value="203.0.113.98", observed_at=NOW)
     db_session.commit()
-    resp = client.get(f"/api/v1/agent/scopes/{foreign.id}/named-targets.ndjson",
-                      headers=_key(client, test_project))
-    assert resp.status_code == 404
-    assert "secret.example.test" not in resp.text
+
+    resp = client.get("/api/v1/agent/scope/named-targets.ndjson", headers=_key(client, test_project))
+    assert resp.status_code == 200, resp.text
+    for theirs in ("secret.example.test", "theirs.apps.example.test", "203.0.113.99", "203.0.113.98"):
+        assert theirs not in resp.text, f"another project's {theirs} is in this project's file"
+    after = _records(client, _key(client, test_project))
+    assert set(after) == set(before) and "portal.example.test" in after
 
 
 @pytest.mark.parametrize("role,allowed", [
@@ -233,9 +248,7 @@ def test_named_targets_carry_the_bulk_export_floor(
 ):
     user = _member(db_session, test_project, role)
     headers = {"X-API-Key": _key_for(db_session, test_project, user)}
-    resp = client.get(
-        f"/api/v1/agent/scopes/{named_scope['scope'].id}/named-targets.ndjson", headers=headers,
-    )
+    resp = client.get("/api/v1/agent/scope/named-targets.ndjson", headers=headers)
     if allowed:
         assert resp.status_code == 200, resp.text
         assert "portal.example.test" in resp.text

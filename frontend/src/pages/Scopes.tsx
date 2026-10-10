@@ -168,7 +168,6 @@ const Scopes: React.FC = () => {
   const [uploadOpen, setUploadOpen] = useState(false);
 
   const [exportScopeId, setExportScopeId] = useState<number | null>(null);
-  const [exportScopeName, setExportScopeName] = useState('');
   const [showOutOfScopeDialog, setShowOutOfScopeDialog] = useState(false);
 
   const [newCidr, setNewCidr] = useState('');
@@ -353,12 +352,6 @@ const Scopes: React.FC = () => {
   });
   const savingSubnet = saveSubnet.isPending;
 
-  // The list is the PROJECT's subnets (5.379.0): a project may hold a second
-  // scope, whose rows were on no page.  An edit or a delete names the scope
-  // the row is in, which the row states.
-  const scopeOf = (subnetId: number): number =>
-    scope?.subnets.find((s) => s.id === subnetId)?.scope_id ?? scope?.id ?? 0;
-
   const handleSaveSubnet = (subnetId: number) => {
     if (!scope) return;
     if (!isIpOrCidr(editCidrDraft)) {
@@ -367,7 +360,7 @@ const Scopes: React.FC = () => {
     }
     setEditCidrError(null);
     saveSubnet.mutate({
-      scopeId: scopeOf(subnetId),
+      scopeId: scope.id,
       subnetId,
       cidr: editCidrDraft.trim(),
       description: editDescDraft.trim(),
@@ -472,7 +465,7 @@ const Scopes: React.FC = () => {
       confirmLabel: 'Delete',
     });
     if (!ok) return;
-    removeSubnet.mutate({ scopeId: scopeOf(subnetId), subnetId, cidr });
+    removeSubnet.mutate({ scopeId: scope.id, subnetId, cidr });
   };
 
   const upload = useMutation({
@@ -511,11 +504,6 @@ const Scopes: React.FC = () => {
     maxSize: 50 * 1024 * 1024,
     multiple: false,
   });
-
-  const handleOpenScopeExport = (scopeId: number, scopeName: string) => {
-    setExportScopeId(scopeId);
-    setExportScopeName(scopeName);
-  };
 
   if (loading) {
     return (
@@ -670,7 +658,7 @@ const Scopes: React.FC = () => {
                   variant="ghost"
                   size="sm"
                   className="h-7"
-                  onClick={() => handleOpenScopeExport(scope.id, 'Project scope')}
+                  onClick={() => setExportScopeId(scope.id)}
                   aria-label="Export scope"
                   title="Export scope as txt / csv / json"
                 >
@@ -1202,7 +1190,6 @@ const Scopes: React.FC = () => {
           open
           onClose={() => setExportScopeId(null)}
           scopeId={exportScopeId}
-          scopeName={exportScopeName}
         />
       )}
 

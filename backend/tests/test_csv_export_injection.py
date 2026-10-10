@@ -97,7 +97,7 @@ def test_scope_hosts_csv_neutralizes_malicious_hostname(
     through safe_csv_row."""
     from app.db import models
 
-    scope = models.Scope(project_id=test_project.id, name="injection-target")
+    scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
 

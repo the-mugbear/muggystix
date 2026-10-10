@@ -21,7 +21,7 @@ def _gen(db, project_id, user_id):
 
 def _estate_with_eol_blind_spot(db, project_id):
     """EOL OS on one host in each of two sites → an estate blind spot."""
-    scope = Scope(project_id=project_id, name="scope")
+    scope = Scope(project_id=project_id)
     db.add(scope)
     s1 = Site(project_id=project_id, name="HQ", criticality_tier=1)
     s2 = Site(project_id=project_id, name="Branch", criticality_tier=3)
@@ -81,7 +81,7 @@ def test_executive_html_escapes_site_names_and_the_site_filter(db_session, test_
     and never about escaping; this is the guard the file's name promised, on
     the HTML that is left."""
     hostile = '<script>alert(1)</script>'
-    scope = Scope(project_id=test_project.id, name="scope")
+    scope = Scope(project_id=test_project.id)
     db_session.add(scope)
     site = Site(project_id=test_project.id, name=hostile, criticality_tier=1)
     db_session.add(site)

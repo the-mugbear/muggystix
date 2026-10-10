@@ -107,7 +107,7 @@ def seed(db, name: str, host_count: int, owner: User):
     db.add(project)
     db.flush()
 
-    scope = models.Scope(project_id=project.id, name="Demo scope")
+    scope = models.Scope(project_id=project.id)
     db.add(scope)
     db.flush()
 

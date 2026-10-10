@@ -128,7 +128,7 @@ def test_tools_list_exposes_the_full_surface(client):
     # 7 reads + 3 writes.
     for name in (
         "assist_get_context", "assist_list_hosts", "assist_get_host",
-        "assist_get_host_vulnerabilities", "assist_list_scopes", "assist_list_scans",
+        "assist_get_host_vulnerabilities", "assist_get_scope", "assist_list_scans",
         "assist_session_info", "assist_add_note", "assist_set_follow",
         "assist_patch_host",
     ):
@@ -1035,7 +1035,8 @@ def test_no_tool_keeps_an_argument_it_used_to_take(client, test_project, db_sess
     argument is simply removed: the registry has no list of retired
     arguments, and one a tool used to take is refused like any other unknown
     argument — `submit_feedback`'s `source` and `assist_session_id`, the
-    guide's `workflow` — with nothing written."""
+    guide's `workflow`, the scope reads' `scope_id` (a project has one scope
+    since 2.488.0) — with nothing written."""
     from app.api.v1.endpoints.mcp_tools import _AUTHORED
     from app.db.models_agent import AgentFeedback
 
@@ -1047,6 +1048,9 @@ def test_no_tool_keeps_an_argument_it_used_to_take(client, test_project, db_sess
         ("submit_feedback", {"source": "made_up", "friction_notes": "x"}),
         ("submit_feedback", {"assist_session_id": 999999, "friction_notes": "x"}),
         ("read_agent_guide", {"workflow": "assist"}),
+        ("scope_list_subnets", {"scope_id": 1}),
+        ("scope_list_domains", {"scope_id": 1}),
+        ("assist_get_scope", {"scope_id": 1}),
     ), start=2):
         res = _rpc(client, {
             "jsonrpc": "2.0", "id": rpc_id, "method": "tools/call",

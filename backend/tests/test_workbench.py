@@ -452,7 +452,7 @@ def test_the_workbench_says_whether_the_project_has_hosts_and_scope_entries(clie
     db_session.add(other)
     db_session.flush()
     _make_host(db_session, other.id, "10.9.8.1")
-    other_scope = models.Scope(project_id=other.id, name="theirs")
+    other_scope = models.Scope(project_id=other.id)
     db_session.add(other_scope)
     db_session.flush()
     db_session.add(models.Subnet(scope_id=other_scope.id, cidr="10.9.8.0/24"))
@@ -466,7 +466,7 @@ def test_the_workbench_says_whether_the_project_has_hosts_and_scope_entries(clie
     assert setup() == {"has_hosts": False, "has_scopes": False, "scope_rows": 0, "only_scope_id": None}
 
     # The scope ROW every project gets says nothing: an entry does.
-    scope = models.Scope(project_id=pid, name="ours")
+    scope = models.Scope(project_id=pid)
     db_session.add(scope)
     db_session.commit()
     assert setup() == {"has_hosts": False, "has_scopes": False, "scope_rows": 1, "only_scope_id": scope.id}
@@ -476,11 +476,11 @@ def test_the_workbench_says_whether_the_project_has_hosts_and_scope_entries(clie
     assert setup() == {"has_hosts": False, "has_scopes": True, "scope_rows": 1, "only_scope_id": scope.id}
 
     _make_host(db_session, pid, "10.9.9.1")
-    db_session.add(models.Scope(project_id=pid, name="second"))
     db_session.commit()
     light = setup(include_rows="false", include_investigate="false")
-    # Two scopes: none is "the" scope.
-    assert light == {"has_hosts": True, "has_scopes": True, "scope_rows": 2, "only_scope_id": None}
+    # (A second scope cannot exist since 2.488.0 — `uq_scopes_project` — so
+    # `scope_rows` is 0 or 1 and the "two scopes: none is the scope" case went.)
+    assert light == {"has_hosts": True, "has_scopes": True, "scope_rows": 1, "only_scope_id": scope.id}
     assert setup() == light
 
 

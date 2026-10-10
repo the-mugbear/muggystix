@@ -24,7 +24,7 @@ from app.services.subnet_insight_service import compute_subnet_insights
 
 def _seed(db, project, dismissed_state):
     pid = project.id
-    scope = models.Scope(project_id=pid, name="s")
+    scope = models.Scope(project_id=pid)
     db.add(scope)
     db.flush()
     for cidr, site in (("10.50.1.0/24", "East"), ("10.50.2.0/24", "West")):

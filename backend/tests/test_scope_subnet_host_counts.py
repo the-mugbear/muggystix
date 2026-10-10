@@ -8,7 +8,7 @@ from app.db import models
 
 
 def test_scope_subnets_carry_host_counts(client, db_session, test_project):
-    scope = models.Scope(project_id=test_project.id, name="ignored")
+    scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.commit()
     busy = models.Subnet(scope_id=scope.id, cidr="10.5.0.0/24")
@@ -33,7 +33,7 @@ def test_each_subnet_says_how_many_of_its_hosts_no_vulnerability_scan_covered(cl
     """Plan A6: the count beside a subnet's hosts is the Evidence page's rule,
     and it opens exactly its hosts — the row's link is the subnet filter plus
     ``gap:vuln_assessment``."""
-    scope = models.Scope(project_id=test_project.id, name="ignored")
+    scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     db_session.commit()
     busy = models.Subnet(scope_id=scope.id, cidr="10.5.0.0/24")

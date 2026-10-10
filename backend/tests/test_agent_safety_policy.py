@@ -203,8 +203,11 @@ def test_session_read_back_covers_scope_and_domains():
 def test_the_read_back_reads_the_specifics_first():
     """An agent cannot state CIDRs it has not read: the block names the reads
     and puts the statement before any command or write, not before any call."""
-    assert "`GET /agent/identity` and `GET /agent/scopes`" in render_read_back()
-    assert "agent_identity and assist_list_scopes" in render_read_back(over_mcp=True)
+    assert "`GET /agent/identity` and `GET /agent/assist/scope`" in render_read_back()
+    assert "agent_identity and assist_get_scope" in render_read_back(over_mcp=True)
+    # Nothing an agent is told names a scope by id any more (2.488.0).
+    for text in (render_read_back(), render_read_back(over_mcp=True)):
+        assert "scope_id" not in text and "/agent/scopes" not in text and "each scope" not in text
     for block in (render_read_back(), render_read_back(over_mcp=True)):
         assert "before any command or write" in block
         assert "Before your first tool call" not in block

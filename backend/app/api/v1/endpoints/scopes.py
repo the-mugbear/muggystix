@@ -24,7 +24,6 @@ from app.db.models_project import Project, ProjectRole
 from app.schemas.pagination import Paginated
 from app.schemas.schemas import (
     Scope as ScopeSchema,
-    ScopeSummary,
     Subnet as SubnetSchema,
     SubnetUpdate,
     SubnetBatchCreate,
@@ -56,6 +55,10 @@ logger = logging.getLogger(__name__)
 # A project has exactly one scope container; every write path funnels through
 # ``default_scope.get_or_create_default_scope`` (a service since the
 # 2026-10-01 review, B4 — the scope-domain write in dns_names.py uses it too).
+#
+# 2.488.0 — the schema says so too (`uq_scopes_project`); the scope has no
+# name; `GET /scopes/` (a list of "all scopes") and `DELETE /scopes/{scope_id}`
+# (the project's whole scope in one call — no page ever offered it) are gone.
 #
 # v2.244.0 — POST / and PATCH /{scope_id} (create + rename a scope container)
 # were removed. They were leftovers from the pre-v2.9.4 model in which users
@@ -348,14 +351,8 @@ def _serialize_scope_with_subnets(
     subnets_skip: int,
     subnets_limit: Optional[int],
     subnets_search: Optional[str] = None,
-    project_wide: bool = False,
 ) -> dict:
     """Build the ScopeSchema payload with a server-paginated subnets array.
-
-    ``project_wide`` (the Scope page's read, ``GET /scopes/default``) lists
-    the subnets of EVERY scope of the scope's project: the page shows a project
-    as one scope, and a second scope's subnets were otherwise on no page while
-    the coverage tile counted them.  Each row carries its own ``scope_id``.
 
     Shared by ``GET /scopes/default`` and ``GET /scopes/{scope_id}``.
     ``with_findings_only`` restricts to subnets with at least one correlated
@@ -378,10 +375,7 @@ def _serialize_scope_with_subnets(
         )
 
     # ONE statement of which subnets are listed, for the page and both counts.
-    listed = (
-        Subnet.scope_id.in_(select(Scope.id).where(Scope.project_id == scope.project_id))
-        if project_wide else Subnet.scope_id == scope.id
-    )
+    listed = Subnet.scope_id == scope.id
     subnet_q = db.query(Subnet).filter(listed)
     if search_filter is not None:
         subnet_q = subnet_q.filter(search_filter)
@@ -446,7 +440,6 @@ def _serialize_scope_with_subnets(
 
     return {
         "id": scope.id,
-        "name": scope.name,
         "description": scope.description,
         "created_at": scope.created_at,
         "updated_at": scope.updated_at,
@@ -504,34 +497,7 @@ def get_default_scope(
     scope = get_or_create_default_scope(db, project.id, user_id=current_user.id)
     return _serialize_scope_with_subnets(
         db, scope, with_findings_only, subnets_skip, subnets_limit, subnets_search,
-        project_wide=True,
     )
-
-
-@router.get("/", response_model=List[ScopeSummary])
-def get_scopes(
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    """Get all scopes with summary information."""
-    scopes = db.query(
-        Scope.id,
-        Scope.name,
-        Scope.description,
-        Scope.created_at,
-        func.count(Subnet.id).label('subnet_count')
-    ).outerjoin(Subnet).filter(Scope.project_id == project.id).group_by(Scope.id).all()
-
-    return [
-        ScopeSummary(
-            id=scope.id,
-            name=scope.name,
-            description=scope.description,
-            created_at=scope.created_at,
-            subnet_count=scope.subnet_count
-        )
-        for scope in scopes
-    ]
 
 
 @router.get("/coverage", response_model=ScopeCoverageSummary)
@@ -681,35 +647,6 @@ def get_scope(
     return _serialize_scope_with_subnets(
         db, scope, with_findings_only, subnets_skip, subnets_limit, subnets_search
     )
-@router.delete(
-    "/{scope_id}",
-    response_model=MessageResponse,
-    responses={
-        401: {"description": "Not authenticated"},
-        403: {"description": "Insufficient permissions — analyst role required"},
-        404: {"description": "Scope not found"},
-    },
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
-    summary="Delete scope (analyst)",
-)
-def delete_scope(
-    scope_id: int,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    """Delete a scope and all its subnets. Requires analyst role."""
-    # Every subnet and every host mapping of the scope goes with it: a bulk
-    # delete by design, not a query to narrow (review 2026-10-01 S2).
-    disable_statement_timeout(db)
-    scope = db.query(Scope).filter(Scope.id == scope_id, Scope.project_id == project.id).first()
-    if not scope:
-        raise HTTPException(status_code=404, detail="Scope not found")
-
-    db.delete(scope)
-    db.commit()
-
-    return {"message": "Scope deleted successfully"}
-
 @router.get(
     "/{scope_id}/host-mappings",
     response_model=Paginated[HostSubnetMappingSchema],
@@ -997,12 +934,9 @@ def _scope_domain_rows(db: Session, project_id: int, domains: List[ScopeDomain])
 
 
 def _scope_domain_page(db: Session, project_id: int, skip: int, limit: int) -> ScopeDomainPage:
-    """The PROJECT's domain-scope entries (the Scope page's list, and what an
-    add answers with — one set, so the answer can stand in for the list).  The
-    page shows a project as one scope; a second scope's entries were on no
-    page while the coverage tile counted them.  Each row says its ``scope_id``,
-    which a removal names.  (The agents read one scope's entries by its id,
-    through their own route.)"""
+    """The project's domain-scope entries (the Scope page's list, and what an
+    add answers with — one set, so the answer can stand in for the list).
+    Keyed by the project: its one scope holds them all."""
     q = db.query(ScopeDomain).filter(
         ScopeDomain.scope_id.in_(select(Scope.id).where(Scope.project_id == project_id)))
     total = q.with_entities(func.count(ScopeDomain.id)).scalar() or 0

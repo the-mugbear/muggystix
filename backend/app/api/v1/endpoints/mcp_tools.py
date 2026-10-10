@@ -55,9 +55,9 @@ source or cite the tool catalogue.
 
 What is deliberately NOT a tool
 -------------------------------
-The bulk, file-shaped endpoints: ``report-context.ndjson``, a scope's
+The bulk, file-shaped endpoints: ``report-context.ndjson``, the scope's
 ``hosts.ndjson`` / ``live-hosts.txt`` / ``web-targets.txt``
-(``/agent/scopes/{scope_id}/…``), and ``POST uploads``.
+(``/agent/scope/…``), and ``POST uploads``.
 They are meant to stream to (or from) a file on the operator's disk, not to be
 materialised into a model's context — a 40k-host target list read through a tool
 call is the same data, minus the ability to pipe it into the next scanner, plus
@@ -91,9 +91,6 @@ _SCOPE = frozenset({WORKFLOW_SCOPE})
 # endpoint declares — see ``derive_tool``.  An id is never below 1, whether or
 # not its endpoint says so: the transport checks it before building the URL.
 HOST_ID = {"minimum": 1, "description": "Numeric host id (from assist_list_hosts)."}
-
-# The scope a read is about.  Every scope read takes it as a path parameter.
-SCOPE_ID = {"minimum": 1, "description": "Scope to read (from assist_list_scopes)."}
 
 # The model the agent says it is running as.  No protocol carries
 # it, so the writes where it matters ask for it: it labels the tests, the
@@ -275,9 +272,10 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     "assist_get_context": {
         "description": (
             "Project orientation: engagement dates, members and their project "
-            "roles, host / port / scope / scan / domain totals, name counts "
-            "(`names.in_scope_unresolved` = approved names nothing has resolved), "
-            "the scopes (first 50; `scopes_truncated`) and the five latest scans. "
+            "roles, host / port / scan totals, the scope's subnet and domain "
+            "counts (the entries are assist_get_scope), name counts "
+            "(`names.in_scope_unresolved` = approved names nothing has resolved) "
+            "and the five latest scans. "
             "No findings. `default_host_view` is the view the Hosts page opens on "
             "when a project admin set one: your unfiltered counts are the whole "
             "project, so say which set you counted when the operator asks about "
@@ -449,7 +447,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "assist_get_vocabulary": {
         "description": (
-            "The values THIS project uses for tag:, label:, site:, scope: and "
+            "The values THIS project uses for tag:, label:, site: and "
             "assigned:, plus the finding statuses and severities. A guessed tag "
             "does not error — it matches zero hosts — so read this before writing "
             "such a predicate."
@@ -819,17 +817,18 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/assist/notes",
         "defaults": {"limit": 25},
     },
-    "assist_list_scopes": {
+    "assist_get_scope": {
         "description": (
-            "List this project's scopes: subnet CIDRs and declared domains "
-            "(each capped at 100 with *_total / *_truncated). Name scope is "
-            "independent of subnet scope — a name in scope does not put the "
-            "address it resolves to in scope, and vice versa. "
-            "Each scope's names_in_scope_total is the deduplicated count of "
-            "inventory names that scope's own domain entries cover."
+            "The project's scope (a project has exactly one): subnet CIDRs and "
+            "declared domains, each capped at 100 with *_total / *_truncated — "
+            "the whole lists are scope_list_subnets / scope_list_domains. Empty "
+            "when the project declares none. Name scope is independent of subnet "
+            "scope — a name in scope does not put the address it resolves to in "
+            "scope, and vice versa. names_in_scope_total is the deduplicated "
+            "count of inventory names the domain entries cover."
         ),
         "method": "GET",
-        "path": "/api/v1/agent/assist/scopes",
+        "path": "/api/v1/agent/assist/scope",
     },
     "assist_list_names": {
         "description": (
@@ -1046,18 +1045,18 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "params": {"host_id": HOST_ID},
     },
     # -----------------------------------------------------------------------
-    # Scope reads — the agent reads a scope, runs its own tools, and uploads
-    # the output.  The bulk host downloads stay curl (see the module docstring).
+    # Scope reads — the agent reads the project's scope, runs its own tools, and
+    # uploads the output.  The bulk host downloads stay curl (see the module
+    # docstring).  No argument names a scope: a project has one.
     # -----------------------------------------------------------------------
     "scope_list_subnets": {
         "description": (
-            "The paginated CIDR list for a scope. Page until `subnets` comes back "
+            "The paginated list of in-scope CIDRs. Page until `subnets` comes back "
             "empty. The full host download is a curl, not a tool."
         ),
         "method": "GET",
-        "path": "/api/v1/agent/scopes/{scope_id}/subnets",
+        "path": "/api/v1/agent/scope/subnets",
         "defaults": {"limit": 100},
-        "params": {"scope_id": SCOPE_ID},
     },
     "scope_list_domains": {
         "description": (
@@ -1067,9 +1066,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "subnet scope."
         ),
         "method": "GET",
-        "path": "/api/v1/agent/scopes/{scope_id}/domains",
+        "path": "/api/v1/agent/scope/domains",
         "defaults": {"limit": 100},
-        "params": {"scope_id": SCOPE_ID},
     },
     "get_upload_job": {
         "description": (

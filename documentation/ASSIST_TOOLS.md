@@ -64,8 +64,9 @@ returning from leave.
 
 | Question | Tool |
 |---|---|
-| Engagement dates, members, totals, scopes, the latest scans | `assist_get_context` |
-| Which scopes / scans exist, in full | `assist_list_scopes`, `assist_list_scans` (an nmap scan's rows carry `scan_info`: the port list it was asked to probe) |
+| Engagement dates, members, totals (the scope's subnet and domain counts among them), the latest scans | `assist_get_context` |
+| What the project's scope declares | `assist_get_scope` — one object, no arguments: the first 100 CIDRs and the first 100 declared domains, with `subnet_total` / `domain_total` and `*_truncated`; the whole lists are `scope_list_subnets` / `scope_list_domains` |
+| Which scans exist, in full | `assist_list_scans` (an nmap scan's rows carry `scan_info`: the port list it was asked to probe) |
 | Which hosts one scan saw, and whether it authenticated to them | `assist_list_scan_hosts` — the scan page's "As scanned" rows; `credentialed` is true / false when the scanner said so (Nessus), null when it did not |
 | Which session am I, for whom (what `assigned:me` means) | `assist_session_info` |
 | How much has actually been assessed | `assist_get_coverage` |

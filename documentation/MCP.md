@@ -53,7 +53,7 @@ read off the server's registry and is the list.
 | The tool catalogue | `list_tools` (a reference for people — never a permission list), `suggest_tool` (propose a tool the catalogue lacks, for a curator; it grants nothing) |
 | Configured scanners | `list_scanner_integrations` (the installation's scanner integrations — name, type, address; never credentials; any session), `request_scanner_credentials` (ONE scanner's credentials, with `operator_agreed: true`, after the agent asked the operator; the operator must be able to write to the project; every request is recorded) — see §6 |
 | Query and report | the `assist_*` reads — the next section lists each against the question it answers |
-| Scope reads and uploads | `assist_list_scopes`, then `scope_list_subnets` / `scope_list_domains` for one scope's CIDRs and names; the target files and the upload itself are curl (see "Bulk data" below); `get_upload_job` polls an upload |
+| Scope reads and uploads | `assist_get_scope` (the project's one scope: the first 100 CIDRs and domains with their totals; no arguments), then `scope_list_subnets` / `scope_list_domains` for the whole lists when it says one is truncated — no tool takes a scope id; the target files and the upload itself are curl (see "Bulk data" below); `get_upload_job` polls an upload |
 | Host tests | `host_tests_list` (read first — do not duplicate), `host_tests_propose` (up to 200 individual tests, each with its own `request_key`; they appear on each host's page at once), `host_tests_get`, `host_tests_update` (409 when `expected_revision` is stale) |
 | Running a test | `host_tests_update` → `in_progress`, run it, `record_evidence` naming the `host_test_id` (with a `request_key`), then `host_tests_update` → `done`. Evidence with outcome `finding`, `no_finding` or `inconclusive` is what marks the host tested |
 | Evidence and proposals | `record_evidence`, `list_evidence`; `propose_finding_text`, `propose_finding`, `propose_observation`, `propose_endpoint_status`, `list_proposals` |
@@ -113,7 +113,8 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 
 | Question | Tool |
 |---|---|
-| "What is in this project?" | `assist_get_context` — engagement dates, members and roles, totals, scopes, the latest scans |
+| "What is in this project?" | `assist_get_context` — engagement dates, members and roles, totals (the scope's subnet and domain counts among them), the latest scans |
+| "What is in scope?" | `assist_get_scope` — the first 100 CIDRs and declared domains, with totals; `scope_list_subnets` / `scope_list_domains` page the whole lists |
 | "How many hosts …?" | `assist_count_hosts` — a total, not a page |
 | "Which hosts match …?" / "What is on this host?" | `assist_list_hosts` (the Hosts page's `q=` language) · `assist_get_host` (by id or address) |
 | "What are our critical findings?" | `assist_list_findings` — project-wide, with `severity_counts` |
@@ -159,7 +160,7 @@ The assist surface is meant to answer whatever an analyst asks about a project.
   from the counts, never from a list's length; the tool description names the
   read that returns each whole list.
 * `setup` — whether the project has anything in it yet: `has_hosts`,
-  `has_scopes` (a scope has at least one subnet entry), `scope_rows`,
+  `has_scopes` (the scope has at least one subnet entry), `scope_rows`,
   `only_scope_id`.
 * `since_last_visit`, `blockers` (imports that need someone) and `followups`
   (the operator's own finished reviews whose host changed afterwards).
@@ -271,9 +272,8 @@ The server `instructions` point at them with `curl`.
 |---|---|---|
 | `GET /assist/report-context.ndjson` | every matching host's report dossier, one JSON object per line | auditor |
 | `GET /assist/hosts.ndjson` | the host list, uncapped, one JSON object per line | auditor |
-| `GET /scopes` | every scope with ALL its subnets and its declared domains (`assist_list_scopes` is the same data capped at 100 per list) | any member |
-| `GET /scopes/{scope_id}/hosts.ndjson` · `live-hosts.txt` · `web-targets.txt` | the scope's hosts, addresses and web URLs (subnet scope) | auditor |
-| `GET /scopes/{scope_id}/named-targets.ndjson` | one row per in-scope name, with its current addresses and whether each is in subnet scope | auditor |
+| `GET /scope/hosts.ndjson` · `/scope/live-hosts.txt` · `/scope/web-targets.txt` | the scope's hosts, addresses and web URLs (subnet scope); empty files when the project declares nothing | auditor |
+| `GET /scope/named-targets.ndjson` | one row per in-scope name, with its current addresses and whether each is in subnet scope | auditor |
 | `POST /uploads` (multipart) | scanner output; poll with `get_upload_job` | analyst |
 | `GET /evidence/{id}/raw` | an evidence record's whole raw output | any member |
 | `GET /assist/client-reports/{id}/files/{fmt}` · `/scope.csv` | a report's rendered file and its scope file | auditor |

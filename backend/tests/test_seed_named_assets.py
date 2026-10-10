@@ -44,7 +44,7 @@ def test_reset_removes_only_seeded_rows(db_session, test_project, test_user, tmp
 
     # A scope + a few internal hosts the seed will bind names to (it changes
     # their display names, which reset must restore).
-    scope = models.Scope(project_id=test_project.id, name="default")
+    scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     hosts = []
     for i in range(3):
@@ -121,7 +121,7 @@ def test_reset_refuses_without_a_manifest(db_session, test_project, tmp_path):
 
 def test_reset_refuses_when_seeded_name_gained_a_foreign_reference(db_session, test_project, test_user, tmp_path):
     seed = _load_seed_module()
-    scope = models.Scope(project_id=test_project.id, name="default")
+    scope = models.Scope(project_id=test_project.id)
     db_session.add(scope)
     for i in range(3):
         db_session.add(models.Host(ip_address=f"10.10.0.{10 + i}", project_id=test_project.id, state="up"))

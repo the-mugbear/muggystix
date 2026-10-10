@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.28.0"
+PROMPT_VERSION = "4.29.0"
 
 
 _INSTANCE_ID_CACHE: Optional[str] = None
@@ -203,7 +203,7 @@ def build_session_instructions(
         + render_key_expiry_guidance(base_url=base_url) + "\n"
         f"### What this session does, in whatever order the operator asks\n"
         f"- **Reads** under `/agent/assist/*` (inventory, findings, posture, "
-        f"scanner observations) and `/agent/scopes` (what is in scope, and "
+        f"scanner observations) and `/agent/scope/*` (what is in scope, and "
         f"target files).\n"
         f"- **Direct writes, attributed to {user_label}:** scanner output "
         f"(`POST /agent/uploads`), notes and corrections on hosts, tests "

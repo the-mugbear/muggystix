@@ -844,30 +844,6 @@ def scope_domain_name_counts(db: Session, project_id: int, domains: Sequence[mod
     return counts
 
 
-def scope_covered_names_by_scope(db: Session, project_id: int, scope_ids: Sequence[int]) -> Dict[int, int]:
-    """Concrete names EACH scope's domain entries cover, deduplicated within
-    the scope (a wildcard and its exact descendant count a name once) — one
-    grouped statement, the same covering rule as every other "is this name in
-    scope" answer (``scope_domain_covers_condition``).
-
-    What a scope ROW says.  The project-wide figure below is not a row's
-    number: on a project with two scopes it read 13 on each, where one covered
-    12 names and the other 1 (acceptance run 2026-10-10, feedback #41).  A
-    name two scopes both cover counts in each, so the rows do not sum to the
-    project's figure."""
-    if not scope_ids:
-        return {}
-    n, sd = models.DNSName, models.ScopeDomain
-    rows = (
-        db.query(sd.scope_id, func.count(func.distinct(n.id)))
-        .join(n, and_(n.project_id == project_id, n.kind == "fqdn", scope_domain_covers_condition(sd, n.fqdn)))
-        .filter(sd.scope_id.in_(list(scope_ids)))
-        .group_by(sd.scope_id)
-        .all()
-    )
-    return {int(scope_id): int(count) for scope_id, count in rows}
-
-
 def scope_domains_covered_names_total(db: Session, project_id: int) -> int:
     """Concrete names in the project covered by ANY scope-domain entry,
     deduplicated — the per-entry counts above overlap when entries nest (a

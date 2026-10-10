@@ -77,18 +77,13 @@ def test_deleting_a_scan_lifts_the_statement_timeout(client, db_session, test_pr
 
 
 def _scope_with_subnet(db, project):
-    scope = Scope(name="s", description="fixture", project_id=project.id)
+    scope = Scope(description="fixture", project_id=project.id)
     db.add(scope)
     db.flush()
     subnet = Subnet(scope_id=scope.id, cidr="10.90.0.0/24")
     db.add(subnet)
     db.commit()
     return scope, subnet
-
-
-def _delete_scope(client, db, project):
-    scope, _ = _scope_with_subnet(db, project)
-    return client.delete(f"{_base(project)}/scopes/{scope.id}")
 
 
 def _delete_subnet(client, db, project):
@@ -121,7 +116,6 @@ def _delete_user(client, db, project):
 
 
 BULK_ROUTES = {
-    "delete scope": _delete_scope,
     "delete subnet": _delete_subnet,
     "correlate all hosts": _correlate_all,
     "scope upload that adds a subnet": _upload_scope_file,
@@ -132,7 +126,7 @@ BULK_ROUTES = {
 @pytest.mark.parametrize("name", sorted(BULK_ROUTES))
 def test_a_bulk_route_lifts_the_statement_timeout(client, db_session, test_project, name):
     """The other routes that run one cascading / project-wide statement by
-    design: deleting a scope or a subnet (their host mappings go with them),
+    design: deleting a subnet (its host mappings go with it),
     the project-wide subnet correlation (asked for, and after a scope upload
     that adds a subnet) and deleting a user (its id is cleared across every
     table that names one)."""
@@ -232,7 +226,7 @@ SECTIONS = ["host-vulnerabilities", "subnets", "vulnerabilities", "note-activity
 @pytest.fixture
 def populated(db_session, test_project):
     _host(db_session, test_project)
-    scope = Scope(name="s", description="fixture", project_id=test_project.id)
+    scope = Scope(description="fixture", project_id=test_project.id)
     db_session.add(scope)
     db_session.flush()
     db_session.add(Subnet(scope_id=scope.id, cidr="10.90.0.0/24"))

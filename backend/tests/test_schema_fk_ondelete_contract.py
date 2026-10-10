@@ -43,7 +43,6 @@ EXPECTED_ONDELETE = {
     ('agent_rate_buckets', 'agent_id'): 'CASCADE',
     ('agent_api_calls', 'api_key_id'): 'SET NULL',
     ('agent_api_calls', 'project_id'): 'CASCADE',
-    ('agent_api_calls', 'scope_id'): 'SET NULL',
     ('agent_feedback', 'agent_id'): 'SET NULL',
     ('agent_feedback', 'agent_session_id'): 'SET NULL',
     ('agent_feedback', 'project_id'): 'SET NULL',

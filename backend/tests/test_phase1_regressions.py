@@ -1361,7 +1361,7 @@ def test_coverage_summary_reports_scope_breakdown(
     from app.db import models
 
     scope = models.Scope(
-        name="cov-scope", description="x", project_id=test_project.id,
+        description="x", project_id=test_project.id,
     )
     db_session.add(scope)
     db_session.flush()
@@ -1390,7 +1390,7 @@ def test_coverage_summary_reports_scope_breakdown(
     body = resp.json()
     assert body["total_scopes"] == 1
     sc = body["scopes"][0]
-    assert sc["scope_name"] == "cov-scope"
+    assert sc["scope_id"] == scope.id
     assert sc["total_scoped_ips"] == 4  # /30 → 4 addresses
     assert sc["discovered_in_scope"] == 2
     assert sc["coverage_percent"] == 50.0

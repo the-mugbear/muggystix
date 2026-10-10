@@ -833,7 +833,6 @@ class ScanSummary(_ScanRunWindow):
 class SubnetStats(BaseModel):
     id: int
     cidr: str
-    scope_name: str
     description: Optional[str] = None
     host_count: int
     total_addresses: Optional[int] = None
@@ -1044,19 +1043,6 @@ class SubnetLabelBulkAssignMany(BaseModel):
     bulk-apply one label across many subnets in one request."""
     subnet_ids: List[int] = Field(..., min_length=1, max_length=1000)
 
-class ScopeBase(BaseModel):
-    name: str = Field(..., max_length=256)
-    description: Optional[str] = Field(None, max_length=2048)
-
-class ScopeCreate(ScopeBase):
-    pass
-
-
-class ScopeUpdate(BaseModel):
-    name: Optional[str] = Field(None, max_length=256)
-    description: Optional[str] = Field(None, max_length=2048)
-
-
 class SubnetCreate(SubnetBase):
     pass
 
@@ -1070,8 +1056,11 @@ class SubnetUpdate(BaseModel):
 class SubnetBatchCreate(BaseModel):
     subnets: List[SubnetCreate] = Field(..., max_length=500)
 
-class Scope(ScopeBase):
+class Scope(BaseModel):
+    """The project's one scope.  It has no name (2.488.0): a project has
+    exactly one, and nobody names it."""
     id: int
+    description: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     subnets: List[Subnet] = []
@@ -1085,15 +1074,6 @@ class Scope(ScopeBase):
     subnets_skip: Optional[int] = None
     subnets_limit: Optional[int] = None
 
-    model_config = ConfigDict(from_attributes=True)
-
-class ScopeSummary(BaseModel):
-    id: int
-    name: str
-    description: Optional[str] = None
-    created_at: datetime
-    subnet_count: int
-    
     model_config = ConfigDict(from_attributes=True)
 
 

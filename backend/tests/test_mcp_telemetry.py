@@ -173,7 +173,7 @@ def test_summary_reports_tools_nobody_has_called(client, test_project, db_sessio
 
     assert summary["tools"]["assist_get_context"]["ok"] == 1
     # Present with zeroes rather than absent.
-    assert summary["tools"]["assist_list_scopes"] == {
+    assert summary["tools"]["assist_get_scope"] == {
         "ok": 0, "tool_error": 0, "protocol_error": 0, "kind": "read",
     }
     assert summary["tools"]["assist_add_note"]["kind"] == "write"

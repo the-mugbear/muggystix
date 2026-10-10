@@ -35,7 +35,6 @@ export interface RiskyServiceBreakdown {
 export interface SubnetInsight {
   subnet_id: number;
   cidr: string;
-  scope_name: string;
   site: string | null;
   site_id: number | null;
   criticality_tier: number;

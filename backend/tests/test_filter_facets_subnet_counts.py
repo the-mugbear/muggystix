@@ -12,7 +12,7 @@ from app.db import models
 def _seed(db, project):
     """Two sites, three subnets. 10.1.0.0/24 holds one up + one down host,
     10.2.0.0/24 one down host, 10.3.0.0/24 nothing."""
-    scope = models.Scope(project_id=project.id, name="ignored")
+    scope = models.Scope(project_id=project.id)
     db.add(scope)
     db.commit()
     subnets = {}

@@ -24,7 +24,7 @@ import pytest
 def scope_with_subnets(db_session, test_project):
     from app.db.models import Scope, Subnet
 
-    scope = Scope(name="mcp-recon-scope", description="fixture", project_id=test_project.id)
+    scope = Scope(description="fixture", project_id=test_project.id)
     db_session.add(scope)
     db_session.commit()
     db_session.refresh(scope)
