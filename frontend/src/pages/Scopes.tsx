@@ -839,10 +839,10 @@ const Scopes: React.FC = () => {
               {/* UX review 2026-09-24 — the fixed columns left Description,
                   the one operators type into, 82px (its header ran into
                   "Site") and the table 44px wider than the page, Actions cut
-                  off. Now: 312px of fixed columns plus 43% for subnet / site /
+                  off. Now: 320px of fixed columns plus 43% for subnet / site /
                   labels, so Description keeps ~225px beside the sidebar and
-                  ~165px at the 840px floor, and the table fits. */}
-              <Table style={{ tableLayout: 'fixed' }} className="min-w-[840px]">
+                  ~170px at the 860px floor, and the table fits. */}
+              <Table style={{ tableLayout: 'fixed' }} className="min-w-[860px]">
                 <TableHeader>
                   <TableRow>
                     {canWrite && (
@@ -859,8 +859,10 @@ const Scopes: React.FC = () => {
                       </TableHead>
                     )}
                     <TableHead className="w-[15%]">Subnet / IP</TableHead>
-                    {/* w-20, not w-16: "12 unscanned" sits under the count. */}
-                    <TableHead className="w-20 text-right">Hosts</TableHead>
+                    {/* w-22, not w-16: "12 unscanned" sits under the count on
+                        one line (at w-20 it broke after the number and every
+                        row grew a line). */}
+                    <TableHead className="w-22 text-right">Hosts</TableHead>
                     <TableHead>Description</TableHead>
                     {/* A typical site name ("DMZ / Internet-facing") wraps
                         to two lines at most. */}

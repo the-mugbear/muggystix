@@ -37,7 +37,8 @@ NEW_FIELD = "the rows of the endpoint's body gained this optional field after th
 
 #: {tool: {query argument}} — what a route gained since the fixture was taken.
 ADDED_SINCE_CAPTURE = {"remediation_list": {"verification", "flag", "q"},
-                       "remediation_follow_up": {"upcoming_days"}}
+                       "remediation_follow_up": {"upcoming_days"},
+                       "assist_list_scanner_observations": {"exploitable"}}
 #: {tool: {body argument}} — the same, for an argument sent in the JSON body.
 ADDED_TO_BODY_SINCE_CAPTURE = {"remediation_record_follow_up": {"upcoming_days"}}
 #: Tools for routes that did not exist when the fixture was taken.
@@ -70,6 +71,8 @@ DIFFERENCES = {
         # whose default is 0); the hand-typed schema had the two the other way.
         "offset/default": NO_DEFAULT,
         "skip": HIDDEN,
+        # v2.479.0 — only issues a scanner reports an exploit for.
+        "exploitable": NEW_ARGUMENT,
     },
     "assist_list_scans": {"offset/default": ROUTE_DEFAULT},
     "host_tests_list": {
