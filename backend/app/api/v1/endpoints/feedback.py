@@ -3,13 +3,10 @@ Agent Feedback Endpoints
 
 Two surfaces:
   1. ``POST /agent/feedback`` (agent-facing, API-key auth) — agents
-     submit structured feedback at the end of each prompt workflow.
+     file feedback at the moment something gets in their way.
   2. ``GET /feedback``, ``GET /feedback/{id}``, ``PATCH /feedback/{id}``,
      ``GET /feedback/stats`` (admin-facing, JWT) — the developer
      triage queue surfaced in the UI.
-
-(Offline result bundles also wrote feedback rows until v2.442.0, when they
-were retired with test plans.)
 """
 
 import re
@@ -41,7 +38,8 @@ from app.services.agent_session_service import sessions_with_a_page
 # ---------------------------------------------------------------------------
 
 class AgentFeedbackCreate(BaseModel):
-    """Payload an agent POSTs to ``/agent/feedback`` at the end of a prompt.
+    """What an agent POSTs to ``/agent/feedback`` when something got in its
+    way — one line of ``friction_notes`` is a complete submission.
 
     All fields are optional *except* ``source`` — we still want a row
     even if the agent only has a frustration message to leave behind.
@@ -49,9 +47,11 @@ class AgentFeedbackCreate(BaseModel):
     source: str = Field(
         ...,
         description=(
-            "What you were doing: assist | reconnaissance | testing. "
-            "(plan_generation and in_session_execution are still accepted and "
-            "mean testing; they date from test plans.)"
+            "What the feedback is about — whichever is closest: assist "
+            "(queries and notes) | reconnaissance (scanning and uploading) | "
+            "testing (host tests and evidence). The older values "
+            "plan_generation and in_session_execution are still accepted and "
+            "read as testing."
         ),
     )
     prompt_version: Optional[str] = None
@@ -161,9 +161,10 @@ def submit_agent_feedback(
     db: Session = Depends(get_db),
     agent: Agent = Depends(get_current_agent),
 ):
-    """Agent POSTs feedback after finishing a prompt workflow.
+    """File feedback — at the moment of friction, as often as it happens.
 
-    The row is stamped with ``agent_id`` and ``project_id`` from the
+    Answers a short acknowledgement (the row's id and what it counted), not
+    the submission.  The row is stamped with ``agent_id`` and ``project_id`` from the
     authenticated API key — the payload itself cannot override those.
     """
     if body.source not in {s.value for s in AgentFeedbackSource}:

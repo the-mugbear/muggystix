@@ -3,8 +3,8 @@ Agent API — scope reads and scanner-output uploads.
 
 An agent reads a scope (its subnets, its in-scope domains, and the hosts the
 inventory already holds inside it), runs its own tools, and uploads the output
-to its session as results land.  Recon runs were removed in v2.433.0: the key
-is project-scoped and every read is keyed on ``scope_id`` directly.
+to its session as results land.  The key is project-scoped and every read is
+keyed on ``scope_id`` directly.
 """
 
 from datetime import datetime
@@ -192,7 +192,7 @@ def download_scope_live_hosts(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """One IP per line, IP-sorted — an ``-iL`` target file."""
+    """One IP per line, IP-sorted — a plain-text target list."""
     scope = _load_scope(db, agent, scope_id)
     return _stream(
         db, _iter_scope_live_hosts(db, scope.id),
@@ -273,13 +273,13 @@ async def upload_scanner_output(
         description=(
             "Name of the sweep this file is one chunk of (e.g. `nmap-tcp-top1000`). "
             "Every upload with the same label in this agent session joins one "
-            "batch, shown on /scans as a single row (v2.335.0)."
+            "batch, shown on /scans as a single row."
         ),
     ),
     skip_informational: Optional[bool] = Form(
         None,
         description=(
-            "Nessus only (v2.341.0): drop severity-0 (informational) report items "
+            "Nessus only: drop severity-0 (informational) report items "
             "instead of storing a vulnerability row each; ports are still derived "
             "from them. Omit to follow the project's setting."
         ),
@@ -291,9 +291,8 @@ async def upload_scanner_output(
 
     Accepts any scanner output format the ingestion service supports (nmap
     XML, masscan, gnmap, nessus, openvas, eyewitness, nikto, naabu,
-    bloodhound, netexec, etc.).  The job belongs to this agent session; no
-    run needs to be open (v2.433.0).  Poll ``GET /agent/uploads/{job_id}``
-    until the parse completes.
+    bloodhound, netexec, etc.).  The job belongs to this agent session.  Poll
+    ``GET /agent/uploads/{job_id}`` until the parse completes.
 
     An identical file already in the project (as a scan, or still parsing) is
     refused with 409 ``duplicate_scan`` naming it — nothing is created. Agents

@@ -10,23 +10,41 @@ Adds what the acceptance questions need beyond the demo seeds, through the
 REAL routes (the running API on localhost:8000), as real project members:
 
   * Four accounts — ``acc-lead`` (project admin), ``acc-analyst``,
-    ``acc-auditor``, ``acc-viewer`` — and an agent key for the analyst, the
-    auditor and the viewer.  No UI entry point lets a viewer START a session
-    (assist start needs auditor); a viewer's key exists when an operator is
-    demoted after starting one, because the key carries its operator's role
-    re-read on every call.  The viewer key is made exactly that way.
-  * A host note thread with replies, an @mention, an assignee, a due date and
-    an image attachment.
+    ``acc-auditor``, ``acc-viewer`` — and an agent key for each: ``admin``
+    (the lead's — remediation writes need a project admin), ``analyst``,
+    ``auditor`` and ``viewer``.  No UI entry point lets a viewer START a
+    session (assist start needs auditor); a viewer's key exists when an
+    operator is demoted after starting one, because the key carries its
+    operator's role re-read on every call.  The viewer key is made exactly
+    that way.
+  * A host note thread with replies, an @mention and an image attachment,
+    marked a handoff and pinned.
   * A finding comment thread with a report image, a status change with a
     justification, and one endpoint marked remediated.
   * An ISSUED client report (the report worker renders its files).
   * A NetExec import with lines the parser does not interpret, processed by
     the ingestion worker.
+  * Work that waits on the ANALYST, so its session's workbench is not empty
+    and a preview can be told from the whole list: 18 findings it owns that
+    need it (10 under investigation = "decide", 8 confirmed with no report
+    text = "write" — more than the workbench's 15-row preview), a host it has
+    in review, a test assigned to it, and a test on the host in review.
+  * A host test proposed by ANOTHER person (the lead), for an agent to work.
+  * A SECOND project ("Acceptance — other project") holding a host at the
+    same address as one of this project's, a scope, a finding, an import job
+    and an attachment: the ids a cross-project request must be refused.
+    Created as the first active global admin, through the same routes.
+  * Remediation records on three findings on hosts — ONLY where the
+    installation has remediation tracking on.  The seed never turns it on
+    (that is an installation-wide switch a global admin owns, in System
+    settings); where it is off it says so, and every remediation route
+    answers 404.
 
-The accounts' passwords and TOTP secrets and the three agent keys are written
-to ``uploads/acceptance-fixtures.json`` (mode 0600) and printed.  Re-running
-reuses the accounts, mints fresh keys, and skips fixtures already present
-(each is marked ``[acceptance seed]``).  Local development only.
+The accounts' passwords and TOTP secrets, the four agent keys and the fixture
+ids are written to ``uploads/acceptance-fixtures.json`` (mode 0600) and
+printed.  Re-running reuses the accounts, mints fresh keys, and skips fixtures
+already present (each is marked ``[acceptance seed]``).  Local development
+only.
 """
 from __future__ import annotations
 
@@ -146,6 +164,199 @@ def _start_key(api: Api, purpose: str) -> str:
     return api("POST", "/assist/start", json={"purpose": purpose})["api_key"]
 
 
+#: Findings the analyst owns that need them: more than the workbench's 15-row
+#: preview, in both kinds ("decide" = under investigation, "write" = confirmed
+#: with no report text).
+OWNED_DECIDE, OWNED_WRITE = 10, 8
+_SEVERITIES = ("critical", "high", "medium", "low")
+OTHER_PROJECT = "Acceptance — other project"
+
+
+def _seed_analyst_work(db, pid: int, users: dict, lead: Api, analyst: Api) -> dict:
+    """Work that waits on ``acc-analyst`` — owned findings of both kinds, a
+    host in review, an assigned test, a test on the host in review — and a
+    test the LEAD proposed, for another session to work."""
+    analyst_user = users["acc-analyst"]
+    hosts = (
+        db.query(models.Host).filter(models.Host.project_id == pid, models.Host.state == "up")
+        .order_by(models.Host.ip_address).offset(32).limit(6).all()
+    )
+    if len(hosts) < 3:
+        raise SystemExit("The project needs more hosts — seed it first (scripts/seed_demo_data.py).")
+
+    wanted = (
+        [(f"{MARK} owned, under investigation {i + 1:02d}", "open") for i in range(OWNED_DECIDE)]
+        + [(f"{MARK} owned, report text missing {i + 1:02d}", "confirmed") for i in range(OWNED_WRITE)]
+    )
+    have = {
+        title for (title,) in db.query(Finding.title).filter(
+            Finding.project_id == pid, Finding.owner_id == analyst_user.id, Finding.title.like(f"{MARK}%"))
+    }
+    created = 0
+    for n, (title, status) in enumerate(wanted):
+        if title in have:
+            continue
+        analyst("POST", "/findings", json={
+            "title": title, "severity": _SEVERITIES[n % len(_SEVERITIES)], "status": status,
+            "owner_id": analyst_user.id, "host_ids": [hosts[n % len(hosts)].id],
+        })
+        created += 1
+    if created:
+        print(f"{created} findings owned by acc-analyst ({OWNED_DECIDE} to decide, {OWNED_WRITE} to write)")
+
+    review_host, other_host = hosts[0], hosts[1]
+    db.expire_all()
+    if not db.query(models.HostFollow).filter_by(host_id=review_host.id, user_id=analyst_user.id).first():
+        analyst("POST", f"/hosts/{review_host.id}/follow", json={"status": "in_review"})
+        print(f"{review_host.ip_address}: in review by acc-analyst")
+
+    # Fixed request keys: a re-run returns the stored tests.
+    def test(key: str, host_id: int, what: str, **extra) -> dict:
+        return {
+            "request_key": f"acceptance-seed-{key}", "host_id": host_id, "tool": "manual",
+            "description": f"{MARK} {what}", "rationale": "Acceptance fixture.",
+            "command": "echo check {ip}", "priority": "medium", "label": "ACCEPTANCE seed", **extra,
+        }
+
+    stored = lead("POST", "/host-tests", json={"tests": [
+        test("assigned", other_host.id, "a test assigned to acc-analyst", assigned_to_id=analyst_user.id),
+        test("in-review", review_host.id, "a test on the host acc-analyst has in review"),
+        test("other-person", hosts[2].id, "a test the lead proposed, for another session to work"),
+    ]})["items"]
+    return {
+        "owned_findings": len(wanted), "to_decide": OWNED_DECIDE, "to_write": OWNED_WRITE,
+        "host_in_review_id": review_host.id,
+        "assigned_test_id": stored[0]["id"], "in_review_test_id": stored[1]["id"],
+        "other_persons_test_id": stored[2]["id"],
+    }
+
+
+def _nmap_xml(ip: str) -> bytes:
+    kind = "ipv6" if ":" in ip else "ipv4"
+    return (
+        '<?xml version="1.0"?>\n'
+        '<nmaprun scanner="nmap" args="nmap -sV" start="1700000000" version="7.94">\n'
+        f'<host><status state="up"/><address addr="{ip}" addrtype="{kind}"/>'
+        '<ports><port protocol="tcp" portid="22"><state state="open"/><service name="ssh"/></port></ports>'
+        '</host>\n<runstats><finished time="1700000100"/></runstats>\n</nmaprun>\n'
+    ).encode()
+
+
+def _seed_other_project(db, base_url: str, shared_ip: str) -> dict:
+    """A second project the acceptance keys are NOT bound to, holding the ids
+    a cross-project request must be refused: a host at ``shared_ip`` (the same
+    address as a host of the evaluation project), a scope, an import job, a
+    finding and an attachment.  Creating a project is a global admin's action,
+    so this part runs as the first active global admin."""
+    admin_user = (
+        db.query(User).filter(User.role == UserRole.ADMIN.value, User.is_active.is_(True))
+        .order_by(User.id).first()
+    )
+    if admin_user is None:
+        print("No active global admin: the second project was not created (cross-project steps: not exercised).")
+        return {}
+    token = _token(db, admin_user)
+    other = db.query(Project).filter(Project.name == OTHER_PROJECT).first()
+    if other is None:
+        r = httpx.post(f"{base_url}/api/v1/projects/", timeout=60,
+                       headers={"Authorization": f"Bearer {token}"},
+                       json={"name": OTHER_PROJECT, "description": f"{MARK} ids for cross-project refusals"})
+        if r.status_code >= 400:
+            raise SystemExit(f"POST /projects/ -> {r.status_code}: {r.text[:500]}")
+        other = db.get(Project, r.json()["id"])
+        print(f"project {other.id} created: {OTHER_PROJECT!r}")
+    oid = other.id
+    api = Api(base_url, oid, token)
+
+    if not db.query(models.Subnet).join(models.Scope, models.Scope.id == models.Subnet.scope_id).filter(
+            models.Scope.project_id == oid).first():
+        prefix = "128" if ":" in shared_ip else "32"
+        api("POST", "/scopes/upload-subnets",
+            files={"file": ("acceptance-scope.txt", io.BytesIO(f"{shared_ip}/{prefix}\n".encode()), "text/plain")})
+    job = db.query(models.IngestionJob).filter(
+        models.IngestionJob.project_id == oid,
+        models.IngestionJob.original_filename == "acceptance-other-project.xml").first()
+    if job is None:
+        up = api("POST", "/upload/", files={
+            "file": ("acceptance-other-project.xml", io.BytesIO(_nmap_xml(shared_ip)), "text/xml")})
+        for _ in range(60):
+            db.expire_all()
+            job = db.get(models.IngestionJob, up["job_id"])
+            if job is not None and job.status in ("completed", "failed"):
+                break
+            time.sleep(1)
+        print(f"second project import job {up['job_id']}: {job.status if job else 'not found'}")
+    db.expire_all()
+    host = db.query(models.Host).filter(models.Host.project_id == oid, models.Host.ip_address == shared_ip).first()
+    scope = db.query(models.Scope).filter(models.Scope.project_id == oid).order_by(models.Scope.id).first()
+    ids = {
+        "project_id": oid, "shared_ip": shared_ip,
+        "host_id": host.id if host else None, "scope_id": scope.id if scope else None,
+        "job_id": job.id if job else None, "scan_id": job.scan_id if job else None,
+        "finding_id": None, "attachment_id": None,
+    }
+    if host is None:
+        print("The second project's import produced no host: its finding and attachment were not created.")
+        return ids
+    finding = db.query(Finding).filter(Finding.project_id == oid, Finding.title.like(f"{MARK}%")).first()
+    if finding is None:
+        made = api("POST", "/findings", json={
+            "title": f"{MARK} a finding in the other project", "severity": "high",
+            "status": "confirmed", "host_ids": [host.id]})
+        note = api("POST", f"/findings/{made['id']}/notes", json={"body": f"{MARK} evidence in the other project."})
+        api("POST", f"/findings/{made['id']}/notes/{note['id']}/attachments",
+            files={"file": ("other-project.png", io.BytesIO(_png()), "image/png")})
+        db.expire_all()
+        finding = db.get(Finding, made["id"])
+    ids["finding_id"] = finding.id
+    ids["attachment_id"] = (
+        db.query(models.NoteAttachment.id)
+        .join(models.Annotation, models.Annotation.id == models.NoteAttachment.annotation_id)
+        .filter(models.Annotation.finding_id == finding.id).order_by(models.NoteAttachment.id).limit(1).scalar()
+    )
+    return ids
+
+
+def _seed_remediation(db, base_url: str, pid: int, lead_user: User, lead: Api) -> dict:
+    """Remediation records on three findings on hosts — only where the
+    installation has tracking on.  Never switches it on."""
+    from datetime import timedelta
+
+    from app.db.models_remediation import FindingHostRemediation
+
+    r = httpx.get(f"{base_url}/api/v1/remediation-policy", timeout=60,
+                  headers={"Authorization": f"Bearer {_token(db, lead_user)}"})
+    if r.status_code >= 400 or not r.json().get("enabled"):
+        return {"tracking_on": False, "finding_host_ids": []}
+    rows = (
+        db.query(FindingHost.id).join(Finding, Finding.id == FindingHost.finding_id)
+        .filter(Finding.project_id == pid, Finding.status == FindingStatus.CONFIRMED,
+                FindingHost.host_status == "open")
+        .order_by(FindingHost.finding_id, FindingHost.id).limit(3).all()
+    )
+    ids = [fh_id for (fh_id,) in rows]
+    tracked = {
+        fh_id for (fh_id,) in db.query(FindingHostRemediation.finding_host_id)
+        .filter(FindingHostRemediation.finding_host_id.in_(ids))
+    } if ids else set()
+    today = datetime.now(timezone.utc).date()
+    plans = (
+        # Assigned long enough ago to be overdue under any ordinary policy…
+        {"contact_email": "ops@acceptance.invalid", "contact_name": "Acceptance Ops",
+         "team": "Infrastructure", "notified_on": (today - timedelta(days=120)).isoformat()},
+        # …assigned recently…
+        {"contact_email": "ops@acceptance.invalid", "contact_name": "Acceptance Ops",
+         "team": "Infrastructure", "notified_on": (today - timedelta(days=2)).isoformat()},
+        # …and a contact with no date: no clock runs.
+        {"contact_email": "apps@acceptance.invalid", "contact_name": "Acceptance Apps"},
+    )
+    todo = [{"finding_host_id": fh_id, **plan} for fh_id, plan in zip(ids, plans) if fh_id not in tracked]
+    if todo:
+        lead("POST", "/remediation/apply", json={"rows": todo})
+        print(f"remediation records on {len(todo)} findings on hosts")
+    return {"tracking_on": True, "finding_host_ids": ids}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--project", type=int, help=f"project id (default: the project named {DEFAULT_PROJECT!r})")
@@ -170,7 +381,7 @@ def main() -> None:
 
     # --- Agent keys -------------------------------------------------------
     # End the sessions an earlier run started, so a re-run leaves exactly
-    # three live keys (the project admin's end route, as the UI does it).
+    # four live keys (the project admin's end route, as the UI does it).
     for (sid,) in db.query(AgentSession.id).filter(
             AgentSession.project_id == pid, AgentSession.purpose.like(f"{MARK}%"),
             AgentSession.status != "ended"):
@@ -183,6 +394,8 @@ def main() -> None:
     membership.role = ProjectRole.VIEWER.value  # …then demoted: the key now acts as a viewer
     db.commit()
     keys = {
+        # A project admin's key: remediation writes need one.
+        "admin": _start_key(lead, f"{MARK} admin"),
         "analyst": _start_key(analyst, f"{MARK} analyst"),
         "auditor": _start_key(auditor, f"{MARK} auditor"),
         "viewer": viewer_key,
@@ -296,13 +509,24 @@ def main() -> None:
             time.sleep(1)
         print(f"NetExec import job {job_id}: {job.status if job else 'not found'}")
 
-    data = {"project_id": pid, "keys": keys, "accounts": creds,
+    fixtures: dict = {}
+    fixtures["analyst_work"] = _seed_analyst_work(db, pid, users, lead, analyst)
+    fixtures["other_project"] = _seed_other_project(db, args.base_url, host.ip_address)
+    fixtures["remediation"] = _seed_remediation(db, args.base_url, pid, users["acc-lead"], lead)
+
+    data = {"project_id": pid, "keys": keys, "accounts": creds, "fixtures": fixtures,
             "note": "Local acceptance fixtures — keys expire with their sessions."}
     fd = os.open(OUT, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
         json.dump(data, fh, indent=2)
-    print(json.dumps({"project_id": pid, "keys": keys}, indent=2))
-    print(f"accounts and keys written to {OUT} (0600)")
+    print(json.dumps({"project_id": pid, "keys": keys, "fixtures": fixtures}, indent=2))
+    print(f"accounts, keys and fixture ids written to {OUT} (0600)")
+    if not fixtures["remediation"]["tracking_on"]:
+        print(
+            "Remediation tracking is OFF on this installation: every remediation step of the "
+            "acceptance suite answers 404 until a global admin turns it on in System settings "
+            "(then run this script again to add the remediation records)."
+        )
 
 
 if __name__ == "__main__":

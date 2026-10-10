@@ -34,7 +34,7 @@ from app.api.deps import get_current_user, require_role
 from app.core.config import settings
 from app.db.models_auth import User, UserRole
 from app.db.session import get_db
-from app.services.agents_guide_service import read_agent_guide, slice_agents_md
+from app.services.agents_guide_service import UnknownGuidePart, read_agent_guide, slice_agents_md
 from app.services.agent_prompt_service import PROMPT_VERSION
 
 logger = logging.getLogger(__name__)
@@ -356,8 +356,8 @@ async def references_index():
         "agents_guide": {
             "url": "/api/v1/agents-guide",
             "description": (
-                "The full agent guide; supports "
-                "?workflow=plan_generation|execution|reconnaissance|assist"
+                "The agent guide. ?workflow=testing|reconnaissance|assist|remediation "
+                "returns one part of it; omit it for the whole guide."
             ),
         },
         "sbom": {
@@ -415,20 +415,21 @@ async def agents_guide(
 ):
     """Serve the agent guide (documentation/AGENT_GUIDE.md) with the base URL replaced to match the current deployment.
 
-    Accepts an optional phase query parameter (``plan_generation``,
-    ``execution``, ``reconnaissance``, ``assist``, or the short forms
-    ``plan``/``exec``/``recon``).  When present, the response is filtered
-    to only the sections tagged for that workflow plus any ``shared``
-    sections.  The execution slice is roughly a third of the full file;
-    the plan_generation / reconnaissance slices are similarly trimmed.
-    See ``services.agents_guide_service.slice_agents_md`` for filter
-    semantics. Unified project sessions receive the full guide.
+    ``workflow`` names one PART of the guide (``testing``, ``reconnaissance``,
+    ``assist`` or ``remediation``): the answer is then the sections tagged for
+    that part plus every ``shared`` section.  Without it (or with ``project``)
+    the whole guide is returned.  A part is a reading aid, not a kind of
+    session.  Any other value is a 422 naming the accepted ones.
+    See ``services.agents_guide_service.slice_agents_md``.
     """
     content = read_agent_guide()
     if content is None:
         raise HTTPException(status_code=404, detail="Agent guide not found")
 
-    content = slice_agents_md(content, workflow)
+    try:
+        content = slice_agents_md(content, workflow)
+    except UnknownGuidePart as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Stamp the served guide with the LIVE prompt version (the same
     # PROMPT_VERSION the agent's prompt embeds).  The static file carries a

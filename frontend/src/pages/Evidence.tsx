@@ -186,7 +186,11 @@ const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ sel
             <AgentTaskButton
               variant={gaps.action.kind === 'plan' ? 'default' : 'outline'}
               label="Propose tests"
-              title="Hand these hosts to your agent to propose tests on them"
+              // A task names a fixed list of hosts: with none there is no task.
+              disabled={gaps.items.length === 0}
+              title={gaps.items.length === 0
+                ? 'No hosts in this gap to hand over'
+                : 'Hand these hosts to your agent to propose tests on them'}
               instruction={agentInstruction.proposeTests(gaps.items.map((h) => h.host_id), planRationale)}
             />
           </div>

@@ -1,13 +1,15 @@
-"""Single source of truth for the agent safety rules (terse form).
+"""The rules an agent is given, written once and rendered to both doors.
 
-The rules are handed to agents in the session prompt
-(:func:`agent_prompt_service.build_session_instructions`), which renders
-:func:`render_safety_rules`; ``test_agent_safety_policy`` asserts the prompt
-emits these exact rules.  (The second surface, the offline bundle
-instructions, went with test plans in v2.442.0.)
+An agent starts through one of two doors and sees only that one: the pasted
+session prompt (:func:`agent_prompt_service.build_session_instructions`, an
+agent that drives the API with curl) or the MCP opening instructions
+(``mcp_assist._server_instructions``).  Both render the same three blocks from
+this module — the safety rules, the read-back and the key-expiry handling — so
+neither can drift from the other.  ``over_mcp`` changes only how a call is
+named (a tool instead of a route) and drops the Markdown.
+``test_agent_safety_policy`` asserts both doors carry these exact rules.
 
-This is the *terse skeleton* the prompt carries.  The detailed how-to lives in
-the agent guide by design (see the prompt-vs-guide split).
+This is the terse skeleton.  The how-to lives in the agent guide.
 
 **What these rules are and are not.**  They are instructions to an agent,
 which BlueStick cannot enforce: the commands run on the operator's machine,
@@ -16,16 +18,9 @@ boundary is real only where the client's sandbox enforces it (Codex
 ``--sandbox workspace-write``, Claude Code's permission prompts), which the
 session-start dialog hands the operator alongside the key.  What BlueStick
 adds is the record: every reported command lands in an audit trail a human
-reads.
-
-**v2.433.0 — no rails.**  The rules used to carry an approved-tool allowlist
-(run without asking only an "approved" tool against an inventory host), a
-mandatory per-host sanity check, and a fixed recon → plan → human approval →
-execution order.  The operator drives their agent now, so those are gone —
-and since v2.442.0 so are plans and execution runs themselves: the agent
-proposes tests on hosts and records what it ran as evidence.  What stays protects the client and the
-operator: the declared scope, the working directory, the operator's machine,
-and a record of every command.
+reads.  What the rules protect is the client and the operator: the declared
+scope, the working directory, the operator's machine, and a record of every
+command.
 """
 from __future__ import annotations
 
@@ -35,8 +30,8 @@ from typing import List
 # PROMPT_VERSION and rewrite PROMPT_CHANGES in agent_prompt_service when you do.
 SAFETY_RULES: List[str] = [
     "Show the operator every command before you run it.",
-    "The operator drives: do what they ask within their project role, and "
-    "propose next steps rather than taking them unasked.",
+    "The operator drives: do what they ask, and propose next steps rather than "
+    "taking them unasked.",
     "Stay inside the project's declared scope. A target outside it — an address "
     "outside the scope's ranges, or a name no declared domain covers — needs the "
     "operator's explicit go-ahead first. A name being in scope does not put the "
@@ -49,20 +44,28 @@ SAFETY_RULES: List[str] = [
     "scanner output so it lands in the inventory.",
 ]
 
-_SAFETY_HEADER = "**SAFETY RULES (mandatory — do not skip):**"
+_SAFETY_TITLE = "SAFETY RULES (mandatory):"
 
 
-def render_safety_rules() -> str:
-    """Render the canonical safety rules as a numbered Markdown block.
+def _title(text: str, over_mcp: bool) -> str:
+    return text if over_mcp else f"**{text}**"
+
+
+def _code(text: str, over_mcp: bool) -> str:
+    return text if over_mcp else f"`{text}`"
+
+
+def render_safety_rules(*, over_mcp: bool = False) -> str:
+    """The safety rules as a numbered block.
 
     Trailing single newline; callers add their own paragraph break.
     """
-    lines = [_SAFETY_HEADER]
+    lines = [_title(_SAFETY_TITLE, over_mcp)]
     lines.extend(f"{i}. {rule}" for i, rule in enumerate(SAFETY_RULES, start=1))
     return "\n".join(lines) + "\n"
 
 
-# --- The read-back (v2.281.0) ------------------------------------------------
+# --- The read-back -----------------------------------------------------------
 # BlueStick cannot enforce any of the rules above: the commands run on the
 # operator's machine and the server sees only what the agent reports.  What it
 # CAN do is ask the agent to say its bounds out loud, to the operator, before
@@ -70,48 +73,43 @@ def render_safety_rules() -> str:
 # scope and working directory rather than its output, when a misunderstanding
 # is cheap to correct.  Deliberately "in your own words": restating requires
 # resolving the rules against *this* session's project, scope and directory,
-# which is exactly the part that can be wrong.
+# which is exactly the part that can be wrong.  The agent is told to read the
+# specifics first: it cannot state CIDRs it has not read.
 
-_READ_BACK_HEADER = (
-    "**FIRST MESSAGE — state your bounds back to the operator (mandatory):**"
-)
+_READ_BACK_TITLE = "FIRST MESSAGE — state your bounds back to the operator (mandatory)."
 
-# One layer since v2.442.0: the session's bounds at start.  (An execution
-# run's start carried a second read-back — that plan's hosts — until runs
-# were removed.)
-_READ_BACK_ITEMS = {
-    "project": [
-        "which project you are working in, and as whom — the operator whose "
-        "permissions this session carries",
-        # v2.433.1 — folded in from the retired recon-run read-back: any
-        # session may scan, so the domain rule is stated for every session.
-        "the scope you will work within — the actual CIDRs and, when any are "
-        "declared, the in-scope domains (saying which are exact names and which "
-        "include subdomains); a name being in scope does not put the address it "
-        "resolves to in subnet scope. Ask the operator if the project declares "
-        "none, or if their task reaches beyond it",
-        "the working directory your commands will run from and write into",
-        "what you will ask about before acting (a target outside the scope — an "
-        "address outside the CIDRs or a name no declared domain covers — "
-        "anything outside the working directory, changes to their machine)",
-    ],
-}
+_READ_BACK_ITEMS: List[str] = [
+    "which project you are working in, and as whom — the operator whose "
+    "permissions this session carries",
+    "the scope you will work within — the actual CIDRs and, when any are "
+    "declared, the in-scope domains (saying which are exact names and which "
+    "include subdomains). Ask the operator if the project declares none, or if "
+    "their task reaches beyond it",
+    "the working directory your commands will run from and write into",
+    "what you will ask about before acting: anything outside the scope or "
+    "outside the working directory, and any change to their machine (rules 3 "
+    "and 4)",
+]
 
 
-def render_read_back(workflow: str = "project") -> str:
-    """The mandatory "say your bounds back" block of the session prompt.
-
-    ``workflow`` is kept for callers that pass the session's; every value
-    renders the ``project`` items (the recon-run block went in v2.433.1 and the
-    execution-run block in v2.442.0, each with its runs).
-    """
-    items = _READ_BACK_ITEMS.get(workflow, _READ_BACK_ITEMS["project"])
+def render_read_back(*, over_mcp: bool = False) -> str:
+    """The mandatory "say your bounds back" block."""
+    if over_mcp:
+        reads = (
+            "Call agent_identity and assist_list_scopes (scope_list_subnets and "
+            "scope_list_domains for each scope)."
+        )
+    else:
+        reads = (
+            "Read `GET /agent/identity` and `GET /agent/scopes` (with each "
+            "scope's `/subnets` and `/domains`)."
+        )
     lines = [
-        _READ_BACK_HEADER,
-        "Before your first tool call or command, tell the operator — in your own "
-        "words, specific to this session, not a recital of this text:",
+        f"{_title(_READ_BACK_TITLE, over_mcp)} {reads} Then, before any command "
+        "or write, tell the operator — in your own words, specific to this "
+        "session, not a recital of this text:",
     ]
-    lines.extend(f"- {item}" for item in items)
+    lines.extend(f"- {item}" for item in _READ_BACK_ITEMS)
     lines.append(
         "Keep it to a few lines, then start. You are not asking permission to begin; "
         "you are giving them the chance to say \"that's the wrong scope\" before you "
@@ -121,10 +119,10 @@ def render_read_back(workflow: str = "project") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Key expiry (v2.304.0)
+# Key expiry
 # ---------------------------------------------------------------------------
 
-def render_key_expiry_guidance() -> str:
+def render_key_expiry_guidance(*, base_url: str = "<base>", over_mcp: bool = False) -> str:
     """How to survive your own credential expiring mid-job.
 
     This exists for one specific, expensive failure: the agent launches a
@@ -132,25 +130,29 @@ def render_key_expiry_guidance() -> str:
     it only finds out when it tries to upload — with the scanning already done.
     An agent that treats a 401 as terminal there throws that work away.
 
-    Kept short and imperative. The two things that matter are *don't discard
-    output* and *retry the same request*; everything else is detail the agent
-    can read off the 401 body.
+    The two things that matter are *don't discard output* and *retry the same
+    request*.  The 401's fields are under ``detail`` (``deps._expired_key_detail``,
+    ``deps._CREDENTIALS_CHANGED_DETAIL``); a revoked or unknown key answers a
+    plain message with no ``recoverable`` at all.
+
+    ``base_url`` is the ``…/api/v1`` the curl agent was given; the MCP agent
+    names the tools instead.
     """
+    if over_mcp:
+        identity, renew = "agent_identity", "session_renew"
+    else:
+        identity = "`GET /agent/identity`"
+        renew = f"`POST {base_url}/agent/session/renew`"
+    c = lambda text: _code(text, over_mcp)  # noqa: E731 - a two-line formatter
     return (
-        "### If your key expires\n\n"
-        "Agent keys are short-lived, and a long scan can outlast one. Two rules:\n\n"
-        "1. **Before starting anything that will run for hours**, check "
-        "`key_expires_at` from `GET <base>/agent/identity`. If your key would "
-        "lapse during it, POST to `renew_path` (also on that response) first. "
-        "This is the cheap path.\n"
-        "2. **If you get a 401 anyway** — which is the normal outcome when a "
-        "scan runs long, because you cannot make requests while blocked — read "
-        "the response body. `recoverable: true` means your session is still "
-        "alive: POST to `renew_path` with the **same key**, then **retry the "
-        "exact request that failed**.\n\n"
-        "**Never re-run a scan or command because of a 401, and never discard "
-        "output you are holding.** Renewal keeps the same key, so nothing needs "
-        "re-bootstrapping — the request that failed will simply work. If the "
-        "body says `recoverable: false`, save what you have to a file in your "
-        "working directory and tell the operator you need a new session.\n"
+        f"{identity} gives {c('key_expires_at')}. Before anything that will run "
+        f"for hours, renew: {renew} (same key, later expiry; it also works after "
+        f"the key has expired). On a 401 read {c('detail')} in the body. "
+        f"{c('recoverable: true')}: renew with the same key, then retry the exact "
+        f"request that failed. {c('recoverable: false')} (the session ended or "
+        f"passed its lifetime, or {c('operator_credentials_changed')}), or no such "
+        "field (the key was revoked): save what you are holding to a file in the "
+        "working directory and tell the operator, who resumes the session or "
+        "starts a new one. Never re-run a scan or a command, or discard output "
+        "you are holding, because of a 401.\n"
     )

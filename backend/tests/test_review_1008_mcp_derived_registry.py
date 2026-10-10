@@ -45,12 +45,23 @@ TOOLS_SINCE_CAPTURE = {
     "remediation_assign_from_report", "assist_get_writing_guidance", "assist_list_my_findings",
 }
 
+#: {tool: {query argument}} — an endpoint parameter the tool stopped offering
+#: (``hidden``): a second name for an argument it already has.
+HIDDEN_SINCE_CAPTURE = {"assist_list_scanner_observations": {"skip"}}
+
+HIDDEN = "the tool no longer offers this second name for an argument it has (narrower)"
+NARROWED = "the tool names the accepted values where the endpoint takes free text (narrower)"
+GUIDE_PART = "the guide gained a part; the endpoint refuses any value that is not one"
+
 #: {tool: {"argument/key": reason}} — every difference, and nothing else.
 DIFFERENCES = {
     "assist_get_finding": {"finding_id/minimum": ROUTE_BOUND},
     "assist_get_host": {"ip/minLength": ROUTE_BOUND},
     "assist_list_evidence_gaps": {"domain/maxLength": ROUTE_BOUND, "segment/maxLength": ROUTE_BOUND},
-    "assist_list_findings": {"offset/default": ROUTE_DEFAULT, "unowned/default": ROUTE_DEFAULT},
+    "assist_list_findings": {
+        "offset/default": ROUTE_DEFAULT, "unowned/default": ROUTE_DEFAULT, "source/enum": NARROWED,
+    },
+    "read_agent_guide": {"workflow/enum": GUIDE_PART},
     "assist_list_scanner_observations": {
         "kind/maxLength": ROUTE_BOUND,
         "severity/maxLength": ROUTE_BOUND,
@@ -58,7 +69,7 @@ DIFFERENCES = {
         # ``offset`` is optional on the endpoint (it falls back to ``skip``,
         # whose default is 0); the hand-typed schema had the two the other way.
         "offset/default": NO_DEFAULT,
-        "skip/default": ROUTE_DEFAULT,
+        "skip": HIDDEN,
     },
     "assist_list_scans": {"offset/default": ROUTE_DEFAULT},
     "host_tests_list": {
@@ -147,11 +158,12 @@ def test_names_requiredness_and_placement_are_unchanged(name):
     schema = advertised_schema(spec)
     added = {"query_params": ADDED_SINCE_CAPTURE.get(name, set()),
              "body_params": ADDED_TO_BODY_SINCE_CAPTURE.get(name, set())}
+    hidden = HIDDEN_SINCE_CAPTURE.get(name, set())
     assert set(schema["properties"]) == (set(before["inputSchema"]["properties"])
-                                         | added["query_params"] | added["body_params"])
+                                         | added["query_params"] | added["body_params"]) - hidden
     assert set(schema.get("required", ())) == set(before["inputSchema"].get("required", ()))
     for where in ("path_params", "query_params", "body_params"):
-        expected = set(before[where]) | added.get(where, set())
+        expected = (set(before[where]) | added.get(where, set())) - hidden
         assert set(spec.get(where, ())) == expected, where
     assert (spec["method"], spec["path"]) == (before["method"], before["path"])
     assert (spec.get("path_alternatives") or {}) == before["path_alternatives"]
@@ -204,6 +216,13 @@ def test_no_listed_difference_widens_a_schema():
                 # A whole optional argument the endpoint gained, not a change to one.
                 gained = ADDED_SINCE_CAPTURE.get(name, set()) | ADDED_TO_BODY_SINCE_CAPTURE.get(name, set())
                 assert key in gained and before == "(absent)", (name, key)
+            elif reason == HIDDEN:
+                assert key in HIDDEN_SINCE_CAPTURE.get(name, set()) and derived == "(absent)", (name, key)
+            elif reason == NARROWED:
+                assert leaf == "enum" and before == "(absent)", (name, key)
+            elif reason == GUIDE_PART:
+                # The one place a list grew: the route refuses what is not on it.
+                assert leaf == "enum" and set(before) < set(derived), (name, key)
             elif reason == NEW_FIELD:
                 # A whole optional field of a body row, not a change to one.
                 assert "/properties/" in key and before == "(absent)", (name, key)

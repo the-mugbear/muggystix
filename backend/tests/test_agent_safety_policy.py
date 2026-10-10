@@ -59,15 +59,54 @@ def test_agents_md_still_covers_each_safety_theme():
 
 def test_session_prompt_demands_the_session_read_back():
     prompt = _session()
-    assert render_read_back("project") in prompt
+    assert render_read_back() in prompt
     assert "FIRST MESSAGE" in prompt
     assert "mandatory" in prompt.lower()
 
 
+def test_the_mcp_opening_renders_the_same_rules_as_the_prompt():
+    """One implementation: an MCP agent never sees the pasted prompt, so the
+    opening instructions render the same rules, read-back and key-expiry
+    handling from ``agent_policy`` — they were a hand paraphrase that had lost
+    rules 2 and 5, "installing software" and the name/address rule."""
+    from app.api.v1.endpoints.mcp_assist import _server_instructions
+    from app.services.agent_policy import render_key_expiry_guidance
+
+    opening = _server_instructions("https://127.0.0.1/api/v1")
+    for rule in SAFETY_RULES:
+        assert rule in opening, f"MCP opening missing rule: {rule!r}"
+    assert render_safety_rules(over_mcp=True) in opening
+    assert render_read_back(over_mcp=True) in opening
+    assert render_key_expiry_guidance(over_mcp=True) in opening
+    # Named as tools, and plain text: no route, no Markdown.
+    assert "agent_identity" in opening and "session_renew" in opening
+    assert "**" not in opening and "GET /agent/identity" not in opening
+    # Nothing about the tool catalogue or the retired plans.
+    for absent in ("list_tools", "test plan"):
+        assert absent not in opening
+
+
+def test_both_doors_read_the_401_where_the_server_puts_it():
+    """``recoverable`` is under ``detail``; a revoked key carries no such
+    field; a password change is named.  The curl door gets the renewal address
+    in full (``renew_path`` is relative to the origin, not to its base URL)."""
+    from app.services.agent_policy import render_key_expiry_guidance
+
+    for text in (render_key_expiry_guidance(base_url="https://h/api/v1"),
+                 render_key_expiry_guidance(over_mcp=True)):
+        assert "detail" in text and "no such field" in text
+        assert "operator_credentials_changed" in text
+        assert "retry the exact request that failed" in text
+    assert "POST https://h/api/v1/agent/session/renew" in render_key_expiry_guidance(
+        base_url="https://h/api/v1")
+    session = _session()
+    assert "/api/v1/agent/session/renew`" in session and "renew_path" not in session
+
+
 def test_session_read_back_states_project_scope_and_directory():
-    """v2.433.0 — the agent may run commands without opening a phase, so the
-    session read-back itself names the scope and the working directory."""
-    block = render_read_back("project")
+    """The agent may run commands at once, so the read-back itself names the
+    scope and the working directory."""
+    block = render_read_back()
     assert "project" in block
     assert "scope" in block
     assert "working directory" in block
@@ -88,38 +127,48 @@ def test_safety_rules_carry_no_rails():
 
 
 def test_the_read_back_carries_a_working_directory():
-    block = render_read_back("project")
+    block = render_read_back()
     assert "working directory" in block
     assert "outside" in block
 
 
 def test_there_is_one_read_back_and_no_run_layer():
-    """v2.442.0 — execution runs are gone, and with them the read-back their
-    start returned.  The retired ``execution`` key renders the session block,
-    never a "hosts this plan covers" recital for a plan that cannot exist."""
+    """There is one read-back, the session's: it takes no workflow or phase
+    (the argument went with the last word of plans and runs), and nothing in
+    it speaks of a plan."""
+    import inspect
+
     import app.services.agent_policy as policy
 
     assert not hasattr(policy, "render_phase_read_back")
-    assert render_read_back("execution") == render_read_back("project")
-    assert "plan" not in render_read_back("execution")
+    assert list(inspect.signature(render_read_back).parameters) == ["over_mcp"]
+    assert "plan" not in render_read_back()
 
 
 def test_session_read_back_covers_scope_and_domains():
-    """Was the recon-run read-back's; any session may scan now (v2.433.1)."""
-    block = render_read_back("project")
+    """Any session may scan, so every read-back states CIDRs and domains.  The
+    name/address rule is said once, in safety rule 3, which the read-back
+    points at."""
+    block = render_read_back()
     assert "CIDRs" in block
     assert "in-scope domains" in block
-    assert "does not put the address it resolves to in subnet scope" in block
+    assert "rules 3 and 4" in block
+    assert "does not put the address it resolves to in scope" in SAFETY_RULES[2]
+    assert "does not put the address it resolves to" not in block
 
 
-def test_an_unregistered_phase_gets_the_least_privileged_wording():
-    """A phase added without registering here should under-claim: the fallback
-    is the project (session) items, the least-privileged set."""
-    assert render_read_back("something-new") == render_read_back("project")
+def test_the_read_back_reads_the_specifics_first():
+    """An agent cannot state CIDRs it has not read: the block names the reads
+    and puts the statement before any command or write, not before any call."""
+    assert "`GET /agent/identity` and `GET /agent/scopes`" in render_read_back()
+    assert "agent_identity and assist_list_scopes" in render_read_back(over_mcp=True)
+    for block in (render_read_back(), render_read_back(over_mcp=True)):
+        assert "before any command or write" in block
+        assert "Before your first tool call" not in block
 
 
 def test_read_back_asks_for_restatement_not_recital():
-    block = render_read_back("project")
+    block = render_read_back()
     assert "in your own words" in block
     assert "not a recital" in block
 
@@ -132,7 +181,7 @@ def test_agents_md_carries_the_read_back_for_every_workflow_slice():
     if text is None:
         pytest.skip("the agent guide is not mounted in this environment")
 
-    for workflow in ("testing", "reconnaissance", "assist"):
+    for workflow in ("testing", "reconnaissance", "assist", "remediation"):
         sliced = slice_agents_md(text, workflow=workflow)
         assert "Say the rules back before you start" in sliced, (
             f"the {workflow} slice lost the read-back section"

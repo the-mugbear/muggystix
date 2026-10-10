@@ -173,7 +173,7 @@ const AgentSessionCredentials: React.FC<Props> = ({
  * key" checkbox: Done closes at once when something holding the key was
  * copied; otherwise the first press says what is lost and offers to close
  * anyway. The key really is shown once — but resuming the session issues a
- * new one, so losing it costs a click on Agent Activity, not the session.
+ * new one, so losing it costs a click on Agent Sessions, not the session.
  */
 export const KeyHandoffFooter: React.FC<{
   copied: boolean;
@@ -186,7 +186,7 @@ export const KeyHandoffFooter: React.FC<{
       {warned && !copied ? (
         <p role="alert" className="mr-auto min-w-0 flex-1 text-caption text-warning">
           Nothing was copied — the key will not be shown again. Resume the session from
-          Agent Activity for a new one.
+          Agent Sessions for a new one.
         </p>
       ) : (
         note && <p className="mr-auto min-w-0 flex-1 text-caption text-muted-foreground">{note}</p>

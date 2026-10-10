@@ -165,10 +165,11 @@ export const AGENT_SESSION_READS = [
   'listAgentSessions', 'getAgentSession', 'getAgentSessionNotes', 'getAgentSessionSummary', 'getAgentActivitySummary',
 ] as const;
 
-/** 5.313.0 — the one-line tasks the per-object entry points hand to the
- *  operator's agent session (AgentTaskButton). There are no per-workflow keys.
- *  5.313.1 — a scan is no run: the agent reads the scope and uploads to its
- *  session. 5.320.0 — tests are proposed on hosts; there is no plan. */
+/** The one-line tasks the per-object entry points hand to the operator's
+ *  agent session (AgentTaskButton). They name what to work on (a scope, a
+ *  fixed host list, a finding) and BlueStick's own calls — never a scanner
+ *  or its flags: which tool and parameters is the agent's judgment and the
+ *  operator's call. */
 export const agentInstruction = {
   /** `covers` says what the scope holds ("8 subnets, 3 domains"): "scope 2"
    *  alone is an id the operator never sees anywhere else. The id stays —
@@ -181,12 +182,12 @@ export const agentInstruction = {
     const what = covers ? ` — ${n(covers.subnets, 'subnet')}, ${n(covers.domains, 'domain')}` : '';
     return `Read this project’s scope in BlueStick (scope id ${scopeId}${what}), run your scanners on what is in scope, and upload the output to this session.`;
   },
-  /** Propose tests on a fixed host list (or one host). Proposing only: the
-   *  operator asks for a run separately. */
+  /** Propose tests on a FIXED host list (or one host): the text always names
+   *  the ids, never "the project's hosts" — a caller with no host has no task
+   *  to hand over (its button is disabled). Proposing only: the operator asks
+   *  for a run separately. */
   proposeTests: (hostIds: number[], what?: string): string => {
-    const base = hostIds.length > 0
-      ? `Propose tests in BlueStick for these hosts only (host ids): ${hostIds.join(', ')}.`
-      : 'Propose tests in BlueStick for this project’s hosts.';
+    const base = `Propose tests in BlueStick for these hosts only (host ids): ${hostIds.join(', ')}.`;
     const typed = what?.trim();
     // The operator's words end as a sentence, so the next one does not run on.
     const focus = typed && !/[.!?]$/.test(typed) ? `${typed}.` : typed;
@@ -203,11 +204,14 @@ export const agentInstruction = {
     + 'check the tests already on the host (host_tests_list) so you do not duplicate one, then use '
     + `host_tests_propose with vulnerability_id ${vulnerabilityId}: the exact command, what output would confirm it, `
     + 'and why. Do not run anything yet.',
-  /** Run the tests already proposed on one host and record what came back. */
+  /** Run the tests already proposed on one host and record what came back.
+   *  The steps are the route's: claim the test (`in_progress`), record the
+   *  evidence against it (`host_test_id` and `request_key` — the server
+   *  requires the key for host-test evidence), then mark it done. */
   runHostTests: (hostId: number): string =>
-    `Run the proposed tests on host ${hostId} in BlueStick: read them with host_tests_list, show me each `
-    + 'command before you run it, record what came back with record_evidence (host_test_id), and mark each '
-    + 'test done.',
+    `Run the proposed tests on host ${hostId} in BlueStick: read them with host_tests_list. For each one, `
+    + 'show me the command before you run it, mark the test in_progress (host_tests_update), run it, record '
+    + 'what came back with record_evidence (host_test_id and a request_key), and mark the test done.',
   /** 5.317.0 — review a finding's write-up and write what is missing, as
    *  proposals (the finding's author accepts or rejects them). */
   reviewFinding: (findingId: number, missing: string[] = []): string => {
@@ -220,6 +224,6 @@ export const agentInstruction = {
       + `for word. Put what you changed and why in rationale, not in the text. Leave sections that are fine `
       + `alone. Write only what the finding's data and evidence support: if a section cannot be written from `
       + `them, do not propose it or fill it with a guess or placeholder; tell me what is missing and what would `
-      + `let you write it. Cite evidence you record. Do not change the finding directly.${gaps}`;
+      + `let you write it. Cite the evidence ids that support each proposal. Do not change the finding directly.${gaps}`;
   },
 };

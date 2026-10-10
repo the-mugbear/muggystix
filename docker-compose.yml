@@ -161,8 +161,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
-      APP_VERSION: ${APP_VERSION:-2.476.0}
-      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.367.0}
+      APP_VERSION: ${APP_VERSION:-2.477.0}
+      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.368.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -260,7 +260,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.476.0}
+      APP_VERSION: ${APP_VERSION:-2.477.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -321,7 +321,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.476.0}
+      APP_VERSION: ${APP_VERSION:-2.477.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
       # One sequential loop — a small pool protects the Postgres
       # max_connections budget (4 API workers + ingestion worker + this).
@@ -344,12 +344,12 @@ services:
         REACT_APP_API_URL: ${REACT_APP_API_URL:-https://localhost}
         # Keep this fallback in sync with the APP_VERSION defaults above
         # (lines 49 + 87) and with platform_version.json's "backend".
-        BACKEND_VERSION: ${APP_VERSION:-2.476.0}
+        BACKEND_VERSION: ${APP_VERSION:-2.477.0}
         # CR4-8 — the build context is just frontend/, so platform_version.json
         # isn't visible during the Docker build; pass the frontend version in
         # so generate-build-info.js stamps the right version (shown under About BlueStick).  Keep in
         # sync with platform_version.json's "frontend".
-        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.367.0}
+        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.368.0}
         # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         # Passed only when set; the Dockerfile holds the pinned defaults.

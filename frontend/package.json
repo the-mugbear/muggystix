@@ -1,6 +1,6 @@
 {
   "name": "networkMapper-frontend",
-  "version": "5.367.0",
+  "version": "5.368.0",
   "private": true,
   "dependencies": {
     "@observablehq/plot": "0.6.17",

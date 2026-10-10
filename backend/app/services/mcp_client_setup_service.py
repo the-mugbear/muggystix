@@ -1,21 +1,14 @@
 """Per-client MCP connection recipes for a freshly-minted agent key.
 
-Extracted from ``assist.py`` in v2.279.0 because MCP stopped being
-assist-only: every session start mints a key with the same shape and the
-operator has the same "how do I point my client at this" problem.  Keeping one
-builder means a fix to a client recipe (VS Code's wrapper key, Codex's env-var
-flag, the sandbox note) lands everywhere at once — the divergence this
-replaces is the reason two of the three original recipes silently didn't work.
+One builder for the start and the resume of a session, so a fix to a client
+recipe (VS Code's wrapper key, Codex's env-var flag, the sandbox note) lands
+everywhere at once.  One project session, one server entry (``bluestick``) and
+one key env var.
 
-v2.337.0 — one project session, one server entry (``bluestick``) and one key
-env var.  The per-workflow names (bluestick-recon / -plan / -exec / -assist)
-are gone: an operator who used to connect four servers connects one that does
-everything.  Every recipe carries the sandbox advice, because any session can
-open a reconnaissance or execution run that runs *commands on the operator's
-machine*; that boundary is enforced by the client — BlueStick can record what
-an agent claims it did, and cannot stop a command from running.  Saying so
-plainly is the honest version.  v2.338.0 removed the ``workflow`` parameter
-the builders had kept accepting and ignoring.
+Every recipe carries the sandbox advice, because any session may run *commands
+on the operator's machine*; that boundary is enforced by the client —
+BlueStick can record what an agent reports it did, and cannot stop a command
+from running.  Saying so plainly is the honest version.
 """
 from __future__ import annotations
 
@@ -78,9 +71,8 @@ def _mcp_server_entry(mcp_url: str, raw_key: str) -> Dict[str, Any]:
 def sandbox_note(client_id: str) -> str:
     """Client flags that keep a command-running agent inside its directory.
 
-    v2.337.0 — always emitted: a single session can open a reconnaissance or
-    execution run that shells out on the operator's machine, so the client
-    sandbox is the real boundary regardless of what the session does first.
+    Always emitted: any session may run commands on the operator's machine,
+    so the client sandbox is the real boundary whatever the session does first.
     The wording is deliberately "your client enforces this": an operator who
     believes the server is enforcing it would grant more than they meant to.
     """
@@ -115,9 +107,9 @@ def sandbox_note(client_id: str) -> str:
 # a saved mcp.json) with a dead key or an untrusted certificate, and ``tools/list``
 # succeeds WITHOUT a key by design (the documentation view), so "I can see the
 # tools" proves nothing about the credential.  The only check that proves the
-# key works end-to-end is an authenticated tool call — ``agent_identity`` is
-# the one every workflow has — and the operator can compare its answer against
-# the project and session this dialog just minted.
+# key works end-to-end is an authenticated tool call — ``agent_identity`` —
+# and the operator can compare its answer against the project and session this
+# dialog just minted.
 # ---------------------------------------------------------------------------
 
 # What each client shows for "connected", and which of its checks means what.
@@ -154,7 +146,11 @@ def verify_prompt() -> str:
     otherwise a model with no tools answers from general knowledge and the
     operator reads a confident paragraph as a working connection.
 
-    v2.374.8 — it also forbids the workaround a field report showed: with the
+    One call only.  It does not ask for the guide: the opening instructions
+    say to read the part that is needed, and the whole guide in the first
+    turn is most of a context window spent before any work.
+
+    It also forbids the workaround a field report showed: with the
     client unconnected (untrusted certificate), the model read the key out of
     mcp.json and drove the endpoint by hand with curl — on Windows, where
     ``curl`` is an Invoke-WebRequest alias — then reported SSE/session problems
@@ -162,11 +158,10 @@ def verify_prompt() -> str:
     """
     name = server_name()
     return (
-        f"Using the {name} MCP server, call agent_identity and then read_agent_guide. "
-        "Report the project, the session id, the workflow, my operator role, whether "
+        f"Using the {name} MCP server, call agent_identity. "
+        "Report the project, the session id, my operator role, whether "
         "you can write project data, and when the key expires — exactly as BlueStick "
-        "returned them. Then, from the guide, summarise in a few lines what you can "
-        f"help me do in this session. If the {name} tools are not available or the "
+        f"returned them. If the {name} tools are not available or the "
         "call fails, say so plainly and help me troubleshoot the connection rather "
         "than answering from general knowledge. Do not reach the server yourself "
         "with curl or a script, and do not read the API key out of the config file: "
@@ -183,9 +178,9 @@ def verify_expected(expected: Optional[Dict[str, Any]]) -> str:
     (e.g. "agent session #12"); either may be absent (the reference page has
     no session), in which case the sentence points at the dialog instead.
 
-    v2.338.0 — the workflow the agent reports is always ``project`` now; the
-    callers that passed "assist" here were telling the operator to expect a
-    word the agent would never say.
+    The first sentence is this session's facts and ends at the first ". ":
+    the start dialog shows that sentence and folds the rest
+    (``McpConnectPanel`` ``CompactVerify``).
     """
     expected = expected or {}
     facts: List[str] = []
@@ -198,8 +193,8 @@ def verify_expected(expected: Optional[Dict[str, Any]]) -> str:
     if not facts:
         facts.append("the project and session id this dialog shows")
     return (
-        f"A working connection answers with {', '.join(facts)} and workflow "
-        f"“project”. A different project, a session it cannot name, or “those "
+        f"A working connection answers with {', '.join(facts)}. "
+        "A different project, a session it cannot name, or “those "
         "tools are not available” means the client is talking to the wrong "
         "server or the key was not accepted — BlueStick marks the session as "
         "connected only after a call like this reaches it."

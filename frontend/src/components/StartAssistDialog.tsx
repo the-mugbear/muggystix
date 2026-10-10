@@ -9,13 +9,13 @@
  * (The component keeps its name; the endpoint it calls is /assist/start.)
  *
  * `instruction` (5.313.0) — the per-object entry points (a scope's scan, a
- * plan's work, a host selection) open this dialog with a one-line task for
- * the agent. It is shown to copy before and after starting, and when the
+ * finding's review, a host selection) open this dialog with a one-line task
+ * for the agent. It is shown to copy before and after starting, and when the
  * operator already has a live session the dialog says to paste it there
  * instead of starting another (AgentTaskButton).
  *
- * No scope picker — a session binds to the project and picks its
- * scope/plan when it opens a phase.  Resume lives on Agent Sessions and each
+ * No scope picker — a session binds to the project, and the task names the
+ * scope or hosts it is about.  Resume lives on Agent Sessions and each
  * session's page (ResumeAgentSessionDialog, v5.214.0), not here: it acts on a
  * row.  5.312.1 — the panel's sessions link to their pages, and the dialog
  * links to Agent Sessions, so a session shown here is one click from its
@@ -171,7 +171,8 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
             ) : (
               <>
                 Connect Claude Code, Codex or VS Code Copilot to this project. The agent
-                works with your permissions and shows you every command it runs.
+                works with your permissions. It is told to show you every command first;
+                your client's permission prompts are what hold it to that.
               </>
             )}
           </DialogDescription>
@@ -238,7 +239,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
               )}
             </>
           ) : (
-            // v5.214.0 — shared with the resume dialog on Agent Activity.
+            // v5.214.0 — shared with the resume dialog on Agent Sessions.
             <>
               <AgentSessionCredentials
                 apiKey={result.api_key}
@@ -298,7 +299,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
             <KeyHandoffFooter
               copied={keyCopied}
               onDone={handleClose}
-              note="Resume from Agent Activity if the agent process dies."
+              note="Resume from Agent Sessions if the agent process dies."
             />
           )}
         </DialogFooter>

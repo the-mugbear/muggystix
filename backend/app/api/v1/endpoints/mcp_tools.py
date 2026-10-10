@@ -43,11 +43,16 @@ tool is listed for every session, and whether it succeeds is the operator's
 project role, checked per request.  An agent that wants the answer
 before trying reads ``can_write_project_data`` from ``agent_identity``.
 
-**One session, every tool (v2.337.0).**  The operator starts one agent
-session and the agent does whatever work is asked within it.  There are no
-plans, execution runs or recon runs (v2.433.0, v2.442.0): the agent reads a
-scope and uploads what its scanners found, proposes tests on hosts, and
-records what it ran as evidence.
+**One session, every tool.**  The operator starts one agent session and the
+agent does whatever work is asked within it, in whatever order: it reads a
+scope and uploads what was collected, proposes tests on hosts, records what it
+ran as evidence, and proposes findings.
+
+**What a description says.**  What the tool returns and the one or two things
+an agent gets wrong without being told — not the argument types the schema
+carries, not history, not a rule the session prompt or the guide owns.  It
+never names a security tool or flags to use, and never tells the agent to
+source or cite the tool catalogue.
 
 What is deliberately NOT a tool
 -------------------------------
@@ -61,20 +66,20 @@ the token bill.  The server ``instructions`` point at them with curl instead.
 """
 from __future__ import annotations
 
+import re
 import sys
 from collections.abc import Mapping
 from typing import Any, Dict, Iterator, List, Optional
 
 # The kinds of work, used only as catalogue tags on the tool reference page
-# (`tool_workflows`) — since v2.337.0 a key belongs to one project session and
-# `tools/list` is not filtered by them.  Kept as plain strings rather than
-# importing the enum: this module is pure data with no DB dependency.
+# (`tool_workflows`): a key belongs to one project session and `tools/list` is
+# not filtered by them.  Kept as plain strings rather than importing the enum:
+# this module is pure data with no DB dependency.
 WORKFLOW_ASSIST = "assist"
-# Proposing tests on hosts and recording what they produced.  Replaces
-# "plan_generation" and "execution" (v2.442.0).
+# Proposing tests on hosts and recording what they produced.
 WORKFLOW_TESTING = "testing"
 # Reading a scope (its subnets, domains, target lists) and uploading scan
-# output.  Was "recon" until v2.433.1, when recon runs were removed.
+# output.
 WORKFLOW_SCOPE = "scope"
 
 ALL_WORKFLOWS = frozenset({WORKFLOW_ASSIST, WORKFLOW_TESTING, WORKFLOW_SCOPE})
@@ -91,33 +96,31 @@ HOST_ID = {"minimum": 1, "description": "Numeric host id (from assist_list_hosts
 # The scope a read is about.  Every scope read takes it as a path parameter.
 SCOPE_ID = {"minimum": 1, "description": "Scope to read (from assist_list_scopes)."}
 
-# The model the agent says it is running as (v2.434.0).  No protocol carries
+# The model the agent says it is running as.  No protocol carries
 # it, so the writes where it matters ask for it: it labels the tests, the
 # proposal or the session, and lets output from different models be compared.
 AGENT_MODEL = "The model you are running as (e.g. claude-opus-5-5). Optional; labels this work."
 
 _AUTHORED: Dict[str, Dict[str, Any]] = {
     # -----------------------------------------------------------------------
-    # Every workflow
+    # The session itself
     # -----------------------------------------------------------------------
     "agent_identity": {
         "description": (
-            "What your API key is: its project session, bound project, write "
-            "capabilities, the operator you act for, and when the key expires. "
-            "Call this first; one key does every kind of work."
+            "What your API key is: its session and project, the operator you act "
+            "for and their project role, whether you may write project data "
+            "(`can_write_project_data`), and when the key expires "
+            "(`key_expires_at`, `renewable_until`). Call this first."
         ),
         "method": "GET",
         "path": "/api/v1/agent/identity",
     },
     "session_renew": {
         "description": (
-            "Push your API key's expiry out without changing the secret — call it "
-            "before launching, or right after finishing, a long-blocking scan whose "
-            "key might lapse while it runs. Renewal, not rotation: the same key keeps "
-            "working, so an agent holding scan output it cannot cheaply reproduce does "
-            "not get re-bootstrapped. Works even if the key has ALREADY expired, and is "
-            "bounded by the session — ending the session revokes the key regardless. No "
-            "arguments: your key identifies its own session (v2.316.0)."
+            "Push your key's expiry out; the key itself does not change. Call it "
+            "before, or right after, something long-running. Works on a key that "
+            "has ALREADY expired, until the session's own deadline "
+            "(`renewable_until`); ending the session revokes the key regardless."
         ),
         "method": "POST",
         "metadata_write": True,
@@ -125,44 +128,44 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "end_session": {
         "description": (
-            "End your session — the LAST call you make, and only when the operator "
-            "says they are finished (finishing a task is not that: report and wait); "
-            "file any feedback you have not filed yet first; the key dies with this call. It "
-            "revokes your key and marks the session ended so the operator's Agent "
-            "Sessions page stops showing it as live. Optional `notes`: one or two "
-            "lines on what the session did (v2.340.0)."
+            "End your session and revoke your key — the LAST call you make, and "
+            "only when the operator says they are finished (finishing a task is "
+            "not that: report and wait); file any feedback you have not filed yet "
+            "first. Never refused; tests and evidence stay in the project."
         ),
         "method": "POST",
         "metadata_write": True,
         "path": "/api/v1/agent/session/end",
-        "params": {
-            "notes": "What the session did, in a line or two.",
-            "agent_model": AGENT_MODEL,
-        },
+        "params": {"agent_model": AGENT_MODEL},
     },
     "read_agent_guide": {
         "description": (
-            "The agent guide — reference for working with BlueStick: endpoint body "
-            "shapes, upload formats, recipes, and the scope and working-directory "
-            "rules in full. Read the part you need when a tool's description leaves "
-            "you guessing; there is no need to read it all before starting. Omit "
-            "workflow for the whole guide, or ask for one slice."
+            "The agent guide: endpoint body shapes, upload formats, recipes, and "
+            "the scope and working-directory rules in full. Read the part you need "
+            "when a tool leaves you guessing. Omit `workflow` for the whole guide."
         ),
         "method": "GET",
         "path": "/api/v1/agents-guide",
         "params": {
             "workflow": {
-                "enum": ["testing", "reconnaissance", "assist"],
-                "description": "One slice of the guide. Omit for the whole guide.",
+                "enum": ["testing", "reconnaissance", "assist", "remediation"],
+                "description": (
+                    "One PART of the guide, not a kind of session: assist (reading "
+                    "and reporting), reconnaissance (scope reads and uploads), "
+                    "testing (host tests and evidence), remediation (remediation "
+                    "tracking). Omit for the whole guide."
+                ),
             },
         },
     },
     "list_tools": {
         "description": (
-            "BlueStick's tool catalogue — what each tool is for, its ports, install "
-            "command, phases, whether it is intrusive, and whether BlueStick parses its "
-            "output (ingestible). A reference, not a permission list: what you run is "
-            "between you and the operator."
+            "BlueStick's tool catalogue, kept by the team: what each tool is for, "
+            "its ports, install command, whether it is intrusive, whether BlueStick "
+            "parses its output (`ingestible`) and, for a parsed tool, the "
+            "`run_command` / `run_note` that produce a file it ingests. A "
+            "reference, not a permission list: what you run is between you and "
+            "the operator."
         ),
         "method": "GET",
         "path": "/api/v1/references/tools",
@@ -180,45 +183,30 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     "suggest_tool": {
         "description": (
             "Propose a tool for BlueStick's catalogue — one you used or needed that "
-            "list_tools doesn't have. Records your rationale for a curator. It is "
+            "it does not list. Records your rationale for a curator. It is "
             "catalogue intake only; it neither grants nor withholds anything."
         ),
         "method": "POST",
         "path": "/api/v1/agent/tool-suggestions",
         "additive": True,
-        "params": {
-            "name": "Tool name as it would be invoked (e.g. ligolo-ng).",
-            "rationale": (
-                "What you used or needed it for — this is what a curator "
-                "reads. Be specific."
-            ),
-        },
+        "params": {"name": "Tool name as it would be invoked (e.g. ligolo-ng)."},
     },
     "submit_feedback": {
         "description": (
-            "File feedback about BlueStick AT THE MOMENT you hit friction — when "
-            "you retry a call, guess a field or a route (a 404 on a path you expected), work around a tool, or re-read the "
-            "guide to make something work — not from memory at the end. Several "
-            "one-line submissions during a session are the norm. end_session "
-            "revokes your key, so file before you end. It is read by a coding "
-            "agent working on BlueStick itself, so write for that reader: name the "
-            "tool or endpoint, expected vs actual, the exact error text or missing "
-            "field, and what would have let you finish faster. `source` names the "
-            "kind of work: assist (queries/notes only), reconnaissance (scope "
-            "reads and uploads), or testing (proposing host tests and recording "
-            "evidence) — the session itself is attributed from your key. One "
-            "row is about ONE kind of work. tool_suggestions "
-            "here are context; suggest_tool files the registry entry."
+            "File feedback about BlueStick AT THE MOMENT you hit friction — a "
+            "retry, a guessed field or route, a workaround — one short entry each. "
+            "A developer working on BlueStick reads it: name the tool or endpoint, "
+            "expected vs actual and the exact error text. `source` is the kind of "
+            "work the entry is about. Answers an acknowledgement (id and counts), "
+            "not the entry."
         ),
         "method": "POST",
         "metadata_write": True,
         "additive": True,
         "path": "/api/v1/agent/feedback",
-        # Session bookkeeping, but an APPEND: a retry files a second row
-        # (v2.343.2).
+        # Session bookkeeping, but an APPEND: a retry files a second row.
         "idempotent": False,
-        # v2.449.0 — went with the `assist_sessions` table.  Still accepted
-        # from a client holding the older tool list, and dropped
+        # Accepted from a client holding an older tool list, and dropped
         # (`mcp_assist._validate_arguments`): the session comes from the key.
         "retired_params": ["assist_session_id"],
         "params": {
@@ -250,86 +238,67 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     # -----------------------------------------------------------------------
     "assist_get_context": {
         "description": (
-            "Project-inventory orientation: the engagement dates (start/end), the "
-            "members and their project roles, host/port/scope/scan "
-            "totals, the scope list (capped at 50), and recent scans. It carries "
-            "NO findings — use assist_list_hosts to locate hosts and "
-            "assist_get_host_vulnerabilities for the scanner vulns on one. Call this first. "
-            "default_host_view (name + filters) is the view the Hosts page OPENS on "
-            "for everyone when a project admin set one: your unfiltered counts are "
-            "the whole project, so when the operator asks about 'the hosts I see', "
-            "say which set you counted."
+            "Project orientation: engagement dates, members and their project "
+            "roles, host / port / scope / scan / domain totals, name counts "
+            "(`names.in_scope_unresolved` = approved names nothing has resolved), "
+            "the scopes (first 50; `scopes_truncated`) and the five latest scans. "
+            "No findings. `default_host_view` is the view the Hosts page opens on "
+            "when a project admin set one: your unfiltered counts are the whole "
+            "project, so say which set you counted when the operator asks about "
+            "'the hosts I see'."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/context",
     },
     "assist_list_hosts": {
         "description": (
-            "List/filter hosts in the project. Prefer the `q` boolean DSL (same "
-            "vocabulary as the Hosts page, e.g. port:, os:, service:, cve:, "
-            "check:, has:, follow:, assigned: — combine with AND/OR/NOT and "
-            "parentheses; the full field list is in the agent guide's assist "
-            "slice, and assist_get_vocabulary gives this project's tag / label / "
-            "site / username values). port:/service: match OPEN ports; add "
-            "@closed, @filtered or @any to the value for others (port:22@any). "
-            "assigned: takes me / any / none / a username, so "
-            "'has:critical AND assigned:none' is 'hosts with a critical scanner "
-            "observation that nobody is assigned' — for unowned triaged "
-            "findings use assist_list_findings unowned=true. An EXPLOITABLE "
-            "CRITICAL (the critical itself has the exploit) is "
-            "has:critical_exploit — 'has:critical AND has:exploit' also matches "
-            "a critical beside an exploitable low. Each row carries "
-            "exploitable_count and critical_exploitable_count. sort_by="
-            "critical_vulns / exploitable_vulns with sort_order=desc lists worst "
-            "first (default: by address). Returns {items, total, has_more, limit, "
-            "offset}: `total` is every matching host — quote it, never the length "
-            "of `items` (a page); raise offset by limit while has_more. For a "
-            "count alone, assist_count_hosts."
+            "Hosts matching a filter. `q` is the Hosts page's query language "
+            "(port:, os:, service:, cve:, check:, has:, follow:, assigned: …, with "
+            "AND / OR / NOT and parentheses); the field list is in the agent "
+            "guide, and assist_get_vocabulary gives this project's tag / label / "
+            "site / username values. port: and service: match OPEN ports "
+            "(port:22@any for other states). follow:mine is the operator's own "
+            "review list, follow:in_review any teammate's; assigned: is about "
+            "HOSTS (unowned findings are assist_list_findings unowned=true). "
+            "has:critical_exploit is a critical that itself has an exploit — "
+            "'has:critical AND has:exploit' also matches a critical beside an "
+            "exploitable low. Returns {items, total, has_more, limit, offset}: "
+            "quote `total`, never the length of a page. A malformed q is a 400; a "
+            "discrete filter value that cannot be read is a 422 naming it."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts",
         # The endpoint's own default is 500 — right for a file download, a lot
         # of tokens for a model that usually wants the first handful.
         "defaults": {"limit": 100},
-        "params": {
-            "q": "Boolean query DSL (see tool description).",
-            "sort_by": {
-                "enum": [
-                    "ip_address", "critical_vulns", "high_vulns", "exploitable_vulns",
-                    "open_ports", "note_count", "discovery_count", "hostname", "last_seen",
-                ],
-            },
-            "sort_order": {"enum": ["asc", "desc"]},
-        },
+        # The route's own text for `q` calls follow:in_review "hosts you have
+        # in review"; it is any teammate's.  Laid over until the route says so.
+        "params": {"q": "The Hosts page's query language (see the tool description)."},
     },
     "assist_count_hosts": {
         "description": (
-            "How many hosts match a filter — the whole answer to a counting "
-            "question, in one call. Use this instead of paging assist_list_hosts "
-            "and counting: a page is not the total, and a count that stopped at "
-            "the first page is wrong in a way nobody can see. Same `q` DSL as "
-            "assist_list_hosts (e.g. 'has:critical AND assigned:none' — critical "
-            "findings nobody owns)."
+            "How many hosts match a filter, in one call — the same arguments as "
+            "assist_list_hosts. Use it instead of counting pages. "
+            "q='has:critical AND assigned:none' is hosts with a critical scanner "
+            "observation and nobody assigned; unowned FINDINGS are "
+            "assist_list_findings unowned=true."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/count",
-        "params": {"q": "Boolean query DSL (see assist_list_hosts)."},
+        "params": {"q": "The Hosts page's query language (see assist_list_hosts)."},
     },
     "assist_get_host": {
         "description": (
-            "Full detail for one host, as the host inspector shows it: identity, "
-            "names seen at the address, OS detail, ports with service detail and "
-            "NSE script output (bounded), severity counts, your review status, tags, "
-            "assignees, scope membership, per-domain assessment state (with "
-            "assessment.vuln_scan_credentialed: did a vulnerability scan log in "
-            "to the host — yes / no / not_stated), weakness "
-            "flags (smb_unsigned, weak_tls…), SMB signing, certificates, network "
-            "attribution, scan conflicts (each has resolved_at = when the shown "
-            "value was picked, not that anyone settled it), note_count and "
-            "finding_count. names = every name SEEN at the address. Notes and "
-            "individual vulnerabilities are separate — use assist_get_host_notes "
-            "and assist_get_host_vulnerabilities for those. Pass exactly one of "
-            "host_id or ip (the address itself — one host per address)."
+            "One host as the host inspector shows it: identity, `names` (every "
+            "name seen at the address), OS, ports with service detail and bounded "
+            "NSE output, severity counts, the operator's review status (`follow`), "
+            "tags, assignees, scope membership, per-domain `assessment` "
+            "(vuln_scan_credentialed: yes / no / not_stated), weakness flags, "
+            "certificates, scan conflicts (`resolved_at` = when the shown value "
+            "was picked, not that anyone settled it), note_count and "
+            "finding_count. `web_interfaces` is the first 10 "
+            "(assist_list_host_web_interfaces has all). Notes and scanner rows "
+            "are their own tools. Pass exactly one of host_id or ip."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}",
@@ -338,43 +307,34 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "assist_get_host_vulnerabilities": {
         "description": (
-            "Every raw scanner vulnerability on a host with evidence: severity, "
-            "CVE/plugin id, title, affected port/service, CVSS, description, "
-            "remediation, scanner evidence. Worst-severity first. Use this to cite "
-            "specifics in a report, not just counts. Returns {host_id, items, total, "
-            "has_more, limit, offset}. NOTE: these are scanner rows — "
-            "each `id` is a vulnerability id, NOT a project-Finding id, so do not "
-            "pass it to assist_get_finding. The triaged project Findings (the spine "
-            "assist_list_findings / assist_get_finding work on) are a separate set. "
-            "Each row says which finding covers its issue, if any: `finding_id` / "
-            "`finding_status` (the issue's), `finding_on_this_host` (false = the "
-            "finding covers other hosts only, so this row is still unjudged here) "
-            "and `finding_endpoint_status` (this host's own state on it). To read one "
-            "issue's rows only, narrow with cve, plugin_id or search (title text)."
+            "One host's raw scanner rows, worst first: severity, CVE / plugin id, "
+            "title, port, CVSS, description, solution, scanner evidence. Returns "
+            "{host_id, items, total, has_more, limit, offset}. These are scanner "
+            "observations: each `id` is a vulnerability id (what "
+            "propose_observation and a host test's `vulnerability_id` take), NOT a "
+            "finding id. `finding_id` / `finding_status` name the finding that "
+            "covers the issue; `finding_on_this_host` false means it covers other "
+            "hosts only, so the row is unjudged here; `finding_endpoint_status` is "
+            "this host's own state on it. cve, plugin_id or search narrow to one "
+            "issue."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/vulnerabilities",
         "defaults": {"limit": 50},
-        "params": {
-            "host_id": HOST_ID,
-            "search": "Only rows whose title contains this text.",
-        },
+        "params": {"host_id": HOST_ID},
     },
     "assist_list_findings": {
         "description": (
-            "Findings across the WHOLE project — the spine an analyst reasons "
-            "about, not one host's slice. Filter by severity, status, source, "
-            "owner (`me` or a username), `unowned=true` (findings nobody owns), "
-            "host_id, or a title substring. Returns `total` and a "
-            "`severity_counts` breakdown for the filter you asked about, so "
-            "\"how many criticals are open?\" is one call. A finding can span "
-            "many hosts — `host_count` is distinct addresses and `endpoint_count` "
-            "affected rows (named endpoints on one IP count once as a host); "
-            "counting result rows is neither. Omit `status` (or pass 'all') for "
-            "every status — the valid values are what assist_get_vocabulary "
-            "returns. These are triaged project Findings, a different set from "
-            "the raw scanner rows assist_get_host_vulnerabilities returns; the "
-            "ids do not cross between the two."
+            "The project's findings — what the team has judged, a different set "
+            "from scanner rows (ids do not cross with "
+            "assist_get_host_vulnerabilities). Returns {total, severity_counts, "
+            "findings}: `total` covers the whole filter and `severity_counts` the "
+            "same filter without `severity`, so 'how many criticals are open?' is "
+            "one call with limit=1; there is no has_more — page with offset until "
+            "you hold `total` rows. `host_count` is distinct addresses and "
+            "`endpoint_count` affected rows; `hosts` is a sample of at most 10 "
+            "addresses (`hosts_truncated`). owner takes `me` or a username; an "
+            "unknown one is a 400."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/findings",
@@ -391,26 +351,24 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
                     "Any other value is a 422."
                 ),
             },
+            # The endpoint compares severity and source as given, so an unknown
+            # one would read as "no such findings": the tool names the values.
             "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
+            "source": {"enum": ["note", "scanner", "execution", "manual", "all"]},
             "host_id": {"minimum": 1},
-            "unowned": "Only findings with no owner.",
-            "owner": "Username, or 'me' for this session's operator.",
         },
     },
     "assist_list_host_web_interfaces": {
         "description": (
-            "Every web interface observed on one host, as a page — the "
-            "continuation for assist_get_host, whose web_interfaces list is capped "
-            "at 10 (its web_interfaces_truncated says when). Each item carries the "
-            "URL, FQDN, title, server header, technologies, a "
-            "screenshot_download_path when EyeWitness captured one, and the "
-            "certificate / TLS facts (cert_not_after, cert_self_signed, cert "
-            "organisations, tls_weak_protocol — null means the tool did not "
-            "report it, not that it is fine; an expired certificate is the "
-            "check:tls_cert_expired observation), plus what the web panel reads "
-            "from the tool's TLS record: tls_version, cert_issuer, "
-            "cert_subject_cn, cert_sans (first 20; cert_san_total). Read "
-            "has_more and page with offset; total is the whole record (v2.343.3)."
+            "Every web interface observed on one host, paged ({items, total, "
+            "has_more}); assist_get_host lists only the first 10. Each: URL, FQDN, "
+            "title, server header, technologies, the tool that observed it, "
+            "`screenshot_download_path` when one was captured, and the TLS facts "
+            "the tool reported (cert_not_after, cert_self_signed, cert "
+            "organisations, issuer, subject CN, cert_sans — the first 20 of "
+            "cert_san_total —, tls_version, tls_weak_protocol). null means the "
+            "tool did not report it, not that it is fine. `is_latest` false is an "
+            "earlier scan's row of the same URL."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/web-interfaces",
@@ -418,12 +376,11 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "assist_list_host_access": {
         "description": (
-            "Every NetExec / SMBMap result on one host, as a page (v2.418.0): "
-            "what BlueStick read from each tool line — login outcome, username, "
-            "local admin, SMBv1, writable share, shares — beside the line itself "
-            "(raw_output; raw_output_truncated when the import cut it). Compare "
-            "the two to check a parse; credentials appear as the tool printed "
-            "them. Read has_more and page with offset."
+            "Every NetExec / SMBMap result on one host, paged: what BlueStick read "
+            "from each tool line (login outcome, username, local admin, SMBv1, "
+            "writable share, shares) beside the line itself (`raw_output`; "
+            "`raw_output_truncated` when the import cut it). Credentials appear as "
+            "the tool printed them."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/access",
@@ -432,27 +389,23 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     "assist_list_uninterpreted_lines": {
         "description": (
             "Imports whose parser did not interpret every line, newest first, "
-            "with those lines as REDACTED shapes and counts (v2.418.0): kind "
-            "`dropped` (not in the inventory), `text_only` (kept as the tool's "
-            "line, nothing read from it), `module_as_login` / `module_as_text` "
-            "(an nxc module's result). Values are placeholders (<IP>, <HOST>, "
-            "<VALUE>, <CREDENTIAL>…). Not an ingestion issue — the data that was "
-            "read is in the project. Pass job_id for one import."
+            "with those lines as REDACTED shapes and counts. kind: `dropped` (not "
+            "in the inventory), `text_only` (kept as the tool's line, nothing read "
+            "from it), `module_as_login` / `module_as_text` (an nxc module's "
+            "result). Not an ingestion issue — what was read is in the project. "
+            "`job_id` is an import's id (`ingestion_job_id` on assist_list_scans), "
+            "not a scan id; an unknown one is a 404. Needs an analyst operator."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/uninterpreted-lines",
     },
     "assist_get_host_notes": {
         "description": (
-            "What the team has already written about this host. Read this "
-            "BEFORE adding a note — a colleague may have recorded the same "
-            "observation an hour ago — and before answering \"what do we know "
-            "about X\", where the answer often lives in a note rather than in "
-            "scan data. Notes carry who wrote them and whether an agent did, the "
-            "thread (parent_id / thread_root_id), type, whether it is pinned, the "
-            "finding an older thread was promoted to, and attachments as download "
-            "references. Paged, newest first: read `total` and `has_more`, and pass "
-            "`offset` to continue — a page is not the whole record."
+            "The team's notes on one host, newest first, paged ({items, total, "
+            "has_more}). Read it before adding a note and before answering 'what "
+            "do we know about X'. Each note: author, whether an agent wrote it "
+            "(`actor_type`), its thread (parent_id / thread_root_id), note_type, "
+            "pinned, and attachments as download references."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/notes",
@@ -461,11 +414,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     "assist_get_vocabulary": {
         "description": (
             "The values THIS project uses for tag:, label:, site:, scope: and "
-            "assigned: — plus the valid finding statuses and severities. Call "
-            "it before writing a query with any of those predicates: a guessed "
-            "tag doesn't error, it returns zero hosts, and \"nothing is tagged "
-            "production\" is a confidently wrong answer to what was really "
-            "\"what are the tags called here?\"."
+            "assigned:, plus the finding statuses and severities. A guessed tag "
+            "does not error — it matches zero hosts — so read this before writing "
+            "such a predicate."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/vocabulary",
@@ -473,89 +424,70 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     "assist_get_writing_guidance": {
         "description": (
             "How THIS installation wants a finding's report text written: `general` "
-            "(every section) and `sections` — instructions for description, impact, "
-            "recommendation, steps_to_reproduce and references, set by its "
-            "administrators. Call it before propose_finding with `report_text` (a new "
-            "finding has nothing to read it from); assist_get_finding carries the same "
-            "block for a finding that exists. It decides style and content, never the "
-            "report-text rules: nothing the data does not support, no BlueStick record "
-            "named."
+            "and `sections` (description, impact, recommendation, "
+            "steps_to_reproduce, references). Read it before propose_finding with "
+            "`report_text`; assist_get_finding carries the same block for a "
+            "finding that exists. It decides style and content, never the "
+            "report-text rules."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/writing-guidance",
     },
     "assist_get_coverage": {
         "description": (
-            "How much of this project has actually been assessed, per domain "
-            "(port discovery, service detection, vulnerability assessment, web, "
-            "TLS…). Every other tool reports what WAS found; this is what stops "
-            "\"no critical findings\" being reported as \"no critical "
-            "exposure\". Cite it whenever a report or an answer implies "
-            "completeness. (The three SCOPE states — hosts in subnet scope, in "
-            "name scope only, outside scope — are not here: count them with "
-            "assist_count_hosts q=scope:subnet / scope:name / scope:none; they add "
-            "up to the host total.) The vuln_assessment domain carries `credentialed` "
-            "{credentialed, not_credentialed, credentials_not_stated} — of the "
-            "assessed hosts, how many a scanner logged in to; a clean result "
-            "from a scan that did not authenticate is weaker evidence. List "
-            "each with assist_list_hosts q=vulnscan:credentialed | "
-            "uncredentialed | unstated."
+            "How much of the project has been assessed, per domain (port "
+            "discovery, service detection, vulnerability assessment, web / TLS …) "
+            "and per segment (`matrix`) — what stops 'no critical findings' being "
+            "reported as 'no critical exposure'. vuln_assessment carries "
+            "`credentialed` {credentialed, not_credentialed, "
+            "credentials_not_stated}: of the assessed hosts, how many a scanner "
+            "logged in to (list them with assist_list_hosts "
+            "q=vulnscan:credentialed | uncredentialed | unstated). The three scope "
+            "states are not here: assist_count_hosts q=scope:subnet / scope:name / "
+            "scope:none."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/coverage",
     },
     "assist_list_segments": {
         "description": (
-            "Per-subnet rollup, worst-first: exposure (active findings by "
-            "severity, tier-weighted), neglect (unowned findings, unreviewed "
-            "and stale hosts), hygiene (end-of-life OS, certificate problems, "
-            "weak auth, risky services) and a recommended next action. Use it "
-            "for \"which segment is worst?\" and \"what is wrong with this "
-            "subnet?\" instead of counting per subnet yourself. Same numbers "
-            "as the Subnet Insights page. `no_coverage` marks a scoped range "
-            "where nothing was ever discovered — a scanning gap, NOT a clean "
-            "subnet. `adopted=false` means the project has no scoped subnets, "
-            "so this is not assessable — not that there are no problems. "
-            "Compare `total` with the number of subnets returned: the page is "
-            "capped, and you are seeing the worst ones, not all of them."
+            "Per-subnet rollup, worst first — the Subnet Insights page's numbers: "
+            "`exposure` (active findings by severity, tier-weighted), `neglect` "
+            "(unowned active findings, unreviewed hosts), `hygiene` (end-of-life "
+            "OS, certificate problems, weak auth, risky services) and a "
+            "recommended action. `no_coverage` marks a scoped range where nothing "
+            "was discovered — a gap, NOT a clean subnet. `adopted=false` means the "
+            "project has no scoped subnets: not assessable. `total` is every "
+            "subnet; page with offset."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/segments",
     },
     "assist_get_posture": {
         "description": (
-            "The project's overall security condition — the headline label, "
-            "the plain-language conclusion, the reasons behind it, the "
-            "prioritised next actions, exposure/ownership/review coverage and "
-            "finding disposition. Start here for \"where is this project?\" and "
-            "build a report's executive summary from it rather than inventing "
-            "a judgement from counts. Note that label='insufficient_evidence' "
-            "means the estate has NOT been assessed enough to judge — it is "
-            "not a clean bill of health, and reporting it as one is wrong. "
-            "scanner_observations is the raw scanner rows (not findings): total "
-            "(informational excluded, as the page states it — the same number as "
-            "headline.detected_exposure.vuln_count), informational, by_severity, "
-            "and hosts_by_severity — 'how many criticals?' has four "
-            "answers (critical findings, critical scanner issues, critical scanner "
-            "rows, hosts carrying one): say which you are giving."
+            "The project's overall condition as the Posture page states it: "
+            "`label`, `conclusion`, `reasons`, `priorities`, `headline`, "
+            "`evidence`, `disposition`, `sites`. label='insufficient_evidence' "
+            "means not assessed enough to judge — it is not a clean bill of "
+            "health. `scanner_observations` counts raw scanner rows, not findings "
+            "(`total` leaves informational out; by_severity; hosts_by_severity; "
+            "null when it could not be counted): 'how many criticals?' may mean "
+            "findings, scanner issues, scanner rows or hosts — say which you are "
+            "giving."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/posture",
     },
     "assist_get_patterns": {
         "description": (
-            "Cross-sectional analysis of the estate: blind spots (conditions "
-            "spanning the whole estate, e.g. 'nearly everything is on an "
-            "end-of-life OS'), segment outliers (subnets whose issue density "
-            "is an outlier against the estate median — the 'this subnet looks "
-            "worse than the rest' claim, with the ratio behind it), each "
-            "condition's spread, per-family root-cause hypotheses with a "
-            "recommended control, and per-subnet diagnostic profiles. This is "
-            "what turns an inventory into an assessment. IMPORTANT: it is "
-            "comparison ACROSS the estate, not change over time — do not "
-            "describe these as trends or say anything got better or worse. "
-            "adopted=false means no scoped subnets, so the analysis cannot "
-            "run: report 'not assessable', never 'no patterns found'."
+            "Cross-sectional analysis of the estate: `blind_spots` (conditions "
+            "spanning it), `segment_outliers` (subnets whose issue density is an "
+            "outlier against the median; times_median null = no baseline to "
+            "compare), `conditions` with their spread, `family_summary` (a "
+            "root-cause hypothesis and control per family) and "
+            "`diagnostic_profiles`. It compares ACROSS the estate, never over "
+            "time — do not call these trends. adopted=false means no scoped "
+            "subnets: report 'not assessable', never 'no patterns found'."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/patterns",
@@ -564,54 +496,33 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     # service its page uses (agent_assist_operations.py).
     "assist_get_workbench": {
         "description": (
-            "Your operator's Operations page, as they see it. my_work is what is "
-            "waiting on them BY KIND — answer 'how much is waiting on me?' with the "
-            "kinds apart, as the page does: findings_to_decide (under investigation, "
-            "or a proposal waits for their decision), findings_to_write (only "
-            "required report text missing; the two add up to findings_needing_me), "
-            "tests_assigned; then what they hold in review: hosts_in_review and "
-            "tests_on_hosts_in_review (on those hosts, not assigned to them). "
-            "to_claim is shared work; total is those parts added up. "
-            "my_queue: hosts they are reviewing. my_tasks: host tests to do "
-            "(group_counts counts each test once: assigned / in_review / triage). "
-            "my_findings: findings they own that NEED them — each row's needs "
-            "says why (under investigation, required report text missing, a "
-            "proposal to decide); a confirmed, written-up finding is not listed. "
-            "followups is 'Changed since review' — hosts YOUR OPERATOR reviewed "
-            "(never a teammate's review) that gained open ports or critical/high "
-            "observations after that review, or that they concluded 'needs more "
-            "evidence' (total = hosts; the same hosts are q='follow:revisit'; "
-            "every team member's are q='has:changed_since_review OR "
-            "conclusion:needs_evidence'). There are no project-wide measures "
-            "here: for hosts tested or untouched critical exposure read the "
-            "total of assist_list_hosts q='has:tested' / q='has:untouched "
-            "has:critical' (by address block: assist_get_terrain). There is no "
-            "team roster either: what the team is already reviewing is "
-            "assist_list_hosts q='follow:in_review' (any teammate's). Also "
-            "blockers, and since_last_visit — scans, new and "
-            "changed hosts, new critical/high scanner observations since they "
-            "last marked Operations seen. Answers 'what's mine?' and 'what "
-            "changed since I was last here?'. Reading never marks anything seen. "
-            "*_unavailable=true means that section could not be computed — say "
-            "so, never 'nothing' or 0. The lists here are PREVIEWS "
-            "(my_queue 10, tasks 10 per group, notes/findings/follow-ups 15) — "
-            "the page itself shows one full list at a time, as tabs: "
-            "use the section's own count — my_work, in_review_count, total_open, "
-            "followups.total — for 'how many', never the list length. For a WHOLE "
-            "list: hosts in review = assist_list_hosts q='follow:mine'; changed "
-            "since review = q='follow:revisit'; tests assigned = host_tests_list "
-            "mine=true active_only=true; tests on hosts in review = host_tests_list "
-            "q='follow:mine' active_only=true (every test to do on those hosts — "
-            "group_counts.in_review leaves out the ones assigned to the operator, "
-            "which it counts under assigned); findings that need the operator = "
-            "assist_list_my_findings (assist_list_findings owner=me lists every "
-            "finding they own, needing them or not). Each my_tasks row "
-            "carries its tool. "
-            "blockers.failed_import_count counts failed imports nobody has "
-            "dismissed and no later clean import superseded, so it is smaller "
-            "than assist_list_ingestion_issues' failed. investigate is null here "
-            "because the untouched queue is not embedded — null is not an empty "
-            "queue; read it with assist_list_worth_a_look."
+            "Your operator's Operations page. `my_work` is what waits on them BY "
+            "KIND — answer with the kinds apart: findings_to_decide, "
+            "findings_to_write (the two add up to findings_needing_me), "
+            "tests_assigned, hosts_in_review, tests_on_hosts_in_review. `total` is "
+            "hosts_in_review + tests_assigned + tests_on_hosts_in_review + "
+            "findings_needing_me; `to_claim` (unassigned critical / high tests) is "
+            "shared work and not in it. The lists are PREVIEWS — my_queue 10, "
+            "my_tasks 10 per group, my_findings and followups 15, recent_notes 8 — "
+            "so answer 'how many' from my_work, in_review_count, total_open, "
+            "group_counts or followups.total, never from a list's length. The "
+            "whole lists: hosts in review = assist_list_hosts q='follow:mine'; "
+            "changed since review (`followups`: the operator's OWN finished "
+            "reviews that gained open ports or critical / high observations, or "
+            "concluded 'needs more evidence') = q='follow:revisit'; tests assigned "
+            "= host_tests_list mine=true active_only=true; tests on hosts in "
+            "review = host_tests_list q='follow:mine' active_only=true; findings "
+            "that need them = assist_list_my_findings. `since_last_visit`: scans, "
+            "new and changed hosts, new critical / high scanner observations since "
+            "they last marked Operations seen (reading marks nothing). `blockers`: "
+            "failed or partial imports nobody dismissed and no later import "
+            "replaced. `setup`: whether the project has hosts and a subnet scope "
+            "yet. `investigate` is null here — the untouched queue is "
+            "assist_list_worth_a_look. `*_unavailable: true` means that section "
+            "could not be computed: say so, never 0. There are no project-wide "
+            "measures and no team roster: read the total of assist_list_hosts "
+            "q='has:tested', q='has:untouched has:critical' or "
+            "q='follow:in_review'."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/workbench",
@@ -620,38 +531,32 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "assist_list_worth_a_look": {
         "description": (
-            "Operations' 'Untouched, with a reason' queue (it was 'Worth a look'): "
-            "hosts NOBODY has touched (no review, "
-            "note, host test, evidence or finding) that carry an observed weakness or a "
-            "relevant change, each with its reasons and next action, in stated "
-            "tier order (1 exploitable critical, 2 critical vulnerability, 3 "
-            "exploit available, 4 high-value service new/changed, 5 scans "
-            "disagree). queue_total and tier_counts cover the whole queue. The "
-            "answer to 'what should we look at next?'. Tier 5 means scans "
-            "recorded different values for the host: every recorded disagreement "
-            "carries resolved_at (when BlueStick picked the value it shows), so "
-            "'resolved' is not 'settled' — a person should still look."
+            "Operations' 'Untouched, with a reason' queue: hosts NOBODY has "
+            "touched (no review or assignment, note, host test, evidence or "
+            "finding) that carry an observed weakness or a relevant change, each "
+            "with its reasons and next action, in stated tier order (1 exploitable "
+            "critical, 2 critical vulnerability, 3 exploit available, 4 high-value "
+            "service new or changed, 5 scans disagree). `queue_total` and "
+            "`tier_counts` cover the whole queue whatever tier or offset you pass. "
+            "A 503 means it could not be computed — not that the queue is empty."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/workbench/investigate",
     },
-    # v2.476.0 — the Operations "Findings" tab as a whole list
+    # The Operations "Findings" tab as a whole list
     # (operations_read_service.compute_my_findings, the page's own function).
     "assist_list_my_findings": {
         "description": (
-            "Every finding your OPERATOR owns that needs something from them — the "
-            "Operations 'Findings' tab, whole and paged; assist_get_workbench "
-            "carries only its first 15 rows. Each row's needs says why it is "
-            "listed (under investigation, required report text missing, a "
-            "proposal to decide), severity first. need=decide is under "
-            "investigation or a proposal waiting; need=write is only report text "
-            "missing; the two never overlap and add up to the list. total is the "
-            "size of the list this call pages — answer 'how many' with it (or "
-            "need_counts / total_open, which describe the whole list whatever "
-            "need says), never with the number of rows on a page. A finding they "
-            "own that needs nothing (confirmed and written up) is not here: "
-            "assist_list_findings owner=me lists those too. Personal to the "
-            "operator — a teammate's findings are not in it."
+            "Every finding your OPERATOR owns that needs something from them — "
+            "the Operations 'Findings' tab, paged, severity first. Each row's "
+            "`needs` says why (under investigation, required report text missing, "
+            "a proposal to decide). need=decide (under investigation, or a "
+            "proposal waiting) and need=write (only report text missing) never "
+            "overlap and add up to the list. `total` is the size of the list this "
+            "call pages; `total_open` and `need_counts` describe the whole list "
+            "whatever `need` says. A finding they own that needs nothing is not "
+            "here (assist_list_findings owner=me lists those too), and a "
+            "teammate's never is."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/workbench/findings",
@@ -702,7 +607,6 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "method": "GET",
         "path": "/api/v1/agent/assist/scans/compare",
         "defaults": {"limit": 100},
-        "params": {"a": "Baseline scan id", "b": "Later scan id"},
     },
     "assist_list_scan_hosts": {
         "description": (
@@ -717,33 +621,23 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "method": "GET",
         "path": "/api/v1/agent/assist/scans/{scan_id}/hosts",
         "defaults": {"limit": 100},
-        "params": {
-            "scan_id": "Scan id (assist_list_scans)",
-            "state": "Only hosts the scan observed in this state (up, down…).",
-            "search": "Address or hostname at scan.",
-        },
+        "params": {"scan_id": "Scan id (assist_list_scans)"},
     },
     "assist_list_ingestion_issues": {
         "description": (
-            "Uploads that failed, are still in flight, or parsed but dropped "
-            "rows. CHECK THIS BEFORE REPORTING THAT SOMETHING IS ABSENT: 'no "
-            "web servers in that range' and 'the httpx upload failed to parse' "
-            "look identical from every other tool, and only one of them is a "
-            "finding about the network. Counts as the Ingestion Results page "
-            "states them: failed (an import went wrong), expired (a staged upload "
-            "nobody started — never imported, nothing failed), discarded, and "
+            "Imports that failed, are still in flight, or parsed but dropped rows "
+            "— check it before reporting that something is ABSENT: if `has_issues` "
+            "is false, an empty result elsewhere is a real absence. Counts as the "
+            "Ingestion Results page states them: failed, expired (a staged upload "
+            "nobody started), discarded, degraded, queued / processing, and "
             "needs_attention (failed or partial, not dismissed, not replaced by a "
-            "later import — say this one for 'how many imports need attention'). "
-            "kind=failed means nothing from that "
-            "file is in the project; kind=expired the same, because it was never "
-            "started; kind=degraded means the file IS in the "
-            "project but rows were dropped, so counts drawn from it are "
-            "undercounts (everything else reports that job as completed); "
-            "queued/processing mean data is still arriving. If has_issues is "
-            "false, an empty result elsewhere is a real absence. Parse-error "
-            "counts: unresolved_parse_errors_total is the project's number; "
-            "unresolved_parse_errors is only the part with no import job (the "
-            "rest is already under failed) — never report it as the total."
+            "later import — the answer to 'how many imports need attention'). An "
+            "issue's kind: failed or expired = nothing from that file is in the "
+            "project; degraded = it is in, but rows were dropped, so counts drawn "
+            "from it are undercounts; parse_error = a recorded failure with no "
+            "import job. unresolved_parse_errors_total is the project's number; "
+            "unresolved_parse_errors only the part with no import job. Needs an "
+            "analyst operator."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/ingestion-issues",
@@ -753,37 +647,21 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     # saving a file beside a report.
     "assist_get_finding": {
         "description": (
-            "One finding with the evidence behind it — the note a human wrote "
-            "to justify promoting it, the replies on that note's thread "
-            "(`evidence_thread`), the finding's own comment thread, the affected "
-            "hosts (with `name_id`/`fqdn` when a row is a named endpoint; "
-            "`host_count` is distinct addresses, `endpoint_count` rows; each "
-            "row's `finding_host_id` is what propose_endpoint_status and "
-            "record_evidence take), and "
-            "references to any attached screenshots. Every note says whether a "
-            "person or an agent wrote it (`actor_type`). Use this when writing "
-            "a finding up: assist_list_findings gives you titles and "
-            "severities, this gives you what to cite. Screenshots come back as "
-            "references (filename, size, download_path): look at one with "
-            "assist_get_image, or save it beside a report from its download_path "
-            "with the session's API key. scanner_evidence and evidence_records say "
-            "whether a claim rests on a scanner's output or on a command a "
-            "tester actually ran; state which, they are different assertions. "
-            "Also: `report_text` (what the client report says — description, "
-            "impact, recommendation, references, steps to reproduce, CVSS vector "
-            "and score), `endpoint_status_counts` (per-host state), and "
-            "`status_history` (who changed the status, when, from → to, and why). "
-            "`writing_guidance` is how THIS installation wants report text "
-            "written — `general`, and `sections` {field: instructions}; read it "
-            "before propose_finding_text and write each section to it. "
-            "`images` lists the finding's images as the report sees them: `id`, "
-            "`caption`, `in_report` (ticked for the report) and `placed_in` — the "
-            "report-text fields whose Markdown places the image with "
-            "`![caption](evidence:<id>)`; a ticked image no field places prints "
-            "under Evidence. "
-            "scanner_evidence lists at most 100 scanner rows: "
-            "scanner_evidence_total is how many there are, and "
-            "scanner_evidence_truncated says the list was cut."
+            "One finding with what a write-up cites. `hosts`: the first 100 "
+            "endpoint rows (`hosts_truncated`); `host_count` is distinct addresses "
+            "and `endpoint_count` rows; each row's `finding_host_id` is what "
+            "propose_endpoint_status and record_evidence take; "
+            "`endpoint_status_counts` covers them all. `evidence_note`, "
+            "`evidence_thread` and `comments` — each note says whether a person or "
+            "an agent wrote it (`actor_type`). `scanner_evidence` (the first 100 "
+            "of scanner_evidence_total) and `evidence_records`: a scanner's output "
+            "and a command a tester ran are different assertions — say which a "
+            "claim rests on. `report_text`, `status_history`, `writing_guidance` "
+            "(read it before propose_finding_text) and `images`: `id`, `caption`, "
+            "`in_report` and `placed_in`, the report-text fields whose Markdown "
+            "places the image with `![caption](evidence:<id>)`; a ticked image no "
+            "field places prints under Evidence. Attachments are references "
+            "(download_path): look at one with assist_get_image."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/findings/{finding_id}",
@@ -811,10 +689,11 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "method": "GET",
         "path": "/api/v1/agent/assist/scanner-observations",
         "defaults": {"limit": 25},
+        # The page route's name for `offset`; one argument for one thing.
+        "hidden": ["skip"],
         "params": {
             "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
             "kind": {"enum": ["misconfiguration", "vulnerability", "informational"]},
-            "skip": "Older name for offset; still accepted.",
         },
     },
     "assist_list_observation_hosts": {
@@ -840,25 +719,21 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "assist_get_client_report": {
         "description": (
-            "One client report and what it says: engagement details, executive "
-            "summary, counts, and every finding as the report states it (ref, "
-            "report text, affected endpoints, evidence attachment ids, and "
-            "confirmations — the test results it prints as how the finding was "
-            "confirmed, with confirmations_omitted for those left out). An issued "
-            "report is its frozen text (content_source issued_snapshot); a draft "
-            "is what it would say now (draft_live). For 'what did we tell the "
-            "client', read the latest issued one. Files carry a download_path. "
-            "In an addendum each finding's change is new, new_hosts or "
-            "severity_changed (previous_severity = what the baseline reported), "
-            "and delta counts them (findings_with_changed_severity). confirmations "
-            "and summary.evidence_records are only what THIS report's template "
-            "prints (evidence_records_not_printed counts the rest; "
-            "agent_evidence_records those an agent recorded). Each finding's "
-            "images[] is every image ticked for the report, with placed_in, "
-            "printed and printed_in; summary.images_printed / images_trailing / "
-            "images_not_printed (with images_not_printed_reasons) add up to "
-            "summary.images, and template_images is what the template declares "
-            "it prints. Those are null when printing could not be measured."
+            "One client report as it states things: engagement details, executive "
+            "summary, `counts`, `scope`, and every finding (ref, report text, "
+            "affected endpoints, `confirmations` — the test results it prints, "
+            "with confirmations_omitted for the rest — and `images[]` with "
+            "placed_in, printed and printed_in). content_source: issued_snapshot "
+            "is the frozen text as issued, draft_live what the draft would say "
+            "now; for 'what did we tell the client' read the latest issued one "
+            "(`latest_issued_id` on assist_list_client_reports). In an addendum "
+            "each finding's `change` is new, new_hosts or severity_changed "
+            "(previous_severity = what the baseline reported) and `delta` counts "
+            "them. confirmations and summary.evidence_records are only what THIS "
+            "template prints (evidence_records_not_printed counts the rest). "
+            "summary.images_printed + images_trailing + images_not_printed = "
+            "summary.images; null when printing could not be measured. Files "
+            "carry a download_path. Needs an auditor operator."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/client-reports/{report_id}",
@@ -907,28 +782,18 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "assist_list_names": {
         "description": (
-            "List the project's named assets (FQDNs) with in_scope, the "
-            "addresses each currently resolves to (derived from the latest "
-            "A/AAAA observations, never stored) and its evidence sources. "
-            "in_scope means a declared domain covers the name; it does NOT make "
-            "the address subnet-in-scope. The actionable queue is "
-            "in_scope=true&resolved=false — approved names no upload has ever "
-            "resolved. A name whose address is shared with other names (load "
-            "balancer / vhost) must be tested by name, not by IP. host_id lists "
-            "the names that CURRENTLY resolve to one host's address (latest "
-            "A/AAAA); assist_get_host's names is wider — every name ever SEEN at "
-            "the address (PTR, certificate, HTTP, scanner), so a PTR-only name "
-            "appears there and not here."
+            "The project's named assets (FQDNs): `in_scope` (a declared domain "
+            "covers the name — it does NOT put the address in subnet scope), "
+            "`current_ips` (the first 10 of current_ip_total, from the latest "
+            "A/AAAA observations) and `sources`. in_scope=true with resolved=false "
+            "is the names approved for testing that no upload has resolved. A "
+            "name that shares its address with other names must be tested by "
+            "name, not by IP. host_id lists the names CURRENTLY resolving to that "
+            "host; assist_get_host's `names` is wider — every name ever seen "
+            "there, PTR and certificate included."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/names",
-        "params": {
-            "q": "Case-insensitive substring on the FQDN.",
-            "in_scope": "Only names a declared domain covers (true) / does not (false).",
-            "resolved": "Only names with (true) / without (false) a current A/AAAA answer.",
-            "host_id": "Only names currently resolving to this host's address.",
-            "kind": {"enum": ["fqdn", "wildcard"]},
-        },
     },
     "assist_list_scans": {
         "description": (
@@ -950,10 +815,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "assist_session_info": {
         "description": (
-            "This unified session's inventory context: bound project, purpose, status, and the "
-            "operator you act on behalf of — who `assigned:me` refers to. For whether "
-            "you may write, call agent_identity and read `can_write_project_data`; "
-            "this response does not carry it."
+            "This session's purpose, status, project and operator — who "
+            "`assigned:me` and `follow:mine` mean. Whether you may write is "
+            "`can_write_project_data` on agent_identity."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/session",
@@ -980,13 +844,11 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "idempotent": False,
         "params": {
             "host_id": HOST_ID,
-            "finding_host_id": "The finding endpoint (vhost) it ran against, if any.",
             "host_test_id": "The host test this answers, if any (from host_tests_list). Needs request_key.",
             "request_key": "Your own stable key for this record; re-sending it returns the record already stored (a safe retry). Required with host_test_id.",
-            "tool": "The tool or method (nmap, curl, a script…).",
             # The endpoint sets no schema length on purpose (a schema 422
             # echoes the input back); its service answers 413 past 5 MB.
-            "raw_output": {"maxLength": 5242880, "description": "The tool's output (up to 5 MB)."},
+            "raw_output": {"maxLength": 5242880},
             "agent_model": AGENT_MODEL,
         },
     },
@@ -1004,40 +866,31 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     },
     "propose_finding_text": {
         "description": (
-            "Propose report text for a finding — a person accepts (then may edit) or "
-            "rejects it; nothing changes until then. EACH FIELD'S VALUE IS THE COMPLETE "
-            "REPLACEMENT for that section, written as it will read in the client report: "
-            "on accept it overwrites the section word for word. Never a critique, a list "
-            "of suggestions, a diff or notes to the author — put why you changed it in "
-            "`rationale`. Propose only the sections you would change. THE READER HAS NEVER "
-            "SEEN BLUESTICK: no record numbers or ids (\"Finding #277\", \"evidence record "
-            "57\"), no mention of BlueStick or of how the text was produced — name a finding "
-            "by its title and a system by its address; a section naming a record is refused "
-            "(422). NOT ENOUGH TO GO ON IS "
-            "A VALID ANSWER: write a section only from the finding's data and recorded "
-            "evidence; when that is too thin, do not propose the section and never fill it "
-            "with a guess or a placeholder (\"TBD\", \"[needs confirmation]\") — say what is "
-            "missing, and what would let you write it, in `rationale` and to your operator. "
-            "One proposal per "
-            "field; several may stand side by side (e.g. from different models). Fields: "
-            "description, impact, recommendation, references, steps_to_reproduce "
-            "(Markdown), cvss_vector. IMAGES: a section may hold `![caption](evidence:<id>)`, "
-            "which prints that image of the finding there. Read `images` on assist_get_finding "
-            "first: KEEP the references a section already holds when you rewrite it (dropping "
-            "one moves the image back under Evidence), and reference only ids listed there — "
-            "any other id is refused (422). You cannot tick an image \"In report\": a proposal "
-            "placing one that is not ticked is not accepted until a person ticks it."
+            "Propose report text for a finding; a person accepts (then may edit) or "
+            "rejects it, and nothing changes until then. One proposal per field; "
+            "several drafts of a field may stand side by side. EACH FIELD'S VALUE IS "
+            "THE COMPLETE REPLACEMENT for that section, as it will read in the client "
+            "report — never a critique, suggestions or a diff (why you changed it goes "
+            "in `rationale`). Propose only the sections you would change. THE READER "
+            "HAS NEVER SEEN BLUESTICK: no record numbers or ids (\"Finding #277\", "
+            "\"evidence record 57\") and no mention of BlueStick — name a finding by "
+            "its title and a system by its address; a section naming a record is "
+            "refused (422). NOT ENOUGH TO GO ON IS A VALID ANSWER: write a section "
+            "only from the finding's data and recorded evidence; when that is too "
+            "thin, leave it out — never a guess or a placeholder — and say what is "
+            "missing in `rationale` and to your operator. Fields: description, impact, "
+            "recommendation, references, steps_to_reproduce (Markdown), cvss_vector. A "
+            "section may place one of the finding's images with "
+            "`![caption](evidence:<id>)`: keep the references a section already holds, "
+            "and use only ids listed under `images` on assist_get_finding (any other "
+            "is a 422; an image nobody ticked 'In report' blocks acceptance until a "
+            "person ticks it). Answers ids and text lengths, not the text."
         ),
         "method": "POST",
         "path": "/api/v1/agent/proposals/finding-text",
         "additive": True,
         "idempotent": False,
         "params": {
-            "fields": (
-                "Field name → the section's complete new text, report-ready (it replaces "
-                "the section on accept) — not comments about the current text. Write each "
-                "to the installation's `writing_guidance` (on assist_get_finding)."
-            ),
             "rationale": (
                 "Why — what you changed and why, what the reviewer should check. Your critique goes here."
             ),
@@ -1073,7 +926,10 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "additive": True,
         "idempotent": False,
         "params": {
-            "vulnerability_id": "The scanner observation's id.",
+            "vulnerability_id": (
+                "A scanner row's `id` from assist_get_host_vulnerabilities — not an "
+                "issue_key from assist_list_scanner_observations."
+            ),
             "agent_model": AGENT_MODEL,
         },
     },
@@ -1096,29 +952,24 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     # --- assist writes (allowed iff the operator's project role permits writes) ---
     "assist_add_note": {
         "description": (
-            "Add a note to a host. Writes project data, so it succeeds only if the "
-            "operator who started your session may write to this project — check "
-            "`can_write_project_data` on agent_identity rather than probing. "
-            "A note is discussion for the team: context, a question, a handoff. It "
-            "has no status and is not how work is recorded — a check you ran is "
-            "evidence (record_evidence), a check to run is a host test "
-            "(host_tests_propose). Notes are stamped agent-authored and appear in "
-            "the operator's UI and in the host inventory's JSON download; mark inferences as "
-            "inferences."
+            "Add a note to a host — discussion for the team (context, a question, a "
+            "handoff), stamped agent-authored. Not how work is recorded: a check "
+            "you ran is record_evidence, a check to run is host_tests_propose. "
+            "Mark inferences as inferences. Needs an operator who may write "
+            "(`can_write_project_data` on agent_identity)."
         ),
         "method": "POST",
         "path": "/api/v1/agent/hosts/{host_id}/notes",
         "additive": True,
-        "params": {"host_id": HOST_ID, "body": "Note text."},
+        "params": {"host_id": HOST_ID},
     },
     "assist_set_follow": {
         "description": (
-            "Set — or clear — a host's review status. Writes project data (see "
-            "agent_identity's `can_write_project_data`). Pass `none` to remove "
-            "your follow entirely, the inverse of setting one (use it to undo a "
-            "status you set). Do NOT "
-            "mark a host `reviewed` on your own initiative — reviewed is a human "
-            "judgement with client-reportable weight; confirm with the operator first."
+            "Set the OPERATOR's review status on a host — in_review or reviewed — "
+            "or `none` to remove it. Do NOT mark a host `reviewed` on your own "
+            "initiative: it is a human judgement; confirm with the operator first. "
+            "Read the host's `follow` before overwriting it. Needs an operator who "
+            "may write."
         ),
         "method": "POST",
         "path": "/api/v1/agent/hosts/{host_id}/follow",
@@ -1187,9 +1038,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
 
 
 # ---------------------------------------------------------------------------
-# Host tests (v2.442.0) — the tests proposed on each host, shown on the host's
-# page.  They replace test plans: no plan to register, no run to open, no
-# approval.
+# Host tests — the tests proposed on each host, shown on the host's page.
 # ---------------------------------------------------------------------------
 _HOST_TEST_ID = {
     "minimum": 1,
@@ -1198,23 +1047,23 @@ _HOST_TEST_ID = {
 
 _AUTHORED["host_tests_propose"] = {
     "description": (
-        "Propose tests on hosts — up to 200 in one call, each a single test on "
-        "one host: the tool, what it establishes, the exact command ({ip} / "
-        "{fqdn} placeholders allowed), the rationale and a priority. They "
-        "appear on each host's page at once; there is no approval step and no "
-        "plan to register. `label` groups the tests of one request (e.g. "
-        "'SMB review 2026-10-01'). When a test would confirm or rule out one "
-        "scanner observation, pass that observation's `vulnerability_id` (it "
-        "must be on the same host): the test is shown on that weakness and "
-        "its result settles it. Which hosts and which tests is the "
-        "operator's request, not yours to widen. Every test needs its own "
-        "`request_key`; re-sending the same key with the same content returns "
-        "the existing test (a safe retry), with different content is a 409. "
-        "The whole batch is validated before anything is written."
+        "Propose tests on hosts — up to 200 per call, each one test on one "
+        "host: the tool, what it establishes (`description`), the exact command "
+        "({ip} / {fqdn} placeholders allowed), the rationale and a priority. "
+        "They show on each host's page at once; nothing approves them. Which "
+        "hosts and which tests is the operator's request, not yours to widen. "
+        "`label` groups one request's tests. `vulnerability_id` (a scanner "
+        "row's id from assist_get_host_vulnerabilities, on the same host) "
+        "links the test to the weakness it confirms. Every test needs its own "
+        "`request_key`: the same key with the same content returns the stored "
+        "test, with different content is a 409. The batch is all-or-nothing. "
+        "Read host_tests_list first, so you do not duplicate a test that is "
+        "already there."
     ),
     "method": "POST",
     "path": "/api/v1/agent/host-tests",
     "additive": True,
+    "params": {"agent_model": AGENT_MODEL},
 }
 _AUTHORED["host_tests_list"] = {
     "description": (
@@ -1258,60 +1107,30 @@ _AUTHORED["host_tests_update"] = {
 
 _AUTHORED["remediation_list"] = {
     "description": (
-        "Remediation tracking, one row per finding ON A HOST: the contact who "
-        "was told (`contact_email`, `contact_name`), `notified_on`, the "
-        "contact's progress `status` (open, closed, deferred) and `closed_on`. "
-        "`closed` means the contact REPORTED it fixed — say \"reported "
-        "fixed\", never \"closed\" or \"remediated\", when you describe it. "
-        "The same finding can have a different contact and status on each "
-        "host. This is the client's progress as a project admin recorded it — "
-        "it is NOT the assessor's conclusion (`finding_status`, "
-        "`endpoint_status` on the same row, where `remediated` means the team "
-        "concluded it is fixed), and neither moves the other. Where the two "
-        "disagree the row says so in `verification`: "
-        "`reported_fixed_not_retested` (the record is closed, the endpoint is "
-        "not remediated and not a false positive) or `remediated_record_open` "
-        "(the endpoint is remediated and a record exists that is open or "
-        "deferred — an endpoint nobody tracked is not one); null where they "
-        "agree. `verification_counts` counts "
-        "both over the selection and `verification=` lists exactly one. "
-        "Each row also carries where it stands against its DEADLINE: `state` "
-        "(overdue, due_soon, on_track, not_assigned — nobody was given a date, "
-        "so no clock runs —, no_deadline — the severity has no timeline —, "
-        "deferred, closed), `due_on`, `days_left` (negative once overdue), "
-        "`closed_days_late` and `last_follow_up_on`. `due_on` is the deadline "
-        "in force: the assigned date (`notified_on`) plus this installation's "
-        "days for the finding's severity (`policy_due_on`, derived), unless a "
-        "project admin set one by hand (`due_override_on`); `deadline_source` "
-        "says which (`policy`, `override`, null). A deferred row carries the "
-        "day it is to be looked at again (`deferred_review_on`) and "
-        "`deferral_review_due` (that day has come, or it never had one). "
-        "`flag_counts` counts, over the selection, the rows an admin is to "
-        "look at — `deferral_review_due`, `deadline_overridden` — and `flag=` "
-        "lists one. `q` searches the finding's title, the host's address and "
-        "its name. "
-        "Filter by `state` (one or several), `status`, `severity`, `contact` "
-        "(part of an address or a name), `unassigned` (no contact yet), "
-        "`host_id` or `finding_id`; `state_counts` and `status_counts` cover "
-        "the whole selection and `total` the rows returned by the filter. "
-        "Over the same selection: `severity_counts` (overdue and due soon per "
-        "severity), `overdue_ages` (overdue rows by days past the deadline: "
-        "1-7, 8-30, 31-90, 90+; filter with `overdue_band`) and "
-        "`not_followed_up` (at-risk rows nobody followed up in "
-        "`not_followed_up_days`; list them with `no_follow_up_days`). Each row "
-        "has a `team` (the group that owns the fix; filter with `team`). "
-        "`group=due` orders by deadline, the longest overdue first. Each "
-        "row's `finding_host_id` is what remediation_apply takes. Needs an "
-        "operator who is a project auditor. Answers 404 on an installation "
-        "that has not turned remediation tracking on."
+        "Remediation tracking, one row per finding ON A HOST: the contact "
+        "(`contact_email`, `contact_name`), `team`, `notified_on` (the assigned "
+        "date), the contact's progress `status` (open, closed, deferred) and "
+        "`closed_on`. `closed` means the contact REPORTED it fixed — say "
+        "\"reported fixed\", never \"remediated\": the assessor's conclusion is "
+        "`finding_status` / `endpoint_status` on the same row, and neither "
+        "moves the other. Where the two disagree the row's `verification` says "
+        "so (`reported_fixed_not_retested`, `remediated_record_open`; null "
+        "where they agree). Against its deadline each row has `state` (overdue, "
+        "due_soon, on_track, not_assigned — nobody was given a date, so no "
+        "clock runs —, no_deadline — the severity has no timeline —, deferred, "
+        "closed), `due_on` (the deadline in force; `deadline_source` policy or "
+        "override), `days_left`, `closed_days_late`, `last_follow_up_on`, and "
+        "for a deferred row `deferred_review_on` / `deferral_review_due`. "
+        "Counts over the selection, whatever page you read: `total`, "
+        "`state_counts`, `status_counts`, `verification_counts`, `flag_counts`, "
+        "`severity_counts`, `overdue_ages`, `not_followed_up`. Each row's "
+        "`finding_host_id` is what remediation_apply takes. Needs an auditor "
+        "operator. Answers 404 where the installation has not turned "
+        "remediation tracking on — say so, do not retry."
     ),
     "method": "GET",
     "path": "/api/v1/agent/remediation",
-    "params": {
-        "state": "Where the row stands against its deadline; several are OR-ed.",
-        "overdue_band": "Only overdue rows this many days past their deadline.",
-        "group": "The order of the rows (default host; due = by deadline).",
-    },
+    "params": {"group": "The order of the rows (default host; due = by deadline)."},
 }
 _AUTHORED["remediation_contacts"] = {
     "description": (
@@ -1401,6 +1220,7 @@ _AUTHORED["remediation_assign_from_report"] = {
     "method": "POST",
     "path": "/api/v1/agent/remediation/assign-from-report",
     "idempotent": True,
+    "params": {"agent_model": AGENT_MODEL},
 }
 _AUTHORED["remediation_timeline"] = {
     "description": (
@@ -1418,40 +1238,32 @@ _AUTHORED["remediation_timeline"] = {
 _AUTHORED["remediation_apply"] = {
     "description": (
         "Set remediation tracking fields on findings on hosts — typically "
-        "from a spreadsheet or CSV the operator holds, which you read locally "
+        "from a spreadsheet the operator holds, which you read locally "
         "(nothing is uploaded). Needs an operator who is a project admin. "
         "Each row names its target by `finding_host_id` (from "
-        "remediation_list), or by `finding_id` with `host_id`; `finding_id` "
-        "alone means EVERY host of that finding, so use it only when the "
-        "source really assigns one contact to all of them. Send only the "
-        "fields the source gives; a field you leave out is not touched and an "
-        "explicit null clears it. Match each source row to exactly one "
-        "finding yourself, from what you read: a row you cannot match is "
-        "reported to the operator and left out, never guessed. ALWAYS call "
-        "with `dry_run: true` first and show the operator the summary — "
-        "targets, changed, unchanged, conflicts. A conflict is a field "
-        "someone already set to a different value: it is left alone unless "
-        "the operator tells you to replace it, and only then do you send "
-        "`overwrite: true`. A row's `notes` become timeline entries (give "
-        "each a `request_key` so a re-run does not add them twice, and "
-        "`occurred_at` when the source dates them; one key is one note — never "
-        "two different texts). `status: closed` records that the contact "
-        "REPORTED it fixed (the pages say \"Reported fixed\"); it does not "
-        "change the assessor's endpoint status, and you never set it because "
-        "an endpoint is `remediated`. `closed_on` goes only with `status: "
-        "closed`, or on a row already closed. `status: deferred` is a "
-        "decision with a date and a reason: the row must carry "
-        "`deferred_review_on` (the day to look at it again, today or later) "
-        "and a note, and so must a change of that date. `due_override_on` "
-        "sets ONE row's deadline by hand (an extension or an earlier date; "
-        "null goes back to the installation's date) and needs a note saying "
-        "why — set it only when the operator's source gives that date; the "
-        "ordinary deadline is derived and never sent. The whole call is planned before anything "
-        "is written, and a dry run refuses what the real call would refuse; "
-        "at most 500 findings on hosts per call."
+        "remediation_list) or by `finding_id` with `host_id`; `finding_id` "
+        "alone means EVERY host of that finding. Send only the fields the "
+        "source gives: a field left out is untouched, an explicit null clears "
+        "it. Match each source row to exactly one finding yourself; a row you "
+        "cannot match is reported to the operator and left out, never "
+        "guessed. ALWAYS call with `dry_run: true` first and show the "
+        "operator the summary — targets, changed, unchanged, conflicts. A "
+        "conflict is a field someone already set to another value: it stays "
+        "unless the operator tells you to replace it, and only then do you "
+        "send `overwrite: true`. `notes` become timeline entries (give each a "
+        "`request_key`, so a re-run does not repeat them). `status: closed` "
+        "records that the contact REPORTED it fixed; it never changes the "
+        "assessor's endpoint status, and you never set it because an endpoint "
+        "is `remediated`. `closed_on` goes only with closed. `status: "
+        "deferred` needs `deferred_review_on` (today or later) and a note. "
+        "`due_override_on` sets ONE row's deadline by hand, needs a note, and "
+        "is sent only when the source gives that date — the ordinary deadline "
+        "is derived, never sent. All-or-nothing; at most 500 findings on "
+        "hosts per call."
     ),
     "method": "POST",
     "path": "/api/v1/agent/remediation/apply",
+    "params": {"agent_model": AGENT_MODEL},
     # The field changes converge on a retry; a note sent without a
     # request_key is added again.
     "idempotent": False,
@@ -1503,6 +1315,8 @@ _SUBSCHEMA = ("items", "additionalProperties", "not")
 _SUBSCHEMA_LISTS = ("anyOf", "oneOf", "allOf", "prefixItems")
 _SUBSCHEMA_MAPS = ("properties", "$defs", "patternProperties")
 _NULL = {"type": "null"}
+#: A route parameter's pattern that only lists the accepted words.
+_CLOSED_LIST = re.compile(r"\^\(([A-Za-z0-9_]+(?:\|[A-Za-z0-9_]+)*)\)\$")
 
 
 def _plain(schema: Any, components: Dict[str, Any], _open: tuple = ()) -> Any:
@@ -1597,6 +1411,12 @@ def derive_tool(name: str, authored: Dict[str, Any], openapi: Dict[str, Any]) ->
 
     def parameter(p: Dict[str, Any]) -> Dict[str, Any]:
         schema = _plain(p.get("schema", {}), components)
+        # A closed list written as a pattern (``^(asc|desc)$``) is offered as
+        # the enum it is: the route stays the one place the values are typed.
+        closed = _CLOSED_LIST.fullmatch(schema.get("pattern") or "")
+        if closed and "enum" not in schema:
+            del schema["pattern"]
+            schema["enum"] = closed.group(1).split("|")
         if p.get("description"):
             schema["description"] = p["description"]
         return schema

@@ -216,7 +216,19 @@ def test_session_prompt_asks_for_feedback_at_the_moment_of_friction(client, test
     # No checkpoint is advertised that no longer exists.
     assert "feedback_recorded" not in prompt
     assert "execution-sessions" not in prompt
-    assert "assist | reconnaissance | testing" in prompt
+    # `source` is required by the endpoint: one clause, and a body that is
+    # valid JSON and files as it stands.
+    assert "whichever of `assist`, `reconnaissance`, `testing` is closest" in prompt
+    import json
+    body = prompt.split("```json\n", 1)[1].split("\n```", 1)[0]
+    sent = json.loads(body)
+    assert sent["source"] == "testing" and set(sent) == {"source", "prompt_version", "friction_notes"}
+    assert client.post(
+        "/api/v1/agent/feedback", headers={"X-API-Key": r.json()["api_key"]}, json=sent,
+    ).status_code == 201
+    # The long payload, the metrics and the tool suggestions are the guide's.
+    for moved in ("agent_metrics", "tool_suggestions", "overall_rating"):
+        assert moved not in prompt
     # The exit step no longer treats feedback as part of the ceremony.
     assert "if you have filed no feedback yet" in prompt
     assert "Before you finish, submit structured feedback" not in prompt

@@ -1,14 +1,16 @@
-"""The agent guide — where it lives, and slicing (extracted from main.py in v2.42.0).
+"""The agent guide — where it lives, and its parts.
 
-The guide is ``documentation/AGENT_GUIDE.md`` (named ``AGENTS.md`` at the repo
-root until v2.427.1 — renamed because coding agents such as Codex and Cursor
-load a root ``AGENTS.md`` as instructions for working ON the repository).
-Compose mounts it at ``/app/AGENT_GUIDE.md``; a local checkout reads it from
-``documentation/``.  ``read_agent_guide`` is the one resolver.
+The guide is ``documentation/AGENT_GUIDE.md`` (not a root ``AGENTS.md``:
+coding agents such as Codex and Cursor load that as instructions for working
+ON the repository).  Compose mounts it at ``/app/AGENT_GUIDE.md``; a local
+checkout reads it from ``documentation/``.  ``read_agent_guide`` is the one
+resolver.
 
-Slicing filters the guide to the sections tagged for a given workflow so the
-agent's context window stays lean.  See the public guide for the
-section-marker syntax.
+The guide is served whole or as one PART (``?workflow=<part>``): the sections
+tagged for that part plus every ``shared`` section, so an agent reads the
+reference for what it is doing and not the rest.  A part is a reading aid, not
+a kind of session and not a permission — one project session does every kind
+of work.  The query argument is still named ``workflow`` (a wire name).
 """
 from __future__ import annotations
 
@@ -17,6 +19,25 @@ from pathlib import Path
 from typing import List, Optional
 
 AGENT_GUIDE_FILENAME = "AGENT_GUIDE.md"
+
+#: The parts a caller may ask for.  A section's tag is one of these or
+#: ``shared``; ``tests/test_docs_contract.py`` pins the two to each other.
+GUIDE_PARTS = ("testing", "reconnaissance", "assist", "remediation")
+
+#: Values that mean "the whole guide", like leaving the argument out.
+#: ``project`` is a session's own workflow, which the MCP layer fills in.
+_FULL_GUIDE_VALUES = {"project"}
+
+
+class UnknownGuidePart(ValueError):
+    """``workflow`` named something that is not a part of the guide."""
+
+    def __init__(self, value: str):
+        self.value = value
+        super().__init__(
+            f"workflow must be one of {', '.join(GUIDE_PARTS)} "
+            f"(or omitted for the whole guide); not understood: {value!r}."
+        )
 
 
 def agent_guide_candidates() -> List[Path]:
@@ -41,49 +62,37 @@ _SECTION_START = re.compile(
 )
 _SECTION_END = re.compile(r'<!--\s*agents:end\s*-->', re.IGNORECASE)
 
-# "testing" replaced the plan-generation and execution slices in v2.442.0; the
-# old names still resolve so an older client's request gets the right slice.
-_WORKFLOW_ALIASES = {
-    "plan": "testing",
-    "plan_generation": "testing",
-    "exec": "testing",
-    "execution": "testing",
-    "recon": "reconnaissance",
-}
-
-# v2.337.0 — a unified project session does every kind of work, so it gets the
-# WHOLE guide rather than one workflow's slice. Treated like ``workflow=None``.
-_FULL_GUIDE_WORKFLOWS = {"project"}
-
 
 def slice_agents_md(content: str, workflow: Optional[str]) -> str:
-    """Return only the sections of the agent guide tagged for the requested workflow.
+    """Return the sections of the agent guide tagged for the requested part.
 
     Sections are delimited by HTML comment markers that render invisible
     to Markdown viewers but are easy to parse server-side::
 
-        <!-- agents:section tags="plan_generation,reconnaissance" -->
+        <!-- agents:section tags="testing,assist" -->
         …section body…
         <!-- agents:end -->
 
     Rules:
-      * A section is included if its tag list contains the requested
-        workflow OR the literal tag ``shared`` (shared sections apply
-        to every workflow).
-      * Untagged content between sections (headers, preamble, horizontal
-        rules) is always included so the document still reads as a
-        coherent guide.
-      * ``workflow=None`` returns the full file unchanged.
-      * Unknown workflow names match nothing, so only ``shared`` +
-        untagged content is returned — a safer default than erroring.
+      * A section is included if its tag list contains the requested part
+        OR the literal tag ``shared``.
+      * Untagged content between sections (the title, horizontal rules) is
+        always included.
+      * ``workflow=None`` (or ``project``) returns the full file unchanged.
+      * Any other value that is not in ``GUIDE_PARTS`` raises
+        ``UnknownGuidePart``, which the route answers with a 422 naming the
+        accepted values: a value that cannot be understood is refused, never
+        answered with something else.
 
-    Case-insensitive short forms accepted: ``plan`` → ``plan_generation``,
-    ``exec`` → ``execution``, ``recon`` → ``reconnaissance``.
+    Matching is case-insensitive and ignores surrounding whitespace.
     """
-    if workflow is None or workflow.lower() in _FULL_GUIDE_WORKFLOWS:
+    if workflow is None:
         return content
-
-    requested = _WORKFLOW_ALIASES.get(workflow.lower(), workflow.lower())
+    requested = workflow.strip().lower()
+    if requested in _FULL_GUIDE_VALUES:
+        return content
+    if requested not in GUIDE_PARTS:
+        raise UnknownGuidePart(workflow)
 
     out_lines: list[str] = []
     in_section = False
@@ -110,8 +119,8 @@ def slice_agents_md(content: str, workflow: Optional[str]) -> str:
         else:
             out_lines.append(line)
 
-    # Collapse runs of 3+ blank lines that the filter may have introduced
-    # (e.g. when a dropped section leaves a gap between two horizontal rules).
+    # Collapse runs of 3+ blank lines (and stacked horizontal rules' gaps)
+    # that a dropped section leaves behind.
     result = '\n'.join(out_lines)
     result = re.sub(r'\n{3,}', '\n\n', result)
     return result

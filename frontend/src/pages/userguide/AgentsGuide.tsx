@@ -77,9 +77,9 @@ const sections: GuideSection[] = [
         <Subhead>The bounds, and what BlueStick can and cannot enforce</Subhead>
         <Para>
           Before the agent acts, it <strong>says the bounds back</strong> in its own words — which
-          project, which scope (its CIDRs and in-scope domains), which working directory. It shows you every command it
-          runs, keeps to hosts in the inventory or names a declared in-scope domain covers (an
-          address a name resolves to is not thereby in scope), and writes its output to the
+          project, which scope (its CIDRs and in-scope domains), which working directory. It is told to show you every command before
+          running it (your client's permission prompts are what hold it to that), to keep to hosts in the inventory or names a declared in-scope domain covers (an
+          address a name resolves to is not thereby in scope), and to write its output to the
           session's working directory.
         </Para>
         <Para>

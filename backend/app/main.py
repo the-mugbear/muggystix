@@ -712,12 +712,17 @@ async def well_known_identity():
             'agent_key_binding': 'project_session',      # one session + one operator
             'agent_keys_time_limited': True,
             'agent_keys_renewable': True,                # by the agent, within the session's lifetime cap; ending the session revokes
-            'audit_trail_persistent': True,              # every /agent/* request is recorded and shown to the operator
+            # Every authenticated /agent/* request is recorded and shown to the
+            # operator — and purged after the retention window, so the claim
+            # is "recorded" plus the window, never "persistent" (that key is
+            # retired). Read as startup.agent_api_call_retention_loop reads
+            # it: the same variable and default; 0 (or less) = kept.
+            'audit_trail_recorded': True,
+            'audit_trail_retention_days': max(0, int(os.getenv('AGENT_API_CALL_RETENTION_DAYS', '90'))),
             # How commands are controlled — the AGENT'S contract, which the
             # server cannot observe. The boundary that actually holds is the
             # client's sandbox; the server contributes the record and the
-            # read-back. v2.433.0: no approved-tool allowlist and no plan
-            # approval — the operator drives the agent.
+            # read-back. The operator drives the agent.
             'command_approval': 'operator_driven',       # every command shown; a target outside the declared scope, anything outside the working dir, or a change to the operator's machine waits for their go-ahead
             'command_approval_enforced_by': 'agent_and_client_sandbox',
         },

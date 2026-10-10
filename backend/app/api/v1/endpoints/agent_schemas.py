@@ -3,9 +3,8 @@ Agent API — Pydantic schemas.
 
 All request/response models for the agent-facing endpoints.  Split out
 of agent_api.py so the route modules (agent_browse / agent_recon /
-agent_assist…) can share a single schema definition.  The test-plan and
-execution schemas went with those routes in v2.442.0: a test is a host test
-(``app/schemas/host_test_schemas.py``), its results are evidence records.
+agent_assist…) can share a single schema definition.  A test is a host test
+(``app/schemas/host_test_schemas.py``); its results are evidence records.
 """
 
 from datetime import datetime
@@ -74,10 +73,8 @@ class HostBrief(BaseModel):
 
 
 class HostBriefPage(BaseModel):
-    """One page of ``GET /agent/assist/hosts`` (v2.440.0).  It was a bare
-    list, and an agent asked "how many hosts expose VNC?" counted the rows of
-    a 500-row page (diag 4).  ``total`` is every matching host, so the length
-    of ``items`` is never mistaken for the answer."""
+    """One page of ``GET /agent/assist/hosts``.  ``total`` is every matching
+    host: answer "how many?" from it, never from the length of ``items``."""
     items: List[HostBrief]
     total: int = Field(..., description="Every host matching the filters — the answer to 'how many'.")
     has_more: bool = Field(..., description="True when hosts remain past this page (raise offset by limit).")
@@ -141,11 +138,8 @@ class AssistFindingsResponse(BaseModel):
     findings).  total/has_more let an agent report complete coverage without
     guessing.
 
-    The rows are ``items`` — they were keyed ``findings`` until v2.453.4, the
-    word this product keeps for what the team has judged; an agent reading
-    ``findings`` here took scanner rows for adjudicated findings (feedback
-    #30).  The route moved with it: ``/assist/hosts/{id}/vulnerabilities``
-    (it ended ``/findings``).  The class names predate the vocabulary."""
+    The rows are ``items``, never ``findings``: that word is kept for what
+    the team has judged.  (The class names predate the vocabulary.)"""
     host_id: int
     total: int
     has_more: bool
@@ -209,7 +203,7 @@ class ScanBrief(BaseModel):
 
 
 class ScopeDomainBrief(BaseModel):
-    """One declared domain-scope entry (v2.330.0).  ``include_subdomains``
+    """One declared domain-scope entry.  ``include_subdomains``
     False = exactly this name; True = this name and every name under it."""
     domain: str
     include_subdomains: bool = False
@@ -240,7 +234,7 @@ class ScopeBrief(BaseModel):
 
 
 class AssistNameRow(BaseModel):
-    """One named asset as the assist surface sees it (v2.330.0).  A name is an
+    """One named asset as an agent reads it.  A name is an
     identity, not an address: ``current_ips`` is DERIVED from the latest
     A/AAAA observation batch, never stored."""
     id: int
@@ -294,22 +288,21 @@ class AgentIdentityOperator(BaseModel):
 
 
 class AgentIdentity(BaseModel):
-    """What this API key is, answerable by *any* agent key.
-
-    Every other self-introspection endpoint is behind a workflow gate
-    (``/agent/assist/session`` needs an assist key, planning context needs a
-    plan key), so a caller holding an unknown key could only discover what it
-    was by trying surfaces until one stopped returning 403.  That is fine for a
-    human with the UI open and useless for a client that has to decide, before
-    its first call, which tools to even offer — which is exactly what the MCP
-    server does at ``tools/list`` time.
+    """What this API key is: its one project session, the operator it acts
+    for and their project role, whether it may write project data, and when
+    the key expires and where to renew it.
     """
-    # ``project`` for every session minted since v2.337.0; the legacy
-    # per-workflow labels survive on older rows.
-    workflow: Optional[str] = None
+    # The session's stored kind.  Kept on the wire for clients that read it;
+    # it selects nothing.
+    workflow: Optional[str] = Field(
+        None,
+        description=(
+            "`project` for every session started now: one session does every "
+            "kind of work, and this value selects nothing (an older session "
+            "may carry a retired label). Kept for clients that read it."
+        ),
+    )
     session_id: Optional[int] = None
-    # (``plan_id`` / ``execution_session_id`` / ``open_phases`` went with test
-    # plans and execution runs in v2.442.0: a session has no phases.)
     project_id: int
     project_name: Optional[str] = None
     agent_id: int
@@ -326,7 +319,7 @@ class AgentIdentity(BaseModel):
     # renewal, feedback, ending the session — are not project writes and stay
     # available to a read-only operator.
     can_write_project_data: bool = False
-    # Agent keys are short-lived (24h for plan keys). An agent that knows when
+    # Agent keys are short-lived (24 h by default). An agent that knows when
     # its credential dies can finish or hand back cleanly instead of failing
     # mid-run on a 401 it has no way to anticipate.
     key_expires_at: Optional[datetime] = None

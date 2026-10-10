@@ -1,21 +1,16 @@
 """
-Agent API — interactive assist workflow (v2.64.0).
+Agent API — the inventory reads (``/agent/assist/*``).
 
-Read-only, project-scoped surface for "ask questions about hosts"
-agents.  Designed to support the senior-tester use case where the
-operator wants to query their project — "which hosts expose FTP?",
-"summarize my critical findings", "what did the last recon turn up?"
-— without minting a plan key and triggering plan-approval ceremony.
+The project-scoped reads an agent answers questions from — "which hosts
+expose FTP?", "summarize my critical findings", "what did the last scan turn
+up?" — each wrapping the service its page uses.
 
-Since v2.337.0 a key binds to one project-scoped ``AgentSession`` and these
-endpoints are gated like every agent route: the router-level
-``enforce_agent_operator_access`` and the operator's project role (the
-per-workflow ``require_assist_scope`` guard is gone).
-
-Scope of v1 (this file): read-only.  No execution authority, no
-plan creation, no follow mutation.  Future work (bulk-follow, scan-
-from-filter) tracked in CHANGELOG and may add WRITE endpoints
-behind their own approval/confirmation surface.
+A key binds to one project-scoped ``AgentSession`` and these endpoints are
+gated like every agent route: the router-level
+``enforce_agent_operator_access`` and the operator's project role.  This file
+is read-only; the agent's writes live in ``agent_browse.py`` (notes, review
+status, host corrections), ``agent_recon.py`` (uploads), ``host_tests.py`` and
+``agent_proposals.py`` (evidence, proposals).
 """
 
 import json
@@ -122,8 +117,7 @@ def get_assist_context(
 ):
     """Single endpoint giving the agent enough project-level
     grounding to answer ad-hoc questions without N+1 chatter:
-    project metadata, host count, scope list, recent scan summary,
-    recent recon session summary.
+    project metadata, host count, scope list, recent scan summary.
 
     Sized to fit comfortably in a typical agent context window
     (counts and headlines, not raw row dumps).  When the agent
@@ -281,8 +275,8 @@ def get_assist_context(
         },
         # Name scope is independent of subnet scope: an in-scope name does not
         # put the address it resolves to in scope.  ``in_scope_unresolved`` is
-        # the actionable number — names approved for testing that have never
-        # resolved in any upload.
+        # the actionable number — names in scope that have never resolved in
+        # any upload.
         "names": {
             "total": names_total,
             "in_scope": names_in_scope,
@@ -418,7 +412,7 @@ def _host_to_brief_dict(
 def _iter_assist_hosts_ndjson(db: Session, query: SAQuery, operator_id=None):
     """Yield every matching host as one JSON object per line, paged so a
     project with thousands of hosts streams in bounded memory instead of
-    materialising the whole ORM result set (mirrors the recon download valve).
+    materialising the whole ORM result set (as a scope's ``hosts.ndjson`` does).
     """
     _PAGE = 500
     # Keyset, not OFFSET: page N of an OFFSET stream re-reads and re-sorts
@@ -556,8 +550,8 @@ def list_assist_hosts(
       session's operator (``started_by``).  This stays read-only: the DSL
       only *filters*, it never mutates follow/assignment state.
 
-    No scope sub-filtering (assist sessions are project-wide), so the
-    recon-only ``scoped_host_ids_subq`` path is skipped.
+    Project-wide: nothing narrows this read to a scope (a scope's own hosts
+    are ``/agent/scopes/{scope_id}/hosts.ndjson``).
 
     v2.440.0 (diag 4) — returns ``{items, total, has_more, limit, offset}``:
     the bare list's length was read as "how many hosts", and a 500-row
@@ -753,8 +747,8 @@ class AssistHostDetail(HostDetail):
     """Assist's host detail — what the host inspector shows (v2.428.0).
 
     A subclass rather than fields on the shared schema: ``HostDetail`` is also
-    the recon/plan browse payload, and those workflows have no use for
-    screenshot download paths or review state.  Every field below comes from
+    what ``GET /agent/hosts/{id}`` answers, which carries no screenshot
+    download paths or review state.  Every field below comes from
     the code the inspector's ``GET /hosts/{id}`` uses (``host_detail_service``,
     ``host_serialization``, ``scope_coverage``, ``host_assessment_service``,
     ``host_query.host_weakness_flags``), so the two cannot state different facts.
@@ -2057,7 +2051,7 @@ class AssistRecentNote(AssistNote):
     host_id: Optional[int] = None
     host_ip: Optional[str] = None
     # v2.428.0 — what the note is ON.  A note has exactly one target (host,
-    # port, finding, scan, scope, test plan or the project); before this only
+    # port, finding, scan, scope or the project); before this only
     # host notes said where they were, and a finding comment read as a note
     # about nothing.  {kind, id, label}.
     target: Optional[Dict[str, Any]] = None
@@ -2172,11 +2166,10 @@ def list_assist_scopes(
     each ScopeBrief carries ``subnet_total`` (the true count) and
     ``subnets_truncated``, so an assist agent can tell a 100-CIDR scope
     from a 1000-CIDR one and surface "list truncated" to the operator.
-    An assist key is rejected on every /agent/recon/* endpoint, so full
-    CIDR enumeration is NOT reachable from this workflow — complete
-    enumeration requires a recon session.
+    The whole list of one scope is ``GET /agent/scopes/{scope_id}/subnets``
+    (and ``/domains``).
 
-    v2.330.0 — each scope also carries its declared ``domains`` (same 100
+    Each scope also carries its declared ``domains`` (same 100
     cap, ``domain_total`` / ``domains_truncated``) and
     ``names_in_scope_total`` (distinct inventory names any entry covers).
     Name scope is independent of subnet scope: an in-scope name does not
@@ -2269,9 +2262,8 @@ def list_assist_names(
     (``name_in_scope_condition``, ``resolving_exists_condition``,
     ``current_binding_condition``), so this view can never disagree with it.
 
-    How to act on it: ``in_scope=true&resolved=false`` is the queue — names
-    approved for testing that no upload has ever resolved (chase them with
-    dnsx/amass output, or drop them from scope).  A name whose
+    ``in_scope=true&resolved=false`` is the queue: names in scope that no
+    upload has ever resolved.  A name whose
     ``current_ips`` is shared with other names (a load balancer / vhost)
     must be tested BY NAME — the address alone reaches a different site.
     A name in scope does not put its address in subnet scope.

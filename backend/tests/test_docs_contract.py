@@ -28,26 +28,32 @@ import re
 import pytest
 
 from app.main import app, _OPENAPI_TAGS
-from app.services.agents_guide_service import read_agent_guide, slice_agents_md
+from app.services.agents_guide_service import (
+    GUIDE_PARTS, UnknownGuidePart, read_agent_guide, slice_agents_md,
+)
 
-WORKFLOWS = ["testing", "reconnaissance", "assist"]
+# The parts of the guide a caller may ask for (``?workflow=<part>``): reading
+# aids, not kinds of session.
+WORKFLOWS = ["testing", "reconnaissance", "assist", "remediation"]
 
-# A substring each workflow slice MUST contain — its workflow-specific
-# heading — proving the slice kept its own body, not just shared preamble.
+# A substring each part MUST contain and no other part may — a heading of its
+# own — proving the slice kept its own body, not just the shared sections.
 # ASCII-only on purpose (no em-dash) so the assertion can't fail on encoding.
 WORKFLOW_ANCHORS = {
-    # v2.442.0 — "testing" replaced the plan-generation and execution slices:
-    # tests are proposed on hosts (Workflow A) and run with evidence recorded
-    # (Workflow B); both are in the one slice.
     "testing": "Propose Tests on Hosts",
     "reconnaissance": "Populate Host Data",
     "assist": "Inventory assist (interactive query",
+    "remediation": "Two statuses, two facts",
 }
 # A shared-section heading that must survive into EVERY slice.
 SHARED_ANCHOR = "Instance Identity (verify once"
 
 # The canonical tags a section may route to (slicer matches these literally).
-KNOWN_SECTION_TAGS = {"shared", "testing", "reconnaissance", "assist"}
+KNOWN_SECTION_TAGS = {"shared", *GUIDE_PARTS}
+
+
+def test_the_parts_are_the_slicers_own_list():
+    assert sorted(WORKFLOWS) == sorted(GUIDE_PARTS)
 
 
 def _load_agents_md() -> str:
@@ -103,21 +109,30 @@ def test_workflow_slice_is_nonempty_with_anchors(wf):
     assert SHARED_ANCHOR in sliced, f"{wf}: slice dropped the shared '{SHARED_ANCHOR}' section"
     assert WORKFLOW_ANCHORS[wf] in sliced, f"{wf}: slice missing its anchor '{WORKFLOW_ANCHORS[wf]}'"
     assert len(sliced) < len(full), f"{wf}: slice is not smaller than the full file — filtering didn't run"
+    for other, anchor in WORKFLOW_ANCHORS.items():
+        if other != wf:
+            assert anchor not in sliced, f"{wf}: slice carries the '{other}' part ('{anchor}')"
 
 
-def test_unknown_workflow_returns_shared_only():
-    """An unrecognised workflow returns shared + untagged content, never a
-    workflow-specific body (the documented safe default)."""
-    full = _load_agents_md()
-    sliced = slice_agents_md(full, "bogus_workflow_xyz")
-    assert SHARED_ANCHOR in sliced
-    assert WORKFLOW_ANCHORS["testing"] not in sliced
-    assert WORKFLOW_ANCHORS["reconnaissance"] not in sliced
+@pytest.mark.parametrize("value", ["bogus_workflow_xyz", "plan", "plan_generation", "exec", "execution", "recon", ""])
+def test_unknown_workflow_is_refused_by_name(value, client):
+    """A value that names no part is a 422 naming the accepted ones — never
+    the shared sections passed off as an answer.  The names of the workflows
+    that no longer exist are unknown values like any other."""
+    with pytest.raises(UnknownGuidePart):
+        slice_agents_md(_load_agents_md(), value)
+    resp = client.get("/api/v1/agents-guide", params={"workflow": value})
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    for part in GUIDE_PARTS:
+        assert part in detail
 
 
 def test_slice_with_no_workflow_returns_full_file():
     full = _load_agents_md()
     assert slice_agents_md(full, None) == full
+    assert slice_agents_md(full, "project") == full
+    assert slice_agents_md(full, " Assist ") == slice_agents_md(full, "assist")
 
 
 # ---------------------------------------------------------------------------

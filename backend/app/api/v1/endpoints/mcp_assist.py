@@ -45,8 +45,8 @@ forwards it to the loopback endpoint, which decides.  The outcome splits on
   bare ``WWW-Authenticate: Bearer`` challenge.  That is a fact about the
   connection, and a client can act on it: prompt for a key, show a connection
   error, stop retrying.
-* **A valid key that may not do this** (the operator's project role is
-  read-only, wrong workflow, host outside the session's scope)
+* **A valid key that may not do this** (the operator's project role does not
+  permit the call)
   → an ``isError`` tool result carrying the endpoint's 403.  That is a fact
   about one call, which the model should read and work around; re-authenticating
   would not change it.
@@ -78,6 +78,11 @@ from app.api.v1.endpoints.mcp_tools import (
     tool_workflows,
 )
 from app.services import mcp_telemetry_service as mcp_telemetry
+from app.services.agent_policy import (
+    render_key_expiry_guidance,
+    render_read_back,
+    render_safety_rules,
+)
 from app.services.agent_api_log_service import mcp_loopback_active
 from app.services.agent_prompt_service import resolve_base_url
 
@@ -128,45 +133,50 @@ def _server_instructions(base_url: str) -> str:
     constant carrying a literal ``{base}`` that nothing ever substituted, so
     every client was handed an unusable URL.
     """
+    # The read-back, the safety rules and the key-expiry handling are RENDERED
+    # from agent_policy — the same text the pasted session prompt renders — so
+    # the two doors cannot drift.  An MCP agent never sees that prompt, so this
+    # text has to stand alone.
     return (
         "BlueStick. Your API key belongs to one project session and acts as the "
-        "operator who started it; they drive, you do what they ask within their "
-        "project role. You can query the inventory, upload scanner output, propose "
-        "tests on hosts (host_tests_propose — they appear on each host's page; "
-        "there are no test plans), run them and record what came back "
-        "(record_evidence), and propose findings — in whatever order the work "
-        "needs. Call agent_identity first to see the project and your authority. "
-        "All calls are audited.\n\n"
+        "operator who started it, with their project role, checked on every "
+        "call. A 403 is their role: tell them, do not route around it. BlueStick "
+        "runs no commands: yours run on the operator's machine, and BlueStick "
+        "knows only what you report to it; every call you make is recorded and "
+        "shown to them.\n\n"
+        + render_read_back(over_mcp=True) + "\n"
+        + render_safety_rules(over_mcp=True) + "\n"
+        "Run anything that may take more than a minute or two in the background "
+        "and poll it; never block one tool call on a scan.\n\n"
+        "What you ran and what came back is recorded directly (record_evidence), "
+        "as are uploads, notes and the tests you propose on hosts "
+        "(host_tests_propose). A change to what the team has concluded or what "
+        "the client report says — report text, a new finding, promoting or "
+        "dismissing a scanner observation, an endpoint's status — is a proposal "
+        "(the propose_* tools) that a person accepts or rejects.\n\n"
+        "If your key expires. "
+        + render_key_expiry_guidance(over_mcp=True) + "\n"
         "When something here gets in your way — a call you had to retry, a field "
         "or a route you guessed at, a tool you worked around — file it with "
         "submit_feedback right then, one line naming the tool or path and what "
-        "you expected. Do not save it for the end of the session.\n\n"
-        "Show the operator every command before you run it. Stay inside the "
-        "project's declared scope (assist_list_scopes) and write output into the "
-        "directory the session is working in. A target outside the scope, reading "
-        "or writing outside that directory, or changing their machine needs the "
-        "operator's explicit go-ahead first. list_tools is a catalogue for "
-        "reference, not a permission list.\n\n"
+        "you expected. End the session (end_session) only when the operator says "
+        "they are finished; finishing a task is not that.\n\n"
         "The tool descriptions and their schemas are enough for most work. The "
-        "guide (read_agent_guide) is reference — field shapes, upload formats, "
-        "recipes — for when a tool leaves you guessing; read the part you need, "
-        "not the whole thing up front.\n\n"
-        "BEFORE your first tool call, tell the operator in your own words what those "
-        "bounds are for THIS session: which project and scope you are working, where "
-        "output will be written, and what you will ask about first. Call "
-        "agent_identity and assist_list_scopes if you need the specifics — read them "
-        "back rather than guessing. It gives them the chance to say \"that's the "
-        "wrong scope\" before you act.\n\n"
-        "Bulk data is file-shaped and deliberately not a tool — fetch it with curl "
-        "and your X-API-Key header, then read the file locally:\n"
-        f"  report over many hosts: GET {base_url}/agent/assist/report-context.ndjson\n"
-        f"  a scope's live hosts:   GET {base_url}/agent/scopes/{{scope_id}}/live-hosts.txt\n"
-        f"  a scope's web targets:  GET {base_url}/agent/scopes/{{scope_id}}/web-targets.txt\n"
-        f"  a scope's host dump:    GET {base_url}/agent/scopes/{{scope_id}}/hosts.ndjson\n"
+        "guide (read_agent_guide) is reference for when a tool leaves you "
+        "guessing; read the part you need, not the whole thing up front.\n\n"
+        "Bulk data is file-shaped and deliberately not a tool — fetch it with "
+        "curl -sS and your X-API-Key header (never -k), then read the file "
+        "locally:\n"
+        f"  report over many hosts:  GET {base_url}/agent/assist/report-context.ndjson\n"
+        f"  every host:              GET {base_url}/agent/assist/hosts.ndjson\n"
+        f"  a scope's live hosts:    GET {base_url}/agent/scopes/{{scope_id}}/live-hosts.txt\n"
+        f"  a scope's web targets:   GET {base_url}/agent/scopes/{{scope_id}}/web-targets.txt\n"
+        f"  a scope's host dump:     GET {base_url}/agent/scopes/{{scope_id}}/hosts.ndjson\n"
         f"  a scope's named targets: GET {base_url}/agent/scopes/{{scope_id}}/named-targets.ndjson\n"
-        f"  upload scanner output:  POST {base_url}/agent/uploads (multipart file; the same "
-        f"batch=<sweep label> on every chunk of a split sweep; 409 duplicate_scan = already ingested)\n"
-        "The tools are for targeted lookups and for recording what you did."
+        f"  an evidence record's raw output: GET {base_url}/agent/evidence/{{evidence_id}}/raw\n"
+        f"  upload scanner output:   POST {base_url}/agent/uploads (multipart file; the same "
+        f"batch=<sweep label> on every chunk of a split sweep; 409 duplicate_scan = already "
+        f"ingested); poll the job with get_upload_job"
     )
 
 # The tool registry moved to ``mcp_tools.py`` in v2.278.0 — see that module for

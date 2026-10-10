@@ -4,11 +4,9 @@ Agent API — data-read, notes & follow endpoints.
 Read-only project/host/scan/scope browsing plus host notes and follow
 status.  Split out of agent_api.py.
 
-Every read is bounded by the key's project.  Keys were once bound to a scope
-as well (recon runs, removed in v2.433.0); nothing narrows a read to a scope
-now, and a scope's own hosts are read through /agent/scopes/{scope_id}/….
-The read surface is duplicated for assist sessions (/agent/assist/*), which
-is where agents mostly read.
+Every read is bounded by the key's project; nothing narrows one to a scope,
+and a scope's own hosts are read through /agent/scopes/{scope_id}/….  The
+inventory reads agents mostly use are /agent/assist/* (agent_assist.py).
 """
 import logging
 from datetime import datetime
@@ -172,18 +170,16 @@ def end_own_session(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """The agent's own exit (v2.340.0).
+    """The agent's own exit.
 
-    The session an agent holds the key for stayed ``active`` after the agent
-    finished, because nothing on the agent surface could end it: recon and
-    execution phases have a ``/complete``, the session itself had none, and
-    the operator's timeline showed every finished session as still running
-    until the hourly sweep lapsed it — after the key had expired *and* the
-    session had passed its lifetime cap, a week by default.
+    Marks the session ended and revokes its key, so the operator's Agent
+    Sessions page stops listing it as live.  A session nobody ends stays
+    active until the hourly sweep lapses it — after the key has expired *and*
+    the session has passed its lifetime cap, a week by default.
 
-    Refuses with 409 while an execution run is still open, naming the ids:
-    complete it first, then end the session.  Feedback goes before this call,
-    not after — the key is revoked on the way out.
+    It never refuses and never loses work: the tests proposed and the
+    evidence recorded are project data.  Feedback goes before this call, not
+    after — the key is revoked on the way out.
     """
     session = load_agent_session(db, request)
     note_agent_model(session, body.agent_model)
@@ -210,13 +206,13 @@ def renew_session_key(
 ):
     """Push this key's expiry out, keeping the same secret.
 
-    v2.304.0.  **Renewal, not rotation.** The token is unchanged, so an agent
+    **Renewal, not rotation.** The token is unchanged, so an agent
     part-way through a job does not have to be re-bootstrapped — which is the
     entire point, because the caller is typically holding scan output it cannot
     reproduce cheaply.
 
     It deliberately **accepts an expired key**. The failure this exists for is
-    discovered late: an agent launches nmap / masscan / Nessus, blocks for
+    discovered late: an agent launches a long scan, blocks for
     hours, its key lapses while it waits, and it only finds out when it tries to
     upload. Refusing renewal there would discard completed work over a lapsed
     credential. Prevention cannot cover this on its own — a blocked agent issues
@@ -260,15 +256,12 @@ def get_agent_identity(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """Self-introspection for *any* agent key, whatever workflow it belongs to.
+    """What this key is: its session and project, the operator it acts for
+    and their project role, whether it may write project data, and when it
+    expires (with where to renew it).
 
-    Deliberately not behind a workflow guard — that is the whole point.  Every
-    other introspection route requires the workflow it describes, so a caller
-    holding a key of unknown provenance can only classify it by trying surfaces
-    until one stops returning 403.  A client that must decide *before its first
-    call* which tools to offer (the MCP server, at ``tools/list``) cannot work
-    that way, and probing with real calls would write audit noise into whichever
-    surface it guessed wrong.
+    The first read of a session — what the read-back to the operator is built
+    from.  A read-only operator's agent may call it too.
 
     It discloses nothing the key can't already reach: the bound project and
     session are what every other call is scoped to, and the operator is who the
@@ -298,15 +291,9 @@ def get_agent_identity(
         and check_permissions(project_role, ProjectRole.ANALYST.value)
     )
 
-    # v2.337.0 — the phases this session has open, so the MCP layer can fill
-    # tool arguments (an execution session's plan_id) and
-    # the client can see what is in flight without probing surfaces.
-
     return AgentIdentity(
         workflow=(session.workflow if session is not None else None),
         session_id=session_id,
-        # Each id in its own space; a single active run resolves cleanly,
-        # several open return None and the agent names the one it means.
         project_id=agent.project_id,
         project_name=(
             db.query(Project.name).filter(Project.id == agent.project_id).scalar()
@@ -337,7 +324,7 @@ def suggest_tool(
     """Record an agent proposing a tool the catalogue doesn't have.
 
     Catalogue intake, not permission: whether a tool may be run is the
-    operator's call in their own client (v2.433.0).  The row lands as
+    operator's call in their own client.  The row lands as
     ``suggested`` and a curator adds it to the catalogue or declines it.
     """
     entry = record_suggestion(
@@ -435,8 +422,7 @@ def list_hosts(
             "Vulnerability.exploitable is True — set by the Nessus parser "
             "when exploit_code_maturity ∈ {functional, high, "
             "proof-of-concept} or metasploit/core-impact/canvas modules "
-            "are present.  v2.85.0; pre-v2.83.2 the column was never "
-            "persisted so this filter would have matched nothing."
+            "are present."
         ),
     ),
     search: Optional[str] = Query(None, description=SEARCH_PARAM_HELP),
@@ -507,16 +493,16 @@ def list_scans(
         None,
         description=(
             "Case-insensitive substring match against Scan.tool_name "
-            "(e.g. ``nessus``, ``nmap``, ``masscan``).  Mirrors the "
-            "user-side /scans filter added v2.82.0 / v2.83.0."
+            "(e.g. ``nessus``, ``nmap``, ``masscan``) — the Scans page's "
+            "tool filter."
         ),
     ),
     created_after: Optional[str] = Query(
         None,
         description=(
             "ISO-8601 timestamp; only scans uploaded after this point "
-            "are returned.  v2.85.0 — drives 'recent uploads' queries "
-            "without paging the full history."
+            "are returned — 'recent uploads' without paging the full "
+            "history."
         ),
     ),
     sort_by: Optional[str] = Query(
@@ -524,7 +510,7 @@ def list_scans(
         pattern="^(created_at|filename|tool_name)$",
         description=(
             "Sort column.  Allowed: ``created_at`` (default), "
-            "``filename``, ``tool_name``.  v2.85.0."
+            "``filename``, ``tool_name``."
         ),
     ),
     sort_order: Optional[str] = Query(

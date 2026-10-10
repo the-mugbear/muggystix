@@ -126,8 +126,10 @@ describe('StartAssistDialog', () => {
     expect(screen.getByText(/Agents → Agent Sessions/)).toBeInTheDocument();
   });
 
-  // 5.313.0 — no plan approval: the dialog never says a plan waits on you.
-  it('promises show-every-command, never an approval step', () => {
+  // The server cannot see the operator's terminal, so the dialog does not
+  // promise that every command is shown: it says the agent is told to, and
+  // names what holds it to that (the client's permission prompts).
+  it('says who holds the agent to show-every-command, and promises no approval step', () => {
     render(
       <MemoryRouter>
         <TooltipProvider>
@@ -135,7 +137,9 @@ describe('StartAssistDialog', () => {
         </TooltipProvider>
       </MemoryRouter>,
     );
-    expect(screen.getByText(/shows you every command it runs/)).toBeInTheDocument();
+    expect(screen.getByText(/It is told to show you every command first/)).toBeInTheDocument();
+    expect(screen.getByText(/your client's permission prompts are what hold it to that/)).toBeInTheDocument();
+    expect(screen.queryByText(/shows you every command it runs/)).toBeNull();
     expect(screen.queryByText(/approv/i)).toBeNull();
   });
 

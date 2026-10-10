@@ -181,7 +181,7 @@ def get_assist_investigation_queue(
     db: Session = Depends(get_db),
 ):
     """The engagement-wide queue on Operations: hosts NOBODY has touched (no
-    review, assignment, note, plan entry or finding) that carry an observed
+    review, assignment, note, test or finding) that carry an observed
     weakness or a relevant change.  Each row carries its reasons, evidence and
     next action; ``tier_counts`` (aligned with ``tiers``) and ``queue_total``
     describe the whole queue whatever ``tier``/``offset`` you pass.  The order
