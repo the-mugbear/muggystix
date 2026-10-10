@@ -570,6 +570,47 @@ def test_low_disk_in_a_piped_deploy_is_a_stated_cancel(project):
     assert _index(project.calls(), "compose build") == -1
 
 
+def _template_asset_lister() -> str:
+    """The Python that upgrade-instance.sh runs to list the template files an
+    operator may have installed (the heredoc between ``<<'PY'`` and ``PY``)."""
+    text = (SCRIPTS / "upgrade-instance.sh").read_text(encoding="utf-8")
+    start = text.index("<<'PY'")
+    start = text.index("\n", start) + 1
+    return text[start:text.index("\nPY\n", start)]
+
+
+def test_upgrade_carries_the_installed_files_of_a_template_that_extends_another(tmp_path):
+    """A template that extends another and declares no assets of its own
+    expects its base's list — under its OWN folder (branding is never
+    inherited).  The contact report repeated the list only because this step
+    read each manifest's own."""
+    root = tmp_path / "report-templates"
+    assets = [{"id": "logo", "path": "img/logo.png"}, {"id": "styles", "path": "branding/reference.docx"},
+              {"id": "bad", "path": "../../etc/passwd"}]
+    for name, manifest in (
+        ("pentest", {"title": "base", "assets": assets}),
+        ("contact-report", {"extends": "pentest"}),
+        ("own-list", {"extends": "pentest", "assets": [{"id": "x", "path": "img/own.png"}]}),
+        ("none", {"extends": "pentest", "assets": []}),
+        ("orphan", {"extends": "../pentest"}),
+        ("broken", None),
+    ):
+        (root / name).mkdir(parents=True)
+        (root / name / "template.json").write_text("{" if manifest is None else json.dumps(manifest), encoding="utf-8")
+
+    out = subprocess.run(
+        ["python3", "-", str(tmp_path)], input=_template_asset_lister(), capture_output=True, text=True, check=True,
+    ).stdout.split()
+
+    assert sorted(out) == [
+        "report-templates/contact-report/branding/reference.docx",
+        "report-templates/contact-report/img/logo.png",
+        "report-templates/own-list/img/own.png",
+        "report-templates/pentest/branding/reference.docx",
+        "report-templates/pentest/img/logo.png",
+    ]
+
+
 def test_an_unreadable_repair_ledger_is_not_reported_as_nothing_pending(project):
     project.state["fail"] = [{"match": r"data_repairs\.py", "rc": 1}]
 

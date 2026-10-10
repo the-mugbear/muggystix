@@ -271,12 +271,26 @@ done < <(python3 - "$PROJECT_ROOT" <<'PY' 2>/dev/null || true
 import json, pathlib, re, sys
 root = pathlib.Path(sys.argv[1]) / "report-templates"
 ok = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$")
-for manifest in sorted(root.glob("*/template.json")):
+def read(path):
     try:
-        assets = json.loads(manifest.read_text(encoding="utf-8")).get("assets") or []
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+for manifest in sorted(root.glob("*/template.json")):
+    own = read(manifest)
+    if own is None:
         continue
-    for a in assets:
+    assets = own.get("assets")
+    # A template that extends another and declares no assets of its own
+    # expects its base's list (the renderer's rule: a manifest key it leaves
+    # out is the base's) — but the FILES are its own: branding is never
+    # inherited, so the paths are under this template's folder.  One level.
+    base = own.get("extends")
+    if assets is None and isinstance(base, str) and ok.match(base) and "/" not in base:
+        assets = (read(root / base / "template.json") or {}).get("assets")
+    for a in assets if isinstance(assets, list) else []:
         path = str(a.get("path") or "") if isinstance(a, dict) else ""
         if ok.match(path) and ".." not in path.split("/"):
             print(f"report-templates/{manifest.parent.name}/{path}")
