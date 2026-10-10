@@ -13,6 +13,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { usePagedList } from '../hooks/usePagedList';
+import { PagedFooter } from '../components/operations/QueueParts';
 import ScansViewTabs from '../components/scans/ScansViewTabs';
 import { useUrlPage } from '../hooks/useUrlPage';
 import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
@@ -774,31 +775,19 @@ const ParseErrors: React.FC = () => {
           {/* Server-paged: the endpoint returns `total` for the active
               filters, so the operator can both see how much exists and reach
               it. Without this the list silently ended at the first page. */}
+          {/* The shared footer since 5.381.0 ("26–50 of 120 · page 2 of 5"). */}
           {totalMatching > 0 && (
-            <div className="mt-sm flex flex-wrap items-center justify-between gap-sm">
-              <p className="text-caption text-muted-foreground" role="status" aria-live="polite">
-                {items.length === 0
-                  ? 'No uploads match these filters'
-                  : `Showing ${page * pageSize + 1}–${page * pageSize + items.length} of ${totalMatching.toLocaleString()}`}
-              </p>
-              <div className="flex items-center gap-xs">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPage(Math.max(page - 1, 0))}
-                  disabled={page === 0 || loading}
-                >
-                  Previous
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPage(page + 1)}
-                  disabled={loading || (page + 1) * pageSize >= totalMatching}
-                >
-                  Next
-                </Button>
-              </div>
+            <div role="status" aria-live="polite">
+              {items.length === 0 ? (
+                <p className="mt-sm text-caption text-muted-foreground">No uploads match these filters</p>
+              ) : (
+                <PagedFooter
+                  pager={{ page, pageSize, total: totalMatching, onPage: setPage }}
+                  shown={items.length}
+                  noun="uploads"
+                  busy={loading}
+                />
+              )}
             </div>
           )}
       </section>

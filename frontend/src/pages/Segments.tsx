@@ -47,6 +47,7 @@ import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { InfoTip } from '../components/ui/info-tip';
 import LastUpdated from '../components/LastUpdated';
+import { PagedFooter } from '../components/operations/QueueParts';
 import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
@@ -479,14 +480,21 @@ const SubnetTable: React.FC<{
           ))}
         </tbody>
       </table>
+      {/* The shared footer (5.381.0): "51–100 of 120 · page 2 of 3".  While
+          the next page loads the previous rows stay under the page that was
+          asked for, so the range is cut at the total. */}
       {data.total > PAGE_SIZE && (
-        <div className="mt-sm flex items-center justify-between gap-sm text-caption text-muted-foreground">
-          <span>Showing {offset + 1}–{Math.min(offset + PAGE_SIZE, data.total)} of {data.total} subnets, worst first</span>
-          <div className="flex items-center gap-xs">
-            <Button size="sm" variant="outline" disabled={loading || offset === 0} onClick={() => onPage(Math.max(0, offset - PAGE_SIZE))}>Previous</Button>
-            <Button size="sm" variant="outline" disabled={loading || offset + PAGE_SIZE >= data.total} onClick={() => onPage(offset + PAGE_SIZE)}>Next</Button>
-          </div>
-        </div>
+        <PagedFooter
+          pager={{
+            page: Math.floor(offset / PAGE_SIZE), pageSize: PAGE_SIZE, total: data.total,
+            onPage: (page) => onPage(page * PAGE_SIZE),
+          }}
+          shown={Math.max(0, Math.min(data.subnets.length, data.total - offset))}
+          noun="subnets"
+          busy={loading}
+        >
+          <span className="text-caption text-muted-foreground">worst first</span>
+        </PagedFooter>
       )}
     </>
   );

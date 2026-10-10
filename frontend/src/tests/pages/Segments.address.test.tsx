@@ -80,7 +80,7 @@ beforeEach(() => {
 describe('Segments — the page of subnets lives in the address (real router)', () => {
   it('a reload on page 3 shows page 3, and asks for it alone', async () => {
     const router = open('/segments?page=3');
-    expect(await screen.findByText('Showing 101–120 of 120 subnets, worst first')).toBeInTheDocument();
+    expect(await screen.findByText('101–120 of 120')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '10.9.100.0/24' })).toBeInTheDocument();
     expect(asked()).toEqual([[50, 100]]);
     await settle();
@@ -90,35 +90,35 @@ describe('Segments — the page of subnets lives in the address (real router)', 
 
   it('Next and Previous write the address (replace) and the list follows', async () => {
     const router = open('/segments');
-    await screen.findByText('Showing 1–50 of 120 subnets, worst first');
+    await screen.findByText('1–50 of 120');
     expect(last()).toEqual([50, 0]);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-    expect(await screen.findByText('Showing 51–100 of 120 subnets, worst first')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next 50 subnets' }));
+    expect(await screen.findByText('51–100 of 120')).toBeInTheDocument();
     expect(router.state.location.search).toBe('?page=2');
     expect(router.state.historyAction).toBe('REPLACE');
     expect(last()).toEqual([50, 50]);
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Previous' })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
-    expect(await screen.findByText('Showing 1–50 of 120 subnets, worst first')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Previous 50 subnets' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Previous 50 subnets' }));
+    expect(await screen.findByText('1–50 of 120')).toBeInTheDocument();
     // The first page is left out of the address.
     expect(router.state.location.search).toBe('');
   });
 
   it('a link to the same page with another page number, and Back, change the rows; nothing writes the old page back', async () => {
     const router = open('/segments');
-    await screen.findByText('Showing 1–50 of 120 subnets, worst first');
+    await screen.findByText('1–50 of 120');
 
     await act(async () => { await router.navigate('/segments?page=3'); });
-    expect(await screen.findByText('Showing 101–120 of 120 subnets, worst first')).toBeInTheDocument();
+    expect(await screen.findByText('101–120 of 120')).toBeInTheDocument();
     expect(last()).toEqual([50, 100]);
     await settle();
     expect(router.state.location.search).toBe('?page=3');
     expect(screen.getByRole('link', { name: '10.9.100.0/24' })).toBeInTheDocument();
 
     await act(async () => { await router.navigate(-1); });
-    expect(await screen.findByText('Showing 1–50 of 120 subnets, worst first')).toBeInTheDocument();
+    expect(await screen.findByText('1–50 of 120')).toBeInTheDocument();
     await settle();
     expect(router.state.location.search).toBe('');
     expect(screen.getByRole('link', { name: '10.9.0.0/24' })).toBeInTheDocument();
@@ -126,20 +126,20 @@ describe('Segments — the page of subnets lives in the address (real router)', 
 
   it('a page past the end steps back to the last page that exists', async () => {
     const router = open('/segments?page=40');
-    expect(await screen.findByText('Showing 101–120 of 120 subnets, worst first')).toBeInTheDocument();
+    expect(await screen.findByText('101–120 of 120')).toBeInTheDocument();
     expect(router.state.location.search).toBe('?page=3');
   });
 
   it('the page on screen stays while the next one loads; a next page that fails says so with Retry (B5)', async () => {
     open('/segments');
-    await screen.findByText('Showing 1–50 of 120 subnets, worst first');
+    await screen.findByText('1–50 of 120');
     let fail: (e: unknown) => void = () => undefined;
     subnetsMock.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next 50 subnets' }));
     // The rows that were read stay under the page that was asked for.
-    expect(await screen.findByText('Showing 51–100 of 120 subnets, worst first')).toBeInTheDocument();
+    expect(await screen.findByText('51–100 of 120')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '10.9.0.0/24' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Next 50 subnets' })).toBeDisabled();
     expect(screen.queryByText('Ranking segments…')).not.toBeInTheDocument();
 
     await act(async () => { fail(new Error('HTTP 500')); });
@@ -155,12 +155,12 @@ describe('Segments — the page of subnets lives in the address (real router)', 
     open('/segments');
     expect(await screen.findByText("Couldn't load the segments")).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Retry/ }));
-    expect(await screen.findByText('Showing 1–50 of 120 subnets, worst first')).toBeInTheDocument();
+    expect(await screen.findByText('1–50 of 120')).toBeInTheDocument();
   });
 
   it('a page the address cannot mean is the first', async () => {
     open('/segments?page=abc');
-    expect(await screen.findByText('Showing 1–50 of 120 subnets, worst first')).toBeInTheDocument();
+    expect(await screen.findByText('1–50 of 120')).toBeInTheDocument();
     expect(asked()).toEqual([[50, 0]]);
   });
 });
@@ -172,7 +172,7 @@ describe('Segments — the lens lives in the address (real router)', () => {
 
   it('opens on the lens the address names, over the default', async () => {
     open('/segments?lens=subnet&page=2');
-    expect(await screen.findByText('Showing 51–100 of 120 subnets, worst first')).toBeInTheDocument();
+    expect(await screen.findByText('51–100 of 120')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'subnet' })).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -188,7 +188,7 @@ describe('Segments — the lens lives in the address (real router)', () => {
     const router = open('/segments?page=2');
     await screen.findByText(/No site carries active findings/);
     fireEvent.click(screen.getByRole('tab', { name: 'subnet' }));
-    expect(await screen.findByText('Showing 51–100 of 120 subnets, worst first')).toBeInTheDocument();
+    expect(await screen.findByText('51–100 of 120')).toBeInTheDocument();
     expect(router.state.location.search).toBe('?page=2&lens=subnet');
     expect(router.state.historyAction).toBe('REPLACE');
 

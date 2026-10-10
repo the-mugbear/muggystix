@@ -89,8 +89,11 @@ export const PagedFooter: React.FC<{
   noun: string;
   /** The page that lists exactly this list — the label states what it opens. */
   openAll?: { to: string; label: string };
+  /** A page is being read: the buttons wait, so a second press cannot ask
+   *  for the page after the one that has not arrived yet. */
+  busy?: boolean;
   children?: React.ReactNode;
-}> = ({ pager, shown, noun, openAll, children }) => {
+}> = ({ pager, shown, noun, openAll, busy = false, children }) => {
   const pages = Math.max(1, Math.ceil(pager.total / pager.pageSize));
   return (
     <div className="mt-xs flex min-w-0 flex-wrap items-center gap-x-md gap-y-xxs">
@@ -99,7 +102,7 @@ export const PagedFooter: React.FC<{
         <span className="inline-flex items-center gap-xxs">
           <Button
             size="sm" variant="ghost" className="size-7 p-0"
-            disabled={pager.page <= 0}
+            disabled={busy || pager.page <= 0}
             onClick={() => pager.onPage(pager.page - 1)}
             aria-label={`Previous ${pager.pageSize} ${noun}`}
           >
@@ -110,7 +113,7 @@ export const PagedFooter: React.FC<{
           </span>
           <Button
             size="sm" variant="ghost" className="size-7 p-0"
-            disabled={pager.page >= pages - 1}
+            disabled={busy || pager.page >= pages - 1}
             onClick={() => pager.onPage(pager.page + 1)}
             aria-label={`Next ${pager.pageSize} ${noun}`}
           >

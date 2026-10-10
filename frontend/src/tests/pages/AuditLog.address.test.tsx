@@ -76,14 +76,14 @@ describe('Audit log — page and filters live in the address (real router)', () 
   it('the pager writes the address (replace) and the list follows', async () => {
     const router = open('/audit-log');
     await screen.findByText('1–20 of 101');
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next 20 events' }));
     expect(await screen.findByText('21–40 of 101')).toBeInTheDocument();
     expect(router.state.location.search).toBe('?page=2');
     expect(router.state.historyAction).toBe('REPLACE');
     expect(last()).toEqual({ skip: 20, limit: 20 });
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Previous' })).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Previous 20 events' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Previous 20 events' }));
     expect(await screen.findByText('1–20 of 101')).toBeInTheDocument();
     expect(router.state.location.search).toBe('');
   });

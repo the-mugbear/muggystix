@@ -193,12 +193,12 @@ describe('AuditLogViewer', () => {
     ));
     mount();
     await screen.findByText('1–20 of 101');
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next 20 events' }));
     await waitFor(() => expect(mocked.listAuditLogs).toHaveBeenCalledWith(expect.objectContaining({ skip: 20 }), expect.any(AbortSignal)));
     // Still the first page, and it says so; the pager waits.
     expect(screen.getByText('first_page_event')).toBeInTheDocument();
     expect(screen.getByText('1–20 of 101')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Next 20 events' })).toBeDisabled();
     expect(screen.queryByText(/Loading audit log/)).toBeNull();
 
     answer({ logs: [row({ id: 2, action: 'second_page_event' })], total: 101, skip: 20, limit: AUDIT_PAGE_SIZE });
@@ -233,9 +233,9 @@ describe('AuditLogViewer', () => {
   it('a new resource type starts from the first page, in one request', async () => {
     mount();
     await screen.findByText('1–20 of 101');
-    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next 20 events' }));
     await waitFor(() => expect(mocked.listAuditLogs).toHaveBeenCalledWith(expect.objectContaining({ skip: 20 }), expect.any(AbortSignal)));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next 20 events' })).toBeEnabled());
     mocked.listAuditLogs.mockClear();
 
     fireEvent.change(screen.getByLabelText('Resource type'), { target: { value: 'user' } });

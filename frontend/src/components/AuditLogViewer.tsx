@@ -29,6 +29,7 @@ import { formatAuditDetails } from '../utils/auditDetails';
 import { personName } from '../utils/people';
 import { formatTimestamp } from '../utils/relativeTime';
 import { safeFallback } from '../utils/uiStyles';
+import { PagedFooter } from './operations/QueueParts';
 import PostureSection from './posture/PostureSection';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -275,27 +276,17 @@ const AuditLogViewer: React.FC = () => {
               </table>
             </div>
 
-            <div className="mt-sm flex items-center justify-between text-caption text-muted-foreground">
-              <span>
-                {total === 0 ? 'No events' : `${skip + 1}–${pageEnd} of ${total}`}
-              </span>
-              <span className="flex gap-xs">
-                <Button
-                  size="sm" variant="outline"
-                  disabled={skip === 0 || loading}
-                  onClick={() => list.setPage(shownPage - 1)}
-                >
-                  Previous
-                </Button>
-                <Button
-                  size="sm" variant="outline"
-                  disabled={pageEnd >= total || loading}
-                  onClick={() => list.setPage(shownPage + 1)}
-                >
-                  Next
-                </Button>
-              </span>
-            </div>
+            {/* The shared footer (5.381.0). */}
+            {total === 0 ? (
+              <p className="mt-sm text-caption text-muted-foreground">No events</p>
+            ) : (
+              <PagedFooter
+                pager={{ page: shownPage, pageSize: PAGE_SIZE, total, onPage: list.setPage }}
+                shown={pageEnd - skip}
+                noun="events"
+                busy={loading}
+              />
+            )}
           </>
         )}
     </PostureSection>
