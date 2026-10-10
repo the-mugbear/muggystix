@@ -45,7 +45,8 @@ as real project members:
     operator's role re-read on every call.  The viewer key is made exactly
     that way.
   * A host note thread with replies, an @mention and an image attachment,
-    marked a handoff and pinned.
+    marked a handoff and pinned; and, on the same host, a note an AGENT
+    wrote in Markdown (heading, list, code, a table, a mention).
   * A finding comment thread with a report image, a status change with a
     justification, and one endpoint marked remediated.
   * An ISSUED client report (the report worker renders its files).
@@ -598,6 +599,28 @@ def main() -> None:
         lead("POST", f"/hosts/{host.id}/notes/{reply['id']}/attachments",
              files={"file": ("null-session.png", io.BytesIO(_png()), "image/png")})
         print(f"host note thread on {host.ip_address} (root note {root['id']})")
+
+    # --- An agent's note, written in Markdown ------------------------------
+    # Through the agents' own route with the analyst's key, so it is
+    # attributed to the session.  Long enough to be clamped, with a list,
+    # code, a mention and a line break: what the note body has to render.
+    if not db.query(models.Annotation).filter(
+            models.Annotation.host_id == host.id, models.Annotation.body.like(f"## {MARK}%")).first():
+        body = (
+            f"## {MARK} Assessment\n\n"
+            "SMB on this host accepts a **null session**.\n"
+            "Checked from the jump host; nothing was changed.\n\n"
+            "- `445/tcp` open, signing **not required**\n"
+            "- `IPC$` readable anonymously\n"
+            "- no writable share found\n\n"
+            "Next: confirm with `smbclient -N -L //host` — @acc-lead to decide whether this is reported.\n\n"
+            "| Share | Access |\n|---|---|\n| IPC$ | read |\n| ADMIN$ | denied |\n"
+        )
+        r = httpx.post(f"{args.base_url}/api/v1/agent/hosts/{host.id}/notes", timeout=60,
+                       headers={"X-API-Key": keys["analyst"]}, json={"body": body})
+        if r.status_code >= 400:
+            raise SystemExit(f"POST /agent/hosts/{host.id}/notes -> {r.status_code}: {r.text[:300]}")
+        print(f"agent note in Markdown on {host.ip_address} (note {r.json()['id']})")
 
     # --- Finding comments, status change with a reason, endpoint state -----
     critical = (
