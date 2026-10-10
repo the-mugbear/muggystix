@@ -30,6 +30,7 @@ import {
   type PromotedEvidence,
 } from '../../services/api';
 import { useAgentTask } from '../../hooks/useAgentTask';
+import { useOpeningKey } from '../../hooks/useOpeningKey';
 import { useProjectId } from '../../hooks/useProjectId';
 import { queryErrorText } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
@@ -120,19 +121,9 @@ const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onSta
   // One key per opening, so a double click stores one record.
   const [requestKey, setRequestKey] = useState(newKey);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setCurrent(test);
-    if (test) {
-      setOutcome('');
-      setSummary('');
-      setOutput('');
-      setError(null);
-      setRequestKey(newKey());
-    }
-    // A different test, or the panel reopening — not every re-render of it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [test?.id, test == null]);
+  // (Each opening — and another test — is a new panel: the controller keys it,
+  // `useOpeningKey`.  `current` is the test it was opened for, replaced only
+  // by the fresh copy after a stale save; it stays while the panel closes.)
 
   const dirty = current != null && (summary.trim().length > 0 || output.length > 0);
   useEffect(() => { onDraft(dirty); }, [dirty, onDraft]);
@@ -301,30 +292,16 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
   const [command, setCommand] = useState('');
   const [expected, setExpected] = useState('');
   const [rationale, setRationale] = useState('');
-  const [priority, setPriority] = useState<HostTestPriority>('medium');
+  // (Each opening is a new panel — the controller keys it, `useOpeningKey` —
+  // so every field below is simply its initial value.)
+  const [priority, setPriority] = useState<HostTestPriority>(() => asPriority(target?.confirms?.severity));
   const [mine, setMine] = useState(true);
   // One key per opening, so a double click stores one test.
-  const [requestKey, setRequestKey] = useState(newKey);
+  const [requestKey] = useState(newKey);
   const projectId = useProjectId();
   const create = useMutation({ mutationFn: (body: HostTestCreateBody) => createHostTests(projectId, [body]) });
-  const { reset: forgetFailure } = create;
   const saving = create.isPending;
   const error = queryErrorText(create.error, 'Could not add the test.');
-
-  useEffect(() => {
-    if (!target) return;
-    setDescription('');
-    setTool('');
-    setCommand('');
-    setExpected('');
-    setRationale('');
-    setPriority(asPriority(target.confirms?.severity));
-    setMine(true);
-    forgetFailure();
-    setRequestKey(newKey());
-    // Each opening starts clean — not every re-render of an open panel.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target]);
 
   const dirty = target != null
     && [description, tool, command, expected, rationale].some((v) => v.trim().length > 0);
@@ -470,6 +447,9 @@ export const useHostTestsController = ({
   const [resultDraft, setResultDraft] = useState(false);
   const [addFor, setAddFor] = useState<{ confirms?: AddTestTarget } | null>(null);
   const [addDraft, setAddDraft] = useState(false);
+  // Each opening of a panel — and, for a result, another test — starts clean.
+  const resultOpening = useOpeningKey(resultFor?.id ?? null);
+  const addOpening = useOpeningKey(addFor);
   const { give: giveAgent, allowed: canAskAgent, dialog: agentDialog } = useAgentTask();
 
   // THE read of this host's tests: the Weaknesses rows and the Tests section
@@ -550,6 +530,7 @@ export const useHostTestsController = ({
   const element = (
     <>
       <ResultPanel
+        key={`result-${resultOpening}`}
         test={resultFor}
         onClose={() => { setResultFor(null); setResultDraft(false); }}
         onDraft={setResultDraft}
@@ -562,6 +543,7 @@ export const useHostTestsController = ({
         onStale={async (id) => (await reload()).find((t) => t.id === id) ?? null}
       />
       <AddTestPanel
+        key={`add-${addOpening}`}
         target={addFor}
         hostId={hostId}
         userId={userId}

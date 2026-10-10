@@ -5,12 +5,13 @@
  * skips them too. Selections survive a new search, so hosts can be gathered
  * across several queries before adding.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query';
 import { Loader2, RefreshCw, Search, X } from 'lucide-react';
 
 import { Finding, Host, addFindingHosts, getHosts } from '../services/api';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useOpeningKey } from '../hooks/useOpeningKey';
 import { useProjectId } from '../hooks/useProjectId';
 import { queryErrorText } from '../lib/query';
 import { Button } from './ui/button';
@@ -36,7 +37,13 @@ export interface AddFindingHostsDialogProps {
   onAdded: (updated: Finding, requested: number[]) => void;
 }
 
-const AddFindingHostsDialog: React.FC<AddFindingHostsDialogProps> = ({ open, onOpenChange, finding, onAdded }) => {
+// A fresh dialog each time it opens: its search, selection and any refusal
+// are the body's initial state (`useOpeningKey`).
+const AddFindingHostsDialog: React.FC<AddFindingHostsDialogProps> = (props) => (
+  <AddFindingHostsBody key={useOpeningKey(props.open)} {...props} />
+);
+
+const AddFindingHostsBody: React.FC<AddFindingHostsDialogProps> = ({ open, onOpenChange, finding, onAdded }) => {
   const projectId = useProjectId();
   const [query, setQuery] = useState('');
   const debounced = useDebouncedValue(query.trim(), 250);
@@ -66,14 +73,6 @@ const AddFindingHostsDialog: React.FC<AddFindingHostsDialogProps> = ({ open, onO
   // One line for what went wrong: the add that was refused, else the search.
   const error = queryErrorText(add.error, 'The hosts could not be added.')
     ?? queryErrorText(search.error, 'Hosts could not be searched.');
-
-  // A fresh dialog each time it opens.
-  useEffect(() => {
-    if (!open) return;
-    setQuery('');
-    setPicked(new Map());
-    resetAdd();
-  }, [open, resetAdd]);
 
   const toggle = (h: Host) => {
     setPicked((prev) => {
