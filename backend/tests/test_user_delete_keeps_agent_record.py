@@ -105,6 +105,10 @@ def test_deleting_a_user_keeps_what_their_agent_session_did(client, db_session, 
     row = row.json()
     assert (row["call_count"], row["host_test_count"], row["evidence_count"]) == (2, 2, 3)
     assert (row["agent_id"], row["user_id"], row["user_username"]) == (None, None, None)
+    # ...and ENDED, saying why (owner, 2026-10-11: "Deleting a user should end
+    # their agent sessions") — it was left stored as active with no key.
+    assert row["status"] != "active", row["status"]
+    assert (row.get("can_end"), row.get("can_resume")) == (False, False)
     listed = client.get(f"{base}/agent-sessions").json()["sessions"]
     assert sid in {r["id"] for r in listed}
 

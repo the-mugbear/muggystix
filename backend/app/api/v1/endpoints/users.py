@@ -643,6 +643,13 @@ def delete_user(
 
     username = user.username  # Store before deletion
 
+    # The account's agent sessions end with it (owner, 2026-10-11: "Deleting a
+    # user should end their agent sessions"): the delete removes their keys,
+    # and a session left stored as active read as live with nothing behind it.
+    # Same transaction as the delete; the sessions and their record stay.
+    end_sessions_of_operator(
+        db, user.id, ended_by=current_user, reason="The operator's account was deleted.",
+    )
     db.delete(user)
     db.commit()
 
