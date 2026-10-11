@@ -534,6 +534,15 @@ def cancel_ingestion_job(
     return {"job_id": job.id, "status": job.status, "message": "Job cancelled"}
 
 
+class RetryJobRequest(BaseModel):
+    # "Import what the file holds" — the operator's answer for a job whose
+    # failure_kind is "truncated_file".  This attempt's shared JSON reader
+    # stops where the file ends instead of failing: the complete records
+    # before the cut are imported and the job finishes PARTIAL.  A file that
+    # is invalid rather than cut short still fails and keeps nothing.
+    keep_truncated: bool = False
+
+
 @router.post(
     "/jobs/{job_id}/retry",
     response_model=CancelJobResponse,
@@ -548,6 +557,7 @@ def cancel_ingestion_job(
 )
 def retry_ingestion_job(
     job_id: int,
+    body: Optional[RetryJobRequest] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -559,6 +569,12 @@ def retry_ingestion_job(
     whose file another job has since imported is refused as a duplicate
     (409, ``code: duplicate_scan``) unless it was uploaded with "import
     anyway".  Owner or admin only; analyst role.
+
+    The body is optional.  ``{"keep_truncated": true}`` is the operator's
+    "import what the file holds" for a file that was cut short
+    (``failure_kind: "truncated_file"``): this attempt stops where the file
+    ends, keeps the complete records before that point and finishes partial.
+    It holds for this attempt only — a retry without it clears it.
     """
     job = db.query(IngestionJob).filter(
         IngestionJob.id == job_id,
@@ -575,7 +591,9 @@ def retry_ingestion_job(
 
     from app.services.ingestion_service import DuplicateUploadError
     try:
-        result = ingestion_service.requeue_job(job_id)
+        result = ingestion_service.requeue_job(
+            job_id, keep_truncated=bool(body and body.keep_truncated),
+        )
     except DuplicateUploadError as exc:
         # Another job imported this exact file while this one sat failed.
         raise HTTPException(status_code=409, detail=exc.detail())
@@ -616,7 +634,9 @@ def get_ingestion_job(
     if not job:
         raise HTTPException(status_code=404, detail="Ingestion job not found")
     _require_job_access(job, current_user)
-    return job
+    # As the lists do: why it failed, of what kind, and whether a later import
+    # replaced it — the page following ONE job reads the same row.
+    return annotate_jobs(db, [job])[0]
 
 
 @router.get(

@@ -342,9 +342,10 @@ export const HOST_FILTER_FIELDS: HostFilterField[] = [
     noData: 'No OS data yet — run OS detection (nmap -O) and upload it.',
   },
   {
-    kind: 'scans', id: 'scans', keys: ['scanIds', 'firstSeenInSelectedScans'], chipKey: 'scanIds',
-    label: 'Seen in scans', category: 'discovery', keywords: ['scan', 'file', 'upload', 'import', 'first', 'new', 'discovered'],
-    help: 'Hosts observed in any selected scan — or, optionally, FIRST discovered in them.',
+    kind: 'scans', id: 'scans', keys: ['scanIds', 'firstSeenInSelectedScans', 'renamedInSelectedScans'], chipKey: 'scanIds',
+    label: 'Seen in scans', category: 'discovery',
+    keywords: ['scan', 'file', 'upload', 'import', 'first', 'new', 'discovered', 'renamed', 'name', 'hostname'],
+    help: 'Hosts observed in any selected scan — or, optionally, FIRST discovered in them, or whose display name they changed.',
   },
   {
     kind: 'multi', id: 'orgs', key: 'orgs', keys: ['orgs'], chipKey: 'orgs',

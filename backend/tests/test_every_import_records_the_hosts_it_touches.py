@@ -576,16 +576,13 @@ def _dnsx_zone_transfer() -> str:
 
 VARIANTS: Dict[str, Variant] = {
     # A forward row (A, name, address) whose address is a known host: the
-    # record is stored under the scan and the host is its value.
+    # record is stored under the scan and the host is its value, so the row
+    # notes the host as dnsx does for the same answer (owner, 2026-10-11; it
+    # was the one open gap here until then).
     "dns_csv-forward-rows": Variant(
         "dns_csv",
         Case("dns-forward.csv", _text(_DNS_CSV_FORWARD), _net("10.72.0"), f"{_PARTIAL} dns.csv"),
         known=_net("10.72.0"),
-        open_gap=(
-            "dns_parser.py notes a host only for a PTR row; an A / AAAA row whose value is a "
-            "known host's address stores a dns_record of the scan and no history row (dnsx counts "
-            "the same answer as addressing the host)"
-        ),
     ),
     # A zone transfer: dns_zone_transfer_allowed is recorded on the NAME
     # SERVER's host, which no answer of the file addresses.

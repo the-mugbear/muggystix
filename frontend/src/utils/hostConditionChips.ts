@@ -140,16 +140,20 @@ export function hostConditionChips(
   list('tags', 'Tag', (id) => names.tag?.(id) ?? id);
   list('subnetLabels', 'Subnet label', (id) => names.subnetLabel?.(id) ?? id);
 
-  // Scans, with the "first discovered" modifier that only means something
-  // alongside them.
+  // Scans, with the "first discovered" / "renamed by" modifiers that only
+  // mean something alongside them.  An address may carry both: the list is
+  // then the hosts that are both, and the chip says so.
   if (filters.scanIds?.length) {
     const { text, full } = anyOf(filters.scanIds.map((id) => names.scan?.(id) ?? `Scan #${id}`));
-    const verb = filters.firstSeenInSelectedScans ? 'First discovered in' : 'Seen in';
+    const verb = filters.firstSeenInSelectedScans && filters.renamedInSelectedScans
+      ? 'First discovered in and renamed by'
+      : filters.renamedInSelectedScans ? 'Renamed by'
+        : filters.firstSeenInSelectedScans ? 'First discovered in' : 'Seen in';
     chips.push({
       key: 'scanIds',
       label: `${verb}: ${text}`,
       title: text === full ? undefined : `${verb}: ${full}`,
-      clearKeys: ['scanIds', 'firstSeenInSelectedScans'],
+      clearKeys: ['scanIds', 'firstSeenInSelectedScans', 'renamedInSelectedScans'],
     });
   }
 

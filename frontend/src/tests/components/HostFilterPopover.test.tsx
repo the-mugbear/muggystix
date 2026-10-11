@@ -246,6 +246,27 @@ describe('HostFilterPopover', () => {
     expect(onApply).toHaveBeenCalledWith({ scanIds: ['9'], firstSeenInSelectedScans: true });
   });
 
+  it('"renamed by" is a third way of using the scans: it needs one, replaces "first discovered", and is restored', async () => {
+    const user = userEvent.setup();
+    const onApply = vi.fn();
+    const { unmount } = render(
+      <Harness fieldId="scans" initial={{ scanIds: ['9'], firstSeenInSelectedScans: true }} onApply={onApply} />,
+    );
+    expect(screen.getByRole('radio', { name: 'First discovered in' })).toHaveAttribute('aria-checked', 'true');
+    await user.click(screen.getByRole('radio', { name: 'Renamed by' }));
+    await user.click(screen.getByRole('button', { name: 'Apply condition' }));
+    expect(onApply).toHaveBeenCalledWith({ scanIds: ['9'], renamedInSelectedScans: true });
+    unmount();
+
+    render(<Harness fieldId="scans" initial={{ scanIds: ['9'], renamedInSelectedScans: true }} onApply={onApply} />);
+    expect(screen.getByRole('radio', { name: 'Renamed by' })).toHaveAttribute('aria-checked', 'true');
+    await user.click(screen.getByRole('checkbox', { name: /nightly\.xml/ }));
+    expect(screen.getByRole('button', { name: 'Apply condition' })).toBeDisabled();
+    await user.click(screen.getByRole('radio', { name: 'Observed in' }));
+    await user.click(screen.getByRole('button', { name: 'Apply condition' }));
+    expect(onApply).toHaveBeenLastCalledWith({});
+  });
+
   it('a choice applies as it is picked, and "Any" removes the condition', async () => {
     const user = userEvent.setup();
     const onApply = vi.fn();

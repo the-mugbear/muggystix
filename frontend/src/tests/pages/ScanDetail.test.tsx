@@ -105,6 +105,25 @@ describe('ScanDetail', () => {
     expect(rowOf('10.0.0.3')).not.toHaveTextContent(/credentialed/i);
   });
 
+  it('says per host what the scan did to it: new here, renamed here, or seen before', async () => {
+    api.getScanHostSnapshots.mockResolvedValue({
+      items: [
+        { host_id: 1, ip_address: '10.0.0.1', hostname_at_scan: 'a.corp', state_at_scan: 'up', host_created: true, hostname_changed: false, open_port_count: 0, observed_port_count: 0 },
+        { host_id: 2, ip_address: '10.0.0.2', hostname_at_scan: 'b.corp', state_at_scan: null, host_created: false, hostname_changed: true, open_port_count: 0, observed_port_count: 0 },
+        { host_id: 3, ip_address: '10.0.0.3', hostname_at_scan: 'c.corp', state_at_scan: null, host_created: false, hostname_changed: false, open_port_count: 0, observed_port_count: 0 },
+        // An older server does not say.
+        { host_id: 4, ip_address: '10.0.0.4', hostname_at_scan: null, state_at_scan: null, host_created: false, open_port_count: 0, observed_port_count: 0 },
+      ],
+    });
+    renderPage();
+    const rowOf = (ip: string) => screen.getByRole('button', { name: ip }).closest('tr')!;
+    await screen.findByRole('button', { name: '10.0.0.1' });
+    expect(rowOf('10.0.0.1')).toHaveTextContent('New here');
+    expect(rowOf('10.0.0.2')).toHaveTextContent('Renamed here');
+    expect(rowOf('10.0.0.3')).toHaveTextContent('Seen before');
+    expect(rowOf('10.0.0.4')).toHaveTextContent('Seen before');
+  });
+
   // nmap's scanned port list: returned by GET /scans/{id} since forever, read by nothing.
   it('prints what the scan was asked to probe, one entry per protocol', async () => {
     api.getScan.mockResolvedValue({

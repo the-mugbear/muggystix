@@ -1059,10 +1059,30 @@ def assigned_predicate(
     )
 
 
-def scan_predicate(scan_ids: Sequence[int], first_seen_only: bool = False) -> ColumnElement:
+def renamed_in_scan_condition(history=models.HostScanHistory) -> ColumnElement:
+    """A ``host_scan_history`` row of a scan that CHANGED the host's display
+    name.  The ONE definition: the Scans figures (``renamed_hosts`` on a scan
+    and on a batch) count the rows it holds for, and the Hosts filter
+    ``renamed_in_scan`` lists their hosts (``scan_predicate``).
+
+    A row that says the scan created the host is never one: the writers do
+    not set both, and a hand delete of the creating scan hands ``host_created``
+    to the next scan's row (``scan_sightings.release_scan``) — that scan then
+    reads as the one that added the host, not as one that renamed it, so
+    "added" and "renamed" never overlap."""
+    return and_(history.hostname_changed.is_(True), history.host_created.is_(False))
+
+
+def scan_predicate(
+    scan_ids: Sequence[int], first_seen_only: bool = False, renamed_only: bool = False,
+) -> ColumnElement:
     """Host appears in any of the given scans; with ``first_seen_only`` the
-    host must have been *first* discovered in one of them."""
+    host must have been *first* discovered in one of them; with
+    ``renamed_only`` one of them must have changed its display name
+    (``renamed_in_scan_condition``)."""
     conditions = [models.HostScanHistory.scan_id.in_(list(scan_ids))]
+    if renamed_only:
+        conditions.append(renamed_in_scan_condition())
     if first_seen_only:
         earlier = aliased(models.HostScanHistory)
         conditions.append(~(

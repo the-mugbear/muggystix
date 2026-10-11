@@ -1,10 +1,9 @@
 """The operator reads a parser's own diagnosis, not a generic template.
 
-UX review + production diagnostics 2026-09-26: a truncated WhatWeb file
-raised "Invalid or truncated whatweb JSON during streaming: premature EOF",
-but the job and the Ingestion Results row said only "The file may contain
-invalid JSON syntax". A NetExec import showed its own reason and then
-"may be corrupted" after it.
+UX review + production diagnostics 2026-09-26: a WhatWeb file the reader
+refused raised the reader's own sentence, but the job and the Ingestion
+Results row said only "The file may contain invalid JSON syntax". A NetExec
+import showed its own reason and then "may be corrupted" after it.
 """
 import json
 
@@ -23,12 +22,15 @@ def _raised(fn):
 
 
 def test_a_parser_diagnosis_is_the_message(tmp_path):
+    # Invalid in the middle (a missing comma).  A file that is CUT SHORT is a
+    # different failure with its own kind and sentence, and the dispatcher
+    # words it: tests/test_truncated_file_keep.py.
     path = tmp_path / "whatweb.json"
-    path.write_text('[{"target": "http://a"}, {"target": "http://b"')  # truncated
+    path.write_text('[{"target": "http://a"} {"target": "http://b"}]')
     err = _raised(lambda: list(iter_json_records(str(path), tool_label="whatweb JSON", threshold_bytes=1)))
     assert type(err) is ValueError
     msg = _generate_user_message(err, "parsing_error", "whatweb_json", "whatweb.json")
-    assert msg.startswith("Invalid or truncated whatweb JSON during streaming")
+    assert msg.startswith("Invalid whatweb JSON during streaming")
     assert "invalid JSON syntax" not in msg
 
 

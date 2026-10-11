@@ -143,10 +143,24 @@ def failure_reason(job: models.IngestionJob, parse_error: Optional[models.ParseE
     return specific or _plain_reason(job.error_message) or _first_line(job.message)
 
 
+def failure_kind(job: models.IngestionJob, parse_error: Optional[models.ParseError]) -> Optional[str]:
+    """The machine-readable kind of a FAILED job's failure: its parse error's
+    ``error_type`` (``parsing_error``, ``format_error``, or
+    ``ingestion_service.TRUNCATED_FILE_ERROR`` — the file was cut short and
+    holds complete records a person may choose to import).  ``None`` for a job
+    that did not fail, or that failed without a parse error (a cancel, a
+    discard, an expiry, an unexpected processing failure).  The ONE reading,
+    for the pages and the agent reads alike — never a sentence matched in a
+    message."""
+    if job.status != "failed" or parse_error is None:
+        return None
+    return parse_error.error_type or None
+
+
 def annotate_jobs(db: Session, jobs: List[models.IngestionJob]) -> List[models.IngestionJob]:
-    """Set ``superseded_by_job_id`` and ``failure_reason`` on each job (plain
-    attributes, read by ``IngestionJobSchema``).  Two queries for any number
-    of jobs."""
+    """Set ``superseded_by_job_id``, ``failure_reason`` and ``failure_kind``
+    on each job (plain attributes, read by ``IngestionJobSchema``).  Two
+    queries for any number of jobs."""
     if not jobs:
         return jobs
     superseded = superseding_job_ids(db, jobs)
@@ -158,4 +172,5 @@ def annotate_jobs(db: Session, jobs: List[models.IngestionJob]) -> List[models.I
     for j in jobs:
         j.superseded_by_job_id = superseded.get(j.id)
         j.failure_reason = failure_reason(j, parse_errors.get(j.parse_error_id))
+        j.failure_kind = failure_kind(j, parse_errors.get(j.parse_error_id))
     return jobs

@@ -235,9 +235,16 @@ def start_staged_job(
 
 def queue_job(
     db: Session, job_id: int, *, allowed_from: tuple, choice: Optional[Dict[str, Any]] = None,
+    keep_truncated: bool = False,
 ) -> IngestionJob:
     """staged | failed → queued: the ONE path, for the format review's start
     and for a plain retry of a failed job.
+
+    ``keep_truncated`` is the operator's answer to a file that was cut short
+    ("import what the file holds"): an instruction for the attempt being
+    queued, written to ``options`` here and REMOVED by every start or retry
+    that does not give it — so it never outlives the attempt it was given
+    for (a cancelled kept attempt, retried plainly, fails as it first did).
 
     Checked under the row lock (``job_transitions.retry``): the status, the
     file on disk and the duplicate guard.  A double start (two tabs, the
@@ -252,7 +259,7 @@ def queue_job(
     Raises ``JobNotTransitionable`` (its ``status`` is the state found, or
     "file_missing"), ``DuplicateUploadError``, or ``LookupError`` when the
     row is gone.  Commits."""
-    from app.services.ingestion_service import _transitions, ingestion_service
+    from app.services.ingestion_service import KEEP_TRUNCATED_OPTION, _transitions, ingestion_service
 
     duplicate: Dict[str, Any] = {}
     found_as: Dict[str, Any] = {}
@@ -282,6 +289,10 @@ def queue_job(
             allowed_from=allowed_from,
             precondition=_precondition,
             parse_error_id=None,
+            # A dismissal acknowledged the failure being left behind, not
+            # whatever this attempt ends as: left set, a retried job that then
+            # failed again or finished partial was already "dealt with".
+            dismissed_at=None,
             **(choice or {}),
         )
     except Exception as exc:
@@ -296,7 +307,19 @@ def queue_job(
         started.retry_count = (started.retry_count or 0) + 1
     # The operator queued it: the reaper's budget starts over.
     started.reap_count = 0
-    if choice is None:
+    # A new dict: the JSON column only notices a reassignment.
+    options = dict(started.options or {})
+    if keep_truncated:
+        options[KEEP_TRUNCATED_OPTION] = True
+    else:
+        options.pop(KEEP_TRUNCATED_OPTION, None)
+    if options != (started.options or {}):
+        started.options = options
+    if keep_truncated:
+        started.message = (
+            f"Re-queued by user to import what the cut-short file holds (attempt {started.retry_count})."
+        )
+    elif choice is None:
         started.message = f"Re-queued by user (attempt {started.retry_count})."
     else:
         chosen = choice.get("format_override")
@@ -434,6 +457,9 @@ def reprocess_job(
     options = dict(job.options or {})
     options["reprocess_of_job_id"] = job.id
     options.pop("format_override", None)
+    # One attempt's instruction (queue_job); a re-process is a new import.
+    from app.services.ingestion_service import KEEP_TRUNCATED_OPTION
+    options.pop(KEEP_TRUNCATED_OPTION, None)
     new = IngestionJob(
         filename=dst.name,
         original_filename=job.original_filename,

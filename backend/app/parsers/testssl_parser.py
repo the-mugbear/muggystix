@@ -398,6 +398,7 @@ class TestsslParser:
                 # skipped.  A TLS assessment completed a handshake: up now.
                 self._observed.note(
                     host_row, created=resolved.created, state="up", hostname=hostname,
+                    renamed=resolved.renamed,
                 )
             except Exception as exc:
                 sp.rollback()

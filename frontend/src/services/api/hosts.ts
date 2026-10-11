@@ -749,6 +749,8 @@ export const getHosts = async (projectId: number, params: {
   follow_status?: string;
   scan_ids?: string;
   first_seen_in_scan?: boolean;
+  /** With `scan_ids` (422 without): only hosts whose display name those scans changed. */
+  renamed_in_scan?: boolean;
   with_notes_only?: boolean;
   has_web_interface?: boolean;
   tech?: string;

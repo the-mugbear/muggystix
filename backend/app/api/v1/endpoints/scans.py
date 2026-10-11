@@ -25,6 +25,7 @@ from app.schemas.schemas import (
 )
 from app.services.command_explanation_service import CommandExplanationService
 from app.services import scope_coverage
+from app.services.host_query_predicates import renamed_in_scan_condition
 from app.services.format_registry import format_label
 from app.services.import_attention_service import superseded_import_condition
 from app.services import dns_name_service, host_work, scan_sightings
@@ -490,6 +491,10 @@ def get_scans(
             # Hosts this scan first discovered (created the row) — the rest of
             # its observed hosts were already known and got updated.
             func.sum(case((models.HostScanHistory.host_created == True, 1), else_=0)).label('new_hosts'),  # noqa: E712
+            # Already-known hosts whose display name this scan changed —
+            # counted with the condition the Hosts filter it opens applies
+            # (renamed_in_scan=true), never a second definition.
+            func.sum(case((renamed_in_scan_condition(), 1), else_=0)).label('renamed_hosts'),
             # v2.333.0 — hosts this scan supplied OS information for.
             func.sum(case((models.HostScanHistory.os_info_updated.is_(True), 1), else_=0)).label('os_fingerprinted'),
         )
@@ -778,6 +783,7 @@ def get_scans(
             up_hosts=result.up_hosts or 0,
             new_hosts=result.new_hosts or 0,
             updated_hosts=(result.total_hosts or 0) - (result.new_hosts or 0),
+            renamed_hosts=result.renamed_hosts or 0,
             total_ports=port_stats.total_ports if port_stats and port_stats.total_ports else 0,
             open_ports=port_stats.open_ports if port_stats and port_stats.open_ports else 0,
             port_breakdown=port_breakdown,
@@ -954,6 +960,13 @@ class ScanBatchSummary(BaseModel):
     tools: List[str] = []
     hosts: int = Field(0, description="Distinct hosts the files observed")
     new_hosts: int = Field(0, description="Hosts these files first discovered")
+    renamed_hosts: int = Field(
+        0,
+        description=(
+            "Already-known hosts whose display name these files changed (distinct hosts; "
+            "the Hosts list with scan_ids=<the files> and renamed_in_scan=true)"
+        ),
+    )
     open_ports: int = Field(0, description="Open-port observations across the files")
     first_uploaded: Optional[datetime] = None
     last_uploaded: Optional[datetime] = None
@@ -1331,6 +1344,12 @@ def list_scan_batches(
                     models.Scan.batch_id.label("batch_id"),
                     func.count(distinct(models.HostScanHistory.host_id)).label("hosts"),
                     func.sum(case((models.HostScanHistory.host_created.is_(True), 1), else_=0)).label("new_hosts"),
+                    # DISTINCT hosts, as ``hosts`` is: two files of one batch
+                    # may each rename the same host, and the Hosts list this
+                    # opens lists it once.
+                    func.count(distinct(case(
+                        (renamed_in_scan_condition(), models.HostScanHistory.host_id),
+                    ))).label("renamed_hosts"),
                 )
                 .select_from(models.Scan)
                 .join(models.HostScanHistory, models.HostScanHistory.scan_id == models.Scan.id)
@@ -1413,6 +1432,7 @@ def list_scan_batches(
             tools=sorted(tools.get(b.id, set()), key=str.lower),
             hosts=(stats.hosts or 0) if stats else 0,
             new_hosts=(stats.new_hosts or 0) if stats else 0,
+            renamed_hosts=(stats.renamed_hosts or 0) if stats else 0,
             open_ports=open_ports.get(b.id, 0) or 0,
             first_uploaded=(r.first_uploaded if r is not None else None) or b.created_at,
             last_uploaded=(r.last_uploaded if r is not None else None) or b.created_at,

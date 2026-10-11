@@ -144,6 +144,7 @@ type HostQueryContext = {
   follow_status?: string;
   scan_ids?: string;
   first_seen_in_scan?: boolean;
+  renamed_in_scan?: boolean;
   with_notes_only?: boolean;
   has_web_interface?: boolean;
   tech?: string;
@@ -216,6 +217,8 @@ function hostQueryContext(filters: HostFilterOptions, sortBy: HostSortOption): H
   if (filters.scanIds?.length) params.scan_ids = filters.scanIds.join(',');
   if (filters.firstSeenInSelectedScans && filters.scanIds?.length)
     params.first_seen_in_scan = filters.firstSeenInSelectedScans;
+  // Sent only with a scan: the server refuses it alone (422), as it means nothing.
+  if (filters.renamedInSelectedScans && filters.scanIds?.length) params.renamed_in_scan = true;
   if (filters.onlyWithNotes === true) params.with_notes_only = true;
   if (filters.hasWebInterface !== undefined) params.has_web_interface = filters.hasWebInterface;
   if (filters.tech?.length) params.tech = filters.tech.join(',');
@@ -265,6 +268,7 @@ function hostsSearch({ filters, sortBy, page }: HostsListState): string {
     // "New in the chosen scans" ticked before a scan is chosen: not a
     // condition the API can take yet, but still the reader's choice.
     if (filters.firstSeenInSelectedScans && !filters.scanIds?.length) sp.set('first_seen_in_scan', 'true');
+    if (filters.renamedInSelectedScans && !filters.scanIds?.length) sp.set('renamed_in_scan', 'true');
     if (page > 0) sp.set(HOSTS_PAGE_PARAM, String(page + 1));
   });
 }

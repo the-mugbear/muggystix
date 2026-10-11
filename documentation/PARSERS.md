@@ -57,7 +57,8 @@ Once queued, a background worker (`app/worker.py`) claims the job and runs
    left it blank, and records `skipped_count`, `parser_warnings`, `partial`,
    the progress summary and `uninterpreted_lines` on the job (see Part 2).
    JSON lines the shared reader could not decode add to the skipped count and
-   mark the job partial.
+   mark the job partial. A JSON document that ends early is a failure of its
+   own kind — see "A file that was cut short" below.
 
 ### Detection basis — what the review shows the operator
 
@@ -92,6 +93,81 @@ Never invent attribution from a filename alone.
 > read), and the tool's entry in `app/data/parser_coverage.json` (the "What
 > BlueStick reads" page, pinned by `tests/test_parser_coverage.py`). (Details in
 > Part 2.)
+
+### A file that was cut short
+
+A scanner that was interrupted, or a copy that did not finish, leaves a file
+that stops before its document is closed. For the formats read through the
+shared JSON reader (`app/parsers/streaming_json.py`) the operator is **asked**
+(owner decision 2026-10-11) — nothing is kept until they say so:
+
+1. **The import fails, as that, and leaves nothing.** A JSON document (an
+   array, or an object holding the array) whose file ends early raises
+   `TruncatedJSONFile`, at any file size. The failed-import cleanup runs at
+   once, as for every failure; no half-imported scan waits for an answer. The
+   job's parse error has `error_type = truncated_file`, served on every job
+   read as `failure_kind`, and the reason says how much the file holds: "This
+   whatweb JSON file was cut short: it ends after 28,253 complete records,
+   before the end of the document."
+2. **The row offers "Import what the file holds"** (Ingestion results;
+   analysts and above) beside the retry. A plain retry reads the same bytes
+   and fails the same way.
+3. **That action re-queues the job with one attempt's instruction**
+   (`POST /upload/jobs/{id}/retry {"keep_truncated": true}` →
+   `job.options.keep_truncated`, set and cleared only by
+   `staged_import_service.queue_job`). The dispatcher hands it to the reader
+   (`begin_read(keep_truncated=True)`), which then stops at the cut instead of
+   raising. Parsers are not involved: they receive the complete records and
+   then the end of the input. The record the cut fell in is never delivered —
+   the library only yields a closed record — so no half record is written.
+4. **The import completes PARTIAL**, with the warning "… it ends after N
+   complete records, before the end of the document. Those records were
+   imported; anything the tool wrote after that point is not in the file." It
+   carries its upload identity like any completed import (an identical upload
+   is then a duplicate), counts as an import that needs someone until it is
+   dismissed, and is never retried by itself. A cancel, the timeout or a
+   worker shutdown during that attempt cleans up like any other.
+
+**Cut short vs invalid.** The two are told apart by *where* the reader fails,
+not by the library's words: the installed ijson backend (yajl2_c) raises
+`IncompleteJSONError` for every error, and says "premature EOF" only for some
+cuts — a cut inside `tru`, an escape, a `\u` escape or a multi-byte character
+is reported as a "lexical error". A failure reported only after the file was
+read to its end means every byte was acceptable and more were expected (cut
+short); a failure before that is invalid content. **An invalid file never gets
+the kind, is never offered the action, and keeps nothing** — with the
+instruction forced through the API it fails again. A file cut **inside its
+first record** has nothing to keep: it fails as an ordinary `parsing_error`
+whose reason says so, and nothing is offered.
+
+**Formats covered** — every parser on the shared reader: amass / subfinder
+JSON, directory-buster JSON, dnsx, EyeWitness JSON, httpx, naabu JSON, Nikto
+JSON, Nuclei, SMBMap JSON, testssl, WhatWeb
+(`tests/test_truncated_file_keep.py` pins the list). It applies to a JSON
+**document**. The same tools' JSON **lines** output is not a document: a final
+line that was cut is skipped and counted, and the import completes partial
+("1 line of the file were not valid JSON and were skipped (a truncated or
+corrupted record)") — unchanged, and without asking. One case moved with this
+change: a small (< 50 MB) JSON *document* that was cut short used to fall to
+the line reader, which kept whichever lines happened to decode on their own or
+failed with "no parseable records"; it now fails as cut short like a large one.
+
+**Formats with their own readers — not covered; what each does today at a
+premature end** (the owner has not decided these):
+
+| Format | Today |
+|---|---|
+| Nmap XML | Completes **partial without asking**: the hosts read so far are kept, with the warning "Incomplete XML — parsing stopped early, so hosts after this point are MISSING, not down". |
+| Masscan XML | Completes **partial without asking** ("The XML ended early (near line N); the N hosts read before that point were imported"). |
+| Masscan JSON | Completes **as if whole**: its reader decodes record by record and drops an undecodable tail with a log line only — the job is not marked partial. |
+| Masscan list, gnmap, and the other line-based text formats | Line by line. A cut last line is either a line that does not parse (counted as skipped where the parser counts, which marks the import partial) or a shorter valid line; a file cut between lines is indistinguishable from a complete one. |
+| Nessus XML | **Fails and keeps nothing** ("Nessus XML was truncated/incomplete … Nothing from this file was kept."). No offer. |
+| OpenVAS XML | **Fails and keeps nothing** ("Invalid or truncated OpenVAS XML: …"). No offer. |
+| BloodHound JSON | **Fails and keeps nothing** ("Invalid or truncated BloodHound JSON…"); its reader does not tell a cut from invalid content. No offer. |
+| NetExec JSON | Falls back to reading the text as console lines; a cut JSON file then usually fails with no host lines. |
+| RDAP JSON / NDJSON | A document that does not decode is read line by line; a cut line is counted as skipped. |
+| CSV formats | Row by row; a cut last row is a short row (skipped or read with empty cells, per parser). |
+| EyeWitness ZIP | A cut archive cannot be opened: fails and keeps nothing. |
 
 ### The data model parsers write to
 
@@ -361,6 +437,8 @@ resolver_name` (there is **no** `hostname`/`ip_address` column on `DNSRecord`).
 | `ttl` | int rows only | ✓ (when numeric) | — |
 | `resolver_name` | ✓ (**only parser that sets it**) | — | — |
 | Feeds `Host.hostname` | PTR (overwrite) + A/AAAA (no overwrite) | PTR rows only | always (needs resolved IP) |
+| Notes an existing host as addressed | PTR + A/AAAA | PTR + A/AAAA | always (via the dedup service) |
+| Creates a host for an unknown address | PTR + A/AAAA | PTR rows only | always (needs resolved IP) |
 
 - **dnsx** is the resolver-attribution path: it counts NXDOMAIN/SERVFAIL/REFUSED
   failures and per-resolver hits into `parser_warnings`, and **fails closed**.
@@ -372,7 +450,9 @@ resolver_name` (there is **no** `hostname`/`ip_address` column on `DNSRecord`).
   and the scan deletes all read). A host the import CREATES gets its row from
   the dedup service (`find_or_create_host`, `host_created`, state `unknown`);
   a host that ALREADY existed — PTR or forward, dnsx's transferred zones
-  included; the CSV's PTR rows — is noted in a `ScanHostObservations` and
+  included, and for the CSV its PTR rows and (since 2026-10-11, owner
+  decision) its A / AAAA rows whose value is that host's address — is noted
+  in a `ScanHostObservations` and
   written by `parser_utils.record_addressed_hosts` (the web parsers'
   `record_hosts_in_scan`, with the flushes two writers of one row need),
   ahead of each heartbeat and after the last record: `host_created` false,
@@ -384,11 +464,44 @@ resolver_name` (there is **no** `hostname`/`ip_address` column on `DNSRecord`).
   had no Hosts list. Imports made before it are not back-filled. The job's
   result line counts the three apart (`parser_utils.dns_import_summary`):
   "N DNS records, A hosts addressed, C created, M display names changed" — the
-  last is existing hosts whose display name the import replaced or filled, and
-  is stated by the import only (no stored row says which scan changed a
-  display name). `host_change_service` ("Changed" on the Hosts list, the
+  last is existing hosts whose display name the import replaced or filled. It
+  is counted from the notes' own `ScanHostObservations.renamed_host_ids`, the
+  set that sets `host_scan_history.hostname_changed` (next bullet), so the
+  sentence, the Scans row's "M renamed" and the Hosts list it opens cannot
+  disagree. `host_change_service` ("Changed" on the Hosts list, the
   queue's "changed at its latest scan") compares the two latest history rows
   that STATE a liveness, so a row with none is not a state flip.
+- **The dns CSV's forward rows and dnsx still differ in two things** (not
+  decided — the owner agreed only to the note): for an A / AAAA answer dnsx
+  also offers the name as the WEAKEST display-name candidate (`forward`: it
+  fills an empty `Host.hostname`, never replaces one) and CREATES the host
+  when the address is unknown; the CSV's A / AAAA row does neither — it stores
+  the record, and notes the host only when the address is already one.
+- **Every import records the hosts whose display name it changed**
+  (`host_scan_history.hostname_changed`, revision `d7b3e9a1c5f2`): true on the
+  scan's row for a host that ALREADY existed when the scan filled its empty
+  `Host.hostname` or replaced it under the one precedence rule
+  (`dns_name_service.apply_hostname_candidate`). It is set where the name is
+  changed and written by the two writers of the history row, no third: the
+  dedup service (`_update_and_record_existing_host` compares the name across
+  the update — nmap, gnmap, Nessus, OpenVAS, nikto, nuclei, NetExec, smbmap,
+  BloodHound, amass, naabu, rustscan, dirbuster; `note_hostname_changed` for
+  NetExec's one direct fill from a later line of the same host) and
+  `record_hosts_in_scan` from `ScanHostObservations.note(..., renamed=…)`
+  (httpx, WhatWeb, testssl through `resolve_host_cached`'s `renamed`; dnsx and
+  the dns CSV from the rule's own answer). masscan and EyeWitness write no
+  display name. Never true on the row of the scan that CREATED the host (a
+  host created with a name, or created and named later in the same file, is
+  "added", not "renamed"), never turned back to false by a later record of
+  the same scan, never written by an operator's edit. Which name wins and
+  when is unchanged — this only records that a change happened. Read through
+  ONE condition, `host_query_predicates.renamed_in_scan_condition`
+  (`hostname_changed AND NOT host_created`): a scan's and a batch's
+  `renamed_hosts`, the Hosts filter `scan_ids=…&renamed_in_scan=true`, and
+  `hostname_changed` on the scan page's rows. Imports made before the revision
+  read false (not back-filled). `tests/test_scan_renamed_hosts.py` holds every
+  format to "a known unnamed host carries a name afterwards if and only if
+  the row says so".
 - **dnsx `all` and `-axfr`** are read in dnsx's own shapes (retryabledns
   `DNSData` / `AXFRData`). `all` is an array of resource records as text,
   `owner<TAB>ttl<TAB>IN<TAB>TYPE<TAB>rdata` (`parse_rr_text`); on an ordinary
@@ -728,9 +841,14 @@ class MyToolParser:
 tool_label="JSON")` streams `.json` arrays, single objects, and `.jsonl` /
 `.ndjson` uniformly; `array_keys` points it at a wrapped payload such as
 `{"results": [...]}` (use this, not
-`json.load`, so large files don't OOM the worker). Lines it cannot decode are
-tallied (`begin_rejection_tally` / `end_rejection_tally`) and reported as
-skipped by the orchestrator.
+`json.load`, so large files don't OOM the worker). The orchestrator opens a
+report around each parser run (`begin_read` / `end_read`): JSON lines the
+reader cannot decode are tallied there and reported as skipped, and a
+document that ends early is noted there and raised as `TruncatedJSONFile` —
+or, when the import was asked to keep what a cut-short file holds, simply ends
+the records ("A file that was cut short", Part 0). A parser on this reader has
+nothing to do for either: do not catch the reader's exception, and do not
+read the file a second way.
 
 `app/services/dns_name_service.py` → `bind_hostname(...)` records the name a
 web tool tested as an HTTP observation and returns its `name_id` for the rows

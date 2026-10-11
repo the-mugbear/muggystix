@@ -27,7 +27,7 @@ describe('describeInventoryFilters', () => {
       has_open_ports: false, os_filter: 'Windows', tech: 'nginx', has_exploit_available: true,
       weaknesses: 'smb_unsigned,weak_tls', checks: 'smb_signing_off', has_test_execution: true,
       has_web_interface: false, follow_status: 'none', assigned_to: 'me', out_of_scope_only: true,
-      scan_ids: '4', first_seen_in_scan: true, with_notes_only: true,
+      scan_ids: '4', first_seen_in_scan: true, renamed_in_scan: true, with_notes_only: true,
       orgs: ['Google, LLC', 'Example'], asns: ['AS15169'], countries: ['US'],
     })).toEqual([
       'Search: "db"', 'Query: port:445 AND NOT tag:"x"', 'State: up', 'Site: London DC',
@@ -35,7 +35,7 @@ describe('describeInventoryFilters', () => {
       'Port states: open', 'Has open ports: No', 'OS: Windows', 'Tech: nginx', 'Exploit reported',
       'Weakness: smb unsigned or weak tls', 'Check: smb signing off', 'Tested',
       'Web interface: not recorded', 'Review: not started', 'Assigned: me', 'Out of scope',
-      'Scan IDs: 4', 'First seen in selected scans', 'With notes only',
+      'Scan IDs: 4', 'First seen in selected scans', 'Display name changed by selected scans', 'With notes only',
       'Organisation: Google, LLC, Example', 'ASN: AS15169', 'Country: US',
     ]);
   });

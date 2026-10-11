@@ -88,6 +88,8 @@ import { formatDate, formatRelativeTime, formatTimestamp } from '../utils/relati
 import ScanContribution from '../components/scans/ScanContribution';
 import ScansViewTabs from '../components/scans/ScansViewTabs';
 import ImportResult from '../components/scans/ImportResult';
+import KeepTruncatedImport from '../components/scans/KeepTruncatedImport';
+import { isCutShort } from '../utils/truncatedImport';
 import UploadReviewDialog from '../components/scans/UploadReviewDialog';
 import { ScanBatchRow } from '../components/scans/ScanBatchList';
 import { ROW_LINK_CLASS, ScanRowActions } from '../components/scans/ScanRowActions';
@@ -1448,6 +1450,13 @@ export default function Scans() {
                         {isFailure && isExpanded && (
                           <TableRow>
                             <TableCell colSpan={7} className="bg-accent p-md">
+                              {/* A cut-short file fails the same way on a plain
+                                  Retry: offer what Ingestion results offers. */}
+                              {canWrite && isCutShort(job) && (
+                                <div className="mb-sm">
+                                  <KeepTruncatedImport jobId={job.id} filename={job.original_filename} fileRetained />
+                                </div>
+                              )}
                               <p className="mb-xxs text-metadata font-semibold text-destructive">
                                 Full error message
                               </p>

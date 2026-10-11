@@ -10,7 +10,7 @@ import ScanContribution from './ScanContribution';
  * review item 5): what this upload did to the inventory, with every count
  * opening the records it counts.
  *
- *   +12 hosts added · 38 already known · 4 conflicts · 7 new open ports · 3 records skipped
+ *   +12 hosts added · 38 already known · 5 renamed · 4 conflicts · 7 new open ports · 3 records skipped
  *
  * Built from the per-scan summary the inventory already computes (host and
  * port history, conflict history, the ingestion job's quality trio), so it
@@ -50,6 +50,19 @@ export function importResultParts(scan: Scan): ImportResultPart[] {
       to: `/hosts?scan_ids=${scan.id}`,
       title: 'Hosts this upload observed that were already in the inventory; their records were updated. Opens every host this scan observed.',
       tone: 'muted',
+    });
+  }
+  // Of the already-known hosts: those whose display name this upload
+  // changed.  Shown only when there are any — a scan imported before the fact
+  // was recorded answers 0, which is "not recorded", not "none".
+  const renamed = scan.renamed_hosts ?? 0;
+  if (renamed > 0) {
+    parts.push({
+      key: 'renamed',
+      text: `${num(renamed)} renamed`,
+      to: `/hosts?scan_ids=${scan.id}&renamed_in_scan=true`,
+      title: 'Hosts already in the inventory whose display name this upload changed (an empty name filled, or a name replaced by a stronger source). Opens the Hosts page filtered to them.',
+      tone: 'default',
     });
   }
   if (added === 0 && known === 0) {

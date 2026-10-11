@@ -268,6 +268,18 @@ class HostScanHistory(Base):
     # surfaced on the host pages. Set at ingest from the dedup create/update
     # decision (the ground truth), so it doesn't need re-deriving.
     host_created = Column(Boolean, nullable=False, server_default=text("false"), default=False)
+    # True iff THIS scan changed the host's display name (``hosts_v2.hostname``)
+    # on a host that already existed: an empty name filled, or a name replaced
+    # under the one precedence rule (dns_name_service.apply_hostname_candidate).
+    # Never true on the row of the scan that created the host (it had no name
+    # to change), never set by an operator's edit, never turned back to false
+    # by a later record of the same scan.  Written by the two writers of this
+    # row and no third (HostDeduplicationService._record_host_scan_history,
+    # parser_utils.record_hosts_in_scan).  Imports from before revision
+    # d7b3e9a1c5f2 read false: they are not back-filled (owner decision).
+    # Read through host_query_predicates.renamed_in_scan_condition — the
+    # Scans figure (``renamed_hosts``) and the Hosts filter it opens.
+    hostname_changed = Column(Boolean, nullable=False, server_default=text("false"), default=False)
     # Review 2026-10-01 B12 — did THIS scan authenticate to the host?  True /
     # False when the scanner says so (Nessus: the host's Credentialed_Scan
     # tag, else plugin 19506); NULL when it does not, and for every tool that

@@ -29,7 +29,7 @@ export interface SavedHostFilterState {
 export const HOST_URL_PARAMS = [
   'search', 'q', 'state', 'os_filter', 'subnets', 'ports', 'services',
   'port_states', 'scan_ids', 'tags', 'subnet_labels', 'sites', 'out_of_scope_only',
-  'out_of_scope', 'has_open_ports', 'first_seen_in_scan', 'has_critical_vulns',
+  'out_of_scope', 'has_open_ports', 'first_seen_in_scan', 'renamed_in_scan', 'has_critical_vulns',
   'has_high_vulns', 'has_medium_vulns', 'has_low_vulns',
   'has_exploit_available', 'has_test_execution',
   'has_web_interface', 'tech', 'follow_status', 'follow',
@@ -76,6 +76,7 @@ const BOOLEAN_PARAMS: Array<[string[], keyof HostFilterOptions]> = [
   [['out_of_scope_only', 'out_of_scope'], 'outOfScopeOnly'],
   [['has_open_ports'], 'hasOpenPorts'],
   [['first_seen_in_scan'], 'firstSeenInSelectedScans'],
+  [['renamed_in_scan'], 'renamedInSelectedScans'],
   [['has_critical_vulns'], 'hasCriticalVulns'],
   [['has_high_vulns'], 'hasHighVulns'],
   [['has_medium_vulns'], 'hasMediumVulns'],

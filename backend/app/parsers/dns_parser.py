@@ -74,11 +74,11 @@ class DNSParser:
         self.db.flush()
         announce_scan(self.db, scan)
 
-        # Host ids: created by this import, and existing hosts whose DISPLAY
-        # name a PTR row changed.  The hosts addressed are these and the noted
-        # ones together.
+        # Host ids created by this import.  The hosts addressed are these and
+        # the noted ones together; the existing hosts whose DISPLAY name a PTR
+        # row changed are the notes' own ``renamed_host_ids`` — the set that
+        # becomes ``host_scan_history.hostname_changed``.
         created_host_ids: set[int] = set()
-        renamed_host_ids: set[int] = set()
         dns_records_processed = 0
         self._rejected = 0
         self._reject_examples: List[str] = []
@@ -150,7 +150,7 @@ class DNSParser:
                     # failed and carried on in a session that could no longer
                     # flush, so every later row was rejected too and the
                     # import failed (the record-isolation rule, v2.419.0).
-                    row_created_id = row_renamed_id = None
+                    row_created_id = None
                     with record_savepoint(self.db, self._observed, self._reset_caches):
                         record_observation(
                             self.db,
@@ -178,13 +178,13 @@ class DNSParser:
                             if existing_host:
                                 # PTR outranks scanner/forward names but never an
                                 # operator's correction (was: unconditional overwrite).
-                                if apply_hostname_candidate(existing_host, dns_name, 'ptr'):
-                                    row_renamed_id = existing_host.id
+                                renamed = apply_hostname_candidate(existing_host, dns_name, 'ptr')
                                 # Addressed by this scan whether or not the
                                 # name changed.  No state: a PTR row does not
                                 # say the host is up.
                                 self._observed.note(
                                     existing_host, created=False, state=None, hostname=dns_name,
+                                    renamed=renamed,
                                 )
                             else:
                                 host_data = {
@@ -196,12 +196,24 @@ class DNSParser:
                                 row_created_id = self.dedup_service.find_or_create_host(
                                     ip_address, scan.id, host_data, project_id=self._project_id
                                 ).id
+                        elif record_type in ('A', 'AAAA'):
+                            # A forward row whose value is a KNOWN host's
+                            # address: the scan addressed that host, as dnsx
+                            # notes it for the same answer (owner decision
+                            # 2026-10-11).  Only the note: this row applies
+                            # no display name and creates no host.
+                            addressed_host = self.db.query(models.Host).filter(
+                                models.Host.ip_address == ip_address,
+                                models.Host.project_id == self._project_id,
+                            ).first()
+                            if addressed_host:
+                                self._observed.note(
+                                    addressed_host, created=False, state=None, hostname=dns_name,
+                                )
                     # Counted only once the row's savepoint is released.
                     dns_records_processed += 1
                     if row_created_id is not None:
                         created_host_ids.add(row_created_id)
-                    if row_renamed_id is not None:
-                        renamed_host_ids.add(row_renamed_id)
 
                 except Exception as e:
                     logger.warning(f"Error processing DNS record row {i}: {str(e)}")
@@ -240,7 +252,9 @@ class DNSParser:
         hosts_created = len(created_host_ids)
         hosts_addressed = len(self._observed.host_ids | created_host_ids)
         # A host this import created and then named again is a created host.
-        hosts_renamed = len(renamed_host_ids - created_host_ids)
+        # The set that set ``hostname_changed`` — one source for the sentence
+        # and the Scans figure.
+        hosts_renamed = len(self._observed.renamed_host_ids - created_host_ids)
 
         # Correlate hosts to subnets
         if hosts_created > 0:

@@ -67,6 +67,7 @@ class HostFilterParams:
         out_of_scope_only: Optional[bool] = Query(None, description="If true, only hosts not mapped to any scope/subnet"),
         scan_ids: Optional[str] = Query(None, description="Comma-separated scan IDs; hosts must appear in at least one", examples=["1,2,5"]),
         first_seen_in_scan: Optional[bool] = Query(None, description="Used with scan_ids — if true, only hosts first discovered in those scans"),
+        renamed_in_scan: Optional[bool] = Query(None, description="Used with scan_ids (422 without it) — if true, only hosts whose display name one of those scans changed: the hosts a scan's `renamed_hosts` counts. A host the scan created is not one"),
         with_notes_only: Optional[bool] = Query(None, description="If true, only hosts that have at least one note"),
         has_web_interface: Optional[bool] = Query(None, description="If true, only hosts with at least one web interface recorded (httpx / eyewitness / nikto)"),
         tech: Optional[str] = Query(None, description="Comma-separated list of technology strings; OR semantics — host qualifies if any interface has any listed tech (substring match, case-insensitive)", examples=["nginx,jenkins"]),
@@ -102,6 +103,7 @@ class HostFilterParams:
         self.out_of_scope_only = out_of_scope_only
         self.scan_ids = scan_ids
         self.first_seen_in_scan = first_seen_in_scan
+        self.renamed_in_scan = renamed_in_scan
         self.with_notes_only = with_notes_only
         self.has_web_interface = has_web_interface
         self.tech = tech

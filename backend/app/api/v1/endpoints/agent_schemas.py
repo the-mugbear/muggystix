@@ -531,6 +531,14 @@ class ReconJobStatus(BaseModel):
     tool_name: Optional[str] = None
     parse_error_id: Optional[int] = None
     last_error: Optional[str] = None
+    failure_kind: Optional[str] = Field(None, description=(
+        "For a failed upload, the kind of failure: parsing_error, format_error, or "
+        "truncated_file — the file was cut short and nothing from it was imported, "
+        "though it holds complete records. Tell the operator: on Ingestion results "
+        "they can choose 'Import what the file holds' (a partial import), or upload "
+        "the complete file. That choice is theirs; no agent call makes it. Null when "
+        "the upload did not fail or failed without a parse error (a cancel)."
+    ))
     # Derived timing so the agent can see where an upload spent its time
     # without polling repeatedly.  Both are None until the relevant
     # transition has happened: ``queue_age_s`` (created -> started) once the

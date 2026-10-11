@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session, aliased, joinedload, selectinload, Query as 
 
 from app.db.session import disable_statement_timeout, get_db, is_statement_timeout
 from app.services.default_scope import project_scope
+from app.services.import_attention_service import failure_kind
 from app.services.operations_read_service import blocked_import_condition
 from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
 from app.services.vulnerability_service import VulnerabilityService
@@ -2592,6 +2593,14 @@ class AssistIngestionIssue(BaseModel):
     #: What to tell the operator — the user-facing parse message where one
     #: exists, otherwise the worker's error.
     message: Optional[str] = None
+    failure_kind: Optional[str] = Field(None, description=(
+        "For a failed import, the kind of failure: parsing_error, format_error, or "
+        "truncated_file — the file was cut short and nothing from it was imported, "
+        "though it holds complete records. On Ingestion results a person can choose "
+        "'Import what the file holds' (a partial import), or upload the complete "
+        "file. That choice is theirs; no agent call makes it. Null for a row that "
+        "did not fail, or failed without a parse error."
+    ))
     #: Rows the parser dropped while still reporting success.  Non-zero means
     #: this file is IN the project but thinner than the file on disk.
     skipped_count: int = 0
@@ -2739,12 +2748,16 @@ def list_assist_ingestion_issues(
         j.parse_error_id for j in failed_jobs if j.parse_error_id is not None
     }
     error_messages: Dict[int, str] = {}
+    # The same rows carry the failure's kind, read as the pages read it.
+    claimed_errors: Dict[int, Any] = {}
     if claimed_error_ids:
-        error_messages = {
-            eid: (msg or "")
-            for eid, msg in db.query(models.ParseError.id, models.ParseError.user_message)
-            .filter(models.ParseError.id.in_(claimed_error_ids)).all()
+        claimed_errors = {
+            row.id: row
+            for row in db.query(
+                models.ParseError.id, models.ParseError.user_message, models.ParseError.error_type,
+            ).filter(models.ParseError.id.in_(claimed_error_ids)).all()
         }
+        error_messages = {eid: (row.user_message or "") for eid, row in claimed_errors.items()}
 
     unresolved_query = (
         db.query(models.ParseError)
@@ -2819,6 +2832,7 @@ def list_assist_ingestion_issues(
                 or j.error_message
                 or j.last_error
             ),
+            failure_kind=failure_kind(j, claimed_errors.get(j.parse_error_id)),
             job_id=j.id,
             parse_error_id=j.parse_error_id,
             created_at=j.created_at,

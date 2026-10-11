@@ -622,8 +622,10 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "description": (
             "The hosts ONE scan observed, as it observed them (the scan page's "
             "'As scanned' table; scan_id from assist_list_scans): state and "
-            "hostname at scan, whether the scan first discovered the host, the "
-            "ports it saw (at most 50 listed per host; the counts are exact) and "
+            "hostname at scan, whether the scan first discovered the host "
+            "(host_created) or changed the display name of one that already "
+            "existed (hostname_changed; false for imports made before this was "
+            "recorded), the ports it saw (at most 50 listed per host; the counts are exact) and "
             "credentialed — whether the scan authenticated to the host: true / "
             "false when the scanner said so (Nessus), null when it did not say. "
             "Null is 'not stated', never 'no'. Paged."
@@ -646,7 +648,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "of them is in `issues` with needs_attention true, and a dismissed one "
             "says dismissed). An "
             "issue's kind: failed or expired = nothing from that file is in the "
-            "project; partial = parsing stopped early, so what came after that "
+            "project (a failed issue's failure_kind says why: truncated_file = the "
+            "file was cut short; a person may choose to import what it holds); partial = parsing stopped early, so what came after that "
             "point is NOT in the project; degraded = it is in, but rows were "
             "dropped, so counts drawn "
             "from it are undercounts; parse_error = a recorded failure with no "
@@ -1049,7 +1052,10 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "description": (
             "Poll an upload's parse status. Upload itself is a file POST you run with "
             "curl (POST /agent/uploads, see the server instructions); this is how you "
-            "find out whether it parsed, and what it produced."
+            "find out whether it parsed, and what it produced. A failed upload carries "
+            "failure_kind: truncated_file means the file was cut short and nothing from "
+            "it was imported — tell the operator; importing what it holds is their "
+            "choice on Ingestion results, and no tool makes it."
         ),
         "method": "GET",
         "path": "/api/v1/agent/uploads/{job_id}",

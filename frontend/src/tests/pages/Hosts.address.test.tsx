@@ -104,6 +104,25 @@ describe('Hosts — the list is its address (real router)', () => {
     expect(router.state.location.search).toBe('?has_critical_vulns=true&ports=22,443&sort_by=ip_address&page=3');
   });
 
+  // The link a scan's "N renamed" opens (ImportResult): the list asked for is
+  // the scan's hosts narrowed to the ones it renamed, and the address stays.
+  it('opens the hosts a scan renamed from its link, and never asks for "renamed" without a scan', async () => {
+    const router = open('/hosts?scan_ids=7&renamed_in_scan=true');
+    await findHostsTable();
+    expect(last()).toMatchObject({ scan_ids: '7', renamed_in_scan: true });
+    expect(last()).not.toHaveProperty('first_seen_in_scan');
+    expect(asked()).toHaveLength(1);
+    expect(router.state.location.search).toBe('?scan_ids=7&renamed_in_scan=true');
+    expect(await screen.findByText(/Renamed by: Scan #7/)).toBeInTheDocument();
+  });
+
+  it('a "renamed" modifier with no scan stays in the address and is not sent (the server refuses it alone)', async () => {
+    const router = open('/hosts?renamed_in_scan=true');
+    await findHostsTable();
+    expect(last()).not.toHaveProperty('renamed_in_scan');
+    expect(router.state.location.search).toBe('?renamed_in_scan=true');
+  });
+
   // The page in the address has the one reading every list has
   // (`hooks/useUrlPage` `pageFromParams`): digits only.
   it.each([

@@ -89,6 +89,7 @@ def check_discrete_filters(
     tags: Optional[str] = None, subnet_labels: Optional[str] = None,
     sites: Optional[str] = None, weaknesses: Optional[str] = None,
     checks: Optional[str] = None, asns: Optional[List[str]] = None,
+    renamed_in_scan: Optional[bool] = None,
 ) -> None:
     """Refuse a discrete host filter that cannot be understood, on every door
     (``build_filtered_host_query`` calls it first).  Each is a 422 naming the
@@ -106,6 +107,8 @@ def check_discrete_filters(
     * a value that names something the project may simply not have — a scan,
       tag or label id, a site name, a technology, an organisation, a country,
       an OS — is VALID and matches nothing: an empty list, never an error;
+    * ``renamed_in_scan=true`` narrows ``scan_ids`` and means nothing without
+      it: refused, never dropped (it would answer with every host);
     * ``assigned_to`` needs the database and is refused by the builder itself
       (``P.UnknownAssignee``): someone no host here can be assigned to.
     """
@@ -131,6 +134,14 @@ def check_discrete_filters(
         _unknown_of("checks", checks, CHECKS)
     if scan_ids and scan_ids.strip():
         parse_id_list("scan_ids", scan_ids)
+    elif renamed_in_scan:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "renamed_in_scan needs scan_ids: it lists the hosts whose display "
+                "name those scans changed. Pass scan_ids, or omit renamed_in_scan."
+            ),
+        )
     try:
         P.parse_asns(asns or [])
     except P.InvalidAsn as exc:
@@ -394,6 +405,7 @@ def build_filtered_host_query(
     out_of_scope_only: Optional[bool] = None,
     scan_ids: Optional[str] = None,
     first_seen_in_scan: Optional[bool] = None,
+    renamed_in_scan: Optional[bool] = None,
     with_notes_only: Optional[bool] = None,
     has_web_interface: Optional[bool] = None,
     tech: Optional[str] = None,
@@ -426,6 +438,7 @@ def build_filtered_host_query(
         port_states=port_states, follow_status=follow_status, scan_ids=scan_ids,
         tech=tech, tags=tags, subnet_labels=subnet_labels, sites=sites,
         weaknesses=weaknesses, checks=checks, asns=asns,
+        renamed_in_scan=renamed_in_scan,
     )
     query = db.query(models.Host)
 
@@ -505,6 +518,7 @@ def build_filtered_host_query(
     if scan_ids and scan_ids.strip():
         query = query.filter(P.scan_predicate(
             parse_id_list("scan_ids", scan_ids), first_seen_only=bool(first_seen_in_scan),
+            renamed_only=bool(renamed_in_scan),
         ))
 
     # v2.12.1: web interface filters.  ``has_web_interface`` narrows to

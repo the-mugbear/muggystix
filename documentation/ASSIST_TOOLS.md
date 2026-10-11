@@ -67,7 +67,7 @@ returning from leave.
 | Engagement dates, members, totals (the scope's subnet and domain counts among them), the latest scans | `assist_get_context` |
 | What the project's scope declares | `assist_get_scope` — one object, no arguments: the first 100 CIDRs and the first 100 declared domains, with `subnet_total` / `domain_total` and `*_truncated`; the whole lists are `scope_list_subnets` / `scope_list_domains` |
 | Which scans exist, in full | `assist_list_scans` (an nmap scan's rows carry `scan_info`: the port list it was asked to probe) |
-| Which hosts one scan saw, and whether it authenticated to them | `assist_list_scan_hosts` — the scan page's "As scanned" rows; `credentialed` is true / false when the scanner said so (Nessus), null when it did not |
+| Which hosts one scan saw, and whether it authenticated to them | `assist_list_scan_hosts` — the scan page's "As scanned" rows; `credentialed` is true / false when the scanner said so (Nessus), null when it did not. Each row also says what the scan did to the host: `host_created` (it first discovered it) or `hostname_changed` (it changed the display name of a host that already existed — the hosts the Scans row counts as "renamed"; false for imports made before this was recorded) |
 | Which session am I, for whom (what `assigned:me` means) | `assist_session_info` |
 | How much has actually been assessed | `assist_get_coverage` |
 | Of the hosts assessed for vulnerabilities, how many the scanner logged in to | `assist_get_coverage` → the `vuln_assessment` domain's `credentialed` (`credentialed` / `not_credentialed` / `credentials_not_stated`, adding up to the assessed count); `assist_list_hosts q=vulnscan:credentialed\|uncredentialed\|unstated` lists each; one host: `assist_get_host` → `assessment.vuln_scan_credentialed` (`yes` / `no` / `not_stated`, null when not assessed) |
@@ -205,7 +205,12 @@ the agent reports the first with no way to suspect the second. A job that
 **completed** having silently dropped rows (`skipped_count`) is in the project
 and reads as healthy everywhere else, so counts drawn from it are undercounts;
 `kind=degraded` names it. A failed job and its parse error are one row — they
-are one upload.
+are one upload. A failed row also says of what kind the failure was
+(`failure_kind`, as `get_upload_job` does): `truncated_file` means the file was
+cut short and nothing from it was imported, though it holds complete records.
+What to do about that is the operator's decision — on Ingestion results a
+person can choose "Import what the file holds" (a partial import), or the
+complete file can be uploaded; no agent tool makes that choice.
 
 ---
 

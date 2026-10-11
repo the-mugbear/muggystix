@@ -25,6 +25,7 @@ from app.api.v1.endpoints.agent_schemas import (
 )
 from app.api.v1.endpoints.agent_common import load_agent_session
 from app.services.default_scope import project_scope
+from app.services.import_attention_service import failure_kind
 from app.services.scope_targets_service import (
     iter_scope_hosts_ndjson as _iter_scope_hosts_ndjson,
     iter_scope_live_hosts as _iter_scope_live_hosts,
@@ -393,6 +394,11 @@ def get_upload_job(
             "assist_list_ingestion_issues lists imports that failed or finished partial."
         ))
 
+    # The kind of failure, read as the pages read it (one function).
+    parse_error = (
+        db.get(models.ParseError, job.parse_error_id)
+        if job.status == "failed" and job.parse_error_id is not None else None
+    )
     return ReconJobStatus(
         job_id=job.id,
         status=job.status,
@@ -402,6 +408,7 @@ def get_upload_job(
         tool_name=job.tool_name,
         parse_error_id=job.parse_error_id,
         last_error=job.last_error,
+        failure_kind=failure_kind(job, parse_error),
         queue_age_s=_seconds_between(job.created_at, job.started_at),
         parse_s=_seconds_between(job.started_at, job.completed_at),
     )

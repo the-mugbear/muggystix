@@ -287,7 +287,10 @@ class HttpxParser:
         host_row = resolved.host
         # An HTTP response is evidence the host is up NOW, whatever the
         # inventory row says (v2.332.1 — the snapshot used to copy Host.state).
-        self._observed.note(host_row, created=resolved.created, state="up", hostname=hostname)
+        self._observed.note(
+            host_row, created=resolved.created, state="up", hostname=hostname,
+            renamed=resolved.renamed,
+        )
         port_row = resolve_port_cached(
             self.db, host_row, port, self._port_cache,
         )

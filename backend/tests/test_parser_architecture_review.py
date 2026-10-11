@@ -22,7 +22,7 @@ from app.db import models
 from app.parsers.httpx_parser import HttpxParser
 from app.parsers.nmap_parser import NmapXMLParser
 from app.parsers.parser_utils import extract_first_ip, parse_host_port_token
-from app.parsers.streaming_json import begin_rejection_tally, end_rejection_tally, iter_json_records
+from app.parsers.streaming_json import begin_read, end_read, iter_json_records
 from app.services.host_deduplication_service import (
     HostDeduplicationService, port_state_is_active, should_refresh_service_details,
 )
@@ -197,10 +197,10 @@ def test_one_bad_httpx_record_does_not_fail_the_import(db_session, test_project,
 def test_undecodable_json_lines_are_counted(tmp_path):
     p = tmp_path / "x.jsonl"
     p.write_text('{"a": 1}\n{"b": 2, "trunc\n{"c": 3}\n')
-    token = begin_rejection_tally()
+    token = begin_read()
     records = list(iter_json_records(str(p)))
     assert records == [{"a": 1}, {"c": 3}]
-    assert end_rejection_tally(token) == 1
+    assert end_read(token).rejected_lines == 1
 
 
 def test_an_import_with_undecodable_lines_is_partial(db_session, test_project, tmp_path):

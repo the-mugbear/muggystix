@@ -130,6 +130,9 @@ export interface ScanHostSnapshot {
   hostname_at_scan: string | null;
   state_at_scan: string | null;
   host_created: boolean;
+  /** This scan changed the host's display name (never true with
+   *  `host_created`).  Absent from an older server. */
+  hostname_changed?: boolean;
   /** Did this scan authenticate to the host? true / false when the scanner
    *  said so (Nessus); null or absent when it did not say — never "no". */
   credentialed?: boolean | null;
@@ -587,6 +590,7 @@ export const getToolReadyOutput = async (
     out_of_scope_only?: boolean;
     scan_ids?: string;
     first_seen_in_scan?: boolean;
+    renamed_in_scan?: boolean;
     with_notes_only?: boolean;
     has_web_interface?: boolean;
     tech?: string;

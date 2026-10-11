@@ -51,6 +51,7 @@ const WORDING: Array<[key: string, say: (value: InventoryFilterValue) => string]
   ['out_of_scope_only', flag('Out of scope')],
   ['scan_ids', labelled('Scan IDs')],
   ['first_seen_in_scan', flag('First seen in selected scans')],
+  ['renamed_in_scan', flag('Display name changed by selected scans')],
   ['with_notes_only', flag('With notes only')],
   ['orgs', labelled('Organisation')],
   ['asns', labelled('ASN')],

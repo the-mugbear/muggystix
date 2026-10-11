@@ -38,6 +38,9 @@ export interface HostFilterOptions {
   outOfScopeOnly?: boolean;
   scanIds?: string[];
   firstSeenInSelectedScans?: boolean;
+  /** Only hosts whose display name one of `scanIds` changed (the scan's
+   *  "N renamed"); like `firstSeenInSelectedScans`, it means nothing alone. */
+  renamedInSelectedScans?: boolean;
   // v2.12.1: web interface filters
   hasWebInterface?: boolean;
   tech?: string[];

@@ -32,6 +32,7 @@ import {
 } from '../services/api';
 import ImportResult from '../components/scans/ImportResult';
 import FormatRetryDialog from '../components/scans/FormatRetryDialog';
+import KeepTruncatedImport from '../components/scans/KeepTruncatedImport';
 import UninterpretedLines from '../components/scans/UninterpretedLines';
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
@@ -42,6 +43,7 @@ import { invalidateReads, useLastSettled } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { importResultsPath } from '../utils/importResultsPath';
 import { INGESTION_JOB_READS } from '../utils/ingestionReads';
+import { isCutShort } from '../utils/truncatedImport';
 import { Badge } from '../components/ui/badge';
 import { BreakableName } from '../components/ui/breakable-name';
 import { Button } from '../components/ui/button';
@@ -963,22 +965,38 @@ const RowDetail: React.FC<{
     : 'File no longer retained — re-upload to import again';
 
   if (item.status === 'failed' || item.error) {
+    // The file ends before its document does, and holds complete records:
+    // said as that, with the one thing a retry cannot do for it.
+    const cutShort = isCutShort(item);
     return (
       <div className="flex flex-col gap-sm">
         <Alert variant="destructive">
           <AlertDescription>
             <p className="font-semibold">
-              {item.error?.error_type ? `Error type: ${item.error.error_type}` : 'Upload failed'}
+              {cutShort
+                ? 'The file was cut short — nothing from it was imported'
+                : item.error?.error_type ? `Error type: ${item.error.error_type}` : 'Upload failed'}
             </p>
             <p className="mt-xxs font-mono text-caption break-words">
               {item.error?.error_message || 'No error message available'}
             </p>
-            {item.error?.user_message
+            {cutShort ? (
+              <p className="mt-xs">
+                A retry reads the same file and fails the same way. If you have the complete file, upload that instead.
+              </p>
+            ) : item.error?.user_message
               && item.error.user_message.trim() !== (item.error.error_message || '').trim() && (
               <p className="mt-xs">{item.error.user_message}</p>
             )}
           </AlertDescription>
         </Alert>
+        {cutShort && (
+          <KeepTruncatedImport
+            jobId={item.id}
+            filename={item.original_filename}
+            fileRetained={!!item.file_retained}
+          />
+        )}
         <div className="flex flex-wrap items-center gap-xs">
           <Button size="sm" variant="outline" onClick={() => onViewParseError(item)}>
             View Details

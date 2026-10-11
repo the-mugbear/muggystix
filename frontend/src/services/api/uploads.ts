@@ -63,6 +63,11 @@ export interface IngestionJob {
   /** v5.289.0 — the parser's specific cause for a failed job ("SMBMap parser
    *  found 0 hosts in …"), not the generic "Failed to parse the file …". */
   failure_reason?: string | null;
+  /** The kind of a failed job's failure: `parsing_error`, `format_error`, or
+   *  `truncated_file` — the file was cut short and holds complete records
+   *  (see `utils/truncatedImport`).  Null when the job did not fail, or
+   *  failed without a parse error (a cancel). */
+  failure_kind?: string | null;
 }
 
 
@@ -373,11 +378,20 @@ export const cancelIngestionJob = async (
 // Retry a FAILED ingestion job whose uploaded file is still on disk
 // (POST /upload/jobs/{id}/retry) — re-queues without re-uploading. Backend
 // 409s if the job isn't failed or the file was already cleaned up.
+//
+// `keepTruncated` is the reader's answer for a file that was cut short
+// (`failure_kind: 'truncated_file'`): this attempt stops where the file ends,
+// keeps the complete records before that point and finishes partial.  It
+// holds for that attempt only; a plain retry sends no body.
 export const retryIngestionJob = async (
   projectId: number,
   jobId: number,
+  options: { keepTruncated?: boolean } = {},
 ): Promise<{ job_id: number; status: string; message: string }> => {
-  const response = await api.post(`${projectPath(projectId)}/upload/jobs/${jobId}/retry`);
+  const url = `${projectPath(projectId)}/upload/jobs/${jobId}/retry`;
+  const response = options.keepTruncated
+    ? await api.post(url, { keep_truncated: true })
+    : await api.post(url);
   return response.data;
 };
 
@@ -426,6 +440,9 @@ export interface IngestionResultItem {
   superseded_by_job_id?: number | null;
   /** v5.289.0 — the parser's specific cause for a failed job. */
   failure_reason?: string | null;
+  /** The kind of that failure; `truncated_file` = cut short, with complete
+   *  records a reader may choose to import (`utils/truncatedImport`). */
+  failure_kind?: string | null;
   /** v5.301.0 — lines the parser did not interpret, and in how many shapes. */
   uninterpreted_total?: number;
   uninterpreted_distinct?: number;

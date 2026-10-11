@@ -293,11 +293,7 @@ class HostDeduplicationService:
         existing_host = host_query.first()
 
         if existing_host:
-            # Update existing host
-            updated_host = self._update_existing_host(existing_host, scan_id, host_data)
-            # Record this scan discovered the host
-            self._record_host_scan_history(updated_host.id, scan_id, host_data)
-            return updated_host
+            return self._update_and_record_existing_host(existing_host, scan_id, host_data)
         else:
             # Create new host
             new_host = self._create_new_host(ip_address, scan_id, host_data)
@@ -357,11 +353,8 @@ class HostDeduplicationService:
                         fallback_query = fallback_query.filter(Host.project_id == project_id)
                     existing_host = fallback_query.first()
                     if existing_host:
-                        updated_host = self._update_existing_host(
+                        updated_host = self._update_and_record_existing_host(
                             existing_host, scan_id, host_data
-                        )
-                        self._record_host_scan_history(
-                            updated_host.id, scan_id, host_data
                         )
                         fallback_nested.commit()
                         return updated_host
@@ -724,6 +717,30 @@ class HostDeduplicationService:
         # scan finds the row above instead of inserting a second copy.
         self.db.flush()
 
+    def _update_and_record_existing_host(self, host: Host, scan_id: int, host_data: Dict[str, Any]) -> Host:
+        """Update a host that already exists and record that this scan saw it
+        — and whether the update changed its DISPLAY name
+        (``host_scan_history.hostname_changed``).  The name is compared
+        across the update, so whatever in ``_update_existing_host`` writes it
+        (today only ``apply_hostname_candidate``) is counted, for every tool
+        that reaches the inventory through ``find_or_create_host``."""
+        name_before = host.hostname or None
+        updated_host = self._update_existing_host(host, scan_id, host_data)
+        self._record_host_scan_history(
+            updated_host.id, scan_id, host_data,
+            renamed=(updated_host.hostname or None) != name_before,
+        )
+        return updated_host
+
+    def note_hostname_changed(self, host_id: int, scan_id: int) -> None:
+        """A parser changed the display name of a host it already brought
+        through ``find_or_create_host`` in THIS scan, outside that call
+        (NetExec fills an empty name from a later line of the same host).
+        Marks the scan's history row through its one writer here — which
+        changes nothing else on the row when given no host data, and marks
+        nothing when the scan created the host."""
+        self._record_host_scan_history(host_id, scan_id, {}, renamed=True)
+
     def _update_existing_host(self, host: Host, scan_id: int, host_data: Dict[str, Any]) -> Host:
         """
         Update existing host with new data using conflict resolution strategy.
@@ -865,8 +882,14 @@ class HostDeduplicationService:
         
         return port
     
-    def _record_host_scan_history(self, host_id: int, scan_id: int, host_data: Dict[str, Any], is_new: bool = False):
-        """Record that this scan discovered/updated this host"""
+    def _record_host_scan_history(
+        self, host_id: int, scan_id: int, host_data: Dict[str, Any], is_new: bool = False,
+        renamed: bool = False,
+    ):
+        """Record that this scan discovered/updated this host.  ``renamed``:
+        this record changed the display name of a host that already existed
+        (``hostname_changed``; never on the row of the scan that created the
+        host, never turned back to false)."""
         key = (host_id, scan_id)
         # Pending row added earlier in THIS parse (O(1)); else a row from a
         # prior flush, found by the uq_host_scan index.
@@ -900,6 +923,8 @@ class HostDeduplicationService:
             # scan) marked the scan as the creator, keep it.
             if is_new:
                 existing_history.host_created = True
+            if renamed and not existing_history.host_created:
+                existing_history.hostname_changed = True
         else:
             # Create new history entry
             history = HostScanHistory(
@@ -909,6 +934,7 @@ class HostDeduplicationService:
                 hostname_at_scan=host_data.get('hostname'),
                 os_info_updated=bool(host_data.get('os_name')),  # True if this scan provided OS info
                 host_created=is_new,  # dedup create/update decision — ground truth
+                hostname_changed=renamed and not is_new,
             )
             self.db.add(history)
             self._pending_host_history[key] = history

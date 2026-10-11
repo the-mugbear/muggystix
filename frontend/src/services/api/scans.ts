@@ -99,6 +99,10 @@ export interface Scan {
   // What this scan introduced vs re-observed. new + updated == total_hosts.
   new_hosts: number;
   updated_hosts: number;
+  /** Of the already-known hosts: those whose display name this scan changed —
+   *  the total of `/hosts?scan_ids=<id>&renamed_in_scan=true`.  Absent from an
+   *  older server; 0 for a scan imported before the fact was recorded. */
+  renamed_hosts?: number;
   total_ports: number;
   open_ports: number;
   command_line?: string | null;
@@ -181,6 +185,8 @@ export interface ScanBatchSummary {
   tools: string[];
   hosts: number;
   new_hosts: number;
+  /** Distinct already-known hosts whose display name the batch's files changed. */
+  renamed_hosts?: number;
   open_ports: number;
   first_uploaded?: string | null;
   last_uploaded?: string | null;

@@ -34,6 +34,29 @@ describe('importResultParts', () => {
     expect(parts.find((p) => p.key === 'skipped')?.to).toBe('/scans?view=results&job_id=77');
   });
 
+  // Owner, 2026-10-11: the hosts whose display name an import changed are a
+  // figure a reader can open, beside "added" and "already known".
+  it('says how many known hosts the upload renamed, as a link to exactly those hosts', () => {
+    const parts = importResultParts(scan({ renamed_hosts: 1234, conflicts: 4 }));
+    expect(parts.map((p) => p.text)).toEqual([
+      '+2 hosts added',
+      '1 already known',
+      '1,234 renamed',
+      '4 conflicts',
+      '7 new open ports',
+    ]);
+    expect(parts.find((p) => p.key === 'renamed')?.to).toBe('/hosts?scan_ids=9&renamed_in_scan=true');
+  });
+
+  it('shows no renamed part for none, and none for a server that does not say', () => {
+    expect(importResultParts(scan({ renamed_hosts: 0 })).map((p) => p.key)).not.toContain('renamed');
+    expect(importResultParts(scan()).map((p) => p.key)).not.toContain('renamed');
+    // A DNS import over known hosts: nothing added, some renamed.
+    expect(importResultParts(scan({
+      total_hosts: 3, new_hosts: 0, updated_hosts: 3, renamed_hosts: 2, port_breakdown: null,
+    })).map((p) => p.text)).toEqual(['3 already known', '2 renamed']);
+  });
+
   it('a gap with no job to name still opens Ingestion results', () => {
     const parts = importResultParts(scan({ import_skipped: 3, import_partial: true }));
     expect(parts.find((p) => p.key === 'skipped')?.to).toBe('/scans?view=results');
@@ -57,8 +80,15 @@ describe('ImportResult', () => {
   it('renders the counts as links and the parser warnings beneath', () => {
     render(
       <MemoryRouter>
-        <ImportResult scan={scan({ conflicts: 1, import_warnings: '2 hosts had no address' })} showContribution={false} />
+        <ImportResult
+          scan={scan({ conflicts: 1, renamed_hosts: 1, import_warnings: '2 hosts had no address' })}
+          showContribution={false}
+        />
       </MemoryRouter>,
+    );
+    expect(screen.getByRole('link', { name: '1 renamed' })).toHaveAttribute(
+      'href',
+      '/hosts?scan_ids=9&renamed_in_scan=true',
     );
     expect(screen.getByRole('link', { name: '+2 hosts added' })).toHaveAttribute(
       'href',

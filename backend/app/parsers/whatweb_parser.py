@@ -232,7 +232,10 @@ class WhatwebParser:
         )
         host_row = resolved.host
         # A WhatWeb hit is an HTTP response: the host is up now (v2.332.1).
-        self._observed.note(host_row, created=resolved.created, state="up", hostname=hostname)
+        self._observed.note(
+            host_row, created=resolved.created, state="up", hostname=hostname,
+            renamed=resolved.renamed,
+        )
         port_row = resolve_port_cached(
             self.db, host_row, port, self._port_cache,
         )

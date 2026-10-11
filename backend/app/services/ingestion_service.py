@@ -35,6 +35,7 @@ from app.db.models import IngestionJob
 # app.db.session.SessionLocal onto the test engine and have these background
 # sessions land in the test DB — same pattern as agent_api_log_service.
 from app.db import session as _session_module
+from app.parsers.streaming_json import TruncatedJSONFile, begin_read, end_read
 from app.services.parse_error_service import log_parse_error
 from app.services.job_transitions import JobNotTransitionable, JobTransitions
 
@@ -78,6 +79,24 @@ class DuplicateUploadError(Exception):
 
 # A job in one of these states makes an identical upload a duplicate.
 DUPLICATE_BLOCKING_STATUSES = ("staged", "queued", "processing")
+
+# Owner decision 2026-10-11 — "ask the user if it's a partial file whether
+# they want to keep partial results".
+#
+# The KIND of a failure is ``parse_errors.error_type`` (the row the failed job
+# points at; served as ``failure_kind``).  This value means: the file ends
+# before its document does, AND complete records precede the cut — so a
+# person can choose to import what the file holds.  A file cut before its
+# first record ended fails as an ordinary ``parsing_error`` whose message
+# says so: there is nothing to keep, so nothing is offered.
+TRUNCATED_FILE_ERROR = "truncated_file"
+# The answer, as a processing instruction for ONE attempt (``job.options``,
+# like ``allow_duplicate``): ``staged_import_service.queue_job`` sets it when
+# the operator chose "Import what the file holds" and clears it on every
+# other start or retry.  The worker hands it to the shared JSON reader, which
+# then stops at the cut instead of failing.  Never set at upload, and no
+# agent route can set it.
+KEEP_TRUNCATED_OPTION = "keep_truncated"
 
 
 def carry_upload_identity(db: Session, job: IngestionJob) -> None:
@@ -1079,6 +1098,8 @@ class IngestionService:
             self._validate_content_matches_extension(destination, raw_name)
 
             opts = dict(options or {})
+            # Only queue_job sets it, for one attempt, on a person's answer.
+            opts.pop(KEEP_TRUNCATED_OPTION, None)
             if allow_duplicate:
                 # Remembered so a later start of this job (staged → queued, or
                 # a retry) does not re-refuse what the operator already chose.
@@ -1272,8 +1293,11 @@ class IngestionService:
             last = last.replace(tzinfo=timezone.utc)
         return last < self._orphan_cutoff()
 
-    def requeue_job(self, job_id: int) -> str:
+    def requeue_job(self, job_id: int, *, keep_truncated: bool = False) -> str:
         """Re-queue a FAILED job whose uploaded file is still on disk.
+
+        ``keep_truncated``: the operator's "import what the file holds" for
+        this attempt (``KEEP_TRUNCATED_OPTION``); a plain retry clears it.
 
         A parse that failed for a transient reason (a DB blip, a since-fixed
         parser bug) can be retried without forcing the operator to locate and
@@ -1292,7 +1316,7 @@ class IngestionService:
 
         with _session_module.SessionLocal() as db:
             try:
-                job = queue_job(db, job_id, allowed_from=("failed",))
+                job = queue_job(db, job_id, allowed_from=("failed",), keep_truncated=keep_truncated)
             except JobNotTransitionable as exc:
                 # ``status`` is either the actual state or the precondition's
                 # reason code.
@@ -2147,6 +2171,9 @@ class IngestionService:
             )
 
         last_error: Optional[Exception] = None
+        # The file ends before its document does (the first parser to say so:
+        # it is a fact about the file, whichever parser read it).
+        cut_short: Optional[TruncatedJSONFile] = None
         for file_type, parser_class, description in parsing_attempts:
             start = time.time()
             try:
@@ -2195,9 +2222,32 @@ class IngestionService:
                     exc,
                 )
                 last_error = exc
+                if cut_short is None and isinstance(exc, TruncatedJSONFile):
+                    cut_short = exc
                 continue
 
         preview = sample[:4096]
+        if cut_short is not None:
+            # Said as what it is, and typed so the pages and an agent can read
+            # it without matching a sentence.  What the attempt wrote is
+            # already gone (the cleanup above): nothing half-imported waits
+            # for the operator's answer.
+            parse_error = log_parse_error(
+                db=db,
+                filename=original_filename,
+                file_content=preview,
+                error=cut_short,
+                error_type=TRUNCATED_FILE_ERROR if cut_short.records_read else "parsing_error",
+                file_type=parsing_attempts[0][0],
+                custom_message=f"{cut_short} Nothing from this file was imported.",
+                project_id=job_project_id,
+            )
+            raise ParseFailure(
+                "File ends early",
+                user_message=parse_error.user_message,
+                error_id=parse_error.id,
+                underlying_error=str(cut_short),
+            )
         parse_error = log_parse_error(
             db=db,
             filename=original_filename,
@@ -2345,9 +2395,12 @@ class IngestionService:
                 raise ValueError(f"Unsupported parser class {parser_class}")
 
             parser = parser_ctor(db)
-            # v2.419.0 (H4) — JSON lines the shared reader could not decode.
-            from app.parsers.streaming_json import begin_rejection_tally, end_rejection_tally
-            _tally = begin_rejection_tally()
+            # What the shared JSON reader meets below the parser: lines it
+            # could not decode (v2.419.0, H4) and a document that ends early.
+            # The operator's "import what the file holds" reaches the reader
+            # here rather than as a parser argument: eleven parsers call the
+            # one reader, and none of them has anything to decide about it.
+            _reading = begin_read(keep_truncated=options.get(KEEP_TRUNCATED_OPTION) is True)
             try:
                 # v2.353.0 — the tool the operator named at import (phase A's
                 # column) reaches the parser, so attribution never has to be
@@ -2357,10 +2410,11 @@ class IngestionService:
                     storage_path, filename, project_id=project_id,
                     source_tool=_source_tool if isinstance(_source_tool, str) else None,
                 )
-                rejected_json_lines = end_rejection_tally(_tally)
+                read_report = end_read(_reading)
             except Exception:
-                end_rejection_tally(_tally)
+                end_read(_reading)
                 raise
+            rejected_json_lines = read_report.rejected_lines
             # Ensure scan and all hosts are tagged with the project
             if project_id and scan:
                 scan.project_id = project_id
@@ -2395,6 +2449,15 @@ class IngestionService:
                 warnings_parts.append(
                     f"{rejected_json_lines} line{'s' if rejected_json_lines != 1 else ''} of the file "
                     "were not valid JSON and were skipped (a truncated or corrupted record)"
+                )
+            # The document ended early and the import went on with what came
+            # before (the operator asked for that).  Partial: how much is
+            # missing is not knowable from the file, so it is not a count.
+            if read_report.cut_short is not None:
+                parse_stats["partial"] = True
+                warnings_parts.append(
+                    f"{read_report.cut_short} Those records were imported; anything the tool "
+                    "wrote after that point is not in the file."
                 )
 
         # tool_name_hint mismatch detection (v2.55.0 review finding M-1,

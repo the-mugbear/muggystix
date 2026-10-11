@@ -66,6 +66,18 @@ class ScanHostSnapshot(BaseModel):
     state_at_scan: Optional[str] = None
     #: True when this scan is the one that first discovered the host.
     host_created: bool = False
+    #: True when this scan changed the display name of a host that already
+    #: existed (``host_query_predicates.renamed_in_scan_condition`` — the rows
+    #: the scan's ``renamed_hosts`` counts).  ``hostname_at_scan`` is the name
+    #: the scan reported, which is not always the name it set.
+    hostname_changed: bool = Field(
+        False,
+        description=(
+            "Whether this scan changed the host's display name (a host it created is "
+            "not one). The scan's renamed_hosts counts these rows. False for every "
+            "scan imported before the fact was recorded."
+        ),
+    )
     #: Did this scan authenticate to the host (``host_scan_history.credentialed``)?
     #: True / False when the scanner said so (Nessus); null when it did not, and
     #: for every tool with no such notion.  Null is "not stated", never "no".
@@ -211,6 +223,7 @@ def scan_host_snapshots(
             hostname_at_scan=hist.hostname_at_scan,
             state_at_scan=hist.state_at_scan,
             host_created=bool(hist.host_created),
+            hostname_changed=bool(hist.hostname_changed) and not hist.host_created,
             credentialed=hist.credentialed,
             observed_port_count=observed_counts.get(host.id, 0),
             open_port_count=open_counts.get(host.id, 0),

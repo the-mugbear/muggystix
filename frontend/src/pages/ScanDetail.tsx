@@ -408,6 +408,14 @@ const ScanDetail: React.FC = () => {
                                   <Badge variant="outline" className="whitespace-nowrap">
                                     New here
                                   </Badge>
+                                ) : row.hostname_changed ? (
+                                  <Badge
+                                    variant="outline"
+                                    className="whitespace-nowrap"
+                                    title="Already in the inventory; this scan changed its display name."
+                                  >
+                                    Renamed here
+                                  </Badge>
                                 ) : (
                                   <span className="text-caption text-muted-foreground">
                                     Seen before

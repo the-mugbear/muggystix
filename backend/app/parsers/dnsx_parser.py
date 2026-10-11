@@ -263,13 +263,13 @@ class DnsxParser:
         # scan touch" reader asks.  A host this import creates gets its row
         # from the dedup service instead.
         self._observed = ScanHostObservations()
-        # Host ids, for the import's summary: created by this import, and
-        # existing hosts whose DISPLAY name an answer changed.  ``_row_*`` are
-        # the current record's, kept apart until its savepoint is released.
+        # Host ids created by this import, for its summary.  ``_row_created``
+        # is the current record's, kept apart until its savepoint is released.
+        # The existing hosts whose DISPLAY name an answer changed are the
+        # notes' own ``renamed_host_ids`` — the set that becomes
+        # ``host_scan_history.hostname_changed``.
         self._created_host_ids: set[int] = set()
-        self._renamed_host_ids: set[int] = set()
         self._row_created: set[int] = set()
-        self._row_renamed: set[int] = set()
         # Tracked for the parser-warning summary.
         self._resolvers_seen: Counter[str] = Counter()
         self._status_codes_seen: Counter[str] = Counter()
@@ -346,7 +346,7 @@ class DnsxParser:
             # avoid a SAVEPOINT round-trip per resolution failure.
             journal: List[tuple] = []
             transfers_before = len(self._zone_transfers)
-            self._row_created, self._row_renamed = set(), set()
+            self._row_created = set()
             sp = self.db.begin_nested()
             # A record that rolls back leaves no note of the hosts it
             # addressed (the same checkpoint record_savepoint takes).
@@ -358,7 +358,6 @@ class DnsxParser:
                 sp.commit()
                 records_written += row_records
                 self._created_host_ids |= self._row_created
-                self._renamed_host_ids |= self._row_renamed
             except Exception as exc:  # noqa: BLE001 — isolate one bad record
                 sp.rollback()
                 self._observed.restore(noted_before)
@@ -425,8 +424,9 @@ class DnsxParser:
         hosts_created = len(self._created_host_ids)
         hosts_addressed = len(self._observed.host_ids | self._created_host_ids)
         # A host this import created and then named again is a created host,
-        # not an existing one whose name changed.
-        hosts_renamed = len(self._renamed_host_ids - self._created_host_ids)
+        # not an existing one whose name changed.  The set that set
+        # ``hostname_changed`` — one source for the sentence and the figure.
+        hosts_renamed = len(self._observed.renamed_host_ids - self._created_host_ids)
         self.last_parse_stats = {
             "skipped": skipped_records,
             "warnings": warnings,
@@ -754,9 +754,10 @@ class DnsxParser:
             .first()
         )
         if existing:
-            if apply_hostname_candidate(existing, hostname, source):
-                self._row_renamed.add(existing.id)
-            self._observed.note(existing, created=False, state=None, hostname=hostname)
+            renamed = apply_hostname_candidate(existing, hostname, source)
+            self._observed.note(
+                existing, created=False, state=None, hostname=hostname, renamed=renamed,
+            )
             return
         # names_recorded: _persist_record already wrote this name→address
         # observation (with resolver + TTL); the dedup service must not add a

@@ -57,7 +57,19 @@ describe('hostConditionChips', () => {
       { scan: () => 'nightly.xml' },
     );
     expect(chip.label).toBe('First discovered in: nightly.xml');
-    expect(chip.clearKeys).toEqual(['scanIds', 'firstSeenInSelectedScans']);
+    expect(chip.clearKeys).toEqual(['scanIds', 'firstSeenInSelectedScans', 'renamedInSelectedScans']);
+  });
+
+  it('folds "renamed by" into the scan condition too, and says so when an address carries both', () => {
+    const names = { scan: () => 'dnsx.jsonl' };
+    const [chip] = hostConditionChips({ scanIds: ['9'], renamedInSelectedScans: true }, names);
+    expect(chip.label).toBe('Renamed by: dnsx.jsonl');
+    expect(chip.clearKeys).toEqual(['scanIds', 'firstSeenInSelectedScans', 'renamedInSelectedScans']);
+    expect(hostConditionChips(
+      { scanIds: ['9'], firstSeenInSelectedScans: true, renamedInSelectedScans: true }, names,
+    )[0].label).toBe('First discovered in and renamed by: dnsx.jsonl');
+    // Alone it is not a condition the list applies: no chip claims one.
+    expect(hostConditionChips({ renamedInSelectedScans: true })).toEqual([]);
   });
 
   it('names the query, a legacy text search and the review state — nothing constrains invisibly', () => {

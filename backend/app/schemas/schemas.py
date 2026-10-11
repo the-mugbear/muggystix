@@ -790,6 +790,11 @@ class ScanSummary(_ScanRunWindow):
     # hosts it re-observed. new_hosts + updated_hosts == total_hosts.
     new_hosts: int = 0
     updated_hosts: int = 0
+    # Of the already-known hosts (so never more than updated_hosts): those
+    # whose display name this scan changed.  The total of the Hosts list with
+    # scan_ids=<id>&renamed_in_scan=true.  0 for every scan imported before
+    # host_scan_history.hostname_changed existed (not back-filled).
+    renamed_hosts: int = 0
     total_ports: int
     open_ports: int
     command_line: Optional[str] = None
@@ -928,6 +933,11 @@ class IngestionJobSchema(BaseModel):
     # "Failed to parse the file …" sentence.
     superseded_by_job_id: Optional[int] = None
     failure_reason: Optional[str] = None
+    # The kind of a failed job's failure, set with the two above
+    # (import_attention_service.failure_kind): "parsing_error",
+    # "format_error", or "truncated_file" — the file was cut short and holds
+    # complete records, which POST …/retry {keep_truncated: true} imports.
+    failure_kind: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

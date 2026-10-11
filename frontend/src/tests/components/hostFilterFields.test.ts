@@ -20,7 +20,8 @@ const EVERY_FILTER: HostFilterOptions = {
   osFilter: 'Linux', subnets: ['10.0.0.0/24'], sites: ['East'], tags: ['1'], subnetLabels: ['2'],
   hasCriticalVulns: true, hasHighVulns: true, hasMediumVulns: true, hasLowVulns: true,
   hasExploitAvailable: true, hasTestExecution: true, outOfScopeOnly: true,
-  scanIds: ['9'], firstSeenInSelectedScans: true, hasWebInterface: false, tech: ['nginx'],
+  scanIds: ['9'], firstSeenInSelectedScans: true, renamedInSelectedScans: true,
+  hasWebInterface: false, tech: ['nginx'],
   orgs: ['Acme'], asns: ['13335'], countries: ['US'], assignedToMe: true,
   followFilter: 'none', onlyWithNotes: true, weaknesses: ['smb_unsigned'], checks: ['smbv1_enabled'],
 };

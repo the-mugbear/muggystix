@@ -151,6 +151,10 @@ class IngestionResultItem(BaseModel):
     # generic "Failed to parse the file …" sentence).
     superseded_by_job_id: Optional[int] = None
     failure_reason: Optional[str] = None
+    # The kind of a failed job's failure (import_attention_service
+    # .failure_kind) — "truncated_file" is the one the page acts on: the file
+    # was cut short and holds complete records a person may choose to import.
+    failure_kind: Optional[str] = None
     # v2.418.0 — how many lines the parser did not interpret, and in how
     # many shapes; the shapes are GET …/ingestion-results/{id}/uninterpreted.
     uninterpreted_total: int = 0
@@ -436,6 +440,7 @@ def get_ingestion_results(
             dismissed_at=job.dismissed_at,
             superseded_by_job_id=job.superseded_by_job_id,
             failure_reason=job.failure_reason,
+            failure_kind=job.failure_kind,
             uninterpreted_total=int((job.uninterpreted_lines or {}).get("total") or 0),
             uninterpreted_distinct=int((job.uninterpreted_lines or {}).get("distinct") or 0),
         )

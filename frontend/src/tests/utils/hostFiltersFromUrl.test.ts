@@ -13,6 +13,16 @@ describe('hostFiltersFromUrl', () => {
     expect(filters).toEqual({ ports: ['443'] });
   });
 
+  it('reads the link a scan\'s "N renamed" opens, and it makes the address authoritative', () => {
+    const { filters, restoredFromSession } = hostFiltersFromUrl(
+      url('scan_ids=7&renamed_in_scan=true'), { filters: { sites: ['3'] } },
+    );
+    expect(filters).toEqual({ scanIds: ['7'], renamedInSelectedScans: true });
+    expect(restoredFromSession).toBe(false);
+    expect(hostFiltersFromUrl(url('renamed_in_scan=true'), { filters: { sites: ['3'] } }).filters)
+      .toEqual({ renamedInSelectedScans: true });
+  });
+
   it('falls back to the saved session on a bare visit, including the legacy top-level keys', () => {
     const { filters, sortBy } = hostFiltersFromUrl(url(''), {
       filters: { sites: ['3'], hasWebInterface: false },

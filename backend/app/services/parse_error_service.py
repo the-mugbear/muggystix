@@ -102,10 +102,12 @@ def _generate_user_message(error: Exception, error_type: str, file_type: str, fi
     """Generate a user-friendly error message"""
 
     # A parser's own diagnosis ("NetExec parser found no host lines in …",
-    # "Invalid or truncated whatweb JSON during streaming: premature EOF") is
-    # a plain ValueError written for the operator, and more specific than
-    # any template below — the template used to REPLACE it, so production
-    # showed "may contain invalid JSON syntax" for a truncated file.
+    # "Invalid whatweb JSON during streaming: …") is a plain ValueError
+    # written for the operator, and more specific than any template below —
+    # the template used to REPLACE it, so production showed "may contain
+    # invalid JSON syntax" for a truncated file.  (A file that was cut short
+    # is not left to this function: the dispatcher passes its sentence as
+    # the custom message, with the kind ``truncated_file``.)
     # Only a ValueError raised inside app.parsers counts: the database driver
     # raises plain ValueError too ("A string literal cannot contain NUL"),
     # which is not an operator's sentence. JSONDecodeError and lxml errors are

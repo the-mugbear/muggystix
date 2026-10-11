@@ -487,6 +487,10 @@ class HostObservation(NamedTuple):
     created: bool
     state: Optional[str]
     hostname: Optional[str]
+    #: This parse changed the host's DISPLAY name (``Host.hostname``) — the
+    #: answer of ``dns_name_service.apply_hostname_candidate``.  Becomes
+    #: ``HostScanHistory.hostname_changed`` unless the scan created the host.
+    renamed: bool = False
 
 
 class ScanHostObservations:
@@ -501,7 +505,8 @@ class ScanHostObservations:
     says what it saw; the inventory row is never consulted.
 
     ``note`` never downgrades: a host created by this parse stays ``created``
-    on later notes, and a definite state is not replaced by ``None``.
+    on later notes, a host it renamed stays ``renamed``, and a definite state
+    is not replaced by ``None``.
 
     It also remembers which hosts have something ``record_hosts_in_scan`` has
     not written yet (review 2026-10-01 M2): the web parsers write their
@@ -520,7 +525,11 @@ class ScanHostObservations:
         created: bool,
         state: Optional[str],
         hostname: Optional[str] = None,
+        renamed: bool = False,
     ) -> None:
+        """``renamed``: this record changed the host's display name — pass
+        what ``apply_hostname_candidate`` (or ``resolve_host_cached``'s
+        ``renamed``) answered, never a comparison of your own."""
         if host is None or host.id is None:
             return
         prev = self._rows.get(host.id)
@@ -529,6 +538,7 @@ class ScanHostObservations:
             created=created or (prev.created if prev else False),
             state=state if state is not None else (prev.state if prev else None),
             hostname=hostname or (prev.hostname if prev else None) or host.hostname,
+            renamed=bool(renamed) or (prev.renamed if prev else False),
         )
         self._rows[host.id] = merged
         if merged != prev:
@@ -563,6 +573,16 @@ class ScanHostObservations:
     @property
     def host_ids(self) -> set[int]:
         return set(self._rows)
+
+    @property
+    def renamed_host_ids(self) -> set[int]:
+        """The noted hosts whose display name this parse changed and that it
+        did not itself create here — the hosts ``record_hosts_in_scan`` marks
+        ``hostname_changed``.  A parser whose NEW hosts go through the dedup
+        service (dnsx, the DNS CSV) subtracts the ids it created, as it does
+        for its result sentence: one set, so the sentence and the stored flag
+        cannot disagree."""
+        return {host_id for host_id, row in self._rows.items() if row.renamed and not row.created}
 
 
 def record_hosts_in_scan(
@@ -615,6 +635,11 @@ def record_hosts_in_scan(
                 existing.state_at_scan = obs.state
             if obs.hostname:
                 existing.hostname_at_scan = obs.hostname
+            # Display name changed by this scan: never on the row of the scan
+            # that created the host (the dedup service may have written that
+            # row — dnsx, the DNS CSV), and never turned back to false.
+            if obs.renamed and not existing.host_created:
+                existing.hostname_changed = True
             continue
         db.add(
             models.HostScanHistory(
@@ -623,6 +648,7 @@ def record_hosts_in_scan(
                 host_created=obs.created,
                 state_at_scan=obs.state,
                 hostname_at_scan=obs.hostname,
+                hostname_changed=obs.renamed and not obs.created,
             )
         )
 
@@ -879,9 +905,13 @@ def upsert_vulnerability(
 class ResolvedHost(NamedTuple):
     """``resolve_host_cached``'s answer: the row, and whether THIS call created
     it.  ``created`` is the ground truth for "what this scan introduced" and is
-    reported once, on the creating call; cache hits answer ``False``."""
+    reported once, on the creating call; cache hits answer ``False``.
+    ``renamed``: THIS call changed the display name of a host that already
+    existed (the answer of ``apply_hostname_candidate``) — hand it to
+    ``ScanHostObservations.note(renamed=…)``."""
     host: Optional[models.Host]
     created: bool
+    renamed: bool = False
 
 
 def resolve_host_cached(
@@ -907,9 +937,10 @@ def resolve_host_cached(
     hostname = display_name_candidate(hostname)
     if ip in host_cache:
         host = host_cache[ip]
-        if host is not None and hostname:
-            apply_hostname_candidate(host, hostname, "scanner")
-        return ResolvedHost(host, False)
+        renamed = bool(
+            host is not None and hostname and apply_hostname_candidate(host, hostname, "scanner")
+        )
+        return ResolvedHost(host, False, renamed)
 
     host = (
         db.query(models.Host)
@@ -917,6 +948,7 @@ def resolve_host_cached(
         .first()
     )
     created = False
+    renamed = False
     if host is None and create:
         host = models.Host(
             ip_address=ip, hostname=hostname, state="up", project_id=project_id,
@@ -926,10 +958,10 @@ def resolve_host_cached(
         db.flush()
         created = True
     elif host is not None and hostname:
-        apply_hostname_candidate(host, hostname, "scanner")
+        renamed = apply_hostname_candidate(host, hostname, "scanner")
 
     host_cache[ip] = host
-    return ResolvedHost(host, created)
+    return ResolvedHost(host, created, renamed)
 
 
 def resolve_port_cached(

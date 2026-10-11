@@ -512,36 +512,47 @@ function EndpointEditor({ field, filters, data, loading, error, commit, cancel }
   );
 }
 
+type ScanUse = 'observed' | 'first' | 'renamed';
+const SCAN_USES: Array<{ value: ScanUse; label: string }> = [
+  { value: 'observed', label: 'Observed in' },
+  { value: 'first', label: 'First discovered in' },
+  { value: 'renamed', label: 'Renamed by' },
+];
+
 function ScansEditor({ field, filters, data, loading, error, commit, cancel }: EditorProps) {
   const [draft, setDraft] = useState<string[]>(filters.scanIds ?? []);
-  const [firstSeen, setFirstSeen] = useState(filters.firstSeenInSelectedScans === true);
+  // One way of using the chosen scans at a time: every host they observed,
+  // the hosts they first discovered, or the hosts whose display name they
+  // changed (a scan's "N renamed").
+  const [mode, setMode] = useState<ScanUse>(
+    filters.renamedInSelectedScans === true ? 'renamed'
+      : filters.firstSeenInSelectedScans === true ? 'first' : 'observed',
+  );
   const apply = () => {
     let next = withValue(without(filters, field.keys), 'scanIds', draft);
     // The modifier means nothing without a scan, so it never outlives them.
-    if (firstSeen && draft.length > 0) next = withValue(next, 'firstSeenInSelectedScans', true);
+    if (mode === 'first' && draft.length > 0) next = withValue(next, 'firstSeenInSelectedScans', true);
+    if (mode === 'renamed' && draft.length > 0) next = withValue(next, 'renamedInSelectedScans', true);
     commit(next);
   };
   return (
     <div className="space-y-xs">
-      <div className="flex gap-xxs" role="radiogroup" aria-label="How the scans are used">
-        {[
-          { value: false, label: 'Observed in' },
-          { value: true, label: 'First discovered in' },
-        ].map((mode) => (
+      <div className="flex flex-wrap gap-xxs" role="radiogroup" aria-label="How the scans are used">
+        {SCAN_USES.map((use) => (
           <button
-            key={mode.label}
+            key={use.value}
             type="button"
             role="radio"
-            aria-checked={firstSeen === mode.value}
-            onClick={() => setFirstSeen(mode.value)}
+            aria-checked={mode === use.value}
+            onClick={() => setMode(use.value)}
             className={cn(
               'rounded-chip border px-sm py-xxs text-caption font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              firstSeen === mode.value
+              mode === use.value
                 ? 'border-transparent bg-primary text-primary-foreground'
                 : 'border-border bg-card hover:bg-accent',
             )}
           >
-            {mode.label}
+            {use.label}
           </button>
         ))}
       </div>
@@ -554,7 +565,7 @@ function ScansEditor({ field, filters, data, loading, error, commit, cancel }: E
       <EditorFooter
         onApply={apply}
         onCancel={cancel}
-        applyDisabled={firstSeen && draft.length === 0}
+        applyDisabled={mode !== 'observed' && draft.length === 0}
         onRemove={filters.scanIds?.length ? () => commit(without(filters, field.keys)) : undefined}
       />
     </div>
