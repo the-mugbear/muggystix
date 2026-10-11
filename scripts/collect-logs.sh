@@ -244,9 +244,19 @@ if $DB_UP; then
         "mcp|mcp_tool_calls|client_name"
         "mcp|mcp_tool_calls|tool_name" "mcp|mcp_tool_calls|rpc_method"
     )
+    # Which of those columns THIS schema has: a column a later revision
+    # dropped (scopes.name, 2.488.0) or an older one never had is skipped, not
+    # queried — a failed query put an ERROR in the database log the bundle
+    # then carries, and a warning that read as a weaker anonymisation.  The
+    # entry stays in the list for an installation still on the older schema.
+    present_columns=$(psql_q -A -t -c \
+        "SELECT table_name || '|' || column_name FROM information_schema.columns WHERE table_schema = current_schema()" 2>/dev/null || true)
     harvest_failed=0
     for spec in "${HARVEST[@]}"; do
         IFS='|' read -r cat tbl col <<< "$spec"
+        if [[ -n "$present_columns" ]] && ! grep -qxF "$tbl|$col" <<< "$present_columns"; then
+            continue
+        fi
         if ! psql_q -A -t -F $'\t' -v ON_ERROR_STOP=1 -c \
             "SELECT DISTINCT '$cat', regexp_replace($col::text, '[\t\r\n]+', ' ', 'g') FROM $tbl WHERE $col IS NOT NULL AND length($col::text) BETWEEN 3 AND 300" \
             >> "$TERMS" 2>/dev/null; then
