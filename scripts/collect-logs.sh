@@ -385,7 +385,26 @@ for k in ("APP_VERSION", "MAX_FILE_SIZE", "INGESTION_RETAIN_FILES_DAYS", "NESSUS
     else
         echo "backend container not running"
     fi
+    # What the last boot's migration did, whatever --since says and whether or
+    # not the backend is up: each "Running upgrade" line, and the one line a
+    # failed or refused upgrade logs (a refusal names the revision and why).
+    # The backend or the ingestion worker runs it — whichever took the lock.
+    echo ""
+    echo "--- Boot migration: revisions applied and any failure (backend + worker, the whole current log) ---"
+    if compose_available; then
+        compose logs --no-color --timestamps backend worker 2>&1 \
+            | grep -E 'Running (upgrade|downgrade)|DATABASE MIGRATION FAILED|NOTHING WAS CHANGED|schema left PARTWAY|Database not ready|\([0-9a-f]{12}\): ' \
+            | tail -n 80 || echo "(no migration line in the current logs — nothing to apply at the last boot, or the logs have rotated)"
+    else
+        echo "No docker compose binary on PATH."
+    fi
     if $DB_UP; then
+        # The three revisions that REFUSE to run rather than guess (the new
+        # image then does not start).  Counts only; each query is plain SQL
+        # that reads the same on the schema before and after the revision.
+        q "Upgrade refusals — b2e5a8c1d4f6: issues with more than one scanner finding (must be 0)" "SELECT count(*) AS duplicated_issues FROM (SELECT 1 FROM findings WHERE source = 'scanner' AND dedup_key IS NOT NULL GROUP BY project_id, dedup_key HAVING count(*) > 1) d;"
+        q "Upgrade refusals — e1b4c7d0a2f5: scopes with no project, projects with more than one scope, and entries held by two scopes of one project (every column but projects_with_several_scopes must be 0; several scopes alone are merged)" "SELECT (SELECT count(*) FROM scopes WHERE project_id IS NULL) AS scopes_without_project, (SELECT count(*) FROM (SELECT 1 FROM scopes WHERE project_id IS NOT NULL GROUP BY project_id HAVING count(*) > 1) p) AS projects_with_several_scopes, (SELECT count(*) FROM (SELECT 1 FROM subnets sn JOIN scopes s ON s.id = sn.scope_id GROUP BY s.project_id, sn.cidr HAVING count(DISTINCT sn.scope_id) > 1) c) AS cidrs_in_two_scopes, (SELECT count(*) FROM (SELECT 1 FROM scope_domains d JOIN scopes s ON s.id = d.scope_id GROUP BY s.project_id, d.domain HAVING count(DISTINCT d.scope_id) > 1) c) AS domains_in_two_scopes;"
+        q "Upgrade refusals — a4f8c2e6b0d1: one CIDR twice in a scope (merged), and those whose copies differ in description or site (must be 0)" "SELECT count(*) AS duplicated_cidrs, count(*) FILTER (WHERE descriptions > 1 OR sites > 1) AS refused FROM (SELECT count(DISTINCT nullif(btrim(description), '')) AS descriptions, count(DISTINCT nullif(btrim(site), '')) AS sites FROM subnets GROUP BY scope_id, cidr HAVING count(*) > 1) d;"
         # What the database is doing at this moment, and who waits on whom —
         # a migration in progress, or a stuck one, shows here.  Statement text
         # is the application's own SQL, cut at 100 characters and scrubbed with
@@ -784,7 +803,10 @@ Files:
 - configuration.txt       .env keys (values redacted unless numeric/boolean), docker-compose.yml
 - versions_and_schema.txt deployed versions AND the frontend build actually being
                           served (they differ after a file copy with no rebuild),
-                          ingestion settings, Alembic state, table sizes,
+                          ingestion settings, Alembic state, what the last boot's
+                          migration applied or why it failed (whatever --since
+                          says), the counts the three refusing revisions check,
+                          table sizes,
                           the data-repair ledger (which one-off corrections ran),
                           Postgres memory settings with cache-hit and temp-file counters
 - ingestion.txt           ingestion queue, failed-job tracebacks, parse errors

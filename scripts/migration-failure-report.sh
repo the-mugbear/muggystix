@@ -184,6 +184,10 @@ DB_LOGS=$("${DC[@]}" logs --since "$SINCE" db 2>&1 || true)
 
     section "8. Known refusal: two scanner findings for one issue (revision b2e5a8c1d4f6)"
     q "Issues with more than one scanner finding (must be 0 before that revision runs)" "SELECT count(*) AS duplicated_issues, coalesce(sum(n), 0) AS findings_involved FROM (SELECT count(*) AS n FROM findings WHERE source = 'scanner' AND dedup_key IS NOT NULL AND dedup_key NOT LIKE 'row:%' GROUP BY project_id, dedup_key HAVING count(*) > 1) d;"
+    # The two later revisions that refuse rather than guess (2.488.0, 2.490.0).
+    # Counts only; plain SQL that reads the same before and after each revision.
+    q "Revision e1b4c7d0a2f5 (one scope per project): scopes with no project and entries held by two scopes of one project must be 0; several scopes alone are merged" "SELECT (SELECT count(*) FROM scopes WHERE project_id IS NULL) AS scopes_without_project, (SELECT count(*) FROM (SELECT 1 FROM scopes WHERE project_id IS NOT NULL GROUP BY project_id HAVING count(*) > 1) p) AS projects_with_several_scopes, (SELECT count(*) FROM (SELECT 1 FROM subnets sn JOIN scopes s ON s.id = sn.scope_id GROUP BY s.project_id, sn.cidr HAVING count(DISTINCT sn.scope_id) > 1) c) AS cidrs_in_two_scopes, (SELECT count(*) FROM (SELECT 1 FROM scope_domains d JOIN scopes s ON s.id = d.scope_id GROUP BY s.project_id, d.domain HAVING count(DISTINCT d.scope_id) > 1) c) AS domains_in_two_scopes;"
+    q "Revision a4f8c2e6b0d1 (a CIDR once in a scope): duplicates are merged; those whose copies differ in description or site must be 0" "SELECT count(*) AS duplicated_cidrs, count(*) FILTER (WHERE descriptions > 1 OR sites > 1) AS refused FROM (SELECT count(DISTINCT nullif(btrim(description), '')) AS descriptions, count(DISTINCT nullif(btrim(site), '')) AS sites FROM subnets GROUP BY scope_id, cidr HAVING count(*) > 1) d;"
     q "Invalid indexes left by an interrupted build" "SELECT c.relname AS index, t.relname AS on_table FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid WHERE NOT i.indisvalid;"
 
     section "9. Live sessions and lock waits"
