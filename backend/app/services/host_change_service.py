@@ -18,7 +18,10 @@ def hosts_changed_since_prior_scan(db: Session, host_ids: Union[Iterable[int], Q
     """Host ids that CHANGED at their most-recent scan vs the prior one — a
     host-state flip (HostScanHistory.state_at_scan) or a port first observed
     after the prior scan.  Hosts with <2 scans are never "changed" (the first
-    scan is all-new, not a change).  Batched via a window function — no N+1.
+    scan is all-new, not a change).  A scan whose history row states no
+    liveness (``state_at_scan`` NULL: a DNS import, a web capture with no
+    answer) is not one of the two compared.  Batched via a window function —
+    no N+1.
     Removed-port detection is intentionally omitted: the dedup keeps ports and
     doesn't track per-scan presence, so "removed" isn't reliably derivable.
 
@@ -53,7 +56,13 @@ def changed_since_prior_scan_query(db: Session, host_ids: Union[Iterable[int], Q
                 partition_by=history.host_id, order_by=history.discovered_at.desc(),
             ).label("rn"),
         )
-        .filter(history.host_id.in_(host_ids))
+        # A history row that states no liveness is not one of the two scans
+        # compared: a DNS import records which hosts its answers addressed
+        # (``state_at_scan`` NULL — a name answer does not say the host is
+        # up), and ranked here it read as a flip from 'up' on every host it
+        # named.  The comparison is between the two latest scans that SAID
+        # something about the host's state.
+        .filter(history.host_id.in_(host_ids), history.state_at_scan.isnot(None))
         .cte("ranked_history")
     )
     latest, prior = aliased(ranked), aliased(ranked)
@@ -67,8 +76,7 @@ def changed_since_prior_scan_query(db: Session, host_ids: Union[Iterable[int], Q
         .join(prior, and_(prior.c.hid == latest.c.hid, prior.c.rn == 2))
         .filter(
             latest.c.rn == 1,
-            # IS DISTINCT FROM: a state going to or from NULL is a flip, which is
-            # what Python's `!=` said.
-            or_(latest.c.state.is_distinct_from(prior.c.state), port_added),
+            # Both states are stated (rows with none are not ranked).
+            or_(latest.c.state != prior.c.state, port_added),
         )
     )

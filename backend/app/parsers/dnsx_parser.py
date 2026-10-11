@@ -54,10 +54,13 @@ from app.db.models_vulnerability import VulnerabilitySource
 from app.services.misconfig_checks import record_misconfig
 from app.parsers.parser_utils import (
     ProgressBeat,
+    ScanHostObservations,
     correlate_scan,
+    dns_import_summary,
     ensure_scan,
     ScanClock,
     parse_rfc3339,
+    record_addressed_hosts,
 )
 from app.parsers.streaming_json import iter_json_records
 from app.services.dns_name_service import (
@@ -254,6 +257,19 @@ class DnsxParser:
         # dedup is now (name, type, value, resolver, scan) and survives across
         # uploads because the DB is checked, not just this file.
         self._name_cache = ObservationCache()
+        # The hosts that ALREADY existed and that an answer of this file
+        # addressed: written to host_scan_history (parser_utils
+        # .record_addressed_hosts), which is what every "which hosts did this
+        # scan touch" reader asks.  A host this import creates gets its row
+        # from the dedup service instead.
+        self._observed = ScanHostObservations()
+        # Host ids, for the import's summary: created by this import, and
+        # existing hosts whose DISPLAY name an answer changed.  ``_row_*`` are
+        # the current record's, kept apart until its savepoint is released.
+        self._created_host_ids: set[int] = set()
+        self._renamed_host_ids: set[int] = set()
+        self._row_created: set[int] = set()
+        self._row_renamed: set[int] = set()
         # Tracked for the parser-warning summary.
         self._resolvers_seen: Counter[str] = Counter()
         self._status_codes_seen: Counter[str] = Counter()
@@ -281,16 +297,19 @@ class DnsxParser:
         clock = ScanClock()
 
         records_written = 0
-        ptr_hosts_updated = 0
-        a_hosts_created = 0
         skipped_records = 0
         # Observation identity is (name, record_type, value, resolver_name,
         # scan) — the same answer from two resolvers stays two rows (the
         # point of resolver_name), an exact repeat from one resolver folds.
         # Enforced by dns_name_service.record_observation + the DB index.
 
-        # R6 — heartbeat between records, outside the record's savepoint.
-        beat = ProgressBeat("records")
+        # R6 — heartbeat between records, outside the record's savepoint.  The
+        # addressed hosts' history is written ahead of each heartbeat's commit
+        # and once more after the last record.
+        scan_id = scan.id
+        beat = ProgressBeat(
+            "records", before=lambda: record_addressed_hosts(self.db, scan_id, self._observed),
+        )
         for row in iter_json_records(file_path, tool_label="dnsx JSON"):
             beat.tick()
             if not isinstance(row, dict):
@@ -327,17 +346,22 @@ class DnsxParser:
             # avoid a SAVEPOINT round-trip per resolution failure.
             journal: List[tuple] = []
             transfers_before = len(self._zone_transfers)
+            self._row_created, self._row_renamed = set(), set()
             sp = self.db.begin_nested()
+            # A record that rolls back leaves no note of the hosts it
+            # addressed (the same checkpoint record_savepoint takes).
+            noted_before = self._observed.checkpoint()
             try:
-                row_records, row_ptr_hosts, row_a_hosts = self._persist_row_answers(
+                row_records = self._persist_row_answers(
                     journal, row, host, ttl, resolver, scan.id, observed_at,
                 )
                 sp.commit()
                 records_written += row_records
-                ptr_hosts_updated += row_ptr_hosts
-                a_hosts_created += row_a_hosts
+                self._created_host_ids |= self._row_created
+                self._renamed_host_ids |= self._row_renamed
             except Exception as exc:  # noqa: BLE001 — isolate one bad record
                 sp.rollback()
+                self._observed.restore(noted_before)
                 skipped_records += 1
                 del self._zone_transfers[transfers_before:]
                 # The dedup service's history caches point at rows the
@@ -349,6 +373,7 @@ class DnsxParser:
                 self._name_cache.forget(journal)
                 logger.warning("dnsx: skipping malformed record host=%r: %s", host, exc)
 
+        record_addressed_hosts(self.db, scan.id, self._observed)
         clock.apply(scan)
 
         if records_written == 0:
@@ -391,37 +416,31 @@ class DnsxParser:
                 "Resolution failures: "
                 + ", ".join(f"{code}={ct}" for code, ct in non_noerror.items())
             )
-        if ptr_hosts_updated:
-            warning_parts.append(f"PTR populated Host.hostname for {ptr_hosts_updated} host(s)")
-        if a_hosts_created:
-            warning_parts.append(f"A/AAAA discovered {a_hosts_created} host(s)")
         warnings = " | ".join(warning_parts) if warning_parts else None
 
         # Final one-line count summary for the ingestion job's progress
         # column.  The written count was previously only logged (below) and
         # never persisted, so a successful dnsx upload showed an empty
         # progress column and no record count anywhere in the UI.
-        summary_parts = [
-            f"{records_written} DNS record{'s' if records_written != 1 else ''}"
-        ]
-        if ptr_hosts_updated:
-            summary_parts.append(
-                f"{ptr_hosts_updated} host{'s' if ptr_hosts_updated != 1 else ''} named via PTR"
-            )
-        if a_hosts_created:
-            summary_parts.append(
-                f"{a_hosts_created} host{'s' if a_hosts_created != 1 else ''} discovered"
-            )
+        hosts_created = len(self._created_host_ids)
+        hosts_addressed = len(self._observed.host_ids | self._created_host_ids)
+        # A host this import created and then named again is a created host,
+        # not an existing one whose name changed.
+        hosts_renamed = len(self._renamed_host_ids - self._created_host_ids)
         self.last_parse_stats = {
             "skipped": skipped_records,
             "warnings": warnings,
-            "summary": ", ".join(summary_parts),
+            "summary": dns_import_summary(
+                records_written, hosts_addressed, hosts_created, hosts_renamed,
+            ),
         }
 
         elapsed = time.time() - start
         logger.info(
-            "dnsx parse complete - filename=%s records=%d ptr_hosts=%d skipped=%d elapsed=%.2fs",
-            filename, records_written, ptr_hosts_updated, skipped_records, elapsed,
+            "dnsx parse complete - filename=%s records=%d hosts_addressed=%d hosts_created=%d "
+            "display_names_changed=%d skipped=%d elapsed=%.2fs",
+            filename, records_written, hosts_addressed, hosts_created, hosts_renamed,
+            skipped_records, elapsed,
         )
         return scan
 
@@ -471,19 +490,18 @@ class DnsxParser:
         over (retryabledns ``AXFRData``).  The entry's typed arrays carry the
         record data WITHOUT the owner names (every A in the zone under one
         ``a``), so the zone is read from the entry's ``all`` array, which has
-        owner, TTL and type per record.  Returns
-        ``(records_written, ptr_hosts_updated, a_hosts_created)``.
+        owner, TTL and type per record.  Returns the records written.
 
         A transferred zone leaves, per server that allowed it, one ``AXFR``
         observation on the zone name (the fact itself) plus every record."""
         axfr = row.get("axfr")
         if not isinstance(axfr, dict):
-            return 0, 0, 0
+            return 0
         chain = axfr.get("chain")
         if not isinstance(chain, list):
-            return 0, 0, 0
+            return 0
         zone = (axfr.get("host") or host or "").strip()
-        records_written = ptr_hosts = a_hosts = 0
+        records_written = 0
         for entry in chain:
             if not isinstance(entry, dict):
                 continue
@@ -495,12 +513,9 @@ class DnsxParser:
                 if isinstance(entry.get("all"), list) else []
             for record in parsed:
                 transferred += 1
-                written, ptr_named, a_named = self._persist_transferred_record(
+                records_written += self._persist_transferred_record(
                     journal, record, server, scan_id, entry_time,
                 )
-                records_written += written
-                ptr_hosts += ptr_named
-                a_hosts += a_named
             if not parsed:
                 # No owner names to be had (an entry without `all`): the
                 # values are kept as what the transfer returned, on the zone,
@@ -528,7 +543,7 @@ class DnsxParser:
                     records_written += 1
                 self._zone_transfers.append((zone_name, server or "unknown server", transferred))
                 self._record_zone_transfer_check(zone_name, server, transferred, scan_id)
-        return records_written, ptr_hosts, a_hosts
+        return records_written
 
     def _record_zone_transfer_check(
         self, zone: str, server: Optional[str], transferred: int, scan_id: int,
@@ -550,15 +565,21 @@ class DnsxParser:
         if endpoint is None:
             return False
         address, port = endpoint
-        host_id = (
-            self.db.query(models.Host.id)
+        host = (
+            self.db.query(models.Host)
             .filter(models.Host.project_id == self._project_id, models.Host.ip_address == address)
-            .scalar()
+            .first()
         )
-        if host_id is None:
+        if host is None:
             return False
+        # The scan now has an observation on this host: say the scan saw it,
+        # or the host is on no list of the scan's (the Scans figures, the
+        # scan's page, the Hosts filter by scan).  Inside the row's savepoint,
+        # so a rolled-back row takes the note along; never downgrades a host
+        # this import created.
+        self._observed.note(host, created=False, state=None)
         record_misconfig(
-            self.db, check_id="dns_zone_transfer_allowed", host_id=host_id, scan_id=scan_id,
+            self.db, check_id="dns_zone_transfer_allowed", host_id=host.id, scan_id=scan_id,
             source=VulnerabilitySource.DNSX, port_number=port,
             evidence=(
                 f"Zone {zone}: transfer allowed by {server} "
@@ -570,10 +591,11 @@ class DnsxParser:
     def _persist_transferred_record(
         self, journal: List[tuple], record: ResourceRecord, server: Optional[str],
         scan_id: int, observed_at: Optional[datetime],
-    ) -> tuple[int, int, int]:
+    ) -> int:
         """One record of a transferred zone, stored like the same answer from
         a query: PTR as (name, PTR, address) naming the host, A/AAAA as a
-        discovered host named by its owner (never a wildcard owner)."""
+        discovered host named by its owner (never a wildcard owner).  Returns
+        the records written (0 or 1)."""
         if record.rtype == "PTR":
             address = _reverse_name_to_ip(record.owner)
             if address:
@@ -581,20 +603,18 @@ class DnsxParser:
                     journal, record.value, "PTR", address, record.ttl, server,
                     scan_id=scan_id, observed_at=observed_at,
                 ) else 0
-                named = 1 if self._update_host_hostname(scan_id, address, record.value, source="ptr") else 0
-                return written, named, 0
+                self._update_host_hostname(scan_id, address, record.value, source="ptr")
+                return written
         written = 1 if self._persist_record(
             journal, record.owner, record.rtype, record.value, record.ttl, server,
             scan_id=scan_id, observed_at=observed_at,
         ) else 0
-        a_named = 0
         if (
             record.rtype in ("A", "AAAA") and _is_valid_ip(record.value)
             and not record.owner.startswith("*")
         ):
-            if self._update_host_hostname(scan_id, record.value, record.owner, source="forward"):
-                a_named = 1
-        return written, 0, a_named
+            self._update_host_hostname(scan_id, record.value, record.owner, source="forward")
+        return written
 
     def _persist_row_answers(
         self,
@@ -605,27 +625,22 @@ class DnsxParser:
         resolver: Optional[str],
         scan_id: int,
         observed_at: Optional[datetime],
-    ) -> tuple[int, int, int]:
+    ) -> int:
         """Persist every DNS answer carried by one dnsx row — the record-type
         fields plus PTR — updating the host inventory for forward A/AAAA and
-        reverse PTR answers.  Returns this row's
-        ``(records_written, ptr_hosts_updated, a_hosts_created)``.
+        reverse PTR answers.  Returns the records this row wrote; which hosts
+        it addressed, created and renamed is kept by ``_update_host_hostname``.
 
         Raises on any persistence error so the caller's SAVEPOINT can isolate
         a single bad record; ``journal`` collects what this row added to the
         name cache so the caller can forget it on rollback.
         """
         records_written = 0
-        ptr_hosts_updated = 0
-        a_hosts_created = 0
 
         records_written += self._persist_all_records(journal, row, resolver, scan_id, observed_at)
-        axfr_records, axfr_ptr_hosts, axfr_a_hosts = self._persist_zone_transfer(
+        records_written += self._persist_zone_transfer(
             journal, row, host, resolver, scan_id, observed_at,
         )
-        records_written += axfr_records
-        ptr_hosts_updated += axfr_ptr_hosts
-        a_hosts_created += axfr_a_hosts
 
         for field_key, record_type in _RECORD_TYPE_FIELDS:
             values = row.get(field_key)
@@ -649,10 +664,7 @@ class DnsxParser:
                     # 'forward' is the weakest display-name source: many
                     # vhosts share one IP, so it only ever fills an empty
                     # hostname or names a brand-new host.
-                    if self._update_host_hostname(
-                        scan_id, value_str, host, source="forward",
-                    ):
-                        a_hosts_created += 1
+                    self._update_host_hostname(scan_id, value_str, host, source="forward")
 
         ptr_values = row.get("ptr")
         if isinstance(ptr_values, list):
@@ -685,10 +697,9 @@ class DnsxParser:
                         scan_id=scan_id, observed_at=observed_at,
                     ):
                         records_written += 1
-                    if self._update_host_hostname(scan_id, host, hostname, source="ptr"):
-                        ptr_hosts_updated += 1
+                    self._update_host_hostname(scan_id, host, hostname, source="ptr")
 
-        return records_written, ptr_hosts_updated, a_hosts_created
+        return records_written
 
     def _persist_record(
         self,
@@ -718,16 +729,21 @@ class DnsxParser:
 
     def _update_host_hostname(
         self, scan_id: int, ip_address: str, hostname: str, *, source: str,
-    ) -> bool:
+    ) -> None:
         """A DNS answer names an address: apply it to the host's DISPLAY name
         through the one precedence rule (dns_name_service), creating the host
-        with ``state='unknown'`` when it doesn't exist yet.  Returns True if
-        the inventory was touched.
+        with ``state='unknown'`` when it doesn't exist yet.
 
         ``source`` is 'ptr' (authoritative reverse DNS — outranks scanner and
         forward names) or 'forward' (weakest — fills an empty hostname or
         names a new host, never replaces).  The name→address relationship
         itself is already persisted by ``_persist_record``.
+
+        A host that already exists is NOTED as addressed by this scan whether
+        or not its display name changed: the note becomes its
+        ``host_scan_history`` row (``record_addressed_hosts``), without which
+        the import's hosts were counted and listed nowhere.  No state: a DNS
+        answer does not say the host is up.
         """
         existing = (
             self.db.query(models.Host)
@@ -738,7 +754,10 @@ class DnsxParser:
             .first()
         )
         if existing:
-            return apply_hostname_candidate(existing, hostname, source)
+            if apply_hostname_candidate(existing, hostname, source):
+                self._row_renamed.add(existing.id)
+            self._observed.note(existing, created=False, state=None, hostname=hostname)
+            return
         # names_recorded: _persist_record already wrote this name→address
         # observation (with resolver + TTL); the dedup service must not add a
         # second, poorer row for the same fact.
@@ -748,7 +767,7 @@ class DnsxParser:
             "names_recorded": True,
             "state": "unknown",
         }
-        self.dedup_service.find_or_create_host(
+        created = self.dedup_service.find_or_create_host(
             ip_address, scan_id, host_data, project_id=self._project_id,
         )
-        return True
+        self._row_created.add(created.id)

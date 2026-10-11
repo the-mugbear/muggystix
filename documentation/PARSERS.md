@@ -366,6 +366,29 @@ resolver_name` (there is **no** `hostname`/`ip_address` column on `DNSRecord`).
   failures and per-resolver hits into `parser_warnings`, and **fails closed**.
   PTR answers authoritatively set `Host.hostname`; forward A/AAAA answers create
   assets but never clobber an existing hostname.
+- **dnsx and the dns CSV record every host an answer addresses** (a
+  `host_scan_history` row per host and scan — what the Scans row's "hosts
+  added / already known", the scan page's host table, the Hosts filter by scan
+  and the scan deletes all read). A host the import CREATES gets its row from
+  the dedup service (`find_or_create_host`, `host_created`, state `unknown`);
+  a host that ALREADY existed — PTR or forward, dnsx's transferred zones
+  included; the CSV's PTR rows — is noted in a `ScanHostObservations` and
+  written by `parser_utils.record_addressed_hosts` (the web parsers'
+  `record_hosts_in_scan`, with the flushes two writers of one row need),
+  ahead of each heartbeat and after the last record: `host_created` false,
+  `hostname_at_scan` = the name the file gave, **no** `state_at_scan` (a DNS
+  answer does not say the host is up), and nothing else about the host is
+  written — it is noted whether or not its display name changed. A record
+  rolled back in its savepoint leaves no note. Before this, only created hosts
+  had a row, so an import that named 5,000 known hosts showed "no hosts" and
+  had no Hosts list. Imports made before it are not back-filled. The job's
+  result line counts the three apart (`parser_utils.dns_import_summary`):
+  "N DNS records, A hosts addressed, C created, M display names changed" — the
+  last is existing hosts whose display name the import replaced or filled, and
+  is stated by the import only (no stored row says which scan changed a
+  display name). `host_change_service` ("Changed" on the Hosts list, the
+  queue's "changed at its latest scan") compares the two latest history rows
+  that STATE a liveness, so a row with none is not a state flip.
 - **dnsx `all` and `-axfr`** are read in dnsx's own shapes (retryabledns
   `DNSData` / `AXFRData`). `all` is an array of resource records as text,
   `owner<TAB>ttl<TAB>IN<TAB>TYPE<TAB>rdata` (`parse_rr_text`); on an ordinary
@@ -689,7 +712,9 @@ class MyToolParser:
   output and writes it onto the `Scan` (never over a window the parser set from
   an explicit run start/finish).
 - `ScanHostObservations` / `record_hosts_in_scan` — the hosts a scan observed,
-  for the per-scan history.
+  for the per-scan history. `record_addressed_hosts` is the same writer for a
+  parser whose NEW hosts go through the dedup service (dnsx, the dns CSV): it
+  flushes around the call so the two writers find each other's row.
 - `map_numeric_severity(score)` / `map_text_severity(text)` — canonical
   severity mapping; reuse these instead of hand-rolling thresholds.
 - `extract_first_ip(text)` / `normalize_ip(value)` /

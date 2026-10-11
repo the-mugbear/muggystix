@@ -6,9 +6,12 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers.parser_utils import (
     ProgressBeat,
+    ScanHostObservations,
     announce_scan,
     correlate_scan,
+    dns_import_summary,
     read_tool_text,
+    record_addressed_hosts,
     record_savepoint,
 )
 from app.services.dns_name_service import (
@@ -37,6 +40,11 @@ class DNSParser:
         self.last_parse_stats: Optional[dict] = None
         self.dedup_service = HostDeduplicationService(db)
         self._name_cache = ObservationCache()
+        # The hosts that ALREADY existed and that a PTR row of this file
+        # addressed — their host_scan_history rows (parser_utils
+        # .record_addressed_hosts).  A host this import creates gets its row
+        # from the dedup service.
+        self._observed = ScanHostObservations()
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         """Parse DNS records CSV file and create/update host records with DNS names"""
@@ -66,12 +74,20 @@ class DNSParser:
         self.db.flush()
         announce_scan(self.db, scan)
 
-        hosts_created = 0
-        hosts_updated = 0
+        # Host ids: created by this import, and existing hosts whose DISPLAY
+        # name a PTR row changed.  The hosts addressed are these and the noted
+        # ones together.
+        created_host_ids: set[int] = set()
+        renamed_host_ids: set[int] = set()
         dns_records_processed = 0
         self._rejected = 0
         self._reject_examples: List[str] = []
-        beat = ProgressBeat("DNS records")
+        # The addressed hosts' history is written ahead of each heartbeat's
+        # commit (outside the row's savepoint) and after the last row.
+        scan_id = scan.id
+        beat = ProgressBeat(
+            "DNS records", before=lambda: record_addressed_hosts(self.db, scan_id, self._observed),
+        )
 
         # Review 2026-10-01 R5 — read like every tool text that reaches a Text
         # column (UTF-16 decoded, NUL removed).  The strict utf-8 open failed
@@ -134,8 +150,8 @@ class DNSParser:
                     # failed and carried on in a session that could no longer
                     # flush, so every later row was rejected too and the
                     # import failed (the record-isolation rule, v2.419.0).
-                    row_host_created = row_host_updated = False
-                    with record_savepoint(self.db, on_rollback=self._reset_caches):
+                    row_created_id = row_renamed_id = None
+                    with record_savepoint(self.db, self._observed, self._reset_caches):
                         record_observation(
                             self.db,
                             project_id=self._project_id,
@@ -163,7 +179,13 @@ class DNSParser:
                                 # PTR outranks scanner/forward names but never an
                                 # operator's correction (was: unconditional overwrite).
                                 if apply_hostname_candidate(existing_host, dns_name, 'ptr'):
-                                    row_host_updated = True
+                                    row_renamed_id = existing_host.id
+                                # Addressed by this scan whether or not the
+                                # name changed.  No state: a PTR row does not
+                                # say the host is up.
+                                self._observed.note(
+                                    existing_host, created=False, state=None, hostname=dns_name,
+                                )
                             else:
                                 host_data = {
                                     'hostname': dns_name,
@@ -171,14 +193,15 @@ class DNSParser:
                                     'names_recorded': True,  # record_observation above wrote it
                                     'state': 'unknown',
                                 }
-                                self.dedup_service.find_or_create_host(
+                                row_created_id = self.dedup_service.find_or_create_host(
                                     ip_address, scan.id, host_data, project_id=self._project_id
-                                )
-                                row_host_created = True
+                                ).id
                     # Counted only once the row's savepoint is released.
                     dns_records_processed += 1
-                    hosts_created += row_host_created
-                    hosts_updated += row_host_updated
+                    if row_created_id is not None:
+                        created_host_ids.add(row_created_id)
+                    if row_renamed_id is not None:
+                        renamed_host_ids.add(row_renamed_id)
 
                 except Exception as e:
                     logger.warning(f"Error processing DNS record row {i}: {str(e)}")
@@ -189,6 +212,7 @@ class DNSParser:
                 beat.tick()
 
         logger.info(f"Processed {i} DNS records from CSV")
+        record_addressed_hosts(self.db, scan.id, self._observed)
 
         # Fail closed when no rows validated — pre-v2.55.0 this path
         # committed a `tool_name='dns'` scan with zero records, which
@@ -213,6 +237,11 @@ class DNSParser:
         # the masscan/nmap ordering.
         self.db.commit()
 
+        hosts_created = len(created_host_ids)
+        hosts_addressed = len(self._observed.host_ids | created_host_ids)
+        # A host this import created and then named again is a created host.
+        hosts_renamed = len(renamed_host_ids - created_host_ids)
+
         # Correlate hosts to subnets
         if hosts_created > 0:
             try:
@@ -231,13 +260,16 @@ class DNSParser:
                 + (" …" if self._rejected > len(self._reject_examples) else "")
                 if self._rejected else None
             ),
-            "summary": f"{dns_records_processed} DNS record{'s' if dns_records_processed != 1 else ''}",
+            "summary": dns_import_summary(
+                dns_records_processed, hosts_addressed, hosts_created, hosts_renamed,
+            ),
             "partial": bool(self._rejected),
         }
 
         logger.info(
-            f"DNS parsing complete - Created: {hosts_created} hosts, "
-            f"Updated: {hosts_updated} hosts, "
+            f"DNS parsing complete - Addressed: {hosts_addressed} hosts, "
+            f"Created: {hosts_created} hosts, "
+            f"Display names changed: {hosts_renamed} hosts, "
             f"Processed: {dns_records_processed} DNS records"
         )
         return scan

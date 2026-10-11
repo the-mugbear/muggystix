@@ -2920,10 +2920,11 @@
             "Host.hostname_source",
             "Host.ip_address",
             "Host.state",
-            "HostScanHistory.hostname_at_scan"
+            "HostScanHistory.hostname_at_scan",
+            "HostScanHistory.host_created"
           ],
-          "shown": "Host inspector header; Hosts list › Host column; Scan page current-hosts table · Filter: hostname:/host:, ip:, subnet:/cidr:, state: · Also: Host inventory CSV; JSON / Markdown export",
-          "note": "An existing project host is renamed only if 'ptr' outranks its current name source (never over an operator correction); an unknown address becomes a new Host with state 'unknown' and hostname_source 'ptr'. Hosts are then correlated to scope subnets."
+          "shown": "Host inspector header; Hosts list › Host column; Scans › import history (hosts added / already known); Scan page hosts tables · Filter: hostname:/host:, ip:, subnet:/cidr:, state:, scan: · Also: Host inventory CSV; JSON / Markdown export",
+          "note": "An existing project host is renamed only if 'ptr' outranks its current name source (never over an operator correction); an unknown address becomes a new Host with state 'unknown' and hostname_source 'ptr'. Hosts are then correlated to scope subnets. Every host a PTR row addresses is recorded as seen by this import (one host_scan_history row with the row's name; no up/down state for a host that already existed), also when its display name did not change; the import's result line says how many hosts the file addressed, how many it created and on how many existing ones the display name changed."
         },
         {
           "what": "Forward A/AAAA rows as hosts",
@@ -3016,7 +3017,7 @@
             "HostScanHistory.hostname_at_scan"
           ],
           "shown": "Host inspector header; Hosts list › Host column; Scan page hosts tables · Filter: ip:, subnet:/cidr:, hostname:/host:, state: · Also: subnet/scope correlation, site grouping; Host inventory CSV",
-          "note": "An unknown address becomes a Host (state 'unknown', hostname = the queried name, source 'forward'); an existing host only gets the name if it had none, since 'forward' is the weakest source. Correlated to scope subnets afterwards."
+          "note": "An unknown address becomes a Host (state 'unknown', hostname = the queried name, source 'forward'); an existing host only gets the name if it had none, since 'forward' is the weakest source. Correlated to scope subnets afterwards. Every host an answer addresses is recorded as seen by this import (one host_scan_history row, with the name the file gave), whether the import created it, renamed it or changed nothing on it — so the Scans row's host counts, the scan page's host table and the Hosts filter by scan list it. For a host that already existed the row states no up/down (a DNS answer does not say), and the host's state is not touched."
         },
         {
           "what": "Reverse DNS (PTR) of an IP",
@@ -3028,10 +3029,12 @@
             "DNSRecord.value",
             "Host.hostname",
             "Host.hostname_source",
-            "Host.state"
+            "Host.state",
+            "HostScanHistory.hostname_at_scan",
+            "HostScanHistory.host_created"
           ],
-          "shown": "Host inspector › DNS evidence; Scan page › DNS Records; Host inspector › DNS evidence card · Filter: hostname:/host:, state: · Also: Names evidence counts by kind; name->host binding",
-          "note": "Stored as a PTR observation under the returned hostname with value = the IP; the host is created (state 'unknown') or renamed with source 'ptr', which outranks scanner and forward names but never an operator correction."
+          "shown": "Host inspector › DNS evidence; Scan page › DNS Records; Host inspector › DNS evidence card; Scans › import history (hosts added / already known); Scan page hosts tables · Filter: hostname:/host:, state:, scan: · Also: Names evidence counts by kind; name->host binding",
+          "note": "Stored as a PTR observation under the returned hostname with value = the IP; the host is created (state 'unknown') or renamed with source 'ptr', which outranks scanner and forward names but never an operator correction. The host is recorded as seen by this import either way (one host_scan_history row; no up/down state for a host that already existed), also when its display name did not change. The import's result line says how many hosts the file addressed, how many of them it created and on how many existing ones the display name changed."
         },
         {
           "what": "PTR on a non-IP host",

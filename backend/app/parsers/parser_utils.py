@@ -627,6 +627,44 @@ def record_hosts_in_scan(
         )
 
 
+def record_addressed_hosts(
+    db: Session, scan_id: int, observations: ScanHostObservations
+) -> None:
+    """``record_hosts_in_scan`` for a parser whose NEW hosts go through the
+    dedup service (dnsx, the DNS CSV): the hosts that already existed and that
+    the file addressed get their ``host_scan_history`` row here; a host the
+    import created has the one ``find_or_create_host`` wrote.
+
+    Two writers, one row per (host, scan) — ``uq_host_scan``.  The session
+    runs ``autoflush=False``, so each writer finds the other's row only once
+    it is in the database: the flush before lets ``record_hosts_in_scan``
+    find (and update, never downgrading ``host_created``) the row of a host
+    this import created and an answer then addressed again; the flush after
+    lets the dedup service's lookup find what was written here.
+
+    Call it where ``record_hosts_in_scan`` is called: ahead of each heartbeat
+    (``ProgressBeat(before=…)``, outside the record savepoint) and after the
+    last record."""
+    db.flush()
+    record_hosts_in_scan(db, scan_id, observations)
+    db.flush()
+
+
+def dns_import_summary(records: int, addressed: int, created: int, renamed: int) -> str:
+    """The one-line result of a DNS import (dnsx, the DNS CSV) for the job's
+    progress column: records stored, hosts the answers addressed, and of
+    those how many the import created and on how many that already existed
+    it changed the display name."""
+    parts = [f"{records} DNS record{'s' if records != 1 else ''}"]
+    if not addressed:
+        parts.append("no hosts addressed")
+        return ", ".join(parts)
+    parts.append(f"{addressed} host{'s' if addressed != 1 else ''} addressed")
+    parts.append(f"{created} created")
+    parts.append(f"{renamed} display name{'s' if renamed != 1 else ''} changed")
+    return ", ".join(parts)
+
+
 def map_numeric_severity(score: Optional[float]) -> VulnerabilitySeverity:
     if score is None:
         return VulnerabilitySeverity.UNKNOWN
