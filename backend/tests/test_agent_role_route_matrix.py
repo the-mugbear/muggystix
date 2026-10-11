@@ -67,6 +67,10 @@ MATRIX = [
      {"analyst": True, "auditor": True, "viewer": True}),
     ("scanner credentials", "POST", "/api/v1/agent/scanner-integrations/999999/credentials",
      {"analyst": True, "auditor": False, "viewer": False}),
+    # Keeping what a cut-short upload holds puts a partial import into the
+    # project: a project write to the gate (the route then answers 422 / 404).
+    ("keep a cut-short upload", "POST", "/api/v1/agent/uploads/999999/keep-truncated",
+     {"analyst": True, "auditor": False, "viewer": False}),
 ]
 
 

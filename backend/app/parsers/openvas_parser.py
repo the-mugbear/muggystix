@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models_vulnerability import VulnerabilitySource
+from app.parsers.cut_short import EndTracking, settle_cut, xml_cut_short
 from app.parsers.parser_utils import (
     ProgressBeat,
     ScanClock,
@@ -98,8 +99,11 @@ class OpenVASParser:
         seen = recorded = failed = 0
         saw_report = False
         beat = ProgressBeat("results")
+        # Read through a handle that knows when the reader reached its end
+        # (how a file that was cut short is told from invalid XML).
+        source = EndTracking.open(file_path)
         try:
-            context = iterparse_safe(file_path, events=("end",))
+            context = iterparse_safe(source, events=("end",))
             processed = 0
             # v2.333.0 — the report records its own run window; it used to be
             # ignored and start_time was the upload time.
@@ -154,7 +158,16 @@ class OpenVASParser:
                 # being counted as a malformed result.
                 beat.tick()
         except (ET.ParseError, XMLSyntaxError) as exc:
-            raise ValueError(f"Invalid or truncated OpenVAS XML: {exc}") from exc
+            if not xml_cut_short(source, file_path):
+                raise ValueError(f"Invalid OpenVAS XML: {exc}") from exc
+            # The file simply ENDS.  Settled in the one place: this raises
+            # (the import fails as cut short and the operator is asked)
+            # unless the import keeps what the file holds; then every
+            # complete <result> read so far stays, and the one the cut fell
+            # in was never delivered.
+            settle_cut(seen, label="OpenVAS XML", cause=exc)
+        finally:
+            source.close()
 
         if not saw_report and seen == 0:
             raise ValueError("Not an OpenVAS / Greenbone report: no <report> and no <result> elements.")

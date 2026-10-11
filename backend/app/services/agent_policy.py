@@ -242,3 +242,55 @@ def render_scanner_integrations_rule(*, over_mcp: bool = False) -> str:
         "recorded. Keep the credentials out of notes, evidence, feedback and "
         "proposals.\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# An upload that was cut short — the agent asks first
+# ---------------------------------------------------------------------------
+# Owner, 2026-10-11: "If an agent attempts to upload a partial, can't it ask
+# the agent operator?"  A file that ends before it is complete fails as
+# ``truncated_file`` and nothing from it is imported.  Keeping what it holds
+# is the operator's answer; the agent asks, then states that they agreed.
+# The same shape as the scanner rule above, with the same limit: the server
+# never sees the conversation, so nothing here says BlueStick confirmed the
+# answer.  What it does is refuse a request that does not state agreement,
+# require an operator who can write to the project, and record the request.
+
+#: What the operator must be told before they answer.  One sentence, used by
+#: the rule and by the refusal of a request that does not state agreement.
+TRUNCATED_UPLOAD_CONSENT_MEANING = (
+    "saying yes means BlueStick imports the complete records the file holds "
+    "and marks the import partial; saying no means nothing from it is "
+    "imported and they can supply the complete file"
+)
+
+#: The 422 for a request that does not state the operator agreed.
+TRUNCATED_UPLOAD_ASK_FIRST = (
+    "Ask the operator first. Tell them the file was cut short and how many "
+    "complete records it holds (the upload's error_message says), and ask "
+    "whether to import what it holds as a partial import or to supply the "
+    f"complete file: {TRUNCATED_UPLOAD_CONSENT_MEANING}. Only after they say "
+    'to import it, send this request again with {"operator_agreed": true}.'
+)
+
+
+def render_truncated_upload_rule(*, over_mcp: bool = False) -> str:
+    """The ask-first rule for an upload whose file was cut short."""
+    if over_mcp:
+        status = "get_upload_job"
+        request = "keep_truncated_upload"
+    else:
+        status = "`GET /agent/uploads/{job_id}`"
+        request = (
+            "`POST /agent/uploads/{job_id}/keep-truncated` "
+            'with `{"operator_agreed": true}`'
+        )
+    return (
+        f"An upload can fail with failure_kind truncated_file ({status}): "
+        "the file was cut short and nothing from it was imported, though it "
+        "holds complete records. Say so to the operator, with the count the "
+        "error message gives, and ask whether to import what the file holds "
+        f"or to supply the complete file; {TRUNCATED_UPLOAD_CONSENT_MEANING}. "
+        f"Only after they say to import it, ask for that ({request}); every "
+        "request is recorded.\n"
+    )

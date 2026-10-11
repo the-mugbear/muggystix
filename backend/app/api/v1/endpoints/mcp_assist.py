@@ -83,6 +83,7 @@ from app.services.agent_policy import (
     render_read_back,
     render_safety_rules,
     render_scanner_integrations_rule,
+    render_truncated_upload_rule,
 )
 from app.services.agent_api_log_service import mcp_loopback_active
 from app.services.agent_prompt_service import resolve_base_url
@@ -157,6 +158,7 @@ def _server_instructions(base_url: str) -> str:
         "dismissing a scanner observation, an endpoint's status — is a proposal "
         "(the propose_* tools) that a person accepts or rejects.\n\n"
         + render_scanner_integrations_rule(over_mcp=True) + "\n"
+        + render_truncated_upload_rule(over_mcp=True) + "\n"
         "If your key expires. "
         + render_key_expiry_guidance(over_mcp=True) + "\n"
         "When something here gets in your way — a call you had to retry, a field "

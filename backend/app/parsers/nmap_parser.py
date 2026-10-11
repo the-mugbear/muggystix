@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers import nse_vulns
 from sqlalchemy.exc import IntegrityError
+from app.parsers.cut_short import EndTracking, settle_cut, xml_cut_short
 from app.parsers.parser_utils import announce_scan, epoch_to_utc, map_numeric_severity, upsert_vulnerability
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
 from app.services.host_deduplication_service import HostDeduplicationService
@@ -57,18 +58,17 @@ class NmapXMLParser:
         # per-host skips, because it means an unknown number of hosts were
         # never seen at all.
         truncated = False
+        # Complete <host> elements read: what precedes a cut.
+        hosts_read = 0
 
+        # Read through a handle that knows when the reader reached its end
+        # (how a file that was cut short is told from invalid XML).
+        source = EndTracking.open(file_path)
         try:
             # Hardening flags (resolve_entities/no_network/huge_tree)
             # live in xml_stream_helpers — see iterparse_safe for the
             # rationale on each.
-            context = iterparse_safe(file_path)
-        except etree.XMLSyntaxError as exc:
-            raise ValueError(
-                f"XML file is malformed or empty and could not be opened: {exc}"
-            ) from exc
-
-        try:
+            context = iterparse_safe(source)
             for event, elem in context:
                 tag = strip_namespace(elem.tag)
 
@@ -85,6 +85,7 @@ class NmapXMLParser:
                         self._parse_scan_info_element(elem, scan_id)
                         clear_element(elem)
                     elif tag == "host":
+                        hosts_read += 1
                         if self._host_has_address(elem):
                             # Per-host savepoint: a failing flush/commit inside
                             # _process_host_with_deduplication (e.g. an over-long
@@ -159,7 +160,22 @@ class NmapXMLParser:
                     ):
                         clear_element(elem)
         except etree.XMLSyntaxError as exc:
-            # Truncated/incomplete XML - preserve whatever hosts were already parsed
+            # The reader stopped.  Two different things end up here:
+            #
+            # * the file simply ENDS — an interrupted scan, or a copy that
+            #   did not finish.  Settled in the one place (owner, 2026-10-11):
+            #   this raises (the import fails as cut short and the operator is
+            #   asked) unless the import keeps what the file holds; then the
+            #   hosts read so far stay, and the host element the cut fell in
+            #   is dropped whole (its end tag never came).
+            # * the content is INVALID XML at this point — e.g. a control
+            #   character nmap wrote as a reference (``&#x1b;`` from a
+            #   banner), which XML 1.0 does not allow.  That is not the
+            #   owner's question and is handled as it always was: the hosts
+            #   read before it are kept and the import is partial, with the
+            #   same warning.
+            if xml_cut_short(source, file_path):
+                settle_cut(hosts_read, label="Nmap XML", unit="host", cause=exc)
             logger.warning(
                 f"XML parsing halted for {filename} (likely truncated/incomplete scan): {exc}. "
                 f"Recovered {hosts_processed} hosts before the error."
@@ -170,6 +186,8 @@ class NmapXMLParser:
                 f"are MISSING, not down. Recovered {hosts_processed} host(s). "
                 f"Re-upload a complete scan file. ({exc})"
             )
+        finally:
+            source.close()
 
         if scan is None or scan_id is None:
             raise ValueError("Unable to locate nmaprun element in XML")

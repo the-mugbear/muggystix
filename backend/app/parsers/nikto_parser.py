@@ -8,11 +8,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+import ijson
 from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models_vulnerability import VulnerabilitySource
-from app.parsers.streaming_json import iter_json_records
+from app.parsers.streaming_json import file_ends_early, iter_json_records
 from app.parsers.parser_utils import (
     ProgressBeat,
     ScanClock,
@@ -73,6 +74,27 @@ def _target_of(host_entry: dict) -> dict:
     return {k: host_entry[k] for k in ("ip", "host", "hostname", "port") if host_entry.get(k) is not None}
 
 
+def _host_object_target(file_path: str) -> dict:
+    """The target fields of a top-level Nikto host object whose findings
+    array has begun — read from the object's own members up to that array,
+    so it works on a file that stops inside the array.  Empty when the file
+    is anything else (JSON lines, a finding object, content that is not JSON
+    before the array)."""
+    fields: dict = {}
+    try:
+        with open(file_path, "rb") as handle:
+            for prefix, event, value in ijson.parse(handle, use_float=True):
+                if prefix in ("vulnerabilities", "findings") and event == "start_array":
+                    return _target_of(fields)
+                if event in ("string", "number", "integer") and prefix and "." not in prefix:
+                    fields[prefix] = value
+                elif prefix == "" and event == "end_map":
+                    return {}
+    except ijson.JSONError:
+        return {}
+    return {}
+
+
 class NiktoParser:
     def __init__(self, db: Session):
         self.db = db
@@ -116,6 +138,8 @@ class NiktoParser:
         # read whole (one host's findings are small) and keeps its target.
         with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
             head = handle.read(4096).lstrip()
+        # The target of a single host object that did not load whole.
+        target: dict = {}
         if head.startswith("{") and os.path.getsize(file_path) < _WHOLE_OBJECT_LIMIT:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
                 try:
@@ -125,6 +149,16 @@ class NiktoParser:
             if isinstance(payload, dict):
                 self._record_json_entries(scan, [payload])
                 return
+            # The one host object did not load.  When that is because the
+            # file was CUT SHORT, the reader below hands over (or counts) the
+            # complete items of its ``vulnerabilities`` array — which carry
+            # no target of their own: it is on the object, written before
+            # the array.  Without it the offer "import what the file holds"
+            # led to an import that recorded nothing and failed.  Only for a
+            # file that ENDS EARLY: content that is invalid for any other
+            # reason is read exactly as it was before.
+            if file_ends_early(file_path):
+                target = _host_object_target(file_path)
         # Stream the records — Nikto JSON exports for large scopes are
         # dominated by per-finding ``description``/``msg`` bodies and
         # can easily reach several hundred MB.
@@ -133,6 +167,9 @@ class NiktoParser:
             array_keys=("vulnerabilities", "findings"),
             tool_label="Nikto JSON",
         )
+        if target:
+            # Only an item with no target of its own takes the object's.
+            entries = (entry if _target_of(entry) else {**target, **entry} for entry in entries)
         self._record_json_entries(scan, entries)
 
     def _record_json_entries(self, scan: models.Scan, entries) -> None:

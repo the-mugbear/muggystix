@@ -116,7 +116,9 @@ const sections: GuideSection[] = [
           leaves the Names inventory with it, unless something else holds it: someone added it, a
           test, a finding or a scanner observation names it, or it is in scope. What it does{' '}
           <em>not</em> undo: changes it made to hosts and ports that already existed. Importing the
-          same file again writes the same values. A truncated Nessus export keeps nothing.
+          same file again writes the same values. A file that was cut short (an interrupted scan,
+          an unfinished copy) fails and keeps nothing until someone chooses <em>Import what the
+          file holds</em> on its row.
         </Para>
         <Para>
           Deleting a finished scan is a project admin's action (<em>Delete scan…</em> on the Scans

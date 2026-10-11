@@ -334,6 +334,53 @@ def retention_window() -> timedelta:
     return timedelta(days=max(int(getattr(settings, "INGESTION_RETAIN_FILES_DAYS", 7)), 0))
 
 
+#: The audit action of an agent's request to keep a cut-short upload.
+TRUNCATED_UPLOAD_KEPT_ACTION = "truncated_upload_kept"
+
+
+def keep_truncated_for_agent(
+    db: Session,
+    job: IngestionJob,
+    parse_error,
+    *,
+    operator_id: Optional[int],
+    agent_session_id: Optional[int],
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> IngestionJob:
+    """An agent's "import what the file holds" for its own cut-short upload,
+    stated as agreed by its operator — and the record of it.
+
+    The re-queue is ``queue_job`` (the ONE failed → queued path, the people's
+    retry included), with the same instruction.  The audit row is staged
+    first, in the same transaction ``queue_job`` commits: the job is never
+    re-queued without its record, and a refused re-queue (``queue_job`` rolls
+    back) leaves none.  The row names the job, the project, the session, the
+    format and how many complete records the file holds — never its content.
+    Raises what ``queue_job`` raises."""
+    from app.core.security import log_audit_event
+
+    details = parse_error.error_details if parse_error is not None else None
+    log_audit_event(
+        db,
+        user_id=operator_id,
+        action=TRUNCATED_UPLOAD_KEPT_ACTION,
+        resource_type="ingestion_job",
+        resource_id=str(job.id),
+        details={
+            "job_id": job.id,
+            "project_id": job.project_id,
+            "agent_session_id": agent_session_id,
+            "file_type": job.format_override or job.detected_file_type,
+            "complete_records": (details or {}).get("records_read"),
+        },
+        ip_address=ip_address,
+        user_agent=user_agent,
+        commit=False,
+    )
+    return queue_job(db, job.id, allowed_from=("failed",), keep_truncated=True)
+
+
 def file_retained(job: IngestionJob) -> bool:
     """Whether the job's file is kept, as the ROW says: nothing has recorded
     removing it.  For pages that serialise many jobs — no disk access.  A

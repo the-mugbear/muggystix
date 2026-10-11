@@ -10,7 +10,7 @@
       "registry_tools": [
         "nmap"
       ],
-      "accepted_input": "Nmap XML (-oX / -oA .xml), streamed with hardened lxml iterparse; a truncated file keeps the hosts read so far and is flagged partial. A <nmaprun scanner=\"masscan\"> root is recorded as tool masscan.",
+      "accepted_input": "Nmap XML (-oX / -oA .xml), streamed with hardened lxml iterparse. A file that was cut short (an interrupted run: no </nmaprun>) fails as cut short and keeps nothing; an analyst can then import the complete hosts it holds, as a partial import. A file whose XML is invalid part-way (not cut short — e.g. a control character written as &#x1b;) keeps the hosts read before that point and is flagged partial, as it always was. A <nmaprun scanner=\"masscan\"> root is recorded as tool masscan.",
       "signals": [
         {
           "what": "Scan command line, Nmap version and XML output version",
@@ -599,7 +599,7 @@
       "registry_tools": [
         "masscan"
       ],
-      "accepted_input": "masscan -oX XML (<nmaprun scanner=\"masscan\">), -oJ JSON (array or concatenated records with nested `ports`), and -oL list (`open tcp 80 10.0.0.1 <epoch>`) including greppable `Timestamp: … Host: … Ports:` lines in a .txt; --banners output in all three.",
+      "accepted_input": "masscan -oX XML (<nmaprun scanner=\"masscan\">), -oJ JSON (array or concatenated records with nested `ports`), and -oL list (`open tcp 80 10.0.0.1 <epoch>`) including greppable `Timestamp: … Host: … Ports:` lines in a .txt; --banners output in all three. An XML or JSON file that was cut short fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import (a list file cannot say it was cut). XML or JSON that is invalid part-way (not cut short) keeps the records before that point and is flagged partial.",
       "signals": [
         {
           "what": "Host address",
@@ -753,7 +753,7 @@
       "registry_tools": [
         "naabu"
       ],
-      "accepted_input": "naabu -json / -jsonl records (`{host, ip, port, protocol, tls, timestamp}`) and plain `host:port` text (also `scheme://ip:port`). A JSON document (not JSON lines) that was cut short fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import.",
+      "accepted_input": "naabu -json / -jsonl records (`{host, ip, port, protocol, tls, timestamp}`) and plain `host:port` text (also `scheme://ip:port`). A JSON file that was cut short (a document, or JSON lines whose last line is cut) fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import.",
       "signals": [
         {
           "what": "Host address",
@@ -927,7 +927,7 @@
         "nessus_xml"
       ],
       "registry_tools": [],
-      "accepted_input": "Nessus v2 XML export (.nessus, or .xml whose sample carries NessusClientData_v2/ReportHost/ReportItem markers), root element <NessusClientData_v2> required, streamed host by host.",
+      "accepted_input": "Nessus v2 XML export (.nessus, or .xml whose sample carries NessusClientData_v2/ReportHost/ReportItem markers), root element <NessusClientData_v2> required, streamed host by host. An export that was cut short fails as cut short and keeps nothing; an analyst can then import the complete hosts it holds, as a partial import.",
       "signals": [
         {
           "what": "Host address",
@@ -1277,7 +1277,7 @@
         "gvm-tools",
         "gvm-cli"
       ],
-      "accepted_input": "Greenbone/OpenVAS XML reports (GMP get_reports / get_results responses, or an exported <report>) containing <result> elements; streamed result by result.",
+      "accepted_input": "Greenbone/OpenVAS XML reports (GMP get_reports / get_results responses, or an exported <report>) containing <result> elements; streamed result by result. A report that was cut short fails as cut short and keeps nothing; an analyst can then import the complete results it holds, as a partial import.",
       "signals": [
         {
           "what": "Host address",
@@ -1519,7 +1519,7 @@
       "registry_tools": [
         "nuclei"
       ],
-      "accepted_input": "-je JSON export (an array) or -jsonl / -j lines. A JSON document (not JSON lines) that was cut short fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import.",
+      "accepted_input": "-je JSON export (an array) or -jsonl / -j lines. A JSON file that was cut short (a document, or JSON lines whose last line is cut) fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import.",
       "signals": [
         {
           "what": "Template match",
@@ -2081,7 +2081,7 @@
       "registry_tools": [
         "httpx"
       ],
-      "accepted_input": "httpx `-json` / `-jsonl` output (one JSON object per line), or the same records as a JSON array or single pretty-printed object; text/CSV output is not accepted. A JSON array that was cut short fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import (a cut last line of JSON lines is skipped and counted).",
+      "accepted_input": "httpx `-json` / `-jsonl` output (one JSON object per line), or the same records as a JSON array or single pretty-printed object; text/CSV output is not accepted. A JSON file that was cut short (an array, or JSON lines whose last line is cut) fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import.",
       "signals": [
         {
           "what": "Probed URL",
@@ -2704,7 +2704,7 @@
         "dirb",
         "wfuzz"
       ],
-      "accepted_input": "Recognised: gobuster text only in expanded mode (`-e`, full URL + `(Status: N) [Size: N]`); ffuf `-of json`/`ejson`; feroxbuster `--json` and text; dirsearch JSON (`results` array), CSV and plain text; ffuf CSV (status only). Not effectively recognised: default gobuster (path-only) output, dirb, OWASP DirBuster reports, wfuzz (any format). Extension picks the path (.json/.jsonl, .csv, .txt); detection is a tool name in the filename, a ffuf-style `results` wrapper / flat `url`+`status` JSON record, or `(Status:` + `http` in text. A JSON document (not JSON lines) that was cut short fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import.",
+      "accepted_input": "Recognised: gobuster text only in expanded mode (`-e`, full URL + `(Status: N) [Size: N]`); ffuf `-of json`/`ejson`; feroxbuster `--json` and text; dirsearch JSON (`results` array), CSV and plain text; ffuf CSV (status only). Not effectively recognised: default gobuster (path-only) output, dirb, OWASP DirBuster reports, wfuzz (any format). Extension picks the path (.json/.jsonl, .csv, .txt); detection is a tool name in the filename, a ffuf-style `results` wrapper / flat `url`+`status` JSON record, or `(Status:` + `http` in text. A JSON file that was cut short (a document, or JSON lines whose last line is cut) fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import.",
       "signals": [
         {
           "what": "Discovered path / URL",
@@ -2976,7 +2976,7 @@
       "registry_tools": [
         "dnsx"
       ],
-      "accepted_input": "dnsx -j / -json output, one JSON object per line (JSONL) or a JSON array, with `host` plus record-type arrays (typically -resp with -a -aaaa -cname -mx -ns -txt -ptr -soa -srv -caa) and/or an `axfr` object (-axfr); plain-text -resp output is not accepted. A JSON array that was cut short fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import (a cut last line of JSON lines is skipped and counted).",
+      "accepted_input": "dnsx -j / -json output, one JSON object per line (JSONL) or a JSON array, with `host` plus record-type arrays (typically -resp with -a -aaaa -cname -mx -ns -txt -ptr -soa -srv -caa) and/or an `axfr` object (-axfr); plain-text -resp output is not accepted. A JSON file that was cut short (an array, or JSON lines whose last line is cut) fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import.",
       "signals": [
         {
           "what": "Forward answers: A, AAAA, CNAME, MX, NS, TXT, SRV, CAA",
@@ -3192,7 +3192,7 @@
         "amass",
         "subfinder"
       ],
-      "accepted_input": "Amass JSON/JSONL (`name` + `addresses`), Subfinder -oJ JSON (`host` + `input` + `source`, optional `ip`), or a text list with one hostname per line optionally followed by an IPv4 (`name ip`). A JSON document (not JSON lines) that was cut short fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import.",
+      "accepted_input": "Amass JSON/JSONL (`name` + `addresses`), Subfinder -oJ JSON (`host` + `input` + `source`, optional `ip`), or a text list with one hostname per line optionally followed by an IPv4 (`name ip`). A JSON file that was cut short (a document, or JSON lines whose last line is cut) fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import.",
       "signals": [
         {
           "what": "Enumerated name with a resolved address (IPv4 or IPv6)",
@@ -3305,7 +3305,7 @@
         "rdap_json"
       ],
       "registry_tools": [],
-      "accepted_input": "NDJSON from scripts/rdap-lookup.py (`{\"query\",\"queried_at\",\"rdap\":{…}}` per line), a single raw RDAP ip-network JSON document (pretty-printed allowed), or a JSON array of either.",
+      "accepted_input": "NDJSON from scripts/rdap-lookup.py (`{\"query\",\"queried_at\",\"rdap\":{…}}` per line), a single raw RDAP ip-network JSON document (pretty-printed allowed), or a JSON array of either. NDJSON or an array that was cut short fails as cut short and keeps nothing; an analyst can then import the complete responses it holds, as a partial import.",
       "signals": [
         {
           "what": "Registered netblock (CIDR)",
@@ -3462,7 +3462,7 @@
       "registry_tools": [
         "netexec"
       ],
-      "accepted_input": "Console text or the --log file (ANSI colour and log prefixes are stripped), and spider_plus JSON (<ip>.json).",
+      "accepted_input": "Console text or the --log file (ANSI colour and log prefixes are stripped), and spider_plus JSON (<ip>.json). A JSON file that was cut short fails as cut short and keeps nothing; an analyst can then import what the file holds, as a partial import (console text cannot say it was cut).",
       "signals": [
         {
           "what": "Host address, NetBIOS name, domain and OS from the SMB banner",
@@ -3797,7 +3797,7 @@
       "registry_tools": [
         "bloodhound-python"
       ],
-      "accepted_input": "Collector JSON (a top-level array, or an object with `data` or `computers`); upload the JSON files, not the ZIP.",
+      "accepted_input": "Collector JSON (a top-level array, or an object with `data` or `computers`); upload the JSON files, not the ZIP. A file that was cut short fails as cut short and keeps nothing; an analyst can then import the complete objects it holds, as a partial import.",
       "signals": [
         {
           "what": "Computer address",

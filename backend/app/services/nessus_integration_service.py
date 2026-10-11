@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 from sqlalchemy.orm import Session
 
+from app.parsers.cut_short import TruncatedFile
 from app.parsers.nessus_parser import NessusParser, NessusHost
 from app.db.models import Host, HostScanHistory, Scan
 from app.services.vulnerability_service import VulnerabilityService
@@ -169,21 +170,15 @@ class NessusIntegrationService:
 
             self.db.expunge_all()
 
-            # v2.91.3 (code review #1) — surface partial-parse and per-
-            # finding-write failures.  Pre-fix the scan returned success
-            # whenever ANY host was ingested; a truncated XML that
-            # produced 50 of 100 hosts (or a host whose vulns silently
-            # failed to write) looked identical to a clean import.  For
-            # a vulnerability inventory that's a false-negative path.
-            parser_truncated = bool(scan_info.get('_parser_truncated'))
-            parser_truncation_error = scan_info.get('_parser_truncation_error')
+            # v2.91.3 (code review #1) — surface per-finding-write failures.
+            # Pre-fix the scan returned success whenever ANY host was
+            # ingested; a host whose vulns silently failed to write looked
+            # identical to a clean import.  For a vulnerability inventory
+            # that's a false-negative path.  (An export that was CUT SHORT
+            # never reaches here unless the operator asked to keep what it
+            # holds: the parser raises ``TruncatedFile``, re-raised below, and
+            # the dispatcher says the kept import is partial.)
             warnings: list[str] = []
-            if parser_truncated:
-                warnings.append(
-                    f"Nessus XML was truncated/incomplete: {parser_truncation_error}. "
-                    f"Only {hosts_processed} hosts were parsed before the error; "
-                    f"the remaining hosts in the file are missing."
-                )
             if vuln_write_failures:
                 warnings.append(
                     f"{vuln_write_failures} vulnerability finding(s) failed to write "
@@ -217,40 +212,6 @@ class NessusIntegrationService:
                     'message': (
                         'Nessus scan parsed but 0 hosts were ingested. '
                         'Check backend logs for per-host errors.'
-                    ),
-                }
-
-            # Truncation is a hard data-loss event — the file is missing
-            # hosts that should have been ingested.  Report it as a
-            # failure even when some hosts landed, so the operator
-            # re-uploads a clean export rather than treating the
-            # half-import as authoritative.
-            if parser_truncated:
-                logger.error(
-                    "Nessus scan %s (%s) truncated mid-parse: %d hosts ingested, "
-                    "%d vulnerabilities, but the source XML was incomplete (%s)",
-                    scan_id, scan_label, hosts_processed, vulnerabilities_found,
-                    parser_truncation_error,
-                )
-                return {
-                    'success': False,
-                    'scan_id': scan_id,
-                    'hosts_processed': hosts_processed,
-                    'vulnerabilities_found': vulnerabilities_found,
-                    'informational_skipped': informational_skipped,
-                    'severity_counts': severity_counts,
-                    'scan_name': scan_label,
-                    'warnings': warnings,
-                    'error': 'Nessus XML was truncated mid-parse',
-                    # The hosts that did land were committed with the switch
-                    # applied, so their skipped count is reported the same way
-                    # a clean import reports it.
-                    'message': (
-                        f'Nessus scan was truncated: only {hosts_processed} hosts '
-                        f'were ingested before the parser hit the end of the file'
-                        + (f' ({informational_skipped} informational skipped)'
-                           if skip_informational else '')
-                        + '. Re-export from the scanner and re-upload to capture all hosts.'
                     ),
                 }
 
@@ -295,7 +256,7 @@ class NessusIntegrationService:
                 )
             }
 
-        except ParseFailure:
+        except (ParseFailure, TruncatedFile):
             # Review 2026-10-01 C1 — cancel, timeout, a superseded attempt and
             # a worker shutdown arrive from report_progress as ParseFailure /
             # ShutdownRequested (both RuntimeError).  The blanket handler
@@ -303,7 +264,9 @@ class NessusIntegrationService:
             # the job instead of handing it back, and the batches already
             # committed stayed in a scan nothing pointed at.  They are the
             # dispatcher's to handle: it deletes the partial scan (the one
-            # the job row names) and re-queues or fails the job.
+            # the job row names) and re-queues or fails the job.  A file that
+            # was cut short is the dispatcher's too: it removes what the
+            # batches committed and records the failure as ``truncated_file``.
             self.db.rollback()
             raise
         except Exception as e:

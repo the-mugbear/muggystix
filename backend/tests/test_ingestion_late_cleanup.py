@@ -519,8 +519,8 @@ def test_a_parser_whose_partial_scan_cannot_be_removed_ends_the_fallback_chain(
     real_execute = svc._execute_parser
     monkeypatch.setattr(
         svc, "_execute_parser",
-        lambda db, job, parser_class, description: (
-            attempts.append(parser_class.__name__), real_execute(db, job, parser_class, description))[1],
+        lambda db, job, parser_class, description, **kw: (
+            attempts.append(parser_class.__name__), real_execute(db, job, parser_class, description, **kw))[1],
     )
     job = run_file(db_session, pid, nmap_file(tmp_path, 3), svc=svc)
 

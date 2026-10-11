@@ -179,15 +179,22 @@ def test_a_truncated_nessus_file_fails_and_keeps_nothing(
     """Decision (C1): a truncated export is still a FAILED import, and — like
     every other failed import — it leaves no scan behind.  It used to keep the
     hosts read before the break in a scan the failed job did not name, and the
-    re-upload the message asks for then made a second scan."""
+    re-upload the message asks for then made a second scan.
+
+    Since 2026-10-11 it fails as CUT SHORT, like every format that can tell
+    (``test_every_format_at_a_cut.py``): the reason says how many complete
+    hosts the file holds, and the operator may choose to import those."""
     pid = test_project.id
     job = run_file(db_session, pid, nessus_file(tmp_path, THREE, truncate_after=2))
 
     assert job.status == "failed"
     assert scans_of(db_session, pid) == []
     assert host_ips(db_session, pid) == []
-    assert "truncated" in (job.error_message or "").lower()
-    assert "Nothing from this file was kept" in job.error_message
+    assert job.error_message == (
+        "This Nessus (.nessus) file was cut short: it ends after 2 complete hosts, before the "
+        "end of the document. Nothing from this file was imported."
+    )
+    assert db_session.get(models.ParseError, job.parse_error_id).error_type == "truncated_file"
 
 
 def test_a_cancelled_import_keeps_what_an_earlier_scan_recorded(

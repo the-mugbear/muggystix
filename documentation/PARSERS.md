@@ -57,8 +57,9 @@ Once queued, a background worker (`app/worker.py`) claims the job and runs
    left it blank, and records `skipped_count`, `parser_warnings`, `partial`,
    the progress summary and `uninterpreted_lines` on the job (see Part 2).
    JSON lines the shared reader could not decode add to the skipped count and
-   mark the job partial. A JSON document that ends early is a failure of its
-   own kind — see "A file that was cut short" below.
+   mark the job partial. A file that ends early — in any format whose reader
+   can tell — is a failure of its own kind: see "A file that was cut short"
+   below.
 
 ### Detection basis — what the review shows the operator
 
@@ -97,77 +98,152 @@ Never invent attribution from a filename alone.
 ### A file that was cut short
 
 A scanner that was interrupted, or a copy that did not finish, leaves a file
-that stops before its document is closed. For the formats read through the
-shared JSON reader (`app/parsers/streaming_json.py`) the operator is **asked**
-(owner decision 2026-10-11) — nothing is kept until they say so:
+that stops before it is complete. **One rule for every format in which that
+can be seen** (owner decisions 2026-10-11): the operator is **asked** — nothing
+is kept until they say so. The rule and its one mechanism live in
+`app/parsers/cut_short.py`; `tests/test_every_format_at_a_cut.py` holds every
+format of the registry to it, or to a stated reason why a cut cannot be told.
 
-1. **The import fails, as that, and leaves nothing.** A JSON document (an
-   array, or an object holding the array) whose file ends early raises
-   `TruncatedJSONFile`, at any file size. The failed-import cleanup runs at
-   once, as for every failure; no half-imported scan waits for an answer. The
-   job's parse error has `error_type = truncated_file`, served on every job
-   read as `failure_kind`, and the reason says how much the file holds: "This
-   whatweb JSON file was cut short: it ends after 28,253 complete records,
-   before the end of the document."
-2. **The row offers "Import what the file holds"** (Ingestion results;
-   analysts and above) beside the retry. A plain retry reads the same bytes
-   and fails the same way.
+1. **The import fails, as that, and leaves nothing.** The reader reports the
+   cut in the one place (`cut_short.settle_cut(records_read, …)`), which raises
+   `TruncatedFile`. The failed-import cleanup runs at once, as for every
+   failure; no half-imported scan waits for an answer. The job's parse error
+   has `error_type = truncated_file`, served on every job read as
+   `failure_kind`, and the reason says how much the file holds, in the
+   format's own name (`format_registry`) and unit: "This WhatWeb JSON file was
+   cut short: it ends after 28,253 complete records, before the end of the
+   document." · "This Nmap XML file was cut short: it ends after 412 complete
+   hosts, …" · for JSON lines "…, part-way through the line that follows."
+   The count is also in `parse_errors.error_details.records_read`.
+2. **The row offers "Import what the file holds"** (Ingestion results and the
+   Scans queue row; analysts and above) beside the retry. A plain retry reads
+   the same bytes and fails the same way.
 3. **That action re-queues the job with one attempt's instruction**
    (`POST /upload/jobs/{id}/retry {"keep_truncated": true}` →
    `job.options.keep_truncated`, set and cleared only by
-   `staged_import_service.queue_job`). The dispatcher hands it to the reader
-   (`begin_read(keep_truncated=True)`), which then stops at the cut instead of
-   raising. Parsers are not involved: they receive the complete records and
-   then the end of the input. The record the cut fell in is never delivered —
-   the library only yields a closed record — so no half record is written.
+   `staged_import_service.queue_job`). The dispatcher opens the read report
+   around the parser with it (`cut_short.begin_read(keep_truncated=True,
+   label=…)`, a ContextVar); `settle_cut` then **returns** instead of raising
+   and the reader simply stops. No parser takes the instruction as an
+   argument, and none decides anything: a reader calls `settle_cut` and, if it
+   comes back, ends its records. The record the cut fell in is never
+   delivered — a reader only ever hands over a closed record, element or
+   line — so no half record is written.
 4. **The import completes PARTIAL**, with the warning "… it ends after N
    complete records, before the end of the document. Those records were
-   imported; anything the tool wrote after that point is not in the file." It
-   carries its upload identity like any completed import (an identical upload
-   is then a duplicate), counts as an import that needs someone until it is
-   dismissed, and is never retried by itself. A cancel, the timeout or a
-   worker shutdown during that attempt cleans up like any other.
+   imported; anything the tool wrote after that point is not in the file."
+   (Nmap adds its own: "Incomplete XML — parsing stopped early, so hosts after
+   this point are MISSING, not down.") It carries its upload identity like any
+   completed import (an identical upload is then a duplicate), counts as an
+   import that needs someone until it is dismissed, and is never retried by
+   itself. A cancel, the timeout or a worker shutdown during that attempt
+   cleans up like any other.
+
+**An agent's own upload** can be kept by the agent after it asked its
+operator: `POST /agent/uploads/{job_id}/keep-truncated {"operator_agreed":
+true}` (MCP `keep_truncated_upload`) re-queues through the same
+`queue_job`, and the request is written to the audit log
+(`truncated_upload_kept`). The server never sees that conversation, so this
+is not an approval by BlueStick: the agent is told to ask, the request states
+that the operator agreed, the operator must be able to write to the project,
+and every request is recorded (`documentation/AGENT_GUIDE.md`).
 
 **Cut short vs invalid.** The two are told apart by *where* the reader fails,
-not by the library's words: the installed ijson backend (yajl2_c) raises
-`IncompleteJSONError` for every error, and says "premature EOF" only for some
-cuts — a cut inside `tru`, an escape, a `\u` escape or a multi-byte character
-is reported as a "lexical error". A failure reported only after the file was
-read to its end means every byte was acceptable and more were expected (cut
-short); a failure before that is invalid content. **An invalid file never gets
-the kind, is never offered the action, and keeps nothing** — with the
-instruction forced through the API it fails again. A file cut **inside its
-first record** has nothing to keep: it fails as an ordinary `parsing_error`
-whose reason says so, and nothing is offered.
+never by a library's exception type, code or words. A failure reported only
+after the whole file was handed over means every byte was acceptable and more
+were expected (cut short); a failure before that is invalid content.
 
-**Formats covered** — every parser on the shared reader: amass / subfinder
-JSON, directory-buster JSON, dnsx, EyeWitness JSON, httpx, naabu JSON, Nikto
-JSON, Nuclei, SMBMap JSON, testssl, WhatWeb
-(`tests/test_truncated_file_keep.py` pins the list). It applies to a JSON
-**document**. The same tools' JSON **lines** output is not a document: a final
-line that was cut is skipped and counted, and the import completes partial
-("1 line of the file were not valid JSON and were skipped (a truncated or
-corrupted record)") — unchanged, and without asking. One case moved with this
-change: a small (< 50 MB) JSON *document* that was cut short used to fall to
-the line reader, which kept whichever lines happened to decode on their own or
-failed with "no parseable records"; it now fails as cut short like a large one.
+- *JSON* (ijson, yajl2_c): the library raises `IncompleteJSONError` for every
+  error, and says "premature EOF" only for some cuts — a cut inside `tru`, an
+  escape, a `\u` escape or a multi-byte character is a "lexical error". The
+  reader's handle remembers having been read to its end
+  (`cut_short.EndTracking`).
+- *XML* (`cut_short.xml_cut_short`): libxml2 (lxml `iterparse`: nmap, masscan,
+  OpenVAS) reports a cut with dozens of different codes ("AttValue: '
+  expected", "Couldn't find end of Start Tag", "Premature end of data in tag
+  …"), and it holds unfinished text back, so some INVALID content is also
+  reported only at the end of input (a bare `&` near the end of a file).
+  "Failed after the last read" is therefore necessary and not sufficient: the
+  file is fed to expat again, which fails on an invalid byte at the feed that
+  holds it and says "no element found" / "unclosed token" / "partial
+  character" only when told the input is over. Cut short = both. A document
+  that declares entities is never called cut short (it is not expanded to
+  find out). `tests/test_cut_short_detection.py` cuts a document at every
+  byte and runs the invalid shapes through both readers.
+- *JSON lines*: only a file's LAST line can be cut. It is, when it does not
+  decode, no line ending follows it, and it is the beginning of a JSON value
+  by the JSON test above (`streaming_json.is_cut_last_line`). A line that does
+  not decode anywhere else — or a last line that is simply not JSON, or one a
+  line ending follows — is invalid content: skipped and counted, the import
+  completes partial ("1 line of the file were not valid JSON and were
+  skipped"), as before and without asking. A JSON-lines file that stops
+  BETWEEN two lines is a complete file of fewer lines.
 
-**Formats with their own readers — not covered; what each does today at a
-premature end** (the owner has not decided these):
+**An invalid file never gets the kind, is never offered the action, and keeps
+nothing** — with the instruction forced through the API it fails again. A file
+cut **inside its first record** has nothing to keep: it fails as an ordinary
+`parsing_error` whose reason says so ("… was cut short before its first host
+was complete: there is nothing in it to import"), and nothing is offered.
 
-| Format | Today |
+**Formats in which a cut is detected** — all of them fail-and-ask, and keep
+the complete records when asked (`CUT_IS_DETECTABLE` in
+`tests/test_every_format_at_a_cut.py`):
+
+| Format | How a cut is seen | What is complete before it |
+|---|---|---|
+| Nmap XML | The XML rule. An interrupted run has no `</nmaprun>` (and no `<runstats>`). | Every closed `<host>`; the host element the cut fell in is dropped whole. Unit: hosts. |
+| Masscan XML | The XML rule. | Every closed `<host>` (masscan writes one per port). |
+| Nessus (.nessus) | The XML rule (expat is its reader). | Every closed `<ReportHost>`; the one the cut fell in is dropped whole. Unit: hosts. No port history is written for Nessus, as before. |
+| OpenVAS / Greenbone XML | The XML rule. | Every closed `<result>` (the report's per-host blocks, which follow the results, are then usually missing). |
+| amass / subfinder JSON, directory brute-force JSON, dnsx, EyeWitness JSON, httpx, naabu JSON, Nikto JSON, Nuclei, SMBMap JSON, testssl, WhatWeb | The shared reader (`streaming_json.iter_json_records`): the JSON rule for a document, the JSON-lines rule for one object per line. | Every closed record of the array; every complete line. A single Nikto host object keeps the complete items of its `vulnerabilities` array, with the object's target (written before the array). |
+| Masscan JSON | Its own record-by-record reader: the text left after the last complete record is the beginning of a JSON value, or the file opened `[` and never closed it. The old closing line `{finished: 1}` is a complete file. | Every complete record. |
+| BloodHound JSON | Its loader asks the shared rule (`streaming_json.iter_document`) at any size. | Every closed object of the array. |
+| NetExec JSON | When the object does not load, the shared rule over its top-level members. | Every complete member (a host, or a share of the one host a spider_plus file is about). A file whose hosts sit under ONE wrapping key holds no complete member. |
+| RDAP JSON / NDJSON | An array of responses: the JSON rule. NDJSON: the JSON-lines rule. A single response cut short holds nothing complete. | Every complete response; still written in ONE transaction, after the whole file was read. |
+
+**Formats in which a cut cannot be told** — read exactly as before, nothing is
+asked (`A_CUT_CANNOT_BE_TOLD` in the same test, with these reasons):
+
+| Format | Why |
 |---|---|
-| Nmap XML | Completes **partial without asking**: the hosts read so far are kept, with the warning "Incomplete XML — parsing stopped early, so hosts after this point are MISSING, not down". |
-| Masscan XML | Completes **partial without asking** ("The XML ended early (near line N); the N hosts read before that point were imported"). |
-| Masscan JSON | Completes **as if whole**: its reader decodes record by record and drops an undecodable tail with a log line only — the job is not marked partial. |
-| Masscan list, gnmap, and the other line-based text formats | Line by line. A cut last line is either a line that does not parse (counted as skipped where the parser counts, which marks the import partial) or a shorter valid line; a file cut between lines is indistinguishable from a complete one. |
-| Nessus XML | **Fails and keeps nothing** ("Nessus XML was truncated/incomplete … Nothing from this file was kept."). No offer. |
-| OpenVAS XML | **Fails and keeps nothing** ("Invalid or truncated OpenVAS XML: …"). No offer. |
-| BloodHound JSON | **Fails and keeps nothing** ("Invalid or truncated BloodHound JSON…"); its reader does not tell a cut from invalid content. No offer. |
-| NetExec JSON | Falls back to reading the text as console lines; a cut JSON file then usually fails with no host lines. |
-| RDAP JSON / NDJSON | A document that does not decode is read line by line; a cut line is counted as skipped. |
-| CSV formats | Row by row; a cut last row is a short row (skipped or read with empty cells, per parser). |
-| EyeWitness ZIP | A cut archive cannot be opened: fails and keeps nothing. |
+| Nmap grepable (`.gnmap`, `.txt`) | One host per line: a file cut between lines is a shorter valid file, a cut last line a line with fewer ports. nmap ends the file with a `# Nmap done` comment, but `masscan -oG` and a grep of the file do not, so its absence does not say the file was cut. |
+| Masscan list (`-oL`) | One `open tcp PORT IP EPOCH` line per port; a cut last line is a shorter line (counted as skipped when it has under four fields). Nothing closes the file. |
+| Naabu text, RustScan text | One `host:port` / `Open ip:port` line per result: a cut last line is another valid, shorter line. |
+| Nikto text, directory brute-force text, hostname list, NetExec console text, SMBMap text | Line by line; a cut last line is a line that matches no pattern, or a shorter valid one. |
+| CSV (Nikto, EyeWitness, directory brute-force, DNS records) | Row by row; a cut last row is a short row (skipped or read with empty cells, per parser). |
+| Masscan JSON with no opening `[` (before 1.0.4), stopped between two records | Indistinguishable from a complete file when its closing `{finished: 1}` line is simply absent. (Stopped INSIDE a record it is detected.) |
+| EyeWitness ZIP | A zip's directory is at its end: a cut archive cannot be opened at all, so it fails like any unreadable archive and keeps nothing. |
+
+**Invalid content is not this rule's, and each format does with it what it
+always did.** The rule is only about a file that ENDS ABRUPTLY (owner,
+2026-10-11); a file that is invalid part-way is never called cut short, never
+offered the action, and the instruction changes nothing about it. Three
+behaviours, pinned per format by the same test:
+
+- *Keeps what precedes it, partial* (`INVALID_CONTENT_KEEPS_WHAT_PRECEDES`):
+  **Nmap XML** — any reader error keeps the hosts read before it, with
+  "Incomplete XML — parsing stopped early, so hosts after this point are
+  MISSING, not down. … Re-upload a complete scan file." This is the path of a
+  COMPLETE nmap file that holds a character XML does not allow: nmap writes a
+  control character from a banner as a reference such as `&#x1b;`, the reader
+  stops there, and the hosts before it are imported
+  (`test_nmap_truncated_xml_quality.py` pins it equal to before). **Masscan
+  XML** — the same, with "The XML ended early (near line N); …". (Both
+  sentences speak of an incomplete file although the cause here is invalid
+  content: the wording is unchanged for now.) **Masscan JSON** — the records
+  before text that is not a record are imported, as before; the one change is
+  that the import is now marked partial with "After N records the file holds
+  text that is not a masscan record; it, and anything after it, could not be
+  read and is not in the inventory." — it used to drop them with a log line
+  and look complete. A record the strict JSON decoder refuses is such text,
+  e.g. one whose banner holds a RAW control character (masscan writes them
+  escaped, `\u0001`, which is read).
+- *Skips the line and counts it*: JSON lines (above).
+- *Fails and keeps nothing*: every other format — Nessus, OpenVAS, BloodHound,
+  RDAP documents, and a streamed JSON document of the shared reader. NetExec
+  JSON that does not load falls back to console lines, as before. A small JSON
+  document that is invalid for a reason other than its end is still handed to
+  the line reader, as it always was.
 
 ### The data model parsers write to
 
@@ -842,13 +918,19 @@ tool_label="JSON")` streams `.json` arrays, single objects, and `.jsonl` /
 `.ndjson` uniformly; `array_keys` points it at a wrapped payload such as
 `{"results": [...]}` (use this, not
 `json.load`, so large files don't OOM the worker). The orchestrator opens a
-report around each parser run (`begin_read` / `end_read`): JSON lines the
-reader cannot decode are tallied there and reported as skipped, and a
-document that ends early is noted there and raised as `TruncatedJSONFile` —
-or, when the import was asked to keep what a cut-short file holds, simply ends
-the records ("A file that was cut short", Part 0). A parser on this reader has
+report around each parser run (`cut_short.begin_read` / `end_read`): JSON
+lines the reader cannot decode are tallied there and reported as skipped, and
+a file that ends early is noted there and raised as `TruncatedFile` — or, when
+the import was asked to keep what a cut-short file holds, simply ends the
+records ("A file that was cut short", Part 0). A parser on this reader has
 nothing to do for either: do not catch the reader's exception, and do not
-read the file a second way.
+read the file a second way. **A parser with a reader of its own** reports a
+premature end the same way and decides nothing: `cut_short.settle_cut(
+records_read, label=…)` (it raises, or returns and the parser stops reading),
+told from invalid content by `cut_short.xml_cut_short` for XML and
+`streaming_json.iter_document` / `is_cut_last_line` for JSON — and gets its
+row in `tests/test_every_format_at_a_cut.py`, which fails for a format it
+does not decide.
 
 `app/services/dns_name_service.py` → `bind_hostname(...)` records the name a
 web tool tested as an HTTP observation and returns its `name_id` for the rows

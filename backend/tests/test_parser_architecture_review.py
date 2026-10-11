@@ -22,7 +22,8 @@ from app.db import models
 from app.parsers.httpx_parser import HttpxParser
 from app.parsers.nmap_parser import NmapXMLParser
 from app.parsers.parser_utils import extract_first_ip, parse_host_port_token
-from app.parsers.streaming_json import begin_read, end_read, iter_json_records
+from app.parsers.cut_short import begin_read, end_read
+from app.parsers.streaming_json import iter_json_records
 from app.services.host_deduplication_service import (
     HostDeduplicationService, port_state_is_active, should_refresh_service_details,
 )

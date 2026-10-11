@@ -13,6 +13,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from lxml import etree
 
+from app.parsers.cut_short import EndTracking, settle_cut, xml_cut_short
+from app.parsers.streaming_json import ends_early
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
@@ -64,6 +66,8 @@ class MasscanParser:
         # v2.390.0 — `--banners` output: (ip, port, proto, kind) → the latest banner.
         self._banners: Dict[Tuple[str, int, str, str], str] = {}
         self._truncated_at: Optional[str] = None
+        # Records decoded before JSON text that is not a record (None = none).
+        self._json_unread_after: Optional[int] = None
         self._unread_lines = 0
         self.last_parse_stats = None
         start = time.time()
@@ -144,8 +148,13 @@ class MasscanParser:
                 except Exception:
                     pass
 
-            # v2.419.0 (review H4) — a truncated XML file keeps the hosts read
-            # before the break, and says the rest is unknown rather than
+            # A file that was CUT SHORT (XML or JSON) never reaches here
+            # unless the operator asked to keep what it holds; the dispatcher
+            # then marks the import partial and says where the file ended.
+            # What follows is INVALID content, which keeps what precedes it.
+            #
+            # v2.419.0 (review H4) — XML that stops being XML keeps the hosts
+            # read before the break, and says the rest is unknown rather than
             # importing as complete.
             if self._truncated_at:
                 self.last_parse_stats = {
@@ -154,6 +163,22 @@ class MasscanParser:
                         f"The XML ended early ({self._truncated_at}); the {processed_hosts} host"
                         f"{'s' if processed_hosts != 1 else ''} before that point were imported, "
                         "anything after it is not in the inventory."
+                    ),
+                    "summary": None,
+                    "partial": True,
+                }
+            elif self._json_unread_after is not None:
+                # JSON that stops being JSON.  The records before it were
+                # always kept; until 2026-10-11 the text, and every record
+                # after it, were dropped with a log line and the import looked
+                # complete.
+                after = self._json_unread_after
+                self.last_parse_stats = {
+                    "skipped": 0,
+                    "warnings": (
+                        f"After {after:,} record{'s' if after != 1 else ''} the file holds text that "
+                        "is not a masscan record; it, and anything after it, could not be read and "
+                        "is not in the inventory."
                     ),
                     "summary": None,
                     "partial": True,
@@ -201,23 +226,18 @@ class MasscanParser:
         flush: Optional[Callable[[Dict[str, List[Dict[str, Any]]]], None]] = None,
     ) -> Dict[str, List[Dict[str, Any]]]:
         host_ports: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        # Complete <host> elements read (masscan writes one per port): what
+        # precedes a cut.
+        records_read = 0
 
+        read_beat = ProgressBeat("records read", every=_READ_BEAT_EVERY)
+        # Read through a handle that knows when the reader reached its end
+        # (how a file that was cut short is told from invalid XML).
+        source = EndTracking.open(file_path)
         try:
             # See xml_stream_helpers.iterparse_safe for the hardening
             # flag rationale (XXE / billion-laughs / huge-tree defense).
-            context = iterparse_safe(file_path)
-        except etree.XMLSyntaxError as exc:
-            line = getattr(exc, "lineno", "?")
-            position = getattr(exc, "position", None)
-            column = position[1] if isinstance(position, tuple) and len(position) > 1 else "?"
-            logger.error(
-                "Masscan XML failed to initialise iterparse for %s (line=%s column=%s): %s",
-                file_path, line, column, exc,
-            )
-            raise
-
-        read_beat = ProgressBeat("records read", every=_READ_BEAT_EVERY)
-        try:
+            context = iterparse_safe(source)
             for event, elem in context:
                 tag = strip_namespace(elem.tag)
 
@@ -244,6 +264,7 @@ class MasscanParser:
                     # R6 — the read phase heartbeats (a file of few hosts and
                     # very many records never reaches the flush threshold).
                     read_beat.tick()
+                    records_read += 1
                     host_info = self._extract_xml_host(elem)
                     if host_info:
                         host_ports[host_info["ip_address"]].extend(host_info["ports"])
@@ -260,11 +281,24 @@ class MasscanParser:
             position = getattr(exc, "position", None)
             column = position[1] if isinstance(position, tuple) and len(position) > 1 else "?"
             logger.warning(
-                "Masscan XML parsing halted for %s near line=%s column=%s "
-                "(likely truncated/incomplete scan). Recovered %s hosts before error: %s",
-                file_path, line, column, len(host_ports), exc,
+                "Masscan XML parsing halted for %s near line=%s column=%s after %s records: %s",
+                file_path, line, column, records_read, exc,
             )
-            self._truncated_at = f"near line {line}"
+            if xml_cut_short(source, file_path):
+                # The file simply ENDS.  Settled in the one place (owner,
+                # 2026-10-11): this raises (the import fails as cut short and
+                # the operator is asked) unless the import keeps what the file
+                # holds; then the records read so far are imported and the
+                # dispatcher marks it partial.
+                settle_cut(records_read, label="Masscan XML", cause=exc)
+            else:
+                # INVALID XML at this point — not the owner's question, and
+                # handled as it always was (v2.419.0, H4): the hosts read
+                # before it are kept and the import is partial, with the same
+                # warning.
+                self._truncated_at = f"near line {line}"
+        finally:
+            source.close()
 
         # v2.333.0 — no utcnow() fallback: a truncated file has no known end,
         # and the upload time is not when the scan finished.
@@ -884,9 +918,41 @@ class MasscanParser:
     # MAX_FILE_SIZE) into a Python str and OOM-ing the worker in a retry loop.
     _MAX_JSON_RECORD_BYTES = 16 * 1024 * 1024
 
+    # masscan before 1.0.4 wrote no array: one record per line with a trailing
+    # comma, closed by this line — which is not JSON (the key is unquoted).
+    _FINISHED_MARKER = re.compile(r'^\{\s*"?finished"?\s*:\s*\d+\s*\}$')
+
     def _iter_json_entries(self, file_path: str) -> Iterable[Dict[str, Any]]:
+        """The records of ``masscan -oJ``, decoded one at a time.
+
+        How the file ENDS is read too (owner, 2026-10-11 — a file that was cut
+        short used to import as if it were whole, its undecodable tail dropped
+        with a log line).  masscan writes ``[``, one record per line, then
+        ``]`` when it finishes, so:
+
+        * the text left after the last complete record is the BEGINNING of a
+          JSON value (``streaming_json.ends_early``: the reader accepts every
+          byte and wants more) — cut short, inside a record;
+        * nothing is left, but the file opened an array and never closed it —
+          cut short, between records;
+        * the text left is the old closing line ``{finished: 1}`` — complete;
+        * the text left is anything else — invalid content.  The records
+          before it are imported, as they always were; what changed is that
+          the import now SAYS so (``_json_unread_after`` → partial, with a
+          warning) where it used to drop that text, and every record after
+          it, with a log line and look complete.  A record the decoder
+          refuses is such text — e.g. one whose banner holds a raw control
+          character, which this decoder has always refused.
+
+        A cut is settled in the one place (``cut_short.settle_cut``): it
+        raises, or the records end here when the import keeps them.  A file
+        with NO opening ``[`` that stops between two records cannot be told
+        from a complete one and is read as before."""
         decoder = json.JSONDecoder()
         buffer = ""
+        read = 0
+        opened_array: Optional[bool] = None
+        closed_array = False
         with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
             while True:
                 chunk = handle.read(self._JSON_READ_CHUNK)
@@ -895,11 +961,14 @@ class MasscanParser:
                 # Append raw — do NOT strip(), which would eat significant
                 # whitespace inside a string literal split across two reads.
                 buffer += chunk
+                if opened_array is None and buffer.strip():
+                    opened_array = buffer.lstrip().startswith("[")
                 while buffer:
                     buffer = buffer.lstrip(", \n\r\t[")
                     if not buffer:
                         break
                     if buffer.startswith("]"):
+                        closed_array = True
                         buffer = buffer[1:]
                         continue
                     try:
@@ -915,15 +984,23 @@ class MasscanParser:
                                 f"{self._MAX_JSON_RECORD_BYTES} bytes or is malformed"
                             )
                         break
+                    read += 1
                     yield entry
                     buffer = buffer[index:]
-        buffer = buffer.strip(", \n\r\t[]")
-        if buffer:
-            try:
-                entry, _ = decoder.raw_decode(buffer)
-                yield entry
-            except json.JSONDecodeError:
-                logger.warning("Trailing JSON buffer ignored while parsing Masscan output")
+        left = buffer.lstrip(", \n\r\t[")
+        if left.strip(", \n\r\t[]"):
+            if self._FINISHED_MARKER.match(left.strip(", \n\r\t[]")):
+                return
+            if not ends_early(left):
+                logger.warning(
+                    "Masscan JSON: text that is not a record after %d records; it and what follows is not read",
+                    read,
+                )
+                self._json_unread_after = read
+                return
+            settle_cut(read, label="Masscan JSON")
+        elif opened_array and not closed_array:
+            settle_cut(read, label="Masscan JSON")
 
     def _parse_timestamp(self, timestamp: Optional[str]) -> Optional[datetime]:
         # v2.333.0 — was datetime.fromtimestamp: the CONTAINER's local time,

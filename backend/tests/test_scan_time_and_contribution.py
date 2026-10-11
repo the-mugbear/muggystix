@@ -148,9 +148,17 @@ class TestParserTimeSources:
             '<?xml version="1.0"?><nmaprun scanner="nmap" start="1640995200" version="7.94">'
             '<host><status state="up"/><address addr="10.9.0.9" addrtype="ipv4"/></host>'
         )  # truncated: no <runstats><finished>
-        scan = NmapXMLParser(db_session).parse_file(
-            _write(tmp_path, "t.xml", xml), "t.xml", project_id=test_project.id
-        )
+        # Imported because the operator asked to keep what the cut-short file
+        # holds (2026-10-11; without that the import fails as cut short).
+        from app.parsers.cut_short import begin_read, end_read
+
+        reading = begin_read(keep_truncated=True)
+        try:
+            scan = NmapXMLParser(db_session).parse_file(
+                _write(tmp_path, "t.xml", xml), "t.xml", project_id=test_project.id
+            )
+        finally:
+            end_read(reading)
         # Used to be utcnow() — the upload time presented as the finish time.
         assert scan.end_time is None
 

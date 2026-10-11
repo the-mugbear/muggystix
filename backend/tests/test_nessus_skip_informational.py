@@ -19,6 +19,8 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from app.db import models
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource
 from app.services.nessus_integration_service import NessusIntegrationService
@@ -239,23 +241,38 @@ def test_host_detail_hides_info_rows_unless_asked(client, db_session, test_proje
 # ---------------------------------------------------------------------------
 
 def test_truncated_import_still_reports_the_skipped_count(db_session, test_project, tmp_path):
-    """A file cut off after a complete host has committed that host with the
-    switch applied; the failure payload must say how many informational items
-    were skipped, the same way a clean import does."""
+    """A file cut off after a complete host, imported because the operator
+    asked to keep what it holds (2026-10-11; without that the service raises
+    ``TruncatedFile`` and the import fails as cut short): the complete host
+    lands with the switch applied, and the result says how many informational
+    items were skipped, the same way a clean import does."""
+    from app.parsers.cut_short import TruncatedFile, begin_read, end_read
+
     pid = test_project.id
     cut = NESSUS_XML.index("</ReportHost>") + len("</ReportHost>")
     truncated = NESSUS_XML[:cut] + '\n<ReportHost name="10.9.9.6"><HostProperties><tag name="host-ip">10.9.9.6</tag>'
     p = tmp_path / "cut.nessus"
     p.write_text(truncated)
 
-    result = NessusIntegrationService(db_session).process_nessus_file(
-        str(p), project_id=pid, skip_informational=True,
-    )
-    assert result["success"] is False, result
-    assert result["error"] == "Nessus XML was truncated mid-parse"
+    with pytest.raises(TruncatedFile) as refused:
+        NessusIntegrationService(db_session).process_nessus_file(
+            str(p), project_id=pid, skip_informational=True,
+        )
+    assert (refused.value.records_read, refused.value.unit) == (1, "host")
+    db_session.rollback()
+
+    reading = begin_read(keep_truncated=True)
+    try:
+        result = NessusIntegrationService(db_session).process_nessus_file(
+            str(p), project_id=pid, skip_informational=True,
+        )
+    finally:
+        report = end_read(reading)
+    assert report.cut_short is not None and report.cut_short.records_read == 1
+    assert result["success"] is True, result
     assert result["hosts_processed"] == 1
     assert result["informational_skipped"] == 3
-    assert "(3 informational skipped)" in result["message"]
+    assert "3 informational skipped" in result["message"]
     # The complete host landed with the switch applied.
     host = _host(db_session, pid)
     assert host is not None

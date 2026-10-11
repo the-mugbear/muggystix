@@ -81,6 +81,9 @@ GATED_PROJECT_WRITES = {
     ("POST", "/api/v1/agent/proposals/finding-text"),
     ("POST", "/api/v1/agent/proposals/observation"),
     ("POST", "/api/v1/agent/uploads"),
+    # Importing what a cut-short upload holds (owner, 2026-10-11): a partial
+    # import into the project, so a project write like the upload itself.
+    ("POST", "/api/v1/agent/uploads/{job_id}/keep-truncated"),
     # v2.482.0 — one configured scanner's credentials.  It writes no project
     # data, but it is deliberately NOT a session-metadata write: a read-only
     # operator's agent must be refused the installation's scanner credentials

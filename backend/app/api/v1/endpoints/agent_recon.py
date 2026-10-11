@@ -10,7 +10,7 @@ project has exactly one scope, so no read names one (``/agent/scope/…``).
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -19,13 +19,19 @@ from app.db.session import disable_statement_timeout, get_db
 from app.db import models
 from app.db.models_agent import Agent
 from app.db.models_project import ProjectRole
-from app.api.deps import agent_read_floor, check_agent_rate_limit
+from app.api.deps import agent_read_floor, check_agent_rate_limit, get_client_info
 from app.api.v1.endpoints.agent_schemas import (
-    AgentRowsPage, ReconUploadResponse, ReconJobStatus, agent_page,
+    AgentRowsPage, KeepTruncatedUploadRequest, ReconUploadResponse, ReconJobStatus, agent_page,
 )
 from app.api.v1.endpoints.agent_common import load_agent_session
+from app.services.agent_policy import TRUNCATED_UPLOAD_ASK_FIRST
 from app.services.default_scope import project_scope
 from app.services.import_attention_service import failure_kind
+from app.services.ingestion_service import (
+    TRUNCATED_FILE_ERROR, DuplicateUploadError, ingestion_service,
+)
+from app.services.job_transitions import JobNotTransitionable
+from app.services.staged_import_service import file_retained, keep_truncated_for_agent
 from app.services.scope_targets_service import (
     iter_scope_hosts_ndjson as _iter_scope_hosts_ndjson,
     iter_scope_live_hosts as _iter_scope_live_hosts,
@@ -373,6 +379,11 @@ def get_upload_job(
     ``POST /agent/uploads``.  404 for a job another session (or a person)
     uploaded — an agent polls only its own work.
     """
+    return _job_status(db, _session_upload(db, request, agent, job_id))
+
+
+def _session_upload(db: Session, request: Request, agent: Agent, job_id: int) -> models.IngestionJob:
+    """The upload job ``job_id`` of THIS agent session, or 404."""
     session = load_agent_session(db, request)
     job = (
         db.query(models.IngestionJob)
@@ -393,12 +404,19 @@ def get_upload_job(
             "assist_list_scans gives each scan's ingestion_job_id, and "
             "assist_list_ingestion_issues lists imports that failed or finished partial."
         ))
+    return job
 
-    # The kind of failure, read as the pages read it (one function).
-    parse_error = (
+
+def _parse_error_of(db: Session, job: models.IngestionJob) -> Optional[models.ParseError]:
+    return (
         db.get(models.ParseError, job.parse_error_id)
         if job.status == "failed" and job.parse_error_id is not None else None
     )
+
+
+def _job_status(db: Session, job: models.IngestionJob) -> ReconJobStatus:
+    # The kind of failure, read as the pages read it (one function).
+    parse_error = _parse_error_of(db, job)
     return ReconJobStatus(
         job_id=job.id,
         status=job.status,
@@ -412,3 +430,74 @@ def get_upload_job(
         queue_age_s=_seconds_between(job.created_at, job.started_at),
         parse_s=_seconds_between(job.started_at, job.completed_at),
     )
+
+
+@router.post(
+    "/uploads/{job_id}/keep-truncated",
+    response_model=ReconJobStatus,
+    summary="Import what a cut-short upload holds (after asking the operator; recorded)",
+)
+def keep_truncated_upload(
+    body: KeepTruncatedUploadRequest,
+    request: Request,
+    job_id: int = Path(..., ge=1),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """Re-queue this session's upload that failed as cut short
+    (``failure_kind: truncated_file``) so that it imports the complete records
+    the file holds and finishes PARTIAL.  Answers the job's new state; poll
+    ``GET /agent/uploads/{job_id}`` as after an upload.
+
+    A POST that declares nothing, so the gate's default holds: the key's
+    operator must be able to WRITE to the project (analyst and above; an
+    auditor's or a viewer's agent is refused 403).
+
+    ``operator_agreed`` is the agent's statement that it asked.  The server
+    cannot check a conversation it never sees, so nothing here is an approval:
+    what it does is refuse a request that does not make the statement, and
+    write an audit row (``truncated_upload_kept``: the operator, the project,
+    the session, the job, the format and the count of complete records) in
+    the transaction that re-queues the job.  The re-queue is the people's
+    (``staged_import_service.queue_job``): one attempt's instruction.
+    """
+    if body.operator_agreed is not True:
+        raise HTTPException(status_code=422, detail=TRUNCATED_UPLOAD_ASK_FIRST)
+    job = _session_upload(db, request, agent, job_id)
+    parse_error = _parse_error_of(db, job)
+    if job.status != "failed":
+        raise HTTPException(status_code=409, detail=(
+            f"This upload is {job.status}, not failed: only an upload that failed as cut short "
+            "(failure_kind: truncated_file) can be imported this way."
+        ))
+    kind = failure_kind(job, parse_error)
+    if kind != TRUNCATED_FILE_ERROR:
+        raise HTTPException(status_code=409, detail=(
+            "This upload did not fail as cut short (failure_kind: "
+            f"{kind or 'none'}): there is nothing here to keep. Its error_message says why it failed."
+        ))
+    gone = HTTPException(status_code=409, detail=(
+        "The uploaded file is no longer kept on the server, so it cannot be read again: "
+        "upload the file again."
+    ))
+    if not file_retained(job):
+        raise gone
+    try:
+        queued = keep_truncated_for_agent(
+            db, job, parse_error,
+            operator_id=request.state.key_operator_id,
+            agent_session_id=job.agent_session_id,
+            **get_client_info(request),
+        )
+    except DuplicateUploadError as exc:
+        raise HTTPException(status_code=409, detail=exc.detail())
+    except JobNotTransitionable as exc:
+        if exc.status == "file_missing":
+            raise gone
+        raise HTTPException(status_code=409, detail=(
+            f"This upload is {exc.status} now, not failed: it was started again meanwhile."
+        ))
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Upload job not found in this session")
+    ingestion_service.enqueue_job(queued.id, db=db)
+    return _job_status(db, queued)

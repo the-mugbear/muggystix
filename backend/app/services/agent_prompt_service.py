@@ -25,13 +25,14 @@ from app.services.agent_policy import (
     render_key_expiry_guidance,
     render_safety_rules,
     render_scanner_integrations_rule,
+    render_truncated_upload_rule,
 )
 
 logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.32.0"
+PROMPT_VERSION = "4.33.0"
 
 
 _INSTANCE_ID_CACHE: Optional[str] = None
@@ -222,6 +223,8 @@ def build_session_instructions(
         f"and poll it; never block one tool call on a scan.\n\n"
         f"### Scanners configured in BlueStick — ask before using one\n"
         + render_scanner_integrations_rule() + "\n"
+        "### An upload that was cut short — ask before keeping it\n"
+        + render_truncated_upload_rule() + "\n"
         f"### The guide is reference\n"
         f"`curl -sS '{guide_url}' -o bluestick-guide.md`, then search it "
         f"(`grep -n '<route or word>' bluestick-guide.md`); it is too long to "

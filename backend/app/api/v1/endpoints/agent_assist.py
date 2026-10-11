@@ -2596,10 +2596,13 @@ class AssistIngestionIssue(BaseModel):
     failure_kind: Optional[str] = Field(None, description=(
         "For a failed import, the kind of failure: parsing_error, format_error, or "
         "truncated_file — the file was cut short and nothing from it was imported, "
-        "though it holds complete records. On Ingestion results a person can choose "
-        "'Import what the file holds' (a partial import), or upload the complete "
-        "file. That choice is theirs; no agent call makes it. Null for a row that "
-        "did not fail, or failed without a parse error."
+        "though it holds complete records. Importing what it holds (a partial "
+        "import) is the operator's decision: for a file THIS session uploaded, ask "
+        "them, and only after they say to import it POST "
+        "/agent/uploads/{job_id}/keep-truncated with {\"operator_agreed\": true}; "
+        "for anyone else's upload a person chooses 'Import what the file holds' on "
+        "Ingestion results. Null for a row that did not fail, or failed without a "
+        "parse error."
     ))
     #: Rows the parser dropped while still reporting success.  Non-zero means
     #: this file is IN the project but thinner than the file on disk.

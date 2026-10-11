@@ -30,7 +30,7 @@ Every tool is text in the model's context on every session. One session does
 every kind of work, so `tools/list` returns the whole catalogue: a tool added
 for assist is context spent by a session that only uploads scans too.
 
-The catalogue is 71 tools, 38 of them `assist_*` (35 reads and 3 writes);
+The catalogue is 72 tools, 38 of them `assist_*` (35 reads and 3 writes);
 `GET /api/v1/references/mcp-tools` is the live list. Their descriptions come to
 about 5,500 words, and that number is watched: a description says what the tool
 returns and the one or two things an agent gets wrong without being told, and
@@ -208,9 +208,11 @@ and reads as healthy everywhere else, so counts drawn from it are undercounts;
 are one upload. A failed row also says of what kind the failure was
 (`failure_kind`, as `get_upload_job` does): `truncated_file` means the file was
 cut short and nothing from it was imported, though it holds complete records.
-What to do about that is the operator's decision — on Ingestion results a
-person can choose "Import what the file holds" (a partial import), or the
-complete file can be uploaded; no agent tool makes that choice.
+What to do about that is the operator's decision: for a file the session
+itself uploaded the agent asks them and, only after they say to import it,
+calls `keep_truncated_upload` (not an `assist_*` tool; `MCP.md` §6); for
+anyone else's upload a person chooses "Import what the file holds" on
+Ingestion results. Either way the complete file can be uploaded instead.
 
 ---
 

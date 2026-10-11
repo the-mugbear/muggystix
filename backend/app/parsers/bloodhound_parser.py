@@ -6,13 +6,13 @@ import os
 import re
 from typing import Iterable, Iterator
 
-import ijson
 from sqlalchemy.orm import Session
 
 from app.db import models
 from app.parsers.parser_utils import (
     ProgressBeat, correlate_scan, ensure_scan, extract_first_ip, persist_host_observation,
 )
+from app.parsers.streaming_json import iter_document
 from app.services.host_deduplication_service import HostDeduplicationService
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,12 @@ class BloodHoundParser:
             try:
                 payload = json.load(handle)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid or truncated BloodHound JSON: {exc}") from exc
+                # Not one JSON value.  If that is because the file ENDS EARLY,
+                # the shared rule says so (and hands over the complete objects
+                # when the import keeps them); anything else is invalid.
+                if _detect_bloodhound_prefix(file_path) is None:
+                    raise ValueError(f"Invalid BloodHound JSON: {exc}") from exc
+                return list(BloodHoundParser._stream_entries(file_path))
         if isinstance(payload, list):
             return payload
         return payload.get("data") or payload.get("computers") or []
@@ -149,13 +154,10 @@ class BloodHoundParser:
                 "BloodHound JSON exceeds streaming threshold but no recognized "
                 "top-level array (array | data | computers) was found at the start."
             )
-        with open(file_path, "rb") as handle:
-            try:
-                yield from ijson.items(handle, prefix)
-            except ijson.JSONError as exc:
-                raise ValueError(
-                    f"Invalid or truncated BloodHound JSON during streaming: {exc}"
-                ) from exc
+        # The shared reader's rule: a document that ends early is settled in
+        # the one place (``TruncatedFile``, or the objects end at the cut when
+        # the import keeps them); invalid content is a ``ValueError``.
+        yield from iter_document(file_path, prefix, "BloodHound JSON")
 
 
 _PREFIX_PATTERNS = (

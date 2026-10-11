@@ -14,6 +14,7 @@ for integration with the risk assessment system.
 # objects), so type annotations must reference stdlib.
 import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as DET
+from app.parsers.cut_short import EndTracking, settle_cut, xml_cut_short
 from app.parsers.xml_stream_helpers import strip_namespace
 import logging
 import re
@@ -195,7 +196,6 @@ class NessusParser:
         """Stream hosts from a Nessus XML file without loading everything into memory."""
 
         scan_info: Dict[str, Any] = {}
-        context = DET.iterparse(file_path, events=("start", "end"))
 
         def host_generator() -> Iterable[NessusHost]:
             root_seen = False
@@ -204,7 +204,11 @@ class NessusParser:
             # (see the end-of-ReportHost finally) — otherwise the child list
             # accumulates one empty shell per host for the whole file.
             report_elem = None
+            # Complete <ReportHost> elements read: what precedes a cut.
+            hosts_read = 0
+            source = EndTracking.open(file_path)
             try:
+                context = DET.iterparse(source, events=("start", "end"))
                 for event, elem in context:
                     tag = strip_namespace(elem.tag)
 
@@ -231,6 +235,7 @@ class NessusParser:
                                 scan_info['scanner_version'] = scanner_version
 
                     if event == "end" and tag == "ReportHost":
+                        hosts_read += 1
                         try:
                             host = self._parse_host(elem)
                             if host:
@@ -249,19 +254,17 @@ class NessusParser:
                                 except ValueError:
                                     pass
             except ET.ParseError as exc:
-                # v2.91.3 (code review #1) — also propagate the truncation
-                # to the caller so the integration service can mark the
-                # ingestion result as failed/partial rather than reporting
-                # unqualified success.  scan_info is captured by closure
-                # and survives generator exhaustion, so the caller reads
-                # this after iteration completes.
-                logger.warning(
-                    "Nessus XML parsing halted (likely truncated/incomplete scan): %s. "
-                    "Hosts parsed before the error have been preserved.",
-                    exc,
-                )
-                scan_info['_parser_truncated'] = True
-                scan_info['_parser_truncation_error'] = str(exc)
+                # The reader stopped.  Invalid content fails the import (it
+                # always did, worded as "truncated").  A file that simply
+                # ENDS is settled in the one place: the import fails as cut
+                # short, or — asked to keep what the file holds — the hosts
+                # end here, every complete <ReportHost> delivered and the one
+                # the cut fell in dropped whole (its end tag never came).
+                if not xml_cut_short(source, file_path):
+                    raise ValueError(f"Invalid Nessus XML: {exc}") from exc
+                settle_cut(hosts_read, label="Nessus", unit="host", cause=exc)
+            finally:
+                source.close()
 
         return scan_info, host_generator()
 

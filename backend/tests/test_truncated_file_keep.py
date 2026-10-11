@@ -22,8 +22,13 @@ What is pinned here:
 * an invalid file never gets the kind and keeps nothing, option or not; a
   file cut inside its first record has nothing to keep and is not offered;
 * the instruction is one attempt's; a viewer or auditor cannot give it; a
-  cancel during the kept attempt cleans up; agents read the kind and have no
-  call that gives the instruction.
+  cancel during the kept attempt cleans up; agents read the kind, and the
+  one call that keeps their own upload states that the operator agreed
+  (``test_truncated_upload_agent.py``).
+
+This file is the shared JSON reader and the job's life around the question.
+The rule for EVERY format — XML, JSON lines, the parsers with their own
+readers — is held in ``test_every_format_at_a_cut.py``.
 
 Every import here runs under a real job (``ingestion_job_harness``).
 """
@@ -42,7 +47,8 @@ from app.db.models_auth import User, UserRole
 from app.db.models_project import ProjectMembership, ProjectRole
 from app.main import app
 from app.parsers import streaming_json
-from app.parsers.streaming_json import TruncatedJSONFile, begin_read, end_read, iter_json_records
+from app.parsers.cut_short import TruncatedFile, begin_read, end_read
+from app.parsers.streaming_json import iter_json_records
 from app.services.ingestion_service import (
     KEEP_TRUNCATED_OPTION,
     TRUNCATED_FILE_ERROR,
@@ -248,7 +254,7 @@ def _read(tmp_path, data: bytes, *, keep: bool = False, array_keys=("results",))
 def test_a_document_that_ends_early_is_told_apart(tmp_path, reader_path, case):
     data, complete = CUT_SHORT[case]
     records, error, report = _read(tmp_path, data)
-    assert isinstance(error, TruncatedJSONFile), (case, error)
+    assert isinstance(error, TruncatedFile), (case, error)
     assert error.records_read == complete
     assert report.cut_short is error
     if reader_path == "streamed":
@@ -266,7 +272,7 @@ def test_a_document_that_ends_early_is_told_apart(tmp_path, reader_path, case):
 def test_invalid_content_is_never_called_cut_short(tmp_path, reader_path, case):
     for keep in (False, True):
         _records, error, report = _read(tmp_path, INVALID[case], keep=keep)
-        assert not isinstance(error, TruncatedJSONFile), (case, error)
+        assert not isinstance(error, TruncatedFile), (case, error)
         assert report.cut_short is None, case
         if reader_path == "streamed":
             # As before this change: the reader's own sentence, a plain ValueError.
@@ -286,7 +292,7 @@ def test_asked_to_keep_the_reader_stops_at_the_cut(tmp_path, reader_path, case):
 @pytest.mark.parametrize("case", sorted(k for k, v in CUT_SHORT.items() if not v[1]))
 def test_nothing_complete_is_nothing_to_keep(tmp_path, reader_path, case):
     records, error, _report = _read(tmp_path, CUT_SHORT[case][0], keep=True)
-    assert records == [] and isinstance(error, TruncatedJSONFile) and error.records_read == 0
+    assert records == [] and isinstance(error, TruncatedFile) and error.records_read == 0
 
 
 def test_a_closed_document_is_read_whole_either_way(tmp_path, reader_path):
@@ -295,14 +301,53 @@ def test_a_closed_document_is_read_whole_either_way(tmp_path, reader_path):
         assert (records, error, report.cut_short, report.rejected_lines) == (THREE, None, None, 0)
 
 
-def test_json_lines_with_a_cut_last_line_are_read_as_before(tmp_path, reader_path):
-    """Not a document: the cut line is skipped and counted, the import is
-    partial (v2.419.0), and the option changes nothing about it."""
+def test_json_lines_with_a_cut_last_line_are_asked_about_too(tmp_path, reader_path):
+    """Owner, 2026-10-11 (second decision): every format in which a cut can be
+    seen.  JSON lines whose LAST line was cut — it does not decode, no line
+    ending follows it, and it is the beginning of a JSON value — are a file
+    that ends early: raised without the instruction, the complete lines with
+    it.  (Until then the line was skipped and counted without asking.)"""
     data = b'{"a": 1}\n{"b": "x"}\n{"c": "unfin'
+    records, error, report = _read(tmp_path, data)
+    assert isinstance(error, TruncatedFile) and (error.records_read, error.in_lines) == (2, True)
+    assert str(error) == (
+        "This whatweb JSON file was cut short: it ends after 2 complete records, "
+        "part-way through the line that follows."
+    )
+    assert report.cut_short is error and report.rejected_lines == 0
+
+    records, error, report = _read(tmp_path, data, keep=True)
+    assert error is None and records == [{"a": 1}, {"b": "x"}]
+    assert report.cut_short is not None and report.rejected_lines == 0
+    assert report.cut_short.kept.endswith(
+        "Those records were imported; anything the tool wrote after that point is not in the file."
+    )
+
+
+JSON_LINES_NOT_CUT = {
+    # A line that does not decode in the MIDDLE: skipped and counted.
+    "an undecodable line in the middle": (b'{"a": 1}\n{"b": "unfin\n{"c": 3}\n', [{"a": 1}, {"c": 3}], 1),
+    # The last line does not decode but a line ending follows it: the writer
+    # finished the line, so it is a bad line, not a cut one.
+    "a bad last line that was ended": (b'{"a": 1}\n{"b": "unfin\n', [{"a": 1}], 1),
+    # The last line has no line ending but is not the beginning of JSON.
+    "a last line that is not JSON": (b'{"a": 1}\n{"b": 2}\n@@@ garbage', [{"a": 1}, {"b": 2}], 1),
+    "a last line with text after a value": (b'{"a": 1}\n{"b": 2} trailing', [{"a": 1}], 1),
+    # A complete last line needs no line ending.
+    "a complete last line with no line ending": (b'{"a": 1}\n{"b": 2}', [{"a": 1}, {"b": 2}], 0),
+}
+
+
+@pytest.mark.parametrize("case", sorted(JSON_LINES_NOT_CUT))
+def test_json_lines_that_are_not_cut_are_read_as_they_always_were(tmp_path, reader_path, case):
+    """Invalid content in JSON lines is skipped and counted (v2.419.0: the
+    import is partial), with or without the instruction, and never called
+    cut short."""
+    data, expected, rejected = JSON_LINES_NOT_CUT[case]
     for keep in (False, True):
         records, error, report = _read(tmp_path, data, keep=keep)
-        assert error is None and records == [{"a": 1}, {"b": "x"}]
-        assert report.rejected_lines == 1 and report.cut_short is None
+        assert (error, records) == (None, expected), case
+        assert (report.rejected_lines, report.cut_short) == (rejected, None), case
 
 
 def test_the_parsers_on_the_shared_reader_are_the_documented_ones():
@@ -340,7 +385,7 @@ def test_a_cut_short_import_fails_as_that_and_is_kept_only_when_asked(
     error = _parse_error(db_session, job)
     assert error.error_type == TRUNCATED_FILE_ERROR == "truncated_file"
     assert error.error_message == (
-        f"This whatweb JSON file was cut short: it ends after {COMPLETE} complete records, "
+        f"This WhatWeb JSON file was cut short: it ends after {COMPLETE} complete records, "
         "before the end of the document."
     )
     assert job.error_message == f"{error.error_message} Nothing from this file was imported."
@@ -368,7 +413,7 @@ def test_a_cut_short_import_fails_as_that_and_is_kept_only_when_asked(
     assert job.partial is True
     assert job.skipped_count == 0
     assert job.parser_warnings == (
-        f"This whatweb JSON file was cut short: it ends after {COMPLETE} complete records, "
+        f"This WhatWeb JSON file was cut short: it ends after {COMPLETE} complete records, "
         "before the end of the document. Those records were imported; anything the tool "
         "wrote after that point is not in the file."
     )
@@ -432,7 +477,7 @@ def test_a_file_cut_inside_its_first_record_has_nothing_to_keep(
     pid = test_project.id
     job_id = _upload(client, test_project, whatweb_file(cut="first")).json()["job_id"]
     sentence = (
-        "This whatweb JSON file was cut short before its first record was complete: "
+        "This WhatWeb JSON file was cut short before its first record was complete: "
         "there is nothing in it to import."
     )
     for attempt in ("as uploaded", "asked to keep"):
@@ -656,7 +701,7 @@ def test_an_agent_reads_the_kind_in_the_same_words(client, db_session, test_proj
     job_id = up.json()["job_id"]
     _run(db_session)
     sentence = (
-        "This whatweb JSON file was cut short: it ends after 30 complete records, "
+        "This WhatWeb JSON file was cut short: it ends after 30 complete records, "
         "before the end of the document. Nothing from this file was imported."
     )
 
@@ -677,10 +722,14 @@ def test_an_agent_reads_the_kind_in_the_same_words(client, db_session, test_proj
     assert row["failure_kind"] == "truncated_file" and row["error"]["user_message"] == sentence
 
 
-def test_no_agent_call_gives_the_instruction():
-    """"Ask the user": keeping a cut-short file is a person's answer.  The
-    one body that carries it belongs to the people's retry route, and an
-    agent's upload cannot smuggle it in as an option."""
+def test_the_instruction_has_two_doors_and_an_agents_states_the_operator_agreed():
+    """"Ask the user": keeping a cut-short file is the operator's answer.
+    A person gives it on the retry route (the one body that carries
+    ``keep_truncated``).  An agent may give it for its own upload only by
+    stating that it asked (owner, 2026-10-11: ``POST
+    /agent/uploads/{job_id}/keep-truncated`` takes ``operator_agreed`` and
+    nothing else — ``tests/test_truncated_upload_agent.py``); no agent body
+    carries the option itself, and an agent's upload cannot smuggle it in."""
     spec = app.openapi()
     carrying = sorted(
         name for name, schema in spec["components"]["schemas"].items()
@@ -690,6 +739,10 @@ def test_no_agent_call_gives_the_instruction():
     using = sorted(path for path, ops in spec["paths"].items() if "RetryJobRequest" in json.dumps(ops))
     assert using == ["/api/v1/projects/{project_id}/upload/jobs/{job_id}/retry"]
     assert not [path for path in spec["paths"] if "/agent/" in path and path.endswith("/retry")]
+    agents = sorted(path for path in spec["paths"] if "/agent/" in path and "keep" in path)
+    assert agents == ["/api/v1/agent/uploads/{job_id}/keep-truncated"]
+    body = spec["components"]["schemas"]["KeepTruncatedUploadRequest"]
+    assert set(body["properties"]) == {"operator_agreed"}
 
 
 @pytest.mark.asyncio

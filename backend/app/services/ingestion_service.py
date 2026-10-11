@@ -35,7 +35,8 @@ from app.db.models import IngestionJob
 # app.db.session.SessionLocal onto the test engine and have these background
 # sessions land in the test DB — same pattern as agent_api_log_service.
 from app.db import session as _session_module
-from app.parsers.streaming_json import TruncatedJSONFile, begin_read, end_read
+from app.parsers.cut_short import TruncatedFile, begin_read, end_read
+from app.services.format_registry import format_label
 from app.services.parse_error_service import log_parse_error
 from app.services.job_transitions import JobNotTransitionable, JobTransitions
 
@@ -80,12 +81,14 @@ class DuplicateUploadError(Exception):
 # A job in one of these states makes an identical upload a duplicate.
 DUPLICATE_BLOCKING_STATUSES = ("staged", "queued", "processing")
 
-# Owner decision 2026-10-11 — "ask the user if it's a partial file whether
-# they want to keep partial results".
+# Owner decisions 2026-10-11 — "ask the user if it's a partial file whether
+# they want to keep partial results", then: "if it's possible to see that the
+# … format ended abruptly let's ask the user … for all scans where it's
+# possible" (every format whose reader can tell: ``app/parsers/cut_short.py``).
 #
 # The KIND of a failure is ``parse_errors.error_type`` (the row the failed job
 # points at; served as ``failure_kind``).  This value means: the file ends
-# before its document does, AND complete records precede the cut — so a
+# before it is complete, AND complete records precede the cut — so a
 # person can choose to import what the file holds.  A file cut before its
 # first record ended fails as an ordinary ``parsing_error`` whose message
 # says so: there is nothing to keep, so nothing is offered.
@@ -93,9 +96,9 @@ TRUNCATED_FILE_ERROR = "truncated_file"
 # The answer, as a processing instruction for ONE attempt (``job.options``,
 # like ``allow_duplicate``): ``staged_import_service.queue_job`` sets it when
 # the operator chose "Import what the file holds" and clears it on every
-# other start or retry.  The worker hands it to the shared JSON reader, which
-# then stops at the cut instead of failing.  Never set at upload, and no
-# agent route can set it.
+# other start or retry.  The worker hands it to the readers
+# (``cut_short.begin_read``), which then stop at the cut instead of failing.
+# Never set at upload, and no agent route can set it.
 KEEP_TRUNCATED_OPTION = "keep_truncated"
 
 
@@ -2171,10 +2174,24 @@ class IngestionService:
             )
 
         last_error: Optional[Exception] = None
-        # The file ends before its document does (the first parser to say so:
-        # it is a fact about the file, whichever parser read it).
-        cut_short: Optional[TruncatedJSONFile] = None
-        for file_type, parser_class, description in parsing_attempts:
+        # The file ends before it is complete (the first parser to say so: it
+        # is a fact about the file, whichever parser read it).  Every format
+        # says it the same way — there is no branch per format here.
+        cut_short: Optional[TruncatedFile] = None
+        cut_file_type: Optional[str] = None
+        cut_recognised = False
+        for attempt in parsing_attempts:
+            file_type, parser_class, description = attempt
+            # A parser that recognised the file, or one that read complete
+            # records of it, found that it ends early: a parser the dispatcher
+            # would merely TRY, having recognised nothing, has no more to say
+            # about that file (and the last-ditch Nessus attempt's own failure
+            # would replace the reason).
+            if (
+                cut_short is not None and isinstance(attempt, FallbackAttempt)
+                and (cut_short.records_read or cut_recognised)
+            ):
+                continue
             start = time.time()
             try:
                 logger.info(
@@ -2183,7 +2200,7 @@ class IngestionService:
                     parser_class.__name__,
                     job.original_filename,
                 )
-                result = self._execute_parser(db, job, parser_class, description)
+                result = self._execute_parser(db, job, parser_class, description, file_type=file_type)
                 elapsed = time.time() - start
                 logger.info(
                     "Job %s: parser %s succeeded in %.2fs",
@@ -2222,8 +2239,14 @@ class IngestionService:
                     exc,
                 )
                 last_error = exc
-                if cut_short is None and isinstance(exc, TruncatedJSONFile):
-                    cut_short = exc
+                # The first to say so — or one that read MORE of it complete (a
+                # try-anyway parser that found no record of its own says
+                # "nothing to import" of a file the next one reads).
+                if isinstance(exc, TruncatedFile) and (
+                    cut_short is None or exc.records_read > cut_short.records_read
+                ):
+                    cut_short, cut_file_type = exc, file_type
+                    cut_recognised = not isinstance(attempt, FallbackAttempt)
                 continue
 
         preview = sample[:4096]
@@ -2238,7 +2261,7 @@ class IngestionService:
                 file_content=preview,
                 error=cut_short,
                 error_type=TRUNCATED_FILE_ERROR if cut_short.records_read else "parsing_error",
-                file_type=parsing_attempts[0][0],
+                file_type=cut_file_type,
                 custom_message=f"{cut_short} Nothing from this file was imported.",
                 project_id=job_project_id,
             )
@@ -2306,6 +2329,8 @@ class IngestionService:
         job: IngestionJob,
         parser_class: Type,
         description: str,
+        *,
+        file_type: Optional[str] = None,
     ) -> Dict[str, object]:
         from app.services.nessus_integration_service import NessusIntegrationService
 
@@ -2333,16 +2358,32 @@ class IngestionService:
         # both code paths.
         warnings_parts: List[str] = []
 
+        # What the readers meet below the parser: JSON lines that did not
+        # decode (v2.419.0, H4) and a file that ends early.  The operator's
+        # "import what the file holds" reaches every reader HERE (the one
+        # ContextVar of ``app/parsers/cut_short.py``) rather than as a parser
+        # argument: no parser has anything to decide about it.  The label is
+        # the format's own, for the sentence a cut is said in.
+        def _open_read():
+            return begin_read(
+                keep_truncated=options.get(KEEP_TRUNCATED_OPTION) is True,
+                label=format_label(file_type),
+            )
+
         # Whatever this raises, ``_process_job`` removes the scan the attempt
         # committed (the job row names it) before anything else is tried.
         if parser_class is NessusIntegrationService:
             parser_instance = NessusIntegrationService(db)
-            result = parser_instance.process_nessus_file(
-                storage_path, filename, project_id=project_id,
-                # v2.341.0 — resolved at upload time (form field, else the
-                # project's setting); the worker only carries it through.
-                skip_informational=bool(options.get("skip_informational", False)),
-            )
+            _reading = _open_read()
+            try:
+                result = parser_instance.process_nessus_file(
+                    storage_path, filename, project_id=project_id,
+                    # v2.341.0 — resolved at upload time (form field, else the
+                    # project's setting); the worker only carries it through.
+                    skip_informational=bool(options.get("skip_informational", False)),
+                )
+            finally:
+                read_report = end_read(_reading)
             if not result.get("success"):
                 # C1 — a failed Nessus import (an error, a truncated export,
                 # no host processed) used to leave the hosts and observations
@@ -2395,12 +2436,7 @@ class IngestionService:
                 raise ValueError(f"Unsupported parser class {parser_class}")
 
             parser = parser_ctor(db)
-            # What the shared JSON reader meets below the parser: lines it
-            # could not decode (v2.419.0, H4) and a document that ends early.
-            # The operator's "import what the file holds" reaches the reader
-            # here rather than as a parser argument: eleven parsers call the
-            # one reader, and none of them has anything to decide about it.
-            _reading = begin_read(keep_truncated=options.get(KEEP_TRUNCATED_OPTION) is True)
+            _reading = _open_read()
             try:
                 # v2.353.0 — the tool the operator named at import (phase A's
                 # column) reaches the parser, so attribution never has to be
@@ -2410,10 +2446,10 @@ class IngestionService:
                     storage_path, filename, project_id=project_id,
                     source_tool=_source_tool if isinstance(_source_tool, str) else None,
                 )
+            finally:
+                # Whatever ends the parse (a worker killed mid-parse included):
+                # the next parse starts its own report.
                 read_report = end_read(_reading)
-            except Exception:
-                end_read(_reading)
-                raise
             rejected_json_lines = read_report.rejected_lines
             # Ensure scan and all hosts are tagged with the project
             if project_id and scan:
@@ -2450,15 +2486,14 @@ class IngestionService:
                     f"{rejected_json_lines} line{'s' if rejected_json_lines != 1 else ''} of the file "
                     "were not valid JSON and were skipped (a truncated or corrupted record)"
                 )
-            # The document ended early and the import went on with what came
-            # before (the operator asked for that).  Partial: how much is
-            # missing is not knowable from the file, so it is not a count.
-            if read_report.cut_short is not None:
-                parse_stats["partial"] = True
-                warnings_parts.append(
-                    f"{read_report.cut_short} Those records were imported; anything the tool "
-                    "wrote after that point is not in the file."
-                )
+
+        # The file ended early and the import went on with what came before
+        # (the operator asked for that) — whichever format, whichever branch.
+        # Partial: how much is missing is not knowable from the file, so it is
+        # not a count.
+        if read_report.cut_short is not None:
+            parse_stats["partial"] = True
+            warnings_parts.append(read_report.cut_short.kept)
 
         # tool_name_hint mismatch detection (v2.55.0 review finding M-1,
         # repositioned in v2.55.1 to cover BOTH branches).

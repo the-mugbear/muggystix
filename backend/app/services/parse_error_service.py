@@ -45,6 +45,11 @@ def log_parse_error(
             error_details["line_number"] = error.lineno
         if hasattr(error, 'offset'):
             error_details["column_offset"] = error.offset
+        # A file that was cut short (``cut_short.TruncatedFile``): how much of
+        # it is complete, as a number beside the sentence that says it.
+        if hasattr(error, 'records_read'):
+            error_details["records_read"] = error.records_read
+            error_details["unit"] = getattr(error, 'unit', 'record')
     
     # Generate file preview (first 1000 characters)
     file_preview = None

@@ -131,6 +131,10 @@ _CREATES_A_ROW = {
     # row, so it is never "idempotent".  (Deliberately not marked additive —
     # see test_the_credential_request_reads_as_a_write_to_confirm.)
     "request_scanner_credentials",
+    # Each request to keep a cut-short upload writes its own audit row (and a
+    # second one is refused 409): never "idempotent", and not marked additive
+    # for the same reason as the credential request.
+    "keep_truncated_upload",
 }
 
 

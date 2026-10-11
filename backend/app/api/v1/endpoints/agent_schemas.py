@@ -522,6 +522,18 @@ class ReconUploadResponse(BaseModel):
     batch: Optional[str] = None
 
 
+class KeepTruncatedUploadRequest(BaseModel):
+    operator_agreed: StrictBool = Field(
+        False,
+        description=(
+            "Must be true, and only after you told the operator the file was cut "
+            "short and how many complete records it holds, and they said to import "
+            "what it holds (a partial import) rather than supply the complete file. "
+            "Anything else is refused (422)."
+        ),
+    )
+
+
 class ReconJobStatus(BaseModel):
     job_id: int
     status: str
@@ -534,9 +546,11 @@ class ReconJobStatus(BaseModel):
     failure_kind: Optional[str] = Field(None, description=(
         "For a failed upload, the kind of failure: parsing_error, format_error, or "
         "truncated_file — the file was cut short and nothing from it was imported, "
-        "though it holds complete records. Tell the operator: on Ingestion results "
-        "they can choose 'Import what the file holds' (a partial import), or upload "
-        "the complete file. That choice is theirs; no agent call makes it. Null when "
+        "though it holds complete records (error_message says how many). Tell the "
+        "operator and ask whether to import what the file holds (a partial import) "
+        "or to supply the complete file; only after they say to import it, POST "
+        "/agent/uploads/{job_id}/keep-truncated with {\"operator_agreed\": true}. "
+        "They can also choose it themselves on Ingestion results. Null when "
         "the upload did not fail or failed without a parse error (a cancel)."
     ))
     # Derived timing so the agent can see where an upload spent its time

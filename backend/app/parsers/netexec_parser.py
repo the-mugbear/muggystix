@@ -20,7 +20,9 @@ from app.services.confidence_service import (
 )
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.db.models_vulnerability import VulnerabilitySource
+from app.parsers.cut_short import TruncatedFile
 from app.parsers.parser_utils import announce_scan, correlate_scan, read_tool_text
+from app.parsers.streaming_json import iter_document
 from app.services import smb_signing as smb_signing_states
 from app.services.misconfig_checks import record_misconfig
 from app.services.line_shapes import ShapeTally, nxc_line_shape
@@ -469,7 +471,17 @@ class NetexecParser:
     def _parse_json_output(self, content: str, scan_id: int):
         """Parse JSON output from netexec spider_plus or similar modules"""
         try:
-            data = json.loads(content)
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                # An object that ENDS EARLY is settled by the shared rule: the
+                # import fails as cut short, or — asked to keep what the file
+                # holds — goes on with the members that are complete.  Any
+                # other undecodable content takes the console fallback below,
+                # as it always did.
+                data = self._members_before_the_cut(content)
+                if data is None:
+                    raise
 
             # Handle different JSON structures
             if isinstance(data, dict):
@@ -495,11 +507,32 @@ class NetexecParser:
 
         except json.JSONDecodeError as e:
             logger.warning(
-                f"Failed to parse JSON content (file may be truncated/incomplete): {e}. "
+                f"Failed to parse JSON content: {e}. "
                 f"Attempting fallback to console-style line parsing."
             )
             # Fall back to console parsing - but warn that results may be incomplete
             self._parse_console_output(content, scan_id)
+
+    @staticmethod
+    def _members_before_the_cut(content: str) -> Optional[Dict[str, Any]]:
+        """For content ``json.loads`` refused: the complete top-level members
+        of an OBJECT whose text ends early (nxc's JSON is one object keyed by
+        address, or by share) — when the import keeps them; ``TruncatedFile``
+        when it does not; ``None`` when the content is not an object or is
+        invalid for any other reason."""
+        if not content.lstrip().startswith('{'):
+            return None
+        members: Dict[str, Any] = {}
+        try:
+            for key, value in iter_document(
+                content.encode('utf-8'), '', 'NetExec JSON', pairs=True, floats=True,
+            ):
+                members[key] = value
+        except TruncatedFile:
+            raise
+        except ValueError:
+            return None
+        return members
 
     def _parse_console_output(self, content: str, scan_id: int):
         """Parse console output from netexec"""

@@ -30,7 +30,9 @@ from typing import Any, Dict, Iterable, List, Optional
 from sqlalchemy.orm import Session
 
 from app.db import models
+from app.parsers.cut_short import TruncatedFile, settle_cut
 from app.parsers.parser_utils import announce_scan, beat_while_reading
+from app.parsers.streaming_json import is_cut_last_line, iter_document
 from app.db.models_attribution import (
     AttributionSource,
     NetworkAttribution,
@@ -205,7 +207,12 @@ class RdapParser:
         try:
             whole = json.loads(content)
         except json.JSONDecodeError:
-            whole = None
+            # A document that ENDS EARLY (an array of responses, or one
+            # response) is settled by the shared rule before anything is
+            # written: the import fails as cut short, or — asked to keep what
+            # the file holds — goes on with the complete responses, still in
+            # the one transaction below.  NDJSON and invalid content: None.
+            whole = self._document_before_the_cut(content)
         if isinstance(whole, dict):
             entries = [("document", whole)]
         elif isinstance(whole, list):
@@ -213,13 +220,19 @@ class RdapParser:
         else:
             # R6 — the read phase heartbeats (only the committed scan row
             # exists so far).
-            for lineno, line in enumerate(beat_while_reading(content.splitlines(), "lines read"), start=1):
-                line = line.strip()
+            lines = content.splitlines(keepends=True)
+            for lineno, raw_line in enumerate(beat_while_reading(lines, "lines read"), start=1):
+                line = raw_line.strip()
                 if not line:
                     continue
                 try:
                     entries.append((f"line {lineno}", json.loads(line)))
                 except json.JSONDecodeError as exc:
+                    # The file's LAST line, cut short (the shared rule): the
+                    # same question, with the complete lines before it.
+                    if is_cut_last_line(raw_line):
+                        settle_cut(len(entries), label="RDAP JSON", in_lines=True, cause=exc)
+                        break
                     skipped += 1
                     if len(warnings) < 5:
                         warnings.append(f"line {lineno}: invalid JSON ({exc})")
@@ -268,6 +281,32 @@ class RdapParser:
             "partial": False,
         }
         return scan
+
+    @staticmethod
+    def _document_before_the_cut(content: str) -> Optional[list]:
+        """For content ``json.loads`` refused.  A JSON document whose text
+        ends early: its complete responses when the import keeps them,
+        ``TruncatedFile`` when it does not (always, for a single response cut
+        short: half a response is no response).  ``None`` for NDJSON — whose
+        first line is a whole object — and for content that is invalid."""
+        text = content.lstrip()
+        if not text.startswith(("[", "{")):
+            return None
+        first_line = text.split("\n", 1)[0].strip()
+        try:
+            if isinstance(json.loads(first_line), dict):
+                return None  # one object per line
+        except json.JSONDecodeError:
+            pass
+        prefix = "item" if text.startswith("[") else ""
+        try:
+            return list(iter_document(
+                content.encode("utf-8"), prefix, "RDAP JSON", dicts_only=False, floats=True,
+            ))
+        except TruncatedFile:
+            raise
+        except ValueError:
+            return None
 
     def _ingest(self, record: Dict[str, Any], project_id: int, scan_id: int) -> bool:
         # The script wraps each response as {"query": ..., "rdap": {...}}; a raw

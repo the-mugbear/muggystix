@@ -649,7 +649,9 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "says dismissed). An "
             "issue's kind: failed or expired = nothing from that file is in the "
             "project (a failed issue's failure_kind says why: truncated_file = the "
-            "file was cut short; a person may choose to import what it holds); partial = parsing stopped early, so what came after that "
+            "file was cut short and holds complete records; importing what it holds "
+            "is the operator's decision — for a file this session uploaded ask them, "
+            "then keep_truncated_upload); partial = parsing stopped early, so what came after that "
             "point is NOT in the project; degraded = it is in, but rows were "
             "dropped, so counts drawn "
             "from it are undercounts; parse_error = a recorded failure with no "
@@ -1054,11 +1056,40 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "curl (POST /agent/uploads, see the server instructions); this is how you "
             "find out whether it parsed, and what it produced. A failed upload carries "
             "failure_kind: truncated_file means the file was cut short and nothing from "
-            "it was imported — tell the operator; importing what it holds is their "
-            "choice on Ingestion results, and no tool makes it."
+            "it was imported, though it holds complete records (error_message says how "
+            "many) — tell the operator and ask whether to import what it holds or to "
+            "supply the complete file; only after they say to import it, call "
+            "keep_truncated_upload."
         ),
         "method": "GET",
         "path": "/api/v1/agent/uploads/{job_id}",
+        "params": {"job_id": {"minimum": 1, "description": "Job id returned by the upload."}},
+    },
+    # The ask-first rule is the session's
+    # (agent_policy.render_truncated_upload_rule); it is said here too because
+    # an agent may read a tool and nothing else.
+    "keep_truncated_upload": {
+        "description": (
+            "ASK THE OPERATOR FIRST. For an upload of this session that failed with "
+            "failure_kind: truncated_file (the file was cut short): imports the "
+            "complete records the file holds and marks the import partial. Before "
+            "calling, tell the operator the file was cut short and how many complete "
+            "records it holds (the upload's error_message says), and ask whether to "
+            "import what it holds or to supply the complete file; saying no means "
+            "nothing from it is imported. Call this only after they say to import "
+            "it, with `operator_agreed: true`. Without it the call is refused (422). "
+            "Every request is recorded and shown to the operator. Needs an operator "
+            "who can write to the project (403 otherwise: tell them). 409 when the "
+            "upload did not fail as cut short, is no longer failed, or its file is no "
+            "longer kept. Answers the job's new state; poll get_upload_job."
+        ),
+        "method": "POST",
+        "path": "/api/v1/agent/uploads/{job_id}/keep-truncated",
+        # NOT marked `additive`: a client may approve an additive write without
+        # asking, and this call puts a partial import into the project on the
+        # operator's say-so — it should read to the client as one to confirm.
+        # Each request writes its own audit row, so a retry is not a no-op.
+        "idempotent": False,
         "params": {"job_id": {"minimum": 1, "description": "Job id returned by the upload."}},
     },
 }

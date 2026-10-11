@@ -53,7 +53,7 @@ read off the server's registry and is the list.
 | The tool catalogue | `list_tools` (a reference for people — never a permission list), `suggest_tool` (propose a tool the catalogue lacks, for a curator; it grants nothing) |
 | Configured scanners | `list_scanner_integrations` (the installation's scanner integrations — name, type, address; never credentials; any session), `request_scanner_credentials` (ONE scanner's credentials, with `operator_agreed: true`, after the agent asked the operator; the operator must be able to write to the project; every request is recorded) — see §6 |
 | Query and report | the `assist_*` reads — the next section lists each against the question it answers |
-| Scope reads and uploads | `assist_get_scope` (the project's one scope: the first 100 CIDRs and domains with their totals; no arguments), then `scope_list_subnets` / `scope_list_domains` for the whole lists when it says one is truncated — no tool takes a scope id; the target files and the upload itself are curl (see "Bulk data" below); `get_upload_job` polls an upload |
+| Scope reads and uploads | `assist_get_scope` (the project's one scope: the first 100 CIDRs and domains with their totals; no arguments), then `scope_list_subnets` / `scope_list_domains` for the whole lists when it says one is truncated — no tool takes a scope id; the target files and the upload itself are curl (see "Bulk data" below); `get_upload_job` polls an upload; `keep_truncated_upload` (with `operator_agreed: true`, after the agent asked the operator) imports what this session's cut-short upload holds, as a partial import — see §6 |
 | Host tests | `host_tests_list` (read first — do not duplicate), `host_tests_propose` (up to 200 individual tests, each with its own `request_key`; they appear on each host's page at once), `host_tests_get`, `host_tests_update` (409 when `expected_revision` is stale) |
 | Running a test | `host_tests_update` → `in_progress`, run it, `record_evidence` naming the `host_test_id` (with a `request_key`), then `host_tests_update` → `done`. Evidence with outcome `finding`, `no_finding` or `inconclusive` is what marks the host tested |
 | Evidence and proposals | `record_evidence`, `list_evidence`; `propose_finding_text`, `propose_finding`, `propose_observation`, `propose_endpoint_status`, `list_proposals` |
@@ -557,6 +557,30 @@ the operator said yes: that conversation happens in the agent's client. The
 flag is the agent's statement, and the record is how a person checks it
 afterwards.
 
+### An upload that was cut short: the agent asks first
+
+A scan file that ends before it is complete (an interrupted run, an unfinished
+copy) fails as `failure_kind: truncated_file` and nothing from it is imported
+— `get_upload_job` says so, with how many complete records the file holds.
+The agent's rule (`agent_policy.render_truncated_upload_rule`, rendered into
+both doors): say so to the operator and ask whether to import what the file
+holds or to supply the complete file; saying yes means BlueStick imports the
+complete records and marks the import partial, saying no means nothing from it
+is imported. Only then `keep_truncated_upload`, for that one upload of its own
+session.
+
+What the server does: it refuses a request that does not carry
+`operator_agreed: true` (422, with what to ask), refuses one whose operator
+cannot write to the project (403), refuses an upload that is not this
+session's (404) or that did not fail as cut short, is no longer failed or
+whose file is gone (409), re-queues the job on the same path as a person's
+"Import what the file holds", and writes an audit row
+(`truncated_upload_kept`: operator, project, session, job, format, count of
+complete records — never file contents) with it. **What it cannot do** is know
+that the operator said yes; the flag is the agent's statement, and the record
+— and the partial import on Ingestion results, which needs someone until it is
+dismissed — is how a person checks it afterwards.
+
 ---
 
 ## 7. Reviewing what happened
@@ -600,6 +624,7 @@ afterwards.
 | `POST /api/v1/agent/session/end` | agent key | end the session and revoke the key |
 | `POST /api/v1/agent/feedback` | agent key | file feedback; answers an acknowledgement |
 | `POST /api/v1/agent/uploads` · `GET /api/v1/agent/uploads/{job_id}` | agent key | upload scanner output (curl, multipart) · poll its parse (`get_upload_job`) |
+| `POST /api/v1/agent/uploads/{job_id}/keep-truncated` | agent key | import what this session's cut-short upload holds, after the operator agreed (`keep_truncated_upload`) |
 | `POST /api/v1/agent/tool-suggestions` | agent key | propose a tool for the catalogue |
 | `GET /api/v1/agent/assist/scanner-integrations` | agent key | the configured scanners, without credentials |
 | `POST /api/v1/agent/scanner-integrations/{integration_id}/credentials` | agent key (operator: analyst or above) | one scanner's credentials, on a recorded request |
