@@ -209,8 +209,9 @@ def evidence_gap_predicate(domains: Sequence[str]) -> ColumnElement:
 # only.  The explicit forms are the structured ``port_states`` list (``any``
 # lifts the restriction) and the DSL's ``@state`` suffix (``service:ssh@closed``,
 # ``port:22@any``).  ``resolve_endpoint_states`` is the one rule; the
-# tool-ready export's per-host port narrowing (hosts.py) and the frontend's
-# ``utils/endpointMatch.ts`` mirror it.
+# tool-ready export narrows each host's ports with these same conditions
+# (``host_query.port_filter_conditions``), and the frontend's
+# ``utils/endpointMatch.ts`` mirrors it.
 
 #: The explicit "no state restriction" value (structured ``port_states`` and
 #: the DSL ``@any`` suffix).
@@ -966,11 +967,58 @@ def my_review_followup_predicate(current_user: User) -> ColumnElement:
     )
 
 
-def assigned_predicate(db: Session, value: str, current_user: User) -> Optional[ColumnElement]:
+class UnknownAssignee(ValueError):
+    """``assigned`` named someone no host of the project can be assigned to.
+    Each door turns it into its own refusal (the DSL a 400, the discrete
+    ``assigned_to`` a 422); it is never read as "no filter"."""
+
+    def __init__(self, value: str):
+        super().__init__(value)
+        self.value = value
+
+
+def project_assignees(db: Session, project_id: int):
+    """``(user id, username)`` of everyone an ``assigned`` filter can name in
+    this project — THE one definition (the filter below and the agents'
+    vocabulary read it): the project's members, the active global admins (who
+    need no membership row to be handed a host) and anyone who currently holds
+    an assignment on one of its hosts (someone since removed from the project
+    still owns what they were given).
+
+    A name outside it is refused the same way whether or not such an account
+    exists, so the filter does not say which usernames the installation has."""
+    from app.db.models_auth import UserRole
+    from app.db.models_project import ProjectMembership
+
+    members = (
+        db.query(User.id, User.username)
+        .join(ProjectMembership, ProjectMembership.user_id == User.id)
+        .filter(ProjectMembership.project_id == project_id)
+    )
+    admins = db.query(User.id, User.username).filter(
+        User.role == UserRole.ADMIN, User.is_active.is_(True),
+    )
+    holders = (
+        db.query(User.id, User.username)
+        .join(HostFollow, HostFollow.user_id == User.id)
+        .join(models.Host, models.Host.id == HostFollow.host_id)
+        .filter(models.Host.project_id == project_id, HostFollow.assigned_at.isnot(None))
+    )
+    return members.union(admins, holders)
+
+
+def assigned_predicate(
+    db: Session, value: str, current_user: User, project_id: Optional[int] = None,
+) -> ColumnElement:
     """Assignment predicate: ``any`` → assigned to anyone, ``none`` → assigned
     to nobody, ``me`` → the caller, a **username** (the normal case — user ids
-    aren't surfaced in the UI), or a numeric user id.  Returns ``None`` for an unusable value so callers skip the
-    filter (legacy parity).
+    aren't surfaced in the UI), or a numeric user id.
+
+    A username or id is resolved among ``project_assignees`` — a member with
+    nothing assigned is a valid value that matches no host; a name or id
+    outside that set raises ``UnknownAssignee`` (it used to return ``None``,
+    which the discrete door read as "no filter" and answered with the whole
+    project).  With no ``project_id`` the lookup is over every account.
 
     "Assigned" keys on ``assigned_at`` (cleared on unassign).  Taking a host
     In Review now sets ``assigned_at`` too (see the review-status write path),
@@ -986,19 +1034,24 @@ def assigned_predicate(db: Session, value: str, current_user: User) -> Optional[
         return assigned if value == "any" else ~assigned
     if value == "me":
         assignee_id: Optional[int] = current_user.id
-    elif is_id(value):
-        assignee_id = int(value)
     else:
         # A username — the value a user actually knows and types (ids aren't
-        # shown anywhere). Case-insensitive exact match.
-        row = (
-            db.query(User.id)
-            .filter(func.lower(User.username) == value.lower())
-            .first()
+        # shown anywhere), case-insensitive exact match — or a user id.
+        if project_id is None:
+            known = db.query(User.id, User.username)
+        else:
+            known = project_assignees(db, project_id)
+        text = str(value).strip()
+        wanted_id = int(text) if is_id(text) and int(text) <= 2**31 - 1 else None
+        assignee_id = next(
+            (
+                uid for uid, username in known.all()
+                if (uid == wanted_id if wanted_id is not None else (username or "").lower() == text.lower())
+            ),
+            None,
         )
-        assignee_id = row[0] if row else None
     if assignee_id is None:
-        return None
+        raise UnknownAssignee(value)
     return _host_has(
         HostFollow.host_id,
         HostFollow.user_id == assignee_id,
@@ -1117,15 +1170,44 @@ def attribution_org_predicate(values: Sequence[str]) -> ColumnElement:
     return _host_attributed(or_(*clauses))
 
 
+class InvalidAsn(ValueError):
+    """An ``asn`` value that is not an autonomous system number."""
+
+    def __init__(self, values: List[str]):
+        super().__init__(", ".join(values))
+        self.values = values
+
+
+def parse_asns(values: Sequence[str]) -> List[int]:
+    """``["AS15169", "13335"]`` → ``[15169, 13335]`` (``AS`` prefix optional,
+    any case).  A value that is not a number raises ``InvalidAsn`` naming it:
+    read as "no such system" it was an ordinary empty list."""
+    asns: List[int] = []
+    bad: List[str] = []
+    for v in values or []:
+        raw = str(v).strip()
+        if not raw:
+            continue
+        text = raw.upper()
+        if text.startswith("AS"):
+            text = text[2:]
+        # ASNs are 32-bit; the column is an integer.
+        if is_id(text) and int(text) <= 2**32 - 1:
+            asns.append(int(text))
+        else:
+            bad.append(raw)
+    if bad:
+        raise InvalidAsn(bad)
+    return asns
+
+
 def attribution_asn_predicate(values: Sequence[str]) -> ColumnElement:
-    """Hosts in any of the given autonomous systems. ``AS`` prefix optional."""
+    """Hosts in any of the given autonomous systems. ``AS`` prefix optional.
+    Raises ``InvalidAsn`` for a value that is not a number."""
     from app.db.models_attribution import NetworkAttribution
 
-    asns = []
-    for v in values or []:
-        text = str(v).strip().upper().lstrip("AS")
-        if is_id(text):
-            asns.append(int(text))
+    # The column is a 4-byte integer: a valid ASN above it is held by no row.
+    asns = [a for a in parse_asns(values) if a <= 2**31 - 1]
     if not asns:
         return false()
     return _host_attributed(NetworkAttribution.asn.in_(asns))

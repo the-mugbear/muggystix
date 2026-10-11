@@ -25,6 +25,17 @@ export const canStartAgentSession = (project: Pick<Project, 'my_role'> | null | 
   return projectRoleAtLeast(project.my_role, 'auditor');
 };
 
+/** Whether the ACCOUNT can write anywhere: a global admin, or analyst / admin
+ *  on at least one of its projects — the server's `can_write_in_some_project`
+ *  (it gates adding, changing and testing an LLM provider, whose only use is
+ *  drafting).  As everywhere here, only roles KNOWN to be too low say no: a
+ *  project that carries no `my_role` leaves the decision to the server. */
+export const canWriteInSomeProject = (
+  projects: ReadonlyArray<Pick<Project, 'my_role'>>,
+  globalRole: string | null | undefined,
+): boolean => globalRole === 'admin'
+  || projects.some((p) => p.my_role === undefined || projectRoleAtLeast(p.my_role, 'analyst'));
+
 export interface ProjectRoleAccess {
   /** The caller's role on the current project; `undefined` when it has not
    *  loaded (or the project carries none), `null` for a non-member. */

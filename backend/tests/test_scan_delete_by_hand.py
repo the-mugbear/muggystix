@@ -1265,3 +1265,82 @@ def test_deleting_the_later_scan_and_then_the_first_removes_the_host(client, db_
     assert client.get(_url(pid, first_id, "/deletion-impact")).json()["hosts_removed"] == 1
     assert client.delete(_url(pid, first_id)).json()["hosts_removed"] == 1
     assert _host_ids(db_session, pid) == set()
+
+
+# ---------------------------------------------------------------------------
+# F. The scan's files on disk go with it — after the commit, on both paths
+#    (review 2026-10-10 H14: the hand delete had no file step, so a wrongly
+#    uploaded EyeWitness bundle's screenshots stayed).
+# ---------------------------------------------------------------------------
+
+def _files_of(root, scan_id):
+    """Every kind of path a scan keeps on disk, made for real."""
+    shots = root / "web_screenshots"
+    (shots / str(scan_id)).mkdir(parents=True, exist_ok=True)
+    (shots / str(scan_id) / "login.png").write_bytes(b"png")
+    (shots / f"report-{scan_id}.json").write_text("{}")
+    (shots / f"report-{scan_id}.csv").write_text("Protocol,Port\n")
+    paths = ingestion_module.scan_file_paths(scan_id)
+    assert paths and all(p.exists() for p in paths)
+    return paths
+
+
+@pytest.fixture
+def uploads(tmp_path, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path))
+    return tmp_path
+
+
+def test_a_hand_delete_leaves_no_file_of_the_scan(client, db_session, test_project, uploads):
+    pid = test_project.id
+    target, other = _scan(db_session, pid, "wrong-project.zip"), _scan(db_session, pid, "other.zip")
+    _host(db_session, pid, target, "10.70.0.1")
+    db_session.commit()
+    target_id, other_id = target.id, other.id
+    gone, kept = _files_of(uploads, target_id), _files_of(uploads, other_id)
+
+    assert client.delete(_url(pid, target_id)).status_code == 200
+
+    assert db_session.query(models.Scan).filter_by(id=target_id).count() == 0
+    assert [p for p in gone if p.exists()] == []
+    # Another scan's files are not this delete's.
+    assert all(p.exists() for p in kept)
+
+
+def test_a_refused_hand_delete_keeps_the_scans_files(client, db_session, test_project, test_user, uploads):
+    pid = test_project.id
+    target = _scan(db_session, pid, "target.zip")
+    _one_host_per_kind(db_session, pid, target, test_user)
+    db_session.commit()
+    target_id = target.id
+    files = _files_of(uploads, target_id)
+
+    assert client.delete(_url(pid, target_id)).status_code == 409
+
+    assert db_session.query(models.Scan).filter_by(id=target_id).count() == 1
+    assert all(p.exists() for p in files)
+
+
+def test_the_files_go_at_the_commit_and_never_before_or_without_it(db_session, test_project, uploads):
+    """Both deletes end in ``delete_scan_row``: the files are there until the
+    transaction that deleted the row commits, and stay when it rolls back."""
+    pid = test_project.id
+    kept, gone = _scan(db_session, pid, "rolled-back.zip"), _scan(db_session, pid, "committed.zip")
+    db_session.commit()
+    kept_id, gone_id = kept.id, gone.id
+    kept_files, gone_files = _files_of(uploads, kept_id), _files_of(uploads, gone_id)
+
+    delete_partial_scan(db_session, kept_id)
+    assert all(p.exists() for p in kept_files)            # not before the commit
+    db_session.rollback()
+    assert db_session.query(models.Scan).filter_by(id=kept_id).count() == 1
+    db_session.commit()                                   # a later, unrelated commit
+    assert all(p.exists() for p in kept_files)            # the scan is still there: so are its files
+
+    delete_partial_scan(db_session, gone_id)
+    assert all(p.exists() for p in gone_files)
+    db_session.commit()
+    assert [p for p in gone_files if p.exists()] == []
+    assert all(p.exists() for p in kept_files)

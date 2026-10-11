@@ -26,6 +26,7 @@ from app.core.security import (
     revoke_session,
     login_lockout_active,
     login_throttle_exceeded,
+    reauth_password,
     verify_password,
     ACCESS_TOKEN_EXPIRE_MINUTES,
     LOGIN_2FA_THROTTLE_PER_USERNAME,
@@ -373,9 +374,9 @@ def _verify_second_factor(db: Session, user: User, code: str) -> bool:
         )
         db.commit()
         return consumed == 1
-    # TOTP path.
-    secret = totp_service.decrypt_secret(user.totp_secret_encrypted)
-    return bool(secret) and totp_service.verify_code(secret, code)
+    # TOTP path — a code is spent when it is accepted, so the same six digits
+    # do not sign in twice inside their window.
+    return totp_service.accept_code(db, user, code)
 
 
 @router.post("/logout")
@@ -498,17 +499,12 @@ def change_password(
     """Change user password"""
     client_info = get_client_info(request)
 
-    # Verify current password
-    if not verify_password(password_data.current_password, current_user.hashed_password):
-        log_audit_event(
-            db=db,
-            user_id=current_user.id,
-            action="password_change_failed",
-            success=False,
-            error_message="Invalid current password",
-            **client_info
-        )
-
+    # Verify current password — counted, so a stolen token cannot be used to
+    # guess it without limit (429 once the account's budget is spent).
+    if not reauth_password(
+        db, current_user, password_data.current_password,
+        failed_action="password_change_failed", **client_info,
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Current password is incorrect"

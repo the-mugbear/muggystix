@@ -40,10 +40,13 @@ const att = (over: Record<string, unknown> = {}) => ({
   id: 9, filename: 'shot.png', content_type: 'image/png', size_bytes: 10,
   created_at: '2026-09-01T00:00:00Z', include_in_report: false, uploaded_by_id: 1, caption: null, ...over,
 });
-const thread = (attachment: Record<string, unknown> | null) => [{
-  id: 2, body: 'with a shot', status: 'open', author_id: 1, author_name: 'ana', parent_id: null,
-  created_at: '2026-08-01T00:00:00Z', attachments: attachment ? [attachment] : [],
-}];
+const thread = (attachment: Record<string, unknown> | null) => ({
+  items: [{
+    id: 2, body: 'with a shot', status: 'open', author_id: 1, author_name: 'ana', parent_id: null,
+    created_at: '2026-08-01T00:00:00Z', attachments: attachment ? [attachment] : [],
+  }],
+  total: 1,
+});
 
 const reportMarking = { canMark: () => true, captionMax: 2000 };
 /** The thread, with the page's read of the finding's images beside it. */

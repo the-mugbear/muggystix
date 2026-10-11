@@ -188,7 +188,9 @@ class FindingHost(Base):
     host_id = Column(
         Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False, index=True,
     )
-    port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="SET NULL"), nullable=True)
+    # Indexed (a4f8c2e6b0d1): deleting a port clears this by ``port_id``, which
+    # was a scan of every finding endpoint per deleted port.
+    port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="SET NULL"), nullable=True, index=True)
     # v2.323.0 — the NAMED endpoint on this host the finding applies to (the
     # stable identity: portal.example.com), inherited from the evidencing
     # vulnerability / plan entry.  The finding anchors to the name; the host

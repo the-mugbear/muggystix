@@ -18,7 +18,10 @@ vi.mock('../../services/api', () => ({
   deleteLLMProvider: vi.fn(),
   testLLMProvider: vi.fn(),
 }));
-const account = vi.hoisted(() => ({ role: 'admin' }));
+const account = vi.hoisted(() => ({ role: 'admin', projects: [] as Array<{ my_role?: string }> }));
+vi.mock('../../contexts/ProjectContext', () => ({
+  useProject: () => ({ currentProject: null, projects: account.projects }),
+}));
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ user: { id: 1, role: account.role }, hasPermission: (r: string) => r !== 'admin' || account.role === 'admin' }),
 }));
@@ -42,6 +45,7 @@ const CLEAR = 'Remove the stored API key';
 beforeEach(() => {
   vi.clearAllMocks();
   account.role = 'admin';
+  account.projects = [];
   mocked.listLLMProviders.mockResolvedValue([provider()]);
   mocked.listLLMProviderTypes.mockResolvedValue([{ value: 'openai', label: 'OpenAI' }]);
   mocked.updateLLMProvider.mockResolvedValue(provider());
@@ -95,11 +99,47 @@ describe('LLM providers — the list could not be read', () => {
 describe('LLM providers — every user manages their own', () => {
   it('shows the controls to an account that is not an administrator', async () => {
     account.role = 'member';
+    account.projects = [{ my_role: 'viewer' }, { my_role: 'analyst' }];
     render(<LLMSettings />);
     expect(await screen.findByText('Work OpenAI')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Add Provider/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Edit provider Work OpenAI' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Test connection to Work OpenAI' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete provider Work OpenAI' })).toBeInTheDocument();
+    expect(screen.queryByText(/needs the analyst role on a project/)).toBeNull();
+  });
+
+  // Owner, 2026-10-11: a provider is for drafting, a project analyst's action;
+  // the server refuses add / change / test for an account that writes nowhere.
+  it.each([
+    ['a viewer and an auditor', [{ my_role: 'viewer' }, { my_role: 'auditor' }]],
+    ['a member of no project', []],
+  ])('an account that is %s sees and may delete its providers, and is told once why that is all', async (_n, projects) => {
+    account.role = 'member';
+    account.projects = projects;
+    render(<LLMSettings />);
+    expect(await screen.findByText('Work OpenAI')).toBeInTheDocument();
+    expect(screen.getAllByText(/needs the analyst role on a project/)).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: /Add Provider/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Edit provider Work OpenAI' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Test connection to Work OpenAI' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Delete provider Work OpenAI' })).toBeInTheDocument();
+  });
+
+  it('with nothing configured, such an account is offered no "add your first"', async () => {
+    account.role = 'member';
+    account.projects = [{ my_role: 'viewer' }];
+    mocked.listLLMProviders.mockResolvedValue([]);
+    render(<LLMSettings />);
+    expect(await screen.findByText('No LLM providers configured yet.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Add/ })).toBeNull();
+  });
+
+  it('a project whose role is not known leaves it to the server', async () => {
+    account.role = 'member';
+    account.projects = [{}];
+    render(<LLMSettings />);
+    expect(await screen.findByRole('button', { name: /Add Provider/ })).toBeInTheDocument();
   });
 });
 

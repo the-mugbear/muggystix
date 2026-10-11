@@ -10,6 +10,7 @@ JWT-authenticated, project-scoped.  Agents cannot read this surface
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -125,9 +126,13 @@ class AgentSessionNotesResponse(BaseModel):
 
 
 class ResumeAgentSessionRequest(BaseModel):
+    # The same bound as a new session's key (``StartAssistRequest.ttl_hours``).
     ttl_hours: Optional[int] = Field(
-        None, ge=1,
-        description="TTL for the replacement key; omitted = deployment default, capped.",
+        None, ge=1, le=24,
+        description=(
+            "TTL for the replacement key in hours (1-24); omitted = the deployment default. "
+            "The key never outlives the session: it ends at `renewable_until` if that is sooner."
+        ),
     )
 
 
@@ -414,6 +419,13 @@ def resume_project_agent_session(
     db.commit()
 
     expires_at = key_expiry_for_agent_sessions(db, [session.id]).get(session.id)
+    # What the dialog prints as "Valid N h": the key's real life, which the
+    # session's deadline may have cut below the TTL that was asked for.
+    key_ttl_hours = resolve_ttl_hours(ttl_hours)
+    if expires_at is not None:
+        aware = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+        remaining = (aware - datetime.now(timezone.utc)).total_seconds() / 3600
+        key_ttl_hours = max(1, min(key_ttl_hours, math.ceil(remaining)))
     mcp_url = f"{resolve_base_url(request)}/mcp"
     return ResumeAgentSessionResponse(
         session_id=session.id,
@@ -426,7 +438,7 @@ def resume_project_agent_session(
             mcp_url, raw_key, project_name=project.name, agent_session_id=session.id,
         )],
         mcp_url=mcp_url,
-        key_ttl_hours=resolve_ttl_hours(ttl_hours),
+        key_ttl_hours=key_ttl_hours,
         key_expires_at=expires_at,
         renewable_until=session_renewal_deadline(session),
     )

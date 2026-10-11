@@ -4,7 +4,7 @@ Authentication and User Management Models
 Models for user accounts, roles, and session management for security intelligence platform.
 """
 
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, ForeignKey, JSON
+from sqlalchemy import BigInteger, Column, Integer, String, DateTime, Boolean, Text, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
@@ -66,6 +66,11 @@ class User(Base):
     totp_secret_encrypted = Column(Text, nullable=True)
     totp_enabled = Column(Boolean, nullable=False, default=False, server_default="false")
     totp_confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    # The RFC 6238 time step (unix time // 30) of the last code this account
+    # had accepted.  A code for that step or an earlier one is refused, so a
+    # code works once (``totp_service.accept_code``, the one writer).  Replay
+    # protection, not a limit: failed attempts are counted from the audit log.
+    totp_last_step = Column(BigInteger, nullable=True)
 
     # Audit fields
     created_at = Column(DateTime(timezone=True), server_default=func.now())

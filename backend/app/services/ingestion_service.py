@@ -680,11 +680,12 @@ def scan_file_paths(scan_id: int) -> List[Path]:
 
 
 def remove_scan_files(scan_id: int) -> int:
-    """Remove a deleted partial scan's files (review 2026-10-01 M4).  Call it
-    AFTER the delete has committed.  Never follows a link and never leaves the
-    screenshots root: the name is built from the integer id, and anything that
-    resolves elsewhere is left alone.  Returns how many entries were removed;
-    a failure is logged, not raised."""
+    """Remove a deleted scan's files (review 2026-10-01 M4).  It runs AFTER
+    the delete has committed and is not called by a delete path:
+    :func:`delete_scan_row` arranges it.  Never follows a link and never
+    leaves the screenshots root: the name is built from the integer id, and
+    anything that resolves elsewhere is left alone.  Returns how many entries
+    were removed; a failure is logged, not raised."""
     if not _real_id(scan_id):
         return 0
     root = (Path(settings.UPLOAD_DIR) / "web_screenshots").resolve()
@@ -700,8 +701,61 @@ def remove_scan_files(scan_id: int) -> int:
                 path.unlink()
                 removed += 1
         except OSError:
-            logger.warning("Could not remove %s of deleted partial scan %s", path, scan_id, exc_info=True)
+            logger.warning("Could not remove %s of deleted scan %s", path, scan_id, exc_info=True)
     return removed
+
+
+# Scans whose row a transaction has deleted and whose files go when — and only
+# when — that transaction commits.  On ``session.info`` with one pair of
+# module-level listeners (the outbox's pattern, ``webhook_dispatcher``): a
+# rollback of any kind forgets them, so a file is never removed for a scan
+# that is still there.
+_FILES_OF_DELETED_SCANS = "_files_of_deleted_scans"
+
+
+def delete_scan_row(db: Session, scan_id: int) -> None:
+    """THE statement that deletes a scan row — the last step of BOTH scan
+    deletes (``delete_partial_scan`` and ``DELETE /scans/{id}``).
+
+    The scan's owned children cascade and the nullable provenance pointers
+    are SET NULL by the foreign keys; a statement, so no child row is loaded.
+    The scan's files on disk (EyeWitness screenshots and reports,
+    ``scan_file_paths``) are removed once the caller's transaction COMMITS —
+    never before, never when it rolls back.  It lives here so no delete path
+    can forget it: the hand delete had no file step and left a wrongly
+    uploaded project's screenshots on disk (review 2026-10-10 H14)."""
+    from sqlalchemy import delete
+
+    from app.db import models
+
+    db.execute(
+        delete(models.Scan).where(models.Scan.id == scan_id)
+        .execution_options(synchronize_session=False)
+    )
+    if _real_id(scan_id):
+        db.info.setdefault(_FILES_OF_DELETED_SCANS, []).append(int(scan_id))
+
+
+def _remove_files_of_deleted_scans(session) -> None:
+    for scan_id in session.info.pop(_FILES_OF_DELETED_SCANS, ()):
+        try:
+            removed = remove_scan_files(scan_id)
+        except Exception:  # noqa: BLE001 — the delete is committed; never fail it here
+            logger.warning("Could not remove the files of deleted scan %s", scan_id, exc_info=True)
+            continue
+        if removed:
+            logger.info(
+                "Removed %d file entr%s of deleted scan %s", removed, "y" if removed == 1 else "ies", scan_id,
+            )
+
+
+def _keep_files_of_scans_not_deleted(session, *args) -> None:
+    session.info.pop(_FILES_OF_DELETED_SCANS, None)
+
+
+event.listen(Session, "after_commit", _remove_files_of_deleted_scans)
+event.listen(Session, "after_rollback", _keep_files_of_scans_not_deleted)
+event.listen(Session, "after_soft_rollback", _keep_files_of_scans_not_deleted)
 
 
 def delete_partial_scan(
@@ -750,9 +804,9 @@ def delete_partial_scan(
       the step a scan delete by hand runs too);
     * the scan — its history, sightings and web rows cascade.
 
-    Statements only (no rows loaded); the caller commits, then removes the
-    scan's files (``remove_scan_files``).  Returns the counts for the log
-    line.
+    Statements only (no rows loaded); the caller commits, and that commit
+    removes the scan's files (``delete_scan_row``).  Returns the counts for
+    the log line.
     """
     from sqlalchemy import delete, select
 
@@ -778,10 +832,7 @@ def delete_partial_scan(
     ports = delete_ports_scan_created(db, scan_id)
 
     names = dns_name_service.delete_scan_observations(db, scan_id)
-    db.execute(
-        delete(models.Scan).where(models.Scan.id == scan_id)
-        .execution_options(synchronize_session=False)
-    )
+    delete_scan_row(db, scan_id)
     return {
         "hosts": hosts, "ports": ports,
         "observations": released["observations"], "rehomed": released["rehomed"],
@@ -1627,8 +1678,8 @@ class IngestionService:
         self, db: Session, scan_id: int, *, why: str, lock_timeout_s: Optional[int] = None,
     ) -> bool:
         """Roll back whatever the failed attempt left pending, then delete its
-        committed partial scan and what only it created (``delete_partial_scan``),
-        and — once that is committed — the files it kept on disk.
+        committed partial scan and what only it created (``delete_partial_scan``);
+        the commit removes the files it kept on disk (``delete_scan_row``).
 
         Best-effort: a cleanup that fails is logged and must not replace the
         error that got us here — the scan stays named on the job row, so the
@@ -1649,13 +1700,12 @@ class IngestionService:
             return False
         finally:
             _import_lock.paused = was_paused
-        files = remove_scan_files(scan_id)
         logger.info(
             "Deleted partial scan %s (%s): %d host(s), %d port(s), %d scanner observation(s) "
             "that only it had created; %d row(s) a later scan had re-observed were kept and "
-            "moved to that scan; %d file entr%s removed",
+            "moved to that scan",
             scan_id, why, removed["hosts"], removed["ports"], removed["observations"],
-            removed.get("rehomed", 0), files, "y" if files == 1 else "ies",
+            removed.get("rehomed", 0),
         )
         return True
 
@@ -1804,7 +1854,10 @@ class IngestionService:
         # named on it is this attempt's too: one the in-process cleanup did
         # not reach (a failure after the parser returned).  Not done on a
         # stale write (above): that row's scan is its new owner's.
-        self._discard_dead_attempt_scan(db, job_id)
+        # ``only_if_failed``: the failure is committed, so an operator's retry
+        # and another worker's claim can land before this reads the pointer —
+        # which would then name the NEW attempt's live scan.
+        self._discard_dead_attempt_scan(db, job_id, only_if_failed=True)
         return True
 
     def _run_job(self, job_id: int, claimed_at: datetime) -> None:
@@ -1893,6 +1946,11 @@ class IngestionService:
                         # Kept and linked, so no longer a leftover to delete
                         # if the operator re-queues the job (R1).
                         job.in_progress_scan_id = None
+                        # A kept scan is a scan like any other: it carries who
+                        # sent the file, its batch and its SHA-256.  Without
+                        # them the duplicate guard does not know the file is
+                        # in the inventory and takes it a second time.
+                        carry_upload_identity(db, job)
                         job.message = (
                             f"Cancelled after the import had written scan #{_scan_id}: "
                             "its data is in the inventory. Delete that scan to undo it."

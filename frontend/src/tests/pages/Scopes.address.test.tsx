@@ -42,7 +42,10 @@ vi.mock('../../contexts/ProjectContext', () => ({
 }));
 const toastMock = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() };
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
-vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, vi.fn()] }));
+const confirmMock = vi.fn();
+vi.mock('../../hooks/useConfirm', () => ({
+  useConfirm: () => [null, (...a: unknown[]) => confirmMock(...a)],
+}));
 vi.mock('../../hooks/useMyAssistSessions', () => ({
   useMyAssistSessions: () => ({ sessions: [], loading: false, failed: false, refresh: vi.fn() }),
 }));
@@ -56,6 +59,7 @@ vi.mock('../../components/SubnetLabelManager', () => ({
 }));
 
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
+import * as api from '../../services/api';
 import Scopes from '../../pages/Scopes';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
@@ -238,5 +242,163 @@ describe('Scope — the selection for "Apply label…" across pages', () => {
     expect(screen.queryByText(/subnets? selected/)).toBeNull();
     expect(screen.queryByRole('button', { name: /Apply label…/ })).toBeNull();
     expect(header()).toHaveAttribute('aria-checked', 'false');
+  });
+});
+
+// Review 2026-10-10, R9 — four ways the selection reached a row the reader
+// could not see, or a request the route refuses.
+describe('Scope — the selection never holds what the search on screen does not list', () => {
+  const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+  const selectedLine = () => screen.queryByText(/subnets? selected/);
+  const header = () => screen.getByLabelText('Select all subnets on this page for bulk label apply');
+  const searchBox = () => screen.getByLabelText('Search subnets by CIDR or description');
+  const rows = () => screen.getByTestId('scope-subnet-rows');
+
+  // The selection of a search the reader left was only HIDDEN: typing the
+  // same search again brought it back, with whatever had happened to its rows
+  // meanwhile.
+  it('a search the reader comes back to starts with nothing ticked', async () => {
+    open('/scopes');
+    await screen.findByText('1–50 of 120');
+    tick(all[1].cidr);
+    expect(selectedLine()).toHaveTextContent(/^1 subnet selected$/);
+
+    fireEvent.change(searchBox(), { target: { value: 'lab' } });
+    await screen.findByText('1–50 of 60');
+    expect(selectedLine()).toBeNull();
+
+    fireEvent.change(searchBox(), { target: { value: '' } });
+    await screen.findByText('1–50 of 120');
+    await screen.findByLabelText(`Select ${all[1].cidr} for bulk label apply`);
+    expect(selectedLine()).toBeNull();
+    expect(screen.getByLabelText(`Select ${all[1].cidr} for bulk label apply`)).toHaveAttribute('aria-checked', 'false');
+  });
+
+  // A guard, not a regression test of its own (it passes before the change
+  // too): a deleted id in "Apply label" is a 404 for the whole request.  The
+  // way one used to survive — the delete answering under another search, the
+  // hidden selection returning later — is the test above.
+  it('a deleted subnet is ticked for nothing: "Apply label" does not send its id', async () => {
+    confirmMock.mockResolvedValue(true);
+    let deleted!: () => void;
+    mocked.deleteSubnet.mockImplementation(() => new Promise<void>((resolve) => { deleted = resolve; }));
+    open('/scopes');
+    await screen.findByText('1–50 of 120');
+    tick(all[1].cidr);
+    tick(all[3].cidr);
+    expect(selectedLine()).toHaveTextContent(/^2 subnets selected$/);
+
+    const actions = screen.getByRole('button', { name: `Actions for ${all[1].cidr}` });
+    actions.focus();
+    fireEvent.keyDown(actions, { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Delete/ }));
+    await waitFor(() => expect(mocked.deleteSubnet).toHaveBeenCalledWith(1, all[1].id));
+
+    await act(async () => { deleted(); });
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith(`Deleted ${all[1].cidr}.`));
+    await waitFor(() => expect(selectedLine()).toHaveTextContent(/^1 subnet selected$/));
+
+    bulkApplyMock.mockResolvedValue({});
+    const apply = screen.getByRole('button', { name: /Apply label…/ });
+    apply.focus();
+    fireEvent.keyDown(apply, { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'PCI' }));
+    await waitFor(() => expect(bulkApplyMock).toHaveBeenCalledTimes(1));
+    expect(bulkApplyMock.mock.calls[0][2]).toEqual([all[3].id]);
+  });
+
+  // The search reads the address and the description: an entry saved with
+  // another description may have left it, and stayed ticked on no page.
+  it('saving a ticked entry under a search unticks it, and says so', async () => {
+    mocked.updateSubnet.mockResolvedValue({});
+    open('/scopes?subnet_q=lab');
+    await screen.findByText('1–50 of 60');
+    tick(labs[0].cidr);
+    tick(labs[1].cidr);
+    expect(selectedLine()).toHaveTextContent(/^2 subnets selected$/);
+
+    fireEvent.click(screen.getByRole('button', { name: `Edit subnet ${labs[0].cidr}` }));
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'office' } });
+    fireEvent.click(screen.getByRole('button', { name: `Save changes to ${labs[0].cidr}` }));
+    await waitFor(() => expect(mocked.updateSubnet).toHaveBeenCalledWith(
+      1, labs[0].id, { cidr: labs[0].cidr, description: 'office', site: '' },
+    ));
+    await waitFor(() => expect(selectedLine()).toHaveTextContent(/^1 subnet selected$/));
+    expect(toastMock.success).toHaveBeenCalledWith(
+      'Entry updated. It is no longer ticked — it may not match the search any more.',
+    );
+  });
+
+  it('saving a ticked entry with no search leaves it ticked: it cannot leave the list', async () => {
+    mocked.updateSubnet.mockResolvedValue({});
+    open('/scopes');
+    await screen.findByText('1–50 of 120');
+    tick(all[0].cidr);
+    fireEvent.click(screen.getByRole('button', { name: `Edit subnet ${all[0].cidr}` }));
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'moved' } });
+    fireEvent.click(screen.getByRole('button', { name: `Save changes to ${all[0].cidr}` }));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Entry updated.'));
+    expect(selectedLine()).toHaveTextContent(/^1 subnet selected$/);
+  });
+
+  // The route takes at most 1,000 ids and refuses a longer list whole.
+  it('stops at the 1,000 subnets one "Apply label" takes, says so, and sends no more', async () => {
+    const many = Array.from({ length: 1030 }, (_, i) => ({
+      id: i + 1, cidr: `10.${Math.floor(i / 250)}.${i % 250}.0/24`, description: null,
+      site: null, host_count: 0, labels: [], created_at: '2026-09-22T00:00:00Z',
+    }));
+    scopeMock.mockImplementation(async (_projectId: number, { subnetsSkip, subnetsLimit }: Asked) => (
+      { id: 5, subnets_total: many.length, subnets: many.slice(subnetsSkip, subnetsSkip + subnetsLimit) }
+    ));
+    open('/scopes');
+    // Twenty pages of 50, each ticked whole by its header box.
+    for (let page = 0; page < 20; page += 1) {
+      await screen.findByLabelText(`Select ${many[page * 50].cidr} for bulk label apply`);
+      fireEvent.click(header());
+      fireEvent.click(next());
+    }
+    await screen.findByLabelText(`Select ${many[1000].cidr} for bulk label apply`);
+    expect(selectedLine()).toHaveTextContent('1,000 subnets selected · 1,000 not on this page');
+    expect(selectedLine()).toHaveTextContent('the most one “Apply label” takes (1,000)');
+
+    // Nothing more can be ticked — by its own box or the header's.
+    const box = screen.getByLabelText(`Select ${many[1000].cidr} for bulk label apply`);
+    expect(box).toBeDisabled();
+    expect(header()).toBeDisabled();
+    fireEvent.click(box);
+    fireEvent.click(header());
+    expect(selectedLine()).toHaveTextContent(/^1,000 subnets selected/);
+
+    bulkApplyMock.mockResolvedValue({});
+    const apply = screen.getByRole('button', { name: /Apply label…/ });
+    apply.focus();
+    fireEvent.keyDown(apply, { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'PCI' }));
+    await waitFor(() => expect(bulkApplyMock).toHaveBeenCalledTimes(1));
+    expect((bulkApplyMock.mock.calls[0][2] as number[]).length).toBe(1000);
+  }, 60_000);
+
+  // `pointer-events-none` stopped the mouse; Tab and Space still reached every
+  // checkbox of the page the reader had left.
+  it('the rows of the page before are inert while the next loads, and take no tick', async () => {
+    open('/scopes');
+    await screen.findByText('1–50 of 120');
+    expect(rows()).not.toHaveAttribute('inert');
+    let answer!: () => void;
+    scopeMock.mockImplementationOnce((projectId: number, asked: Asked) => (
+      new Promise((resolve) => { answer = () => resolve(serve(projectId, asked)); })
+    ));
+    fireEvent.click(next());
+    await waitFor(() => expect(rows()).toHaveAttribute('inert'));
+    expect(rows().className).not.toContain('pointer-events-none');
+    // Still the first page's rows.
+    tick(all[0].cidr);
+    fireEvent.click(header());
+    expect(selectedLine()).toBeNull();
+
+    await act(async () => { answer(); });
+    await waitFor(() => expect(row(50)).toBeInTheDocument());
+    expect(rows()).not.toHaveAttribute('inert');
+    expect(selectedLine()).toBeNull();
   });
 });

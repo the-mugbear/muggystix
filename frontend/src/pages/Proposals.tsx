@@ -9,7 +9,7 @@
  * measures (pending by kind — each opens its list), then the list.
  */
 import React, { useEffect, useRef } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, X } from 'lucide-react';
 
@@ -29,7 +29,7 @@ import { formatApiError } from '../utils/apiErrors';
 import { isPageShortcutEvent } from '../utils/keyboard';
 import { FilterChips } from '../components/operations/QueueParts';
 import PostureSection from '../components/posture/PostureSection';
-import ProposalItem, { REJECT_NOTE_PLACEHOLDER } from '../components/proposals/ProposalItem';
+import ProposalItem, { describeProposal, REJECT_NOTE_PLACEHOLDER } from '../components/proposals/ProposalItem';
 import { Button } from '../components/ui/button';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
@@ -38,6 +38,10 @@ import {
 } from '../components/ui/select';
 
 const PAGE = 50;
+/** How many of the proposals a bulk accept left pending are named in its
+ *  notice (a batch is up to 200; the rest are counted, and every one is
+ *  marked on its own row). */
+const LEFT_PENDING_SHOWN = 10;
 
 const KINDS: Array<{ kind: ProposalKind; label: string; info: string }> = [
   { kind: 'finding_text', label: 'Report text', info: 'A finding’s description, impact, recommendation, steps, references or CVSS vector.' },
@@ -143,10 +147,18 @@ const Proposals: React.FC = () => {
     mutationFn: (v: { ids: number[]; action: 'accept' | 'reject'; note?: string }) =>
       decideProposals(projectId, v.ids, v.action, v.note),
     onSuccess: (res, v) => {
+      // Left pending by rule (a section rewritten after its draft): said in
+      // the notice above the list, which stays while they wait; here only
+      // how many.
+      const left = res.skipped.length
+        ? ` ${res.skipped.length} left pending to decide one at a time.`
+        : '';
       if (res.failed.length) {
         // 5.317.2 — "left pending" was wrong for one already decided or
         // superseded meanwhile; the server's reason says what happened.
-        toast.warning(`${res.decided.length} decided; ${res.failed.length} not (${String(res.failed[0].detail)}).`);
+        toast.warning(`${res.decided.length} decided; ${res.failed.length} not (${String(res.failed[0].detail)}).${left}`);
+      } else if (left) {
+        toast.warning(`${res.decided.length} accepted.${left}`);
       } else {
         toast.success(`${res.decided.length} ${v.action === 'accept' ? 'accepted' : 'rejected'}.`);
       }
@@ -156,6 +168,13 @@ const Proposals: React.FC = () => {
     onError: (err) => toast.error(formatApiError(err, 'Could not decide them.')),
   });
   const bulkBusy = bulkDecide.isPending;
+  // What the last "Accept all shown" left for a person to decide singly —
+  // for as long as each is still pending on screen (decided there, or on its
+  // finding, it leaves the notice).
+  const leftForOneAtATime = (bulkDecide.data?.skipped ?? []).flatMap((skip) => {
+    const proposal = items?.find((p) => p.id === skip.id && p.status === 'pending');
+    return proposal ? [{ proposal, detail: skip.detail }] : [];
+  });
 
   const more = async () => {
     try {
@@ -235,7 +254,7 @@ const Proposals: React.FC = () => {
       body: action === 'accept'
         ? (
           <div className="space-y-xs">
-            <p>Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding), whose target has changed, or that is one of several drafts of the same section (choose those on the finding) is not applied, and the reason is shown.</p>
+            <p>Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding), whose target has changed, or that is one of several drafts of the same section (choose those on the finding) is not applied, and the reason is shown. A draft of a section that was rewritten after the draft was made is left pending too: decide those one at a time.</p>
             {limitNote && <p>{limitNote}</p>}
           </div>
         )
@@ -342,6 +361,33 @@ const Proposals: React.FC = () => {
           />
         )}
 
+        {leftForOneAtATime.length > 0 && (
+          // The bulk accept's own answer: which proposals it did not apply,
+          // and why (the server's sentence).  Each is listed by what it
+          // would replace and opens where it is reviewed against that text.
+          <div role="status" data-testid="bulk-left-pending"
+            className="mb-sm min-w-0 rounded-control border border-warning/40 bg-warning/10 px-sm py-xs text-caption">
+            <p className="break-words">
+              <strong>{leftForOneAtATime.length} not accepted.</strong> {leftForOneAtATime[0].detail}
+            </p>
+            <ul className="mt-xxs space-y-xxs">
+              {leftForOneAtATime.slice(0, LEFT_PENDING_SHOWN).map(({ proposal }) => {
+                const to = proposalDestination(proposal);
+                const label = describeProposal(proposal);
+                return (
+                  <li key={proposal.id} className="min-w-0 break-words">
+                    {to ? <Link to={to} className="underline underline-offset-2">{label}</Link> : label}
+                  </li>
+                );
+              })}
+            </ul>
+            {leftForOneAtATime.length > LEFT_PENDING_SHOWN && (
+              <p className="mt-xxs text-muted-foreground">
+                and {leftForOneAtATime.length - LEFT_PENDING_SHOWN} more — each is marked in the list below.
+              </p>
+            )}
+          </div>
+        )}
         {error && items !== null && (
           // A failed re-read keeps the rows it could not refresh.
           <p role="alert" className="mb-xs break-words text-caption text-destructive">{error} The rows below are from the last successful load.</p>

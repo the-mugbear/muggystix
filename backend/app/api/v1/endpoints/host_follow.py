@@ -27,6 +27,10 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
     "/{host_id:int}/follow",
     response_model=HostFollowInfo,
     summary="Follow a host (set review status)",
+    # Setting a review status is a write to the project (it moves the
+    # reviewed count and tells teammates the host is taken): analyst and up,
+    # as on the agents' door (owner, 2026-10-11).  Reading it stays everyone's.
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
 def follow_host(
     host_id: int,
@@ -84,6 +88,7 @@ def set_review_note(
     "/{host_id:int}/follow",
     status_code=204,
     summary="Unfollow a host",
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
 def unfollow_host(
     host_id: int,

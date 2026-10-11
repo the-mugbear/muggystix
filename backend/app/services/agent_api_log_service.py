@@ -165,6 +165,52 @@ def is_agent_audited_path(path: str) -> bool:
 # Methods whose body we capture (mutations) vs skip (reads).
 _BODY_CAPTURE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
+# Routes whose request CONTENT is not kept in the call log: the remediation
+# surface.  Its bodies and filters name people (a contact's name and address,
+# a team, dates), remediation is read from AUDITOR up and exists only where
+# tracking is switched on — while the call log is every project member's (a
+# viewer reads a session's calls).  The log still says the call happened: the
+# path template, the status, the size, the hosts it referenced.  What was
+# written has its own record, shown at remediation's own floor (the host's
+# remediation timeline).  Withheld when the row is WRITTEN, so no reader of
+# the table (the session page, a diagnostics bundle, a query by hand) has it;
+# ``withhold_private_content`` is applied on read too, for rows written before
+# this rule existed.
+PRIVATE_CONTENT_PREFIXES = (AGENT_API_PREFIX + "remediation",)
+NOT_RECORDED = "(not recorded)"
+
+
+def keeps_no_content(path: Optional[str]) -> bool:
+    """Whether a call to ``path`` is logged without its body and its query values."""
+    return any(
+        path == prefix or path.startswith(prefix + "/")
+        for prefix in PRIVATE_CONTENT_PREFIXES
+    ) if path else False
+
+
+def withhold_private_content(
+    path: Optional[str], body_summary: Any, query_params: Optional[dict],
+) -> Tuple[Any, Optional[dict]]:
+    """``(body_summary, query_params)`` as the call log keeps them for
+    ``path``: unchanged for an ordinary route; for a ``keeps_no_content`` one
+    the body is reduced to a marker with its size and each query value to
+    ``NOT_RECORDED`` (the parameter names stay — they say what was asked)."""
+    if not keeps_no_content(path):
+        return body_summary, query_params
+    if body_summary is not None and not (
+        isinstance(body_summary, dict) and body_summary.get("_not_recorded")
+    ):
+        size = body_summary.get("_size") if isinstance(body_summary, dict) else None
+        if size is None:
+            try:
+                size = len(json.dumps(body_summary))
+            except (TypeError, ValueError):
+                size = None
+        body_summary = {"_not_recorded": True, "_size": size}
+    if query_params:
+        query_params = {name: NOT_RECORDED for name in query_params}
+    return body_summary, query_params
+
 # How fresh ``agent_sessions.last_activity_at`` has to be before a call skips
 # rewriting it.  Same window as ``deps._AGENT_ACTIVITY_DEBOUNCE_SECONDS``: the
 # value answers "is this agent still alive", which does not need per-call
@@ -653,6 +699,15 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
             host_ids, target_ips = _collect_referenced_ids(
                 path_params, query_params, body_for_id_scan,
             )
+            # Which hosts the call was about is read first; the content of a
+            # remediation call is then not kept (see PRIVATE_CONTENT_PREFIXES).
+            if keeps_no_content(request.url.path):
+                if request.method in _BODY_CAPTURE_METHODS and body_bytes and skip_reason is None:
+                    body_summary = {"_not_recorded": True, "_size": len(body_bytes)}
+                body_summary, query_params = withhold_private_content(
+                    request.url.path, body_summary, query_params,
+                )
+                target_ips = []
 
             # Response size (Content-Length header if present; otherwise
             # we leave it null rather than buffer the streaming body).

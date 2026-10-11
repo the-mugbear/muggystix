@@ -1324,7 +1324,10 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
           </Badge>
           {/* §6/§9 — one state-aware review control: primary action for the
               common path + an overflow for the off-path transitions
-              (mark-reviewed-direct, clear status). */}
+              (mark-reviewed-direct, clear status).  Setting a review status
+              is a write (analyst and up): below that the badge above is the
+              whole of it — the controls are hidden, not disabled. */}
+          {canManageEntries && (<>
           {followStatus === 'reviewed' ? (
             <Button size="sm" variant="outline" disabled={followLoading}
               onClick={() => updateFollow('in_review')}>
@@ -1361,6 +1364,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
               Clear status
             </Button>
           )}
+          </>)}
         </div>
       </div>
 

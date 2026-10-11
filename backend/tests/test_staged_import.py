@@ -319,6 +319,42 @@ def test_staged_jobs_expire_and_their_files_go(client, db_session, test_project)
     assert _job(db_session, fresh).status == "staged"
 
 
+def test_every_ingestion_job_status_write_is_the_transition_layers(client, db_session, test_project, monkeypatch):
+    """The expiry sweep was the one place that set ``job.status`` itself
+    (review 2026-10-10).  It asks the transition layer now — which moves a
+    job only from ``staged`` — and no module that handles import jobs assigns
+    a status of its own."""
+    import re
+
+    import app as app_package
+    from app.services import ingestion_service as module
+
+    old = _upload(client, test_project, HOST_PORT_TEXT, "old.txt", "text/plain", stage=True).json()["job_id"]
+    old_job = _job(db_session, old)
+    old_job.created_at = datetime.now(timezone.utc) - timedelta(hours=30)
+    db_session.commit()
+    asked = []
+    cancel = module._transitions.cancel
+
+    def spy(db, job_id, **kwargs):
+        asked.append((job_id, kwargs.get("allowed_from"), kwargs.get("to_status")))
+        return cancel(db, job_id, **kwargs)
+
+    monkeypatch.setattr(module._transitions, "cancel", spy)
+    at = datetime.now(timezone.utc).replace(microsecond=0)
+    assert expire_staged_jobs(db_session, now=at) == 1
+    assert asked == [(old, ("staged",), "failed")]
+    db_session.refresh(old_job)
+    assert old_job.status == "failed" and old_job.completed_at == at and old_job.file_removed_at == at
+
+    root = Path(app_package.__file__).parent
+    direct = re.compile(r"\.status\s*=(?!=)")
+    for rel in ("services/ingestion_service.py", "services/staged_import_service.py", "worker.py",
+                "worker_loop.py", "api/v1/endpoints/upload.py"):
+        source = (root / rel).read_text(encoding="utf-8")
+        assert not direct.search(source), f"{rel} sets a job's status itself"
+
+
 # --- v2.368.0 — staged transitions are locked; a staged file is a duplicate ---
 # Code review findings 2 and 3. Every test below was run against the pre-fix
 # code and fails there.

@@ -495,9 +495,10 @@ class ReportGenerator:
     def _findings_for_report_ids(self, host_ids: List[int]) -> List[Dict[str, Any]]:
         """Findings affecting ``host_ids``, severity-ordered — the triaged record
         that rolls up across hosts (note promotions, scanner promotions,
-        test results).  The comprehensive JSON's ``findings`` and the
-        drafter's input (``report_draft_service``), so both carry the
-        analyst's conclusions, not just raw scan data."""
+        test results).  The comprehensive JSON's ``findings``, so the download
+        carries the analyst's conclusions, not just raw scan data.  (The AI
+        summary of a client report is NOT built from this: it takes that
+        report's own dataset, ``report_draft_service.build_context``.)"""
         if not host_ids:
             return []
         host_id_set = set(host_ids)
@@ -533,8 +534,7 @@ class ReportGenerator:
                 ],
                 "vuln_id": f.vuln_id,
                 # The note thread this finding was promoted from — its image
-                # attachments are the finding's visual evidence.  Just the int
-                # (the drafter resolves it to image captions).
+                # attachments are the finding's visual evidence.  Just the int.
                 "evidence_annotation_id": f.evidence_annotation_id,
                 # The finding's own comment/evidence thread (repro steps,
                 # rationale, discussion the analyst added while refining it).

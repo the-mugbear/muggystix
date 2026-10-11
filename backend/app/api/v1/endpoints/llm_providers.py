@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models_auth import User
 from app.db.models_llm import LLMProvider, LLMProviderType
-from app.api.deps import get_current_user
+from app.api.deps import can_write_in_some_project, get_current_user
 from app.services.llm_provider_service import (
     LLMProviderService, test_connection, chat_completion,
 )
@@ -30,6 +30,32 @@ from app.services.prompt_sanitizer import sanitize_for_llm
 logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+#: Why an account that writes nowhere is refused (owner, 2026-10-11).
+PROVIDER_NEEDS_A_WRITER = (
+    "An LLM provider is used to draft report text, and drafting needs the analyst "
+    "role on a project. This account is not an analyst or administrator of any project, "
+    "so it cannot add, change, test or use a provider. It can still list and delete its own."
+)
+
+
+def require_drafting_account(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> User:
+    """Adding, changing, testing or using a provider is for an account that
+    can write in at least one project (``deps.can_write_in_some_project``).
+
+    Providers stay per-user and self-service — this is NOT the global admin
+    role.  But a provider's only use is drafting, a project analyst's action,
+    and each of these calls makes the server send an HTTP request to an
+    address the caller chose (an Ollama server may legitimately sit on a
+    private network), so an account that could never draft does not get to
+    make them.  Listing and deleting one's own providers stays open: someone
+    whose role was lowered can still remove theirs."""
+    if not can_write_in_some_project(db, current_user):
+        raise HTTPException(status_code=403, detail=PROVIDER_NEEDS_A_WRITER)
+    return current_user
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +145,7 @@ def list_llm_providers(
     response_model=LLMProviderResponse,
     status_code=201,
     summary="Add a new LLM provider configuration",
+    dependencies=[Depends(require_drafting_account)],
 )
 def create_llm_provider(
     body: LLMProviderCreate,
@@ -158,6 +185,7 @@ def create_llm_provider(
 @router.patch(
     "/{provider_id}",
     response_model=LLMProviderResponse,
+    dependencies=[Depends(require_drafting_account)],
 )
 def update_llm_provider(
     body: LLMProviderUpdate,
@@ -219,6 +247,7 @@ def delete_llm_provider(
     "/{provider_id}/test",
     response_model=TestConnectionResponse,
     summary="Verify credentials / reachability for a configured provider",
+    dependencies=[Depends(require_drafting_account)],
 )
 def test_llm_provider(
     provider_id: int = Path(..., gt=0),
@@ -267,6 +296,7 @@ class CompletionResponse(BaseModel):
     "/{provider_id}/complete",
     response_model=CompletionResponse,
     summary="Send a chat completion to a configured provider",
+    dependencies=[Depends(require_drafting_account)],
 )
 def complete(
     body: CompletionRequest,

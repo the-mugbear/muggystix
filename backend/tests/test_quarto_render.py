@@ -189,8 +189,22 @@ HOSTILE = (
     "$\\href{javascript:alert(14)}{VALUELINK}$ \\(a\\) \\[b\\] "
     '::: {.bs-code key="planted.secret"} | pipe'
 )
+# A `---` … `---` block in written text (review 2026-10-10 H7).  pandoc's gfm
+# reader took one — at the start of a field or after a blank line — as the
+# document's YAML metadata: the lines were silently missing from the report,
+# and a block that is not valid YAML failed the whole render.  HOSTILE_MD
+# opens with the valid one (so every field it fills STARTS with it) and holds
+# both again mid-text; `HOSTILE_YAML_MALFORMED` also opens the first
+# finding's recommendation, which every shipped template prints.
+HOSTILE_YAML_VALID = "---\nAffected: YAMLVALIDMARK all domain controllers\ntitle: YAMLTITLEMARK\n---\n\n"
+HOSTILE_YAML_MALFORMED = "---\nscope: [YAMLBADMARK unclosed\n  - : :\n---\n\n"
 HOSTILE_MD = (
-    "{{< env HOME >}}\n\n"
+    HOSTILE_YAML_VALID
+    + "{{< env HOME >}}\n\n"
+    "Text before a block.\n\n"
+    + HOSTILE_YAML_MALFORMED
+    + HOSTILE_YAML_VALID.replace("YAMLVALIDMARK", "YAMLMIDMARK")
+    + "{{< env HOME >}}\n\n"
     "{{< include /etc/passwd >}}\n\n"
     "<script>alert('md')</script>\n\n"
     "![secret](/etc/passwd)\n\n"
@@ -546,8 +560,9 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
     data["findings"][0]["title"] = HOSTILE
     data["findings"][0]["description"] = HOSTILE_MD
     # Every template prints a recommendation; not every one the description
-    # or the executive summary.
-    data["findings"][0]["recommendation"] = HOSTILE_MD
+    # or the executive summary.  This one OPENS with the malformed block (the
+    # description and the summary open with the valid one).
+    data["findings"][0]["recommendation"] = HOSTILE_YAML_MALFORMED + HOSTILE_MD
     data["executive_summary"] = HOSTILE_MD
     # v2.441.0 — a scope over the cutoff prints a per-site table and a file
     # name: a site is typed by a person, so it is hostile text too.
@@ -617,6 +632,14 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
         docx_parts = "".join(
             z.read(n).decode("utf-8", errors="replace") for n in z.namelist() if n.endswith((".xml", ".rels"))
         )
+
+    # --- a `---` block in written text (H7) -----------------------------------
+    # Its lines are printed — leading, mid-text, valid YAML or not — and it
+    # set nothing: the page's title is still the report's.
+    for text in (html, docx):
+        for marker in ("YAMLVALIDMARK", "YAMLMIDMARK", "YAMLBADMARK", "YAMLTITLEMARK"):
+            assert marker in text, marker
+    assert "YAMLTITLEMARK" not in re.search(r"<title>(.*?)</title>", html, re.S).group(1)
 
     # --- math (S1) -----------------------------------------------------------
     # Nothing became a formula, and nothing loads a math library: checked over
@@ -773,9 +796,10 @@ def test_a_value_that_starts_with_four_spaces_is_a_paragraph_not_a_code_block(tm
 def test_the_reader_and_the_filter_both_refuse_math():
     """The filter's two layers, pinned in its source: the reader's math
     extensions are off (the names are pandoc's — ``--list-extensions=gfm``),
-    and ``clean()`` has a Math handler."""
+    and ``clean()`` has a Math handler.  The reader also takes no metadata
+    block from written text (H7)."""
     source = quarto_render.FIELDS_FILTER.read_text(encoding="utf-8")
-    assert 'local READER = "gfm-raw_html-tex_math_dollars-tex_math_gfm"' in source
+    assert 'local READER = "gfm-raw_html-tex_math_dollars-tex_math_gfm-yaml_metadata_block"' in source
     assert "pandoc.read(text, READER)" in source and source.count("pandoc.read(") == 1
     assert "Math = math_source," in source
     assert quarto_render._FORMAT_ARGS["html"] == ("-M", "html-math-method:plain")

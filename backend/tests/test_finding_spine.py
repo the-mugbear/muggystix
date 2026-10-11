@@ -149,8 +149,59 @@ def test_finding_comment_thread_create_list_and_threading(client, test_project):
 
     listing = client.get(base)
     assert listing.status_code == 200, listing.text
-    bodies = [n["body"] for n in listing.json()]
-    assert bodies == ["Confirmed on DC01 — screenshot attached", "Repro: smbclient -L //10.0.0.5"]
+    # A page of the thread, newest first, with the thread's size.
+    assert listing.json()["total"] == 2
+    bodies = [n["body"] for n in listing.json()["items"]]
+    assert bodies == ["Repro: smbclient -L //10.0.0.5", "Confirmed on DC01 — screenshot attached"]
+
+
+def test_every_comment_of_a_long_thread_can_be_reached(client, db_session, test_project, test_user):
+    """Review 2026-10-10 H9: the read was the OLDEST 100 with no offset, so the
+    101st comment saved, notified and never appeared — for its author too.
+    The thread is longer than both the default page and the largest one."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.db.models import Annotation
+
+    fid = client.post(
+        f"/api/v1/projects/{test_project.id}/findings",
+        json={"title": "A much discussed finding", "severity": "high"},
+    ).json()["id"]
+    base = f"/api/v1/projects/{test_project.id}/findings/{fid}/notes"
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    # Pairs share a timestamp: the order within a pair is the id's.
+    db_session.add_all([
+        Annotation(finding_id=fid, user_id=test_user.id, body=f"comment {i}",
+                   created_at=start + timedelta(minutes=i // 2))
+        for i in range(320)
+    ])
+    db_session.commit()
+
+    # Someone posts: it is in the first read the page makes, at the top.
+    posted = client.post(base, json={"body": "the newest comment"}).json()
+    first = client.get(base).json()
+    assert first["total"] == 321
+    assert len(first["items"]) == 100
+    assert first["items"][0]["id"] == posted["id"]
+
+    # Walking back reaches every comment exactly once, in one order.
+    seen = []
+    offset = 0
+    while True:
+        page = client.get(base, params={"limit": 300, "offset": offset}).json()
+        assert page["total"] == 321
+        if not page["items"]:
+            break
+        seen += [n["id"] for n in page["items"]]
+        offset += len(page["items"])
+    assert len(seen) == len(set(seen)) == 321
+    expected = [
+        i for (i,) in db_session.query(Annotation.id).filter(Annotation.finding_id == fid)
+        .order_by(Annotation.created_at.desc(), Annotation.id.desc())
+    ]
+    assert seen == expected
+    assert client.get(base, params={"limit": 301}).status_code == 422
+    assert client.get(base, params={"offset": -1}).status_code == 422
 
 
 def test_finding_comment_cross_finding_threading_rejected(client, test_project):

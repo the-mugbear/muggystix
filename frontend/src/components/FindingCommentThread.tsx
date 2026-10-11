@@ -6,7 +6,7 @@
  * screenshots paste or upload straight onto a comment and ride into the report.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ImagePlus, Loader2, Send, CornerDownRight, Pencil, RefreshCw, Trash2, X } from 'lucide-react';
 
 import {
@@ -26,8 +26,9 @@ import { Button } from './ui/button';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useToast } from '../contexts/ToastContext';
+import { useListQuery } from '../hooks/useListQuery';
 import { useProjectId } from '../hooks/useProjectId';
-import { invalidateReads, queryErrorText } from '../lib/query';
+import { invalidateReads } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { announceMentionOutcome } from '../utils/mentions';
 import { safeFallback } from '../utils/uiStyles';
@@ -44,7 +45,29 @@ interface FindingCommentThreadProps {
   reportMarking?: ReportMarking;
 }
 
-const notesKeyOf = (projectId: number, findingId: number) => ['getFindingNotes', projectId, findingId] as const;
+/** Comments per read: the newest to begin with, and per "Show earlier comments". */
+export const THREAD_PAGE = 100;
+
+/**
+ * The finding's thread, the newest comments first loaded and the earlier ones
+ * a "Show earlier comments" at a time (`useListQuery`).  A conversation is
+ * read as one run — a reply quotes the comment above it, a notification links
+ * to one comment (`#note-<id>`), and what the reader just posted belongs at
+ * the end of what is on screen — so it grows in place rather than being cut
+ * into numbered pages.  The server's `offset` counts from the newest, so the
+ * first read always holds a comment just posted.
+ */
+function useFindingThread(findingId: number, { enabled = true }: { enabled?: boolean } = {}) {
+  const projectId = useProjectId();
+  return useListQuery<Annotation>(
+    'getFindingNotes',
+    ({ offset, limit, signal }) => getFindingNotes(projectId, findingId, { offset, limit }, signal),
+    [projectId, findingId],
+    // A comment posted while the reader walks back shifts every offset by
+    // one: the row handed out twice is dropped.
+    { pageSize: THREAD_PAGE, dedupeBy: (note) => note.id, errorMessage: "Comments couldn't load.", enabled },
+  );
+}
 
 /**
  * How many comments the finding's thread holds — for where the page shows it
@@ -53,17 +76,12 @@ const notesKeyOf = (projectId: number, findingId: number) => ['getFindingNotes',
  * It reads the thread's own query and asks for nothing itself
  * (`enabled: false`): the thread, on the same page, is the reader that
  * fetches, so the count is the thread's number at every moment — after a
- * post, a delete, a failed re-read — and costs no request.
+ * post, a delete, a failed re-read — and costs no request.  It is the
+ * server's count of the whole thread, not of the comments loaded.
  */
 export function useFindingCommentCount(findingId: number): number | null {
-  const projectId = useProjectId();
-  const { data } = useQuery({
-    queryKey: notesKeyOf(projectId, findingId),
-    queryFn: ({ signal }) => getFindingNotes(projectId, findingId, signal),
-    enabled: false,
-    select: (notes) => notes.length,
-  });
-  return data ?? null;
+  const thread = useFindingThread(findingId, { enabled: false });
+  return thread.responses ? thread.total : null;
 }
 
 /** A file waiting to be attached. `error` is set when its upload against
@@ -96,38 +114,46 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   const queryClient = useQueryClient();
-  const notesKey = notesKeyOf(projectId, findingId);
-  const query = useQuery({ queryKey: notesKey, queryFn: ({ signal }) => getFindingNotes(projectId, findingId, signal) });
+  const thread = useFindingThread(findingId);
   // `notes === null` = never loaded successfully; distinct from "loaded, and
   // there are none" so a failed fetch is never presented as an empty record
   // (UX review H1).  A failed re-read keeps whatever was on screen and says
   // the refresh failed rather than blanking the thread.
-  const notes = query.data ?? null;
-  const loading = query.isFetching;
-  const loadError = queryErrorText(query.error, "Comments couldn't load.");
-  const load = () => query.refetch();
-  const setNotes = (update: (prev: Annotation[]) => Annotation[]) =>
-    queryClient.setQueryData<Annotation[]>(notesKey, (prev) => (prev ? update(prev) : prev));
-  // A comment was added to: the thread is read again (the promise is that
-  // read), and with a screenshot so are the finding's images — the report
-  // text's "Insert image" and each image's row follow.
+  const notes = thread.rows;
+  const loading = thread.loading;
+  const loadError = thread.error;
+  const load = thread.reload;
+  // A comment was added to, or one went: the thread is read again — every
+  // read the reader has loaded, so the count and the place they had walked
+  // back to both hold (the promise is that read) — and with a screenshot so
+  // are the finding's images: the report text's "Insert image" and each
+  // image's row follow.
   const threadChanged = ({ images }: { images: boolean }) => {
     if (images) void invalidateReads(queryClient, 'getFindingImages');
-    return queryClient.invalidateQueries({ queryKey: notesKey });
+    return thread.reload();
+  };
+  const showEarlier = () => {
+    // The failure is said beside the button (`loadMoreError`).
+    thread.loadMore().catch(() => undefined);
   };
 
   // A notification links to /findings/:id#note-:noteId — bring that comment
-  // into view once the thread has loaded.
+  // into view once the thread has loaded.  A comment older than what is
+  // loaded is walked back to, a read at a time, until it is on screen or the
+  // thread's first comment has been reached.
   const scrolledTo = useRef<string | null>(null);
+  const { hasMore, loadingMore, loadMoreError, loadMore } = thread;
   useEffect(() => {
     const hash = window.location.hash;
-    if (!notes || !hash.startsWith('#note-') || scrolledTo.current === hash) return;
+    if (!notes || !/^#note-\d+$/.test(hash) || scrolledTo.current === hash) return;
     const el = document.getElementById(hash.slice(1));
     if (el) {
       scrolledTo.current = hash;
       el.scrollIntoView?.({ block: 'center' });
+    } else if (hasMore && !loading && !loadingMore && !loadMoreError) {
+      loadMore().catch(() => undefined);
     }
-  }, [notes]);
+  }, [notes, hasMore, loading, loadingMore, loadMoreError, loadMore]);
 
   const startReply = (note: Annotation) => {
     setReplyTo(note);
@@ -226,7 +252,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({
     onSuccess: (updated) => {
       if (updated.mention_warning) toast.warning(updated.mention_warning);
       else announceMentionOutcome(toast, updated);
-      setNotes((prev) => prev.map((n) => (n.id === updated.id ? { ...n, ...updated } : n)));
+      thread.mapRows((n) => (n.id === updated.id ? { ...n, ...updated } : n));
       setEditing(null);
     },
     onError: (err) => toast.error(formatApiError(err, 'Could not save the comment.')),
@@ -235,11 +261,11 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({
   const remove = useMutation({
     mutationFn: (note: Annotation) => deleteFindingNote(projectId, findingId, note.id),
     onSuccess: (_done, note) => {
-      setNotes((prev) => prev.filter((n) => n.id !== note.id));
       setReplyTo((current) => (current?.id === note.id ? null : current));
-      // Its screenshots went with it: they are no longer the finding's images.
-      if (note.attachments?.length) void invalidateReads(queryClient, 'getFindingImages');
       toast.success('Comment deleted.');
+      // Busy until the thread no longer shows it.  Its screenshots went with
+      // it: they are no longer the finding's images.
+      return threadChanged({ images: Boolean(note.attachments?.length) });
     },
     onError: (err) => toast.error(formatApiError(err, 'Could not delete the comment.')),
   });
@@ -401,7 +427,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({
     <section className="mb-md min-w-0" aria-label="Comments and evidence">
       <div className="border-b border-border pb-xs">
         <h2 className="text-caption font-semibold uppercase tracking-wide text-muted-foreground">
-          Comments &amp; evidence{notes && notes.length > 0 ? ` (${notes.length})` : ''}
+          Comments &amp; evidence{notes && thread.total > 0 ? ` (${thread.total.toLocaleString()})` : ''}
         </h2>
       </div>
       <div className="space-y-md pt-sm">
@@ -432,7 +458,22 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({
                 No comments yet. Add repro steps, rationale, or screenshots to evidence this finding.
               </p>
             ) : (
-              <div className="space-y-md">{conversation.map(renderMessage)}</div>
+              <div className="space-y-md">
+                {hasMore && (
+                  // Above the oldest comment on screen: the thread reads
+                  // downwards, so what came before is asked for at its top.
+                  <div className="flex flex-wrap items-center gap-sm">
+                    <Button variant="outline" size="sm" onClick={showEarlier} disabled={loadingMore || loading}>
+                      {loadingMore && <Loader2 className="size-4 animate-spin" aria-hidden />}
+                      Show earlier comments ({Math.max(thread.total - conversation.length, 0).toLocaleString()} earlier)
+                    </Button>
+                    {loadMoreError && (
+                      <p className="text-caption text-destructive" role="status">{loadMoreError}</p>
+                    )}
+                  </div>
+                )}
+                {conversation.map(renderMessage)}
+              </div>
             )}
           </>
         )}

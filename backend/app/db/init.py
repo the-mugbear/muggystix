@@ -281,11 +281,11 @@ def _sync_schema_with_alembic() -> None:
         else:
             logger.info("Empty database — building schema from Alembic head")
             command.upgrade(cfg, "head")
-    except OperationalError:
-        # DB not ready (connection refused / still starting) — let the caller's
-        # retry loop handle it. NOT a migration defect.
-        raise
     except Exception as exc:
+        if _database_not_ready(exc):
+            # Connection refused / still starting — let the caller's retry
+            # loop handle it. NOT a migration defect.
+            raise
         # The upgrade stopped, and not because the DB is unreachable. This is
         # NOT transient — every boot crash-loops here until it is resolved —
         # so surface ONE loud, actionable line instead of a buried Alembic
@@ -299,6 +299,35 @@ def _sync_schema_with_alembic() -> None:
         # logs``.
         _say(logging.CRITICAL, _failure_message(started_at, _current_db_revision(), exc))
         raise
+
+
+def _database_not_ready(exc: BaseException) -> bool:
+    """True when ``exc`` says the database could not be REACHED — the one kind
+    of failure worth waiting out.  Pure.
+
+    ``OperationalError`` is the driver's class for much more than that: a full
+    disk (53100), out of memory (53200), a deadlock (40P01), a lock or
+    statement timeout (55P03, 57014) raised INSIDE the upgrade are all
+    ``OperationalError``.  Treating the whole class as "not ready" re-ran the
+    migration chain ten times, never logged ``DATABASE MIGRATION FAILED`` — the
+    line ``scripts/stack-lib.sh`` reads — and left the deploy saying "still
+    migrating" (review 2026-10-10, H20).
+
+    Not ready is only:
+
+    * no SQLSTATE at all — the client never got a server answer (connection
+      refused, name not resolved, the connection dropped);
+    * class 08, connection exception;
+    * 57P03, ``cannot_connect_now`` — the server is starting up or shutting
+      down.
+    """
+    if not isinstance(exc, OperationalError):
+        return False
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "pgcode", None) or getattr(orig, "sqlstate", None)
+    if not code:
+        return True
+    return str(code).startswith("08") or str(code) == "57P03"
 
 
 def _failure_message(started_at: Optional[str], now_at: Optional[str], exc: BaseException) -> str:
@@ -401,6 +430,11 @@ def initialize_database() -> None:
             _done = True
             return
         except OperationalError as exc:
+            if not _database_not_ready(exc):
+                # A failure INSIDE the upgrade (disk full, deadlock, a
+                # timeout): ``_sync_schema_with_alembic`` has said so, once.
+                # Waiting does not help and re-running the chain hides it.
+                raise
             last_exc = exc
             logger.warning(
                 "Database not ready (attempt %d/%d): %s",

@@ -43,7 +43,7 @@ from app.db.models_host_tests import HostTest  # noqa: E402
 from app.db.models_proposals import EvidenceRecord  # noqa: E402
 from app.db.models_auth import User, UserRole  # noqa: E402
 from app.db.models_confidence import ConflictHistory, HostConfidence, NetexecResult  # noqa: E402
-from app.db.models_findings import Finding, FindingHost, FindingHostStatus  # noqa: E402
+from app.db.models_findings import Finding, FindingHost, FindingHostStatus, FindingVulnerability  # noqa: E402
 from app.core.security import get_password_hash  # noqa: E402
 from app.db.models_project import Project, ProjectMembership, ProjectRole  # noqa: E402
 from app.db.models_vulnerability import (  # noqa: E402
@@ -372,7 +372,13 @@ def s04_finding_dispositions(c: Ctx, sc):
         p = port(c, h, sc, 22, "ssh", product="OpenSSH", version="7.4")
         v = vuln(c, h, sc, "OpenSSH < 8.0 multiple vulnerabilities", VulnerabilitySeverity.CRITICAL,
                  port_obj=p, cve="CVE-2019-6111", plugin_id="s04-ssh", exploitable=True)
-        v.finding_id = f.id
+        # The link a promotion writes (`finding_vulnerabilities`): without it the
+        # scanner rows read as unjudged beside a finding that covers them — the
+        # native acceptance run of 2026-10-11 could only join the two by title.
+        # (`v.finding_id = …` stood here; a scanner row has no such column.)
+        if f.vuln_id is None:
+            f.vuln_id = v.id
+        c.db.add(FindingVulnerability(finding_id=f.id, vuln_id=v.id))
         c.db.add(FindingHost(finding_id=f.id, host_id=h.id, host_status=state))
     c.db.flush()
     c.note("s04", "One finding, three sites, three endpoint states",

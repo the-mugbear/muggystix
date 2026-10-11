@@ -70,18 +70,51 @@ def unknown_value_error(name: str, value: str, allowed) -> HTTPException:
     )
 
 
+#: ``follow_status`` values: the stored review states plus the two derived ones.
+FOLLOW_STATUS_FILTERS = ("none", "in_review_any", *(s.value for s in FollowStatus))
+
+
+def _unknown_of(name: str, value: Optional[str], allowed) -> None:
+    """422 for the first item of a comma-separated ``value`` outside ``allowed``."""
+    for item in _split_csv(value):
+        if item not in allowed:
+            raise unknown_value_error(name, item, allowed)
+
+
 def check_discrete_filters(
     *, state: Optional[str] = None, ports: Optional[str] = None,
     services: Optional[str] = None, subnets: Optional[str] = None,
+    port_states: Optional[str] = None, follow_status: Optional[str] = None,
+    scan_ids: Optional[str] = None, tech: Optional[str] = None,
+    tags: Optional[str] = None, subnet_labels: Optional[str] = None,
+    sites: Optional[str] = None, weaknesses: Optional[str] = None,
+    checks: Optional[str] = None, asns: Optional[List[str]] = None,
 ) -> None:
     """Refuse a discrete host filter that cannot be understood, on every door
-    (``build_filtered_host_query`` calls it first).
+    (``build_filtered_host_query`` calls it first).  Each is a 422 naming the
+    value; a filter that is dropped answers with every host in the project.
 
-    ``state`` is matched exactly and a ``subnets`` value must be a network or
-    an address, so a mistyped one would read as an ordinary (usually empty)
-    result; a list that names nothing, dropped, would answer with every host
-    in the project.  Each is a 422 naming the value."""
-    for name, value in (("ports", ports), ("services", services), ("subnets", subnets)):
+    Where the line is, per parameter:
+
+    * a comma-separated list that was given but names nothing (``tech=,``) is
+      refused for EVERY list parameter; an empty or blank value is "not given";
+    * a value from a closed set must be in it — ``state``, ``port_states``,
+      ``follow_status``, ``weaknesses``, ``checks``;
+    * a value with a format must have it — ``ports`` (``parse_port_list``),
+      ``scan_ids`` / ``tags`` / ``subnet_labels`` (row ids, ``parse_id_list``),
+      ``subnets`` (a network or an address), ``asns`` (a number);
+    * a value that names something the project may simply not have — a scan,
+      tag or label id, a site name, a technology, an organisation, a country,
+      an OS — is VALID and matches nothing: an empty list, never an error;
+    * ``assigned_to`` needs the database and is refused by the builder itself
+      (``P.UnknownAssignee``): someone no host here can be assigned to.
+    """
+    for name, value in (
+        ("ports", ports), ("services", services), ("subnets", subnets),
+        ("port_states", port_states), ("scan_ids", scan_ids), ("tech", tech),
+        ("tags", tags), ("subnet_labels", subnet_labels), ("sites", sites),
+        ("weaknesses", weaknesses), ("checks", checks),
+    ):
         if value and value.strip() and not [v for v in value.split(",") if v.strip()]:
             raise HTTPException(
                 status_code=422,
@@ -89,6 +122,22 @@ def check_discrete_filters(
             )
     if state is not None and state.strip() and state not in HOST_STATES:
         raise unknown_value_error("state", state, HOST_STATES)
+    _unknown_of("port_states", port_states, P.EXPLICIT_PORT_STATES)
+    if follow_status and follow_status not in FOLLOW_STATUS_FILTERS:
+        raise unknown_value_error("follow_status", follow_status, FOLLOW_STATUS_FILTERS)
+    _unknown_of("weaknesses", weaknesses, WEAKNESS_FLAGS)
+    if _split_csv(checks):
+        from app.services.misconfig_checks import CHECKS
+        _unknown_of("checks", checks, CHECKS)
+    if scan_ids and scan_ids.strip():
+        parse_id_list("scan_ids", scan_ids)
+    try:
+        P.parse_asns(asns or [])
+    except P.InvalidAsn as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"asns must be autonomous system numbers (15169 or AS15169); not understood: {exc.values}.",
+        )
     if subnets:
         try:
             parse_subnets(subnets)
@@ -266,10 +315,7 @@ def weakness_predicate(
     """Hosts with ANY of the given weakness / access flags."""
     unknown = [f for f in flags if f not in WEAKNESS_FLAGS]
     if unknown:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown weakness filter {', '.join(unknown)} (one of: {', '.join(WEAKNESS_FLAGS)})",
-        )
+        raise unknown_value_error("weaknesses", unknown[0], WEAKNESS_FLAGS)
     from app.services.host_query_dsl import _HAS_KEYWORDS, BuildCtx
     ctx = BuildCtx(db, current_user, project_id, only_host_ids=only_host_ids)
     return or_(*[_HAS_KEYWORDS[f][0](ctx) for f in flags])
@@ -302,8 +348,25 @@ def checks_predicate(db: Session, project_id: int, checks: List[str]):
     from app.services.misconfig_checks import CHECKS
     unknown = [c for c in checks if c not in CHECKS]
     if unknown:
-        raise HTTPException(status_code=400, detail=f"Unknown check {', '.join(unknown)}")
+        raise unknown_value_error("checks", unknown[0], CHECKS)
     return P.check_predicate(checks)
+
+
+def port_filter_conditions(
+    *, ports: Optional[str] = None, services: Optional[str] = None,
+    port_states: Optional[str] = None, has_open_ports: Optional[bool] = None,
+) -> list:
+    """The conditions ONE port row meets under the discrete port filters
+    (``ports`` / ``services`` / ``port_states`` / ``has_open_ports=true``) —
+    what the host filter below asks of a host's port, and what the tool-ready
+    export asks of each port it emits, so the two cannot disagree about which
+    port a filter means.  Empty when no port filter narrows a row."""
+    return P.port_match_conditions(
+        ports=parse_port_list(ports) if ports else None,
+        services=[s.strip() for s in services.split(',') if s.strip()] if services else None,
+        port_states=[s.strip().lower() for s in port_states.split(',') if s.strip()] if port_states else None,
+        require_open=bool(has_open_ports),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +421,12 @@ def build_filtered_host_query(
     ``assigned_to``, ``weaknesses`` and ``q`` are judged for; a caller that
     passes none of those may pass ``None``.
     """
-    check_discrete_filters(state=state, ports=ports, services=services, subnets=subnets)
+    check_discrete_filters(
+        state=state, ports=ports, services=services, subnets=subnets,
+        port_states=port_states, follow_status=follow_status, scan_ids=scan_ids,
+        tech=tech, tags=tags, subnet_labels=subnet_labels, sites=sites,
+        weaknesses=weaknesses, checks=checks, asns=asns,
+    )
     query = db.query(models.Host)
 
     if project_id is not None:
@@ -389,27 +457,18 @@ def build_filtered_host_query(
     # `is not None`, not truthiness: has_open_ports=False is a filter in its own
     # right.
     if ports or services or port_states or has_open_ports is not None:
-        port_ints = parse_port_list(ports) if ports else None
-        service_list = [s.strip() for s in services.split(',') if s.strip()] if services else None
-        state_list = [s.strip().lower() for s in port_states.split(',') if s.strip()] if port_states else None
+        port_conditions = port_filter_conditions(
+            ports=ports, services=services, port_states=port_states, has_open_ports=has_open_ports,
+        )
         if has_open_ports is False:
             # NOT EXISTS, never ``NOT IN (subquery)``: Postgres cannot
             # anti-join NOT IN, and this filter did not finish in 60 s on a
             # 120k-host instance.
             query = query.filter(not_(P.has_open_ports_predicate(db)))
-            if port_ints or service_list or state_list:
-                query = query.filter(P.host_has_port(*P.port_match_conditions(
-                    ports=port_ints,
-                    services=service_list,
-                    port_states=state_list,
-                )))
+            if ports or services or port_states:
+                query = query.filter(P.host_has_port(*port_conditions))
         else:
-            query = query.filter(P.host_has_port(*P.port_match_conditions(
-                ports=port_ints,
-                services=service_list,
-                port_states=state_list,
-                require_open=bool(has_open_ports),
-            )))
+            query = query.filter(P.host_has_port(*port_conditions))
 
     if search:
         query = query.filter(build_search_predicate(db, search, project_id))
@@ -418,8 +477,6 @@ def build_filtered_host_query(
         query = query.filter(P.has_notes_predicate())
 
     if follow_status:
-        if follow_status not in ("none", "in_review_any") and follow_status not in {s.value for s in FollowStatus}:
-            raise HTTPException(status_code=400, detail="Invalid follow status filter")
         query = query.filter(P.follow_predicate(follow_status, current_user))
 
     if out_of_scope_only:
@@ -445,13 +502,10 @@ def build_filtered_host_query(
     if has_test_execution:
         query = query.filter(P.tested_predicate(project_id))
 
-    if scan_ids:
-        try:
-            scan_id_list = [int(s.strip()) for s in scan_ids.split(',') if s.strip()]
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid scan_ids parameter")
-        if scan_id_list:
-            query = query.filter(P.scan_predicate(scan_id_list, first_seen_only=bool(first_seen_in_scan)))
+    if scan_ids and scan_ids.strip():
+        query = query.filter(P.scan_predicate(
+            parse_id_list("scan_ids", scan_ids), first_seen_only=bool(first_seen_in_scan),
+        ))
 
     # v2.12.1: web interface filters.  ``has_web_interface`` narrows to
     # hosts with at least one web_interfaces row (or, when false, those
@@ -486,10 +540,21 @@ def build_filtered_host_query(
             query = query.filter(P.site_predicate(db, site_names))
 
     # v2.71.0 — assignment filter.  "me" / "any" / numeric user id.
-    if assigned_to:
-        assigned_pred = P.assigned_predicate(db, assigned_to, current_user)
-        if assigned_pred is not None:
-            query = query.filter(assigned_pred)
+    if assigned_to and assigned_to.strip():
+        value = assigned_to.strip()
+        if value == "me" and current_user is None:
+            raise HTTPException(status_code=422, detail="assigned_to='me' needs a signed-in caller.")
+        try:
+            query = query.filter(P.assigned_predicate(db, value, current_user, project_id))
+        except P.UnknownAssignee:
+            # The same answer whether or not such an account exists.
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Unknown assigned_to {value!r}: nobody a host of this project can be assigned to. "
+                    "Use me, any, none, or the username or id of a project member."
+                ),
+            )
 
     # RDAP network-attribution filters (org / ASN / country).  Repeated-value
     # lists (comma-safe — org names contain commas); OR within each group,

@@ -8,7 +8,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { findingDetailHref } from '../utils/findingsReturn';
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 
 import {
@@ -33,8 +33,10 @@ import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
-import { invalidateReads, queryErrorText } from '../lib/query';
+import { invalidateReads } from '../lib/query';
 import { useListCursor } from '../hooks/useListCursor';
+import { usePagedList } from '../hooks/usePagedList';
+import { useUrlPage } from '../hooks/useUrlPage';
 import { useUrlSearchDraft } from '../hooks/useUrlSearchDraft';
 import { SeverityBadge } from '../components/ui/SeverityBadge';
 import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../components/ListFilterBar';
@@ -216,8 +218,9 @@ const FindingsList: React.FC = () => {
   // Page + sort live in the URL too (UX review M1): the detail page hands
   // this exact URL back on its "Findings" action, so an analyst working a
   // narrowed, sorted, paged queue lands on the same row set, not page 1 of
-  // everything. `page` is 1-based in the URL, 0-based here.
-  const page = Math.max(0, (Number(searchParams.get('page')) || 1) - 1);
+  // everything.  The page is `usePagedList`'s, below (`?page=`, read by the
+  // one reading of a page in an address): a filter, sort or page-size control
+  // starts from the first page by leaving `page` out of its ONE address write.
   const pageSize = (() => {
     const n = Number(searchParams.get('page_size'));
     return [25, 50, 100, 200].includes(n) ? n : 50;
@@ -228,7 +231,6 @@ const FindingsList: React.FC = () => {
   // server's severity sort breaks ties by id descending, i.e. newest.
   const sortBy: FindingSortField = (searchParams.get('sort') as FindingSortField | null) ?? 'severity';
   const sortDir: 'asc' | 'desc' = searchParams.get('dir') === 'desc' ? 'desc' : 'asc';
-  const setPage = useCallback((p: number) => setUrlParam('page', String(p + 1), '1'), [setUrlParam]);
   const setPageSize = useCallback((n: number) => setUrlParam('page_size', String(n), '50', true), [setUrlParam]);
   const setSort = useCallback((field: FindingSortField | null, dir: 'asc' | 'desc') => {
     setSearchParams((prev) => {
@@ -278,8 +280,9 @@ const FindingsList: React.FC = () => {
     }
   }, [membershipSignature]);
 
+  // What the list is asked for, without the page (the list hook's).
   const filters = useMemo<FindingFilters>(() => {
-    const f: FindingFilters = { limit: pageSize, offset: page * pageSize };
+    const f: FindingFilters = {};
     if (statusFilter !== 'all') f.status = statusFilter;
     if (severityFilter !== 'all') f.severity = severityFilter;
     if (sourceFilter !== 'all') f.source = sourceFilter;
@@ -289,7 +292,7 @@ const FindingsList: React.FC = () => {
     if (searchValue) f.search = searchValue;
     if (sortBy) { f.sort = sortBy; f.dir = sortDir; }
     return f;
-  }, [statusFilter, severityFilter, sourceFilter, ownerFilter, searchValue, user?.id, page, pageSize, sortBy, sortDir]);
+  }, [statusFilter, severityFilter, sourceFilter, ownerFilter, searchValue, user?.id, sortBy, sortDir]);
 
   // Per-field default direction (worst/most-relevant first); a repeat click
   // toggles. Mirrors the backend's per-field default.
@@ -320,13 +323,33 @@ const FindingsList: React.FC = () => {
   // selection's "not on this page" count and the pagination do not blink.
   // They are not this filter's rows: nothing on them can be ticked or
   // changed, and the keyboard cursor does not open one.
-  const listKey = useMemo(() => ['listFindings', projectId, filters], [projectId, filters]);
-  const listQuery = useQuery({
-    queryKey: listKey,
-    queryFn: ({ signal }) => listFindings(projectId, filters, signal),
-    placeholderData: keepPreviousData,
-  });
-  const findings = useMemo<Finding[]>(() => listQuery.data?.items ?? [], [listQuery.data]);
+  //
+  // One page at a time on `usePagedList`, its page the ADDRESS's
+  // (`keepAddressPage`: a link or Back names a filter and a page together and
+  // opens that page).  The hook owns "a page past the end steps back to the
+  // last one that exists" — the page read `?page=` by hand and had no such
+  // step, so closing the only finding of the last page, or an old link to
+  // `?page=9`, said "No active findings" over findings that exist (review
+  // 2026-10-10, H15).
+  const list = usePagedList<Finding, FindingListResponse>(
+    'listFindings',
+    ({ offset, limit, signal }) => listFindings(projectId, { ...filters, limit, offset }, signal),
+    [projectId, filters],
+    { pageSize, page: useUrlPage(), keepAddressPage: true, within: projectId, errorMessage: LOAD_FAILED },
+  );
+  const { page, setPage } = list;
+  /** This address's own answer; `null` until it is in. */
+  const ownAnswer = list.response;
+  // The rows of the filter or page before, while this one's first read is out.
+  const previousRows = ownAnswer === null && list.error === null && list.lastResponse !== null;
+  const answer = ownAnswer ?? (previousRows ? list.lastResponse : null);
+  // A row whose status was just changed carries the change's answer until the
+  // list is read again; one that left the status filter by it is not shown
+  // (`matchesStatusFilter` is the server's rule), so the view stays truthful.
+  const findings = useMemo<Finding[]>(() => {
+    if (ownAnswer) return ownAnswer.items.filter((f) => matchesStatusFilter(f.status, statusFilter));
+    return answer?.items ?? [];
+  }, [ownAnswer, answer, statusFilter]);
   // The Owner filter offers the people who OWN one of the listed findings,
   // each with how many (5.357.0) — the server's `owner_counts`, taken under
   // every filter but the owner, so each number is the size of the list its
@@ -334,7 +357,7 @@ const FindingsList: React.FC = () => {
   // offered every project member: on a real project that is mostly people
   // who own nothing.)  The counts of "Assigned to me" and "Unowned" come from
   // the same answer; `null` = not known (still loading, or an older server).
-  const ownerCounts = listQuery.data?.owner_counts ?? null;
+  const ownerCounts = answer?.owner_counts ?? null;
   const countOf = (ownerId: number | null): number | null => (
     ownerCounts ? ownerCounts.find((c) => c.owner_id === ownerId)?.count ?? 0 : null
   );
@@ -358,9 +381,8 @@ const FindingsList: React.FC = () => {
     }
     return options;
   }, [ownerCounts, members, user?.id, ownerFilter, findings]);
-  const total = listQuery.data?.total ?? 0;
-  const sevCounts: Partial<Record<FindingSeverity, number>> = listQuery.data?.severity_counts ?? {};
-  const previousRows = listQuery.isPlaceholderData;
+  const total = answer?.total ?? 0;
+  const sevCounts: Partial<Record<FindingSeverity, number>> = answer?.severity_counts ?? {};
   // This filter's answer is not here yet (the first load, a new filter), or a
   // failed load is being asked for again.  A re-read after a change is
   // neither: the rows on screen are this filter's and stay as they are.
@@ -370,32 +392,31 @@ const FindingsList: React.FC = () => {
   // read 0 findings".  With this filter's rows already on screen (the re-read
   // after a change, which keeps `data` beside `error`) it is a failed REFRESH:
   // the rows stay, usable, and a line above them says they may be out of date.
-  const ownRows = listQuery.data !== undefined && !previousRows;
-  const readFailure = queryErrorText(listQuery.error, LOAD_FAILED);
-  const loading = listQuery.isPending || previousRows || (listQuery.isError && !ownRows && listQuery.isFetching);
-  const error = ownRows ? null : readFailure;
-  const refreshError = ownRows && !listQuery.isFetching ? readFailure : null;
+  const ownRows = ownAnswer !== null;
+  const readFailure = list.error;
+  const loading = !ownRows && (readFailure === null || list.loading);
+  const error = ownRows || loading ? null : readFailure;
+  const refreshError = ownRows && !list.loading ? readFailure : null;
   // A failed load is said in the table and as a toast.
   useEffect(() => { if (error) toast.error(error); }, [error, toast]);
+  // The page has no row to show although the list has some: the rows were
+  // dealt with and the list is being read again, or the page is past the end
+  // and the hook is stepping back.  Neither is an empty list.
+  const pageEmptied = findings.length === 0 && total > 0 && (list.loading || page > 0);
 
-  // A change's answer is put into the list on screen at once; the list is
+  // A change's answer is put onto the rows on screen at once; the list is
   // then read again (`listChanged`), because a row that left the filter also
   // changed the total, the severity counts and what the next page holds.
-  const patchFindings = (update: (rows: Finding[]) => Finding[]) =>
-    queryClient.setQueryData<FindingListResponse>(listKey, (prev) => (prev ? { ...prev, items: update(prev.items) } : prev));
+  const patchFindings = list.mapRows;
   const listChanged = () => { void invalidateReads(queryClient, 'listFindings'); };
 
   const statusChange = useMutation({
     mutationFn: (v: { findingId: number; status: FindingStatus; title: string; summary?: string }) =>
       setFindingStatus(projectId, v.findingId, v.status, v.summary),
     onSuccess: (updated, { findingId, status, title }) => {
-      patchFindings((prev) =>
-        prev
-          // Drop a row that no longer matches the active status filter so the
-          // filtered view stays truthful.
-          .filter((f) => f.id !== findingId || matchesStatusFilter(updated.status, statusFilter))
-          .map((f) => (f.id === findingId ? updated : f)),
-      );
+      // A row that no longer matches the status filter leaves the view by
+      // `findings`' own rule.
+      patchFindings((f) => (f.id === findingId ? updated : f));
       listChanged();
       // The status trail gained a line.
       void queryClient.invalidateQueries({ queryKey: ['getFindingHistory', projectId, findingId] });
@@ -424,12 +445,7 @@ const FindingsList: React.FC = () => {
       bulkSetFindingStatus(projectId, v.ids, v.status, v.summary),
     onSuccess: (result, { ids, status }) => {
       const changed = new Set(ids.filter((id) => !result.skipped_ids.includes(id)));
-      patchFindings((prev) =>
-        prev
-          .map((f) => (changed.has(f.id) ? { ...f, status } : f))
-          // Drop rows that no longer match the active status filter.
-          .filter((f) => !changed.has(f.id) || matchesStatusFilter(status, statusFilter)),
-      );
+      patchFindings((f) => (changed.has(f.id) ? { ...f, status } : f));
       listChanged();
       void queryClient.invalidateQueries({ queryKey: ['getFindingHistory'] });
       setSelected(new Set());
@@ -454,8 +470,7 @@ const FindingsList: React.FC = () => {
         ? null
         : members.find((m) => m.user_id === assigneeId)?.username ?? 'user';
       const assigned = new Set(ids);
-      patchFindings((prev) =>
-        prev.map((f) => (assigned.has(f.id) ? { ...f, owner_id: assigneeId, owner_name: name } : f)));
+      patchFindings((f) => (assigned.has(f.id) ? { ...f, owner_id: assigneeId, owner_name: name } : f));
       // Under "Assigned to me" / "Unowned" a row may have left the filter.
       listChanged();
       setSelected(new Set());
@@ -678,7 +693,7 @@ const FindingsList: React.FC = () => {
             <p role="alert" className="mb-xs break-words text-metadata text-destructive">
               The list could not be refreshed, so it may be out of date.
               {refreshError !== LOAD_FAILED && ` ${refreshError}`}{' '}
-              <button type="button" className="text-info hover:underline" onClick={() => void listQuery.refetch()}>
+              <button type="button" className="text-info hover:underline" onClick={() => void list.reload()}>
                 Retry
               </button>
             </p>
@@ -729,7 +744,7 @@ const FindingsList: React.FC = () => {
                   load is retried); a filter refetch keeps the prior rows on
                   screen, dimmed and inert, and a re-read after a change keeps
                   the rows as they are (no full-table flash). */}
-              {loading && (findings.length === 0 || listQuery.isError) && (
+              {((loading && (findings.length === 0 || readFailure !== null)) || (!loading && !error && pageEmptied)) && (
                 <TableRow>
                   <TableCell colSpan={7} className="py-xl text-center text-muted-foreground">
                     <Loader2 className="mx-auto size-5 animate-spin" aria-hidden />
@@ -742,13 +757,13 @@ const FindingsList: React.FC = () => {
                     <AlertTriangle className="mx-auto mb-xs size-5" aria-hidden />
                     <p>The findings could not be loaded. This is not an empty list.</p>
                     {error !== LOAD_FAILED && <p className="break-words text-caption">{error}</p>}
-                    <Button variant="outline" size="sm" className="mt-sm" onClick={() => void listQuery.refetch()}>
+                    <Button variant="outline" size="sm" className="mt-sm" onClick={() => void list.reload()}>
                       Retry
                     </Button>
                   </TableCell>
                 </TableRow>
               )}
-              {!loading && !error && findings.length === 0 && (
+              {!loading && !error && findings.length === 0 && !pageEmptied && (
                 <TableRow>
                   <TableCell colSpan={7} className="py-xl text-center text-muted-foreground">
                     {onlyDefaultFilter ? (

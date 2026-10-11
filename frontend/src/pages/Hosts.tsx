@@ -67,7 +67,7 @@ import { cn } from '../utils/cn';
 import { isPageShortcutEvent } from '../utils/keyboard';
 import { copyToClipboard } from '../utils/clipboard';
 import { buildHostsUrl } from '../utils/drilldownLinks';
-import { stickyBelowChrome } from '../utils/uiStyles';
+import { inertWhen, stickyBelowChrome } from '../utils/uiStyles';
 import { exposureChips } from '../utils/portsOfInterest';
 import { endpointMatchCriteria } from '../utils/endpointMatch';
 import { weaknessMatchCriteria } from '../utils/weaknessMatch';
@@ -328,7 +328,7 @@ export default function Hosts() {
   // Setting and clearing the project default view are the PROJECT admin's on
   // the server (`host_filter_views`: promote and `DELETE /default-view`), so
   // both controls follow `isProjectAdmin` — true for a global admin as well.
-  const { canExport, isProjectAdmin: canSetProjectDefault } = useProjectRole();
+  const { canWrite, canExport, isProjectAdmin: canSetProjectDefault } = useProjectRole();
   const queryClient = useQueryClient();
   // --- The list's state is the address -----------------------------------
   // Conditions, sort and page are READ from `location.search` on every render
@@ -639,6 +639,17 @@ export default function Hosts() {
   const vulnError = shown?.vulnerability_error ?? false;
   const loading = !isInitialized || list.loading;
   const listError = loading ? null : list.error;
+  // The rows on screen are not this address's answer: it has not arrived yet
+  // (another filter, sort, page or page size is loading), or its read failed.
+  // Nothing may be ticked on them and no bulk action is offered over them — a
+  // bulk action acts on the CURRENT filter's hosts, and the bar would name the
+  // previous filter's count over them (review 2026-10-10, H1).
+  const rowsArePrevious = hosts.length > 0 && list.response === null;
+  // After a failed read the previous rows stay visible (to preserve scroll
+  // position), but they may no longer match the active filters/query — so
+  // they are marked stale, with Retry, and export is paused with the bulk
+  // actions until a read succeeds.
+  const showingStaleResults = listError !== null && hosts.length > 0;
   // True once a first read of the list has settled.  Gates the full-page
   // skeleton so it only shows on initial load — never on a refetch whose
   // current result happens to be empty (e.g. toggling a filter that matches
@@ -1106,18 +1117,31 @@ export default function Hosts() {
   const lastPageIndex = Math.max(0, Math.ceil(totalHosts / rowsPerPage) - 1);
   // Position within the full result set (queue progress), not just the page.
   const inspectedAbsoluteIndex = inspectedIndex >= 0 ? page * rowsPerPage + inspectedIndex : -1;
-  // What to open once the next page loads. A ref (not state) so turning the
-  // page doesn't add a render and the post-load effect reads the latest intent.
-  const pendingInspectorEdgeRef = useRef<null | 'first' | 'last' | 'first-unreviewed'>(null);
+  // What to open once the next page loads, and of WHICH address it was asked
+  // (`from` → `to`): it is taken only from that address's own answer.  A ref
+  // (not state) so turning the page doesn't add a render and the post-load
+  // effect reads the latest intent.
+  const pendingInspectorEdgeRef = useRef<null | {
+    edge: 'first' | 'last' | 'first-unreviewed'; from: string; to: string;
+  }>(null);
+  /** Turn to `nextPage` and open `edge` of it once it has answered. */
+  const turnPageFor = (edge: 'first' | 'last' | 'first-unreviewed', nextPage: number) => {
+    const from = location.search;
+    setPage(nextPage);
+    const to = writtenSearchRef.current;
+    pendingInspectorEdgeRef.current = to !== null && to !== from ? { edge, from, to } : null;
+  };
   // A filter edit or a page turn can take the open host out of the rows shown.
   // The inspector keeps it (never a silent switch, never a lost note draft) and
   // says so; Next then walks the queue that is on screen NOW, from its top.
   const inspectedOutsideRows =
     inspectedHostId !== null && inspectedIndex < 0 && !loading && pendingInspectorEdgeRef.current === null;
-  const hasInspectorPrev = inspectedAbsoluteIndex > 0;
-  const hasInspectorNext = inspectedOutsideRows
+  // After a read that failed the rows are the ones from before it: there is
+  // no "next" among them until Retry answers.
+  const hasInspectorPrev = !showingStaleResults && inspectedAbsoluteIndex > 0;
+  const hasInspectorNext = !showingStaleResults && (inspectedOutsideRows
     ? hosts.length > 0
-    : inspectedAbsoluteIndex >= 0 && inspectedAbsoluteIndex < totalHosts - 1;
+    : inspectedAbsoluteIndex >= 0 && inspectedAbsoluteIndex < totalHosts - 1);
   // "Unreviewed" = nobody has started it: skip both Reviewed AND In Review
   // (a teammate is already on the in-review ones). Untouched / legacy-watching
   // hosts are the queue targets.
@@ -1127,6 +1151,9 @@ export default function Hosts() {
   };
 
   const stepInspector = async (delta: 1 | -1) => {
+    // Not over rows of another address (a page still loading, or one that
+    // could not be read): a second press would turn a page further.
+    if (rowsArePrevious) return;
     if (inspectedIndex < 0) {
       // Outside the rows shown: there is no "previous", and "next" is the top
       // of the current queue.
@@ -1138,56 +1165,56 @@ export default function Hosts() {
     const target = hosts[inspectedIndex + delta];
     if (target) { setInspectedHostId(target.id); return; }
     // Crossed the page boundary — turn the page and open its near edge.
-    if (delta === 1 && page < lastPageIndex) {
-      pendingInspectorEdgeRef.current = 'first';
-      setPage((p) => p + 1);
-    } else if (delta === -1 && page > 0) {
-      pendingInspectorEdgeRef.current = 'last';
-      setPage((p) => p - 1);
-    }
+    if (delta === 1 && page < lastPageIndex) turnPageFor('first', page + 1);
+    else if (delta === -1 && page > 0) turnPageFor('last', page - 1);
   };
 
   // Jump to the next host that still needs review, scanning forward across
   // pages and skipping ones already Reviewed.
   const stepToNextUnreviewed = async () => {
+    if (rowsArePrevious) return;
     // From outside the rows shown the scan starts at the top (index -1 + 1).
     if (inspectedIndex < 0 && !inspectedOutsideRows) return;
     if (!(await confirmDiscardDraft())) return;
     for (let i = inspectedIndex + 1; i < hosts.length; i += 1) {
       if (hostNeedsReview(hosts[i])) { setInspectedHostId(hosts[i].id); return; }
     }
-    if (page < lastPageIndex) {
-      pendingInspectorEdgeRef.current = 'first-unreviewed';
-      setPage((p) => p + 1);
-    } else {
-      toast.info('No more unreviewed hosts in this queue', { autoHideMs: 2000 });
-    }
+    if (page < lastPageIndex) turnPageFor('first-unreviewed', page + 1);
+    else toast.info('No more unreviewed hosts in this queue', { autoHideMs: 2000 });
   };
 
-  // Consume a pending cross-page jump once the new page has loaded.
+  // Consume a pending cross-page jump from the ANSWER of the page it turned
+  // to — never from the rows that stay on screen meanwhile (review
+  // 2026-10-10, H16: when that page's read failed, the rows were still the
+  // page before it, so "next" opened its first host again and "next
+  // unreviewed" asked for every later page in turn).  A read that failed, an
+  // address the reader has since left and a page that turned out not to exist
+  // all drop the jump: the open host stays, and the list says what happened.
+  const pageAnswer = list.response;
+  const pageReadFailed = list.error !== null;
   useEffect(() => {
-    const edge = pendingInspectorEdgeRef.current;
-    if (!edge || loading || hosts.length === 0) return;
-    if (edge === 'first') {
-      pendingInspectorEdgeRef.current = null;
-      setInspectedHostId(hosts[0].id);
-    } else if (edge === 'last') {
-      pendingInspectorEdgeRef.current = null;
-      setInspectedHostId(hosts[hosts.length - 1].id);
-    } else if (edge === 'first-unreviewed') {
-      const target = hosts.find(hostNeedsReview);
-      if (target) {
-        pendingInspectorEdgeRef.current = null;
-        setInspectedHostId(target.id);
-      } else if (page < lastPageIndex) {
-        setPage((p) => p + 1); // keep scanning forward
-      } else {
-        pendingInspectorEdgeRef.current = null;
-        toast.info('No more unreviewed hosts in this queue', { autoHideMs: 2000 });
-      }
+    const pending = pendingInspectorEdgeRef.current;
+    if (!pending || location.search === pending.from) return;
+    if (location.search !== pending.to) { pendingInspectorEdgeRef.current = null; return; }
+    if (loading) return;
+    if (pageReadFailed) { pendingInspectorEdgeRef.current = null; return; }
+    if (!pageAnswer) return;
+    const rows = pageAnswer.items;
+    pendingInspectorEdgeRef.current = null;
+    if (rows.length === 0) return;
+    if (pending.edge === 'first') {
+      setInspectedHostId(rows[0].id);
+    } else if (pending.edge === 'last') {
+      setInspectedHostId(rows[rows.length - 1].id);
+    } else {
+      const target = rows.find(hostNeedsReview);
+      if (target) setInspectedHostId(target.id);
+      // Keep scanning forward: the next page, once, from THIS page's answer.
+      else if (page < Math.ceil(pageAnswer.total / rowsPerPage) - 1) turnPageFor('first-unreviewed', page + 1);
+      else toast.info('No more unreviewed hosts in this queue', { autoHideMs: 2000 });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hosts, loading]);
+  }, [location.search, pageAnswer, pageReadFailed, loading]);
 
   // A fresh result set (page turn) invalidates the row cursor.
   useEffect(() => {
@@ -1251,7 +1278,7 @@ export default function Hosts() {
     // inspectedHostId / page / totalHosts; re-attaching on those keeps the
     // cross-page queue stepping fresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hosts, inspectedHostId, loading, cursorIndex, page, totalHosts, rowsPerPage]);
+  }, [hosts, inspectedHostId, loading, rowsArePrevious, cursorIndex, page, totalHosts, rowsPerPage]);
 
   // A host's review status as the server just returned it, put into the rows
   // of the list on screen (no second read of the page).
@@ -1391,6 +1418,9 @@ export default function Hosts() {
   const baseColumns = useHostColumns({
     updatingHostId,
     onFollowChange: handleFollowChange,
+    // Setting a review status is a write (analyst and up): below that the
+    // row states the review and offers no control.
+    canSetReview: canWrite,
     // v2.44.1 (UX review #2): the keyboard path for the row-level
     // "open host inspector" action lives in the IP cell as a real
     // <button>.  The row's onRowClick still fires for mouse users
@@ -1432,17 +1462,14 @@ export default function Hosts() {
     getRowId: (host) => host.id.toString(),
     rowSelection,
     onRowSelectionChange: setRowSelection,
-    enableRowSelection: true,
+    // A row of another address cannot be ticked: the tick would outlive the
+    // rows it was made over and be acted on under the filter that replaced
+    // them.
+    enableRowSelection: !rowsArePrevious,
     manualSorting: true,
     manualPagination: true,
     pageCount: Math.max(Math.ceil(totalHosts / rowsPerPage), 1),
   });
-
-  // After a failed refetch we keep the previous rows visible (to preserve scroll
-  // position), but they may no longer match the active filters/query — so mark
-  // them stale and pause actions that would act on possibly-mismatched rows
-  // (bulk operations + export) until a fetch succeeds.
-  const showingStaleResults = listError !== null && hosts.length > 0;
 
   if (loading && !hosts.length && !hasFetchedOnceRef.current) {
     return <ListPageSkeleton titleWidth={180} actionCount={3} tableProps={{ rows: 10, columns: 6 }} />;
@@ -1834,8 +1861,11 @@ export default function Hosts() {
         <>
           {/* Host table — sole renderer (desktop-only product; horizontal
               scroll handles narrow widths, no separate mobile card view).
-              Dimmed (not interaction-blocked) while stale: drill-down into a
-              single host is harmless + refetches, only bulk/export are paused. */}
+              While another address loads the rows of the one before it are
+              dimmed and inert (no tick, review picker, link or row click acts
+              on a row the reader has left).  After a FAILED read they are
+              dimmed but still open a host — drill-down is harmless — while
+              ticking, bulk actions and export stay paused. */}
           {/* v5.270.0 — the "?" on a service chip, said once for the page. */}
           {/* The row keys, said once for the page: the state dot beside each
               IP, and (when present) the "?" on a service chip. */}
@@ -1872,8 +1902,10 @@ export default function Hosts() {
             )}
           </p>
           <div
-            className={cn(showingStaleResults && 'opacity-60 transition-opacity')}
-            aria-busy={showingStaleResults || undefined}
+            className={cn(rowsArePrevious && 'opacity-60 transition-opacity')}
+            aria-busy={rowsArePrevious || undefined}
+            data-testid="hosts-rows"
+            {...inertWhen(rowsArePrevious && !showingStaleResults)}
           >
             <DataTableShell<Host>
               table={table}
@@ -1906,8 +1938,11 @@ export default function Hosts() {
           </div>
 
           {/* Bulk-action bar — shown once one or more rows are selected.
-              Paused while results are stale (a failed refetch): acting on rows
-              that may not match the active query is the trap this guards.
+              Paused while the rows are not this address's answer (it is still
+              loading, or its read failed): acting on rows that may not match
+              the active query is the trap this guards.  While it loads the
+              bar stays mounted, hidden — a page turn keeps "all matching" —
+              and after a failed read it is gone until a read succeeds.
               v5.290.0 — inserting it ABOVE the table pushed every row ~40px
               down, so the second checkbox click landed on the wrong host; an
               always-there placeholder fixed that but spent a row of the page
@@ -1923,22 +1958,29 @@ export default function Hosts() {
           >
             {selectedIds.length > 0 && (
               <div className="h-11 min-w-0 rounded-control bg-card shadow-lg">
-                {showingStaleResults ? (
+                {rowsArePrevious && (
                   <p className="flex h-full min-w-0 items-center rounded-control border border-dashed border-border px-sm text-caption text-muted-foreground">
-                    <span className="truncate">Bulk actions are paused until a refresh succeeds.</span>
+                    <span className="truncate">
+                      {showingStaleResults
+                        ? 'Bulk actions are paused until a refresh succeeds.'
+                        : 'Bulk actions are paused while the list loads.'}
+                    </span>
                   </p>
-                ) : (
-                  <HostBulkBar
-                    selectedIds={selectedIds}
-                    selectedIps={selectedIps}
-                    totalMatching={totalHosts}
-                    // The server's cap, from the same answer as the total.
-                    bulkCap={shown?.bulk_select_cap ?? null}
-                    queryContext={queryContext}
-                    onClear={() => setRowSelection({})}
-                    // The bar re-reads the rows and the facets it changed.
-                    onApplied={() => setRowSelection({})}
-                  />
+                )}
+                {!showingStaleResults && (
+                  <div className="h-full min-w-0" hidden={rowsArePrevious}>
+                    <HostBulkBar
+                      selectedIds={selectedIds}
+                      selectedIps={selectedIps}
+                      totalMatching={totalHosts}
+                      // The server's cap, from the same answer as the total.
+                      bulkCap={shown?.bulk_select_cap ?? null}
+                      queryContext={queryContext}
+                      onClear={() => setRowSelection({})}
+                      // The bar re-reads the rows and the facets it changed.
+                      onApplied={() => setRowSelection({})}
+                    />
+                  </div>
                 )}
               </div>
             )}

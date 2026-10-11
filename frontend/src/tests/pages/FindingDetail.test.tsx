@@ -59,6 +59,9 @@ import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
+/** A read of the comment thread: the comments it brought and the thread's size. */
+const threadOf = (items: unknown[], total = items.length) => ({ items, total });
+
 const finding = (over: Record<string, unknown> = {}) => ({
   id: 7, project_id: 1, title: 'Weak TLS on portal', severity: 'high', status: 'open', source: 'manual',
   owner_id: null, owner_name: null, evidence_annotation_id: null, vuln_id: null,
@@ -82,7 +85,7 @@ beforeEach(() => {
   projectRole.value = 'analyst';
   mocked.getFinding.mockResolvedValue(finding());
   mocked.getFindingHistory.mockResolvedValue([]);
-  mocked.getFindingNotes.mockResolvedValue([]);
+  mocked.getFindingNotes.mockResolvedValue(threadOf([]));
   mocked.listProjectMembers.mockResolvedValue([]);
   // The status route answers with the finding (its status as asked for).
   mocked.setFindingStatus.mockImplementation(async (_p: number, _id: number, status: string) => finding({ status }));
@@ -866,7 +869,7 @@ describe('FindingDetail — report text (v5.260.0)', () => {
   it('shows an image the text places, where it is placed, and offers it in the editor', async () => {
     URL.revokeObjectURL = vi.fn();
     mocked.getFindingImages.mockResolvedValue({ items: [image57], caption_max: 2000 });
-    mocked.getFindingNotes.mockResolvedValue([comment]);
+    mocked.getFindingNotes.mockResolvedValue(threadOf([comment]));
     mocked.getFinding.mockResolvedValue(finding({
       can_modify: true,
       report_text: reportText({ description: 'Relayed.\n\n![](evidence:57)\n\n![x](evidence:999)' }),
@@ -894,7 +897,7 @@ describe('FindingDetail — report text (v5.260.0)', () => {
     URL.revokeObjectURL = vi.fn();
     let release!: (v: unknown) => void;
     mocked.getFindingImages.mockReturnValue(new Promise((resolve) => { release = resolve; }));
-    mocked.getFindingNotes.mockResolvedValue([comment]);
+    mocked.getFindingNotes.mockResolvedValue(threadOf([comment]));
     mocked.getFinding.mockResolvedValue(finding({
       can_modify: true, report_text: reportText({ description: 'Relayed.\n\n![](evidence:57)' }),
     }));
@@ -918,7 +921,7 @@ describe('FindingDetail — report text (v5.260.0)', () => {
   it('says the images could not be loaded when the list fails — on the page and in the text — and retries', async () => {
     URL.revokeObjectURL = vi.fn();
     mocked.getFindingImages.mockRejectedValueOnce(new Error('boom'));
-    mocked.getFindingNotes.mockResolvedValue([]);
+    mocked.getFindingNotes.mockResolvedValue(threadOf([]));
     mocked.getFinding.mockResolvedValue(finding({
       can_modify: true, report_text: reportText({ description: '![](evidence:57)' }),
     }));
@@ -939,7 +942,7 @@ describe('FindingDetail — report text (v5.260.0)', () => {
     URL.revokeObjectURL = vi.fn();
     projectRole.value = 'viewer';
     mocked.getFindingImages.mockResolvedValue({ items: [{ ...image57, can_edit: false }], caption_max: 2000 });
-    mocked.getFindingNotes.mockResolvedValue([comment]);
+    mocked.getFindingNotes.mockResolvedValue(threadOf([comment]));
     mocked.getFinding.mockResolvedValue(finding({
       can_modify: false, report_text: reportText({ description: '![](evidence:57)' }),
     }));
@@ -1049,10 +1052,10 @@ describe('FindingDetail — the jump bar', () => {
         steps_to_reproduce: null, cvss_vector: null, cvss_score: null, cvss_score_from_vector: false,
       },
     }));
-    mocked.getFindingNotes.mockResolvedValue([
+    mocked.getFindingNotes.mockResolvedValue(threadOf([
       { id: 1, parent_id: null, body: 'one', author_id: 1, author_name: 'tester', created_at: '2026-10-01T10:00:00Z', attachments: [] },
       { id: 2, parent_id: null, body: 'two', author_id: 1, author_name: 'tester', created_at: '2026-10-01T11:00:00Z', attachments: [] },
-    ]);
+    ]));
     renderAt('/findings/7');
     await screen.findByText('Weak TLS on portal');
     // No proposals waiting and no test evidence: neither is offered.
@@ -1065,7 +1068,7 @@ describe('FindingDetail — the jump bar', () => {
   // it to the page from an effect).  Unknown is no count, never 0; a posted
   // comment moves it.
   it('the comment count follows the thread: none while unknown, then the thread’s own number', async () => {
-    let answer!: (notes: unknown[]) => void;
+    let answer!: (thread: unknown) => void;
     mocked.getFindingNotes.mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
     const note = (id: number) => ({
       id, parent_id: null, body: `note ${id}`, author_id: 1, author_name: 'tester',
@@ -1074,14 +1077,16 @@ describe('FindingDetail — the jump bar', () => {
     renderAt('/findings/7');
     await screen.findByText('Weak TLS on portal');
     await waitFor(async () => expect(await entries()).toContain('Comments & evidence'));
-    await act(async () => { answer([note(1)]); });
-    await waitFor(async () => expect(await entries()).toContain('Comments & evidence1'));
+    // The number is the THREAD's (the server's `total`), not how many
+    // comments this read brought: a long thread loads its newest only.
+    await act(async () => { answer(threadOf([note(1)], 140)); });
+    await waitFor(async () => expect(await entries()).toContain('Comments & evidence140'));
 
     mocked.createFindingNote.mockResolvedValue(note(2));
-    mocked.getFindingNotes.mockResolvedValue([note(1), note(2)]);
+    mocked.getFindingNotes.mockResolvedValue(threadOf([note(2), note(1)], 141));
     fireEvent.change(screen.getByLabelText('New comment'), { target: { value: 'note 2' } });
     fireEvent.click(screen.getByRole('button', { name: 'Comment' }));
-    await waitFor(async () => expect(await entries()).toContain('Comments & evidence2'));
+    await waitFor(async () => expect(await entries()).toContain('Comments & evidence141'));
     // One reader's worth of requests: the first read and the one after the post.
     expect(mocked.getFindingNotes).toHaveBeenCalledTimes(2);
   });

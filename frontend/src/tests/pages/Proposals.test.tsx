@@ -226,7 +226,7 @@ describe('Proposals page — a filter value it does not know', () => {
 describe('Proposals page — the bulk reject reason', () => {
   it('is named, says what it is for, and is sent with the decision', async () => {
     listProposals.mockResolvedValue({ total: 2, items: page(1, 2), has_more: false });
-    decideProposals.mockResolvedValue({ decided: [1, 2], failed: [] });
+    decideProposals.mockResolvedValue({ decided: [1, 2], failed: [], skipped: [] });
     render(<MemoryRouter initialEntries={['/proposals?scope=all']}><Proposals /></MemoryRouter>);
     fireEvent.click(await screen.findByRole('button', { name: /Reject all shown/ }));
     const reason = await screen.findByRole('textbox', { name: 'Why reject them? (optional)' });
@@ -244,7 +244,7 @@ describe('Proposals page — a bulk decision is at most 200, and says so', () =>
   const ids = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
   const open = async (n: number) => {
     listProposals.mockResolvedValue({ total: n, items: page(1, n), has_more: false });
-    decideProposals.mockImplementation(async (_projectId: number, sent: number[]) => ({ decided: sent, failed: [] }));
+    decideProposals.mockImplementation(async (_projectId: number, sent: number[]) => ({ decided: sent, failed: [], skipped: [] }));
     render(<MemoryRouter initialEntries={['/proposals?scope=all']}><Proposals /></MemoryRouter>);
     await screen.findByText(/j<\/kbd>|move,/);
   };
@@ -280,6 +280,76 @@ describe('Proposals page — a bulk decision is at most 200, and says so', () =>
     fireEvent.click(within(dialog).getByRole('button', { name: 'Accept all shown' }));
     await waitFor(() => expect(decideProposals).toHaveBeenCalledTimes(1));
     expect(decideProposals.mock.calls[0][1]).toEqual(ids(200));
+  });
+});
+
+// Review 2026-10-10 S1 (owner, 2026-10-11) — a bulk accept leaves a draft of a
+// section that was rewritten after the draft; the page says which, and why.
+describe('Proposals page — what a bulk accept left for one at a time', () => {
+  const REASON = 'This section was rewritten after the draft was made — accepting would replace that text. '
+    + 'Decide it on its own, with the current text beside the draft.';
+  const text = (id: number, over: Partial<Proposal> = {}): Proposal => ({
+    ...row(id), kind: 'finding_text', field: 'impact', finding_id: 100 + id, finding_host_id: null,
+    payload: { value: `Draft ${id}` }, current_value: `Text now ${id}`, base_value: null,
+    base_recorded: true, changed_since_proposed: false, ...over,
+  });
+  // 14 drafts; the sections of twelve were rewritten after their drafts —
+  // more than the notice names one by one.
+  const REWRITTEN = Array.from({ length: 12 }, (_, i) => i + 3);
+  const drafts = () => Array.from({ length: 14 }, (_, i) => text(i + 1, {
+    changed_since_proposed: REWRITTEN.includes(i + 1),
+  }));
+
+  it('names them with the reason, links each to where it is reviewed, and keeps them until decided', async () => {
+    let held = drafts();
+    listProposals.mockImplementation(async () => ({ total: held.length, items: held, has_more: false }));
+    decideProposals.mockImplementation(async (_projectId: number, sent: number[]) => {
+      const decided = sent.filter((id) => !REWRITTEN.includes(id));
+      held = held.filter((p) => !decided.includes(p.id));
+      return {
+        decided, failed: [],
+        skipped: REWRITTEN.map((id) => ({ id, reason: 'text_changed_since_proposed', detail: REASON })),
+      };
+    });
+    render(<MemoryRouter initialEntries={['/proposals?scope=all']}><Proposals /></MemoryRouter>);
+    await waitFor(() => expect(document.querySelectorAll('[data-proposal]')).toHaveLength(14));
+    expect(screen.queryByTestId('bulk-left-pending')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Accept all shown' }));
+    const dialog = await screen.findByRole('dialog');
+    // Said before the click, too.
+    expect(dialog).toHaveTextContent('rewritten after the draft was made is left pending too: decide those one at a time');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Accept all shown' }));
+
+    const notice = await screen.findByTestId('bulk-left-pending');
+    expect(notice).toHaveTextContent('12 not accepted.');
+    expect(notice).toHaveTextContent(REASON);
+    // The first ten by what they would replace, each a link to its finding …
+    const links = within(notice).getAllByRole('link');
+    expect(links).toHaveLength(10);
+    expect(links[0]).toHaveTextContent('Impact for “Finding 3”');
+    expect(links[0]).toHaveAttribute('href', '/findings/103#proposals');
+    // … and the rest counted.
+    expect(notice).toHaveTextContent('and 2 more');
+    // They are still in the list, pending; the two that were applied are not.
+    await waitFor(() => expect(document.querySelectorAll('[data-proposal]')).toHaveLength(12));
+
+    // One of them decided on its own leaves the notice.
+    held = held.filter((p) => p.id !== 3);
+    pollTick();
+    await waitFor(() => expect(screen.getByTestId('bulk-left-pending')).toHaveTextContent('11 not accepted.'));
+    expect(within(screen.getByTestId('bulk-left-pending')).queryByText('Impact for “Finding 3”')).toBeNull();
+  });
+
+  it('says nothing when the bulk accept skipped none', async () => {
+    const held = drafts().slice(0, 2);
+    listProposals.mockResolvedValue({ total: 2, items: held, has_more: false });
+    decideProposals.mockResolvedValue({ decided: [1, 2], failed: [], skipped: [] });
+    render(<MemoryRouter initialEntries={['/proposals?scope=all']}><Proposals /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept all shown' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Accept all shown' }));
+    await waitFor(() => expect(decideProposals).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('bulk-left-pending')).toBeNull();
   });
 });
 

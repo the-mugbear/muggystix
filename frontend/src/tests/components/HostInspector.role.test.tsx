@@ -100,6 +100,12 @@ describe('HostInspector — a project viewer reads the host', () => {
     expect(screen.queryByRole('button', { name: 'Assign this host' })).toBeNull();
     expect(screen.queryByRole('button', { name: /Add test/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Record result/ })).toBeNull();
+    // Setting a review status is a write (owner, 2026-10-11): the state is
+    // still read — the badge — and no control sets it.
+    expect(screen.getByText('Not reviewed')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Start review/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Mark reviewed/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Clear status/ })).toBeNull();
   });
 
   it('an auditor is a reader too; an analyst gets the composer and the test actions', async () => {
@@ -108,6 +114,7 @@ describe('HostInspector — a project viewer reads the host', () => {
     expect((await screen.findAllByText('todo-test')).length).toBeGreaterThan(0);
     expect(screen.queryByPlaceholderText(NOTE_PLACEHOLDER)).toBeNull();
     expect(screen.queryByRole('button', { name: /Add test/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Start review/ })).toBeNull();
     unmount();
 
     role.value = 'analyst';
@@ -117,6 +124,7 @@ describe('HostInspector — a project viewer reads the host', () => {
     expect(screen.getByRole('button', { name: 'Reply to note' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add a tag' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Add test/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Start review/ })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /Record result/ }).length).toBeGreaterThan(0);
   });
 });

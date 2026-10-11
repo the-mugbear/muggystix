@@ -99,3 +99,74 @@ def test_endpoint_state_validation(client, db_session, test_project):
     assert same.status_code == 200
     after = db_session.query(FindingStatusHistory).filter(FindingStatusHistory.finding_id == finding["id"]).count()
     assert after == before
+
+
+# ---------------------------------------------------------------------------
+# Review 2026-10-10 H2 — every writer of an endpoint's state is the one step
+# ---------------------------------------------------------------------------
+
+def _trail(db, finding_id):
+    return [
+        e.summary for e in db.query(FindingStatusHistory)
+        .filter(FindingStatusHistory.finding_id == finding_id)
+        .order_by(FindingStatusHistory.id)
+    ]
+
+
+def test_restoring_onto_an_attached_endpoint_is_the_one_step(client, db_session, test_project):
+    """``POST /findings/{id}/hosts {endpoints: [...]}`` for a host ALREADY on
+    the finding set its state with no check and no history line."""
+    finding, hosts = _finding_with_hosts(client, db_session, test_project.id, ["10.4.2.1", "10.4.2.2"])
+    url = f"/api/v1/projects/{test_project.id}/findings/{finding['id']}/hosts"
+    before = _trail(db_session, finding["id"])
+
+    # A value that is no endpoint state is refused, and nothing is stored.
+    for bad in ("confirmed", "x" * 300):
+        r = client.post(url, json={"endpoints": [{"host_id": hosts[0].id, "host_status": bad}]})
+        assert r.status_code == 422, r.text
+    db_session.expire_all()
+    assert {r.host_status for r in db_session.query(FindingHost).filter_by(finding_id=finding["id"])} == {"open"}
+    assert _trail(db_session, finding["id"]) == before
+
+    # A real state lands through the endpoint step: the row moves and the
+    # trail says which endpoint, from what, to what.
+    r = client.post(url, json={"endpoints": [{"host_id": hosts[0].id, "host_status": "remediated"}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["endpoint_status_counts"] == {"open": 1, "remediated": 1}
+    added = _trail(db_session, finding["id"])[len(before):]
+    assert len(added) == 1, added
+    assert "10.4.2.1" in added[0] and "open → remediated" in added[0]
+
+    # The same state again writes nothing.
+    r = client.post(url, json={"endpoints": [{"host_id": hosts[0].id, "host_status": "remediated"}]})
+    assert r.status_code == 200, r.text
+    assert len(_trail(db_session, finding["id"])) == len(before) + 1
+
+
+def test_removing_and_restoring_an_endpoint_is_on_the_trail(client, db_session, test_project):
+    finding, hosts = _finding_with_hosts(client, db_session, test_project.id, ["10.4.3.1", "10.4.3.2", "10.4.3.3"])
+    base = f"/api/v1/projects/{test_project.id}/findings/{finding['id']}"
+    row = next(h for h in finding["hosts"] if h["ip_address"] == "10.4.3.2")
+    assert client.patch(f"{base}/endpoints/{row['id']}", json={"host_status": "retest"}).status_code == 200
+    before = _trail(db_session, finding["id"])
+
+    # One endpoint row: the line names it and the state it was in.
+    assert client.delete(f"{base}/endpoints/{row['id']}").status_code == 200
+    added = _trail(db_session, finding["id"])[len(before):]
+    assert len(added) == 1 and "Removed endpoint 10.4.3.2" in added[0] and "retest" in added[0], added
+
+    # The Undo: the row is back in its state, and both steps are said.
+    r = client.post(f"{base}/hosts", json={"endpoints": [{"host_id": row["host_id"], "host_status": "retest"}]})
+    assert r.status_code == 200, r.text
+    assert {h["ip_address"]: h["host_status"] for h in r.json()["hosts"]}["10.4.3.2"] == "retest"
+    added = _trail(db_session, finding["id"])[len(before) + 1:]
+    assert len(added) == 2, added
+    assert "Restored endpoint 10.4.3.2" in added[0]
+    assert "10.4.3.2" in added[1] and "open → retest" in added[1]
+
+    # Every endpoint of a host.
+    before = _trail(db_session, finding["id"])
+    assert client.delete(f"{base}/hosts/{hosts[2].id}").status_code == 200
+    added = _trail(db_session, finding["id"])[len(before):]
+    assert len(added) == 1 and "Removed endpoint 10.4.3.3" in added[0] and "(was open)" in added[0], added
+    assert db_session.query(FindingHost).filter_by(finding_id=finding["id"], host_id=hosts[2].id).count() == 0

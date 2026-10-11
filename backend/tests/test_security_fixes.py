@@ -294,6 +294,7 @@ def test_scan_update_notifies_reviewer_of_updated_host_only(db_session, test_pro
 
     uploader = _make_user(db_session, "uploader3")
     reviewer = _make_user(db_session, "reviewer4")
+    _make_membership(db_session, test_project, reviewer)
     scan = models.Scan(project_id=test_project.id, filename="rescan.xml", tool_name="nmap")
     db_session.add(scan)
     db_session.flush()
@@ -383,3 +384,66 @@ def test_scan_update_skips_when_only_follower_is_uploader(db_session, test_proje
         scan_id=scan.id, actor_id=uploader.id,
     )
     assert created == []
+
+
+def test_scan_update_is_not_sent_to_people_no_longer_on_the_project(db_session, test_project):
+    """Review 2026-10-10 H25: a review row outlives its reviewer's membership,
+    and this notification alone did not ask who is on the project now — a
+    removed or deactivated reviewer was sent the scan's file name.  The same
+    re-scan tells each remaining reviewer once, with THEIR number of hosts,
+    and the re-observed hosts are never bound as a list of ids."""
+    from sqlalchemy import event
+
+    from app.db import models
+    from app.db.models import HostFollow, FollowStatus, HostScanHistory
+    from app.services.notification_service import NotificationService
+
+    uploader = _make_user(db_session, "uploader5")
+    stayed = _make_user(db_session, "stayed")
+    one_host = _make_user(db_session, "onehost")
+    removed = _make_user(db_session, "removed")
+    deactivated = _make_user(db_session, "deactivated")
+    for user in (uploader, stayed, one_host, deactivated):
+        _make_membership(db_session, test_project, user)
+    deactivated.is_active = False
+    scan = models.Scan(project_id=test_project.id, filename="client-dmz-rescan.xml", tool_name="nmap")
+    db_session.add(scan)
+    db_session.flush()
+    hosts = [
+        models.Host(project_id=test_project.id, ip_address=f"10.8.{i // 200}.{i % 200 + 1}", state="up")
+        for i in range(120)
+    ]
+    db_session.add_all(hosts)
+    db_session.flush()
+    db_session.add_all(
+        [HostScanHistory(host_id=h.id, scan_id=scan.id, host_created=False) for h in hosts]
+        + [HostFollow(host_id=h.id, user_id=stayed.id, status=FollowStatus.REVIEWED) for h in hosts]
+        + [HostFollow(host_id=h.id, user_id=removed.id, status=FollowStatus.IN_REVIEW) for h in hosts[:40]]
+        + [HostFollow(host_id=h.id, user_id=deactivated.id, status=FollowStatus.IN_REVIEW) for h in hosts[:40]]
+        + [HostFollow(host_id=hosts[7].id, user_id=one_host.id, status=FollowStatus.IN_REVIEW),
+           HostFollow(host_id=hosts[8].id, user_id=uploader.id, status=FollowStatus.IN_REVIEW)]
+    )
+    db_session.flush()
+
+    statements = []
+
+    def record(_conn, _cursor, statement, parameters, _context, _many):
+        statements.append((statement, parameters))
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", record)
+    try:
+        created = NotificationService(db_session).notify_followers_of_scan_update(
+            scan_id=scan.id, actor_id=uploader.id,
+        )
+    finally:
+        event.remove(bind, "before_cursor_execute", record)
+
+    told = {n.user_id: n for n in created}
+    assert set(told) == {stayed.id, one_host.id}
+    assert told[stayed.id].title.startswith("120 hosts") and told[stayed.id].host_id is None
+    assert told[one_host.id].title.startswith("1 host ") and told[one_host.id].host_id == hosts[7].id
+    assert all(n.project_id == test_project.id and n.source_id == scan.id for n in created)
+    # No statement carried the re-observed hosts: none has anywhere near 120
+    # bound values, whatever the number of hosts.
+    assert statements and max(len(params or ()) for _sql, params in statements) < 20

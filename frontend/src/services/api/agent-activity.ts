@@ -12,7 +12,8 @@ import { api, projectPath } from './client';
 export interface AgentApiCallRow {
   id: number;
   created_at: string;
-  agent_id: number;
+  /** Null once the agent is gone (its owner's account was deleted): the call is kept. */
+  agent_id: number | null;
   /** Who engaged this agent — joined from Agent.owner; null if deleted. */
   agent_name?: string | null;
   owner_id?: number | null;

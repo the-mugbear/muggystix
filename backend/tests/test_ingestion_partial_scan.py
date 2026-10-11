@@ -575,3 +575,117 @@ def test_a_cancelled_import_of_a_parser_that_now_commits_leaves_nothing(
     assert job.status == "failed" and "Cancelled" in (job.error_message or "")
     assert all_scan_ids(db_session) == []
     assert host_ips(db_session, pid) == []
+
+
+# ---------------------------------------------------------------------------
+# Review 2026-10-10 — H24 and the two notes beside it
+# ---------------------------------------------------------------------------
+
+def test_an_import_cancelled_after_its_last_heartbeat_keeps_its_upload_identity(
+    db_session, test_project, test_user, tmp_path,
+):
+    """A cancel that lands after the parser's last heartbeat finds the data
+    written: the scan is kept and named on the cancelled job.  It was kept
+    with no SHA-256, batch or uploader, so the duplicate guard did not know
+    the file was in the inventory and took it a second time."""
+    pid = test_project.id
+    path = nmap_file(tmp_path, 3, name="late-cancel.xml", net="10.77")
+    batch = models.ScanBatch(project_id=pid, label="one sweep", created_by_id=test_user.id)
+    db_session.add(batch)
+    db_session.flush()
+    batch_id, user_id, sha = batch.id, test_user.id, "ab" * 32
+    svc = IngestionService()
+    job_id = queue_file(db_session, pid, path)
+    db_session.query(models.IngestionJob).filter_by(id=job_id).update(
+        {"content_sha256": sha, "batch_id": batch_id, "submitted_by_id": user_id}
+    )
+    db_session.commit()
+
+    parse = svc._process_job
+
+    def parse_then_cancel(db, job):
+        result = parse(db, job)                   # every heartbeat of the run is behind it
+        assert svc.cancel_job(job_id) is True     # … and only now does the cancel land
+        return result
+
+    svc._process_job = parse_then_cancel  # type: ignore[method-assign]
+    run_next(db_session, svc)
+
+    job = job_row(db_session, job_id)
+    assert job.status == "failed" and "Cancelled after the import had written scan" in job.message
+    assert job.scan_id is not None and job.in_progress_scan_id is None
+    assert len(host_ips(db_session, pid)) == 3
+    scan = db_session.get(models.Scan, job.scan_id)
+    assert (scan.content_sha256, scan.batch_id, scan.uploaded_by_id) == (sha, batch_id, user_id)
+    # What that is for: the same file again is known to be this scan.
+    duplicate = IngestionService._find_duplicate(db_session, pid, sha)
+    assert duplicate is not None and duplicate.scan_id == scan.id
+    db_session.rollback()
+
+
+def test_a_failure_does_not_delete_the_scan_of_an_attempt_that_took_the_job_since(
+    db_session, test_project, monkeypatch,
+):
+    """``_fail_job_guarded`` commits the failure and THEN removes the scan the
+    row names.  A retry claimed in between leaves the row naming the new
+    attempt's live scan: read without the status, that scan was deleted."""
+    from app.services import ingestion_service as module
+
+    pid = test_project.id
+    claimed = datetime.now(timezone.utc).replace(microsecond=0)
+    live = models.Scan(project_id=pid, filename="retry.xml", tool_name="nmap", scan_type="nmap_xml")
+    db_session.add(live)
+    db_session.flush()
+    job = models.IngestionJob(
+        project_id=pid, filename="retry.xml", original_filename="retry.xml", storage_path="/nonexistent",
+        status="processing", started_at=claimed, last_heartbeat=claimed, retry_count=0,
+        options={"project_id": pid},
+    )
+    db_session.add(job)
+    db_session.commit()
+    job_id, live_id = job.id, live.id
+
+    fail = module._transitions.fail
+
+    def fail_then_another_worker_claims(db, jid, claimed_at, **cols):
+        written = fail(db, jid, claimed_at, **cols)
+        # The operator retried and another worker claimed, and its parser
+        # named its scan — all after this attempt's failure was written.
+        db.query(models.IngestionJob).filter_by(id=jid).update({
+            "status": "processing", "started_at": claimed + timedelta(seconds=5),
+            "in_progress_scan_id": live_id,
+        })
+        return written
+
+    monkeypatch.setattr(module._transitions, "fail", fail_then_another_worker_claims)
+    assert IngestionService()._fail_job_guarded(
+        db_session, job_id, claimed, error_message="boom", message=None, last_error="boom", parse_error_id=None,
+    ) is True
+
+    assert all_scan_ids(db_session) == [live_id]
+    assert job_row(db_session, job_id).in_progress_scan_id == live_id
+
+
+def test_a_failure_still_removes_its_own_attempts_scan(db_session, test_project):
+    """The other half: the row is still this attempt's failure, so the scan
+    it names is its leftover and goes."""
+    pid = test_project.id
+    claimed = datetime.now(timezone.utc).replace(microsecond=0)
+    leftover = models.Scan(project_id=pid, filename="own.xml", tool_name="nmap", scan_type="nmap_xml")
+    db_session.add(leftover)
+    db_session.flush()
+    job = models.IngestionJob(
+        project_id=pid, filename="own.xml", original_filename="own.xml", storage_path="/nonexistent",
+        status="processing", started_at=claimed, last_heartbeat=claimed, retry_count=0,
+        options={"project_id": pid}, in_progress_scan_id=leftover.id,
+    )
+    db_session.add(job)
+    db_session.commit()
+    job_id = job.id
+
+    assert IngestionService()._fail_job_guarded(
+        db_session, job_id, claimed, error_message="boom", message=None, last_error="boom", parse_error_id=None,
+    ) is True
+
+    assert job_row(db_session, job_id).status == "failed"
+    assert all_scan_ids(db_session) == []

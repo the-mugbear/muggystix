@@ -135,3 +135,22 @@ def test_systemic_html_endpoint_accepts_site(client, db_session, test_project):
     assert r.status_code == 200, r.text
     assert "Scoped to site: HQ" in r.text
     assert 'filename=systemic_insights_HQ_' in r.headers["content-disposition"]
+    # A plain ASCII name needs no second form.
+    assert "filename*" not in r.headers["content-disposition"]
+
+
+def test_a_site_name_in_another_script_still_downloads(client, db_session, test_project):
+    """Review 2026-10-10 H19: ``isalnum()`` is true for any script's letters,
+    so "東京" reached the header as it was and the response could not be
+    encoded — a 500."""
+    from urllib.parse import unquote
+
+    _estate_with_eol_blind_spot(db_session, test_project.id)
+    r = client.get(f"/api/v1/projects/{test_project.id}/reports/systemic.html", params={"site": "東京, 本社"})
+    assert r.status_code == 200, r.text
+    header = r.headers["content-disposition"]
+    header.encode("latin-1")                      # what a server must be able to do with it
+    plain, extended = header.split("; filename*=UTF-8''")
+    assert plain.startswith("attachment; filename=systemic_insights_") and plain.endswith(".html")
+    assert "," not in header and '"' not in header
+    assert unquote(extended).startswith("systemic_insights_東京--本社_")

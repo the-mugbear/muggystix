@@ -326,6 +326,80 @@ def login_throttle_exceeded(
     return False
 
 
+# Password re-authentication with a live token (review 2026-10-10, H26):
+# changing the password, turning 2FA off, regenerating the recovery codes.
+# The caller already holds a session, so the sign-in limits never see these —
+# and without a limit of their own a stolen bearer token was an unmetered
+# password oracle.  Counted the same way as failed sign-ins, from
+# ``audit_logs``: REAUTH_THROTTLE_FAILURES wrong passwords for the ACCOUNT in
+# LOGIN_THROTTLE_WINDOW_MINUTES, across the three routes and across addresses
+# (whoever holds the token chooses the address).  While it holds, the owner
+# cannot re-authenticate either; they can still sign in, and an administrator
+# can reset the password.
+REAUTH_FAILED_ACTIONS = ("password_change_failed", "password_reauth_failed")
+REAUTH_THROTTLE_FAILURES = LOGIN_LOCKOUT_FAILURES
+
+
+def reauth_password(
+    db: Session,
+    user: User,
+    password: str,
+    *,
+    failed_action: str = "password_reauth_failed",
+    purpose: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> bool:
+    """Check the signed-in ``user``'s password for a re-authenticating route.
+
+    True when it is right.  False when it is wrong — the failure is then
+    already in the audit log (``failed_action``, one of
+    ``REAUTH_FAILED_ACTIONS``), and the route answers as it always has.
+    Raises 429 BEFORE checking the password once the account has
+    ``REAUTH_THROTTLE_FAILURES`` recent failures, so a throttled caller learns
+    nothing about a further guess.
+
+    The one implementation for every route that asks a signed-in user for
+    their password; a new one calls this rather than ``verify_password``.
+    """
+    if failed_action not in REAUTH_FAILED_ACTIONS:
+        raise ValueError(f"{failed_action!r} is not counted by the re-authentication limit")
+    if db.get_bind().dialect.name == "postgresql":
+        # Parallel guesses are counted one at a time: held until this
+        # attempt's audit row (or the route's own change) commits.
+        db.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(literal(f"reauth:{user.id}"), 0)))
+        )
+    if login_throttle_exceeded(
+        db, username=user.username, ip_address=ip_address,
+        actions=REAUTH_FAILED_ACTIONS, per_username=REAUTH_THROTTLE_FAILURES,
+    ):
+        log_audit_event(
+            db=db, user_id=user.id, action="login_throttled",
+            details={"username": user.username, "stage": "reauth"},
+            success=False, error_message="Throttled",
+            ip_address=ip_address, user_agent=user_agent,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "Too many incorrect passwords. Try again in "
+                f"{LOGIN_THROTTLE_WINDOW_MINUTES} minutes."
+            ),
+        )
+    if verify_password(password, user.hashed_password):
+        return True
+    details = {"username": user.username}
+    if purpose:
+        details["purpose"] = purpose
+    log_audit_event(
+        db=db, user_id=user.id, action=failed_action, details=details,
+        success=False, error_message="Invalid current password",
+        ip_address=ip_address, user_agent=user_agent,
+    )
+    return False
+
+
 def check_permissions(user_role: str, required_role: str) -> bool:
     """Return True when ``user_role`` meets or exceeds ``required_role``.
 

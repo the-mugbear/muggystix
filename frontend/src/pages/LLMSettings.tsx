@@ -19,7 +19,10 @@ import {
   LLMProviderTypeOption,
   LLMProviderCreatePayload,
 } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
+import { useProject } from '../contexts/ProjectContext';
 import { useToast } from '../contexts/ToastContext';
+import { canWriteInSomeProject } from '../utils/projectRole';
 import { formatApiError } from '../utils/apiErrors';
 import { SettingsPage, useSecretSave, useSettingsReads } from '../components/settings/SecretSettingsShell';
 import { useConfirm } from '../hooks/useConfirm';
@@ -87,6 +90,11 @@ const emptyForm: LLMProviderCreatePayload = {
 
 const LLMSettings: React.FC = () => {
   const toast = useToast();
+  // A provider is for drafting report text, a project analyst's action: the
+  // server refuses add / change / test for an account that writes in no
+  // project (owner, 2026-10-11).  Such an account still sees and may delete
+  // the providers it has.  Hidden, not disabled.
+  const canManage = canWriteInSomeProject(useProject().projects, useAuth().user?.role);
   const [confirmEl, confirm] = useConfirm();
   const queryClient = useQueryClient();
   const providersQuery = useQuery({
@@ -221,18 +229,23 @@ const LLMSettings: React.FC = () => {
   const urlError = validateBaseUrl(form.base_url);
 
   return (
-    // Every user manages their OWN providers: the add button is everyone's.
+    // Every user manages their OWN providers; adding one is for an account
+    // that can draft somewhere (`canManage`), and the lead says so once.
     <SettingsPage
       title="LLM Providers"
-      lead={<>
+      lead={canManage ? <>
         Configure API keys and base URLs for hosted and local LLMs. API keys are encrypted at
         rest with a key derived from the app's SECRET_KEY.
+      </> : <>
+        A provider is used to draft report text, which needs the analyst role on a project.
+        This account has that role on no project, so it cannot add, change or test a provider;
+        it can remove the ones it has.
       </>}
-      action={(
+      action={canManage ? (
         <Button onClick={openNew}>
           <Plus className="size-4" aria-hidden /> Add Provider
         </Button>
-      )}
+      ) : undefined}
       error={error}
       onRetry={retryLoad}
     >
@@ -242,6 +255,7 @@ const LLMSettings: React.FC = () => {
         <Card>
           <CardContent className="flex flex-col items-center gap-sm p-xxl text-center">
             <p className="text-metadata text-muted-foreground">No LLM providers configured yet.</p>
+            {canManage && (<>
             <p className="text-caption text-muted-foreground">
               Add one to enable the in-app agent runtime. Cloud providers (OpenAI, Anthropic)
               require API keys; Ollama runs locally and needs only a base URL.
@@ -249,6 +263,7 @@ const LLMSettings: React.FC = () => {
             <Button onClick={openNew}>
               <Plus className="size-4" aria-hidden /> Add Your First Provider
             </Button>
+            </>)}
           </CardContent>
         </Card>
       ) : (
@@ -282,6 +297,7 @@ const LLMSettings: React.FC = () => {
                 </Badge>
                 <Separator className="my-sm" />
                 <div className="flex gap-xxs">
+                  {canManage && (<>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
@@ -313,6 +329,7 @@ const LLMSettings: React.FC = () => {
                     </TooltipTrigger>
                     <TooltipContent>Edit</TooltipContent>
                   </Tooltip>
+                  </>)}
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button

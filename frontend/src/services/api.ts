@@ -508,22 +508,22 @@ export const cancelReportJob = async (projectId: number, jobId: number): Promise
 };
 
 // --- AI-drafted narrative report (beta) --------------------------------------
-// Asks a configured LLM provider to draft a markdown report from the project's
-// promoted findings. The operator edits the returned draft — the AI never owns
-// the final text. Errors: 400 (user-fixable: no provider / no findings — the
-// reason is in `detail`), 502 (provider failure — generic `detail`).
+// Asks a configured LLM provider to draft a markdown summary of ONE client
+// report from the findings that report lists (the server builds it from the
+// report's own dataset). The operator edits the returned draft — the AI never
+// owns the final text. Errors: 400 (user-fixable: no provider / no findings —
+// the reason is in `detail`), 404 (no such report), 502 (provider failure —
+// generic `detail`).
 
 export interface DraftReportRequest {
+  /** The client report whose summary is drafted. */
+  report_id: number;
   /** Provider to use; omit to let the backend pick the user's default. */
   provider_id?: number;
   /** Optional free-text audience (e.g. "executive", "technical remediation"). */
   audience?: string;
   /** Optional free-text steering instructions for the draft. */
   instructions?: string;
-  /** Optional severity filter for the findings fed to the model. */
-  severities?: string[];
-  /** Optional status filter for the findings fed to the model. */
-  statuses?: string[];
 }
 
 export interface DraftReportResponse {
@@ -532,7 +532,7 @@ export interface DraftReportResponse {
   provider_id: number;
   provider_type: string;
   model_id: string | null;
-  /** How many promoted findings the draft was built from. */
+  /** How many findings the draft was built from — the ones the report lists. */
   finding_total: number;
   severity_counts: Record<string, number>;
   usage: Record<string, unknown> | null;

@@ -84,7 +84,7 @@ def test_hosts_list_accepts_the_params(client, db_session, test_project):
     body = client.get(f"/api/v1/projects/{test_project.id}/hosts/?weaknesses=smb_unsigned").json()
     items = body.get("items", body.get("hosts", body))
     assert [h["ip_address"] for h in items] == ["10.9.1.1"]
-    assert client.get(f"/api/v1/projects/{test_project.id}/hosts/?weaknesses=bogus").status_code == 400
+    assert client.get(f"/api/v1/projects/{test_project.id}/hosts/?weaknesses=bogus").status_code == 422
 
 
 def test_rows_and_detail_carry_the_flags(client, db_session, test_project):

@@ -673,9 +673,25 @@ page from `hooks/useUrlPage` (`{ pageSize, page: useUrlPage() }`): `?page=`,
 reader pages.  New deps — a filter, a tab — start from page 1, and a link to
 a tab or a filter never carries `page`.  Remediation, Remediation deadlines,
 the Operations tabs, Names, Segments, Ingestion Results, the audit log,
-Hosts and Scanner observations do.  A page the address names past the end steps back to the last page
+Hosts, Findings, the Scope editor's subnets and Scanner observations do.  A page the address names past the end steps back to the last page
 that exists — the hook's doing, on every one of them; a page writes no clamp
-of its own.
+of its own, and never reads `?page=` by hand (Findings did, until the review of 2026-10-10:
+closing the only finding of the last page said "No active findings" over the
+fifty on the page before).
+
+**Rows that are not the answer to what is asked now are dimmed AND inert.**
+While another filter, sort or page loads, the rows of the one before it may
+stay on screen (so the table does not collapse), but nothing acts on them:
+their wrapper carries the browser's `inert` (`{...inertWhen(rowsArePrevious)}`,
+`utils/uiStyles` — never `pointer-events-none`, which leaves every checkbox
+reachable by keyboard), no tick takes, and a bulk bar is paused until the
+answer is in ("Bulk actions are paused while the list loads." on Hosts).  A
+selection that spans pages is the FILTER's: it survives a page turn and is
+forgotten for good with the filter or search it was made under — hidden and
+brought back later, it can hold a row that was deleted or edited out of the
+search meanwhile.  A selection that feeds one request stops at that request's
+limit and says so (the Scope editor: 1,000 subnets, "the most one “Apply
+label” takes").
 
 **Every paged list has the same footer, at the foot of the list:**
 `components/operations/QueueParts.PagedFooter` — "51–100 of 120", chevrons
@@ -703,11 +719,14 @@ scan's own time is a labelled second line ("ran … · took 5m", or "ran … ·
 scanner clock, zone unknown") with its provenance on hover.  Only the
 all-files view sorted by when the scans ran shows that time first, headed
 "Ran", with "uploaded …" beneath and a dash where the file records none.
+The column follows the rows ON SCREEN: while the other view loads, the rows
+of the view before it keep the time they were listed by.
 Never one column that is one time on some rows and another on the rest.
 Dates are provenance: no row is judged old.
 
-Two of them are opened by links that name filters AND a page
-(`/hosts?q=…&page=4`; a same-page link on the audit log), and that page must
+Three of them are opened by links that name filters AND a page
+(`/hosts?q=…&page=4`; a same-page link on the audit log; the Findings queue a
+finding's page hands back), and that page must
 open.  They pass **`keepAddressPage: true`**: the page is the address's
 whenever the filters changed together with the address — a link, Back, the
 page's own control — and the hook does not take it out.  A control of such a

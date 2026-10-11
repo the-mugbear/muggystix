@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.db.models_auth import User, UserRecoveryCode
-from app.core.security import verify_password, log_audit_event
+from app.core.security import log_audit_event, reauth_password
 from app.api.deps import get_current_user, get_client_info
 from app.services import totp_service
 
@@ -154,7 +154,9 @@ def two_factor_enable(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No pending 2FA setup found. Start setup first.",
         )
-    if not totp_service.verify_code(secret, body.code):
+    # Spent as it is accepted, like a sign-in's: the code that confirmed the
+    # enrolment does not also complete a sign-in.
+    if not totp_service.accept_code(db, current_user, body.code):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="That code is incorrect. Check your authenticator and try again.")
 
     current_user.totp_enabled = True
@@ -177,7 +179,9 @@ def regenerate_recovery_codes(
     """Regenerate recovery codes (invalidates the old set). Password-gated."""
     if not current_user.totp_enabled:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Two-factor authentication is not enabled.")
-    if not verify_password(body.password, current_user.hashed_password):
+    if not reauth_password(
+        db, current_user, body.password, purpose="2fa_recovery_codes", **get_client_info(request),
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Incorrect password.")
     codes = _issue_recovery_codes(db, current_user)
     log_audit_event(
@@ -193,8 +197,12 @@ def two_factor_disable(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Turn off 2FA — requires the account password as re-auth."""
-    if not verify_password(body.password, current_user.hashed_password):
+    """Turn off 2FA — requires the account password as re-auth.  Wrong
+    passwords are counted (``security.reauth_password``): 429 once the
+    account's budget is spent."""
+    if not reauth_password(
+        db, current_user, body.password, purpose="2fa_disable", **get_client_info(request),
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Incorrect password.")
     current_user.totp_secret_encrypted = None
     current_user.totp_enabled = False

@@ -42,6 +42,20 @@ export const scrollBelowChrome = (extra = '0.75rem'): React.CSSProperties => ({
   scrollMarginTop: `calc(var(--topbar-h, 76px) + var(--secondary-nav-h, 0px) + ${extra})`,
 });
 
+/**
+ * Spread onto the wrapper of rows that are NOT the answer to what is asked
+ * now (the previous filter's or page's, kept on screen while the next loads):
+ * `<div {...inertWhen(rowsArePrevious)}>`.  The browser's `inert` takes the
+ * subtree out of clicks, focus, the tab order and the accessibility tree —
+ * `pointer-events-none` alone left every checkbox reachable by keyboard
+ * (review 2026-10-10, R9).
+ *
+ * As a spread and as the string "true": React 18 does not know the attribute
+ * (its types have no `inert`, and it writes an unknown attribute's string as
+ * given), and React 19, which does, reads "true" as on.
+ */
+export const inertWhen = (on: boolean): { inert?: string } => (on ? { inert: 'true' } : {});
+
 /* Re-import React's type only — kept inline to avoid a top-level React
  * import in a pure-utility module. */
 import type * as React from 'react';

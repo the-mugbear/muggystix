@@ -3682,7 +3682,7 @@
           "level": "discarded",
           "stored_as": [],
           "shown": null,
-          "note": "Lines with no status marker are dropped (or stored as a share while a share table is open); a `[+]` module line is kept as text — before 2.428.4 it was stored as a successful login by a user named after the result (\"VULNERABLE\"); hyphenated module names (MS17-010) match no pattern."
+          "note": "Lines with no status marker are dropped (or stored as a share while a share table is open); a `[+]` module line is kept as text — before 2.428.4 it was stored as a successful login by a user named after the result (\"VULNERABLE\"); hyphenated module names (MS17-010) match no pattern. A line whose first column is a module (or anything that is not one of nxc's protocols) still records the port it names as open, but never names the port's service after that column (2.490.0 — it used to: \"zerologon\" over \"smb\" on 445)."
         },
         {
           "what": "User, group, RID-brute and password-policy output",

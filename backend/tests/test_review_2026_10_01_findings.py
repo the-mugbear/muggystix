@@ -388,7 +388,7 @@ def test_bulk_decide_serializes_nothing(client, db_session, test_project, host, 
     monkeypatch.setattr(proposal_service, "serialize_many", lambda db, rows: calls.append(len(rows)) or real(db, rows))
     r = client.post(f"{_base(test_project)}/proposals/bulk", json={"ids": ids, "action": "accept"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"decided": ids, "failed": []}
+    assert r.json() == {"decided": ids, "failed": [], "skipped": []}
     assert calls == []
 
 

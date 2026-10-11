@@ -789,7 +789,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         </form>
       </PostureSection>
 
-      <AiDraftReportDialog open={aiOpen} onClose={() => setAiOpen(false)}
+      <AiDraftReportDialog reportId={reportId} open={aiOpen} onClose={() => setAiOpen(false)}
         useLabel="Use as the summary"
         onUse={(text) => edit({ executive_summary: text })} />
       {confirmDialog}

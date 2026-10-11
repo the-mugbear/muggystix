@@ -379,6 +379,11 @@ class ResponseTooLarge(ValueError):
     """An outbound response body exceeded the configured byte cap."""
 
 
+class RequestBudgetExceeded(TimeoutError):
+    """An outbound request took longer than its ``total_timeout`` — in all,
+    not in any one read."""
+
+
 def safe_request(
     method: str,
     url: str,
@@ -387,6 +392,7 @@ def safe_request(
     timeout: float = 15.0,
     verify: bool = True,
     max_bytes: int | None = None,
+    total_timeout: float | None = None,
     **kwargs,
 ):
     """Perform a single SSRF-safe request and return a fully-read
@@ -401,17 +407,96 @@ def safe_request(
     Raises :class:`ResponseTooLarge` (a ``ValueError``) if the body exceeds the
     cap; otherwise the returned response behaves like a normal buffered one
     (``.json()`` / ``.text`` / ``.status_code`` / ``.raise_for_status()``).
+
+    ``timeout`` bounds each PHASE (connect, each write, each read), which is
+    no bound on the request: a receiver that sends one byte of its headers or
+    body just inside every read timeout holds the caller for as long as it
+    likes.  ``total_timeout`` is the wall-clock budget for the whole request,
+    for a caller that cannot wait (the webhook sweep runs on the ingestion
+    worker's only thread — review 2026-10-10, H11).  When it runs out the
+    caller gets :class:`RequestBudgetExceeded` (a ``TimeoutError``) at once.
+
+    The budget is kept by doing the request on a helper thread and not waiting
+    for it past the deadline: nothing inside one blocking socket read can be
+    interrupted from Python, and the transport is deliberately untouched.  The
+    abandoned helper is not left to run for ever — the client is closed under
+    it, and it checks the deadline between chunks — so it ends with its
+    current read (at most one ``timeout`` later).
     """
+    if total_timeout is None:
+        return _safe_request(
+            method, url, allow_private=allow_private, timeout=timeout, verify=verify,
+            max_bytes=max_bytes, **kwargs,
+        )
+
+    import threading
+    import time
+
+    deadline = time.monotonic() + total_timeout
+    outcome: dict = {}
+    clients: list = []
+
+    def _run() -> None:
+        try:
+            outcome["response"] = _safe_request(
+                method, url, allow_private=allow_private,
+                timeout=min(timeout, total_timeout), verify=verify, max_bytes=max_bytes,
+                deadline=deadline, on_client=clients.append, **kwargs,
+            )
+        except BaseException as exc:  # noqa: BLE001 — handed to the caller below
+            outcome["error"] = exc
+
+    helper = threading.Thread(target=_run, name="safe-request", daemon=True)
+    helper.start()
+    helper.join(total_timeout)
+    if helper.is_alive():
+        for client in clients:
+            try:
+                client.close()
+            except Exception:  # best effort: the helper may be mid-read on it
+                pass
+        raise RequestBudgetExceeded(
+            f"no complete response from {urlparse(url).hostname} within {total_timeout:g}s"
+        )
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["response"]
+
+
+def _safe_request(
+    method: str,
+    url: str,
+    *,
+    allow_private: bool,
+    timeout: float,
+    verify: bool,
+    max_bytes: int | None,
+    deadline: float | None = None,
+    on_client=None,
+    **kwargs,
+):
+    """``safe_request``'s one request: send, stream to the cap, return the
+    read response.  ``deadline`` (``time.monotonic()``) is checked between
+    chunks; ``on_client`` is handed the client so a caller that stops waiting
+    can close it."""
+    import time
+
     from app.core.config import settings
 
     cap = settings.MAX_OUTBOUND_RESPONSE_BYTES if max_bytes is None else max_bytes
     with safe_http_client(allow_private=allow_private, timeout=timeout, verify=verify) as client:
+        if on_client is not None:
+            on_client(client)
         request = client.build_request(method, url, **kwargs)
         response = client.send(request, stream=True)
         try:
             total = 0
             chunks = []
             for chunk in response.iter_bytes():
+                if deadline is not None and time.monotonic() > deadline:
+                    raise RequestBudgetExceeded(
+                        f"the response from {response.url.host} was still arriving at the deadline"
+                    )
                 total += len(chunk)
                 if total > cap:
                     raise ResponseTooLarge(

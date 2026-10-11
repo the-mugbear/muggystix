@@ -122,3 +122,37 @@ def test_a_binary_upload_failure_is_recorded(db_session, test_project):
     assert error.error_message == "EyeWitness zip bundle contained no .json report"
     assert "\x00" not in error.file_preview
     assert error.file_preview.startswith("Binary data: 504b0304")
+
+
+@pytest.mark.parametrize("sort_order", ["asc", "desc"])
+def test_rows_that_tie_on_the_sort_column_page_without_repeating_or_skipping(
+    client, db_session, test_project, sort_order
+):
+    """Review 2026-10-10: sorted by a column every row shares (``status``),
+    the order had no tiebreaker, so each page read was free to order the ties
+    its own way — a row could be on two pages or on none.  The job id breaks
+    ties, newest first, in either direction of the sort."""
+    for i in range(25):
+        db_session.add(models.IngestionJob(
+            project_id=test_project.id, filename=f"stored-{i}.xml",
+            storage_path=f"/app/uploads/ingestion_queue/stored-{i}.xml",
+            original_filename=f"scan-{i}.xml", status="completed", tool_name="nmap",
+        ))
+    db_session.commit()
+    ids = [
+        row.id for row in db_session.query(models.IngestionJob.id)
+        .filter(models.IngestionJob.project_id == test_project.id)
+    ]
+    assert len(ids) == 25
+
+    paged = []
+    for skip in (0, 10, 20):
+        page = client.get(
+            f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results",
+            params={"sort_by": "status", "sort_order": sort_order, "skip": skip, "limit": 10},
+        )
+        assert page.status_code == 200, page.text
+        assert page.json()["total"] == 25
+        paged.extend(item["id"] for item in page.json()["items"])
+
+    assert paged == sorted(ids, reverse=True)

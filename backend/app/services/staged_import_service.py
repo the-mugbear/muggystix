@@ -503,22 +503,36 @@ def expire_staged_jobs(db: Session, *, max_age: timedelta = STAGED_MAX_AGE, now:
     # re-checks ``status = 'staged'`` once it has the lock, so a job that was
     # started a moment ago is not matched either). Unlocked, the sweep could
     # fail a job — and delete its file — between the start's check and write.
-    stale = (
-        db.query(IngestionJob)
+    from app.services.ingestion_service import _transitions
+    from app.services.job_transitions import JobNotTransitionable
+
+    stale_ids = [
+        job_id for (job_id,) in db.query(IngestionJob.id)
         .filter(IngestionJob.status == STAGED_STATUS, IngestionJob.created_at < cutoff)
+        .order_by(IngestionJob.id)
         .with_for_update(skip_locked=True)
-        .all()
-    )
-    for job in stale:
-        job.status = "failed"
-        msg = f"{EXPIRED_MESSAGE_PREFIX}: not started within {int(max_age.total_seconds() // 3600)} hours."
-        job.error_message = msg
-        job.message = msg
+    ]
+    msg = f"{EXPIRED_MESSAGE_PREFIX}: not started within {int(max_age.total_seconds() // 3600)} hours."
+    expired = 0
+    for job_id in stale_ids:
+        # The status write is the transition layer's, like every other: it
+        # reads the row again under the lock this transaction already holds
+        # and moves it only from ``staged``.
+        try:
+            job = _transitions.cancel(
+                db, job_id, allowed_from=(STAGED_STATUS,), to_status="failed",
+                error_message=msg, message=msg,
+            )
+        except JobNotTransitionable:
+            continue
+        if job is None:
+            continue
         job.completed_at = now
         # Under the row lock, like every removal of a job's file: after the
         # commit the job is ``failed`` and startable again, and a start could
         # pass its file check just before the file went.
         _remove_file_of_locked_job(job, now)
-    if stale:
+        expired += 1
+    if stale_ids:
         db.commit()
-    return len(stale)
+    return expired

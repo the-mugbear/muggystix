@@ -76,7 +76,15 @@ local WEB = { http = true, https = true, mailto = true }
 -- pandoc's own (`pandoc --list-extensions=gfm`); gfm has no fenced divs,
 -- attributes, bracketed spans or raw attributes, so a `::: {.bs-md …}` an
 -- author types is text, never one of this filter's placeholders.
-local READER = "gfm-raw_html-tex_math_dollars-tex_math_gfm"
+--
+-- And without metadata blocks (`-yaml_metadata_block`): gfm reads a
+-- `---` … `---` block anywhere in the text as the document's YAML metadata,
+-- and the blocks read from it then hold none of it — a section opening
+-- with "---\nAffected: all domain controllers\n---" printed without those
+-- lines, and one whose block is not valid YAML failed the render (pandoc
+-- exit 64), on an issue render after the report's number was taken.  With
+-- the extension off the lines are text (review 2026-10-10 H7).
+local READER = "gfm-raw_html-tex_math_dollars-tex_math_gfm-yaml_metadata_block"
 
 -- A Math node as the characters its author typed.
 local function math_source(el)

@@ -46,6 +46,9 @@ import {
 import { Textarea } from './ui/textarea';
 
 interface AiDraftReportDialogProps {
+  /** The client report the draft is for: the server builds it from the
+   *  findings THAT report lists, never from another selection. */
+  reportId: number;
   open: boolean;
   onClose: () => void;
   /** v5.261.0 — hand the (edited) draft to the caller, e.g. a report's
@@ -75,11 +78,11 @@ const wasCancelled = (err: unknown): boolean => {
 
 /**
  * "Draft with AI (beta)" — asks a configured LLM provider to draft a markdown
- * report from the project's promoted findings, then hands the raw markdown to
+ * summary from the findings this report lists, then hands the raw markdown to
  * the operator in an editable textarea. The AI drafts; the human owns the final
  * text (copy / download .md).
  */
-const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ open, onClose, onUse, useLabel }) => {
+const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ reportId, open, onClose, onUse, useLabel }) => {
   const navigate = useNavigate();
   const toast = useToast();
   const projectId = useProjectId();
@@ -146,6 +149,7 @@ const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ open, onClose
 
   const handleGenerate = () => {
     generate.mutate({
+      report_id: reportId,
       provider_id: providerId === '' ? undefined : providerId,
       audience: audience.trim() || undefined,
       instructions: instructions.trim() || undefined,
@@ -185,7 +189,7 @@ const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ open, onClose
             pinned and the page never overflows horizontally. */}
         <div className="min-w-0 space-y-sm overflow-y-auto">
           <p className="text-caption text-muted-foreground">
-            A configured LLM drafts a narrative report from this project&apos;s promoted findings.
+            A configured LLM drafts a narrative from the findings this report lists.
             The draft is <strong>yours to edit</strong> — nothing is saved or sent anywhere until
             you copy or download it.
           </p>

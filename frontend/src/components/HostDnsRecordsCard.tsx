@@ -109,6 +109,12 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId, embedde
             that didn&apos;t carry resolver attribution (CSV or amass).
           </p>
         )}
+        {data && data.total > data.items.length && (
+          // The count above is every record of the host; the list is cut.
+          <p className="text-caption text-muted-foreground">
+            The first {data.items.length} of {data.total} are listed below.
+          </p>
+        )}
         {loading && (
           <div className="flex items-center gap-xs text-caption text-muted-foreground">
             <Loader2 className="size-3.5 animate-spin" aria-hidden />

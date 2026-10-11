@@ -25,6 +25,7 @@ from app.db.session import get_db
 from app.db.models_agent import AgentApiCall, Agent, AgentFeedback, AgentSession
 from app.db.models_auth import User
 from app.db.models_project import Project
+from app.services.agent_api_log_service import withhold_private_content
 from app.services.agent_session_service import LISTED_WORKFLOWS
 
 router = APIRouter()
@@ -36,7 +37,8 @@ class AgentApiCallRow(BaseModel):
 
     id: int
     created_at: datetime
-    agent_id: int
+    # None once the agent's owner was deleted: the call is kept (a4f8c2e6b0d1).
+    agent_id: Optional[int] = None
     # Owner attribution — who engaged this agent.  Lets the UI label each
     # row and filter to "my agents", so one operator's calls aren't lost in
     # a project-wide firehose.  Joined from Agent.owner; null when the
@@ -140,9 +142,15 @@ def _serialize_rows(db: Session, rows: List[AgentApiCall]) -> List[AgentApiCallR
     items = []
     for r in rows:
         aname, oid, ouname = owners.get(r.agent_id, (None, None, None))
+        # A remediation call's content is not in the log; a row written before
+        # that rule is answered as if it had been (one function, both sides).
+        body, query = withhold_private_content(r.path, r.request_body_summary, r.query_params)
         items.append(
             AgentApiCallRow.model_validate(r).model_copy(
-                update={"agent_name": aname, "owner_id": oid, "owner_username": ouname}
+                update={
+                    "agent_name": aname, "owner_id": oid, "owner_username": ouname,
+                    "request_body_summary": body, "query_params": query,
+                }
             )
         )
     return items

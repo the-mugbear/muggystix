@@ -147,8 +147,11 @@ def test_assigned_predicate_resolves_username(db_session, test_project, member):
     ids_by_name = {h.id for h in db_session.query(models.Host).filter(pred_name).all()}
     ids_by_id = {h.id for h in db_session.query(models.Host).filter(pred_id).all()}
     assert ids_by_name == ids_by_id == {host.id}
-    # An unknown username yields no filter (None), not a crash.
-    assert assigned_predicate(db_session, "no-such-user", member) is None
+    # An unknown username is refused — never "no filter" (it used to be None,
+    # which the Hosts filter read as the whole project).
+    from app.services.host_query_predicates import UnknownAssignee
+    with pytest.raises(UnknownAssignee):
+        assigned_predicate(db_session, "no-such-user", member)
 
 
 # ---------------------------------------------------------------------------

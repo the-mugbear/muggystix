@@ -323,6 +323,25 @@ describe('Report detail — draft', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Issue report/ })).toBeEnabled());
   });
 
+  // Review 2026-10-10 H10 — the draft is asked for THIS report: the server
+  // builds it from the findings the report lists, not from its own selection.
+  it('"Draft with AI" names the report it drafts the summary of', async () => {
+    mocked.getClientReport.mockResolvedValue(report());
+    mocked.listLLMProviders.mockResolvedValue([{ id: 3, name: 'local', provider_type: 'ollama', model_id: 'm', is_default: true }]);
+    mocked.draftReportWithAI.mockResolvedValue({
+      content: 'Two criticals.', provider_id: 3, provider_type: 'ollama', model_id: 'm',
+      finding_total: 4, severity_counts: { critical: 1 }, usage: null,
+    });
+    renderDetail();
+    fireEvent.click(await screen.findByRole('button', { name: /Draft with AI/ }));
+    const generate = await screen.findByRole('button', { name: 'Generate draft' });
+    await waitFor(() => expect(generate).toBeEnabled());
+    fireEvent.click(generate);
+    await waitFor(() => expect(mocked.draftReportWithAI).toHaveBeenCalledWith(
+      1, expect.objectContaining({ report_id: 5, provider_id: 3 }), expect.anything(),
+    ));
+  });
+
   it('issues only after confirmation', async () => {
     const issuedReport = report({ status: 'issued', number: 3, render_status: 'pending', can_edit: false, can_issue: false });
     // First load: the draft; afterwards (the render poll): the issued report.

@@ -334,7 +334,7 @@ def test_the_caption_travels_with_the_comment_thread(client, db_session, test_pr
     finding = _finding(db_session, test_project)
     att = _image(client, test_project, finding)
     _patch(client, test_project, att, caption="What it shows")
-    notes = client.get(f"{_base(test_project)}/findings/{finding.id}/notes").json()
+    notes = client.get(f"{_base(test_project)}/findings/{finding.id}/notes").json()["items"]
     assert notes[0]["attachments"][0]["caption"] == "What it shows"
 
 

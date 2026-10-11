@@ -13,10 +13,12 @@ ciphertext doesn't help against the other).
 
 import base64
 import hashlib
+import hmac
 import io
 import logging
 import re
 import secrets
+import time
 from typing import List, Optional
 
 import pyotp
@@ -25,8 +27,11 @@ import qrcode.image.svg
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.db.models_auth import User
 
 logger = logging.getLogger(__name__)
 
@@ -102,17 +107,61 @@ def normalize_secret(raw: str) -> Optional[str]:
     return cleaned
 
 
-def verify_code(secret_b32: str, code: str) -> bool:
-    """True if ``code`` is a currently-valid TOTP for ``secret_b32``."""
+def code_time_step(secret_b32: str, code: str, *, now: Optional[float] = None) -> Optional[int]:
+    """The RFC 6238 time step ``code`` is valid for — the current one or one
+    of its ``_VALID_WINDOW`` neighbours — or None when it is valid for none.
+
+    Pure: it says a code is RIGHT, not that it may be used.  A right code is
+    used through :func:`accept_code`, which lets each step through once.
+    """
     if not secret_b32 or not code:
-        return False
+        return None
     code = re.sub(r"\s+", "", code)
     if not code.isdigit():
-        return False
+        return None
     try:
-        return pyotp.TOTP(secret_b32).verify(code, valid_window=_VALID_WINDOW)
+        totp = pyotp.TOTP(secret_b32)
+        current = int(time.time() if now is None else now) // totp.interval
+        # Newest first: when a code is right for two steps (one chance in a
+        # million) the later one is recorded, which refuses both afterwards.
+        for step in range(current + _VALID_WINDOW, current - _VALID_WINDOW - 1, -1):
+            if hmac.compare_digest(totp.generate_otp(step), code):
+                return step
     except Exception:
+        return None
+    return None
+
+
+def accept_code(db: Session, user: User, code: str, *, now: Optional[float] = None) -> bool:
+    """True when ``code`` is a valid authenticator code for ``user`` that has
+    not been accepted before; it is then spent.  COMMITS.
+
+    A TOTP code is valid for its 30-second step and the neighbours on either
+    side, so without a memory the same six digits were accepted again and
+    again for about 90 seconds (review 2026-10-10, H26) — by anyone who saw
+    them typed, or took them off the wire with the challenge token.
+    ``users.totp_last_step`` is that memory: a code for that step or an
+    earlier one is refused (RFC 6238 §5.2).  The claim is ONE conditional
+    UPDATE, so of two requests carrying the same code exactly one wins, and it
+    is committed here so that nothing later in the request can un-spend it.
+
+    This is the one place a TOTP code is accepted: sign-in's second step and
+    the confirmation of an enrolment both come here.  Wrong codes are counted
+    by the callers, from the audit log; this column is not a limit.
+    """
+    step = code_time_step(decrypt_secret(user.totp_secret_encrypted) or "", code, now=now)
+    if step is None:
         return False
+    spent = (
+        db.query(User)
+        .filter(
+            User.id == user.id,
+            or_(User.totp_last_step.is_(None), User.totp_last_step < step),
+        )
+        .update({User.totp_last_step: step}, synchronize_session=False)
+    )
+    db.commit()
+    return spent == 1
 
 
 def provisioning_uri(secret_b32: str, account_name: str) -> str:

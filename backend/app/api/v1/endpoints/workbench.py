@@ -25,9 +25,9 @@ from app.db.session import get_db
 from app.db.models import OperationsCursor
 from app.db.cursor_upsert import upsert_user_project_cursor
 from app.db.models_auth import User
-from app.db.models_project import Project
+from app.db.models_project import Project, ProjectRole
 from app.api.deps import get_current_user
-from app.api.deps import get_current_project
+from app.api.deps import get_current_project, require_project_role
 from app.api.params import FindingNeedParam
 # CR4-2 — depend on services, not other routers' handlers.  The composition
 # (and "since last visit") lives in workbench_service (v2.428.0) so the agent
@@ -299,6 +299,8 @@ def get_address_terrain(
     "/followups/still-reviewed",
     response_model=StillReviewedResponse,
     summary="'Still reviewed': the caller saw what changed after their review and it stands — re-stamp the review date",
+    # "Whoever may set their own review status" — that route's floor.
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
 def mark_still_reviewed(
     body: StillReviewedRequest,

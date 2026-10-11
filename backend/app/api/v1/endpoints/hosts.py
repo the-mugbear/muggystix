@@ -9,9 +9,8 @@ envelope assembly.
 
 import logging
 from pathlib import Path
-from typing import Any, List, Optional, Dict
+from typing import Any, List, Optional, Dict, Set
 from datetime import datetime
-import ipaddress
 import json
 import itertools
 import time
@@ -50,8 +49,8 @@ from pydantic import BaseModel, ConfigDict
 from app.services.vulnerability_service import VulnerabilityService
 from app.services.host_follow_service import HostFollowService
 from app.services.host_query import (
-    SERVICE_PORT_MAPPINGS,
     escape_like as _escape_like,
+    port_filter_conditions as _port_filter_conditions,
     build_filtered_host_query as _build_filtered_host_query,
     apply_host_sorting as _apply_host_sorting,
     HOST_SORT_FIELDS,
@@ -643,26 +642,16 @@ def get_hosts_v2(
         ):
             check_id_map.setdefault(hid, []).append(cid)
 
-    # Batch lookup: each host's MOST-SPECIFIC (longest-prefix) subnet + site,
-    # so the Host column can show where the host lives.  Bounded by the page's
-    # host_ids (paginated), not the whole project.  Most-specific-wins mirrors
-    # the insights/attention resolution so overlapping ranges agree.
-    host_location_map: Dict[int, dict] = {}
-    if host_ids:
-        best_prefix: Dict[int, int] = {}
-        for hid, cidr, site in (
-            db.query(models.HostSubnetMapping.host_id, models.Subnet.cidr, models.Subnet.site)
-            .join(models.Subnet, models.HostSubnetMapping.subnet_id == models.Subnet.id)
-            .filter(models.HostSubnetMapping.host_id.in_(host_ids))
-            .all()
-        ):
-            try:
-                pfx = ipaddress.ip_network(cidr, strict=False).prefixlen
-            except ValueError:
-                pfx = 0
-            if hid not in best_prefix or pfx > best_prefix[hid]:
-                best_prefix[hid] = pfx
-                host_location_map[hid] = {"subnet": cidr, "site": site}
+    # Each host's most-specific subnet and its site, so the Host column can
+    # show where the host lives — the ONE host→site rule
+    # (``resolve_host_locations``: the site is inherited from the nearest
+    # site-bearing subnet, as Posture and ``site:`` count it), asked for the
+    # page's hosts only.
+    from app.services.subnet_insight_service import resolve_host_locations
+    host_location_map: Dict[int, dict] = {
+        hid: {"subnet": loc["cidr"], "site": loc["site"]}
+        for hid, loc in resolve_host_locations(db, project.id, host_ids=host_ids).items()
+    }
 
     # v2.344.0 — the same three coverage states the detail card shows
     # (subnet / reachable via in-scope name / none), so the list can't call a
@@ -1708,12 +1697,14 @@ def get_host_dns_records(
     if host.hostname:
         filters.append(models.DNSRecord.domain == host.hostname)
 
+    # ONE filter for the rows, their count and the two summaries: ``limit``
+    # cuts the rows only, so the card's "N records", resolvers and types
+    # describe every record of the host, not the first page of them.
+    matching = (models.DNSRecord.project_id == project.id, or_(*filters))
+    total = db.query(func.count(models.DNSRecord.id)).filter(*matching).scalar() or 0
     rows = (
         db.query(models.DNSRecord)
-        .filter(
-            models.DNSRecord.project_id == project.id,
-            or_(*filters),
-        )
+        .filter(*matching)
         .order_by(
             models.DNSRecord.record_type.asc(),
             models.DNSRecord.domain.asc(),
@@ -1739,8 +1730,16 @@ def get_host_dns_records(
     # Distinct resolver + record-type lists, preserved in stable
     # alphabetical order so the frontend can render summary pills
     # without a second client-side pass.
-    resolvers = sorted({r.resolver_name for r in rows if r.resolver_name})
-    record_types = sorted({r.record_type for r in rows if r.record_type})
+    if total > len(rows):
+        def _distinct(column):
+            return sorted(
+                v for (v,) in db.query(column).filter(*matching).distinct().all() if v
+            )
+        resolvers = _distinct(models.DNSRecord.resolver_name)
+        record_types = _distinct(models.DNSRecord.record_type)
+    else:
+        resolvers = sorted({r.resolver_name for r in rows if r.resolver_name})
+        record_types = sorted({r.record_type for r in rows if r.record_type})
     project_total = (
         db.query(func.count(models.DNSRecord.id))
         .filter(models.DNSRecord.project_id == project.id)
@@ -1748,7 +1747,7 @@ def get_host_dns_records(
     ) or 0
     return HostDnsRecordsResponse(
         items=items,
-        total=len(items),
+        total=total,
         resolvers=resolvers,
         record_types=record_types,
         project_total=project_total,
@@ -1983,16 +1982,12 @@ def get_tool_ready_hosts(
         if total_count > TOOL_READY_ENTITY_CAP:
             response_headers["X-Tool-Ready-Truncated"] = "true"
             response_headers["X-Tool-Ready-Limit"] = str(TOOL_READY_ENTITY_CAP)
-        # The per-host port narrowing in _generate_tool_output reuses the
-        # same port-dimension filters the query applied, sourced from the
-        # shared bundle.
-        output_filters = {
-            "search": filters.search,
-            "ports": filters.ports,
-            "services": filters.services,
-            "port_states": filters.port_states,
-            "has_open_ports": filters.has_open_ports,
-        }
+        # Which ports each host's lines carry: the ones the query's own port
+        # conditions match (formats that emit no port skip the read).
+        emits_ports = format in _NEEDS_PORT_DATA or (format == "json" and include_ports)
+        output_filters = (
+            _filter_matched_port_ids(db, [h.id for h in hosts], filters) if emits_ports else None
+        )
         names_by_host = (
             _current_names_for_hosts(
                 db, project.id, [h.id for h in hosts], in_scope_only=in_scope_names_only,
@@ -2010,74 +2005,47 @@ def get_tool_ready_hosts(
     )
 
 
-def _get_filtered_output_ports(
-    host: models.Host,
-    filters: Optional[Dict[str, Optional[str | bool]]] = None,
-) -> List[models.Port]:
-    filters = filters or {}
-    ports = list(host.ports or [])
+def _filter_matched_port_ids(
+    db: Session, host_ids: List[int], filters: HostFilterParams,
+) -> Optional[Set[int]]:
+    """The ids of the selected hosts' ports that the discrete port filters
+    (``ports`` / ``services`` / ``port_states`` / ``has_open_ports=true``)
+    mean, or ``None`` when no such filter narrows a port.
 
-    port_values = {
-        int(value.strip())
-        for value in (filters.get("ports") or "").split(",")
-        if value and value.strip().isdigit()
-    }
-    if port_values:
-        ports = [port for port in ports if port.port_number in port_values]
+    Decided by the host filter's OWN conditions
+    (``host_query.port_filter_conditions``), evaluated by the database — the
+    export used to re-implement them in Python and drifted (it still expanded
+    a service name to "standard" ports after the filter stopped doing so).
 
-    service_values = [
-        value.strip().lower()
-        for value in (filters.get("services") or "").split(",")
-        if value and value.strip()
-    ]
-    if service_values:
-        service_ports = {
-            mapped_port
-            for service in service_values
-            for mapped_port in SERVICE_PORT_MAPPINGS.get(service, [])
-        }
-        ports = [
-            port for port in ports
-            if (
-                (port.service_name and any(service in port.service_name.lower() for service in service_values))
-                or port.port_number in service_ports
-            )
-        ]
-
-    # v2.403.0 — the query's rule: a port/service condition keeps OPEN ports
-    # unless a state was named (`any` = every state).
-    port_state_values = P.resolve_endpoint_states(
-        (filters.get("port_states") or "").split(","),
-        has_endpoint=bool(port_values or service_values),
+    ``search`` and ``q`` choose HOSTS and narrow no port: a search that
+    matched an address used to strip every port of the host (its port text
+    does not contain the address), leaving a web-target list empty."""
+    conditions = _port_filter_conditions(
+        ports=filters.ports, services=filters.services,
+        port_states=filters.port_states, has_open_ports=filters.has_open_ports,
     )
-    if port_state_values:
-        ports = [port for port in ports if (port.state or "").lower() in port_state_values]
+    if not conditions or not host_ids:
+        return None
+    matched: Set[int] = set()
+    for start in range(0, len(host_ids), 1000):
+        chunk = host_ids[start:start + 1000]
+        matched.update(
+            pid for (pid,) in db.query(models.Port.id)
+            .filter(models.Port.host_id.in_(chunk), *conditions)
+            .all()
+        )
+    return matched
 
-    if filters.get("has_open_ports"):
-        ports = [port for port in ports if port.state == 'open']
 
-    search_value = (filters.get("search") or "").strip().lower()
-    if search_value:
-        if search_value.isdigit():
-            search_port = int(search_value)
-            ports = [
-                port for port in ports
-                if port.port_number == search_port
-                or (port.service_name and search_value in port.service_name.lower())
-                or (port.service_product and search_value in port.service_product.lower())
-            ]
-        else:
-            mapped_ports = set(SERVICE_PORT_MAPPINGS.get(search_value, []))
-            ports = [
-                port for port in ports
-                if (
-                    (port.service_name and search_value in port.service_name.lower())
-                    or (port.service_product and search_value in port.service_product.lower())
-                    or port.port_number in mapped_ports
-                )
-            ]
-
-    return ports
+def _get_filtered_output_ports(
+    host: models.Host, matched_port_ids: Optional[Set[int]] = None,
+) -> List[models.Port]:
+    """The host's ports the export emits: all of them, or those among
+    ``matched_port_ids`` when a port filter is in force."""
+    ports = list(host.ports or [])
+    if matched_port_ids is None:
+        return ports
+    return [port for port in ports if port.id in matched_port_ids]
 
 
 # Formats whose output uses the names currently bound to each address.
@@ -2128,7 +2096,7 @@ def _current_names_for_hosts(
 
 
 def _web_urls_for_host(
-    host: models.Host, filters: Optional[Dict[str, Optional[str | bool]]], names: List[str],
+    host: models.Host, filters: Optional[Set[int]], names: List[str],
 ) -> List[str]:
     """URLs for the host's open web ports: one per (bound name, port), or the
     IP URL per port when no bound name qualifies.  Empty when the host has no
@@ -2154,7 +2122,7 @@ def _generate_tool_output(
     hosts: List[models.Host],
     format: str,
     include_ports: bool = False,
-    filters: Optional[Dict[str, Optional[str | bool]]] = None,
+    filters: Optional[Set[int]] = None,
     names_by_host: Optional[Dict[int, List[str]]] = None,
 ) -> str:
     names_by_host = names_by_host or {}

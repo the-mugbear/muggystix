@@ -36,7 +36,8 @@ from app.db import (  # noqa: F401
 EXPECTED_ONDELETE = {
     ('activity_cursors', 'project_id'): 'CASCADE',
     ('activity_cursors', 'user_id'): 'CASCADE',
-    ('agent_api_calls', 'agent_id'): 'CASCADE',
+    # a4f8c2e6b0d1 — the call log outlives its agent (and so a deleted account).
+    ('agent_api_calls', 'agent_id'): 'SET NULL',
     ('agent_api_calls', 'agent_session_id'): 'SET NULL',
     # v2.300.0 — rate-limit buckets die with their agent; a counter for a
     # deleted agent can never be consulted again.

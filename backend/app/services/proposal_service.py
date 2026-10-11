@@ -698,6 +698,52 @@ def competing_drafts(db: Session, project_id: int, ids: Iterable[int]) -> set:
     return {pid for group in by_field.values() if len(group) > 1 for pid in group}
 
 
+REWRITTEN_SINCE_PROPOSED = "text_changed_since_proposed"
+REWRITTEN_SINCE_PROPOSED_DETAIL = (
+    "This section was rewritten after the draft was made — accepting would replace that text. "
+    "Decide it on its own, with the current text beside the draft."
+)
+
+
+def text_changed_since_proposed(proposal: AgentProposal, current_value: Optional[str]) -> Optional[bool]:
+    """Whether a report-text proposal's field no longer reads as it did when
+    the draft was made — THE comparison (what a reviewer is warned by on a
+    single proposal, and what a bulk accept skips by).
+
+    ``None`` = not known: the proposal is of another kind, or was made before
+    the field's text was recorded with it (``payload.base_value``, 2.454.0).
+    Unknown is never "unchanged" and never "changed": a single proposal shows
+    no warning for it, and a bulk accept does not skip it."""
+    payload = proposal.payload or {}
+    if proposal.kind != ProposalKind.FINDING_TEXT.value or "base_value" not in payload:
+        return None
+    return (payload.get("base_value") or "").strip() != (current_value or "").strip()
+
+
+def rewritten_since_proposed(db: Session, proposal: AgentProposal) -> bool:
+    """A PENDING report-text proposal whose section a person has rewritten
+    since the draft — read now, so call it with the decision's locks held
+    (``lock_for_decision``: the finding, then the proposal).  A bulk accept
+    leaves such a proposal pending (owner decision 2026-10-11): one click on
+    "Accept all shown" must not replace text nobody compared the draft with,
+    and report text has no history to get it back from."""
+    if (
+        proposal.kind != ProposalKind.FINDING_TEXT.value
+        or proposal.status != ProposalStatus.PENDING.value
+        or proposal.finding_id is None
+        or proposal.field not in TEXT_FIELDS
+    ):
+        return False
+    # The column, not the entity: a Finding already in the session would be
+    # answered from its pre-lock state.
+    current = (
+        db.query(getattr(Finding, proposal.field))
+        .filter(Finding.id == proposal.finding_id, Finding.project_id == proposal.project_id)
+        .scalar()
+    )
+    return text_changed_since_proposed(proposal, current) is True
+
+
 def reject_proposal(db: Session, proposal: AgentProposal, user: User, *, note: Optional[str] = None) -> AgentProposal:
     _require_pending(proposal)
     proposal.status = ProposalStatus.REJECTED.value
@@ -850,8 +896,8 @@ def serialize_proposal(proposal: AgentProposal, current: Optional[Dict[int, Find
     base_recorded = proposal.kind == ProposalKind.FINDING_TEXT.value and "base_value" in payload
     base_value = payload.get("base_value") if base_recorded else None
     changed_since_proposed = None
-    if base_recorded and proposal.status == ProposalStatus.PENDING.value and current and proposal.finding_id in current:
-        changed_since_proposed = (base_value or "").strip() != (current_value or "").strip()
+    if proposal.status == ProposalStatus.PENDING.value and current and proposal.finding_id in current:
+        changed_since_proposed = text_changed_since_proposed(proposal, current_value)
     name = lambda u: (u.full_name or u.username) if u is not None else None  # noqa: E731
     return {
         "id": proposal.id,

@@ -112,6 +112,38 @@ def test_the_problems_endpoint_lists_them(client, test_project, tmp_path, monkey
     assert res.json() == [{"name": "no-manifest", "error": "The folder has no template.json."}]
 
 
+def test_the_problems_endpoint_is_the_global_administrators(client, db_session, test_project, tmp_path, monkeypatch):
+    """Documented as global-admin and served to any member (review
+    2026-10-10): a problem's detail can name a path on the server.  A
+    PROJECT admin is not a global one."""
+    from datetime import datetime, timezone
+
+    from app.api.deps import get_current_user
+    from app.db.models_auth import User, UserRole
+    from app.db.models_project import ProjectMembership, ProjectRole
+    from app.main import app
+
+    root = tmp_path / "report-templates"
+    (root / "no-manifest").mkdir(parents=True)
+    monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(root))
+    member = User(
+        id=611, username="padmin", email="padmin@example.com", full_name="P Admin", hashed_password="x",
+        role=UserRole.MEMBER, is_active=True, created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(member)
+    db_session.flush()
+    db_session.add(ProjectMembership(project_id=test_project.id, user_id=member.id, role=ProjectRole.ADMIN.value))
+    db_session.commit()
+    app.dependency_overrides[get_current_user] = lambda: member
+
+    res = client.get(f"/api/v1/projects/{test_project.id}/client-reports/templates/problems")
+
+    assert res.status_code == 403
+    assert "no-manifest" not in res.text
+    # The templates that ARE offered stay every reader's.
+    assert client.get(f"/api/v1/projects/{test_project.id}/client-reports/templates").status_code == 200
+
+
 # --- the executive brief -------------------------------------------------------------
 
 @needs_templates

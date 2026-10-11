@@ -7,6 +7,9 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.db.models_findings import FindingHostStatus
+from app.schemas.schemas import Annotation as AnnotationSchema
+
 
 class FindingEndpointSegment(BaseModel):
     """The network segment an affected host belongs to — the project's one
@@ -241,6 +244,13 @@ class FindingNoteUpdate(BaseModel):
     body: str = Field(..., min_length=1, max_length=16384)
 
 
+class FindingNotePage(BaseModel):
+    """GET /findings/{id}/notes — a page of the thread, newest first.
+    ``total`` is every comment on the finding, whatever the page."""
+    items: List[AnnotationSchema]
+    total: int
+
+
 class FindingStatusUpdateRequest(BaseModel):
     status: str
     summary: Optional[str] = None
@@ -251,7 +261,8 @@ class FindingEndpointRef(BaseModel):
     endpoint, optionally with the per-endpoint status to restore (Undo)."""
     host_id: int
     name_id: Optional[int] = None
-    host_status: Optional[str] = None
+    # An endpoint state or nothing: anything else is a 422.
+    host_status: Optional[FindingHostStatus] = None
 
 
 class FindingHostsRequest(BaseModel):

@@ -75,16 +75,21 @@ interface AuthProviderProps {
 
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  // Another user's data is never in the query cache: what the previous user
-  // read (remembered answers included) is dropped when the signed-in user
-  // changes — on sign-out, and when someone else signs in.  Done while
-  // rendering, so nothing below this provider can read it first.  (Keys name
-  // the project, not the user: this is the user's half of the isolation.)
+  // Another user's data is never in the client's caches: what the previous
+  // user read (remembered answers included) AND what they sent or were
+  // answered (a mutation keeps its variables and its answer while it is
+  // held) is dropped when the signed-in user changes — on sign-out, and when
+  // someone else signs in.  Done while rendering, so nothing below this
+  // provider can read it first.  (Keys name the project, not the user: this
+  // is the user's half of the isolation.)
   const queryClient = useQueryClient();
   const cacheOwner = useRef<number | null>(null);
   const userId = user?.id ?? null;
   if (cacheOwner.current !== userId) {
-    if (cacheOwner.current !== null) queryClient.getQueryCache().clear();
+    if (cacheOwner.current !== null) {
+      queryClient.getQueryCache().clear();
+      queryClient.getMutationCache().clear();
+    }
     cacheOwner.current = userId;
   }
   const [token, setToken] = useState<string | null>(null);

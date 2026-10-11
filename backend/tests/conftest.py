@@ -418,6 +418,9 @@ def client(db_session, test_user):
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_current_user] = override_get_current_user
+    # A public route that says more to a signed-in caller sees the same user.
+    from app.api.deps import get_current_user_if_present
+    app.dependency_overrides[get_current_user_if_present] = override_get_current_user
 
     with TestClient(app) as test_client:
         yield test_client

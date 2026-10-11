@@ -66,7 +66,9 @@ class Host(Base):
     # row UPDATE, so correcting a hostname/OS via the assist surface forged
     # fresh scan evidence and could make a stale scope look re-scanned.
     last_seen = Column(DateTime(timezone=True), server_default=func.now())
-    last_updated_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"))  # Track which scan last updated this host
+    # Which scan last updated this host.  Indexed (a4f8c2e6b0d1): deleting a
+    # scan clears it by this column, which was a scan of every host per scan.
+    last_updated_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), index=True)
 
     # Relationships.  All plain lazy since v2.393.0 (review 2026-09-23
     # B-Debt-1): they were lazy="selectin", so EVERY whole-entity Host query —
@@ -137,7 +139,7 @@ class Port(Base):
     # `onupdate=func.now()` — a non-scan UPDATE to a port row must not forge a
     # fresh observation timestamp.
     last_seen = Column(DateTime(timezone=True), server_default=func.now())
-    last_updated_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"))
+    last_updated_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), index=True)
     # The scan whose import INSERTED this row, set at every insert site and
     # never moved afterwards.  Read only when a scan is deleted: the cleanup
     # of an unfinished import and a delete by hand both remove the ports that
@@ -493,8 +495,13 @@ class Subnet(Base):
     __tablename__ = "subnets"
 
     id = Column(Integer, primary_key=True, index=True)
+    # A CIDR is in the scope once (``uq_subnets_scope_cidr``, a4f8c2e6b0d1).
+    # The constraint is on the STORED TEXT, which every writer normalises with
+    # ``str(ipaddress.ip_network(value, strict=False))`` (``scopes._validate_cidr``,
+    # ``SubnetParser``).  Its index leads with ``scope_id``, so neither column
+    # carries one of its own.
     scope_id = Column(Integer, ForeignKey("scopes.id", ondelete="CASCADE"), nullable=False)
-    cidr = Column(String, nullable=False, index=True)
+    cidr = Column(String, nullable=False)
     description = Column(Text)
     # Physical/logical site this subnet belongs to (e.g. "London DC", "AWS
     # us-east-1").  This string is the human-entered NAME (set from CSV col 4
@@ -534,6 +541,10 @@ class Subnet(Base):
             if a.label is not None:
                 out.append(a.label)
         return sorted(out, key=lambda lbl: (lbl.name or "").lower())
+
+    __table_args__ = (
+        UniqueConstraint("scope_id", "cidr", name="uq_subnets_scope_cidr"),
+    )
 
 
 class Site(Base):

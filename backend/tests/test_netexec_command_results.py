@@ -51,6 +51,25 @@ def test_real_logins_on_the_same_protocol_still_read(db_session, test_project, t
     assert by_user["sa"].auth_success is False
 
 
+def test_a_first_column_that_is_not_a_protocol_is_not_the_ports_service(db_session, test_project, tmp_path):
+    """Native acceptance run 2026-10-11 (D1): `ZZZ 10.10.7.250 9999 …` made
+    port 9999 with the service "zzz", and a module's line (`ZEROLOGON … 445`)
+    put the module's name on the SMB port.  The line shows the port was
+    reached, so the port stays; its first column is not a service."""
+    hosts, _rows = _parse(db_session, test_project, tmp_path, "\n".join([
+        "SMB         10.10.7.250     445    FS01             [*] Windows 10.0 Build 17763 x64 (name:FS01) (domain:LAB) (signing:True) (SMBv1:False)",
+        "ZEROLOGON   10.10.7.250     445    FS01             VULNERABLE",
+        "ZZZ         10.10.7.250     9999   FS01             [?] an unknown protocol column, synthetic",
+    ]))
+    ports = {
+        p.port_number: p.service_name
+        for p in db_session.query(models.Port).filter(models.Port.host_id == hosts["10.10.7.250"].id)
+    }
+    assert ports[445] == "smb"
+    assert 9999 in ports and ports[9999] in (None, "")
+    assert not {"zzz", "zerologon"} & {(name or "").lower() for name in ports.values()}
+
+
 def test_nxc_none_hostname_is_no_name(db_session, test_project, tmp_path):
     hosts, _rows = _parse(db_session, test_project, tmp_path, "\n".join([EXEC_LINE, LOGIN_LINE]))
     assert hosts["10.10.10.52"].hostname in (None, "")

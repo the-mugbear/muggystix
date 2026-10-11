@@ -1902,11 +1902,13 @@ def delete_scan(
 
         # 8. Delete the scan — its owned children cascade and the nullable
         #    provenance pointers (last_updated_scan_id, conflict_history.*) are
-        #    SET NULL by the FK actions.  Raw DELETE (rather than db.delete(scan))
-        #    so the database does the cascade in one statement instead of
-        #    SQLAlchemy loading every child of the scan's delete-orphan
-        #    relationships (vulnerabilities, web_interfaces) into memory first.
-        db.execute(text('DELETE FROM "scans" WHERE id = :sid'), {"sid": scan_id})
+        #    SET NULL by the FK actions.  The cleanup's own statement (rather
+        #    than db.delete(scan)), so the database does the cascade in one
+        #    statement instead of SQLAlchemy loading every child of the scan's
+        #    delete-orphan relationships (vulnerabilities, web_interfaces) into
+        #    memory first — and so the scan's files on disk go with it, once
+        #    the commit below has landed.
+        imports.delete_scan_row(db, scan_id)
 
         # Single commit — all or nothing
         db.commit()

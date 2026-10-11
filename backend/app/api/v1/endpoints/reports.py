@@ -8,6 +8,7 @@ from app.api.deps import get_current_project, require_project_role
 from app.core.security import check_permissions
 from app.db.models_auth import UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
+from app.api.downloads import attachment
 from app.api.params import HostFilterParams
 from app.db.models import ReportJob
 # ReportGenerator now lives in the service layer; re-exported here so the
@@ -70,7 +71,7 @@ def generate_hosts_csv_report(
     return StreamingResponse(
         generator.iter_inventory_csv(filter_kwargs),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        headers=attachment(filename),
     )
 
 
@@ -95,12 +96,14 @@ def generate_systemic_executive_report(
     html_doc = generator.generate_systemic_executive_html(site=site or None)
     slug = ""
     if site:
+        # Letters and digits of any script (a site may be "東京"): the header
+        # helper carries them, with an ASCII stand-in beside.
         slug = "_" + "".join(ch if ch.isalnum() else "-" for ch in site)[:40]
     filename = f"systemic_insights{slug}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
     return Response(
         content=html_doc,
         media_type="text/html",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        headers=attachment(filename),
     )
 
 

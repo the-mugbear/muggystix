@@ -433,6 +433,13 @@ export interface UseHostColumnsOptions {
   /** Fires when the user picks a follow status from a row's menu. */
   onFollowChange: (hostId: number, status: FollowStatus | 'none') => void;
   /**
+   * Whether the reader may SET a review status (project analyst and up —
+   * `useProjectRole().canWrite`, passed in by the page so this module stays
+   * free of the contexts and the API client).  False hides the row's change
+   * control; the state is still shown.  Defaults to true.
+   */
+  canSetReview?: boolean;
+  /**
    * Fires when the user activates the primary cell (clicks the IP/hostname
    * button or presses Enter on it).  v2.44.1 (UX review #2): this is the
    * keyboard path for the row-level openInspector action.  The row itself
@@ -496,6 +503,7 @@ const PivotValue: React.FC<{
 export function useHostColumns({
   updatingHostId,
   onFollowChange,
+  canSetReview: canWrite = true,
   onOpen,
   onAddFilter,
   endpointMatch = null,
@@ -901,6 +909,9 @@ export function useHostColumns({
                   {state.kind === 'reviewed' && <Check className="mr-xxs inline size-3" aria-hidden />}
                   {state.label}
                 </span>
+                {/* Setting a review status is a write (analyst and up): the
+                    state above is everyone's to read, the control is not. */}
+                {canWrite && (
                 <span className="absolute right-0 top-0 rounded-control bg-background opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 has-[[data-state=open]]:opacity-100">
                   <FollowMenu
                     host={host}
@@ -908,6 +919,7 @@ export function useHostColumns({
                     onChange={(status) => onFollowChange(host.id, status)}
                   />
                 </span>
+                )}
               </div>
               {detail && (
                 <span className="line-clamp-2 break-words text-caption text-muted-foreground" title={titles || undefined}>
@@ -926,6 +938,6 @@ export function useHostColumns({
     // return to the inspector with stale list context that didn't
     // match the current filter set, while mouse row-click (which
     // uses the live callback) worked correctly.
-    [updatingHostId, onFollowChange, onOpen, onAddFilter, endpointMatch, weaknessMatch, weaknessLabels, markNew],
+    [canWrite, updatingHostId, onFollowChange, onOpen, onAddFilter, endpointMatch, weaknessMatch, weaknessLabels, markNew],
   );
 }

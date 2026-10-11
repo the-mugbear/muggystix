@@ -242,6 +242,13 @@ class LLMProviderService:
 # Connection test — verifies credentials before saving / at user request
 # ---------------------------------------------------------------------------
 
+#: What ``test_connection`` answers whenever the provider did not answer.
+PROVIDER_UNREACHABLE = (
+    "Could not reach the provider. Check the address, and that the service is "
+    "running and reachable from the BlueStick server."
+)
+
+
 def test_connection(provider: LLMProvider) -> Dict[str, Any]:
     """Issue a lightweight request to the provider to verify connectivity.
 
@@ -309,11 +316,21 @@ def test_connection(provider: LLMProvider) -> Dict[str, Any]:
             exc.response.status_code, exc.response.text[:500],
         )
         return {"ok": False, "detail": f"Provider returned HTTP {exc.response.status_code}."}
-    except httpx.RequestError as exc:
-        return {"ok": False, "detail": f"Request failed: {exc}"}
     except Exception as exc:  # noqa: BLE001
-        logger.exception("LLM provider test_connection failed")
-        return {"ok": False, "detail": f"Unexpected error: {exc}"}
+        # One fixed answer for every failure in which the provider did not
+        # answer — refused, timed out, did not resolve, a blocked address, an
+        # unreadable body.  The exception's own text told the caller WHICH
+        # (open / refused / timeout), for any private host and port an
+        # ``ollama`` provider names: an internal port probe.  The reason is
+        # logged for whoever runs the server.
+        if isinstance(exc, (httpx.RequestError, TimeoutError, ValueError)):
+            logger.warning(
+                "LLM provider test_connection could not reach provider %s: %s: %s",
+                provider.id, type(exc).__name__, exc,
+            )
+        else:
+            logger.exception("LLM provider test_connection failed")
+        return {"ok": False, "detail": PROVIDER_UNREACHABLE}
 
 
 # ---------------------------------------------------------------------------

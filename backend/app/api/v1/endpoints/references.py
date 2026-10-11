@@ -7,7 +7,9 @@ data — same stance as ``/agents-guide``), with one exception noted below:
   * ``GET  /api/v1/references/mcp-tools``           — MCP tool catalog, connect
     recipes, and this deployment's certificate info
   * ``GET  /api/v1/references/tls-certificate``     — deployment TLS cert (PEM)
-  * ``GET  /api/v1/references/tools``               — the tool registry
+  * ``GET  /api/v1/references/tools``               — the tool registry (the
+    catalogued rows for anyone; agents' suggestions and their rationale only
+    for a signed-in user or an agent key)
   * ``PATCH /api/v1/references/tools/{name}``       — vet one (**admin only**)
   * ``GET  /api/v1/references/parser-coverage``     — what each import format
     keeps, where it is shown, and what is discarded
@@ -30,7 +32,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import identify_agent_if_present
-from app.api.deps import get_current_user, require_role
+from app.api.deps import get_current_user, get_current_user_if_present, require_role
 from app.core.config import settings
 from app.db.models_auth import User, UserRole
 from app.db.session import get_db
@@ -179,6 +181,7 @@ def tool_registry(
     # is presented, so `list_tools` lands in the session's activity log
     # instead of vanishing (v2.312.0).
     _agent=Depends(identify_agent_if_present),
+    _user: Optional[User] = Depends(get_current_user_if_present),
 ):
     """The tool registry — every tool BlueStick knows about (v2.277.0).
 
@@ -187,10 +190,24 @@ def tool_registry(
     row is catalogued (``reference``), an agent's suggestion awaiting a
     curator, or a declined suggestion; since v2.433.0 none of them is a
     permission — the operator decides what their agent runs.
+
+    **What a caller with no credential gets is the catalogue only**: the
+    ``reference`` rows, without ``suggested_rationale``.  A suggestion (and a
+    declined one) is free text an agent wrote — up to 2,000 characters, which
+    in practice names clients and addresses — so those rows and every
+    rationale are for a signed-in user or an agent's key.  Asking for
+    ``status=suggested`` / ``rejected`` anonymously answers an empty list.
     """
+    from app.db.models_tools import TOOL_REFERENCE
     from app.services import tool_registry_service
 
-    tools = tool_registry_service.list_tools(db, status=status, category=category)
+    identified = _agent is not None or _user is not None
+    if not identified and status not in (None, "", TOOL_REFERENCE):
+        tools = []
+    else:
+        tools = tool_registry_service.list_tools(
+            db, status=status if identified else TOOL_REFERENCE, category=category,
+        )
     return {
         "count": len(tools),
         "tools": [
@@ -211,7 +228,7 @@ def tool_registry(
                 # what to upload — null for a tool with no parser.
                 "run_command": t.run_command,
                 "run_note": t.run_note,
-                "suggested_rationale": t.suggested_rationale,
+                "suggested_rationale": t.suggested_rationale if identified else None,
             }
             for t in tools
         ],

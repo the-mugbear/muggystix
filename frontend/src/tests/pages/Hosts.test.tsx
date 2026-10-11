@@ -1287,6 +1287,169 @@ describe('Hosts', () => {
     await findHostsTable();
     expect(screen.queryByTestId('hosts-restored-notice')).toBeNull();
   });
+
+  // Review 2026-10-10, H1 — the rows that stay on screen while another filter
+  // loads are the filter's the reader has LEFT.  A row ticked over them stayed
+  // ticked when the new rows landed, and the bar offered "Select all 30
+  // matching" (the old count) over an action that reads the NEW filter's ids.
+  describe('rows of the address before the one being read', () => {
+    /** Hold the next list read open; `answer()` lets it through. */
+    const holdNextRead = () => {
+      let answer: () => void = () => undefined;
+      mockedApi.getHosts.mockImplementationOnce((_projectId: number, params?: Record<string, any>) => (
+        new Promise((resolve) => { answer = () => resolve(buildHostResponse(params)); })
+      ));
+      return { answer: () => act(async () => { answer(); }) };
+    };
+    const settle = async () => {
+      await findHostsTable();
+      await screen.findAllByText('10.0.0.20');
+      await waitFor(() => expect(mockedApi.getHostFilterData).toHaveBeenCalled());
+      await act(async () => { await Promise.resolve(); });
+    };
+
+    it('cannot be ticked while another filter loads, no bar is offered over them, and nothing is selected when the new rows land', async () => {
+      const user = userEvent.setup({ skipHover: true });
+      renderHosts();
+      await settle();
+      const rows = screen.getByTestId('hosts-rows');
+      expect(rows).not.toHaveAttribute('inert');
+
+      const read = holdNextRead();
+      await applyCriticalFilter(user);
+      await waitFor(() => expect(mockedApi.getHosts).toHaveBeenLastCalledWith(
+        1, expect.objectContaining({ has_critical_vulns: true }), expect.anything(),
+      ));
+      // Still the rows of the filter that was left (host 4 has no critical
+      // observation): dimmed, inert, and a tick does not take.
+      expect(screen.getAllByText('10.0.0.4').length).toBeGreaterThan(0);
+      expect(rows).toHaveAttribute('inert');
+      expect(rows).toHaveAttribute('aria-busy', 'true');
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select 10.0.0.4' }));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select all rows on this page' }));
+      expect(screen.queryByText(/\d+ selected/)).toBeNull();
+      expect(screen.getByTestId('hosts-bulk-slot')).toBeEmptyDOMElement();
+
+      await read.answer();
+      await waitFor(() => expect(screen.queryByText('10.0.0.4')).toBeNull());
+      expect(rows).not.toHaveAttribute('inert');
+      expect(screen.getByTestId('hosts-bulk-slot')).toBeEmptyDOMElement();
+      expect(screen.getAllByRole('checkbox').every((box) => box.getAttribute('aria-checked') === 'false')).toBe(true);
+    });
+
+    it('pause the bulk bar while another page of the same filter loads, and give it back — with the selection — once it answers', async () => {
+      const user = userEvent.setup({ skipHover: true });
+      renderHosts();
+      await settle();
+      await waitFor(() => {
+        const box = screen.getByRole('checkbox', { name: 'Select 10.0.0.3' });
+        if (box.getAttribute('aria-checked') !== 'true') fireEvent.click(box);
+        expect(screen.getByText('1 selected')).toBeInTheDocument();
+      });
+      const slot = screen.getByTestId('hosts-bulk-slot');
+      expect(within(slot).getByRole('button', { name: 'Select all 30 matching' })).toBeInTheDocument();
+
+      const read = holdNextRead();
+      await user.click(screen.getByLabelText('Next page'));
+      expect(await within(slot).findByText('Bulk actions are paused while the list loads.')).toBeInTheDocument();
+      // Nothing of the bar can be reached meanwhile.
+      expect(within(slot).queryByRole('button')).toBeNull();
+
+      await read.answer();
+      await waitFor(() => expect(within(slot).queryByText(/Bulk actions are paused/)).toBeNull());
+      // The selection is the filter's and survives its pages.
+      expect(within(slot).getByRole('button', { name: 'Select all 30 matching' })).toBeInTheDocument();
+      expect(within(slot).getByText('1 selected')).toBeInTheDocument();
+    });
+
+    it('a tick does not take over rows whose own read failed either', async () => {
+      const user = userEvent.setup({ skipHover: true });
+      renderHosts();
+      await settle();
+      mockedApi.getHosts.mockImplementationOnce(() => Promise.reject(new Error('boom')));
+      await user.click(screen.getByLabelText('Next page'));
+      expect(await screen.findByText(/Showing previous results/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Select 10.0.0.4' }));
+      expect(screen.queryByText(/\d+ selected/)).toBeNull();
+      expect(screen.getByTestId('hosts-bulk-slot')).toBeEmptyDOMElement();
+    });
+  });
+
+  // Review 2026-10-10, H16 — the inspector's Next / Next unreviewed across a
+  // page boundary opened a host from the rows ON SCREEN once the list stopped
+  // loading.  When the next page's read failed those were still the page
+  // before it.
+  describe('stepping the inspector across a page boundary', () => {
+    const firstPage = () => buildHostResponse({}).items;
+    const openLastRowOfFirstPage = async () => {
+      renderHosts();
+      await findHostsTable();
+      await screen.findAllByText('10.0.0.20');
+      await waitFor(() => expect(mockedApi.getHostFilterData).toHaveBeenCalled());
+      await act(async () => { await Promise.resolve(); });
+      const last = firstPage()[24];
+      act(() => { columnArgs.calls[0].onOpen?.(last.id); });
+      expect(screen.getByTestId('host-inspector')).toHaveTextContent(`host ${last.id}`);
+      expect(screen.getByText('25 of 30 in this queue')).toBeInTheDocument();
+      mockedApi.getHosts.mockClear();
+      toastMock.info.mockClear();
+      return last;
+    };
+
+    it('opens the first host of the next page from that page’s own answer', async () => {
+      await openLastRowOfFirstPage();
+      fireEvent.keyDown(window, { key: 'j' });
+      const next = buildHostResponse({ skip: 25 }).items[0];
+      await waitFor(() => expect(screen.getByTestId('host-inspector')).toHaveTextContent(`host ${next.id}`));
+      expect(screen.getByText('26 of 30 in this queue')).toBeInTheDocument();
+      expect(mockedApi.getHosts).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the open host when the next page cannot be read: one request, nothing opened, Next waits for Retry', async () => {
+      const last = await openLastRowOfFirstPage();
+      mockedApi.getHosts.mockImplementationOnce(() => Promise.reject(new Error('boom')));
+      fireEvent.keyDown(window, { key: 'j' });
+      expect(await screen.findByText(/Failed to fetch hosts/)).toBeInTheDocument();
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.getByTestId('host-inspector')).toHaveTextContent(`host ${last.id}`);
+      expect(mockedApi.getHosts).toHaveBeenCalledTimes(1);
+      expect(mockedApi.getHosts).toHaveBeenLastCalledWith(1, expect.objectContaining({ skip: 25 }), expect.anything());
+      expect(screen.getByRole('button', { name: 'Next host (j)' })).toBeDisabled();
+      // A second press turns no further page.
+      fireEvent.keyDown(window, { key: 'j' });
+      await act(async () => { await Promise.resolve(); });
+      expect(mockedApi.getHosts).toHaveBeenCalledTimes(1);
+      expect(toastMock.info).not.toHaveBeenCalled();
+    });
+
+    it('"next unreviewed" asks for the one next page when it cannot be read — not every page after it', async () => {
+      // 100 hosts, four pages, every one reviewed: there is nothing to find.
+      const reviewed = Array.from({ length: 100 }, (_, i) => makeHost(i + 1, { follow: { status: 'reviewed' } }));
+      mockedApi.getHosts.mockImplementation(async (_projectId: number, params?: Record<string, any>) => {
+        const skip = params?.skip ?? 0;
+        return { items: reviewed.slice(skip, skip + 25), total: 100, bulk_select_cap: 5000 };
+      });
+      renderHosts();
+      await findHostsTable();
+      await screen.findAllByText('10.0.0.25');
+      await waitFor(() => expect(mockedApi.getHostFilterData).toHaveBeenCalled());
+      await act(async () => { await Promise.resolve(); });
+      act(() => { columnArgs.calls[0].onOpen?.(25); });
+      expect(screen.getByTestId('host-inspector')).toHaveTextContent('host 25');
+      mockedApi.getHosts.mockClear();
+      toastMock.info.mockClear();
+
+      mockedApi.getHosts.mockImplementationOnce(() => Promise.reject(new Error('boom')));
+      fireEvent.keyDown(window, { key: 'n' });
+      expect(await screen.findByText(/Failed to fetch hosts/)).toBeInTheDocument();
+      await act(async () => { await Promise.resolve(); });
+      await act(async () => { await Promise.resolve(); });
+      expect(mockedApi.getHosts.mock.calls.map(([, p]) => (p as { skip: number }).skip)).toEqual([25]);
+      expect(screen.getByTestId('host-inspector')).toHaveTextContent('host 25');
+      // It did not look at every page, so it does not say there is nothing left.
+      expect(toastMock.info).not.toHaveBeenCalled();
+    });
+  });
 });
 
 // v5.270.0 — the table states things quietly: review state as text (the

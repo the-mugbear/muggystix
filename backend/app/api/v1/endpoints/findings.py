@@ -40,7 +40,7 @@ from app.schemas.findings import (
     FindingImage, FindingImageList,
     FindingResponse, FindingHostInfo, FindingListResponse, FindingReportText,
     PromoteVulnerabilityRequest, PromoteVulnerabilityPreview,
-    FindingCreateRequest, FindingUpdateRequest, FindingNoteUpdate,
+    FindingCreateRequest, FindingUpdateRequest, FindingNotePage, FindingNoteUpdate,
     FindingStatusUpdateRequest, FindingHostsRequest, FindingStatusHistoryEntry,
     FindingDiscussionList,
 )
@@ -459,7 +459,11 @@ def add_finding_hosts(
     if body.host_ids:
         svc.add_hosts(finding=finding, host_ids=body.host_ids, actor_id=current_user.id)
     for ep in body.endpoints:
-        svc.restore_endpoint(finding=finding, host_id=ep.host_id, name_id=ep.name_id, host_status=ep.host_status)
+        svc.restore_endpoint(
+            finding=finding, host_id=ep.host_id, name_id=ep.name_id,
+            host_status=ep.host_status.value if ep.host_status else None,
+            actor_id=current_user.id,
+        )
     db.commit()
     return _serialize(_load(db, project, finding_id), viewer)
 
@@ -654,18 +658,22 @@ def finding_comment_activity(
 
 @router.get(
     "/findings/{finding_id}/notes",
-    response_model=List[AnnotationSchema],
-    summary="List the comment/evidence thread on a finding (oldest-first)",
+    response_model=FindingNotePage,
+    summary="A page of the comment/evidence thread on a finding (newest first)",
 )
 def list_finding_notes(
     finding_id: int,
     limit: int = Query(100, ge=1, le=300),
+    offset: int = Query(0, ge=0, description="Comments to skip, counted from the newest."),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
+    """``items`` are the newest ``limit`` comments after ``offset``, newest
+    first; ``total`` is the whole thread.  The page shows the newest and
+    walks back with ``offset`` ("Show earlier comments")."""
     _load(db, project, finding_id)  # 404s + enforces project scope
-    notes = FindingService(db).list_finding_notes(finding_id, limit=limit)
-    return [_serialize_note(n) for n in notes]
+    notes, total = FindingService(db).list_finding_notes(finding_id, limit=limit, offset=offset)
+    return FindingNotePage(items=[_serialize_note(n) for n in notes], total=total)
 
 
 @router.post(

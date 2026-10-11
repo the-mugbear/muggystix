@@ -390,46 +390,47 @@ class NotificationService:
         .host_created = False) means the data changed under whoever's reviewing
         it.  One summary notification per follower per scan (not per host) so a
         big re-scan can't spam.  Skips the uploader.  Best-effort — the caller
-        wraps this so a notification error never fails the ingest."""
-        from collections import defaultdict
+        wraps this so a notification error never fails the ingest.
+
+        Only people who are on the project NOW are told (``current_members``,
+        the rule of the two notifications above): a review row outlives its
+        reviewer's membership, and someone removed from the project was still
+        sent the scan's file name.  One grouped statement over the scan's own
+        history — the re-observed hosts are never brought back to be bound as
+        literals (a re-scan of a large project re-observes tens of thousands)."""
         from app.db.models import HostScanHistory, HostFollow, FollowStatus, Scan
 
-        updated_host_ids = [
-            hid for (hid,) in (
-                self.db.query(HostScanHistory.host_id)
-                .filter(
-                    HostScanHistory.scan_id == scan_id,
-                    HostScanHistory.host_created.is_(False),
-                )
-                .all()
-            )
-        ]
-        if not updated_host_ids:
-            return []
-
-        per_user: dict = defaultdict(set)
-        rows = (
-            self.db.query(HostFollow.user_id, HostFollow.host_id)
-            .filter(
-                HostFollow.host_id.in_(updated_host_ids),
-                HostFollow.status.in_(
-                    [FollowStatus.IN_REVIEW.value, FollowStatus.REVIEWED.value]
-                ),
-            )
-            .all()
-        )
-        for uid, hid in rows:
-            if uid != actor_id:
-                per_user[uid].add(hid)
-        if not per_user:
-            return []
-
         scan = self.db.get(Scan, scan_id)
-        scan_label = (getattr(scan, "filename", None) or f"scan #{scan_id}")
-        project_id = getattr(scan, "project_id", None)
+        if scan is None:
+            return []
+        conditions = [
+            HostScanHistory.scan_id == scan_id,
+            HostScanHistory.host_created.is_(False),
+            HostFollow.status.in_([FollowStatus.IN_REVIEW.value, FollowStatus.REVIEWED.value]),
+        ]
+        if actor_id is not None:
+            conditions.append(HostFollow.user_id != actor_id)
+        # Per reviewer: how many of their hosts the scan re-observed, and one
+        # of them (the link, when it is the only one).
+        per_user = {
+            uid: (int(n), one_host)
+            for uid, n, one_host in (
+                self.db.query(
+                    HostFollow.user_id,
+                    func.count(func.distinct(HostFollow.host_id)),
+                    func.min(HostFollow.host_id),
+                )
+                .join(HostScanHistory, HostScanHistory.host_id == HostFollow.host_id)
+                .filter(*conditions)
+                .group_by(HostFollow.user_id)
+            )
+        }
+        members = self.current_members(scan.project_id, per_user)
+        scan_label = scan.filename or f"scan #{scan_id}"
+        project_id = scan.project_id
         notifications = []
-        for uid, hids in per_user.items():
-            n = len(hids)
+        for uid in sorted(members):
+            n, one_host = per_user[uid]
             notification = Notification(
                 user_id=uid,
                 project_id=project_id,
@@ -440,7 +441,7 @@ class NotificationService:
                 source_id=scan_id,
                 # Single-host updates deep-link to that host; multi-host land on
                 # the scan's host list.
-                host_id=(next(iter(hids)) if n == 1 else None),
+                host_id=(one_host if n == 1 else None),
                 actor_id=actor_id,
             )
             self.db.add(notification)

@@ -1794,24 +1794,11 @@ def assist_vocabulary(
         v for (v,) in db.query(models.SubnetLabel.name)
         .filter(models.SubnetLabel.project_id == pid).all() if v
     })
-    # Who an `assigned:<username>` query can actually name: project members,
-    # PLUS anyone currently holding an assignment here. A global admin needs no
-    # membership row to be assigned a host, so members-only would omit exactly
-    # the person whose work the analyst is asking about.
-    member_names = db.query(User.username).join(
-        ProjectMembership, ProjectMembership.user_id == User.id
-    ).filter(ProjectMembership.project_id == pid)
-    assignee_names = (
-        db.query(User.username)
-        .join(models.HostFollow, models.HostFollow.user_id == User.id)
-        .join(models.Host, models.Host.id == models.HostFollow.host_id)
-        .filter(
-            models.Host.project_id == pid,
-            models.HostFollow.assigned_at.isnot(None),
-        )
-    )
-    usernames = sorted({u for (u,) in member_names.all() if u}
-                       | {u for (u,) in assignee_names.all() if u})
+    # Who an `assigned:<username>` query can actually name — the filter's own
+    # definition (members, active global admins, anyone holding an assignment
+    # here), so every name listed is accepted and every other one refused.
+    from app.services.host_query_predicates import project_assignees
+    usernames = sorted({u for _id, u in project_assignees(db, pid).all() if u})
     # v2.343.2 (review) — derived from the canonical enums.  The hand-written
     # list advertised `triaged` / `closed`, which no finding has ever carried,
     # and omitted `accepted_risk` / `retest`, which do exist: a filter on the

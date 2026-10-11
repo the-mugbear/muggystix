@@ -804,7 +804,11 @@ def update_agent_host(
                 # dns_name_service.apply_hostname_candidate).  Clearing the
                 # name drops the lock so ingestion can name the host again.
                 host.hostname_source = "operator" if new_value else None
-    if changed:
+    # ``changed`` lists the fields whose VALUE moved.  Sending the name the
+    # host already has changes none, but it still pins the name (the source
+    # above) — and that used to be left uncommitted, so the next scan could
+    # rename a host its operator had just confirmed.
+    if changed or db.is_modified(host):
         db.commit()
         db.refresh(host)
 

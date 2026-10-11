@@ -129,6 +129,37 @@ describe('HostBulkBar — selection scope', () => {
     expect(screen.getByText(/Every host matching the current filters, on every page/)).toBeInTheDocument();
   });
 
+  // The selection is kept from page to page, and only the page on screen has
+  // its addresses here.  The button read "Copy IPs" beside "3 selected" and
+  // copied one (review 2026-10-10).
+  it('"Copy IPs" says how many it copies when some of the checked rows are on other pages', () => {
+    const bar = (ids: number[], ips: string[]) => (
+      <HostBulkBar
+        selectedIds={ids}
+        selectedIps={ips}
+        totalMatching={120}
+        bulkCap={SERVER_CAP}
+        queryContext={{}}
+        onClear={vi.fn()}
+        onApplied={vi.fn()}
+      />
+    );
+    const { rerender } = render(bar([1, 2, 3], ['10.0.0.1']));
+    expect(screen.getByText('3 selected')).toBeInTheDocument();
+    const copy = screen.getByRole('button', { name: 'Copy the 1 IP on this page' });
+    expect(copy).toBeEnabled();
+    expect(copy).toHaveAttribute('title', expect.stringContaining('The other 2 selected hosts are on other pages'));
+    expect(screen.queryByRole('button', { name: 'Copy IPs' })).not.toBeInTheDocument();
+
+    // Every checked row on screen: the plain label, as before.
+    rerender(bar([1, 2], ['10.0.0.1', '10.0.0.2']));
+    expect(screen.getByRole('button', { name: 'Copy IPs' })).toBeEnabled();
+
+    // None of them on screen: nothing to copy, and it says so.
+    rerender(bar([1, 2], []));
+    expect(screen.getByRole('button', { name: 'Copy the 0 IPs on this page' })).toBeDisabled();
+  });
+
   it('with no cap stated, "all matching" is not offered: the bar cannot say how many it would reach', () => {
     renderBar(7000, null);
     expect(screen.getByText('2 selected')).toBeInTheDocument();

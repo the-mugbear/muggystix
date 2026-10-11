@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, defer, selectinload
 
 from app.api.deps import get_current_project, require_project_role
 from app.api.deps import get_current_user
+from app.api.downloads import attachment
 from app.core.security import log_audit_event
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
@@ -194,9 +195,16 @@ def list_report_templates():
 
 
 @router.get("/templates/problems", response_model=List[ReportTemplateProblemOut])
-def list_report_template_problems():
+def list_report_template_problems(current_user: User = Depends(get_current_user)):
     """Folders under report-templates/ that are not offered, and why — so a
-    template with a mistake says so instead of simply not appearing."""
+    template with a mistake says so instead of simply not appearing.  Global
+    administrators only: they are who can put a folder on the server, and a
+    problem's detail can name a path there."""
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail="Only a global administrator is told which template folders could not be offered.",
+        )
     return [ReportTemplateProblemOut(**p) for p in templates.template_problems()]
 
 
@@ -746,7 +754,7 @@ def report_scope_response(service: ClientReportService, report: Report) -> Respo
         content = report_scope.scope_csv(scope)
     return Response(
         content=content, media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        headers=attachment(name),
     )
 
 

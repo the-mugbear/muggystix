@@ -84,6 +84,7 @@ import { buildHostsUrl } from '../utils/drilldownLinks';
 import { IP_OR_CIDR_HINT, isIpOrCidr } from '../utils/ipAddress';
 import { formatDate, formatTimestamp } from '../utils/relativeTime';
 import { selectAllState } from '../utils/selection';
+import { inertWhen } from '../utils/uiStyles';
 
 const plural = (n: number, one: string, many = `${one}s`) =>
   `${n.toLocaleString()} ${n === 1 ? one : many}`;
@@ -153,6 +154,11 @@ const EmptyCellEdit: React.FC<{ label: string; onClick: () => void }> = ({ label
 /** Subnets to a page — the Segments table's size.  (The "Load more" list
  *  read 200 at a time; a page that long put its footer four screens down.) */
 const SUBNET_PAGE_SIZE = 50;
+/** The most subnets one "Apply label" takes — the route's own limit
+ *  (`SubnetLabelBulkAssignMany.subnet_ids`; a longer list is refused whole).
+ *  The selection stops there and says so.  `tests/subnetBulkLimit.test.ts`
+ *  pins the two numbers to each other. */
+const SUBNET_BULK_MAX = 1000;
 const NO_LABELS: SubnetLabelWithCounts[] = [];
 const NO_SELECTION: ReadonlySet<number> = new Set();
 type ScopeSubnet = Scope['subnets'][number];
@@ -212,15 +218,28 @@ const Scopes: React.FC = () => {
   // The subnets ticked for "Apply label…".  They belong to the search they
   // were ticked under — a bulk action never reaches a row the current search
   // hides — and are kept from page to page of it: the bar says how many are
-  // not on the page on screen.
+  // not on the page on screen.  Another search FORGETS them (while rendering,
+  // so no render shows them): they used to be hidden only, and came back —
+  // with whatever had been deleted or edited out of the search meanwhile —
+  // when the same search was typed again (review 2026-10-10, R9).
   const [selection, setSelection] = useState<{ search: string; ids: ReadonlySet<number> }>(
     { search: '', ids: NO_SELECTION },
   );
+  if (selection.search !== subnetSearch) setSelection({ search: subnetSearch, ids: NO_SELECTION });
   const selectedSubnetIds = selection.search === subnetSearch ? selection.ids : NO_SELECTION;
+  const selectionFull = selectedSubnetIds.size >= SUBNET_BULK_MAX;
   const changeSelection = (change: (ids: Set<number>) => void) => setSelection((prev) => {
     const ids = new Set(prev.search === subnetSearch ? prev.ids : NO_SELECTION);
     change(ids);
     return { search: subnetSearch, ids };
+  });
+  /** A subnet that is gone, or may have left the search, is ticked for
+   *  nothing — whatever the search on screen is by the time this runs. */
+  const untickSubnet = (subnetId: number) => setSelection((prev) => {
+    if (!prev.ids.has(subnetId)) return prev;
+    const ids = new Set(prev.ids);
+    ids.delete(subnetId);
+    return { ...prev, ids };
   });
 
   const labelsQuery = useQuery({
@@ -351,8 +370,16 @@ const Scopes: React.FC = () => {
     mutationFn: ({ subnetId, ...changes }: {
       subnetId: number; cidr: string; description: string; site: string;
     }) => updateSubnet(projectId, subnetId, changes),
-    onSuccess: () => {
-      toast.success('Entry updated.');
+    onSuccess: (_saved, { subnetId }) => {
+      // Under a search, the entry as saved may not match it any more (the
+      // search reads the address and the description): it would stay ticked
+      // on no page, and "Apply label…" would reach a row the search hides.
+      // Whether it still matches is the server's to say, so it is unticked.
+      const unticked = subnetSearch !== '' && selectedSubnetIds.has(subnetId);
+      if (unticked) untickSubnet(subnetId);
+      toast.success(unticked
+        ? 'Entry updated. It is no longer ticked — it may not match the search any more.'
+        : 'Entry updated.');
       cancelEditSubnet();
       return scopeChanged();
     },
@@ -398,16 +425,28 @@ const Scopes: React.FC = () => {
     bulkApply.mutate({ labelId, labelName, ids });
   };
 
-  const toggleSubnetSelected = (subnetId: number) => changeSelection((ids) => {
-    if (!ids.delete(subnetId)) ids.add(subnetId);
-  });
+  // Rows that are not this page's answer take no tick (they are inert on
+  // screen too), and nothing is ticked past what one "Apply label" takes.
+  const toggleSubnetSelected = (subnetId: number) => {
+    if (subnetsArePrevious) return;
+    changeSelection((ids) => {
+      if (!ids.delete(subnetId) && ids.size < SUBNET_BULK_MAX) ids.add(subnetId);
+    });
+  };
   // The header box is this PAGE's rows: all of them ticked unticks them, any
-  // other state ticks the rest.  Rows ticked on another page are left alone.
-  const toggleAllSelected = () => changeSelection((ids) => {
-    const rows = subnets ?? [];
-    const all = rows.every((s) => ids.has(s.id));
-    rows.forEach((s) => { if (all) ids.delete(s.id); else ids.add(s.id); });
-  });
+  // other state ticks the rest — as far as the limit goes.  Rows ticked on
+  // another page are left alone.
+  const toggleAllSelected = () => {
+    if (subnetsArePrevious) return;
+    changeSelection((ids) => {
+      const rows = subnets ?? [];
+      const all = rows.every((s) => ids.has(s.id));
+      rows.forEach((s) => {
+        if (all) ids.delete(s.id);
+        else if (ids.size < SUBNET_BULK_MAX) ids.add(s.id);
+      });
+    });
+  };
 
   // A subnet's label chips and their editor — in the Labels column, or inside
   // the row's editor while the row is being edited (v5.289.0).  The editor
@@ -454,8 +493,11 @@ const Scopes: React.FC = () => {
       deleteSubnet(projectId, subnetId),
     onSuccess: (_void, { subnetId, cidr }) => {
       toast.success(`Deleted ${cidr}.`);
-      // A deleted subnet is no longer ticked for anything.
-      if (selectedSubnetIds.has(subnetId)) changeSelection((ids) => { ids.delete(subnetId); });
+      // A deleted subnet is no longer ticked for anything.  Unconditionally:
+      // asking the selection of the search on screen first missed one ticked
+      // under a search the reader had left, and one stale id makes the whole
+      // "Apply label" request a 404.
+      untickSubnet(subnetId);
       return scopeChanged();
     },
     onError: (err) => toast.error(formatApiError(err, 'Failed to delete entry.')),
@@ -800,6 +842,11 @@ const Scopes: React.FC = () => {
                   {selectedElsewhere > 0 && (
                     <span className="text-muted-foreground"> · {selectedElsewhere.toLocaleString()} not on this page</span>
                   )}
+                  {selectionFull && (
+                    <span className="text-warning">
+                      {' '}· the most one “Apply label” takes ({SUBNET_BULK_MAX.toLocaleString()}) — apply it, then select the rest
+                    </span>
+                  )}
                 </span>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -837,10 +884,14 @@ const Scopes: React.FC = () => {
             )}
 
             {/* Rows of the page or search before the one asked for are
-                dimmed and inert until theirs arrive (or the read is retried). */}
+                dimmed and inert until theirs arrive (or the read is retried):
+                `inert`, so the keyboard cannot reach a checkbox or an editor
+                either (`pointer-events-none` stopped the mouse only). */}
             <div
-              className={cn('overflow-x-auto', subnetsArePrevious && 'pointer-events-none opacity-60')}
+              className={cn('overflow-x-auto', subnetsArePrevious && 'opacity-60')}
               aria-busy={subnetList.loading || undefined}
+              data-testid="scope-subnet-rows"
+              {...inertWhen(subnetsArePrevious)}
             >
               {/* Fixed layout (UI_STYLE_GUIDE): an unbounded description or
                   label set wraps inside its column instead of widening it. */}
@@ -859,6 +910,8 @@ const Scopes: React.FC = () => {
                           // Some of the subnets = the dash, not an empty box.
                           checked={selectAllState(selectedOnPage, subnets.length)}
                           onCheckedChange={toggleAllSelected}
+                          // At the limit there is nothing more it could tick.
+                          disabled={selectionFull && selectedOnPage < subnets.length}
                           aria-label="Select all subnets on this page for bulk label apply"
                         />
                       </TableHead>
@@ -908,6 +961,10 @@ const Scopes: React.FC = () => {
                               <Checkbox
                                 checked={selectedSubnetIds.has(subnet.id)}
                                 onCheckedChange={() => toggleSubnetSelected(subnet.id)}
+                                disabled={selectionFull && !selectedSubnetIds.has(subnet.id)}
+                                title={selectionFull && !selectedSubnetIds.has(subnet.id)
+                                  ? `${SUBNET_BULK_MAX.toLocaleString()} subnets are selected — the most one “Apply label” takes.`
+                                  : undefined}
                                 aria-label={`Select ${subnet.cidr} for bulk label apply`}
                               />
                             </TableCell>

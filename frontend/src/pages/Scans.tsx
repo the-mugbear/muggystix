@@ -564,8 +564,10 @@ export default function Scans() {
     [listedFlat, scans, historyRows],
   );
   // The time column is the upload time — the grouped history's own order —
-  // except in the all-files view sorted by when the scans ran.
-  const timeColumn: ScanTimeColumn = showBatchFiles && sortBy === 'start_time' ? 'ran' : 'uploaded';
+  // except in the all-files view sorted by when the scans ran.  It follows
+  // the rows ON SCREEN (`listedFlat`): while the other view loads they are
+  // still the previous view's, and keep the time they were listed by.
+  const timeColumn: ScanTimeColumn = listedFlat && sortBy === 'start_time' ? 'ran' : 'uploaded';
   const historyHeader = (column: SortBy, label: string, className?: string) =>
     showBatchFiles
       ? renderSortHeader(column, label, className)

@@ -530,6 +530,88 @@ def test_bulk_accept_does_not_choose_between_drafts_of_one_field(client, db_sess
     assert sorted(r["decided"]) == sorted(drafts)
 
 
+def test_bulk_accept_leaves_text_a_person_rewrote_after_the_draft(client, db_session, test_project):
+    """Review 2026-10-10 S1 (owner, 2026-10-11): "Accept all shown" replaced a
+    section someone had rewritten after the agent drafted against the old
+    text — and report text has no history to get it back from.  A single
+    accept shows the reviewer that the text changed; a bulk accept leaves
+    such a proposal pending and says so."""
+    from app.services import proposal_service
+
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    finding = _finding(client, test_project, host)
+    url = f"{_base(test_project)}/findings/{finding['id']}"
+    assert client.patch(url, json={"references": "CWE-294"}).status_code == 200
+    made = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+        "finding_id": finding["id"],
+        "fields": {
+            "impact": "Draft impact.", "recommendation": "Draft recommendation.",
+            "description": "Draft description.", "references": "Draft references.",
+        },
+    }).json()["proposals"]
+    ids = {p["field"]: p["id"] for p in made}
+
+    # After the drafts: a person rewrites the impact …
+    assert client.patch(url, json={"impact": "What the lead wrote by hand."}).status_code == 200
+    # … re-saves the references with nothing but spacing changed (not a rewrite) …
+    assert client.patch(url, json={"references": "  CWE-294\n"}).status_code == 200
+    # … and the description's draft is a row from before the field's text was
+    # recorded with a proposal: what it was written against is not known.
+    old = db_session.get(AgentProposal, ids["description"])
+    old.payload = {"value": "Draft description."}
+    db_session.commit()
+    assert client.patch(url, json={"description": "Written since; nobody can say whether before the draft."}).status_code == 200
+
+    r = client.post(f"{_base(test_project)}/proposals/bulk", json={"ids": list(ids.values()), "action": "accept"})
+
+    assert r.status_code == 200, r.text
+    answer = r.json()
+    assert set(answer) == {"decided", "failed", "skipped"}
+    assert answer["failed"] == []
+    assert answer["skipped"] == [{
+        "id": ids["impact"], "reason": "text_changed_since_proposed",
+        "detail": proposal_service.REWRITTEN_SINCE_PROPOSED_DETAIL,
+    }]
+    assert sorted(answer["decided"]) == sorted([ids["recommendation"], ids["description"], ids["references"]])
+    db_session.expire_all()
+    row = db_session.get(Finding, finding["id"])
+    assert row.impact == "What the lead wrote by hand."             # not replaced
+    assert row.recommendation == "Draft recommendation."
+    assert row.references == "Draft references."                     # spacing was not a rewrite
+    # No recorded base: decided as a single accept of it would be (no warning there either).
+    assert row.description == "Draft description."
+    skipped = db_session.get(AgentProposal, ids["impact"])
+    assert skipped.status == "pending" and skipped.error is None and skipped.decided_at is None
+
+    # The reason is the single proposal's own word, from the one comparison …
+    pending = client.get(f"{_base(test_project)}/proposals", params={"status": "pending"}).json()["items"]
+    assert [(p["id"], p["changed_since_proposed"]) for p in pending] == [(ids["impact"], True)]
+    # … and decided on its own, knowingly, it is applied.
+    assert client.post(f"{_base(test_project)}/proposals/{ids['impact']}/accept", json={}).status_code == 200
+    db_session.expire_all()
+    assert db_session.get(Finding, finding["id"]).impact == "Draft impact."
+
+
+def test_bulk_reject_skips_nothing_and_an_unchanged_bulk_accept_answers_no_skips(client, db_session, test_project):
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    finding = _finding(client, test_project, host)
+    url = f"{_base(test_project)}/findings/{finding['id']}"
+    first = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+        "finding_id": finding["id"], "fields": {"impact": "Draft impact."}}).json()["proposals"][0]["id"]
+    assert client.patch(url, json={"impact": "Rewritten by hand."}).status_code == 200
+    r = client.post(f"{_base(test_project)}/proposals/bulk", json={"ids": [first], "action": "reject"}).json()
+    assert r == {"decided": [first], "failed": [], "skipped": []}
+
+    second = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+        "finding_id": finding["id"], "fields": {"impact": "A newer draft."}}).json()["proposals"][0]["id"]
+    r = client.post(f"{_base(test_project)}/proposals/bulk", json={"ids": [second], "action": "accept"}).json()
+    assert r == {"decided": [second], "failed": [], "skipped": []}
+    db_session.expire_all()
+    assert db_session.get(Finding, finding["id"]).impact == "A newer draft."
+
+
 def test_the_agent_reads_what_happened_to_its_proposals(client, db_session, test_project):
     key, _ = _start(client, test_project)
     other_key, _ = _start(client, test_project)

@@ -184,7 +184,7 @@ def test_a_comment_is_edited_and_deleted_by_its_author_only(client, test_project
 
     act_as(people["alice"])
     assert client.delete(f"{base}/{note['id']}").status_code == 204
-    assert [n["id"] for n in client.get(base).json()] == []
+    assert client.get(base).json() == {"items": [], "total": 0}
 
 
 def test_a_comment_with_replies_is_kept(client, test_project, people, act_as):

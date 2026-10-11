@@ -3,6 +3,7 @@ from typing import List, Optional
 from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 from pydantic import BaseModel
 from app.db import models
@@ -84,6 +85,34 @@ def _get_or_create_site(db: Session, project_id: int, name: Optional[str], user_
     if cache is not None:
         cache[name] = site
     return site
+
+
+def _is_duplicate_cidr(exc: IntegrityError) -> bool:
+    """The database refused a second row for one (scope, CIDR)."""
+    return "uq_subnets_scope_cidr" in str(getattr(exc, "orig", exc))
+
+
+def _insert_subnets(db: Session, rows: List[Subnet]) -> bool:
+    """Insert ``rows`` — all of them, or none.  False when another request put
+    one of their CIDRs into the scope first.
+
+    The callers read the scope's CIDRs before they insert, and two requests can
+    both read before either writes; ``uq_subnets_scope_cidr`` is what settles
+    it.  The insert runs in a SAVEPOINT so the loser keeps its transaction
+    (the site rows it made, the session's objects) and decides what a CIDR
+    that is already there means: the upload skips it, the add form says so.
+    """
+    if not rows:
+        return True
+    try:
+        with db.begin_nested():
+            db.add_all(rows)
+            db.flush()
+    except IntegrityError as exc:
+        if not _is_duplicate_cidr(exc):
+            raise
+        return False
+    return True
 
 
 @router.post("/upload-subnets", response_model=SubnetFileUploadResponse, dependencies=[Depends(require_project_role(ProjectRole.ANALYST))])
@@ -181,43 +210,75 @@ async def upload_subnet_file(
         # (never a duplicate row); labels merge (add, never replace) so repeated
         # uploads accumulate labels onto the same subnet.
         scope = get_or_create_default_scope(db, project.id, user_id=current_user.id)
-        existing_subnets = {
-            s.cidr: s for s in db.query(Subnet).filter(Subnet.scope_id == scope.id).all()
-        }
-        added = 0
-        descriptions_set = 0
-        sites_set = 0
         site_cache: dict = {}  # name -> Site, get-or-created once per upload
+        site_of = {
+            site: _get_or_create_site(db, project.id, site, current_user.id, site_cache)
+            for _cidr, _labels, _description, site in entries if site
+        }
+        # What the file says about each CIDR the FIRST time it names it — the
+        # row a new subnet is created from.
+        first_mention: dict = {}
         for cidr, _labels, description, site in entries:
-            site_obj = _get_or_create_site(db, project.id, site, current_user.id, site_cache) if site else None
-            sub = existing_subnets.get(cidr)
-            if sub is None:
-                sub = Subnet(
+            first_mention.setdefault(cidr, (description, site))
+
+        # Insert the CIDRs the scope does not hold, in one flush.  A request
+        # that added one of them between this read and the insert makes the
+        # database refuse the batch (``_insert_subnets``); the scope is then
+        # read again, and that CIDR is one the scope already holds.  Three
+        # passes: each lost pass means another writer committed, and nothing
+        # deletes and re-adds in a loop.
+        existing_subnets: dict = {}
+        created: List[Subnet] = []
+        for _attempt in range(3):
+            existing_subnets = {
+                s.cidr: s for s in db.query(Subnet).filter(Subnet.scope_id == scope.id).all()
+            }
+            created = []
+            for cidr, (description, site) in first_mention.items():
+                if cidr in existing_subnets:
+                    continue
+                site_obj = site_of.get(site) if site else None
+                created.append(Subnet(
                     cidr=cidr, scope_id=scope.id,
                     description=(description or None),
                     site=(site or None), site_id=(site_obj.id if site_obj else None),
-                )
-                db.add(sub)
-                existing_subnets[cidr] = sub
-                added += 1
+                ))
+            if _insert_subnets(db, created):
+                break
+        else:
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="The scope was being changed by another upload at the same time. Upload the file again.",
+            )
+        created_cidrs = {sub.cidr for sub in created}
+        for sub in created:
+            existing_subnets[sub.cidr] = sub
+        added = len(created)
+
+        descriptions_set = 0
+        sites_set = 0
+        counted_as_created: set = set()
+        for cidr, _labels, description, site in entries:
+            sub = existing_subnets[cidr]
+            if cidr in created_cidrs and cidr not in counted_as_created:
+                # The row this subnet was just created from.
+                counted_as_created.add(cidr)
                 if description:
                     descriptions_set += 1
                 if site:
                     sites_set += 1
-            else:
-                # Update description/site on an existing subnet when the CSV
-                # provides them (empty cols leave the existing values intact).
-                if description:
-                    sub.description = description
-                    descriptions_set += 1
-                if site:
-                    sub.site = site
-                    sub.site_id = site_obj.id if site_obj else None
-                    sites_set += 1
-        # One flush for the whole batch — populates .id on every pending Subnet
-        # (the existing_subnets map holds live object refs) for the label
-        # assignments below.  Avoids a per-row round-trip (and a regression on the
-        # label-less .txt path, which never flushed in the loop before).
+                continue
+            # Update description/site on an existing subnet when the CSV
+            # provides them (empty cols leave the existing values intact).
+            if description:
+                sub.description = description
+                descriptions_set += 1
+            if site:
+                site_obj = site_of.get(site)
+                sub.site = site
+                sub.site_id = site_obj.id if site_obj else None
+                sites_set += 1
         db.flush()
 
         # Labels: get-or-create the project label, then add only assignments that
@@ -702,15 +763,26 @@ def add_subnets(
     site_cache: dict = {}
     for cidr, description, site in normalized:
         site_obj = _get_or_create_site(db, project.id, site, None, site_cache) if site else None
-        row = Subnet(
+        created.append(Subnet(
             cidr=cidr, description=description, site=(site or None),
             site_id=(site_obj.id if site_obj else None), scope_id=scope_id,
+        ))
+    # Insert (and get the ids); ``correlate_subnets`` commits the subnets and
+    # their mappings together.  The read above can miss a CIDR another request
+    # is adding at this moment — a double-submitted form, an upload of the
+    # same list: the database then refuses the batch, and the answer is the
+    # one the check above gives.
+    if not _insert_subnets(db, created):
+        db.rollback()
+        taken = sorted(
+            row.cidr for row in db.query(Subnet.cidr).filter(
+                Subnet.scope_id == scope_id, Subnet.cidr.in_([c for c, _, _ in normalized]),
+            )
         )
-        db.add(row)
-        created.append(row)
-    # Flush for the ids; ``correlate_subnets`` commits the subnets and their
-    # mappings together.
-    db.flush()
+        raise HTTPException(
+            status_code=400,
+            detail=f"CIDR {taken[0] if taken else normalized[0][0]} already exists in this scope",
+        )
 
     # Map the hosts already in the database to the new subnets — ALL of them in
     # one pass (review 2026-10-01 R24): one read of the project's hosts, one
@@ -770,7 +842,16 @@ def update_subnet(
         site_obj = _get_or_create_site(db, project.id, body.site, None) if body.site else None
         subnet.site_id = site_obj.id if site_obj else None
 
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        # Another request gave the scope this CIDR after the check above.
+        db.rollback()
+        if not _is_duplicate_cidr(exc):
+            raise
+        raise HTTPException(
+            status_code=400, detail=f"CIDR {_validate_cidr(body.cidr)} already exists in this scope",
+        )
     db.refresh(subnet)
 
     if cidr_changed:

@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, require_project_role
 from app.api.deps import get_current_user
+from app.api.downloads import attachment
 from app.services.default_scope import get_or_create_default_scope
 from app.db import models
 from app.db.models import DNS_ADDRESS_VALUED_TYPES, DNS_OBS_IMPORT, DNS_RESOLVING_TYPES
@@ -220,11 +221,11 @@ def export_names(
     if format == "csv":
         return StreamingResponse(
             _csv(), media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=names.csv"},
+            headers=attachment("names.csv"),
         )
     return StreamingResponse(
         _txt(), media_type="text/plain",
-        headers={"Content-Disposition": "attachment; filename=names.txt"},
+        headers=attachment("names.txt"),
     )
 
 

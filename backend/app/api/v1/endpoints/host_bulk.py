@@ -282,7 +282,11 @@ class BulkFollowRequest(BaseModel):
     status: ReviewStateToSet
 
 
-@router.post("/bulk/follow", response_model=BulkResult, summary="Set follow status on many hosts (for the caller)")
+@router.post(
+    "/bulk/follow", response_model=BulkResult, summary="Set follow status on many hosts (for the caller)",
+    # The single-host route's floor (``POST /hosts/{id}/follow``): analyst and up.
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
 def bulk_follow(
     payload: BulkFollowRequest,
     db: Session = Depends(get_db),

@@ -27,6 +27,10 @@ const note = (id: number, body = `note ${id}`) => ({
   id, body, status: 'open', author_id: 1, author_name: 'ana', parent_id: null, created_at: '2026-08-01T00:00:00Z',
 });
 
+/** A read of the thread: its comments (the server sends the newest first; the
+ *  thread orders what it shows itself) and how many the thread holds. */
+const page = (items: unknown[], total = items.length) => ({ items, total });
+
 const renderThread = () => render(<FindingCommentThread findingId={7} canManage />);
 
 /** Paste one image into the composer. */
@@ -38,7 +42,7 @@ const pasteImage = (name: string) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocked.getFindingNotes.mockResolvedValue([]);
+  mocked.getFindingNotes.mockResolvedValue(page([]));
 });
 
 describe('FindingCommentThread — H1: unavailable is not empty', () => {
@@ -48,13 +52,13 @@ describe('FindingCommentThread — H1: unavailable is not empty', () => {
     expect(await screen.findByText(/Comments couldn't load/)).toBeInTheDocument();
     expect(screen.queryByText(/No comments yet/)).toBeNull();
 
-    mocked.getFindingNotes.mockResolvedValueOnce([note(1)]);
+    mocked.getFindingNotes.mockResolvedValueOnce(page([note(1)]));
     fireEvent.click(screen.getByRole('button', { name: /Retry/ }));
     expect(await screen.findByText('note 1')).toBeInTheDocument();
   });
 
   it('refresh failure keeps the loaded comments and shows a stale-data notice', async () => {
-    mocked.getFindingNotes.mockResolvedValueOnce([note(1)]);
+    mocked.getFindingNotes.mockResolvedValueOnce(page([note(1)]));
     mocked.createFindingNote.mockResolvedValue(note(2));
     mocked.getFindingNotes.mockRejectedValueOnce(new Error('503'));
     renderThread();
@@ -151,7 +155,7 @@ describe('FindingCommentThread — C3: failed attachments are kept and retried a
   });
 
   it('regression: Remove during an in-flight retry never drops a different pending file', async () => {
-    (api.getFindingNotes as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (api.getFindingNotes as ReturnType<typeof vi.fn>).mockResolvedValue(page([]));
     (api.createFindingNote as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 5, body: 'x', attachments: [] });
     let resolveRetry: (v: unknown) => void = () => {};
     (api.uploadFindingNoteAttachment as ReturnType<typeof vi.fn>)
@@ -186,7 +190,7 @@ describe('FindingCommentThread — v5.256.0: a comment is its author\'s', () => 
   const others = (id: number, body: string) => ({ ...note(id, body), author_id: 2, author_name: 'bo' });
 
   it('offers Edit and Delete on my comments only', async () => {
-    mocked.getFindingNotes.mockResolvedValue([note(1, 'mine'), others(2, 'theirs')]);
+    mocked.getFindingNotes.mockResolvedValue(page([note(1, 'mine'), others(2, 'theirs')]));
     renderThread();
     await screen.findByText('theirs');
     expect(screen.getAllByRole('button', { name: /Edit/ })).toHaveLength(1);
@@ -195,7 +199,7 @@ describe('FindingCommentThread — v5.256.0: a comment is its author\'s', () => 
   });
 
   it('edits in place and marks the comment edited', async () => {
-    mocked.getFindingNotes.mockResolvedValue([note(1, 'frist draft')]);
+    mocked.getFindingNotes.mockResolvedValue(page([note(1, 'frist draft')]));
     mocked.updateFindingNote.mockResolvedValue({
       ...note(1, 'first draft'), updated_at: '2026-08-01T01:00:00Z',
     });
@@ -210,18 +214,22 @@ describe('FindingCommentThread — v5.256.0: a comment is its author\'s', () => 
   });
 
   it('deletes after confirmation', async () => {
-    mocked.getFindingNotes.mockResolvedValue([note(1, 'mine')]);
+    // The thread is read again after the delete (its count is the server's).
+    mocked.getFindingNotes.mockResolvedValueOnce(page([note(1, 'mine')]));
     mocked.deleteFindingNote.mockResolvedValue(undefined);
     confirmMock.mockResolvedValueOnce(true);
     renderThread();
     await screen.findByText('mine');
+    expect(screen.getByRole('heading')).toHaveTextContent('(1)');
     fireEvent.click(screen.getByRole('button', { name: /Delete comment/ }));
     await waitFor(() => expect(mocked.deleteFindingNote).toHaveBeenCalledWith(1, 7, 1));
     await waitFor(() => expect(screen.queryByText('mine')).toBeNull());
+    expect(mocked.getFindingNotes).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText(/No comments yet/)).toBeInTheDocument();
   });
 
   it('a comment with replies is not deleted — it says why instead of asking', async () => {
-    mocked.getFindingNotes.mockResolvedValue([note(1, 'root'), { ...others(2, 'reply'), parent_id: 1 }]);
+    mocked.getFindingNotes.mockResolvedValue(page([note(1, 'root'), { ...others(2, 'reply'), parent_id: 1 }]));
     renderThread();
     await screen.findByText('reply');
     fireEvent.click(screen.getByRole('button', { name: /Delete comment/ }));
@@ -276,10 +284,14 @@ describe('FindingCommentThread — a screenshot is one of the finding’s images
 
   it('deleting a comment that carried screenshots reads them again; a bare one does not', async () => {
     const { reread, ReadsOnScreen } = images();
-    mocked.getFindingNotes.mockResolvedValue([
+    // What the server holds: each delete takes its comment out of the next read.
+    let held: Array<ReturnType<typeof note> & { attachments?: unknown[] }> = [
       note(1, 'bare'), { ...note(2, 'with shots'), attachments: [{ id: 9, filename: 'shot.png' }] },
-    ]);
-    mocked.deleteFindingNote.mockResolvedValue(undefined);
+    ];
+    mocked.getFindingNotes.mockImplementation(async () => page(held));
+    mocked.deleteFindingNote.mockImplementation(async (_project: number, _finding: number, id: number) => {
+      held = held.filter((n) => n.id !== id);
+    });
     confirmMock.mockResolvedValue(true);
     renderWith(ReadsOnScreen);
     await screen.findByText('with shots');
@@ -299,11 +311,12 @@ describe('FindingCommentThread — a screenshot is one of the finding’s images
 // others' on the left (v5.268.0), oldest first, a reply quoting what it answers.
 describe('FindingCommentThread — conversation layout', () => {
   it('sides, order and reply quotes', async () => {
-    mocked.getFindingNotes.mockResolvedValue([
-      { ...note(1, 'Found it.'), created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:01Z' },
-      { ...note(2, 'Confirmed on my side.'), author_id: 2, author_name: 'ben', parent_id: 1, created_at: '2026-08-01T01:00:00Z' },
+    // As the server sends them: newest first.  The thread reads oldest first.
+    mocked.getFindingNotes.mockResolvedValue(page([
       { ...note(3, 'Thanks.'), created_at: '2026-08-01T02:00:00Z' },
-    ]);
+      { ...note(2, 'Confirmed on my side.'), author_id: 2, author_name: 'ben', parent_id: 1, created_at: '2026-08-01T01:00:00Z' },
+      { ...note(1, 'Found it.'), created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:01Z' },
+    ]));
     const { container } = renderThread();
     await screen.findByText('Thanks.');
     const sides = [...container.querySelectorAll('[data-side]')].map((el) => el.getAttribute('data-side'));
@@ -318,5 +331,96 @@ describe('FindingCommentThread — conversation layout', () => {
     // The viewer's own messages read "You"; no Card wraps the thread.
     expect(screen.getAllByText('You')).toHaveLength(2);
     expect(container.querySelector('.bg-card.shadow-raised')).toBeNull();
+  });
+});
+
+// Review 2026-10-10 H9 — the thread was the OLDEST 100 comments and nothing
+// else: the 101st saved, notified and never appeared, for its author too.
+// The server here holds more than two reads' worth.
+describe('FindingCommentThread — a thread longer than one read', () => {
+  const HELD = 230;
+  /** Comment n of the thread (1 = the first written), a minute apart. */
+  const nth = (n: number) => ({
+    ...note(n, `comment ${n}`), author_id: 2, author_name: 'bo',
+    created_at: new Date(Date.UTC(2026, 7, 1, 0, n)).toISOString(),
+  });
+  let held: Array<ReturnType<typeof nth>>;
+  /** The server's rule: newest first, `offset` counted from the newest. */
+  const serve = async (_project: number, _finding: number, { offset = 0, limit = 100 } = {}) => {
+    const newestFirst = [...held].reverse();
+    return page(newestFirst.slice(offset, offset + limit), held.length);
+  };
+  // The thread as someone who only reads it sees it.  (Queried by element,
+  // not by role: a role query over hundreds of comments is what makes a
+  // test of a long thread slow.)
+  const renderReader = () => render(<FindingCommentThread findingId={7} canManage={false} />);
+  const shown = () => [...document.querySelectorAll('[id^="note-"]')].map((el) => el.id);
+  const heading = () => document.querySelector('h2')?.textContent ?? '';
+  const earlier = () => [...document.querySelectorAll('button')]
+    .find((b) => /Show earlier comments/.test(b.textContent ?? '')) ?? null;
+
+  beforeEach(() => {
+    held = Array.from({ length: HELD }, (_v, i) => nth(i + 1));
+    mocked.getFindingNotes.mockImplementation(serve);
+    window.location.hash = '';
+  });
+
+  it('opens on the newest comments, says how many came before, and walks back to the first', async () => {
+    renderReader();
+    await screen.findByText(`comment ${HELD}`);
+    // The newest 100, oldest of them first; the count is the thread's.
+    expect(shown()).toHaveLength(100);
+    expect(shown()[0]).toBe('note-131');
+    expect(shown()[99]).toBe(`note-${HELD}`);
+    expect(heading()).toContain(`(${HELD})`);
+
+    expect(earlier()).toHaveTextContent('Show earlier comments (130 earlier)');
+    fireEvent.click(earlier() as HTMLElement);
+    await screen.findByText('comment 31');
+    expect(mocked.getFindingNotes).toHaveBeenLastCalledWith(1, 7, { offset: 100, limit: 100 }, expect.anything());
+    expect(earlier()).toHaveTextContent('Show earlier comments (30 earlier)');
+    fireEvent.click(earlier() as HTMLElement);
+    await screen.findByText('comment 1');
+    expect(shown()).toHaveLength(HELD);
+    expect(shown()[0]).toBe('note-1');
+    expect(shown()[HELD - 1]).toBe(`note-${HELD}`);
+    // Every comment is on screen: nothing earlier is offered.
+    expect(earlier()).toBeNull();
+  });
+
+  it('shows a comment the reader just posted, at the end', async () => {
+    mocked.createFindingNote.mockImplementation(async (_p: number, _f: number, body: string) => {
+      const made = { ...nth(HELD + 1), body, author_id: 1, author_name: 'ana' };
+      held.push(made);
+      return made;
+    });
+    renderThread();
+    await screen.findByText(`comment ${HELD}`);
+    fireEvent.change(screen.getByLabelText('New comment'), { target: { value: 'the one I just wrote' } });
+    fireEvent.click(screen.getByText('Comment', { selector: 'button' }));
+    expect(await screen.findByText('the one I just wrote')).toBeInTheDocument();
+    expect(heading()).toContain(`(${HELD + 1})`);
+    // At the end of what is on screen, where a conversation's newest is.
+    const ids = shown();
+    expect(ids[ids.length - 1]).toBe(`note-${HELD + 1}`);
+  });
+
+  it('a link to an earlier comment walks back until that comment is on screen', async () => {
+    window.location.hash = '#note-5';
+    renderReader();
+    expect(await screen.findByText('comment 5')).toBeInTheDocument();
+    // Three reads reach it: the newest 100, then two more.
+    expect(mocked.getFindingNotes).toHaveBeenCalledTimes(3);
+  });
+
+  it('a failed "Show earlier comments" is said beside it and keeps the thread', async () => {
+    renderReader();
+    await screen.findByText(`comment ${HELD}`);
+    mocked.getFindingNotes.mockRejectedValueOnce(new Error('503'));
+    fireEvent.click(earlier() as HTMLElement);
+    expect(await screen.findByText(/Comments couldn't load/)).toBeInTheDocument();
+    expect(shown()).toHaveLength(100);
+    expect(earlier()).toHaveTextContent('Show earlier comments (130 earlier)');
+    expect(earlier()).toBeEnabled();
   });
 });

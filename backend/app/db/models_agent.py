@@ -319,9 +319,14 @@ class AgentApiCall(Base):
     # before/during auth (the request never had an agent_id to record);
     # `error_class` distinguishes these from rows with NULL agent_id
     # for some other reason.
+    #
+    # SET NULL (a4f8c2e6b0d1; owner, 2026-10-11: "Keep the logs with user
+    # nulled"): deleting an account deletes its agents, and the record of what
+    # those agents did must outlive both.  A row whose agent is gone keeps its
+    # project, session, path and time and is attributed to nobody.
     agent_id = Column(
         Integer,
-        ForeignKey("agents.id", ondelete="CASCADE"),
+        ForeignKey("agents.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -329,6 +334,7 @@ class AgentApiCall(Base):
         Integer,
         ForeignKey("api_keys.id", ondelete="SET NULL"),
         nullable=True,
+        index=True,
     )
     api_key_prefix = Column(String(16), nullable=True)  # nm_agent_xxxx — never the raw key
     source_ip = Column(String(45), nullable=True)
@@ -410,18 +416,14 @@ class AgentApiCall(Base):
         # The session page's feed and its per-session counts: one session's
         # calls, newest first.
         Index("idx_agent_api_call_session_created", "agent_session_id", "created_at"),
-        # v2.50.1 — enforce the agent_id+project_id-or-error_class
-        # contract at the DB level.  The columns were relaxed to
-        # nullable in f9e2d471a8c6 to record pre-auth 5xx (the request
-        # crashed before we knew which agent/project it belonged to);
-        # ``error_class`` is the discriminator that says "this row is a
-        # pre-auth failure row, not a regular agent call with a
-        # missing FK".  Without this CHECK, a future code path that
-        # forgets to populate either pair produces orphan rows the
-        # activity-tab can't filter.
+        # A row names its project, or it is a pre-auth failure row
+        # (``error_class`` set: the request crashed before the project was
+        # known — f9e2d471a8c6).  Until a4f8c2e6b0d1 the first half also
+        # required ``agent_id``; it no longer can, because a call outlives its
+        # agent (SET NULL above).  The project is what every reader filters
+        # by, and it cannot go missing: deleting a project deletes its calls.
         CheckConstraint(
-            "(agent_id IS NOT NULL AND project_id IS NOT NULL) "
-            "OR error_class IS NOT NULL",
+            "project_id IS NOT NULL OR error_class IS NOT NULL",
             name="ck_agent_api_calls_attribution_or_error",
         ),
     )

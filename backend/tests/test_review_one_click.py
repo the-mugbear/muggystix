@@ -264,17 +264,17 @@ def test_the_review_note_is_the_reviewers_own_and_a_writers(client, db_session, 
         assert client.post(url, json={"status": "reviewed"}).status_code == 200
         assert client.patch(url, json={"review_summary": "the analyst's"}).status_code == 200
 
-        # A viewer may keep a review status (their own row, as before) but the
-        # note is a write: analyst and up.
+        # A viewer sets neither: the status and the note are both writes,
+        # analyst and up (owner, 2026-10-11 — ``test_review_status_role_floor``).
         app.dependency_overrides[get_current_user] = lambda: viewer
-        assert client.post(url, json={"status": "reviewed"}).status_code == 200
+        assert client.post(url, json={"status": "reviewed"}).status_code == 403
         assert client.patch(url, json={"review_summary": "a viewer's"}).status_code == 403
     finally:
         app.dependency_overrides[get_current_user] = mine
 
     assert _row(db_session, host, test_user).review_summary == "mine"
     assert _row(db_session, host, analyst).review_summary == "the analyst's"
-    assert _row(db_session, host, viewer).review_summary is None
+    assert db_session.query(HostFollow).filter_by(host_id=host.id, user_id=viewer.id).first() is None
 
 
 # ---------------------------------------------------------------------------

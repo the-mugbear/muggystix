@@ -5,6 +5,7 @@ from sqlalchemy import text as sql_text
 from app.db.session import get_db
 from app.services.csv_utils import safe_csv_row
 from app.services import scope_coverage
+from app.api.downloads import attachment
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_project import Project, ProjectRole
@@ -85,7 +86,7 @@ def export_scope_hosts(
         disable_statement_timeout(db)
         return PlainTextResponse(
             content="".join(iter_scope_web_targets(db, scope.id)) if scope else "",
-            headers={"Content-Disposition": f"attachment; filename={safe_name}_web-targets.txt"},
+            headers=attachment(f"{safe_name}_web-targets.txt"),
         )
 
     rows = (
@@ -99,7 +100,7 @@ def export_scope_hosts(
         body = "\n".join(r.ip_address for r in rows) + ("\n" if rows else "")
         return PlainTextResponse(
             content=body,
-            headers={"Content-Disposition": f"attachment; filename={safe_name}_hosts.txt"},
+            headers=attachment(f"{safe_name}_hosts.txt"),
         )
 
     if format_type == "csv":
@@ -118,7 +119,7 @@ def export_scope_hosts(
         return Response(
             content=buf.getvalue(),
             media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={safe_name}_hosts.csv"},
+            headers=attachment(f"{safe_name}_hosts.csv"),
         )
 
     # JSON
@@ -130,7 +131,7 @@ def export_scope_hosts(
     return Response(
         content=json.dumps(data, indent=2),
         media_type="application/json",
-        headers={"Content-Disposition": f"attachment; filename={safe_name}_hosts.json"},
+        headers=attachment(f"{safe_name}_hosts.json"),
     )
 
 
@@ -167,13 +168,15 @@ def export_scan_hosts(
         ORDER BY h.ip_address
     """), {"scan_id": scan_id, "project_id": project.id}).fetchall()
 
+    # The scan's own file name leads the download's; whatever it holds — any
+    # script, a comma — the header helper sends it as RFC 6266 says.
     safe_name = scan.filename.replace(" ", "_").replace("/", "-")[:40] if scan.filename else f"scan_{scan_id}"
 
     if format_type == "txt":
         body = "\n".join(r.ip_address for r in rows) + ("\n" if rows else "")
         return PlainTextResponse(
             content=body,
-            headers={"Content-Disposition": f"attachment; filename={safe_name}_hosts.txt"},
+            headers=attachment(f"{safe_name}_hosts.txt"),
         )
 
     if format_type == "csv":
@@ -187,7 +190,7 @@ def export_scan_hosts(
         return Response(
             content=buf.getvalue(),
             media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={safe_name}_hosts.csv"},
+            headers=attachment(f"{safe_name}_hosts.csv"),
         )
 
     # JSON
@@ -199,7 +202,7 @@ def export_scan_hosts(
     return Response(
         content=json.dumps(data, indent=2),
         media_type="application/json",
-        headers={"Content-Disposition": f"attachment; filename={safe_name}_hosts.json"},
+        headers=attachment(f"{safe_name}_hosts.json"),
     )
 
 
@@ -231,7 +234,7 @@ def export_out_of_scope_hosts(
         body = "\n".join(r.ip_address for r in rows) + ("\n" if rows else "")
         return PlainTextResponse(
             content=body,
-            headers={"Content-Disposition": "attachment; filename=out_of_scope_hosts.txt"},
+            headers=attachment("out_of_scope_hosts.txt"),
         )
 
     if format_type == "csv":
@@ -245,7 +248,7 @@ def export_out_of_scope_hosts(
         return Response(
             content=buf.getvalue(),
             media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=out_of_scope_hosts.csv"},
+            headers=attachment("out_of_scope_hosts.csv"),
         )
 
     # JSON
@@ -257,5 +260,5 @@ def export_out_of_scope_hosts(
     return Response(
         content=json.dumps(data, indent=2),
         media_type="application/json",
-        headers={"Content-Disposition": "attachment; filename=out_of_scope_hosts.json"},
+        headers=attachment("out_of_scope_hosts.json"),
     )

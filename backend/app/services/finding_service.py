@@ -465,32 +465,30 @@ class FindingService:
 
         rows = (
             self.db.query(FindingHost)
+            .options(selectinload(FindingHost.host), selectinload(FindingHost.name))
             .filter(FindingHost.finding_id == finding.id, FindingHost.host_id == vuln.host_id)
+            .order_by(FindingHost.id)
             .all()
         )
-        host = self.db.query(Host.ip_address).filter(Host.id == vuln.host_id).first()
-        label = host[0] if host else f"host {vuln.host_id}"
-        changed = False
+        # Each row goes through the one endpoint step.  On a finding this call
+        # made, the creation line below already says what happened here, so
+        # the step writes no second line; on an existing finding its line is
+        # the trail ("Endpoint <label>: open → false_positive — <reason>").
         for row in rows:
-            if row.host_status != FindingHostStatus.FALSE_POSITIVE.value:
-                row.host_status = FindingHostStatus.FALSE_POSITIVE.value
-                changed = True
-        reason = f": {summary}" if summary else ""
+            self._move_endpoint(
+                finding, row, FindingHostStatus.FALSE_POSITIVE.value, actor_id,
+                summary or "false positive here", history=not created,
+            )
         if created:
+            host = self.db.query(Host.ip_address).filter(Host.id == vuln.host_id).first()
+            label = host[0] if host else f"host {vuln.host_id}"
+            reason = f": {summary}" if summary else ""
             record_status_transition(
                 self.db, history_model=FindingStatusHistory, fk_field="finding_id",
                 entity_id=finding.id, from_status=None, to_status=finding.status,
                 changed_by_id=actor_id,
                 summary=f"Dismissed as false positive on {label} only{reason}",
             )
-        elif changed:
-            # Same shape set_endpoint_status writes: the finding's status did
-            # not move, the endpoint's did, and the trail names the endpoint.
-            self.db.add(FindingStatusHistory(
-                finding_id=finding.id, from_status=finding.status, to_status=finding.status,
-                changed_by_id=actor_id,
-                summary=f"Endpoint {label}: false positive here{reason}",
-            ))
         self.db.flush()
         return finding
 
@@ -845,27 +843,46 @@ class FindingService:
                 detail=f"host_status must be one of {sorted(allowed)}",
             )
 
+    @staticmethod
+    def _endpoint_label(row: FindingHost) -> str:
+        """How a history line names an endpoint row."""
+        label = row.host.ip_address if row.host else f"host {row.host_id}"
+        if row.name is not None:
+            label = f"{row.name.fqdn} on {label}"
+        return label
+
+    def _endpoint_line(self, finding: Finding, actor_id: Optional[int], summary: str) -> None:
+        """A history line about the finding's endpoints: the finding's own
+        status does not move.  Written directly — the shared transition helper
+        is for the finding's status and skips a no-change move, which this is
+        by design."""
+        self.db.add(FindingStatusHistory(
+            finding_id=finding.id, from_status=finding.status, to_status=finding.status,
+            changed_by_id=actor_id, summary=summary,
+        ))
+
     def _move_endpoint(
         self, finding: Finding, row: FindingHost, host_status: str,
-        actor_id: Optional[int], note: Optional[str],
+        actor_id: Optional[int], note: Optional[str], *, history: bool = True,
     ) -> bool:
-        """Set one endpoint row's state and write its history line.  False
-        when it already had that state (nothing written).  Does not flush."""
+        """THE one write of ``finding_hosts.host_status`` on an existing row:
+        it refuses a value that is not an endpoint state (422) and writes the
+        history line.  False when the row already had that state (nothing
+        written).  Does not flush.
+
+        ``history=False`` is for the one caller whose own line already says
+        it: the false-positive dismissal that CREATED the finding."""
+        self._validate_endpoint_status(host_status)
         if row.host_status == host_status:
             return False
         old = row.host_status
         row.host_status = host_status
-        label = row.host.ip_address if row.host else f"host {row.host_id}"
-        if row.name is not None:
-            label = f"{row.name.fqdn} on {label}"
-        # Written directly: the shared transition helper is for the finding's
-        # own status and skips a no-change move, which this is by design.
-        self.db.add(FindingStatusHistory(
-            finding_id=finding.id, from_status=finding.status, to_status=finding.status,
-            changed_by_id=actor_id,
-            # ``note``: where the change came from (an accepted proposal).
-            summary=f"Endpoint {label}: {old} → {host_status}" + (f" — {note}" if note else ""),
-        ))
+        if history:
+            self._endpoint_line(
+                finding, actor_id,
+                # ``note``: where the change came from (an accepted proposal).
+                f"Endpoint {self._endpoint_label(row)}: {old} → {host_status}" + (f" — {note}" if note else ""),
+            )
         return True
 
     def add_hosts(
@@ -925,10 +942,26 @@ class FindingService:
         self._before_endpoints_removed(
             finding, actor_id=actor_id, is_project_admin=is_project_admin, host_id=host_id,
         )
-        self.db.query(FindingHost).filter(
-            FindingHost.finding_id == finding.id, FindingHost.host_id == host_id,
-        ).delete(synchronize_session=False)
+        rows = (
+            self.db.query(FindingHost)
+            .options(selectinload(FindingHost.host), selectinload(FindingHost.name))
+            .filter(FindingHost.finding_id == finding.id, FindingHost.host_id == host_id)
+            .order_by(FindingHost.id)
+            .all()
+        )
+        for row in rows:
+            self._record_endpoint_removed(finding, row, actor_id)
+            self.db.delete(row)
+        self.db.flush()
         return finding
+
+    def _record_endpoint_removed(self, finding: Finding, row: FindingHost, actor_id: Optional[int]) -> None:
+        """The history line of a removal: which endpoint, and the state it
+        was in (the row and that state are gone afterwards)."""
+        self._endpoint_line(
+            finding, actor_id,
+            f"Removed endpoint {self._endpoint_label(row)} (was {row.host_status})",
+        )
 
     def remove_endpoint(
         self, *, finding: Finding, finding_host_id: int,
@@ -948,17 +981,25 @@ class FindingService:
             finding, actor_id=actor_id, is_project_admin=is_project_admin, finding_host_id=finding_host_id,
         )
         snapshot = {"host_id": row.host_id, "name_id": row.name_id, "host_status": row.host_status}
+        self._record_endpoint_removed(finding, row, actor_id)
         self.db.delete(row)
         self.db.flush()
         return snapshot
 
     def restore_endpoint(
         self, *, finding: Finding, host_id: int, name_id: Optional[int] = None,
-        host_status: Optional[str] = None,
+        host_status: Optional[str] = None, actor_id: Optional[int] = None,
     ) -> Finding:
         """v2.325.0 — (re)attach one endpoint with its name and status intact.
         ``name_id`` must belong to the finding's project; a name from another
-        project is rejected like a foreign host."""
+        project is rejected like a foreign host.
+
+        The state is set through :meth:`_move_endpoint` — on a row this call
+        attached and on one that was already there alike — so a value that is
+        not an endpoint state is refused before anything is written and every
+        change of state has its history line."""
+        if host_status:
+            self._validate_endpoint_status(host_status)
         if name_id is not None:
             from app.db.models import DNSName
             ok = (
@@ -968,19 +1009,26 @@ class FindingService:
             )
             if ok is None:
                 raise HTTPException(status_code=422, detail=f"Name {name_id} is not in this project.")
-        self._attach_hosts(finding, [host_id], names_by_host={host_id: name_id} if name_id is not None else None)
-        self.db.flush()  # autoflush is off — the row must exist before we look it up
-        if host_status:
-            row = (
+        def _row() -> Optional[FindingHost]:
+            return (
                 self.db.query(FindingHost)
+                .options(selectinload(FindingHost.host), selectinload(FindingHost.name))
                 .filter(
                     FindingHost.finding_id == finding.id, FindingHost.host_id == host_id,
                     FindingHost.name_id.is_(None) if name_id is None else FindingHost.name_id == name_id,
                 )
                 .first()
             )
-            if row is not None:
-                row.host_status = host_status
+
+        was_attached = _row() is not None
+        self._attach_hosts(finding, [host_id], names_by_host={host_id: name_id} if name_id is not None else None)
+        self.db.flush()  # autoflush is off — the row must exist before we look it up
+        row = _row()
+        if row is not None:
+            if not was_attached:
+                self._endpoint_line(finding, actor_id, f"Restored endpoint {self._endpoint_label(row)}")
+            if host_status:
+                self._move_endpoint(finding, row, host_status, actor_id, "restored")
         self.db.flush()
         return finding
 
@@ -1329,18 +1377,26 @@ class FindingService:
             })
         return rows, total
 
-    def list_finding_notes(self, finding_id: int, limit: int = 100) -> List[Annotation]:
+    def list_finding_notes(
+        self, finding_id: int, *, limit: int = 100, offset: int = 0,
+    ) -> Tuple[List[Annotation], int]:
+        """A page of the finding's comments, NEWEST first, and how many the
+        thread holds.  ``offset=0`` is the newest ``limit`` — the comment
+        someone just posted is always in it — and a larger offset walks back
+        to the first one, so every comment can be reached (the read used to
+        be the OLDEST 100 with no way past them).  The id breaks a tie: two
+        comments in one transaction share a timestamp."""
         from app.services.host_serialization import note_load_options
-        return (
-            self.db.query(Annotation)
-            .filter(Annotation.finding_id == finding_id)
-            .options(*note_load_options())  # all that _serialize_note reads
-            # Oldest-first reads as a thread; the id breaks a tie (two comments in
-            # one transaction share a timestamp, and their order was arbitrary).
-            .order_by(Annotation.created_at.asc(), Annotation.id.asc())
+        base = self.db.query(Annotation).filter(Annotation.finding_id == finding_id)
+        total = base.with_entities(func.count(Annotation.id)).scalar() or 0
+        rows = (
+            base.options(*note_load_options())  # all that _serialize_note reads
+            .order_by(Annotation.created_at.desc(), Annotation.id.desc())
+            .offset(offset)
             .limit(limit)
             .all()
         )
+        return rows, int(total)
 
     def create_finding_note(
         self, *, finding_id: int, user_id: int, body: str,

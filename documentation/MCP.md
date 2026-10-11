@@ -384,7 +384,14 @@ The endpoint's own 401 reaches the client as that real HTTP 401, a JSON-RPC
 error (`-32001`) whose message is the endpoint's detail. One of its reasons is
 `operator_credentials_changed` — the key was issued before its operator's
 password was last changed or reset. It is not recoverable by renewing; the
-operator starts a new session.
+operator starts a new session. `session_renew` also answers
+`operator_inactive` (not recoverable) when the operator's account has been
+deactivated; deactivating an account ends its sessions.
+
+A host query that names an assignee nobody here can be (`q=assigned:<name>`
+outside the usernames `assist_get_vocabulary` lists — the project's members,
+the active global administrators and whoever currently holds a host) or an
+`asn:` that is not a number is a 400 naming the value, never an empty list.
 
 `read_agent_guide` called without `part` returns the whole guide; with it,
 one part (`assist`, `reconnaissance`, `testing` or `remediation`). `part` is

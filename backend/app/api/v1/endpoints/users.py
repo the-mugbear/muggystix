@@ -33,6 +33,26 @@ _AUTH_RESPONSES = {
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
+def _end_everything_signed_in_as(
+    db: Session, user: User, *, ended_by: User, session_reason: str, agent_reason: str,
+) -> None:
+    """Take an account back from whatever is signed in as it: revoke its live
+    browser sessions (``session_reason`` is stored on each) and end the agent
+    sessions it started, revoking their keys (``agent_reason`` is shown on the
+    Agent Sessions page).  ONE step for an administrator's password reset and
+    for deactivating the account; the caller commits."""
+    from app.db.models_auth import UserSession
+
+    db.query(UserSession).filter(
+        UserSession.user_id == user.id,
+        UserSession.revoked_at.is_(None),
+    ).update(
+        {"revoked_at": datetime.now(timezone.utc), "revoked_reason": session_reason},
+        synchronize_session=False,
+    )
+    end_sessions_of_operator(db, user.id, ended_by=ended_by, reason=agent_reason)
+
+
 # Pydantic models
 class UserListItem(BaseModel):
     id: int
@@ -448,6 +468,15 @@ def update_user(
 
     if update_data.is_active is not None:
         changes["is_active"] = {"old": user.is_active, "new": update_data.is_active}
+        if user.is_active and update_data.is_active is False:
+            # Deactivating takes the account back: what was signed in or
+            # started under it ends now, so switching the account on again
+            # later does not bring an old token or an old agent key back.
+            _end_everything_signed_in_as(
+                db, user, ended_by=current_user,
+                session_reason="account_deactivated",
+                agent_reason="the operator's account was deactivated by an administrator",
+            )
         user.is_active = update_data.is_active
 
     db.commit()
@@ -509,20 +538,13 @@ def admin_reset_password(
     # session) must stop working.  Mirrors the self-service change-password
     # path, which revokes for the same reason.  ``must_change_password`` only
     # gates the next *login*; an already-issued token would otherwise stay
-    # valid for its full lifetime.
-    from app.db.models_auth import UserSession
-    db.query(UserSession).filter(
-        UserSession.user_id == user.id,
-        UserSession.revoked_at.is_(None),
-    ).update(
-        {"revoked_at": datetime.now(timezone.utc), "revoked_reason": "admin_password_reset"},
-        synchronize_session=False,
-    )
-    # The same goes for agent keys: a session started with a stolen token
-    # would otherwise keep answering, and renewing, for up to a week.
-    end_sessions_of_operator(
-        db, user.id, ended_by=current_user,
-        reason="the operator's password was reset by an administrator",
+    # valid for its full lifetime.  The same goes for agent keys: a session
+    # started with a stolen token would otherwise keep answering, and
+    # renewing, for up to a week.
+    _end_everything_signed_in_as(
+        db, user, ended_by=current_user,
+        session_reason="admin_password_reset",
+        agent_reason="the operator's password was reset by an administrator",
     )
 
     db.commit()

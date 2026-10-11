@@ -145,19 +145,32 @@ def test_resolve_endpoint_states():
     assert resolve_endpoint_states(["closed", "any"], has_endpoint=True) is None
 
 
-def test_tool_output_port_narrowing_follows_the_rule():
-    from app.api.v1.endpoints.hosts import _get_filtered_output_ports
+def test_tool_output_port_narrowing_follows_the_rule(client, db_session, test_project):
+    """The export's ports are the ones the host filter's own conditions match
+    (``host_query.port_filter_conditions``) — asked of the database, not
+    re-implemented in Python."""
+    host = models.Host(project_id=test_project.id, ip_address="10.9.7.1", state="up")
+    db_session.add(host)
+    db_session.flush()
+    for number, state in ((22, "open"), (2222, "closed")):
+        db_session.add(models.Port(
+            host_id=host.id, port_number=number, protocol="tcp", state=state, service_name="ssh",
+        ))
+    db_session.commit()
 
-    host = SimpleNamespace(ports=[
-        SimpleNamespace(port_number=22, state="open", service_name="ssh"),
-        SimpleNamespace(port_number=2222, state="closed", service_name="ssh"),
-    ])
-    nums = lambda f: [p.port_number for p in _get_filtered_output_ports(host, f)]  # noqa: E731
-    assert nums({"services": "ssh"}) == [22]
-    assert nums({"services": "ssh", "port_states": "closed"}) == [2222]
-    assert nums({"services": "ssh", "port_states": "any"}) == [22, 2222]
+    def nums(**params):
+        resp = client.get(
+            f"/api/v1/projects/{test_project.id}/hosts/tool-ready/json",
+            params={"include_ports": "true", **params},
+        )
+        assert resp.status_code == 200, resp.text
+        return sorted(p["port"] for h in resp.json() for p in h["ports"])
+
+    assert nums(services="ssh") == [22]
+    assert nums(services="ssh", port_states="closed") == [2222]
+    assert nums(services="ssh", port_states="any") == [22, 2222]
     # No port condition: nothing narrows by state.
-    assert nums({}) == [22, 2222]
+    assert nums() == [22, 2222]
 
 
 def test_service_picker_counts_what_the_default_filter_returns(client, db_session, test_project):

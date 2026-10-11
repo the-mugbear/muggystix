@@ -293,7 +293,13 @@ def get_ingestion_results(
     sort_col = sort_col_map[sort_by]
     order_clause = sort_col.asc() if sort_order == "asc" else sort_col.desc()
 
-    jobs = annotate_jobs(db, base.order_by(order_clause).offset(skip).limit(limit).all())
+    # The id breaks ties: sorted by a column many rows share (status, tool),
+    # an order with no tiebreaker is a different order on every page read, and
+    # a row is shown twice or not at all.  Newest first within a tie.
+    jobs = annotate_jobs(
+        db,
+        base.order_by(order_clause, models.IngestionJob.id.desc()).offset(skip).limit(limit).all(),
+    )
 
     # Collect scan_ids from completed jobs for batch stats query
     scan_ids = [j.scan_id for j in jobs if j.scan_id is not None]

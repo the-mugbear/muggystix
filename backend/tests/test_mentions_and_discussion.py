@@ -230,7 +230,7 @@ def test_a_finding_comment_reports_who_was_notified_and_who_matched_nobody(
     assert edited["unmatched_mentions"] == ["ghost"]
 
     # A plain listing carries neither field.
-    [listed] = client.get(base).json()
+    [listed] = client.get(base).json()["items"]
     assert listed["mentions_notified"] is None and listed["unmatched_mentions"] is None
 
 

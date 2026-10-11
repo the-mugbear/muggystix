@@ -151,9 +151,18 @@ NFS_PORT = 2049
 
 def nxc_service_name(protocol: Optional[str], port: Optional[int]) -> Optional[str]:
     """The service on the port an nxc line names: the protocol, except that an
-    NFS line's port is the mount daemon's unless it is 2049."""
-    if (protocol or '').lower() == 'nfs' and port != NFS_PORT:
+    NFS line's port is the mount daemon's unless it is 2049.
+
+    None when the first column is not one of nxc's protocols — a module
+    (``ZEROLOGON``, ``SPIDER_PLUS``) or something this parser does not know.
+    The line still shows the port was reached, so the port is recorded open,
+    but its first column is not a service: it was stored as one ("zzz" on
+    9999; a module's name over "smb" on 445) until 2.490.0."""
+    name = (protocol or '').lower()
+    if name == 'nfs' and port != NFS_PORT:
         return 'mountd'
+    if name and name not in _NXC_PROTOCOLS:
+        return None
     return protocol
 
 

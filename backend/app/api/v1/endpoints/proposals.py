@@ -77,19 +77,34 @@ class DecideBody(BaseModel):
     edited_value: Optional[str] = Field(None, max_length=32768)
 
 
+class _LeftForOneAtATime(Exception):
+    """A bulk accept did not apply this proposal, by rule: nothing failed."""
+
+
 def _decide(
     db: Session, project_id: int, proposal_id: int, user: User, action: str, body: DecideBody,
-    *, serialize: bool = True,
+    *, serialize: bool = True, skip_rewritten: bool = False,
 ):
     """Decide one proposal and commit.  Returns its row as the routes return
     it, or None with ``serialize=False`` (the bulk route reports ids only —
     it used to build and discard each row, about five statements apiece;
-    review 2026-10-01 N8)."""
+    review 2026-10-01 N8).
+
+    ``skip_rewritten`` (the bulk accept): a report-text proposal whose
+    section was rewritten after the draft is left pending — nothing written,
+    the locks released — and ``_LeftForOneAtATime`` is raised.  A single
+    accept does not pass it: there the reviewer has the current text beside
+    the draft, with the warning, and overwrites knowingly."""
     # Locked until the commit below: a second decision on it waits, then
     # finds it decided (409) instead of applying it again.
     # One lock order for every decision — a report-text proposal's finding
     # first, then the proposal (H1; `lock_for_decision` says why).
     proposal = proposals.lock_for_decision(db, project_id, proposal_id)
+    # Under those locks, so the text compared is the text an accept would
+    # replace: a save of the section waits for this decision or came first.
+    if skip_rewritten and action == "accept" and proposals.rewritten_since_proposed(db, proposal):
+        db.rollback()
+        raise _LeftForOneAtATime()
     try:
         if action == "accept":
             proposals.accept_proposal(db, proposal, user, edited_value=body.edited_value, note=body.note)
@@ -147,8 +162,18 @@ def bulk_decide(
     not stop the rest; the response says which were decided and why the
     others were not.  Accepting never picks between several drafts of one
     field: accepting the first would supersede the rest by list order, so
-    those are left pending for a person to choose on the finding."""
-    done, failed = [], []
+    those are left pending for a person to choose on the finding.
+
+    Accepting also never replaces report text a person rewrote after the
+    draft was made (owner decision 2026-10-11): such a proposal is left
+    pending and named in ``skipped`` with its reason, to be decided on its
+    own — where the current text is shown beside the draft.  The comparison
+    is the single proposal's ``changed_since_proposed``
+    (``proposal_service.text_changed_since_proposed``), made under the
+    decision's locks.  A proposal made before the field's text was recorded
+    with it cannot be compared and is decided as before, as a single accept
+    of it shows no warning either.  A reject skips nothing."""
+    done, failed, skipped = [], [], []
     competing = (
         proposals.competing_drafts(db, project.id, body.ids) if body.action == "accept" else set()
     )
@@ -157,11 +182,19 @@ def bulk_decide(
             failed.append({"id": pid, "status_code": 409, "detail": proposals.COMPETING_DRAFTS_DETAIL})
             continue
         try:
-            _decide(db, project.id, pid, user, body.action, DecideBody(note=body.note), serialize=False)
+            _decide(
+                db, project.id, pid, user, body.action, DecideBody(note=body.note),
+                serialize=False, skip_rewritten=True,
+            )
             done.append(pid)
+        except _LeftForOneAtATime:
+            skipped.append({
+                "id": pid, "reason": proposals.REWRITTEN_SINCE_PROPOSED,
+                "detail": proposals.REWRITTEN_SINCE_PROPOSED_DETAIL,
+            })
         except HTTPException as exc:
             failed.append({"id": pid, "status_code": exc.status_code, "detail": exc.detail})
-    return {"decided": done, "failed": failed}
+    return {"decided": done, "failed": failed, "skipped": skipped}
 
 
 # ---------------------------------------------------------------------------

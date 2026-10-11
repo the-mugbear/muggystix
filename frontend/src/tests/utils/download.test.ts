@@ -54,6 +54,22 @@ describe('filenameFromContentDisposition', () => {
     ['attachment; filename="hosts_report_2026-10-07.csv"', 'hosts_report_2026-10-07.csv'],
     ['attachment; filename=report_12.zip', 'report_12.zip'],
     ['ATTACHMENT; FILENAME="Mixed Case.html"', 'Mixed Case.html'],
+    // Review 2026-10-10 H19 — RFC 6266: the real name travels percent-encoded
+    // in `filename*`, beside an ASCII stand-in.  The real one is the file's.
+    [
+      "attachment; filename=xml_hosts.txt; filename*=UTF-8''%D1%81%D0%BA%D0%B0%D0%BD.xml_hosts.txt",
+      'скан.xml_hosts.txt',
+    ],
+    ["attachment; filename=systemic_insights_1.html; filename*=utf-8''systemic_insights_%E6%9D%B1%E4%BA%AC_1.html",
+      'systemic_insights_東京_1.html'],
+    ["attachment; filename=a_b.xml_hosts.csv; filename*=UTF-8''a%2Cb.xml_hosts.csv", 'a,b.xml_hosts.csv'],
+    // Starlette's FileResponse sends only the extended form for such a name.
+    ["attachment; filename*=utf-8''%E5%A0%B1%E5%91%8A.zip", '報告.zip'],
+    // The stand-in alone ends at the next parameter, quoted or not.
+    ['attachment; filename=hosts.csv; size=12', 'hosts.csv'],
+    ['attachment; filename="a;b.csv"; size=12', 'a;b.csv'],
+    // An extended name that cannot be decoded: the stand-in is used.
+    ["attachment; filename=plain.txt; filename*=UTF-8''%E6%9D", 'plain.txt'],
   ])('reads the server’s name from %s', (header, name) => {
     expect(filenameFromContentDisposition(header, 'fallback.bin')).toBe(name);
   });

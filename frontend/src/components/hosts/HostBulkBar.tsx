@@ -143,6 +143,10 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   // list — the core "feed these to an external tool" loop.  Page-scoped:
   // in select-all-matching mode the IPs of unfetched rows aren't on the
   // client, so this is disabled there in favour of the Tool-Ready export.
+  // The selection is kept from page to page, and only this page's addresses
+  // are here: when some of the checked rows are on other pages the button
+  // says how many it copies, instead of "Copy IPs" beside "N selected".
+  const ipsElsewhere = allMatching ? 0 : selectedIds.length - selectedIps.length;
   const copyIps = async () => {
     const ok = await copyToClipboard(selectedIps.join('\n'));
     if (ok) {
@@ -320,11 +324,15 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
           title={
             allMatching
               ? 'Copy works on the explicitly checked rows — use Export → Tool-Ready for all matching hosts.'
-              : 'Copy the selected IPs as a newline-separated list'
+              : ipsElsewhere > 0
+                ? `Copies the ${selectedIps.length.toLocaleString()} checked on this page. The other ${ipsElsewhere.toLocaleString()} selected ${ipsElsewhere === 1 ? 'host is' : 'hosts are'} on other pages.`
+                : 'Copy the selected IPs as a newline-separated list'
           }
         >
           {copiedIps ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
-          Copy IPs
+          {ipsElsewhere > 0
+            ? `Copy the ${selectedIps.length.toLocaleString()} IP${selectedIps.length === 1 ? '' : 's'} on this page`
+            : 'Copy IPs'}
         </Button>
 
         {canWrite && (<>
@@ -427,7 +435,8 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
         </DropdownMenu>
         </>)}
 
-        {/* Status */}
+        {/* Status — setting a review status is a write (analyst and up). */}
+        {canWrite && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button size="sm" variant="outline" disabled={working}>
@@ -445,6 +454,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+        )}
 
         {/* Propose tests — the selection becomes a fixed target list. */}
         {canWrite && (

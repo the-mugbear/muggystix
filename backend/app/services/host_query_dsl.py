@@ -543,6 +543,10 @@ def _split_port_state(field: str, value: str):
         return value, None
     state = state.strip().lower()
     if state not in P.EXPLICIT_PORT_STATES:
+        if field == "version":
+            # Product / version text is free text and may hold an "@" of its
+            # own (version:"git@github"); only a real state is a qualifier.
+            return value, None
         raise DSLError(
             f"{field}: unknown port state '{state}' after '@' "
             f"(one of: {', '.join(P.EXPLICIT_PORT_STATES)})"
@@ -616,14 +620,21 @@ def _b_gap(ctx: BuildCtx, values: List[str]) -> ColumnElement:
 def _b_assigned(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     preds = []
     for v in values:
-        pred = P.assigned_predicate(ctx.db, v, ctx.current_user)
-        if pred is None:
+        try:
+            preds.append(P.assigned_predicate(ctx.db, v, ctx.current_user, ctx.project_id))
+        except P.UnknownAssignee:
             raise DSLError(
-                f"Invalid assigned value '{v}' (use me, any, none, a username, "
-                "or a user id)"
+                f"Invalid assigned value '{v}' (use me, any, none, or the username "
+                "or id of someone a host of this project can be assigned to)"
             )
-        preds.append(pred)
     return or_(*preds)
+
+
+def _b_asn(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    try:
+        return P.attribution_asn_predicate(values)
+    except P.InvalidAsn as exc:
+        raise DSLError(f"asn: expects an autonomous system number (15169 or AS15169), not '{exc.values[0]}'")
 
 
 def _b_site(ctx: BuildCtx, values: List[str]) -> ColumnElement:
@@ -709,7 +720,7 @@ _FIELD_SPECS: List[FieldSpec] = [
               description="Organization on the host's TLS certificate — CA-validated, "
                           "so stronger evidence of control than a self-declared registry "
                           "record. Absent on DV certs."),
-    FieldSpec("asn", lambda c, v: P.attribution_asn_predicate(v),
+    FieldSpec("asn", _b_asn,
               value_source="asn",
               description="Autonomous system number the host's netblock belongs to."),
     FieldSpec("country", lambda c, v: P.attribution_country_predicate(v),

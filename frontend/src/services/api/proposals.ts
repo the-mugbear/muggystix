@@ -114,6 +114,12 @@ export const rejectProposal = async (projectId: number, id: number, note?: strin
 export interface BulkDecision {
   decided: number[];
   failed: Array<{ id: number; status_code: number; detail: unknown }>;
+  /** Left pending by rule, nothing having failed: a bulk ACCEPT does not
+   *  replace report text a person rewrote after the draft was made
+   *  (`reason: 'text_changed_since_proposed'` — the single proposal's
+   *  `changed_since_proposed`).  `detail` is the server's sentence for it.
+   *  Those are decided one at a time. */
+  skipped: Array<{ id: number; reason: string; detail: string }>;
 }
 
 /** The most ids `POST /proposals/bulk` takes (`BulkDecision.ids`, backend

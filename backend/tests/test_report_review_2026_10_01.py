@@ -747,3 +747,100 @@ def test_a_full_report_carries_no_previous_severity(client, db_session, test_pro
     item = dataset["findings"][0]
     assert item["change"] is None and item["previous_severity"] is None and item["previous_severity_label"] is None
     assert dataset["delta"] is None and summary["delta"] is None
+
+
+# ---------------------------------------------------------------------------
+# Review 2026-10-10 H10 — "Draft with AI" is drafted from the REPORT's dataset
+# ---------------------------------------------------------------------------
+
+def _draft_fixture(db_session, project, user):
+    """A report's worth of findings and the ones a report leaves out.  The
+    reported finding has more endpoints than the prompt's preview (50)."""
+    hosts = [_host(db_session, project, f"10.80.{i // 200}.{i % 200 + 1}") for i in range(64)]
+    reported = _finding(
+        db_session, project, "Relay to the domain controller", "high",
+        hosts=[*hosts[:58], (hosts[58], "false_positive"), (hosts[59], "remediated")],
+        description="NTLM relay is possible.",
+    )
+    _finding(db_session, project, "Dismissed critical", "critical", status="false_positive", hosts=[hosts[60]])
+    _finding(db_session, project, "Still being looked at", "critical", status="open", hosts=[hosts[61]])
+    _finding(db_session, project, "Every endpoint dismissed", "critical",
+             hosts=[(hosts[62], "false_positive")])
+    db_session.add(Annotation(finding_id=reported.id, user_id=user.id, body="internal chatter about the client"))
+    db_session.commit()
+    return reported, hosts
+
+
+def test_the_ai_summary_is_drafted_from_the_reports_own_findings(client, db_session, test_project, test_user):
+    """The drafter chose its own findings — every finding attached to any host
+    of the project, open and false-positive ones included — so the drafted
+    summary could report a Critical the report does not contain."""
+    from app.services.report_draft_service import ReportDraftService
+
+    reported, hosts = _draft_fixture(db_session, test_project, test_user)
+    rid = _create(client, test_project)["id"]
+    dataset, _, _ = _build(db_session, rid)
+    context = ReportDraftService(db_session, test_user).build_context(db_session.get(Report, rid))
+
+    # The same findings, in the report's order, under the report's references.
+    assert [f["ref"] for f in context["findings"]] == [i["ref"] for i in dataset["findings"]]
+    assert [i["id"] for i in dataset["findings"]] == [reported.id]
+    assert context["finding_total"] == 1
+    assert context["severity_counts"] == {"high": 1}
+    assert {k: v for k, v in dataset["counts"].items() if v} == {"high": 1, "total": 1}
+
+    # The same endpoints: the false-positive one is dropped as the report
+    # drops it, the count is the report's, the list a preview of it.
+    labels = [ClientReportService._label(ep) for ep in dataset["findings"][0]["affected"]]
+    assert len(labels) == 59 and hosts[58].ip_address not in labels
+    drafted = context["findings"][0]
+    assert drafted["affected_count"] == dataset["findings"][0]["affected_count"] == 59
+    assert drafted["affected_hosts"] == labels[:50]
+    assert drafted["description"] == "NTLM relay is possible."
+
+    # Nothing the report leaves out, and none of the team's discussion.
+    sent = json.dumps(context)
+    for absent in ("Dismissed critical", "Still being looked at", "Every endpoint dismissed",
+                   "internal chatter", hosts[60].ip_address, hosts[61].ip_address, hosts[62].ip_address):
+        assert absent not in sent, absent
+    # A record id is not a thing the reader of a report can look up.
+    assert "id" not in drafted
+
+
+def test_the_draft_route_names_its_report(client, db_session, test_project, test_user, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.db.models_project import Project
+    from app.services import report_draft_service
+    from app.services.report_draft_service import ReportDraftService
+
+    seen = {}
+
+    def fake_chat(provider, *, system, messages, max_tokens, temperature):
+        seen["user"] = messages[0]["content"]
+        return {"content": "A summary.", "raw": {}}
+
+    monkeypatch.setattr(report_draft_service, "chat_completion", fake_chat)
+    monkeypatch.setattr(
+        ReportDraftService, "_provider",
+        lambda self, pid: SimpleNamespace(id=9, provider_type="openai", model_id="m"),
+    )
+    _draft_fixture(db_session, test_project, test_user)
+    rid = _create(client, test_project)["id"]
+    url = f"/api/v1/projects/{test_project.id}/reports/draft"
+
+    r = client.post(url, json={"report_id": rid})
+    assert r.status_code == 200, r.text
+    assert r.json()["finding_total"] == 1 and r.json()["severity_counts"] == {"high": 1}
+    assert "Relay to the domain controller" in seen["user"]
+    assert "Dismissed critical" not in seen["user"] and "Still being looked at" not in seen["user"]
+
+    # The report is part of the question; another project's is not found.
+    assert client.post(url, json={}).status_code == 422
+    other = Project(name="other", slug="other")
+    db_session.add(other)
+    db_session.flush()
+    foreign = Report(project_id=other.id, kind="full", status="draft", title="Theirs", template="pentest")
+    db_session.add(foreign)
+    db_session.commit()
+    assert client.post(url, json={"report_id": foreign.id}).status_code == 404

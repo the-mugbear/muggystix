@@ -449,6 +449,23 @@ def authenticate_for_renewal(
     if _issued_before_password_change(ctx):
         raise HTTPException(status_code=401, detail=_CREDENTIALS_CHANGED_DETAIL)
 
+    # ... nor one whose operator's account is deactivated or gone: every other
+    # agent call refuses it (the operator gate), and a renewal kept the key
+    # alive for the day the account was switched back on.
+    if ctx.operator_id is None or not ctx.operator_active:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": "operator_inactive",
+                "recoverable": False,
+                "message": (
+                    "This key's operator is no longer an active user, so it cannot "
+                    "be renewed. Save any output you are holding to a file; an "
+                    "active project member can start a new session."
+                ),
+            },
+        )
+
     if not key_is_renewable(ctx.session):
         raise HTTPException(
             status_code=401,
@@ -695,6 +712,21 @@ def get_current_agent(
         _commit_keeping_loaded(db)
 
     return agent
+
+
+def get_current_user_if_present(
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_bearer),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """The signed-in user, or ``None`` — for a PUBLIC endpoint that says more
+    to someone it can identify (``GET /references/tools``).  A missing,
+    invalid or expired token is not an error here: the caller is anonymous."""
+    if credentials is None:
+        return None
+    try:
+        return get_current_user(credentials=credentials, db=db)
+    except HTTPException:
+        return None
 
 
 def identify_agent_if_present(
@@ -1128,6 +1160,29 @@ def require_project_role(required_role: "ProjectRole | str"):
         return current_user
 
     return checker
+
+
+def can_write_in_some_project(db: Session, user: User) -> bool:
+    """Whether this ACCOUNT can write anywhere: a global admin, or analyst or
+    admin on at least one project (any project — archived included).
+
+    The one answer for an account-level feature that only exists to serve a
+    project write.  Today that is the per-user LLM providers: a provider is
+    used for drafting, which needs project ANALYST (``report_drafts``), so an
+    account that is viewer / auditor everywhere has no use for one — and
+    registering or testing one makes the server issue an HTTP request to an
+    address the caller chose."""
+    if user.role == UserRole.ADMIN:
+        return True
+    return (
+        db.query(ProjectMembership.id)
+        .filter(
+            ProjectMembership.user_id == user.id,
+            ProjectMembership.role.in_((ProjectRole.ADMIN.value, ProjectRole.ANALYST.value)),
+        )
+        .first()
+        is not None
+    )
 
 
 async def read_upload_capped(

@@ -1,5 +1,6 @@
+import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Replace the barrel outright — importOriginal would pull in the real axios
@@ -442,6 +443,91 @@ describe('Findings — a change is followed by the list as the server has it', (
 
 // The rows were taken off the screen for every read — the table went blank
 // between two filters — although the previous rows were being kept.
+// Review 2026-10-10, H15 — the page read `?page=` by hand (`Number(...) || 1`)
+// and had no "a page past the end steps back": closing the only finding of the
+// last page left the reader on an empty page 2 that said the list was empty,
+// with 50 findings on page 1; an old link to `?page=9` did the same, and
+// `?page=2.5` asked the server for offset 75.  The list is `usePagedList` now.
+describe('Findings — a page that does not exist', () => {
+  const Where: React.FC = () => {
+    const [params] = useSearchParams();
+    return <span data-testid="address">{params.toString()}</span>;
+  };
+  const renderAt = (url: string) =>
+    render(
+      <TooltipProvider>
+        <MemoryRouter initialEntries={[url]}>
+          <Routes>
+            <Route path="/findings" element={<><Findings /><Where /></>} />
+          </Routes>
+        </MemoryRouter>
+      </TooltipProvider>,
+    );
+  const offsets = () => mocked.listFindings.mock.calls.map(([, filters]) => (filters as { offset: number }).offset);
+  const firstPage = () => [makeFinding(1), makeFinding(2), makeFinding(3)];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocked.listFindings.mockReset();
+    mocked.listProjectMembers.mockResolvedValue([]);
+    confirmMock.mockResolvedValue(true);
+  });
+
+  it('closing the only finding of the last page goes to the page before it — never an empty list over findings that exist', async () => {
+    let total = 51;
+    mocked.listFindings.mockImplementation(async (_projectId: number, filters: { offset: number }) => ({
+      items: filters.offset === 0 ? firstPage() : total === 51 ? [makeFinding(51)] : [],
+      total,
+      severity_counts: EMPTY_SEV_COUNTS,
+    }));
+    mocked.setFindingStatus.mockImplementation(async () => {
+      total = 50;
+      return makeFinding(51, { status: 'confirmed' });
+    });
+    renderAt('/findings?status=open&page=2');
+    await screen.findByText('Finding 51');
+    expect(offsets()).toEqual([50]);
+
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Change status for Finding 51' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('option', { name: 'Confirmed' }));
+
+    // The reader sees page 1's findings, and the address is page 1's.
+    expect(await screen.findByText('Finding 1')).toBeInTheDocument();
+    expect(screen.getByTestId('address')).toHaveTextContent(/^status=open$/);
+    expect(screen.getByRole('status')).toHaveTextContent('50 findings');
+    expect(screen.queryByText(/No findings match these filters|No active findings|No findings yet/)).toBeNull();
+    // The page it was on, that page again after the change, then the last one that exists.
+    expect(offsets()).toEqual([50, 50, 0]);
+  });
+
+  it('an address that names a page past the end opens the last page that exists', async () => {
+    mocked.listFindings.mockImplementation(async (_projectId: number, filters: { offset: number }) => ({
+      items: filters.offset === 50 ? [makeFinding(51)] : filters.offset === 0 ? firstPage() : [],
+      total: 51,
+      severity_counts: EMPTY_SEV_COUNTS,
+    }));
+    renderAt('/findings?page=9');
+    expect(await screen.findByText('Finding 51')).toBeInTheDocument();
+    expect(screen.getByTestId('address')).toHaveTextContent(/^page=2$/);
+    expect(screen.queryByText(/No active findings/)).toBeNull();
+    expect(offsets()).toEqual([400, 50]);
+  });
+
+  it('a page that is not a whole number is the first page, not a fractional offset', async () => {
+    mocked.listFindings.mockImplementation(async () => ({ items: firstPage(), total: 51, severity_counts: EMPTY_SEV_COUNTS }));
+    renderAt('/findings?page=2.5');
+    await screen.findByText('Finding 1');
+    expect(offsets()).toEqual([0]);
+  });
+
+  it('an empty list on the first page still says so', async () => {
+    mocked.listFindings.mockImplementation(async () => ({ items: [], total: 0, severity_counts: EMPTY_SEV_COUNTS }));
+    renderAt('/findings');
+    expect(await screen.findByText(/No active findings/)).toBeInTheDocument();
+    expect(offsets()).toEqual([0]);
+  });
+});
+
 describe('Findings — while another filter loads', () => {
   type Resp = { items: ReturnType<typeof makeFinding>[]; total: number; severity_counts: object };
   let answer!: { resolve: (r: Resp) => void; reject: (e: unknown) => void };

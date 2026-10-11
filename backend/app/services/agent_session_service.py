@@ -153,7 +153,18 @@ def mint_session_key(
     per session, ever, so a resumed session's orphaned key cannot keep
     writing beside the new one.  ``uq_api_key_agent_session_active`` is the
     DB backstop; a race on it surfaces as 409 rather than a bare 500.
+
+    The key never outlives the session: its expiry is cut to the session's
+    renewal deadline (``session_renewal_deadline`` — start + the lifetime cap)
+    HERE, in the one mint, as a renewal's is.  A Resume an hour before the cap
+    used to hand out a key good for the whole requested TTL, which nothing
+    afterwards compared with the deadline.
     """
+    expires_at = resolve_expires_at(ttl_hours)
+    deadline = session_renewal_deadline(session)
+    if deadline is not None and expires_at > deadline:
+        expires_at = deadline
+
     db.query(APIKey).filter(
         APIKey.agent_session_id == session.id,
         APIKey.is_active.is_(True),
@@ -167,7 +178,7 @@ def mint_session_key(
             name=name or f"agent-session-{session.id}",
             key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
             key_prefix=raw_key[:14],
-            expires_at=resolve_expires_at(ttl_hours),
+            expires_at=expires_at,
             # The application's clock, not the database's: the auth chain
             # compares this with ``User.password_changed_at``, which the
             # password routes also stamp from the application.

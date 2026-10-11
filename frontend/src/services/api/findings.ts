@@ -338,8 +338,24 @@ export const getFindingHistory = async (
 // A finding hosts its own annotation thread (the notes→findings→reports flow):
 // discussion + repro/rationale + screenshots, refined here before reports.
 
-export const getFindingNotes = async (projectId: number, findingId: number, signal?: AbortSignal): Promise<Annotation[]> => {
-  const response = await api.get<Annotation[]>(`${projectPath(projectId)}/findings/${findingId}/notes`, { signal });
+/** A page of a finding's thread: `items` newest first, `total` the whole thread. */
+export interface FindingNotePage {
+  items: Annotation[];
+  total: number;
+}
+
+/** `offset` counts from the NEWEST comment: 0 is the newest `limit`, and a
+ *  larger one walks back to the first. */
+export const getFindingNotes = async (
+  projectId: number,
+  findingId: number,
+  page: { limit?: number; offset?: number } = {},
+  signal?: AbortSignal,
+): Promise<FindingNotePage> => {
+  const response = await api.get<FindingNotePage>(`${projectPath(projectId)}/findings/${findingId}/notes`, {
+    params: { limit: page.limit, offset: page.offset },
+    signal,
+  });
   return response.data;
 };
 

@@ -1,7 +1,8 @@
 /**
- * Review 2026-10-01 R32 — the bulk bar had no role check.  Tagging, assigning
- * and proposing tests are a project analyst's; review status is the caller's
- * own and copying IPs changes nothing, so a reader keeps those.
+ * Review 2026-10-01 R32 — the bulk bar had no role check.  Tagging, assigning,
+ * proposing tests and — owner, 2026-10-11 — setting a review status are a
+ * project analyst's (the server's floor on `/hosts/bulk/follow`); copying IPs
+ * changes nothing, so a reader keeps that.
  */
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,11 +33,11 @@ const renderBar = () => render(
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe('HostBulkBar — what a selection can do follows the project role', () => {
-  it('a viewer copies IPs and sets their own review status, and nothing else', () => {
-    role.value = 'viewer';
+  it.each(['viewer', 'auditor'])('a %s copies IPs and nothing else — the review action is hidden, not disabled', (name) => {
+    role.value = name;
     renderBar();
     expect(screen.getByRole('button', { name: /Copy IPs/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Review/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Review/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /^\s*Tag/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Assign/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Propose tests/ })).toBeNull();
@@ -51,6 +52,7 @@ describe('HostBulkBar — what a selection can do follows the project role', () 
     expect(screen.getByRole('button', { name: /Tag/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Assign/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Propose tests/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Review/ })).toBeInTheDocument();
     expect(api.listHostTags).toHaveBeenCalled();
   });
 });

@@ -106,6 +106,10 @@ _DROP_TRACKER: dict[int, dict[str, float]] = {}
 _DROP_TRACKER_LOCK = threading.Lock()
 
 _TIMEOUT_SECONDS = 5.0
+# The whole POST, in wall-clock time — connect, send, and the response read to
+# its end.  ``_TIMEOUT_SECONDS`` bounds each phase only: a receiver that sends
+# a byte every four seconds never trips it (review 2026-10-10, H11).
+_REQUEST_BUDGET_SECONDS = 10.0
 
 
 def _ensure_workers() -> None:
@@ -303,8 +307,11 @@ def _post(
     # safe_request streams + size-caps the response (a hostile receiver could
     # otherwise return a huge body httpx would buffer); a ResponseTooLarge or
     # transport error propagates to _deliver/send_test, which already log it.
+    # ``total_timeout`` is what keeps one receiver from holding its sender —
+    # a dispatcher thread, or the ingestion worker's only thread in the sweep.
     return safe_request(
         "POST", url, allow_private=True, timeout=_TIMEOUT_SECONDS,
+        total_timeout=_REQUEST_BUDGET_SECONDS,
         content=body, headers=headers,
     )
 
@@ -326,6 +333,14 @@ _FASTPATH_LEASE_SECONDS = _CLAIM_LEASE_SECONDS
 # Rows the sweeper will attempt per pass — bounded so a large backlog can't
 # monopolise the worker tick.
 _SWEEP_BATCH = 20
+# ... and the time one pass may spend POSTing.  The sweep runs between jobs on
+# the ingestion worker's ONE thread, which claims no import and writes no
+# heartbeat meanwhile: twenty rows for a firewalled receiver were twenty
+# connect timeouts in a row.  A pass starts no delivery after this; the rows
+# it did not reach are untouched and due at the next pass.  Worst case for a
+# pass is this plus one ``_REQUEST_BUDGET_SECONDS`` — far inside the worker's
+# heartbeat allowance (``WORKER_HEARTBEAT_TIMEOUT``, 180 s).
+_SWEEP_BUDGET_SECONDS = 30.0
 # How long delivered rows are kept before the sweeper prunes them. Failed rows
 # are kept longer (they're the ones an operator investigates).
 _DELIVERED_RETENTION_DAYS = 7
@@ -694,8 +709,10 @@ def sweep_pending_deliveries(db: Session, *, limit: int = _SWEEP_BATCH) -> int:
     way by leasing instead: a row handed to the in-process queue is created
     ``_FASTPATH_LEASE_SECONDS`` in the future, and ``_claim_for_send``
     re-reads its status before any queued task actually sends. Delivery
-    happens synchronously here; the batch is bounded so a pile-up of dead
-    receivers can't monopolise the tick.
+    happens synchronously here, on the ingestion worker's one thread; the
+    batch is bounded in rows AND in time (``_SWEEP_BUDGET_SECONDS``, each POST
+    by ``_REQUEST_BUDGET_SECONDS``) so a pile-up of dead or dripping receivers
+    can't monopolise the tick.  A row the pass did not reach is not claimed.
     """
     from app.db.models_project import (
         WebhookConfig, WebhookDelivery, WebhookDeliveryStatus,
@@ -758,7 +775,16 @@ def sweep_pending_deliveries(db: Session, *, limit: int = _SWEEP_BATCH) -> int:
     db.commit()
 
     sent = 0
-    for delivery_id, cfg, payload in candidates:
+    started = time.monotonic()
+    for position, (delivery_id, cfg, payload) in enumerate(candidates):
+        if time.monotonic() - started >= _SWEEP_BUDGET_SECONDS:
+            # Not claimed, so nothing to undo: still pending, still due.
+            logger.warning(
+                "Webhook sweep stopped after %.0fs with %d of %d due deliver(ies) not attempted; "
+                "they are retried on the next pass",
+                time.monotonic() - started, len(candidates) - position, len(candidates),
+            )
+            break
         token = _claim_for_send(delivery_id)
         if token is None:
             # The fast path (or another sweeper) owns it. Not an error.

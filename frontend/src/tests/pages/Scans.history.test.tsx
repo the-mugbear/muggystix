@@ -222,6 +222,36 @@ describe('Scans — the time column', () => {
     expect(timeLines('older.xml').map((p) => p.textContent)).toEqual(['—', `uploaded ${at('2026-09-19T10:00:00Z')}`]);
   });
 
+  // Review 2026-10-10 — the column followed the view ASKED FOR, so while the
+  // all-files list loaded, the grouped rows still on screen (upload order)
+  // were re-headed "Ran" and showed their run time first.
+  it('follows the rows on screen: the grouped rows keep the upload time until the all-files list has answered', async () => {
+    withTimes();
+    renderPage('/scans?sort_by=start_time');
+    await screen.findByText('newest.xml');
+    expect(screen.getByText('DMZ sweep')).toBeInTheDocument();
+    expect(screen.getByTestId('viewer-zone-hint').closest('th')).toHaveTextContent(/^Uploaded/);
+
+    let answer!: (rows: unknown[]) => void;
+    api.getScans.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    fireEvent.click(screen.getByRole('button', { name: 'All files' }));
+    await waitFor(() => expect(api.getScans).toHaveBeenLastCalledWith(
+      1, 0, 250, expect.objectContaining({ unbatched: false, sortBy: 'start_time' }),
+    ));
+    // Still the grouped history's rows, by the time they are ordered by.
+    expect(screen.getByText('DMZ sweep')).toBeInTheDocument();
+    expect(screen.getByTestId('viewer-zone-hint').closest('th')).toHaveTextContent(/^Uploaded/);
+    expect(timeLines('newest.xml')[0].textContent).toBe(at('2026-10-09T11:00:00Z'));
+
+    answer([
+      { ...scan(9, 'newest.xml'), created_at: '2026-10-09T11:00:00Z', start_time: RAN, time_source: 'tool_run' },
+      scan(3, 'older.xml'),
+    ]);
+    await waitFor(() => expect(screen.queryByText('DMZ sweep')).toBeNull());
+    expect(screen.getByTestId('viewer-zone-hint').closest('th')).toHaveTextContent(/^Ran/);
+    expect(timeLines('newest.xml')[0].textContent).toBe(at(RAN));
+  });
+
   it('in the all-files view sorted by anything else it is the upload time', async () => {
     withTimes();
     renderPage('/scans?batch_files=show&sort_by=filename');

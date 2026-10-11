@@ -19,6 +19,7 @@ from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.api.deps import ProjectRole
 from app.services.client_report_service import REQUIRED_TEXT
+from app.services.client_report_views import load_report
 from app.db.models_proposals import ProposalSource
 from app.services import proposal_service as proposals
 from app.services.report_draft_service import ReportDraftService
@@ -32,6 +33,10 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 class ReportDraftRequest(BaseModel):
+    report_id: int = Field(
+        ..., description="The client report whose summary is drafted: the draft is "
+                         "built from the findings THAT report lists.",
+    )
     provider_id: Optional[int] = Field(
         None, description="LLM provider to use; omit to use your default provider."
     )
@@ -42,12 +47,6 @@ class ReportDraftRequest(BaseModel):
     instructions: Optional[str] = Field(
         None, max_length=2000,
         description="Extra drafting guidance (tone, sections to emphasise, etc.).",
-    )
-    severities: Optional[List[str]] = Field(
-        None, description="Restrict to these finding severities (default: all)."
-    )
-    statuses: Optional[List[str]] = Field(
-        None, description="Restrict to these finding statuses (default: all)."
     )
 
 
@@ -64,7 +63,7 @@ class ReportDraftResponse(BaseModel):
 @router.post(
     "/draft",
     response_model=ReportDraftResponse,
-    summary="Draft a report from this project's findings + evidence via the LLM",
+    summary="Draft a client report's summary from the findings that report lists, via the LLM",
     # Report drafting is an analyst-level action (same as generating any report).
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
@@ -74,22 +73,24 @@ def draft_report(
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """Return an editable Markdown draft built from the project's promoted
-    findings, their evidence-note threads, and attached-image captions.
+    """Return an editable Markdown draft built from ONE report's own dataset
+    (``report_id``): the findings it prints, the endpoints it lists for each,
+    what it says about them and its figure captions — the same selection the
+    report is rendered from, so the summary cannot describe a finding the
+    report leaves out.  Another project's report is a 404.
 
     The draft is a starting point for a human to review and edit — it is never
     final. Configuration errors (no provider, no findings) return 400; upstream
     provider failures return 502 without leaking the provider's response body.
     """
+    report = load_report(db, project.id, body.report_id)
     svc = ReportDraftService(db, current_user)
     try:
         result = svc.generate(
-            project.id,
+            report,
             provider_id=body.provider_id,
             audience=body.audience,
             instructions=body.instructions,
-            severities=body.severities,
-            statuses=body.statuses,
         )
     except ValueError as exc:
         # User-fixable: no provider configured, no findings to draft from.

@@ -107,4 +107,35 @@ describe('AuthProvider — verifying the stored session', () => {
     expect(await screen.findByText('signed out')).toBeInTheDocument();
     expect(ended.getQueryData(['getRemediationPolicy'])).toBeUndefined();
   });
+
+  // Review 2026-10-10 — the mutation cache was left: what the user SENT and
+  // was answered (a held mutation keeps both) outlived their session.
+  it('drops what the user sent and was answered from the mutation cache too — and keeps it while the session is kept', async () => {
+    const withWrite = async () => {
+      const client = createQueryClient();
+      await client.getMutationCache()
+        .build(client, { mutationFn: async (_sent: { note: string }) => 'answered to admin', gcTime: Infinity })
+        .execute({ note: 'written by admin' });
+      return client;
+    };
+    const held = (client: ReturnType<typeof createQueryClient>) => client.getMutationCache().getAll().map((m) => m.state.variables);
+    const mountWith = (client: ReturnType<typeof createQueryClient>) => render(
+      <MemoryRouter><AuthProvider><Who /></AuthProvider></MemoryRouter>,
+      { wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> },
+    );
+
+    apiGet.mockRejectedValue({ response: { status: 503 } });
+    const kept = await withWrite();
+    const first = mountWith(kept);
+    expect(await screen.findByText('signed in as admin')).toBeInTheDocument();
+    expect(held(kept)).toEqual([{ note: 'written by admin' }]);
+    first.unmount();
+
+    apiGet.mockRejectedValue({ response: { status: 401 } });
+    const ended = await withWrite();
+    expect(held(ended)).toEqual([{ note: 'written by admin' }]);
+    mountWith(ended);
+    expect(await screen.findByText('signed out')).toBeInTheDocument();
+    expect(held(ended)).toEqual([]);
+  });
 });

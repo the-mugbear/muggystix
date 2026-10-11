@@ -143,6 +143,7 @@ def _load_subnet_meta(db: Session, project_id: int) -> Dict[int, Dict[str, Any]]
 
 def resolve_host_locations(
     db: Session, project_id: int, subnet_meta: Optional[Dict[int, Dict[str, Any]]] = None,
+    *, host_ids: Optional[List[int]] = None,
 ) -> Dict[int, Dict[str, Any]]:
     """Map each host to its ONE most-specific (longest-prefix) subnet, plus its
     INHERITED site.
@@ -156,20 +157,47 @@ def resolve_host_locations(
     so every site-attribution surface (attention, subnet/systemic insights,
     posture, reports) agrees on which site a host belongs to.  Keep the two
     functions' inheritance rule in lockstep.
+
+    ``host_ids`` answers for those hosts only (a page of the Hosts list): it
+    reads their mappings and just the subnets those name, instead of every
+    subnet and every mapping of the project.  The rule below is the same loop.
     """
-    if subnet_meta is None:
-        subnet_meta = _load_subnet_meta(db, project_id)
-    if not subnet_meta:
-        return {}
-    mappings = (
-        db.query(HostSubnetMapping.host_id, HostSubnetMapping.subnet_id)
-        .join(models.Host, HostSubnetMapping.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == project_id,
-            HostSubnetMapping.subnet_id.in_(list(subnet_meta.keys())),
+    if host_ids is not None:
+        if not host_ids:
+            return {}
+        rows = (
+            db.query(
+                HostSubnetMapping.host_id, Subnet.id, Subnet.cidr, Subnet.site, Subnet.site_id,
+            )
+            .join(Subnet, HostSubnetMapping.subnet_id == Subnet.id)
+            .join(Scope, Subnet.scope_id == Scope.id)
+            .filter(Scope.project_id == project_id, HostSubnetMapping.host_id.in_(list(host_ids)))
+            .all()
         )
-        .all()
-    )
+        subnet_meta = {}
+        mappings = []
+        for host_id, sid, cidr, site, site_id in rows:
+            if sid not in subnet_meta:
+                try:
+                    prefixlen = ipaddress.ip_network(cidr, strict=False).prefixlen
+                except ValueError:
+                    prefixlen = 0
+                subnet_meta[sid] = {"cidr": cidr, "site": site, "site_id": site_id, "prefixlen": prefixlen}
+            mappings.append((host_id, sid))
+    else:
+        if subnet_meta is None:
+            subnet_meta = _load_subnet_meta(db, project_id)
+        if not subnet_meta:
+            return {}
+        mappings = (
+            db.query(HostSubnetMapping.host_id, HostSubnetMapping.subnet_id)
+            .join(models.Host, HostSubnetMapping.host_id == models.Host.id)
+            .filter(
+                models.Host.project_id == project_id,
+                HostSubnetMapping.subnet_id.in_(list(subnet_meta.keys())),
+            )
+            .all()
+        )
     locations: Dict[int, Dict[str, Any]] = {}
     best_prefix: Dict[int, int] = {}
     # Track the nearest site-bearing subnet per host separately from the nearest

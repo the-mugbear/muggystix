@@ -283,7 +283,7 @@ describe('Scopes page — screenshot review (v5.288.0)', () => {
 
   it('points to a live agent session instead of starting another', async () => {
     mySessions.sessions = [{
-      kind: 'project', id: 72, project_id: 1, purpose: null, status: 'active',
+      id: 72, project_id: 1, purpose: null, status: 'active',
       user_id: 1, user_username: 'me', started_at: '2026-09-29T10:00:00Z', completed_at: null,
       last_activity_at: null,
       key_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
@@ -512,7 +512,9 @@ describe('Scopes page — a read that fails with the scope on screen', () => {
     expect(alert).toHaveAttribute('role', 'alert');
     expect(alert).toHaveTextContent('The subnets below are the ones shown before.');
     const stale = screen.getByText('10.77.1.0/24');
-    expect(stale.closest('.overflow-x-auto')).toHaveClass('pointer-events-none', 'opacity-60');
+    // Dimmed and inert — to the keyboard too, which `pointer-events-none` was not.
+    expect(stale.closest('.overflow-x-auto')).toHaveClass('opacity-60');
+    expect(stale.closest('.overflow-x-auto')).toHaveAttribute('inert');
     expect(toastMock.error).not.toHaveBeenCalled();
 
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));

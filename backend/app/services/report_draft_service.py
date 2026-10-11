@@ -1,26 +1,20 @@
-"""AI-assisted report drafting (v2.246.0).
+"""AI-assisted report drafting.
 
-Composes the pieces that already exist but never talked to each other:
+Two drafts, both through the operator's own **LLM provider**
+(``llm_provider_service.chat_completion``, which owns the SSRF-safe transport
+and the encrypted credentials):
 
-* the **Finding spine** — promoted findings with their evidence-note threads
-  (``evidence_annotation_id``), scanner corroboration, affected hosts, and the
-  analyst's own comment thread — assembled by
-  ``ReportGenerator._findings_for_report_ids`` (reused, not reimplemented);
-* **attached evidence images** (``NoteAttachment``) — surfaced here as captions
-  so the model can reference figures without us shipping image bytes to every
-  provider;
-* the operator's **LLM provider** — ``llm_provider_service.chat_completion``,
-  which owns the SSRF-safe transport + Fernet-encrypted credentials.
+* **a report's summary** (``build_context`` / ``generate``) — from that
+  report's own dataset, ``ClientReportService.content``: the findings the
+  report prints, the endpoints it lists and its counts.  Never a second
+  selection of findings — a summary must not describe what the report does
+  not contain.  The answer is editable Markdown handed back to the caller;
+  nothing is stored.
+* **one finding's report text** (``build_finding_text_context`` /
+  ``draft_finding_text``) — from what is known about that finding; the
+  drafts become proposals.
 
-The output is an editable Markdown draft returned to the caller — "AI drafts,
-human commits", the same rule the ``/llm-providers/{id}/complete`` endpoint
-already enforces. Deliberately STATELESS in this cut: no draft table, so no
-schema change (the repo's Alembic heads need merging first — tracked
-separately). Persistence/iteration is a clean fast-follow.
-
-Findings are the right input, not the full host inventory: they are curated and
-bounded (a project has thousands of hosts but tens to low-hundreds of promoted
-findings), so the prompt stays within a sane token budget without sampling.
+Image bytes never enter a prompt: figures are named by their captions.
 """
 from __future__ import annotations
 
@@ -35,7 +29,6 @@ from app.db import models
 from app.db.models_findings import Finding
 from app.db.models_vulnerability import Vulnerability
 from app.services import report_writing_guidance
-from app.services.report_generator import ReportGenerator
 from app.services.llm_provider_service import (
     LLMProviderService,
     chat_completion,
@@ -48,14 +41,18 @@ logger = logging.getLogger(__name__)
 # Cap the number of evidence-image captions we enumerate per finding — a
 # screenshot-heavy finding shouldn't dominate the prompt.
 _MAX_CAPTIONS_PER_FINDING = 8
+# The same for a finding's endpoints (``affected_count`` carries the total)
+# and for each written section.
+_MAX_AFFECTED_PER_FINDING = 50
+_MAX_SECTION_CHARS = 2000
 
 _SYSTEM_PROMPT = (
     "You are a senior penetration-test report writer. You draft clear, "
     "professional, factual security assessment reports for a technical and "
     "management audience. You are given the STRUCTURED, ALREADY-TRIAGED "
-    "findings for one project — promoted findings with their severity, "
-    "affected hosts, evidence notes, scanner corroboration, and figure "
-    "captions.\n\n"
+    "findings of one client report, exactly as that report lists them — "
+    "each with its reference, severity, the systems it affects (a count and "
+    "a sample), what the report says about it, and figure captions.\n\n"
     "Rules:\n"
     "- Write in Markdown.\n"
     "- Ground every statement in the supplied data. Do NOT invent findings, "
@@ -103,73 +100,65 @@ class ReportDraftService:
                 out[fid] = captions
         return out
 
-    def build_context(
-        self,
-        project_id: int,
-        *,
-        severities: Optional[List[str]] = None,
-        statuses: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """Assemble the compact, evidence-bearing findings context for the LLM.
+    def build_context(self, report) -> Dict[str, Any]:
+        """What the model is given to draft ONE report's summary: that
+        report's own dataset (``ClientReportService.content`` — the findings
+        it prints, the endpoints it lists for each, its counts), nothing
+        else.
 
-        Reuses ``ReportGenerator._findings_for_report_ids`` so the draft path and
-        the deterministic export path share ONE finding-correlation
-        implementation (no second source of truth).
-        """
-        project = (
-            self.db.query(models.Project)
-            .filter(models.Project.id == project_id)
-            .first()
-        )
-        gen = ReportGenerator(self.db, self.current_user, project_id)
-        host_ids = [
-            hid
-            for (hid,) in self.db.query(models.Host.id)
-            .filter(models.Host.project_id == project_id)
-            .all()
-        ]
-        findings = gen._findings_for_report_ids(host_ids)
+        One implementation (review 2026-10-10 H10): the draft used to be built
+        from every finding attached to any host of the project — open ones
+        and false positives included — so a summary could describe a Critical
+        the report does not contain.  A finding the report leaves out, an
+        endpoint it drops and a status it does not print are therefore not
+        here either, and neither is the team's discussion: the written
+        sections are what the report says.
 
-        sev_filter = {s.lower() for s in severities} if severities else None
-        status_filter = {s.lower() for s in statuses} if statuses else None
-        if sev_filter is not None:
-            findings = [f for f in findings if (f.get("severity") or "").lower() in sev_filter]
-        if status_filter is not None:
-            findings = [f for f in findings if (f.get("status") or "").lower() in status_filter]
+        Raises ``ValueError`` when the report cannot be built (an addendum
+        whose baseline is gone)."""
+        from app.services.client_report_service import ClientReportService
 
-        captions = self._evidence_image_captions(findings)
+        dataset, summary = ClientReportService(self.db).content(report)
+        if dataset is None:
+            raise ValueError(summary.get("error") or "This report cannot be built yet.")
+        label = ClientReportService._label
 
         shaped: List[Dict[str, Any]] = []
-        for f in findings:
-            shaped.append(
-                {
-                    "title": f.get("title"),
-                    "severity": f.get("severity"),
-                    "status": f.get("status"),
-                    "source": f.get("source"),
-                    "host_count": f.get("host_count"),
-                    "affected_hosts": f.get("affected_hosts", [])[:50],
-                    # The analyst's evidence/rationale thread — the textual half
-                    # of "reports include the evidence attached to a finding".
-                    "evidence_notes": [
-                        c.get("body", "")
-                        for c in (f.get("comments") or [])
-                        if c.get("body")
-                    ],
-                    "evidence_figures": captions.get(f.get("id"), []),
-                }
-            )
-
-        # Severity roll-up so the model can open with accurate totals.
-        sev_counts: Dict[str, int] = {}
-        for f in shaped:
-            key = (f.get("severity") or "unknown").lower()
-            sev_counts[key] = sev_counts.get(key, 0) + 1
+        for item in dataset["findings"]:
+            affected = [label(ep) for ep in item["affected"]]
+            shaped.append({
+                # The report's own reference ("F-03"), never a record id: the
+                # reader of the summary can look that up in the report.
+                "ref": item["ref"],
+                "title": item["title"],
+                "severity": item["severity"],
+                "status": item["status"],
+                # An addendum: new / new_hosts / severity_changed.
+                "change": item["change"],
+                # ``affected_count`` is the report's number; the list is a
+                # preview of it, cut for the prompt.
+                "affected_count": item["affected_count"],
+                "affected_hosts": affected[:_MAX_AFFECTED_PER_FINDING],
+                # What the report says about it, each cut for the prompt.
+                **{
+                    field: (item.get(field) or "")[:_MAX_SECTION_CHARS] or None
+                    for field in ("description", "impact", "recommendation")
+                },
+                "evidence_figures": [
+                    img["caption"] for img in item["images"] if img.get("caption")
+                ][:_MAX_CAPTIONS_PER_FINDING],
+            })
 
         return {
-            "project_name": project.name if project else f"project #{project_id}",
+            "project_name": dataset["project"]["name"] or f"project #{report.project_id}",
+            "report_title": dataset["report"]["title"],
+            "report_kind": dataset["report"]["kind"],
             "finding_total": len(shaped),
-            "severity_counts": sev_counts,
+            # The report's own roll-up (its summary table), so the model opens
+            # with the totals the reader will see printed.
+            "severity_counts": {
+                sev: n for sev, n in dataset["counts"].items() if sev != "total" and n
+            },
             "findings": shaped,
         }
 
@@ -177,40 +166,26 @@ class ReportDraftService:
 
     def generate(
         self,
-        project_id: int,
+        report,
         *,
         provider_id: Optional[int] = None,
         audience: Optional[str] = None,
         instructions: Optional[str] = None,
-        severities: Optional[List[str]] = None,
-        statuses: Optional[List[str]] = None,
         max_tokens: int = 4096,
     ) -> Dict[str, Any]:
-        """Draft a report from the project's findings + evidence via the LLM.
+        """Draft a report's summary from that report's findings via the LLM.
 
         Raises ``ValueError`` for user-fixable problems (no provider configured,
         no findings to draft from) and ``RuntimeError`` for provider/transport
         failures — the endpoint maps these to 400 / 502 respectively.
         """
-        svc = LLMProviderService(self.db)
-        provider = (
-            svc.get(provider_id, self.current_user.id)
-            if provider_id is not None
-            else svc.get_default(self.current_user.id)
-        )
-        if provider is None:
-            raise ValueError(
-                "No LLM provider is configured. Add one on the LLM Providers "
-                "page (or pass a provider_id) before drafting a report."
-            )
-
-        context = self.build_context(
-            project_id, severities=severities, statuses=statuses
-        )
+        provider = self._provider(provider_id)
+        context = self.build_context(report)
         if context["finding_total"] == 0:
             raise ValueError(
-                "This project has no promoted findings to draft a report from. "
-                "Promote findings on the Findings page first."
+                "This report lists no findings to draft from. A report prints "
+                "confirmed, accepted-risk and remediated findings: confirm one "
+                "on the Findings page first."
             )
 
         audience_line = (
@@ -225,7 +200,7 @@ class ReportDraftService:
         )
         user_message = (
             f"{audience_line}{extra}"
-            "Draft the assessment report from this project's triaged findings. "
+            "Draft the assessment report from the findings this report lists. "
             "The structured data follows as JSON.\n\n"
             f"```json\n{json.dumps(context, ensure_ascii=False)}\n```"
         )
