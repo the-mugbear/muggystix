@@ -1,5 +1,5 @@
 import React from 'react';
-import { FolderTree, ShieldCheck, FileDown } from 'lucide-react';
+import { FolderTree, ShieldCheck, FileDown, PenLine } from 'lucide-react';
 import {
   Table,
   TableBody,
@@ -84,7 +84,7 @@ const sections: GuideSection[] = [
           <strong>global administrator</strong>. A global administrator passes every project check
           and alone sees the <strong>Administration</strong> hub: <strong>All projects</strong>{' '}
           (create a project), <strong>System</strong> (worker health, accounts, remediation
-          tracking, report writing guidance), <strong>Audit log</strong> and{' '}
+          tracking, report writing guidance — its own section below), <strong>Audit log</strong> and{' '}
           <strong>Agent Feedback</strong>, plus <strong>Oversight</strong>. Deleting a project,
           changing scanner integrations and uploading report-template files are theirs too. Project
           members and roles are managed from <strong>Settings → Project</strong> by a project admin.
@@ -115,6 +115,61 @@ const sections: GuideSection[] = [
           Agent API keys are a separate, narrower surface — project-scoped, time-limited, carrying
           the operator's own project role, and unable to reach user or admin endpoints (see Agents).
         </Para>
+      </div>
+    ),
+  },
+  {
+    id: 'report-writing',
+    title: 'Report writing guidance',
+    Icon: PenLine,
+    summary: 'The instructions an AI is given for each section of a finding’s report text — one set for the installation.',
+    content: (
+      <div>
+        <Para>
+          A finding&rsquo;s report text can be drafted by an AI in two ways: <em>Draft empty
+          sections</em> on the finding&rsquo;s page (the signed-in person&rsquo;s own LLM provider),
+          and an agent session proposing a section. Both are told how to write by the same record,
+          which a <strong>global administrator</strong> edits under{' '}
+          <strong>Administration → System → Report writing</strong>. It applies to every project:
+          set it once to your organisation&rsquo;s house style.
+        </Para>
+        <Subhead>The boxes</Subhead>
+        <UnorderedList>
+          <li><strong>Every section</strong> — voice and audience for all of them (who is writing, for whom, how plainly).</li>
+          <li><strong>Description</strong>, <strong>Impact</strong>, <strong>Recommendation</strong>, <strong>Steps to reproduce</strong>, <strong>References</strong> — what that one section must contain: length, structure, what it has to name, what to leave out.</li>
+        </UnorderedList>
+        <Para>
+          Each box holds up to 4,000 characters and starts on a short shipped default, marked{' '}
+          <em>Default</em>. An edited box offers <em>Reset to default</em>, and an emptied box goes
+          back to its default when saved. Only the boxes you changed are saved; the page says who
+          last changed the guidance and when, and each change is written to the audit log.
+        </Para>
+        <Subhead>Writing it</Subhead>
+        <UnorderedList>
+          <li>Write to the model as you would brief a new colleague: &ldquo;Two short paragraphs: what the weakness is, then where it was seen. No CVSS wording.&rdquo;</li>
+          <li>Keep to style and content. The guidance decides how a section reads; it cannot make a model state what the data does not show.</li>
+          <li>Say it once, in the right box: something true of every section goes in <em>Every section</em>.</li>
+          <li>Do not paste client names or secrets: the text is sent to whichever LLM provider drafts, and every agent session can read it.</li>
+        </UnorderedList>
+        <Subhead>Rules that always apply</Subhead>
+        <Para>
+          Under the boxes, <em>Rules that always apply</em> lists what is not editable. They come
+          after your guidance and win over it:
+        </Para>
+        <UnorderedList>
+          <li>Every statement is grounded in the finding&rsquo;s data — no invented hosts, CVEs, versions or results.</li>
+          <li>A section the data cannot support is <strong>declined</strong>, with what is missing said beside it — never filled with a guess, a placeholder or a note to the analyst.</li>
+          <li>The reader is the client: no mention of BlueStick, a record number from it, the analysts&rsquo; notes or how the text was produced.</li>
+          <li>Each section is its complete text in Markdown, without headings.</li>
+        </UnorderedList>
+        <Subhead>When it takes effect, and what it does not do</Subhead>
+        <UnorderedList>
+          <li><strong>The next draft</strong> is written to it. Text already written, and proposals already waiting, are not rewritten.</li>
+          <li><strong>An agent reads it when it reads the finding</strong> (or on its own, before proposing a new finding with report text), so a running session picks up a change at its next read — no Resume is needed.</li>
+          <li><strong>Nothing is applied without a person.</strong> A draft or an agent&rsquo;s section is a proposal, reviewed beside the current text on the finding&rsquo;s page or under <strong>Agents → Proposals</strong>.</li>
+          <li><strong>It does not bind people.</strong> What an analyst types into a section is saved as written.</li>
+          <li><strong>It is not the report template.</strong> Layout, headings, logo and which sections print belong to the template (Export &amp; reporting, below).</li>
+        </UnorderedList>
       </div>
     ),
   },
@@ -161,8 +216,9 @@ const AdminGuide: React.FC = () => (
     <GuidePage
       intro={
         <span>
-          Running the platform: isolating engagements into projects, controlling who can do what, and
-          getting data back out as tool-ready lists or formal reports.
+          Running the platform: isolating engagements into projects, controlling who can do what,
+          telling an AI how your reports are written, and getting data back out as tool-ready lists
+          or formal reports.
         </span>
       }
       sections={sections}
