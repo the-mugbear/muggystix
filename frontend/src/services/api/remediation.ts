@@ -227,6 +227,9 @@ export interface RemediationContact {
   closed: number;
   last_follow_up_on: string | null;
   projects: number;
+  /** The projects (of those asked about) where the contact still has work —
+   *  anything not reported fixed: where a document can be prepared. */
+  work_project_ids?: number[];
 }
 /** Without `scope`: the project `projectId`'s own contacts.  With `'all'`:
  *  every project the caller administers, narrowed to `projectId` when it is
@@ -255,11 +258,19 @@ export interface ContactReportJob {
   /** Images the finished document left out because their finding also
    *  affects a system that is not this contact's. */
   images_withheld: number;
+  /** How many findings the finished document prints, and how many of them
+   *  with no recommendation written (the document says to ask for it). */
+  findings?: number;
+  without_recommendation?: number;
   /** The file exists and can be downloaded. */
   ready: boolean;
 }
+/** `upcoming_days` narrows the document as a reminder is narrowed: 0 = only
+ *  overdue and due soon, N = also due within N days; left out = everything
+ *  still open. */
 export const prepareContactReport = async (
-  projectId: number, body: { contact_email: string; format: ContactReportFormat }, mount?: RemediationMount,
+  projectId: number, body: { contact_email: string; format: ContactReportFormat; upcoming_days?: number },
+  mount?: RemediationMount,
 ): Promise<ContactReportJob> =>
   (await api.post<ContactReportJob>(`${base(projectId, mount)}/remediation/contact-report`, body)).data;
 
@@ -321,6 +332,9 @@ export interface RemediationFollowUp {
   items: RemediationRow[];
   has_more: boolean;
   project_ids: number[];
+  /** Projects (of those asked about) where the contact has open findings and
+   *  the reminder lists none of them; null when the list is cut short. */
+  other_projects?: number | null;
   text: string;
 }
 /** `upcomingDays` (0–365): also remind of on-track rows due within that many days. */

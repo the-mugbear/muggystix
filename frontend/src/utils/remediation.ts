@@ -281,15 +281,43 @@ const writesDeferral = (opened: RemediationDraft, draft: RemediationDraft): bool
 export const draftProblem = (
   draft: RemediationDraft, opened?: RemediationDraft, today?: string,
 ): string | null => {
-  const email = draft.contact_email.trim();
-  if (email && !EMAIL.test(email)) return 'The contact must be an email address.';
+  const email = emailProblem(draft);
+  if (email) return email;
   if (draft.closed_on && draft.status !== 'closed') return 'A “Reported fixed on” date goes with the status Reported fixed.';
+  return reviewProblem(draft, opened, today);
+};
+
+/** The two problems that are ONE field's, so the dialog says each at its
+ *  field (`draftProblem` is still the one answer to "may this be saved"). */
+export const emailProblem = (draft: Pick<RemediationDraft, 'contact_email'>): string | null => {
+  const email = draft.contact_email.trim();
+  return email && !EMAIL.test(email) ? 'The contact must be an email address.' : null;
+};
+export const reviewProblem = (
+  draft: RemediationDraft, opened?: RemediationDraft, today?: string,
+): string | null => {
   if (opened && writesDeferral(opened, draft)) {
     const review = draft.deferred_review_on.trim();
     if (!review) return 'A deferral needs a “Review on” date.';
     if (today && review < today) return 'The “Review on” date must be today or later.';
   }
   return null;
+};
+
+/** What a selection's rows would be due on, per severity in it — the bulk
+ *  edit's preview of the policy's date ("Critical: Oct 16, 2026 · Medium:
+ *  Dec 15, 2026").  A preview only: the server decides every deadline. */
+export const policyDueBySeverity = (
+  policy: Pick<RemediationPolicy, 'days'> | null, severities: string[], assignedOn: string,
+): string | null => {
+  if (policy == null || !/^\d{4}-\d{2}-\d{2}$/.test(assignedOn)) return null;
+  const order = ['critical', 'high', 'medium', 'low', 'info'];
+  const present = [...new Set(severities.map((s) => s.toLowerCase()))]
+    .sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
+  return present.map((severity) => {
+    const due = previewDueOn(policy, severity, assignedOn);
+    return `${severityWord(severity)}: ${due ? formatDate(due) : 'no due date'}`;
+  }).join(' · ');
 };
 
 /** Why a note for the timeline is required for these changes, or null.  A

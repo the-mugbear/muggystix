@@ -87,7 +87,21 @@ def deadline_text(row: dict) -> str:
         return f"{_plural(-left, 'day', 'days')} overdue"
     if state in ("due_soon", "on_track"):
         return "Due today" if left == 0 else f"Due in {_plural(left, 'day', 'days')}"
+    if state == "deferred" and row.get("deferred_review_on"):
+        # A deferred system has no due date: the day it is looked at again is
+        # what its reader can plan by.
+        return f"Deferred, review on {row['deferred_review_on']}"
     return {"deferred": "Deferred", "no_deadline": "No deadline", "not_assigned": "Not assigned"}.get(state, "")
+
+
+def selection_text(upcoming_days: Optional[int]) -> str:
+    """What a narrowed document lists, in words ('' for everything open) —
+    the reminder's own horizons (``remediation_service._to_remind``)."""
+    if upcoming_days is None:
+        return ""
+    if upcoming_days == 0:
+        return "Past the deadline or due soon"
+    return f"Past the deadline, due soon, or due in the next {_plural(upcoming_days, 'day', 'days')}"
 
 
 def timeline_text(policy: deadlines.Policy) -> str:
@@ -108,13 +122,21 @@ def timeline_text(policy: deadlines.Policy) -> str:
 
 
 def contact_rows(db: Session, project_id: int, contact_email: str, *,
+                 upcoming_days: Optional[int] = None,
                  policy: Optional[deadlines.Policy] = None, today: Optional[date] = None) -> dict:
     """The contact's rows in this project that are still work, and how many
-    are already closed.  ``404`` when the contact has nothing here."""
+    are already closed.  ``404`` when the contact has nothing here.
+
+    ``upcoming_days`` narrows the document as the reminder is narrowed, by
+    the list's own selection: ``0`` is overdue and due soon, ``N`` also what
+    is due within N days; ``None`` is everything still open."""
+    which = ({"state": _LISTED} if upcoming_days is None
+             else {"upcoming_days": upcoming_days} if upcoming_days
+             else {"state": deadlines.AT_RISK_STATES})
     listing = remediation_service.list_rows(
-        db, [project_id], contact_email=contact_email, state=_LISTED, group="due",
-        limit=MAX_ROWS + 1, policy=policy, today=today)
-    if listing["total"] + listing["state_counts"]["closed"] == 0:
+        db, [project_id], contact_email=contact_email, group="due",
+        limit=MAX_ROWS + 1, policy=policy, today=today, **which)
+    if sum(listing["state_counts"].values()) == 0:
         raise HTTPException(404, "This contact has no finding assigned in this project.")
     if listing["total"] > MAX_ROWS:
         raise HTTPException(422, f"This contact has more than {MAX_ROWS} open findings on hosts; "
@@ -123,20 +145,20 @@ def contact_rows(db: Session, project_id: int, contact_email: str, *,
 
 
 def build_dataset(db: Session, project_id: int, contact_email: str, *,
-                  today: Optional[date] = None) -> dict:
+                  today: Optional[date] = None, upcoming_days: Optional[int] = None) -> dict:
     """The contact's list as a template dataset (see the module docstring)."""
-    return _build(db, project_id, contact_email, today=today)[0]
+    return _build(db, project_id, contact_email, today=today, upcoming_days=upcoming_days)[0]
 
 
 def _build(db: Session, project_id: int, contact_email: str, *,
-           today: Optional[date] = None) -> Tuple[dict, List[int]]:
+           today: Optional[date] = None, upcoming_days: Optional[int] = None) -> Tuple[dict, List[int]]:
     """``(dataset, the ids of the hosts the document lists)``."""
     from app.services.client_report_service import ClientReportService
 
     policy = deadlines.load(db)
     today = today or policy.today()
     email = contact_email.strip().lower()
-    listing = contact_rows(db, project_id, email, policy=policy, today=today)
+    listing = contact_rows(db, project_id, email, upcoming_days=upcoming_days, policy=policy, today=today)
     rows = listing["items"]
     name = next((row["contact_name"] for row in rows if row["contact_name"]), None)
     project = db.get(Project, project_id)
@@ -163,16 +185,24 @@ def _build(db: Session, project_id: int, contact_email: str, *,
     mine: dict[tuple[int, str], tuple[int, dict]] = {}
     for order, row in enumerate(rows):
         mine.setdefault((row["finding_id"], row["ip_address"]), (order, row))
-    # The contact's systems that are already closed: theirs too, though not
-    # listed (what decides whether a finding is on anyone else's system).
-    closed = remediation_service.list_rows(
-        db, [project_id], contact_email=email, state=("closed",), group="due",
-        limit=MAX_ROWS + 1, policy=policy, today=today)
-    theirs = set(mine) | {(row["finding_id"], row["ip_address"]) for row in closed["items"]}
-    closed_complete = closed["total"] <= len(closed["items"])
+    # Whose a system is does not depend on what the document LISTS: every row
+    # of the contact, in every state, is theirs — the closed ones, and, in a
+    # narrowed document, the ones due outside its window.  (Deciding it from
+    # the listed rows plus the closed ones held only while the document listed
+    # everything open: narrowed, a finding wholly this contact's lost its
+    # evidence because one of its systems was due later.)
+    owned = remediation_service.list_rows(
+        db, [project_id], contact_email=email, group="due",
+        limit=MAX_ROWS + 1, policy=policy, today=today, with_counts=False)
+    theirs = {(row["finding_id"], row["ip_address"]) for row in owned["items"]}
+    owned_complete = owned["total"] <= len(owned["items"])
 
-    findings = []
-    images_withheld = 0
+    # The contact's findings, each with its systems most urgent first — and
+    # the findings themselves in that order (the list's own, `group="due"`):
+    # a reader who fixes things starts at the top, and the report's order
+    # (severity, then reference) put a finding due in days above one a month
+    # overdue.  A stable sort: findings equally urgent keep the report's order.
+    theirs_to_fix = []
     for finding in dataset["findings"]:
         affected = []
         for endpoint in finding["affected"]:
@@ -187,9 +217,14 @@ def _build(db: Session, project_id: int, contact_email: str, *,
             }))
         if not affected:
             continue
-        # Each finding's systems most urgent first; the first one's deadline
-        # is the finding's in the summary table.
-        affected = [entry for _, entry in sorted(affected, key=lambda pair: pair[0])]
+        affected.sort(key=lambda pair: pair[0])
+        theirs_to_fix.append((affected[0][0], finding, [entry for _, entry in affected]))
+    theirs_to_fix.sort(key=lambda entry: entry[0])
+
+    findings = []
+    images_withheld = 0
+    for _, finding, affected in theirs_to_fix:
+        # The first system's deadline is the finding's in the summary table.
         index = len(findings)
         # A finding is on several contacts' systems, and what was run against
         # another contact's system — its address, the command, the output —
@@ -198,7 +233,7 @@ def _build(db: Session, project_id: int, contact_email: str, *,
         # so it is printed only when every result could have been this
         # contact's.
         listed = {entry["address"] for entry in affected}
-        all_theirs = closed_complete and all(
+        all_theirs = owned_complete and all(
             (finding["id"], endpoint["address"]) in theirs for endpoint in finding["affected"])
         confirmations = [entry for entry in finding.get("confirmations") or [] if entry.get("host") in listed]
         # Images are the finding's, not a system's.  One the author placed in
@@ -243,8 +278,16 @@ def _build(db: Session, project_id: int, contact_email: str, *,
         "contact": {"name": name, "email": email}, "as_of": today.isoformat(),
     })
     dataset["remediation"] = {
-        "overdue": counts["overdue"], "due_soon": counts["due_soon"], "open": listing["total"],
+        "overdue": counts["overdue"], "due_soon": counts["due_soon"],
+        # Everything of the contact's that is still work here, whatever the
+        # document was narrowed to; `listed` is what it was narrowed to and
+        # `selection` says that in words ('' when it lists everything).
+        "open": sum(counts[state] for state in _LISTED), "listed": listing["total"],
+        "selection": selection_text(upcoming_days),
         "closed": counts["closed"], "due_soon_days": policy.due_soon_days, "timeline": timeline_text(policy),
+        # Findings printed with "no recommendation has been written yet" —
+        # for whoever prepares the document, before it is sent.
+        "without_recommendation": sum(1 for f in findings if not f.get("recommendation")),
         # Rows of the contact that the document cannot show: their finding is
         # not one a client report includes (still under investigation).
         "not_listed": not_listed,
@@ -277,13 +320,20 @@ def enqueue(db: Session, project_id: int, body, who) -> ReportJob:
     if missing:
         raise HTTPException(409, quarto_render.missing_assets_message(template.name, missing))
     email = body.contact_email
-    listing = contact_rows(db, project_id, email)
+    upcoming_days = body.upcoming_days
+    listing = contact_rows(db, project_id, email, upcoming_days=upcoming_days)
     if listing["total"] == 0:
+        if upcoming_days is not None and sum(listing["state_counts"][state] for state in _LISTED) > 0:
+            what = selection_text(upcoming_days)
+            raise HTTPException(409, f"Nothing assigned to this contact is {what[0].lower()}{what[1:]}: "
+                                     "choose a wider selection.")
         raise HTTPException(409, "Everything assigned to this contact has been reported fixed: "
                                  "there is nothing to list.")
 
     service = ReportJobService()
     filters = {"contact_email": email}
+    if upcoming_days is not None:
+        filters["upcoming_days"] = upcoming_days
     session = getattr(who, "session", None)
     if session is not None:
         # Whose agent asked: the timeline entries name it.
@@ -334,6 +384,11 @@ def serialize_job(job: ReportJob) -> dict:
         # Evidence images the finished document left out because their
         # finding is also on a system that is not this contact's.
         "images_withheld": (job.filters or {}).get("images_withheld", 0) if job.status == "completed" else 0,
+        # How many findings the finished document prints, and how many of
+        # them with no recommendation written.
+        "findings": (job.filters or {}).get("findings", 0) if job.status == "completed" else 0,
+        "without_recommendation": ((job.filters or {}).get("without_recommendation", 0)
+                                   if job.status == "completed" else 0),
         "ready": job.status == "completed" and bool(job.result_path) and Path(job.result_path).is_file(),
     }
 
@@ -347,17 +402,22 @@ def run_job(db: Session, job: ReportJob) -> Tuple[bytes, str, str]:
         raise ValueError(f"Unsupported contact report job: {job.format!r}")
     if not deadlines.load(db).enabled:
         raise ValueError(deadlines.NOT_ENABLED)
+    upcoming_days = (job.filters or {}).get("upcoming_days")
     try:
-        dataset, host_ids = _build(db, job.project_id, email)
+        dataset, host_ids = _build(db, job.project_id, email,
+                                   upcoming_days=upcoming_days if isinstance(upcoming_days, int) else None)
     except HTTPException as exc:
         raise ValueError(str(exc.detail))
     template = contact_template()
     # ASCII only: a name may hold any letter ("jörg@…"), a file name here not.
     slug = client_report_render.file_slug(email.split("@")[0], "contact")[:40].strip("-") or "contact"
+    # The project is in the name: a contact with findings in several projects
+    # is handed one document per project, prepared on the same day.
+    project = client_report_render.file_slug(dataset["project"]["name"], "project")[:40].strip("-") or "project"
     with tempfile.TemporaryDirectory(prefix="bs-contact-") as tmp:
         files = quarto_render.render(
             template.path, template.entry, dataset, [fmt], Path(tmp),
-            basename=f"remediation-{slug}-{dataset['report']['as_of']}",
+            basename=f"remediation-{project}-{slug}-{dataset['report']['as_of']}",
             resolve_evidence=client_report_render.live_evidence_resolver(db, job.project_id),
             postprocess=template.postprocess, timeout=settings.REPORT_RENDER_TIMEOUT_SECONDS,
             asset_files=templates.asset_files(template),
@@ -374,5 +434,7 @@ def run_job(db: Session, job: ReportJob) -> Tuple[bytes, str, str]:
         **(job.filters or {}),
         "listed_host_ids": host_ids,
         "images_withheld": dataset["remediation"].get("images_withheld", 0),
+        "findings": len(dataset["findings"]),
+        "without_recommendation": dataset["remediation"].get("without_recommendation", 0),
     }
     return data, quarto_render.FORMATS[fmt][2], path.name

@@ -194,6 +194,59 @@ def test_a_loose_image_is_printed_only_when_every_system_is_the_contacts(
 
 
 @needs_templates
+def test_narrowing_the_document_does_not_change_whose_a_system_is(
+        client, db_session, test_project, two_contacts, monkeypatch):
+    """2.494.0, found in review before it was committed: a document narrowed
+    to "overdue and due soon" decided "is every system of this finding the
+    contact's?" from the rows it LISTED plus the closed ones, so a system of
+    theirs due outside the window counted as somebody else's and the finding's
+    loose evidence was withheld."""
+    # TLS: A overdue, C closed (the fixture), and a third system of alice's due much later.
+    d = _host(db_session, test_project, "10.61.0.4")
+    link = FindingHost(finding_id=two_contacts["tls"], host_id=d.id, host_status="open")
+    db_session.add(link)
+    db_session.commit()
+    alice = {"contact_email": "alice@testdomain.com"}
+    r = client.post(f"/api/v1/projects/{test_project.id}/remediation/apply", json={"overwrite": True, "rows": [
+        {"finding_id": two_contacts["tls"], "host_id": two_contacts["a"], "notified_on": day(100)},   # medium: overdue
+        {"finding_host_id": link.id, **alice, "notified_on": day(0)},                                 # due in 90 days
+        {"finding_id": two_contacts["smb"], "host_id": two_contacts["a"], "notified_on": day(40)},    # high: overdue
+    ]})
+    assert r.status_code == 200, r.text
+
+    def entry(att_id, placed_in):
+        return {"attachment_id": att_id, "file": f"evidence/{att_id}.png", "caption": f"image {att_id}",
+                "placed_in": placed_in}
+
+    def evidence(self, findings):
+        return {f.id: {"images": [entry(f.id * 10 + 2, [])], "evidence": [entry(f.id * 10 + 2, [])], "placed": {}}
+                for f in findings}, 0, 0
+
+    monkeypatch.setattr(ClientReportService, "_evidence", evidence)
+    data = remediation_report.build_dataset(db_session, test_project.id, "alice@testdomain.com", upcoming_days=0)
+    by_id = {f["id"]: f for f in data["findings"]}
+    # The narrowed document lists only the overdue system of each finding…
+    tls, smb = by_id[two_contacts["tls"]], by_id[two_contacts["smb"]]
+    assert [e["address"] for e in tls["affected"]] == ["10.61.0.1"]
+    # …and TLS is still wholly alice's (overdue, closed, due later): its evidence stays.
+    assert [e["attachment_id"] for e in tls["evidence"]] == [tls["id"] * 10 + 2] and len(tls["images"]) == 1
+    # SMB is also on bob's system: withheld, narrowed or not.
+    assert smb["evidence"] == [] and smb["images"] == []
+    assert data["remediation"]["images_withheld"] == 1
+
+
+def test_the_contacts_read_takes_any_iterable_of_projects(client, db_session, test_project, two_contacts):
+    """`contacts()` reads its projects twice since 2.494.0 (the counts, then
+    where each contact still has work): an iterator must not be spent by the first."""
+    from app.services import remediation_service
+    answers = [remediation_service.contacts(db_session, projects) for projects in (
+        [test_project.id], (test_project.id,), (pid for pid in [test_project.id]))]
+    assert answers[0] == answers[1] == answers[2]
+    assert {c["contact_email"]: c["work_project_ids"] for c in answers[2]} == {
+        "alice@testdomain.com": [test_project.id], "bob@testdomain.com": [test_project.id]}
+
+
+@needs_templates
 def test_a_finding_no_report_has_issued_prints_no_reference(client, db_session, test_project, two_contacts):
     data = remediation_report.build_dataset(db_session, test_project.id, "alice@testdomain.com")
     assert [f["ref"] for f in data["findings"]] == ["", ""]
@@ -262,7 +315,9 @@ def test_a_contact_whose_address_is_not_ascii_gets_a_document_and_then_the_entry
     db_session.expire_all()
     job = db_session.get(ReportJob, job_id)
     assert job.status == "completed", job.error_message
-    assert job.result_filename.startswith("remediation-j-rg-") and job.result_filename.isascii()
+    # remediation-<project>-<contact>-<day>: the project is in the name (2.494.0).
+    assert job.result_filename.startswith("remediation-") and "-j-rg-" in job.result_filename
+    assert job.result_filename.isascii()
     (event,) = db_session.query(RemediationEvent).filter_by(kind="report").all()
     assert (event.host_id, event.new_value, event.author_id) == (host.id, "jörg@testdomain.com", test_user.id)
     status = client.get(f"/api/v1/projects/{test_project.id}/remediation/contact-report/{job_id}").json()

@@ -203,6 +203,9 @@ class ContactReportBody(_Base):
     """Prepare one contact's remediation list as a document."""
     contact_email: str = Field(..., min_length=3, max_length=254)
     format: Literal["contact-docx", "contact-html"] = "contact-docx"
+    upcoming_days: Optional[int] = Field(None, ge=0, le=UPCOMING_MAX_DAYS, description=(
+        "Narrow the document as a reminder is narrowed: 0 lists only what is overdue or due soon, "
+        "N also what is due within N days. Left out: everything still open."))
 
     @field_validator("contact_email")
     @classmethod

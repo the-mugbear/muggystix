@@ -20,6 +20,7 @@ from app.db.models_remediation import RemediationEvent, RemediationPolicy
 from app.db.models_reports import Report
 from app.main import app
 from app.services import quarto_render, remediation_report
+from app.services.client_report_render import file_slug
 from app.services import report_template_service as templates
 
 HERE = Path(__file__).resolve()
@@ -167,7 +168,8 @@ def test_the_filled_template_is_the_contacts_systems_and_nobody_elses(db_session
     text = quarto_render.render_source(ROOT / "contact-report", "report.qmd", data)
     assert "| Contact | Roger Smith" in text and "testdomain\\.com" in text
     assert "| Past the deadline | 1 |" in text and "| Due within 7 days | 1 |" in text
-    assert "| Open in all | 3 " in text and "1 already reported fixed, not listed" in text
+    assert "| Still open | 3 " in text and "1 more already reported fixed, not listed" in text
+    assert "Findings assigned to you\\, most urgent first" in text        # escaped in the source, a comma in print
     assert "1 more assigned to you is still being investigated" in text
     # The report's format: every finding with its sections, and the deadline
     # on each of its systems.
@@ -260,9 +262,88 @@ def test_the_worker_renders_the_document(db_session, test_project, world, test_u
     from app.services.client_report_render import run_client_job
     data, media_type, filename = run_client_job(db_session, job)
     html = data.decode("utf-8")
-    assert media_type == "text/html" and filename.startswith("remediation-roger-") and filename.endswith(".html")
+    # The project is in the name: a contact with findings in several projects
+    # is handed one document per project, prepared on the same day.
+    assert media_type == "text/html" and filename.endswith(".html")
+    assert filename.startswith(f"remediation-{file_slug(test_project.name)}-roger-")
     assert "Roger Smith" in html and "12 days overdue" in html and "Require SMB signing by group policy." in html
     assert "10.60.0.3" not in html and "TODO" not in html
+    # What the page says before the document is sent: every finding has its recommendation.
+    assert (job.filters["findings"], job.filters["without_recommendation"]) == (2, 0)
+
+
+# --- what the 2026-10-12 walkthrough asked for (2.494.0) -----------------------------
+
+@needs_templates
+def test_the_findings_are_listed_most_urgent_first_not_in_the_reports_order(
+        client, db_session, test_project, world):
+    """The report orders by severity: SMB (high) before TLS (medium).  Here
+    that is also the urgent order — so a critical finding that is merely on
+    track is added, which the report would print first and this list last."""
+    host = _host(db_session, test_project, "10.60.0.9")
+    _f, (link,) = _finding(db_session, test_project, "Default credentials", "critical", [host])
+    db_session.commit()
+    r = client.post(f"{base(test_project)}/apply", json={"overwrite": True, "rows": [
+        {"finding_host_id": link, "contact_email": "roger@testdomain.com", "notified_on": day(1)}]})
+    assert r.status_code == 200, r.text
+    data = remediation_report.build_dataset(db_session, test_project.id, "roger@testdomain.com")
+    assert [f["title"] for f in data["findings"]] == [
+        "SMB signing not required", "TLS 1.0 enabled", "Default credentials"]
+    assert [f["_path"] for f in data["findings"]] == ["findings.0", "findings.1", "findings.2"]
+    assert data["remediation"]["without_recommendation"] == 1          # the new one has none written
+
+
+@needs_templates
+def test_a_document_narrowed_like_the_reminder_lists_that_and_says_so(client, db_session, test_project, world):
+    whole = remediation_report.build_dataset(db_session, test_project.id, "roger@testdomain.com")
+    assert (whole["remediation"]["selection"], whole["remediation"]["listed"]) == ("", 3)
+    # A deferral leaves "overdue or due soon": TLS is deferred, SMB stays.
+    tls_row = next(f for f in whole["findings"] if f["title"] == "TLS 1.0 enabled")
+    review = (TODAY + timedelta(days=20)).isoformat()
+    r = client.post(f"{base(test_project)}/apply", json={"overwrite": True, "rows": [
+        {"finding_id": tls_row["id"], "host_id": world["a"], "status": "deferred", "deferred_review_on": review,
+         "notes": [{"body": "Waiting for the vendor"}]}]})
+    assert r.status_code == 200, r.text
+    whole = remediation_report.build_dataset(db_session, test_project.id, "roger@testdomain.com")
+    (tls,) = next(f for f in whole["findings"] if f["title"] == "TLS 1.0 enabled")["affected"]
+    assert (tls["deadline"], tls["due_on"]) == (f"Deferred, review on {review}", None)
+
+    narrowed = remediation_report.build_dataset(db_session, test_project.id, "roger@testdomain.com", upcoming_days=0)
+    assert [f["title"] for f in narrowed["findings"]] == ["SMB signing not required"]
+    summary = narrowed["remediation"]
+    assert (summary["selection"], summary["listed"], summary["open"]) == ("Past the deadline or due soon", 1, 3)
+    text = quarto_render.render_source(templates.get_template("contact-report").path, "report.qmd", narrowed)
+    assert "| This document lists | Past the deadline or due soon: 1 of the 3 |" in text
+    assert "This document lists" not in quarto_render.render_source(
+        templates.get_template("contact-report").path, "report.qmd", whole)
+
+    # The request carries it to the worker, and a window with nothing in it is refused in words.
+    queued = client.post(f"{base(test_project)}/contact-report",
+                         json={"contact_email": "roger@testdomain.com", "upcoming_days": 0})
+    assert queued.status_code == 202, queued.text
+    assert db_session.get(ReportJob, queued.json()["id"]).filters == {
+        "contact_email": "roger@testdomain.com", "upcoming_days": 0}
+    r = client.post(f"{base(test_project)}/apply", json={"overwrite": True, "rows": [
+        {"finding_id": world["smb"], "host_id": world["a"], "notified_on": TODAY.isoformat()}]})
+    assert r.status_code == 200, r.text
+    empty = client.post(f"{base(test_project)}/contact-report",
+                        json={"contact_email": "roger@testdomain.com", "upcoming_days": 0})
+    assert empty.status_code == 409 and "choose a wider selection" in empty.text
+    assert client.post(f"{base(test_project)}/contact-report",
+                       json={"contact_email": "roger@testdomain.com", "upcoming_days": 400}).status_code == 422
+
+
+def test_a_contact_says_where_they_still_have_work_and_a_reminder_what_it_leaves_out(
+        client, db_session, test_project, world):
+    (roger,) = [c for c in client.get(f"{base(test_project)}/contacts").json()["items"]
+                if c["contact_email"] == "roger@testdomain.com"]
+    assert roger["work_project_ids"] == [test_project.id]
+    # Everything of Roger's here that is at risk is in the reminder: no project is left out.
+    reminder = client.get(f"{base(test_project)}/follow-up", params={"contact_email": "roger@testdomain.com"}).json()
+    assert (reminder["project_ids"], reminder["other_projects"]) == ([test_project.id], 0)
+    # Jane has one open finding, on track: her reminder names no project, and says one has work.
+    jane = client.get(f"{base(test_project)}/follow-up", params={"contact_email": "jane@testdomain.com"}).json()
+    assert (jane["project_ids"], jane["other_projects"]) == ([], 1)
 
 
 @needs_templates

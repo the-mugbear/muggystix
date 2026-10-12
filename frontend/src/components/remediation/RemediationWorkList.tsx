@@ -63,6 +63,8 @@ const ALL_PROJECTS = '__all__';
 // How far ahead "Remind" looks for a contact with nothing overdue or due soon
 // (one of the follow-up dialog's horizons).
 const UPCOMING_REMINDER_DAYS = 90;
+/** The three views' names: the tabs', and the heading over the list. */
+export const VIEW_TITLE = { rows: 'Findings on hosts', contacts: 'Contacts', teams: 'Teams' } as const;
 const ANY_SEVERITY = '__any__';
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'];
 
@@ -94,7 +96,11 @@ export interface RemediationWorkListProps {
    *  a filter, and the list itself to place.  The page's lead, and anything
    *  else that reads the answer, is rendered here — never copied into the
    *  page's state. */
-  children?: (loaded: { page: RemediationPage | null; filtered: boolean; list: React.ReactNode }) => React.ReactNode;
+  children?: (loaded: {
+    page: RemediationPage | null; filtered: boolean; list: React.ReactNode;
+    /** What the list is showing, for the heading over it: the view's name. */
+    title: string;
+  }) => React.ReactNode;
   /** `scope="all"`: open a row's host or finding in ITS project (the page
    *  switches project first).  A row whose project cannot be opened — an
    *  archived one, or one the reader is not in — stays text. */
@@ -232,6 +238,19 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     enabled: view === 'contacts',
   });
   const contacts = people.data ?? NO_CONTACTS;
+  // Narrowed to one project, a contact's row counts that project alone: the
+  // same contacts over every project say in how many each has findings, so
+  // the column reads "1 of 3" and nobody is taken to have one document to
+  // prepare when there are three.
+  const everywhere = useQuery({
+    queryKey: ['listRemediationContacts', null, 'all'],
+    queryFn: ({ signal }) => listRemediationContacts(null, 'all', signal),
+    enabled: across && projectId != null && view === 'contacts',
+  });
+  const projectsOf = useMemo(
+    () => new Map((everywhere.data ?? NO_CONTACTS).map((c) => [c.contact_email, c.projects])),
+    [everywhere.data],
+  );
 
   const groups = useQuery({
     queryKey: ['listRemediationTeams', asked, every],
@@ -313,10 +332,14 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   // A contact with nothing overdue or due soon is reminded of what is coming.
   const [followUpAhead, setFollowUpAhead] = useState(0);
   const [report, setReport] = useState<RemediationContact | null>(null);
-  // A contact's list is ONE project's document: on the cross-project page it
-  // needs the project chosen first.
-  const reportProject = across ? projects?.find((p) => p.project_id === projectId) ?? null : null;
-  const canReport = canWrite && (!across || reportProject != null);
+  // A contact's list is ONE project's document.  On the cross-project page
+  // it is the chosen project's; with none chosen, the dialog asks which of
+  // the projects where the contact still has work (a project the page was
+  // not told about keeps its number for a name).
+  const reportProjects = (c: RemediationContact): Array<{ project_id: number; name: string }> => (
+    projectId != null ? [projectId] : c.work_project_ids ?? []
+  ).map((id) => ({ project_id: id, name: projects?.find((p) => p.project_id === id)?.name ?? `Project ${id}` }));
+  const canReport = (c: RemediationContact) => canWrite && c.open > 0 && (!across || reportProjects(c).length > 0);
 
 
   // After a save.  The write itself has every remediation read on screen
@@ -398,7 +421,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     <div className="min-w-0">
       <div className="mb-sm flex min-w-0 flex-wrap items-center gap-sm">
         <div role="tablist" aria-label="How the list is shown" className="flex items-center gap-xs">
-          {viewButton('rows', 'Findings on hosts')}
+          {viewButton('rows', VIEW_TITLE.rows)}
           {viewButton('contacts', 'By contact')}
           {viewButton('teams', 'By team')}
         </div>
@@ -485,9 +508,9 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
         >
           {() => (
             <div className="min-w-0 overflow-x-auto">
-              {across && canWrite && reportProject == null && (
+              {across && canWrite && projectId == null && (
                 <p className="mb-xs text-caption text-muted-foreground">
-                  Follow up covers every project. A contact’s list as a document is one project’s: choose a project above to prepare one.
+                  Follow up covers every project. A contact’s list as a document is one project’s: Document asks which.
                 </p>
               )}
               <Table aria-label="Remediation contacts and their deadlines" className="min-w-[57rem] table-fixed">
@@ -529,14 +552,22 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                         <TableCell className="text-right align-middle tabular-nums">{count(c.due_soon, 'text-warning')}</TableCell>
                         <TableCell className="text-right align-middle tabular-nums">{count(c.on_track)}</TableCell>
                         <TableCell className="text-right align-middle tabular-nums">{count(c.open)}</TableCell>
-                        {across && <TableCell className="text-right align-middle tabular-nums">{c.projects}</TableCell>}
+                        {across && (
+                          <TableCell className="text-right align-middle tabular-nums">
+                            {(projectsOf.get(c.contact_email) ?? 0) > c.projects ? (
+                              <span title={`This contact has findings in ${projectsOf.get(c.contact_email)} projects; these counts are the chosen project’s`}>
+                                {c.projects} of {projectsOf.get(c.contact_email)}
+                              </span>
+                            ) : c.projects}
+                          </TableCell>
+                        )}
                         <TableCell className="truncate align-middle tabular-nums">
                           {c.last_follow_up_on ? formatDate(c.last_follow_up_on)
                             : atRisk > 0 ? <span className="text-muted-foreground">Not yet</span> : <Dash label="Nothing to follow up" />}
                         </TableCell>
                         <TableCell className="align-middle">
                           <div className="flex justify-end gap-xs">
-                            {canReport && c.open > 0 && (
+                            {canReport(c) && (
                               <Button size="sm" variant="ghost" className="h-7"
                                 title="Prepare this contact’s remediation list as a Word or HTML document"
                                 onClick={() => setReport(c)}>Document</Button>
@@ -784,9 +815,19 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                             <TableCell className="min-w-0 align-middle">
                               {r.contact_email || r.contact_name ? (
                                 <>
-                                  <span className="block truncate" title={r.contact_email ?? r.contact_name ?? undefined}>
-                                    {r.contact_name ?? r.contact_email}
-                                  </span>
+                                  {/* The way from a row to its contact: what to say to
+                                      them, and the record that it was said. */}
+                                  {r.contact_email ? (
+                                    <button type="button" className={`${LINK} block max-w-full truncate text-left`}
+                                      title={`${r.contact_email} — follow up with this contact`}
+                                      onClick={() => { setFollowUpAhead(0); setFollowUp(r.contact_email); }}>
+                                      {r.contact_name ?? r.contact_email}
+                                    </button>
+                                  ) : (
+                                    <span className="block truncate" title={r.contact_name ?? undefined}>
+                                      {r.contact_name}
+                                    </span>
+                                  )}
                                   {r.team && (
                                     <span className="block truncate text-caption text-muted-foreground" title={`Team: ${r.team}`}>
                                       {r.team}
@@ -876,8 +917,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
         <RemediationContactReportDialog
           contactEmail={report.contact_email}
           contactName={report.contact_name}
-          projectId={reportProject?.project_id}
-          projectName={reportProject?.name}
+          projects={across ? reportProjects(report) : undefined}
           onClose={() => setReport(null)}
         />
       )}
@@ -885,7 +925,13 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
         projectId={across ? timeline?.project_id : undefined} />
     </div>
   );
-  return children ? <>{children({ page: answered?.page ?? null, filtered: answered?.filtered ?? false, list: body })}</> : body;
+  return children ? (
+    <>
+      {children({
+        page: answered?.page ?? null, filtered: answered?.filtered ?? false, list: body, title: VIEW_TITLE[view],
+      })}
+    </>
+  ) : body;
 };
 
 export default RemediationWorkList;

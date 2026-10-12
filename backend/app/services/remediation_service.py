@@ -972,6 +972,8 @@ def contacts(db, project_ids: Iterable[int], *, limit: int = 200,
     with the most overdue comes first; ``last_follow_up_on`` is the most
     recent day anyone recorded chasing them about a row that is still at
     risk (None: nobody has)."""
+    # Read twice below, and the argument may be an iterator.
+    project_ids = tuple(project_ids)
     policy = policy or deadlines.load(db)
     today = today or policy.today()
     state_of = deadlines.state_expr(db, policy, today)
@@ -989,10 +991,23 @@ def contacts(db, project_ids: Iterable[int], *, limit: int = 200,
             .group_by(Remediation.contact_email)
             .order_by(overdue.desc(), n("due_soon").desc(), Remediation.contact_email)
             .limit(limit).all())
+    # Where each of them still has work (anything not reported fixed): the
+    # projects a document can be prepared in, a document being one project's.
+    work: dict[str, list[int]] = {}
+    emails = [r[0] for r in rows]
+    if emails:
+        for email, project_id in (
+            db.query(Remediation.contact_email, Remediation.project_id)
+            .filter(Remediation.project_id.in_(tuple(project_ids)), Remediation.contact_email.in_(emails),
+                    _STATUS != "closed")
+            .distinct().order_by(Remediation.project_id)
+        ):
+            work.setdefault(email, []).append(project_id)
     return [{"contact_email": r[0], "contact_name": r[1], "total": r[2], "open": int(r[3] or 0),
              "overdue": int(r[4] or 0), "due_soon": int(r[5] or 0), "on_track": int(r[6] or 0),
              "deferred": int(r[7] or 0), "closed": int(r[8] or 0),
-             "last_follow_up_on": _iso(deadlines.as_date(r[9])), "projects": r[10]} for r in rows]
+             "last_follow_up_on": _iso(deadlines.as_date(r[9])), "projects": r[10],
+             "work_project_ids": work.get(r[0], [])} for r in rows]
 
 
 def teams(db, project_ids: Iterable[int], *, limit: int = 200,
@@ -1126,13 +1141,24 @@ def follow_up(db, project_ids: Sequence[int], contact_email: str, *, upcoming_da
     not_listed = listing["total"] - len(items)
     overdue, due_soon = listing["state_counts"]["overdue"], listing["state_counts"]["due_soon"]
     name = next((row["contact_name"] for row in items if row["contact_name"]), None)
+    listed_in = {row["project_id"] for row in items}
+    # Projects where the contact has open rows and the reminder names none of
+    # them (nothing there is in the window asked for) — so the page can say
+    # why a contact "in 3 projects" gets a message about two.  Only known when
+    # the list is complete: a project may be in the rows left out.
+    elsewhere = None
+    if not_listed <= 0:
+        elsewhere = (db.query(Remediation.project_id)
+                     .filter(Remediation.project_id.in_(tuple(project_ids)), Remediation.contact_email == email,
+                             _STATUS == "open", Remediation.project_id.notin_(tuple(listed_in) or (0,)))
+                     .distinct().count())
     return {"contact_email": email, "contact_name": name, "as_of": today.isoformat(),
-            "overdue": overdue, "due_soon": due_soon,
+            "overdue": overdue, "due_soon": due_soon, "other_projects": elsewhere,
             # On track, with a deadline inside the window that was asked for.
             "upcoming": listing["total"] - overdue - due_soon, "upcoming_days": upcoming_days,
             "items": items, "has_more": listing["has_more"],
             "total": listing["total"], "not_listed": not_listed,
-            "project_ids": sorted({row["project_id"] for row in items}),
+            "project_ids": sorted(listed_in),
             "text": follow_up_text(name, items, today, not_listed=not_listed, upcoming_days=upcoming_days)}
 
 

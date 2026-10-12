@@ -43,6 +43,8 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
+import { BellPanel } from './UnreadNotifications';
 import { pollEvery, useFailureStreak } from '../lib/query';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { HUBS, documentTitleFor, isCrossProjectPath, resolveActiveHub } from '../config/navigation';
@@ -91,6 +93,7 @@ export default function Layout({ children }: LayoutProps) {
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
+  const [bellOpen, setBellOpen] = React.useState(false);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
 
   // Audit PRF·L1: previously evaluated at module load, which forced a
@@ -687,16 +690,18 @@ export default function Layout({ children }: LayoutProps) {
             <TooltipContent>Open command palette ({cmdKey}+K)</TooltipContent>
           </Tooltip>
 
-          {/* Notifications */}
+          {/* Notifications.  The bell opens them HERE, over the page the
+              reader is on (5.387.0): it used to go to the selected project's
+              Collaboration page, which took a reader off a cross-project
+              page to read another project's alert.  Collaboration still
+              shows the same list (`?mentions=mine`), one link away. */}
+          <Popover open={bellOpen} onOpenChange={setBellOpen}>
           <Tooltip>
             <TooltipTrigger asChild>
+              <PopoverTrigger asChild>
               <Button
                 variant="outline"
                 size="icon"
-                // FRX·H6: bell deep-links into Activity with a
-                // `mentions=mine` filter pre-applied so the user lands
-                // on what the badge was promising, not the full feed.
-                onClick={() => navigate('/activity?mentions=mine')}
                 aria-label="Notifications"
                 className="relative"
               >
@@ -724,15 +729,20 @@ export default function Layout({ children }: LayoutProps) {
                   </span>
                 )}
               </Button>
+              </PopoverTrigger>
             </TooltipTrigger>
             <TooltipContent>
               {notificationsStale
                 ? `Counts may be stale — server unreachable. Last known: ${unreadCount} unread.`
                 : unreadCount > 0
-                ? `${unreadCount} unread notification${unreadCount !== 1 ? 's' : ''} — open Collaboration to read ${unreadCount !== 1 ? 'them' : 'it'}`
+                ? `${unreadCount} unread notification${unreadCount !== 1 ? 's' : ''}`
                 : 'No unread notifications'}
             </TooltipContent>
           </Tooltip>
+          <PopoverContent align="end" className="w-[32rem] max-w-[calc(100vw-2rem)] p-sm" aria-label="Notifications">
+            {bellOpen && <BellPanel onClose={() => setBellOpen(false)} />}
+          </PopoverContent>
+          </Popover>
 
           {/* v5.316.0 — pending proposals; nothing when there are none. */}
           <PendingProposalsButton />

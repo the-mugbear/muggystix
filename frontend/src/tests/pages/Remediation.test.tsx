@@ -59,6 +59,7 @@ import Remediation from '../../pages/Remediation';
 import { TooltipProvider } from '../../components/ui/tooltip';
 import { LIST_CURSOR_CLASS } from '../../hooks/useListCursor';
 import { resetRemediationPolicy } from '../../hooks/useRemediationPolicy';
+import { formatDate } from '../../utils/relativeTime';
 import type { RemediationPage, RemediationRow } from '../../services/api';
 
 const LONG = 'a'.repeat(200);
@@ -364,9 +365,16 @@ describe('Remediation', () => {
     const table = await screen.findByRole('table', { name: /remediation/i });
     fireEvent.click(within(table).getByRole('button', { name: 'Assign' }));
     const dialog = await screen.findByRole('dialog');
-    fireEvent.change(within(dialog).getByLabelText('Contact email'), { target: { value: 'Roger Smith' } });
-    expect(within(dialog).getByRole('alert')).toHaveTextContent(/email address/);
+    const email = within(dialog).getByLabelText('Contact email');
+    fireEvent.change(email, { target: { value: 'Roger Smith' } });
+    // Not said while the address is still being typed (5.387.0) — Save is held back either way.
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+    // Once the field is left it is said AT the field, which is marked invalid.
+    fireEvent.blur(email);
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(/email address/);
+    expect(email).toHaveAttribute('aria-invalid', 'true');
+    expect(email.closest('div')).toContainElement(within(dialog).getByRole('alert'));
     expect(applyRemediation).not.toHaveBeenCalled();
   });
 
@@ -783,6 +791,107 @@ describe('Remediation', () => {
     expect(await within(dialog).findByText('list.docx')).toBeInTheDocument();
     if (sentence) expect(within(dialog).getByText(sentence)).toBeInTheDocument();
     else expect(within(dialog).queryByText(/left out/)).not.toBeInTheDocument();
+  });
+
+  // 5.387.0 — the walkthrough of 2026-10-12.
+  it('a document is narrowed like the reminder, and says how many findings have no recommendation', async () => {
+    listRemediationContacts.mockResolvedValue([
+      { contact_email: 'roger@example.com', contact_name: 'Roger Smith', total: 3, open: 3, overdue: 2, due_soon: 1,
+        on_track: 0, deferred: 0, closed: 0, last_follow_up_on: null, projects: 1 },
+    ]);
+    const done = { id: 7, status: 'completed', format: 'contact-docx', message: null, error: null, filename: 'list.docx',
+      contact_email: 'roger@example.com', created_at: null, images_withheld: 0, ready: true };
+    prepareContactReport.mockReset()
+      .mockResolvedValueOnce({ ...done, findings: 3, without_recommendation: 2 })
+      .mockResolvedValueOnce({ ...done, id: 8, findings: 2, without_recommendation: 2 })
+      .mockResolvedValue({ ...done, id: 9, findings: 2, without_recommendation: 0 });
+    show('/remediation?view=contacts');
+    const table = await screen.findByRole('table', { name: /contacts/i });
+    fireEvent.click(within(table).getByRole('button', { name: 'Document' }));
+    const dialog = await screen.findByRole('dialog');
+    // The project page has one project: nothing to choose.
+    expect(within(dialog).queryByRole('combobox', { name: 'Project' })).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Prepare' }));
+    expect(await within(dialog).findByText(/2 of its 3 findings have no recommendation written/)).toBeInTheDocument();
+    // Everything still open is the default: no narrowing is sent.
+    expect(prepareContactReport.mock.calls[0]).toEqual([1, { contact_email: 'roger@example.com', format: 'contact-docx' }, undefined]);
+
+    // Another selection is another document: the finished one is put away.
+    fireEvent.keyDown(within(dialog).getByRole('combobox', { name: 'What it lists' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('option', { name: 'Overdue and due soon' }));
+    expect(within(dialog).queryByText('list.docx')).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Prepare' }));
+    expect(await within(dialog).findByText(/None of its 2 findings has a recommendation written/)).toBeInTheDocument();
+    expect(prepareContactReport.mock.calls[1][1]).toEqual({
+      contact_email: 'roger@example.com', format: 'contact-docx', upcoming_days: 0 });
+
+    fireEvent.keyDown(within(dialog).getByRole('combobox', { name: 'What it lists' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('option', { name: 'Overdue, due soon, and due in the next 30 days' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Prepare' }));
+    expect(await within(dialog).findByText('list.docx')).toBeInTheDocument();
+    expect(prepareContactReport.mock.calls[2][1]).toMatchObject({ upcoming_days: 30 });
+    expect(within(dialog).queryByText(/recommendation written/)).not.toBeInTheDocument();
+  });
+
+  it('the editor offers the contacts in use, brings a known one’s name, and says when an address is new', async () => {
+    listRemediationContacts.mockResolvedValue([
+      { contact_email: 'jane@example.com', contact_name: 'Jane Roe', total: 1, open: 1, overdue: 0, due_soon: 0,
+        on_track: 1, deferred: 0, closed: 0, last_follow_up_on: null, projects: 1 },
+    ]);
+    show();
+    const table = await screen.findByRole('table', { name: /remediation/i });
+    fireEvent.click(within(table).getByRole('button', { name: 'Assign' }));
+    const dialog = await screen.findByRole('dialog');
+    const email = within(dialog).getByLabelText('Contact email');
+    await waitFor(() => expect(dialog.querySelector('datalist option[value="jane@example.com"]')).not.toBeNull());
+    expect(email).toHaveAttribute('list', dialog.querySelector('datalist')!.id);
+
+    fireEvent.change(email, { target: { value: 'Jane@Example.com' } });
+    expect(within(dialog).getByLabelText('Contact name')).toHaveValue('Jane Roe');
+    fireEvent.blur(email);
+    expect(within(dialog).queryByText(/A new contact/)).not.toBeInTheDocument();
+
+    // One letter off is a second contact: said, not refused — and the name the
+    // known address brought goes with it (a typed name would stay).
+    fireEvent.change(email, { target: { value: 'jnae@example.com' } });
+    expect(within(dialog).getByLabelText('Contact name')).toHaveValue('');
+    fireEvent.blur(email);
+    expect(within(dialog).getByText('A new contact: no finding in this project is assigned to this address yet.')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled();
+  });
+
+  it('a bulk edit previews what the selection would be due on, per severity', async () => {
+    listRemediation.mockResolvedValue(page([row(1), row(2, { severity: 'medium' }), row(3, { severity: 'info' })]));
+    show();
+    const table = await screen.findByRole('table', { name: /remediation/i });
+    fireEvent.click(within(table).getByRole('checkbox', { name: 'Select every row on this page' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Assign or update' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByTestId('rem-due-by-severity')).not.toBeInTheDocument();      // no date yet
+    fireEvent.change(within(dialog).getByLabelText('Assigned on'), { target: { value: '2026-10-05' } });
+    expect(within(dialog).getByTestId('rem-due-by-severity')).toHaveTextContent(
+      `Due by the policy — High: ${formatDate('2026-11-04')} · Medium: ${formatDate('2027-01-03')} · Informational: no due date`);
+    // A date set by hand for the selection is the due date: the policy's is not previewed beside it.
+    fireEvent.change(within(dialog).getByLabelText('Due date'), { target: { value: '2026-12-01' } });
+    expect(within(dialog).queryByTestId('rem-due-by-severity')).not.toBeInTheDocument();
+  });
+
+  it('a row’s contact opens the follow-up with them, and the section is named for the view', async () => {
+    getRemediationFollowUp.mockResolvedValue({
+      contact_email: 'roger@example.com', contact_name: 'Roger Smith', as_of: '2026-11-10', overdue: 1, due_soon: 0,
+      upcoming: 0, items: [], has_more: false, project_ids: [1], other_projects: 0, text: 'Hello Roger Smith,',
+    });
+    listRemediationContacts.mockResolvedValue([]);
+    show();
+    const table = await screen.findByRole('table', { name: /remediation/i });
+    expect(screen.getByRole('heading', { name: 'Findings on hosts' })).toBeInTheDocument();
+    fireEvent.click(within(table).getByRole('button', { name: 'Roger Smith' }));
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Follow up with Roger Smith (roger@example.com)');
+    expect(getRemediationFollowUp.mock.calls[0].slice(0, 2)).toEqual([1, 'roger@example.com']);
+    fireEvent.click(within(screen.getByRole('dialog')).getAllByRole('button', { name: 'Close' })[0]);
+    fireEvent.click(screen.getByRole('tab', { name: 'By contact' }));
+    expect(await screen.findByRole('heading', { name: 'Contacts' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Findings on hosts' })).not.toBeInTheDocument();
   });
 
   it('offers no document to someone who cannot write', async () => {

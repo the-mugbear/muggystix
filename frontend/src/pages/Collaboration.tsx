@@ -23,9 +23,9 @@
  * unread notifications panel with the ?mentions=mine deep link.
  */
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { MessageSquare, Bell, ArrowRight, Paperclip, RefreshCw, Loader2 } from 'lucide-react';
+import { MessageSquare, Bell, Paperclip, RefreshCw, Loader2 } from 'lucide-react';
 import {
   getFindingDiscussions,
   FindingDiscussion,
@@ -34,20 +34,15 @@ import {
   NoteActivityAuthor,
   NoteActivityResponse,
   markActivitySeen,
-  getNotifications,
-  markNotificationsRead,
-  markAllNotificationsRead,
-  NotificationItem,
-  NotificationListResponse,
 } from '../services/api';
+import { NotificationRows, useUnreadNotifications } from '../components/UnreadNotifications';
 import { AgentAuthorBadge } from '../components/AgentAuthorBadge';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { useAuth } from '../contexts/AuthContext';
-import { invalidateReads, queryErrorText } from '../lib/query';
+import { queryErrorText } from '../lib/query';
 import { useProjectId } from '../hooks/useProjectId';
-import { notificationHref } from '../utils/notificationLinks';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useListCursor } from '../hooks/useListCursor';
 import { useListQuery, type ListPage } from '../hooks/useListQuery';
@@ -60,7 +55,7 @@ import {
 } from '../components/ui/select';
 import { cn } from '../utils/cn';
 import { InlineLoader } from '../components/ui/inline-loader';
-import { formatRelativeTime as relativeTime, formatTimestamp } from '../utils/relativeTime';
+import { formatTimestamp } from '../utils/relativeTime';
 import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../components/ListFilterBar';
 import { SeverityBadge } from '../components/ui/SeverityBadge';
 import { MentionText } from '../components/MentionText';
@@ -93,13 +88,8 @@ const DISCUSSION_LIMIT = 100;
 /** Notes are paged ("Load more") rather than capped at one fetch — which made
  *  the thread / host counts and the feed silently miss everything past it. */
 const NOTES_PAGE_SIZE = 100;
-/** How many unread notifications the panel asks for. */
-const UNREAD_LIMIT = 50;
-/** The reader's unread notifications: theirs, whatever the project. */
-const UNREAD_KEY = ['getNotifications', true, UNREAD_LIMIT] as const;
 
 const NO_NOTES: NoteActivityItem[] = [];
-const NO_NOTIFICATIONS: NotificationItem[] = [];
 const NO_AUTHORS: NoteActivityAuthor[] = [];
 
 /** A finding's status as the row's chip, in the tone of its population
@@ -112,11 +102,6 @@ const FINDING_CHIP: Record<FindingPopulation, 'info' | 'warning' | 'muted'> = {
 
 const messages = (n: number) => `${n.toLocaleString()} message${n === 1 ? '' : 's'}`;
 
-/** Short age, switching to a date past a month — "412d ago" tells a reader
- *  less than the date does. */
-function formatRelativeTime(dateStr: string | null | undefined): string {
-  return relativeTime(dateStr, { absoluteAfterDays: 30 });
-}
 
 /** The time of day only: a thread row sits under its day's heading, so the
  *  date beside it repeated the heading (UX review 2026-09-24). */
@@ -167,7 +152,6 @@ const Activity: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const mentionsFilter = searchParams.get('mentions');
   const mentionsPanelRef = useRef<HTMLDivElement | null>(null);
-  const queryClient = useQueryClient();
   const projectId = useProjectId();
   // The author filter lives in the URL (`?author=<id>` or `?author=me`,
   // 5.329.0), so "my activity" is a link (Operations' "My work" heading
@@ -233,13 +217,10 @@ const Activity: React.FC = () => {
   // stay listed until dismissed or opened, even after the bell badge has been
   // zeroed out.  Notifications are NOT marked read just because the page
   // opened (§21): only when one is opened, or by "Mark all read".
-  const notificationsQuery = useQuery({
-    queryKey: UNREAD_KEY,
-    queryFn: ({ signal }) => getNotifications(true, UNREAD_LIMIT, signal),
-  });
-  const unreadNotifications = notificationsQuery.data?.notifications ?? NO_NOTIFICATIONS;
-  const notificationsFailed = notificationsQuery.isError;
-  const notificationsLoaded = notificationsQuery.isSuccess;
+  const {
+    notifications: unreadNotifications, failed: notificationsFailed, loaded: notificationsLoaded,
+    open: openMention, markAllRead: markAllMentionsRead,
+  } = useUnreadNotifications();
 
   // FRX·H6: scroll the notifications panel into view when arriving from the bell.
   useEffect(() => {
@@ -256,34 +237,6 @@ const Activity: React.FC = () => {
   // cursor) — once, whatever comes of it.
   const { mutate: markSeen } = useMutation({ mutationFn: () => markActivitySeen(projectId) });
   useEffect(() => { markSeen(); }, [markSeen]);
-
-  // A notification leaves the panel at once; the server is told, and the
-  // bell in the top bar reads its count again either way (components/Layout).
-  const bellChanged = useCallback(() => {
-    void invalidateReads(queryClient, 'getUnreadNotificationCount');
-  }, [queryClient]);
-  const setUnread = useCallback((keep: (n: NotificationItem) => boolean) => {
-    queryClient.setQueryData<NotificationListResponse>(UNREAD_KEY, (old) => (
-      old ? { ...old, notifications: old.notifications.filter(keep) } : old
-    ));
-  }, [queryClient]);
-  const { mutate: dismissMention } = useMutation({
-    mutationFn: (id: number) => markNotificationsRead([id]),
-    onMutate: (id) => setUnread((n) => n.id !== id),
-    onSettled: bellChanged,
-  });
-  const { mutate: markAllMentionsRead } = useMutation({
-    mutationFn: () => markAllNotificationsRead(),
-    onMutate: () => setUnread(() => false),
-    onSettled: bellChanged,
-  });
-
-  // Open a notification's source: mark it read, then deep-link by kind.
-  const openMention = useCallback((n: NotificationItem) => {
-    dismissMention(n.id);
-    const to = notificationHref(n);
-    if (to) navigate(to);
-  }, [dismissMention, navigate]);
 
   const threadGroups = useMemo<NoteThreadGroup[]>(() => {
     const grouped = new Map<string, NoteActivityItem[]>();
@@ -410,7 +363,7 @@ const Activity: React.FC = () => {
       {/* A failed load is said, not shown as "no notifications". */}
       {notificationsFailed && (
         <p role="status" className="text-metadata text-muted-foreground">
-          Your notifications could not be loaded; the bell in the top bar still lists them.
+          Your notifications could not be loaded; the bell in the top bar asks for them again.
         </p>
       )}
 
@@ -453,30 +406,7 @@ const Activity: React.FC = () => {
               </Button>
             </div>
           </div>
-          <ul className="divide-y divide-border/60">
-            {unreadNotifications.map((n) => (
-              <li key={n.id}>
-                <button
-                  type="button"
-                  onClick={() => openMention(n)}
-                  className={cn(
-                    'flex w-full min-w-0 items-start gap-sm rounded-control py-xs text-left',
-                    'transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  )}
-                >
-                  <Badge variant={n.type === 'mention' ? 'info' : 'muted'} className="mt-xxs shrink-0">
-                    {n.type === 'mention' ? 'mention' : n.type.replace('_', ' ')}
-                  </Badge>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-metadata font-medium">{n.title}</span>
-                    {n.body && <span className="line-clamp-1 text-caption text-muted-foreground">{n.body}</span>}
-                  </span>
-                  <span className="shrink-0 text-caption text-muted-foreground">{formatRelativeTime(n.created_at)}</span>
-                  <ArrowRight className="mt-xxs size-4 shrink-0 text-muted-foreground" aria-hidden />
-                </button>
-              </li>
-            ))}
-          </ul>
+          <NotificationRows notifications={unreadNotifications} onOpen={openMention} />
         </section>
       )}
 

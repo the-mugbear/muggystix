@@ -26,7 +26,7 @@ import { useRemediationPolicy } from '../hooks/useRemediationPolicy';
 import { queryErrorText } from '../lib/query';
 import { REPORTED_FIXED, timelineSummary } from '../utils/remediation';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
-import RemediationWorkList from '../components/remediation/RemediationWorkList';
+import RemediationWorkList, { VIEW_TITLE } from '../components/remediation/RemediationWorkList';
 import { RemediationLead } from './Remediation';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 
@@ -113,8 +113,8 @@ const RemediationDeadlines: React.FC = () => {
   // The page around the work list, drawn with what the list has on screen:
   // the lead reads the list's answer where it is shown (the list hands it to
   // its `children`), never from a copy kept in this page's state.
-  const layout = ({ page, filtered, list }: {
-    page: RemediationPage | null; filtered: boolean; list: React.ReactNode;
+  const layout = ({ page, filtered, list, title }: {
+    page: RemediationPage | null; filtered: boolean; list: React.ReactNode; title: string;
   }) => (
     <div className="flex flex-col gap-lg p-md md:p-lg">
       <div className="min-w-0">
@@ -130,7 +130,9 @@ const RemediationDeadlines: React.FC = () => {
       {!none && (
         <>
           <PostureSection
-            title={<>Projects{projects && <SectionCount>{projects.items.length}</SectionCount>}</>}
+            // The count is of the rows listed: the projects folded into the
+            // line under the table are counted there ("Not shown: 8 projects…").
+            title={<>Projects{projects && <SectionCount>{shown.length}</SectionCount>}</>}
             description={policy ? `${timelineSummary(policy)}, counted from the day a finding is assigned.` : undefined}
           >
             {error && (
@@ -200,7 +202,7 @@ const RemediationDeadlines: React.FC = () => {
           </PostureSection>
 
           <div ref={listRef} className="scroll-mt-16">
-            <PostureSection title="Findings on hosts">{list}</PostureSection>
+            <PostureSection title={title}>{list}</PostureSection>
           </div>
 
           <PostureSection title="Over time">
@@ -212,7 +214,7 @@ const RemediationDeadlines: React.FC = () => {
   );
 
   // With no project to administer there is no list to read (and none is asked for).
-  if (none) return layout({ page: null, filtered: false, list: null });
+  if (none) return layout({ page: null, filtered: false, list: null, title: VIEW_TITLE.rows });
   return (
     <RemediationWorkList
       scope="all"

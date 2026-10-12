@@ -235,6 +235,10 @@ describe('B — a deferral has a review date and a reason', () => {
     await choose(dialog, 'Status', 'Deferred');
     const review = within(dialog).getByLabelText('Review on');
     expect(review).toHaveAttribute('min', '2026-11-10');                  // the list's as_of
+    // The field is required and Save held back at once; the words come once it has been left (5.387.0).
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
+    expect(save(dialog)).toBeDisabled();
+    fireEvent.blur(review);
     expect(within(dialog).getByRole('alert')).toHaveTextContent('A deferral needs a “Review on” date.');
     expect(save(dialog)).toBeDisabled();
     fireEvent.change(review, { target: { value: '2026-11-09' } });

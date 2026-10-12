@@ -86,7 +86,7 @@ const Remediation: React.FC = () => {
   // state the list filled from an effect).
   return (
     <RemediationWorkList scope="project" canWrite={canWrite} policy={policy}>
-      {({ page, filtered, list }) => {
+      {({ page, filtered, list, title }) => {
         // Offered to a project admin while something has no assigned date —
         // and only by a server that knows the route (it is the one that sends
         // `flag_counts`), so an older one is never asked for it.
@@ -112,7 +112,7 @@ const Remediation: React.FC = () => {
             </div>
 
             <PostureSection
-              title="Findings on hosts"
+              title={title}
               description={policy ? `${timelineSummary(policy)}, counted from the day a finding is assigned.` : undefined}
             >
               {list}

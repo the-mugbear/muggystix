@@ -6,18 +6,20 @@
  * through the one write path, `POST /remediation/apply`.
  */
 import React, { useMemo, useRef, useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
 import {
-  applyRemediation, type RemediationPolicy, type RemediationRow, type RemediationStatus,
+  applyRemediation, listRemediationContacts, type RemediationContact, type RemediationPolicy,
+  type RemediationRow, type RemediationStatus,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useProjectId } from '../../hooks/useProjectId';
 import { formatApiError } from '../../utils/apiErrors';
 import {
-  applyRowsFor, draftCaution, draftChanges, draftFor, draftProblem, hasChanges, invalidateRemediationReads,
-  localToday, noteRequirement, policyDueLine, REMEDIATION_STATUSES, REMEDIATION_STATUS_LABEL, type RemediationDraft,
+  applyRowsFor, draftCaution, draftChanges, draftFor, draftProblem, emailProblem, hasChanges,
+  invalidateRemediationReads, localToday, noteRequirement, policyDueBySeverity, policyDueLine, reviewProblem,
+  REMEDIATION_STATUSES, REMEDIATION_STATUS_LABEL, type RemediationDraft,
 } from '../../utils/remediation';
 import { Button } from '../ui/button';
 import {
@@ -29,6 +31,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Textarea } from '../ui/textarea';
 
 const UNCHANGED = '__unchanged__';
+const NO_CONTACTS: RemediationContact[] = [];
 
 const newKey = (): string =>
   (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
@@ -72,9 +75,20 @@ export const RemediationEditDialog: React.FC<{
   // Naming a contact is assigning the finding: the clock starts today unless
   // the admin says another day.  Only when no date was there and none was
   // typed — never over a date somebody entered.
-  const setContact = (value: string) => setDraft((d) => ({
+  // The name the address last brought with it: it follows the address (a
+  // misspelt address must not keep the known contact's name — seen in the
+  // browser), while a name somebody typed stays.
+  const broughtName = useRef('');
+  const setContact = (value: string) => {
+    const known = contacts.find((c) => c.contact_email === value.trim().toLowerCase())?.contact_name ?? '';
+    const follows = !draft.contact_name || draft.contact_name === broughtName.current;
+    if (follows) broughtName.current = known;
+    setContactFields(value, follows ? known : null);
+  };
+  const setContactFields = (value: string, name: string | null) => setDraft((d) => ({
     ...d,
     contact_email: value,
+    contact_name: name ?? d.contact_name,
     notified_on: value.trim() && !opened.contact_email && !opened.notified_on && !d.notified_on && rows.length === 1
       ? (today ?? localToday()) : d.notified_on,
   }));
@@ -89,8 +103,30 @@ export const RemediationEditDialog: React.FC<{
   const [byHand, setByHand] = useState(!!opened.due_override_on);
   const someByHand = rows.some((r) => !!r.due_override_on);
 
+  // The contacts already in use: an address IS the contact, so a known one
+  // is offered while typing (a typo would make a second contact and split
+  // the follow-up), and one nobody has used yet is said to be new.
+  const known = useQuery({
+    queryKey: ['listRemediationContacts', acrossProjects ? null : currentProjectId, acrossProjects ? 'all' : undefined],
+    queryFn: ({ signal }) => listRemediationContacts(
+      acrossProjects ? null : currentProjectId, acrossProjects ? 'all' : undefined, signal),
+  });
+  const contacts = known.data ?? NO_CONTACTS;
+  const typedEmail = draft.contact_email.trim().toLowerCase();
+  const newContact = known.isSuccess && !!typedEmail && typedEmail !== opened.contact_email.trim().toLowerCase()
+    && !contacts.some((c) => c.contact_email === typedEmail);
+
   const day = today ?? localToday();
   const problem = draftProblem(draft, opened, day);
+  // A field's own problem is said at the field once the reader has left it
+  // (not while an address is half typed); Save is held back either way.
+  const [left, setLeft] = useState<{ email?: boolean; review?: boolean }>({});
+  const emailBad = emailProblem(draft);
+  const reviewBad = reviewProblem(draft, opened, day);
+  const elsewhere = problem != null && problem !== emailBad && problem !== reviewBad ? problem : null;
+  // What the selection would be due on, per severity, once an assigned date is typed.
+  const dueBySeverity = several && clockRuns && !draft.due_override_on
+    ? policyDueBySeverity(policy, rows.map((r) => r.severity), draft.notified_on) : null;
   const changes = draftChanges(opened, draft);
   const dirty = hasChanges(changes, draft.note);
   // A due date set by hand and a deferral are saved with their reason.
@@ -188,8 +224,25 @@ export const RemediationEditDialog: React.FC<{
             <div className="min-w-0">
               <Label htmlFor="rem-email">Contact email</Label>
               <Input id="rem-email" type="email" maxLength={254} value={draft.contact_email}
+                list="rem-email-known" autoComplete="off"
+                aria-invalid={left.email && emailBad != null} aria-describedby="rem-email-note"
                 placeholder={several && !opened.contact_email ? 'Leave as it is' : 'name@example.com'}
+                onBlur={() => setLeft((l) => ({ ...l, email: true }))}
                 onChange={(e) => setContact(e.target.value)} />
+              <datalist id="rem-email-known">
+                {contacts.map((c) => (
+                  <option key={c.contact_email} value={c.contact_email}>{c.contact_name ?? ''}</option>
+                ))}
+              </datalist>
+              <div id="rem-email-note">
+                {left.email && emailBad ? (
+                  <p role="alert" className="mt-xxs text-caption text-destructive">{emailBad}</p>
+                ) : left.email && newContact && (
+                  <p role="status" className="mt-xxs text-caption text-muted-foreground">
+                    A new contact: no finding {acrossProjects ? 'in your projects' : 'in this project'} is assigned to this address yet.
+                  </p>
+                )}
+              </div>
             </div>
             <div className="min-w-0">
               <Label htmlFor="rem-name">Contact name</Label>
@@ -214,6 +267,11 @@ export const RemediationEditDialog: React.FC<{
                   ? 'The day the contact was given the finding: each deadline counts from it.'
                   : 'The deadline counts from this day.'}
               </p>
+              {dueBySeverity && (
+                <p className="mt-xxs break-words text-caption text-muted-foreground" data-testid="rem-due-by-severity">
+                  Due by the policy — {dueBySeverity}{someByHand ? '. A date set by hand stays.' : ''}
+                </p>
+              )}
             </div>
             <div className="min-w-0">
               <Label htmlFor="rem-status">Status</Label>
@@ -249,11 +307,14 @@ export const RemediationEditDialog: React.FC<{
                 <Label htmlFor="rem-review">Review on</Label>
                 <Input id="rem-review" type="date" ref={reviewRef} value={draft.deferred_review_on} min={day}
                   aria-required aria-describedby="rem-review-hint"
-                  onBlur={checkDates} onKeyUp={checkDates}
+                  onBlur={() => { checkDates(); setLeft((l) => ({ ...l, review: true })); }} onKeyUp={checkDates}
                   onChange={(e) => set('deferred_review_on', e.target.value)} />
                 <p id="rem-review-hint" className="mt-xxs text-caption text-muted-foreground">
                   The clock is stopped until then; the deferral is listed for review from that day.
                 </p>
+                {left.review && reviewBad && (
+                  <p role="alert" className="mt-xxs text-caption text-destructive">{reviewBad}</p>
+                )}
               </div>
             )}
             {clockRuns && (
@@ -329,9 +390,9 @@ export const RemediationEditDialog: React.FC<{
           {!halfDate && !problem && draftCaution(draft) && (
             <p role="status" className="mt-xs text-caption text-warning">{draftCaution(draft)}</p>
           )}
-          {(halfDate || problem) && (
+          {(halfDate || elsewhere) && (
             <p role="alert" className="mt-xs text-caption text-destructive">
-              {halfDate ? 'A date is only partly filled in. Finish it or clear it.' : problem}
+              {halfDate ? 'A date is only partly filled in. Finish it or clear it.' : elsewhere}
             </p>
           )}
         </DialogBody>

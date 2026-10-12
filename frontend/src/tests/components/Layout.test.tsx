@@ -3,12 +3,20 @@
  * which sidebar entry says "you are here", and when the tab strip shows.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 
 // The real router hooks: setupTests pins useLocation to "/".
 vi.mock('react-router-dom', async () => vi.importActual<typeof import('react-router-dom')>('react-router-dom'));
-vi.mock('../../services/api', () => ({ getUnreadNotificationCount: vi.fn().mockResolvedValue(0) }));
+const notifications = vi.hoisted(() => ({
+  getNotifications: vi.fn(), markNotificationsRead: vi.fn(), markAllNotificationsRead: vi.fn(),
+}));
+vi.mock('../../services/api', () => ({
+  getUnreadNotificationCount: vi.fn().mockResolvedValue(0),
+  getNotifications: (...a: unknown[]) => notifications.getNotifications(...a),
+  markNotificationsRead: (...a: unknown[]) => notifications.markNotificationsRead(...a),
+  markAllNotificationsRead: (...a: unknown[]) => notifications.markAllNotificationsRead(...a),
+}));
 vi.mock('../../components/AgentActivityRail', () => ({ default: () => null }));
 vi.mock('../../components/ProjectSelector', () => ({ default: () => <div>project selector</div> }));
 vi.mock('../../components/CommandPalette', () => ({ default: () => null }));
@@ -79,6 +87,37 @@ describe('Layout shell', () => {
     remediationTracked = false;
     renderAt('/hosts');
     expect(offered()).toBe(false);
+  });
+
+  // 5.387.0 (walkthrough 2026-10-12): the bell went to the selected
+  // project's Collaboration page, so reading another project's deadline alert
+  // took the reader off the cross-project page they were working on.
+  it('the bell lists the notifications over the page the reader is on, and one opens its own list', async () => {
+    notifications.getNotifications.mockResolvedValue({ notifications: [{
+      id: 5, type: 'remediation', title: 'Other project: 2 findings on hosts are due within 7 days', body: null,
+      source_type: 'remediation_due_soon', source_id: 9, host_id: null, finding_id: null,
+      created_at: '2026-10-11T10:00:00Z',
+    }] });
+    notifications.markNotificationsRead.mockResolvedValue(undefined);
+    isAdmin = true;
+    remediationTracked = true;
+    const Where = () => { const l = useLocation(); return <p data-testid="where">{l.pathname}{l.search}</p>; };
+    render(
+      <MemoryRouter initialEntries={['/remediation-deadlines?view=contacts']}>
+        <Layout><Where /></Layout>
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Notifications' }));
+    const row = await screen.findByRole('button', { name: /Other project: 2 findings on hosts are due within 7 days/ });
+    // Nothing moved, and nothing was marked read by looking.
+    expect(screen.getByTestId('where')).toHaveTextContent('/remediation-deadlines?view=contacts');
+    expect(notifications.markNotificationsRead).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Open Collaboration' })).toBeInTheDocument();
+    fireEvent.click(row);
+    await waitFor(() => expect(screen.getByTestId('where'))
+      .toHaveTextContent('/remediation-deadlines?state=due_soon&project=9'));
+    expect(notifications.markNotificationsRead).toHaveBeenCalledWith([5]);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Open Collaboration' })).not.toBeInTheDocument());
   });
 
   it('names the page and the project in the browser title', () => {

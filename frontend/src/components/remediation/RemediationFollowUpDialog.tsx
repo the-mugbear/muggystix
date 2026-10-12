@@ -154,6 +154,12 @@ export const RemediationFollowUpDialog: React.FC<{
 
   const who = data?.contact_name ? `${data.contact_name} (${contactEmail})` : contactEmail;
   const nothing = data != null && data.items.length === 0;
+  // The contact's row says "3 projects" and the message names two: the rest
+  // have open findings, none of them in the window the reminder is about.
+  const others = across && projectId == null ? data?.other_projects ?? 0 : 0;
+  const elsewhere = others > 0
+    ? ` ${others.toLocaleString()} more ${others === 1 ? 'project has' : 'projects have'} open findings for this contact, none ${ahead > 0 ? `due in the next ${ahead} days` : 'overdue or due soon'}.`
+    : '';
 
   return (
     <Dialog open onOpenChange={(v) => { if (!v && !busy) onClose(); }}>
@@ -171,6 +177,7 @@ export const RemediationFollowUpDialog: React.FC<{
                   ? `${data.overdue.toLocaleString()} overdue, ${data.due_soon.toLocaleString()} due soon and ${data.upcoming.toLocaleString()} due in the next ${ahead} days`
                   : `${data.overdue.toLocaleString()} overdue and ${data.due_soon.toLocaleString()} due soon`)
                   + `${scope === 'all' && data.project_ids.length > 1 ? ` across ${data.project_ids.length} projects` : ''}.`
+                  + elsewhere
                   + ' Copy the message and send it your own way: BlueStick sends nothing.'}
           </DialogDescription>
         </DialogHeader>

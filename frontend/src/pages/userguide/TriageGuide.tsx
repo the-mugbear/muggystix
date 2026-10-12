@@ -280,7 +280,7 @@ const sections: GuideSection[] = [
         </Para>
         <UnorderedList>
           <li><strong>Threading</strong> — reply to notes to build a conversation.</li>
-          <li><strong>@Mentions</strong> — tag teammates with <Mono>@username</Mono> to notify them; the bell icon shows your unread mention count.</li>
+          <li><strong>@Mentions</strong> — tag teammates with <Mono>@username</Mono> to notify them; the bell icon shows how many notifications you have not read and lists them where you are; opening one takes you to what it is about.</li>
           <li><strong>Type and pin</strong> — label a thread (question, decision, handoff…) and pin the ones that must stay at the top.</li>
           <li><strong>Screenshots for the report</strong> — put them on the finding: <em>Attach image</em> on one of its comments, then tick <strong>In report</strong>. An image is left out until it is ticked; captions and placing an image in the report text are described under Findings.</li>
           <li><strong>Markdown</strong> — headers, lists, and bold render in the UI.</li>

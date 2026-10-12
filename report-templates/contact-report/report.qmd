@@ -27,8 +27,11 @@
   The data is a client report's, narrowed to the contact, plus:
     report.contact       name (may be empty) and email
     report.as_of         the day the deadlines were worked out
-    remediation          overdue, due_soon, due_soon_days, open, closed,
-                         not_listed, timeline (the deadlines in words)
+    remediation          overdue, due_soon, due_soon_days, open (everything
+                         of the contact's still open here), closed,
+                         not_listed, timeline (the deadlines in words);
+                         selection + listed when the document was narrowed
+                         (what it lists, in words, and how many)
     each finding         deadline — its most urgent one, in words; ref is
                          EMPTY until a client report has been issued with the
                          finding (a number given before that could still move
@@ -161,14 +164,17 @@ format:
 <% if summary %>
 | Past the deadline | << summary.overdue >> |
 | Due within << summary.due_soon_days >> days | << summary.due_soon >> |
-| Open in all | << summary.open >><% if summary.closed %> (<< summary.closed >> already reported fixed, not listed)<% endif %> |
+| Still open | << summary.open >><% if summary.closed %> (<< summary.closed >> more already reported fixed, not listed)<% endif %> |
+<% if summary.get("selection") %>
+| This document lists | << summary.selection >>: << summary.listed >> of the << summary.open >> |
+<% endif %>
 <% if summary.get("timeline") %>
 | Deadlines | << summary.timeline >>, counted from the day a finding was assigned |
 <% endif %>
 <% endif %>
 
 <% if findings %>
-<% with caption = "Findings assigned to you" %><% include "partials/_table_caption.qmd" %><% endwith %>
+<% with caption = "Findings assigned to you, most urgent first" %><% include "partials/_table_caption.qmd" %><% endwith %>
 | Ref | Finding | Severity | Systems | Most urgent |
 |:--------|:----------------------------------------|:----------------|:-----------|:--------------------|
 <% for f in findings %>

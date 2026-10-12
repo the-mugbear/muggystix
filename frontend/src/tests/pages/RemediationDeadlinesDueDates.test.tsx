@@ -16,7 +16,11 @@ const listRemediationContacts = vi.fn();
 const getRemediationFollowUp = vi.fn();
 const recordRemediationFollowUp = vi.fn();
 const recordRemediationFollowUpOverview = vi.fn();
+const prepareContactReport = vi.fn();
 vi.mock('../../services/api', () => ({
+  prepareContactReport: (...a: unknown[]) => prepareContactReport(...a),
+  getContactReport: vi.fn(),
+  downloadContactReport: vi.fn(),
   getRemediationPolicy: (...a: unknown[]) => getRemediationPolicy(...a),
   updateRemediationPolicy: (...a: unknown[]) => updateRemediationPolicy(...a),
   previewRemediationPolicy: (...a: unknown[]) => previewRemediationPolicy(...a),
@@ -90,7 +94,8 @@ const show = (path = '/remediation-deadlines') => render(
 
 beforeEach(() => {
   [getRemediationPolicy, updateRemediationPolicy, previewRemediationPolicy, listRemediationProjects, listRemediationOverview,
-    listRemediationContacts, getRemediationFollowUp, recordRemediationFollowUp, recordRemediationFollowUpOverview]
+    listRemediationContacts, getRemediationFollowUp, recordRemediationFollowUp, recordRemediationFollowUpOverview,
+    prepareContactReport]
     .forEach((m) => m.mockReset());
   Object.values(toast).forEach((m) => m.mockReset());
   resetRemediationPolicy();
@@ -186,10 +191,84 @@ describe('H — one contact, several projects', () => {
   it('says a document is one project’s without making the reminder sound as if it needed one', async () => {
     show('/remediation-deadlines?view=contacts');
     expect(await screen.findByText(
-      'Follow up covers every project. A contact’s list as a document is one project’s: choose a project above to prepare one.',
+      'Follow up covers every project. A contact’s list as a document is one project’s: Document asks which.',
     )).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Follow up' })).toBeInTheDocument();
+    // The contacts read did not say where this contact has work (an older server): nothing to offer.
     expect(screen.queryByRole('button', { name: 'Document' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Contacts' })).toBeInTheDocument();
+  });
+
+  // 5.387.0 — the walkthrough of 2026-10-12: Document used to vanish until a
+  // project was chosen in the filter above.
+  it('with every project shown, Document asks which project — one document per project', async () => {
+    listRemediationContacts.mockResolvedValue([{ ...ROGER, work_project_ids: [4, 9] }]);
+    prepareContactReport.mockResolvedValue({
+      id: 7, status: 'completed', format: 'contact-docx', message: null, error: null,
+      filename: 'remediation-old-engagement-roger-2026-11-10.docx', contact_email: 'roger@example.com',
+      created_at: null, images_withheld: 0, findings: 1, without_recommendation: 1, ready: true,
+    });
+    show('/remediation-deadlines?view=contacts');
+    fireEvent.click(await screen.findByRole('button', { name: 'Document' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/This contact has open findings in 2 projects: prepare one for each\./)).toBeInTheDocument();
+    // Nothing can be prepared for "no project".
+    expect(within(dialog).getByRole('button', { name: 'Prepare' })).toBeDisabled();
+    fireEvent.keyDown(within(dialog).getByRole('combobox', { name: 'Project' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('option', { name: 'Old engagement' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Prepare' }));
+    expect(await within(dialog).findByText('remediation-old-engagement-roger-2026-11-10.docx')).toBeInTheDocument();
+    // Through the mount that also serves an archived project, in the project chosen.
+    expect(prepareContactReport.mock.calls).toEqual([
+      [9, { contact_email: 'roger@example.com', format: 'contact-docx' }, 'overview']]);
+    expect(within(dialog).getByText(/1 of its 1 finding has no recommendation written/)).toBeInTheDocument();
+  });
+
+  it('a contact with work in one project is not asked which', async () => {
+    listRemediationContacts.mockResolvedValue([{ ...ROGER, work_project_ids: [4] }]);
+    show('/remediation-deadlines?view=contacts');
+    fireEvent.click(await screen.findByRole('button', { name: 'Document' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByRole('combobox', { name: 'Project' })).not.toBeInTheDocument();
+    expect(dialog).toHaveTextContent('The findings assigned to this contact in Alpha');
+    expect(within(dialog).getByRole('button', { name: 'Prepare' })).toBeEnabled();
+  });
+
+  it('narrowed to one project, the Projects column still says in how many the contact has findings', async () => {
+    listRemediationContacts.mockImplementation(async (projectId: number | null) => (
+      projectId == null ? [ROGER] : [{ ...ROGER, projects: 1, work_project_ids: [4] }]));
+    show('/remediation-deadlines?view=contacts&project=4');
+    const table = await screen.findByRole('table', { name: /contacts/i });
+    expect(await within(table).findByText('1 of 2')).toBeInTheDocument();
+    expect(listRemediationContacts.mock.calls.map((c) => c.slice(0, 2))).toEqual(
+      expect.arrayContaining([[4, 'all'], [null, 'all']]));
+    // The chosen project is the document's: no question.
+    fireEvent.click(within(table).getByRole('button', { name: 'Document' }));
+    expect(await screen.findByRole('dialog')).toHaveTextContent('The findings assigned to this contact in Alpha');
+  });
+
+  it('says when further projects have open findings and nothing in the reminder’s window', async () => {
+    getRemediationFollowUp.mockResolvedValue(followUp({ other_projects: 1 }));
+    const dialog = await open();
+    expect(dialog).toHaveTextContent(
+      '4 overdue and 2 due soon across 2 projects. 1 more project has open findings for this contact, none overdue or due soon.');
+  });
+
+  it('the Projects section counts the rows it lists, not the projects folded under it', async () => {
+    listRemediationProjects.mockResolvedValue({
+      items: [
+        { project_id: 4, name: 'Alpha', archived: false, states: states({ overdue: 2, not_assigned: 5 }) },
+        { project_id: 5, name: 'Idle one', archived: false, states: states({ not_assigned: 3 }) },
+        { project_id: 6, name: 'Idle two', archived: false, states: states() },
+      ],
+      totals: states({ overdue: 2, not_assigned: 8 }), as_of: '2026-11-10', policy: POLICY,
+    });
+    show();
+    const heading = await screen.findByRole('heading', { name: /^Projects/ });
+    await waitFor(() => expect(heading).toHaveTextContent('Projects1'));
+    expect(screen.getByText(/Not shown: 2 projects where nothing has been assigned yet/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show them' }));
+    expect(heading).toHaveTextContent('Projects3');
   });
 });
 
