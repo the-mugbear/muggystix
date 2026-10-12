@@ -107,13 +107,18 @@ let setFromOutside: (f: Finding) => void = () => undefined;
 // which is where the table's rows come from.  It holds the finding already
 // and is never stale: nothing here reads it from the server.
 const neverAsked = (): Promise<Finding> => Promise.reject(new Error('the finding is not read in this test'));
+// …except where a test says what the server holds (an answer that crossed
+// another write makes the table read the finding again).
+const readFinding = vi.fn(neverAsked);
+let cached: () => Finding | undefined = () => undefined;
 const Harness: React.FC<{ initial: Finding; focus?: number | null }> = ({ initial, focus = null }) => {
   const queryClient = useQueryClient();
   const key = ['getFinding', 1, initial.id];
   const { data: current } = useQuery({
-    queryKey: key, queryFn: neverAsked, initialData: initial, staleTime: Infinity,
+    queryKey: key, queryFn: () => readFinding(), initialData: initial, staleTime: Infinity,
   });
   setFromOutside = (f) => queryClient.setQueryData(key, f);
+  cached = () => queryClient.getQueryData<Finding>(key);
   useEffect(() => queryClient.getQueryCache().subscribe((event) => {
     if (event.type === 'updated' && event.action.type === 'success' && event.query.queryKey[0] === 'getFinding') {
       applied(event.action.data);
@@ -134,6 +139,73 @@ const chip = (name: RegExp) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  readFinding.mockImplementation(neverAsked);
+});
+
+// Review 2026-10-12 H1.  The queue orders this table's own changes; a rename
+// (or a report-text save) made while one is on its way writes the same cached
+// record.  The endpoint's answer is the WHOLE finding as it stood when the
+// endpoint change committed — laid over the record it put "Old title" back on
+// a page that had just shown the new one.
+describe('FindingEndpoints — an answer that crosses another write of the finding', () => {
+  const renamed = (f: Finding): Finding => ({ ...f, title: 'New title' });
+  const oldTitleWasPutBack = () => applied.mock.calls.some(([f]) => (f as Finding).title === 'F');
+
+  it('a single change: the newer title stays and the finding is read again', async () => {
+    const start = finding([endpoint(1), endpoint(2)]);
+    const answer = deferred<Finding>();
+    setFindingEndpointStatus.mockReturnValueOnce(answer.promise);
+    render(<Harness initial={start} />);
+    fireEvent.change(stateOf(1), { target: { value: 'retest' } });
+    await waitFor(() => expect(setFindingEndpointStatus).toHaveBeenCalledTimes(1));
+
+    // The rename commits and is shown while the endpoint's answer is delayed.
+    act(() => setFromOutside(renamed(start)));
+    applied.mockClear();
+    const held = withState(renamed(start), { 1: 'retest' });      // what the server holds
+    readFinding.mockResolvedValueOnce(held);
+    await act(async () => { answer.resolve(withState(start, { 1: 'retest' })); });   // the older snapshot
+
+    await waitFor(() => expect(cached()).toEqual(held));
+    expect(readFinding).toHaveBeenCalledTimes(1);
+    expect(oldTitleWasPutBack()).toBe(false);
+    expect(stateOf(1).value).toBe('retest');
+    expect(stateOf(1)).not.toBeDisabled();
+  });
+
+  it('a bulk change: the same', async () => {
+    const start = finding([endpoint(1), endpoint(2), endpoint(3)]);
+    const answer = deferred<Finding>();
+    setFindingEndpointsStatus.mockReturnValueOnce(answer.promise);
+    render(<Harness initial={start} />);
+    fireEvent.click(box(1));
+    fireEvent.click(box(2));
+    fireEvent.change(screen.getByLabelText('Set the selected endpoints to'), { target: { value: 'remediated' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set 2 endpoints' }));
+    await waitFor(() => expect(setFindingEndpointsStatus).toHaveBeenCalledTimes(1));
+
+    act(() => setFromOutside(renamed(start)));
+    applied.mockClear();
+    const held = withState(renamed(start), { 1: 'remediated', 2: 'remediated' });
+    readFinding.mockResolvedValueOnce(held);
+    await act(async () => { answer.resolve(withState(start, { 1: 'remediated', 2: 'remediated' })); });
+
+    await waitFor(() => expect(cached()).toEqual(held));
+    expect(oldTitleWasPutBack()).toBe(false);
+    expect([1, 2, 3].map((id) => stateOf(id).value)).toEqual(['remediated', 'remediated', 'open']);
+  });
+
+  it('with nothing else writing the record, the answer goes on it and nothing is read', async () => {
+    const start = finding([endpoint(1), endpoint(2)]);
+    const answer = deferred<Finding>();
+    setFindingEndpointStatus.mockReturnValueOnce(answer.promise);
+    render(<Harness initial={start} />);
+    fireEvent.change(stateOf(1), { target: { value: 'retest' } });
+    await waitFor(() => expect(setFindingEndpointStatus).toHaveBeenCalledTimes(1));
+    await act(async () => { answer.resolve(withState(start, { 1: 'retest' })); });
+    expect(stateOf(1).value).toBe('retest');
+    expect(readFinding).not.toHaveBeenCalled();
+  });
 });
 
 // Browser pass 2026-10-01 — the server answered a change with the changed row

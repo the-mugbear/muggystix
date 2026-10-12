@@ -54,9 +54,10 @@ export const findingAsSent = (queryClient: QueryClient, projectId: number, findi
  * since the write was sent; otherwise which is newer cannot be told from the
  * answer and the finding is read again.  Returns true when the answer was put.
  *
- * Use this — not `putFinding` — for a write whose answer may cross another
- * write's.  (`FindingEndpoints` sends its changes one at a time through a
- * queue and applies every answer in order; that is its own guarantee.)
+ * Use this — not `putFinding` — for every write of a finding: any answer may
+ * cross another write's.  `FindingEndpoints` does too: its queue orders its
+ * own changes, not a rename or a report-text save made while one is on its
+ * way (review 2026-10-12).
  */
 export function putFindingAnswer(
   queryClient: QueryClient, projectId: number, updated: Finding,
