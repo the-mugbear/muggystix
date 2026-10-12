@@ -220,7 +220,9 @@ def test_a_finding_under_investigation_needs_its_owner(client, db_session, test_
     db_session.commit()
     body = _my_findings(client, test_project.id)
     assert [i["finding_id"] for i in body["items"]] == [f.id] and body["total_open"] == 1
-    assert body["items"][0]["needs"] == [{"kind": "under_investigation", "text": "under investigation"}]
+    assert body["items"][0]["needs"] == [
+        {"kind": "under_investigation", "text": "under investigation", "count": 1},
+    ]
     # Unwritten text on a finding the report would not include yet is not owed.
     assert body["items"][0]["missing_text"] == []
 
@@ -235,7 +237,7 @@ def test_a_reportable_finding_with_empty_required_text_names_the_sections(
     assert item["finding_id"] == f.id
     assert item["missing_text"] == ["impact", "recommendation"]
     assert item["needs"] == [
-        {"kind": "missing_text", "text": "report text missing: impact, recommendation"},
+        {"kind": "missing_text", "text": "report text missing: impact, recommendation", "count": 2},
     ]
 
 
@@ -288,8 +290,8 @@ def test_a_pending_proposal_about_my_finding_needs_me(client, db_session, test_p
     body = _my_findings(client, pid)
     by_id = {i["finding_id"]: i for i in body["items"]}
     assert set(by_id) == {named.id, evidenced.id}
-    assert by_id[named.id]["needs"] == [{"kind": "proposals", "text": "2 proposals to decide"}]
-    assert by_id[evidenced.id]["needs"] == [{"kind": "proposals", "text": "1 proposal to decide"}]
+    assert by_id[named.id]["needs"] == [{"kind": "proposals", "text": "2 proposals to decide", "count": 2}]
+    assert by_id[evidenced.id]["needs"] == [{"kind": "proposals", "text": "1 proposal to decide", "count": 1}]
     assert {fid: i["pending_proposals"] for fid, i in by_id.items()} == (
         proposal_service.pending_per_finding(db_session, [named.id, evidenced.id, decided.id])
     )

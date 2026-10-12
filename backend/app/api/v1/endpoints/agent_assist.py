@@ -36,6 +36,8 @@ from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models_auth import User
 from app.db.models_findings import FindingSeverity, FindingSource
 from app.api.deps import agent_read_floor, check_agent_rate_limit
+from app.api.params import FindingNeedsParam
+from app.schemas.findings import FindingNeed
 
 from app.api.v1.endpoints.agent_schemas import (
     AgentPage,
@@ -70,7 +72,7 @@ from app.api.v1.endpoints.agent_common import (
     require_project_host,
     unknown_value_error,
 )
-from app.services import dns_name_service, host_detail_service, report_writing_guidance
+from app.services import dns_name_service, finding_needs, host_detail_service, report_writing_guidance
 from app.services.attribution_correlation import attributions_for_host
 from app.services.host_assessment_service import host_assessment
 from app.services.host_query import (
@@ -1468,6 +1470,10 @@ class AssistProjectFinding(BaseModel):
     endpoint_count: int = 0
     hosts: List[str] = []
     hosts_truncated: bool = False
+    # What it still needs before the report goes out, as the Findings page's
+    # row says it (``finding_needs``): required report text missing, a report
+    # image without a caption, proposals to decide.  Empty = nothing.
+    needs: List[FindingNeed] = []
 
 
 class AssistFindingsPage(AgentPage):
@@ -1489,6 +1495,8 @@ def list_assist_findings(
     unowned: bool = Query(False, description="Only findings with no owner — the work-allocation question."),
     owner: Optional[str] = Query(None, description="Username of the owner (or 'me')."),
     search: Optional[str] = Query(None, max_length=200, description="Substring match on the title."),
+    # The Findings page's own declaration: one set of words on both doors.
+    needs: FindingNeedsParam = None,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     agent: Agent = Depends(check_agent_rate_limit),
@@ -1547,7 +1555,7 @@ def list_assist_findings(
     svc = FindingService(db)
     filters = dict(
         project_id=request.state.agent_project_id, status=status, source=source,
-        host_id=host_id, unowned=unowned, owner_id=owner_id, search=search,
+        host_id=host_id, unowned=unowned, owner_id=owner_id, search=search, needs=needs,
     )
     rows, total = svc.list_findings(
         **filters, severity=severity, limit=limit, offset=offset,
@@ -1556,6 +1564,8 @@ def list_assist_findings(
     # Counted in SQL: a finding on 30,000 hosts is two numbers and ten
     # addresses here, not 30,000 endpoint rows and their hosts.
     spread = svc.address_summaries([f.id for f in rows], sample=10)
+    # What each still needs before the report — the page rows' own function.
+    needs_by_id = finding_needs.needs_of(db, [f.id for f in rows])
 
     findings = []
     for f in rows:
@@ -1577,6 +1587,7 @@ def list_assist_findings(
                 # is for naming one.
                 hosts=on["sample"],
                 hosts_truncated=on["host_count"] > 10,
+                needs=needs_by_id[f.id].needs if f.id in needs_by_id else [],
             )
         )
     return AssistFindingsPage(

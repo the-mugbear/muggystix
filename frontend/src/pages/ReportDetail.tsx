@@ -43,6 +43,7 @@ import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRoster } from '../hooks/useProjectMembers';
 import { pollEvery, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
+import { NEED_SECTION } from '../utils/findingNeeds';
 import { formatTimestamp } from '../utils/relativeTime';
 import { REPORT_FIELD_LABELS } from '../utils/reportImages';
 import { safeFallback } from '../utils/uiStyles';
@@ -84,6 +85,14 @@ export const evidenceRecordsNotice = (total: number, byAgent?: number | null): s
  *  details; they are not printed." — an addendum's already-reported findings. */
 export const evidenceRecordsNotPrintedNotice = (count: number): string =>
   `${count.toLocaleString()} further test result${count === 1 ? ' belongs' : 's belong'} to findings this report lists without their details; ${count === 1 ? 'it is' : 'they are'} not printed.`;
+
+/** Images the report prints under their file's name, nobody having written a
+ *  caption — the issue dialog's line; the page lists the findings. */
+export const uncaptionedImagesSentence = (rows: ReadonlyArray<{ count: number }>): string => {
+  const images = rows.reduce((n, r) => n + r.count, 0);
+  return `${images.toLocaleString()} image${images === 1 ? ' has' : 's have'} no caption and `
+    + `${images === 1 ? 'is' : 'are'} printed under ${images === 1 ? 'its' : 'their'} file name.`;
+};
 
 const joinWords = (words: string[]): string =>
   words.length <= 1 ? words.join('') : `${words.slice(0, -1).join(', ')} or ${words[words.length - 1]}`;
@@ -328,6 +337,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           {!!s?.internal_references?.length && (
             <p className="mt-xs">{s.internal_references.length} finding{s.internal_references.length === 1 ? ' names' : 's name'} a BlueStick record in its text, which the reader cannot look up.</p>
           )}
+          {!!s?.uncaptioned_images?.length && (
+            <p className="mt-xs">{uncaptionedImagesSentence(s.uncaptioned_images)}</p>
+          )}
           {!!s?.agent_images && (
             <p className="mt-xs">{s.agent_images} image{s.agent_images === 1 ? ' comes' : 's come'} from notes an agent wrote.</p>
           )}
@@ -417,6 +429,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const missingDetails = s.missing_details ?? [];
   const pendingProposals = s.pending_proposals ?? [];
   const internalReferences = s.internal_references ?? [];
+  const uncaptionedImages = s.uncaptioned_images ?? [];
   // Issue is the main action only once nothing prints as TODO; until then
   // the page leads to the gaps and to previewing, not to freezing them.
   const ready = !missingText.length && !missingDetails.length;
@@ -551,6 +564,24 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                   title={m.title}>{m.title}</Link>
                 <span className="min-w-0 break-words text-caption text-muted-foreground">
                   {m.fields.map((f) => `${REPORT_FIELD_LABELS[f.field] ?? f.field}: ${f.phrases.map((p) => `“${p}”`).join(', ')}`).join(' · ')}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </PostureSection>
+      )}
+
+      {isDraft && uncaptionedImages.length > 0 && (
+        <PostureSection title="Images without a caption"
+          description="Each prints under its file’s name. A caption is written on the image, in the finding’s comments.">
+          <ul className="space-y-xxs">
+            {uncaptionedImages.map((m) => (
+              <li key={m.id} className="flex min-w-0 flex-wrap items-baseline gap-x-xs text-body">
+                <span className="tabular-nums text-muted-foreground">{m.ref}</span>
+                <Link to={`/findings/${m.id}#${NEED_SECTION.uncaptioned_images}`}
+                  className="min-w-0 truncate text-info hover:underline" title={m.title}>{m.title}</Link>
+                <span className="text-caption tabular-nums text-muted-foreground">
+                  {m.count.toLocaleString()} image{m.count === 1 ? '' : 's'}
                 </span>
               </li>
             ))}

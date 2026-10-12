@@ -819,7 +819,12 @@ class ClientReportService:
                     by_agent += first
                 ticked.append(att)
             images, placed, unplaced = report_images.report_placement(by_id[fid], ticked)
-            by_finding[fid] = {"images": images, "placed": placed, "evidence": unplaced}
+            by_finding[fid] = {
+                "images": images, "placed": placed, "evidence": unplaced,
+                # Not part of the dataset: the images whose caption above is
+                # the file's name, for the summary's warning.
+                "uncaptioned": {att.id for att in ticked if report_images.caption_missing(att)},
+            }
         return by_finding, skipped, by_agent
 
     @staticmethod
@@ -1320,6 +1325,19 @@ class ClientReportService:
             # Written text that names a BlueStick record ("Finding #277"),
             # which the reader cannot look up — a warning, never a block.
             "internal_references": internal_reference_warnings(items),
+            # Images this report prints with the file's name for a caption,
+            # because nobody wrote one — a warning, never a block.  The rule
+            # the Findings list's "report image without a caption" applies
+            # (``finding_needs``), narrowed to what THIS template prints.
+            "uncaptioned_images": [
+                {"id": item["id"], "ref": item["ref"], "title": item["title"], "count": n}
+                for item in items
+                if (n := sum(
+                    1 for img in item["images"]
+                    if img["attachment_id"] in evidence.get(item["id"], {}).get("uncaptioned", ())
+                    and img.get("printed", True)
+                ))
+            ],
             # v2.441.0 — over the template's cutoff the report names a scope
             # file instead of listing the scope: the operator must send it.
             "scope_external": {

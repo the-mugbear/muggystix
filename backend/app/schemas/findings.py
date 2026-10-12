@@ -88,6 +88,19 @@ class FindingImageList(BaseModel):
     caption_max: int
 
 
+class FindingNeed(BaseModel):
+    """One thing a finding still needs before the report goes out
+    (``services/finding_needs.py``, the one definition)."""
+    # missing_text | uncaptioned_images | proposals — and, on Operations'
+    # "Findings that need me" only, under_investigation.
+    kind: str
+    # The sentence a row shows, the same on every page.
+    text: str
+    # Empty required sections, report images without a caption, or proposals
+    # waiting.
+    count: int = 1
+
+
 class FindingResponse(BaseModel):
     id: int
     project_id: int
@@ -120,6 +133,10 @@ class FindingResponse(BaseModel):
     # evidence image for the report, not only their own uploads.
     viewer_is_project_admin: bool = False
     report_text: Optional[FindingReportText] = None
+    # What the finding still needs (``finding_needs.needs_of``): on a LIST
+    # row only — null on a single finding, whose page shows each need in its
+    # own section.
+    needs: Optional[List[FindingNeed]] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)

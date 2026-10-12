@@ -73,7 +73,7 @@ const LONG = 'x'.repeat(200);
 const finding = (id: number, over: Partial<MyFindingItem> = {}): MyFindingItem => ({
   finding_id: id, title: `Weak TLS ${id}`, severity: 'high', status: 'open', host_id: null,
   host_count: 3, evidence_annotation_id: null, updated_at: new Date(Date.now() - 51 * 60_000).toISOString(),
-  needs: [{ kind: 'under_investigation', text: 'under investigation' }], missing_text: [], pending_proposals: 0,
+  needs: [{ kind: 'under_investigation', text: 'under investigation', count: 1 }], missing_text: [], pending_proposals: 0,
   ...over,
 });
 const host = (id: number, over: Partial<MyAttentionHost> = {}): MyAttentionHost => ({
@@ -156,7 +156,7 @@ describe('Findings tab', () => {
     expect(screen.getByRole('button', { name: /^Needs a decision/ })).toHaveAttribute('aria-pressed', 'true');
     unmount();
     renderIt([], 0, ok, 0, { need: 'write', needCounts: { decide: 3, write: 0 } });
-    expect(screen.getByText('Nothing here — no finding you own is only missing required report text.')).toBeInTheDocument();
+    expect(screen.getByText('Nothing here — no finding you own is only missing required report text or an image caption.')).toBeInTheDocument();
   });
 
   it('one table: severity, #, finding, what is owed, how long it has waited', () => {
@@ -164,8 +164,8 @@ describe('Findings tab', () => {
       finding(21, { severity: 'critical' }),
       finding(1, {
         needs: [
-          { kind: 'missing_text', text: 'report text missing: impact, recommendation' },
-          { kind: 'proposals', text: '2 proposals to decide' },
+          { kind: 'missing_text', text: 'report text missing: impact, recommendation', count: 2 },
+          { kind: 'proposals', text: '2 proposals to decide', count: 2 },
         ],
         host_count: 1, updated_at: null,
       }),
@@ -199,7 +199,7 @@ describe('Findings tab', () => {
   });
 
   it('a 200-character title stays on one line; the need wraps to two before it is cut', () => {
-    renderIt([finding(1, { title: `Title ${LONG}`, needs: [{ kind: 'missing_text', text: `needs ${LONG}` }] })]);
+    renderIt([finding(1, { title: `Title ${LONG}`, needs: [{ kind: 'missing_text', text: `needs ${LONG}`, count: 1 }] })]);
     const title = screen.getByRole('link', { name: `Title ${LONG}` });
     expect(title.closest('td')).toHaveClass('truncate');
     expect(title.closest('td')).toHaveAttribute('title', expect.stringContaining(`Title ${LONG}`));

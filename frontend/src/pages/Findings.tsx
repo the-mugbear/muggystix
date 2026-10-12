@@ -14,6 +14,7 @@ import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-
 import {
   Finding,
   FindingFilters,
+  FindingNeedsFilter,
   FindingListResponse,
   FindingSortField,
   FindingSeverity,
@@ -80,6 +81,7 @@ import {
   SOURCE_LABEL, SOURCE_OPTIONS, STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates, matchesStatusFilter,
 } from '../utils/findingStatus';
 import { endpointPreviewTitle } from '../utils/findingEndpoints';
+import { NEED_FILTER_OPTIONS, NEED_SECTION, needsFilterOf, rowNeeds } from '../utils/findingNeeds';
 import { selectAllState } from '../utils/selection';
 
 // Compact age ("31d") from an ISO timestamp — the full date goes in the
@@ -182,6 +184,8 @@ const FindingsList: React.FC = () => {
   const severityFilter = (searchParams.get('severity') as FindingSeverity | null) ?? 'all';
   const sourceFilter = (searchParams.get('source') as FindingSource | null) ?? 'all';
   const ownerFilter = ownerFilterOf(searchParams.get('owner'), user?.id);
+  // What a finding still needs before the report (`utils/findingNeeds`).
+  const needsFilter = needsFilterOf(searchParams.get('needs'));
   // The search is the address's too (`search.value`, what the list is asked
   // for); the box shows `search.draft`, which is committed a moment after the
   // typing stops — replacing the entry, from the first page — and follows the
@@ -214,6 +218,7 @@ const FindingsList: React.FC = () => {
   const setSeverityFilter = (v: FindingSeverity | 'all') => setFilterParam('severity', v, 'all');
   const setSourceFilter = (v: FindingSource | 'all') => setFilterParam('source', v, 'all');
   const setOwnerFilter = (v: OwnerFilterValue) => setFilterParam('owner', v, 'any');
+  const setNeedsFilter = (v: FindingNeedsFilter | 'all') => setFilterParam('needs', v, 'all');
 
   // Page + sort live in the URL too (UX review M1): the detail page hands
   // this exact URL back on its "Findings" action, so an analyst working a
@@ -251,11 +256,11 @@ const FindingsList: React.FC = () => {
   const members = roster.members;
 
   const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all'
-    || sourceFilter !== 'all' || ownerFilter !== 'any' || searchValue !== '';
+    || sourceFilter !== 'all' || ownerFilter !== 'any' || needsFilter !== 'all' || searchValue !== '';
   // The page opens on status 'active', so `hasActiveFilters` is true on a
   // clean URL. The empty state must not blame filters the analyst never set.
   const onlyDefaultFilter = statusFilter === 'active' && severityFilter === 'all'
-    && sourceFilter === 'all' && ownerFilter === 'any' && searchValue === '';
+    && sourceFilter === 'all' && ownerFilter === 'any' && needsFilter === 'all' && searchValue === '';
 
   // Bulk-selection safety — mirrors the guard in Hosts.tsx. The selected set is
   // only meaningful for the result set it was made against: a filter change
@@ -265,8 +270,8 @@ const FindingsList: React.FC = () => {
   // they're deliberately excluded and selection survives them — the same
   // convention Hosts uses.
   const membershipSignature = useMemo(
-    () => JSON.stringify([statusFilter, severityFilter, sourceFilter, ownerFilter, searchValue]),
-    [statusFilter, severityFilter, sourceFilter, ownerFilter, searchValue],
+    () => JSON.stringify([statusFilter, severityFilter, sourceFilter, ownerFilter, needsFilter, searchValue]),
+    [statusFilter, severityFilter, sourceFilter, ownerFilter, needsFilter, searchValue],
   );
   const prevMembership = useRef<string | null>(null);
   useEffect(() => {
@@ -289,10 +294,11 @@ const FindingsList: React.FC = () => {
     if (ownerFilter === 'unowned') f.unowned = true;
     else if (ownerFilter === 'me') { if (user?.id != null) f.owner_id = user.id; }
     else if (ownerFilter !== 'any') f.owner_id = Number(ownerFilter);
+    if (needsFilter !== 'all') f.needs = needsFilter;
     if (searchValue) f.search = searchValue;
     if (sortBy) { f.sort = sortBy; f.dir = sortDir; }
     return f;
-  }, [statusFilter, severityFilter, sourceFilter, ownerFilter, searchValue, user?.id, sortBy, sortDir]);
+  }, [statusFilter, severityFilter, sourceFilter, ownerFilter, needsFilter, searchValue, user?.id, sortBy, sortDir]);
 
   // Per-field default direction (worst/most-relevant first); a repeat click
   // toggles. Mirrors the backend's per-field default.
@@ -623,6 +629,17 @@ const FindingsList: React.FC = () => {
             ))}
           </SelectContent>
         </Select>
+        <Select value={needsFilter} onValueChange={(v) => setNeedsFilter(v as FindingNeedsFilter | 'all')}>
+          <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-52')} aria-label="Still needed before the report">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Needed or not</SelectItem>
+            {NEED_FILTER_OPTIONS.map(([value, label]) => (
+              <SelectItem key={value} value={value}>{label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </ListFilterBar>
 
       {/* Severity rollup — "how bad is this scope" at a glance (respects the
@@ -846,6 +863,27 @@ const FindingsList: React.FC = () => {
                         {describeEndpointStates(f.endpoint_status_counts, f.host_count) && (
                           <span> · {describeEndpointStates(f.endpoint_status_counts, f.host_count)}</span>
                         )}
+                      </span>
+                    )}
+                    {/* What it still needs before the report, in the
+                        server's words; each opens the section of the finding
+                        where it is met.  Nothing owed = no line. */}
+                    {rowNeeds(f.needs).length > 0 && (
+                      <span
+                        className="block break-words text-caption text-warning"
+                        data-testid={`finding-needs-${f.id}`}
+                      >
+                        {rowNeeds(f.needs).map((n, at) => (
+                          <React.Fragment key={n.kind}>
+                            {at > 0 && <span className="text-muted-foreground"> · </span>}
+                            <Link
+                              to={`${findingDetailHref(f.id, searchParams.toString())}#${NEED_SECTION[n.kind]}`}
+                              className="hover:underline"
+                            >
+                              {n.text}
+                            </Link>
+                          </React.Fragment>
+                        ))}
                       </span>
                     )}
                   </TableCell>

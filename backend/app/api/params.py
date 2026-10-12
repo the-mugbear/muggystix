@@ -35,6 +35,27 @@ FindingNeedParam = Annotated[
 ]
 
 
+#: ``needs=`` on a findings list — the page's (``GET /projects/{id}/findings``)
+#: and the agents' (``GET /agent/assist/findings``): only findings that still
+#: need that before the report goes out.  The words are
+#: ``finding_needs.NEED_FILTERS`` (``test_finding_needs`` pins the two
+#: together); both routes take this declaration, so a word neither
+#: understands is a 422 on both doors.
+FindingNeedsParam = Annotated[
+    Optional[Literal["any", "missing_text", "uncaptioned_images", "proposals"]],
+    Query(
+        description=(
+            "Only findings that still need this before the report goes out: missing_text "
+            "(the report would include it and a required section is empty), "
+            "uncaptioned_images (the report would include it and an image ticked for the "
+            "report has no caption, so its file name is printed), proposals (a proposal "
+            "about it waits for a decision), or any of the three. Each row's `needs` says "
+            "which."
+        ),
+    ),
+]
+
+
 class HostFilterParams:
     """The shared /hosts filter query params, declared once.
 

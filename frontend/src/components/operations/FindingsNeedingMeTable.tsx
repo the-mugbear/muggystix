@@ -47,11 +47,11 @@ export const needsLine = (f: MyFindingItem): string =>
 
 const NEED_TITLE: Record<FindingNeed, string> = {
   decide: 'Findings under investigation, or with a proposal waiting for your decision.',
-  write: 'Findings with nothing to decide whose required report text is missing.',
+  write: 'Findings with nothing to decide whose required report text, or the caption of a report image, is missing.',
 };
 const EMPTY_NEED: Record<FindingNeed, string> = {
   decide: 'Nothing here — no finding you own is under investigation or has a proposal waiting for a decision.',
-  write: 'Nothing here — no finding you own is only missing required report text.',
+  write: 'Nothing here — no finding you own is only missing required report text or an image caption.',
 };
 
 const NO_ROWS: MyFindingItem[] = [];

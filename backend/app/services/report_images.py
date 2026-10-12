@@ -267,8 +267,16 @@ def evidence_file(attachment) -> Optional[str]:
     return f"evidence/{attachment.id}.{ext}" if ext else None
 
 
+def caption_missing(attachment) -> bool:
+    """Nobody wrote this image a caption, so the report prints its file's
+    name.  The SQL twin is ``finding_needs``'s uncaptioned-image condition."""
+    return not (getattr(attachment, "caption", None) or "").strip()
+
+
 def caption_or_filename(attachment) -> str:
-    return (getattr(attachment, "caption", None) or "").strip() or attachment.filename
+    if caption_missing(attachment):
+        return attachment.filename
+    return attachment.caption.strip()
 
 
 def attachments_of(

@@ -130,7 +130,8 @@ service:
 
 * `my_work` — the operator's queue by kind: `findings_to_decide`,
   `findings_to_write` (they add up to `findings_needing_me`; a finding with a
-  decision AND missing text is a `decide`), `tests_assigned`, `hosts_in_review`,
+  decision AND missing text is a `decide`; a `write` is missing required report
+  text or the caption of a report image), `tests_assigned`, `hosts_in_review`,
   `tests_on_hosts_in_review`. `total` is those four parts; `to_claim` is shared
   work and is not in it. An agent asked "what is waiting on me?" answers by
   kind.
@@ -174,7 +175,7 @@ when `tier` is passed.
 | Which hosts match | `assist_list_hosts` (`q=`) |
 | One host in detail | `assist_get_host` |
 | Scanner observations on a host | `assist_get_host_vulnerabilities` — raw scanner rows, not findings; each row carries `finding_id`, `finding_status`, `finding_on_this_host` and `finding_endpoint_status` (the inspector's rule for "is this judged on this host"); `cve` / `plugin_id` / `search` narrow to one issue's rows |
-| Findings across the project | `assist_list_findings` — `total` and `severity_counts` over the filter; each row's `hosts` is a sample of at most 10 addresses (`hosts_truncated`) |
+| Findings across the project | `assist_list_findings` — `total` and `severity_counts` over the filter; each row's `hosts` is a sample of at most 10 addresses (`hosts_truncated`), and its `needs` says what it still needs before the report goes out (required report text missing, a report image without a caption, proposals to decide); `needs=missing_text\|uncaptioned_images\|proposals\|any` lists only those |
 | Scanner issues not yet judged, across the project | `assist_list_scanner_observations` → `assist_list_observation_hosts` |
 | What the team said | `assist_get_host_notes`, `assist_list_recent_notes` |
 | What the team tested, and what it showed | `host_tests_list` (`host_id=` — the tests proposed for the host, with status and evidence counts) and `list_evidence` (`host_id=` or `host_test_id=` — what was run and what came back) |

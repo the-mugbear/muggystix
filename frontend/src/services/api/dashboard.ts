@@ -9,6 +9,7 @@
  * ``../services/api`` — the barrel re-exports this module.
  */
 import { api, projectPath } from './client';
+import type { FindingNeedItem } from './findings';
 
 export interface VulnerabilityStats {
   total_vulnerabilities: number;
@@ -116,9 +117,11 @@ export interface MyFindingItem {
   evidence_annotation_id: number | null;
   updated_at: string | null;
   /** Why it is listed, in the order to act on (v2.450.0). */
-  needs?: Array<{ kind: 'under_investigation' | 'missing_text' | 'proposals'; text: string }>;
+  needs?: FindingNeedItem[];
   /** Required report sections still empty (a finding the report includes). */
   missing_text?: string[];
+  /** Images ticked for the report with no caption (the same findings). */
+  uncaptioned_images?: number;
   pending_proposals?: number;
 }
 

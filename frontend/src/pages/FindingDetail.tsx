@@ -593,10 +593,12 @@ const FindingDetail: React.FC = () => {
       </div>
 
       {/* Where the page's sections are, pinned under the chrome: the hosts
-          panel is bounded, so every section is one click away.  No `#id` in
-          the address here: `?endpoint=` is this page's deep link, and two
-          things must not both scroll the page on load. */}
-      <SectionJumpBar entries={jumpEntries} label="Sections of this finding" hash={false} />
+          panel is bounded, so every section is one click away.  A link may
+          name a section (`#section-report-text` — the Findings list's "what
+          it still needs" does) unless it names an endpoint: `?endpoint=` is
+          this page's other deep link, and two things must not both scroll
+          the page on load. */}
+      <SectionJumpBar entries={jumpEntries} label="Sections of this finding" hash={focusEndpointId == null} />
 
       {/* What is waiting for a decision comes first, as a summary that goes
           to each proposal where it applies. */}

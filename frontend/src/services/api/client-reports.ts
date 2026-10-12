@@ -175,6 +175,10 @@ export interface ReportSummary {
   agent_images?: number;
   /** v5.316.0 — reported findings with proposals nobody has decided yet. A warning, never a block. */
   pending_proposals?: Array<{ id: number; ref: string; title: string; count: number }>;
+  /** Reported findings with images this report prints under the file's name,
+   *  because nobody wrote a caption. A warning, never a block; absent from a
+   *  report issued before it was counted. */
+  uncaptioned_images?: Array<{ id: number; ref: string; title: string; count: number }>;
   /** v5.346.0 — reported findings whose written text names a BlueStick record
    *  ("Finding #277"), by section. A warning, never a block. */
   internal_references?: Array<{

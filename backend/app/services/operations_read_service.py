@@ -34,6 +34,7 @@ from app.db.models_auth import User
 from app.db.models_findings import Finding, FindingHost
 from app.db.models_project import Project
 from app.db.session import is_statement_timeout
+from app.schemas.findings import FindingNeed
 from app.services.import_attention_service import (
     superseded_import_condition,
     unsuccessful_import_condition,
@@ -1038,12 +1039,6 @@ def compute_my_recent_notes(
 # My Findings — active findings the caller owns
 # ---------------------------------------------------------------------------
 
-class MyFindingNeed(BaseModel):
-    """What a finding is waiting on its owner for."""
-    kind: str  # under_investigation | missing_text | proposals
-    text: str
-
-
 class MyFindingItem(BaseModel):
     """One finding that needs its owner.  ``host_id`` is a representative
     affected host (for a host-context link); ``evidence_annotation_id`` lets
@@ -1057,10 +1052,12 @@ class MyFindingItem(BaseModel):
     evidence_annotation_id: Optional[int] = None
     updated_at: Optional[datetime] = None
     #: Why it is listed, in the order to act on — never empty.
-    needs: List[MyFindingNeed] = Field(default_factory=list)
+    needs: List[FindingNeed] = Field(default_factory=list)
     #: The required report sections still empty (only for a finding the
     #: client report would include).
     missing_text: List[str] = Field(default_factory=list)
+    #: Images ticked for the report with no caption (the same findings only).
+    uncaptioned_images: int = 0
     pending_proposals: int = 0
 
 
@@ -1071,8 +1068,9 @@ class MyFindingsResponse(BaseModel):
     total_open: int = 0
     #: ``total_open`` in its two parts (v2.453.0), which add up to it:
     #: ``decide`` — under investigation, or a proposal waits for a decision;
-    #: ``write`` — only required report text is missing.  Whole-list figures
-    #: whatever ``need`` and the page say.
+    #: ``write`` — nothing to decide: required report text is missing, or a
+    #: report image has no caption.  Whole-list figures whatever ``need`` and
+    #: the page say.
     need_counts: Dict[str, int] = Field(default_factory=lambda: {"decide": 0, "write": 0})
 
 
@@ -1093,11 +1091,17 @@ def compute_my_findings(
     * the client report would include it and a required report section is
       empty — ``client_report_service``'s own rule and field list, so this is
       the report page's "Missing report text" narrowed to the owner;
+    * the client report would include it and an image ticked for the report
+      has no caption (the report prints the file's name);
     * a proposal about it is waiting for a decision
       (``proposal_service``'s "about a finding").
 
-    Severity-ranked.  Three statements whatever the number of findings: the
-    rows (with the total as a window), their hosts, their pending proposals.
+    The last three are ``finding_needs`` — the Findings list's own conditions
+    and sentences — so a row here says what its row there says.
+
+    Severity-ranked.  Four statements whatever the number of findings: the
+    rows (with the total as a window), their hosts, and the two of
+    ``finding_needs.needs_of``.
 
     ``limit`` / ``offset`` page the list in that order (v2.452.0 — the
     Operations "Findings" tab, ``GET /workbench/findings``); ``total_open`` is
@@ -1106,32 +1110,29 @@ def compute_my_findings(
 
     ``need`` (v2.453.0) narrows the rows to one kind of work — ``decide``
     (under investigation, or a proposal to decide) or ``write`` (required
-    report text missing and nothing to decide).  The two partition the list:
+    report text or an image's caption missing, and nothing to decide).  The
+    two partition the list:
     a decision comes before the writing, so a finding with both is a
     ``decide``.  ``need_counts`` are the page lead's numbers and each is the
     size of the list its ``need`` returns.
     """
     from app.db.models_vulnerability import severity_rank as _severity_rank
-    from app.services import proposal_service
-    from app.services.client_report_service import (
-        REQUIRED_TEXT,
-        UNDER_INVESTIGATION,
-        blank_required_text,
-        missing_required_text_condition,
-        reportable_finding_condition,
-    )
+    from app.services import finding_needs
+    from app.services.client_report_service import UNDER_INVESTIGATION
 
     severity_rank = _severity_rank(Finding.severity)
     investigating = Finding.status.in_(UNDER_INVESTIGATION)
-    text_owed = and_(reportable_finding_condition(), missing_required_text_condition())
-    blank = blank_required_text()
     if need is not None and need not in FINDING_NEEDS:
         raise ValueError(f"need must be one of {FINDING_NEEDS}, not {need!r}")
-    to_decide = or_(investigating, proposal_service.has_pending_proposal_condition())
+    to_decide = or_(investigating, finding_needs.need_condition("proposals"))
+    to_write = or_(
+        finding_needs.need_condition("missing_text"),
+        finding_needs.need_condition("uncaptioned_images"),
+    )
     needs_me = (
         Finding.project_id == project.id,
         Finding.owner_id == current_user.id,
-        or_(to_decide, text_owed),
+        or_(to_decide, to_write),
     )
     narrowed = needs_me + (
         (to_decide,) if need == "decide" else (not_(to_decide),) if need == "write" else ()
@@ -1148,8 +1149,6 @@ def compute_my_findings(
         db.query(
             Finding.id, Finding.title, Finding.severity, Finding.status,
             Finding.evidence_annotation_id, Finding.updated_at,
-            text_owed.label("text_owed"),
-            *[blank[k].label(f"blank_{k}") for k in REQUIRED_TEXT],
             func.count().over().label("total"),
             func.count().filter(to_decide).over().label("decide_total"),
         )
@@ -1191,24 +1190,11 @@ def compute_my_findings(
             host_count[fid] = int(cnt)
             rep_host[fid] = min_host
 
-    pending = proposal_service.pending_per_finding(db, finding_ids)
+    needs_by_id = finding_needs.needs_of(db, finding_ids, with_status=True)
 
     items: List[MyFindingItem] = []
     for f in findings:
-        needs: List[MyFindingNeed] = []
-        if f.status in UNDER_INVESTIGATION:
-            needs.append(MyFindingNeed(kind="under_investigation", text="under investigation"))
-        missing = [k for k in REQUIRED_TEXT if getattr(f, f"blank_{k}")] if f.text_owed else []
-        if missing:
-            needs.append(MyFindingNeed(
-                kind="missing_text", text=f"report text missing: {', '.join(missing)}",
-            ))
-        proposals = int(pending.get(f.id, 0))
-        if proposals:
-            needs.append(MyFindingNeed(
-                kind="proposals",
-                text=f"{proposals} proposal{'' if proposals == 1 else 's'} to decide",
-            ))
+        owed = needs_by_id.get(f.id) or finding_needs.FindingNeeds()
         items.append(MyFindingItem(
             finding_id=f.id,
             title=f.title,
@@ -1218,9 +1204,10 @@ def compute_my_findings(
             host_count=host_count.get(f.id, 0),
             evidence_annotation_id=f.evidence_annotation_id,
             updated_at=f.updated_at,
-            needs=needs,
-            missing_text=missing,
-            pending_proposals=proposals,
+            needs=owed.needs,
+            missing_text=owed.missing_text,
+            uncaptioned_images=owed.uncaptioned_images,
+            pending_proposals=owed.pending_proposals,
         ))
     return MyFindingsResponse(
         items=items, total_open=need_counts["decide"] + need_counts["write"],

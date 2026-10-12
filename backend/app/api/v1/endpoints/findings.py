@@ -20,12 +20,13 @@ from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role, resolve_project_assignee
+from app.api.params import FindingNeedsParam
 from app.core.security import log_audit_event
 from app.services.finding_service import FindingService, endpoint_segments, validate_severity
 from app.services.finding_actions import (
     FindingActor, apply_report_text, finding_actor, promote_or_dismiss_vulnerability, require_modify,
 )
-from app.services import remediation_service, report_images
+from app.services import finding_needs, remediation_service, report_images
 from app.services.report_text import REPORT_TEXT_FIELDS, report_text_of
 from app.services.host_follow_service import HostFollowService, NoteHasRepliesError
 from app.services.host_serialization import _serialize_note, note_load_options
@@ -162,6 +163,8 @@ def list_findings(
     source: Optional[str] = Query(None),
     host_id: Optional[int] = Query(None, description="Only findings affecting this host."),
     search: Optional[str] = Query(None, max_length=200, description="Case-insensitive substring match on finding title."),
+    # The one declaration, shared with the agents' findings list.
+    needs: FindingNeedsParam = None,
     sort: Optional[str] = Query(
         None, description="severity | status | title | host_count | source | created_at | owner (default newest-first; unowned sorts last).",
     ),
@@ -176,29 +179,34 @@ def list_findings(
     rows, total = svc.list_findings(
         project_id=project.id, status=status, severity=severity,
         owner_id=owner_id, unowned=unowned, source=source, host_id=host_id,
-        search=search, limit=limit, offset=offset, sort=sort, sort_dir=dir,
+        search=search, needs=needs, limit=limit, offset=offset, sort=sort, sort_dir=dir,
     )
     sev_counts = svc.severity_counts(
         project_id=project.id, status=status, owner_id=owner_id,
-        unowned=unowned, source=source, host_id=host_id, search=search,
+        unowned=unowned, source=source, host_id=host_id, search=search, needs=needs,
     )
     # C2 (review 2026-10-01): a row carries the endpoint COUNT, the state
     # roll-up and a preview of five — two grouped statements for the page,
     # never every endpoint of every finding (and never a query per row).
     # With `host_id`, that host's endpoint rows lead each preview.
     endpoints = svc.endpoint_summaries([f.id for f in rows], first_host_id=host_id)
+    # What each row still needs before the report: two more statements for
+    # the page, and the figures behind `needs=` — never a second definition.
+    needs_by_id = finding_needs.needs_of(db, [f.id for f in rows])
+    items = []
+    for f in rows:
+        row = _serialize(f, viewer, with_report_text=False, endpoints=endpoints[f.id])
+        row.needs = needs_by_id[f.id].needs if f.id in needs_by_id else []
+        items.append(row)
     return FindingListResponse(
         # Report text stays off the list: up to five 32 KB fields per row.
-        items=[
-            _serialize(f, viewer, with_report_text=False, endpoints=endpoints[f.id])
-            for f in rows
-        ],
+        items=items,
         total=total, severity_counts=sev_counts,
         # The Owner filter's options: taken before the owner filter, so each
         # count is the size of the list that owner opens.
         owner_counts=svc.owner_counts(
             project_id=project.id, status=status, severity=severity,
-            source=source, host_id=host_id, search=search,
+            source=source, host_id=host_id, search=search, needs=needs,
         ),
     )
 

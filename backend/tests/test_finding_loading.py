@@ -150,8 +150,9 @@ def test_the_list_is_a_fixed_number_of_statements(client, db_session, test_proje
     many, statements = _list_statements(client, db_session, test_project)
     assert len(many["items"]) == 12 and all(r["host_count"] == 30 for r in many["items"])
     assert len(statements) == len(base), "\n".join(statements)
-    # And none of them brings back whole endpoint rows for the page.
-    assert len(statements) <= 12, "\n".join(statements)
+    # And none of them brings back whole endpoint rows for the page.  (Two of
+    # them are the rows' `needs` — `finding_needs.needs_of`.)
+    assert len(statements) <= 14, "\n".join(statements)
 
 
 def test_endpoint_summaries_are_two_statements_for_any_page(db_session, test_project, test_user):
@@ -279,4 +280,7 @@ def test_agent_findings_list_counts_in_sql_and_loads_no_endpoint(client, db_sess
     distinct_hosts = db_session.query(FindingHost.host_id).distinct().count()
     assert finding["endpoint_count"] == endpoint_rows
     assert finding["host_count"] == distinct_hosts
-    assert not [s for s in statements if "finding_hosts.host_status" in s], statements
+    # A statement that RETURNS endpoint rows selects the column under a label;
+    # the rows' `needs` only ask, in a WHERE, whether a live endpoint exists.
+    assert not [s for s in statements if "finding_hosts.host_status AS" in s], statements
+    assert any("finding_hosts.host_status" in s for s in statements)

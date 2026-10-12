@@ -50,6 +50,23 @@ export interface FindingHostInfo {
  *  it says nothing about the finding's other hosts. */
 export type FindingHostStatus = 'open' | 'remediated' | 'retest' | 'false_positive';
 
+/** What a finding can still need before the report goes out — the server's
+ *  one definition (`services/finding_needs.py`). */
+export type FindingNeedKind = 'missing_text' | 'uncaptioned_images' | 'proposals';
+
+/** One need of a finding: the server's sentence for it, the same on every
+ *  page, and the figure behind it (empty required sections, report images
+ *  without a caption, proposals waiting). `under_investigation` is said on
+ *  Operations' "Findings that need me" only. */
+export interface FindingNeedItem {
+  kind: FindingNeedKind | 'under_investigation';
+  text: string;
+  count: number;
+}
+
+/** `needs=` on the list: one kind, or any of them. */
+export type FindingNeedsFilter = FindingNeedKind | 'any';
+
 export interface Finding {
   id: number;
   project_id: number;
@@ -76,6 +93,9 @@ export interface Finding {
   /** v5.260.0 — the caller is a project admin: may mark any evidence image
    *  for the report, not only their own uploads. */
   viewer_is_project_admin?: boolean;
+  /** What it still needs before the report. LIST rows only; a single
+   *  finding sends null (its page shows each need in its own section). */
+  needs?: FindingNeedItem[] | null;
   created_at: string;
   updated_at: string | null;
 }
@@ -156,6 +176,8 @@ export interface FindingFilters {
   host_id?: number;
   /** Case-insensitive substring match on the finding title. */
   search?: string;
+  /** Only findings that still need this before the report. */
+  needs?: FindingNeedsFilter;
   sort?: FindingSortField;
   dir?: 'asc' | 'desc';
   limit?: number;

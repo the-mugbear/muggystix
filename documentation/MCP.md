@@ -170,7 +170,9 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 **The workbench.** `assist_get_workbench` is the operator's own Operations page:
 
 * `my_work` — what waits on them **by kind**: `findings_to_decide`,
-  `findings_to_write` (the two add up to `findings_needing_me`),
+  `findings_to_write` (required report text or a report image's caption is
+  missing and nothing waits for a decision; the two add up to
+  `findings_needing_me`),
   `tests_assigned`, `hosts_in_review`, `tests_on_hosts_in_review`. `total` is
   those four parts added up; `to_claim` (unassigned critical / high tests) is
   shared work and is not in it.

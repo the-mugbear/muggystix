@@ -1068,7 +1068,7 @@ class FindingService:
         status: Optional[str] = None, severity: Optional[str] = None,
         owner_id: Optional[int] = None, unowned: bool = False,
         source: Optional[str] = None, host_id: Optional[int] = None,
-        search: Optional[str] = None,
+        search: Optional[str] = None, needs: Optional[str] = None,
     ):
         """The Findings list's filters, in ONE place (v2.474.0).
 
@@ -1092,6 +1092,13 @@ class FindingService:
             q = q.filter(Finding.hosts.any(FindingHost.host_id == host_id))
         if search and search.strip():
             q = q.filter(Finding.title.ilike(f"%{escape_like(search.strip())}%", escape="\\"))
+        if needs:
+            # What a finding still needs before the report (``finding_needs``,
+            # the one definition; imported here because it reads the proposal
+            # service, which imports this module).
+            from app.services import finding_needs
+
+            q = q.filter(finding_needs.need_condition(needs))
         return q
 
     def list_findings(
@@ -1099,7 +1106,7 @@ class FindingService:
         status: Optional[str] = None, severity: Optional[str] = None,
         owner_id: Optional[int] = None, source: Optional[str] = None,
         host_id: Optional[int] = None, unowned: bool = False,
-        search: Optional[str] = None,
+        search: Optional[str] = None, needs: Optional[str] = None,
         limit: int = 100, offset: int = 0,
         sort: Optional[str] = None, sort_dir: Optional[str] = None,
     ):
@@ -1113,7 +1120,7 @@ class FindingService:
         q = self._selection(
             self.db.query(Finding).options(*options), project_id=project_id,
             status=status, severity=severity, owner_id=owner_id, unowned=unowned,
-            source=source, host_id=host_id, search=search,
+            source=source, host_id=host_id, search=search, needs=needs,
         )
         total = q.count()
         q = q.order_by(*_finding_order(sort, sort_dir))
@@ -1236,7 +1243,7 @@ class FindingService:
         self, *, project_id: int,
         status: Optional[str] = None, owner_id: Optional[int] = None,
         source: Optional[str] = None, host_id: Optional[int] = None,
-        unowned: bool = False, search: Optional[str] = None,
+        unowned: bool = False, search: Optional[str] = None, needs: Optional[str] = None,
     ) -> dict:
         """Per-severity finding counts for the rollup header.  Respects every
         filter EXCEPT severity (the point is to show the full severity
@@ -1245,7 +1252,7 @@ class FindingService:
         q = self._selection(
             self.db.query(Finding.severity, func.count(Finding.id)), project_id=project_id,
             status=status, owner_id=owner_id, unowned=unowned,
-            source=source, host_id=host_id, search=search,
+            source=source, host_id=host_id, search=search, needs=needs,
         )
         return {sev: int(c) for sev, c in q.group_by(Finding.severity).all()}
 
@@ -1253,7 +1260,7 @@ class FindingService:
         self, *, project_id: int,
         status: Optional[str] = None, severity: Optional[str] = None,
         source: Optional[str] = None, host_id: Optional[int] = None,
-        search: Optional[str] = None,
+        search: Optional[str] = None, needs: Optional[str] = None,
     ) -> List[dict]:
         """Who owns the listed findings, and how many each (v2.474.0) — what
         the page's Owner filter offers.
@@ -1266,7 +1273,7 @@ class FindingService:
             self.db.query(Finding.owner_id, User.full_name, User.username, func.count(Finding.id))
             .outerjoin(User, User.id == Finding.owner_id),
             project_id=project_id, status=status, severity=severity,
-            source=source, host_id=host_id, search=search,
+            source=source, host_id=host_id, search=search, needs=needs,
         )
         rows = [
             {"owner_id": owner_id, "owner_name": (full_name or username) if owner_id is not None else None,

@@ -351,7 +351,11 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "call with limit=1. `host_count` is distinct addresses and "
             "`endpoint_count` affected rows; `hosts` is a sample of at most 10 "
             "addresses (`hosts_truncated`). owner takes `me` or a username; an "
-            "unknown one is a 400."
+            "unknown one is a 400. Each row's `needs` says what the finding "
+            "still needs before the report goes out — required report text "
+            "missing, a report image without a caption (the report would print "
+            "its file name), proposals waiting for a person's decision — and "
+            "`needs` as an argument lists only those; `total` is then how many."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/findings",
