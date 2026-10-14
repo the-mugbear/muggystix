@@ -48,6 +48,16 @@ describe('Report details — sections', () => {
     expect(screen.queryByRole('textbox')).toBeNull();                        // nothing is a field until Edit
   });
 
+  // Walkthrough 2026-10-14: the Executive summary said it twice.
+  it('a section of one field says "Customised" once, in its status line; the field keeps "Use the project’s"', () => {
+    render(<Harness saved={{ executive_summary: 'Ours.' }} />);
+    expect(section('summary').getByTestId('report-section-summary-status')).toHaveTextContent('Customised for this report');
+    const mark = section('summary').getByTestId('report-summary-customised');
+    expect(mark).not.toHaveTextContent('Customised for this report');
+    expect(within(mark).getByRole('button', { name: 'Use the project’s Executive summary' })).toBeInTheDocument();
+    expect(section('summary').getAllByText(/Customised for this report/)).toHaveLength(1);
+  });
+
   it('opening a section and cancelling leaves nothing pending', () => {
     render(<Harness />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit Client & engagement' }));

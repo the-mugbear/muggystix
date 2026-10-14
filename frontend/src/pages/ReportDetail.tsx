@@ -714,16 +714,19 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       {isDraft && (
         // What really refuses the issue, apart from what prints as TODO or is
         // a warning (the checklist below): no new blocking rule (proposal §4.2).
-        <section className="min-w-0 space-y-xxs" aria-labelledby="review-blockers" data-testid="review-blockers">
-          <h2 id="review-blockers" className="text-subheading font-medium">What blocks issuing</h2>
-          {blockers.length ? (
-            <ul className="list-disc space-y-xxs pl-lg text-body text-destructive">
-              {blockers.map((b) => <li key={b} className="break-words">{b}</li>)}
-            </ul>
-          ) : (
-            <p className="text-body text-muted-foreground">Nothing blocks issuing. What is left below prints as TODO or is a warning.</p>
-          )}
-        </section>
+        // A section like "Before issuing" under it (walkthrough 2026-10-14:
+        // a plain heading read as a lesser rank).
+        <div data-testid="review-blockers">
+          <PostureSection title="What blocks issuing">
+            {blockers.length ? (
+              <ul className="list-disc space-y-xxs pl-lg text-body text-destructive">
+                {blockers.map((b) => <li key={b} className="break-words">{b}</li>)}
+              </ul>
+            ) : (
+              <p className="text-body text-muted-foreground">Nothing blocks issuing. What is left below prints as TODO or is a warning.</p>
+            )}
+          </PostureSection>
+        </div>
       )}
       {isDraft && (
         <ReportChecklist reportId={reportId} summary={s} isAdmin={isAdmin} canEdit={report.can_edit}

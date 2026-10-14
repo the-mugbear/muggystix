@@ -130,12 +130,16 @@ const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> =
     const value = current(ctx, key);
     const own = customised(ctx, key);
     const caption = ctx.followed && !own && !(key in ctx.pending) ? sourceCaption(ctx.sources?.[key]) : null;
-    const mark = own ? (
+    // A section of one field says "Customised for this report" in its status
+    // line already: the field keeps only its action (walkthrough 2026-10-14 —
+    // the Executive summary said it twice).
+    const single = section.keys.length === 1 && status != null;
+    const mark = own && !(single && !canEdit) ? (
       <p className="flex flex-wrap items-center gap-x-xs text-caption text-muted-foreground" data-testid={`${id}-customised`}>
-        <span className="font-medium text-foreground">Customised for this report</span>
+        {!single && <span className="font-medium text-foreground">Customised for this report</span>}
         {canEdit && (
           <>
-            <span aria-hidden>·</span>
+            {!single && <span aria-hidden>·</span>}
             <Button type="button" variant="link" size="sm" className="h-auto p-0 text-caption" disabled={busy}
               aria-label={`Use the project’s ${label(key)}`} onClick={() => edits.set(key, null)}>
               Use the project’s

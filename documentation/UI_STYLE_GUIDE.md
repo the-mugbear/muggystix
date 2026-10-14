@@ -1078,7 +1078,8 @@ From the codebase review of 2026-10-07 (5.339.0).
   another. A value not the project's says where it comes from ("From the
   installation's defaults") on its caption line; one the report chose is
   marked "Customised for this report" with **"Use the project's"** beside
-  it. A list emptied where the project lists people says so ("This report
+  it — in a section of ONE field the status line already says it, so the
+  field shows only "Use the project's" (a state is said once). A list emptied where the project lists people says so ("This report
   will list nobody here."). A Markdown value is rendered; a long one wraps
   — no nested scrolling box.
 - **Pending changes are saved by ONE explicit action** (the report
