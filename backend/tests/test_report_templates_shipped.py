@@ -894,3 +894,29 @@ def test_an_addendum_prints_evidence_only_for_what_it_shows_in_detail():
     }
     # Nothing of a finding; the one written text it prints is the summary.
     assert set(parts["texts"]) == {"executive_summary"}
+
+
+def test_the_brief_prints_the_author_and_a_written_disclaimer_too():
+    """The draft's page offers the author and the disclaimer whichever
+    template is chosen; the brief printed neither (walkthrough 2026-10-14)."""
+    data = _sample("executive-brief")
+    data["engagement"]["author_name"] = "Example Security Assessments"
+    data["engagement"]["disclaimer"] = "Our terms."
+    out = _fill("executive-brief", data)
+    assert "| Prepared by | Example Security Assessments |" in out
+    assert 'key="engagement.disclaimer"' in out and "point-in-time analysis" not in out
+    assert _parts("executive-brief", data)["texts"].get("engagement.disclaimer") is True
+
+    # None written anywhere: its own sentence; a draft owes the author.
+    data["engagement"]["author_name"] = data["engagement"]["disclaimer"] = None
+    data["report"]["draft"] = True
+    out = _fill("executive-brief", data)
+    assert "point-in-time analysis" in out and "engagement.disclaimer" not in out
+    assert "| Prepared by | [TODO" in out
+
+    # A report issued before either existed: neither key, no row, no TODO.
+    data["report"]["draft"] = False
+    for key in ("author_name", "disclaimer"):
+        data["engagement"].pop(key)
+    out = _fill("executive-brief", data)
+    assert "Prepared by" not in out and "point-in-time analysis" in out

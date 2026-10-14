@@ -332,6 +332,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const issue = async () => {
     if (!report) return;
     const s = report.summary;
+    const issueTemplate = templates.find((t) => t.name === report.template);
     const ok = await confirm({
       title: 'Issue this report?',
       body: (
@@ -340,6 +341,14 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             It takes the project&apos;s next report number and is frozen: what it says about each finding
             is kept as it is now, and it can no longer be edited or deleted. A correction is a revision
             that supersedes it.
+          </p>
+          {/* The template is whatever the Preview selector was last set to:
+              named here, so a template chosen only to look at is not issued
+              by accident (walkthrough 2026-10-14). */}
+          <p className="mt-xs break-words" data-testid="issue-template">
+            It is issued with the <strong>{issueTemplate?.title ?? report.template}</strong> template
+            {issueTemplate?.formats.length
+              ? <>, as {issueTemplate.formats.map((f) => FORMAT_LABEL[f]).join(', ')}</> : null}.
           </p>
           {!!s?.under_investigation && (
             <p className="mt-xs">{s.under_investigation} finding{s.under_investigation === 1 ? ' is' : 's are'} still under investigation and will not be in it.</p>
@@ -534,7 +543,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           </PostureMeasure>
           <PostureMeasure label="Missing report text" value={s.missing_text?.length ?? 0}
             info="Findings in the report with no description, impact or recommendation written.">
-            {s.missing_text?.length ? 'Listed below' : 'Every finding has its text'}
+            {/* Only a draft lists them (Before issuing). */}
+            {!s.missing_text?.length ? 'Every finding has its text'
+              : isDraft ? 'Listed below' : 'Issued with a TODO in their place'}
           </PostureMeasure>
           <PostureMeasure label="Evidence images" value={s.images ?? 0}
             info="Images are opt-in: tick “In report” on an image attached to a finding's evidence or comments. Where one prints depends on the report's template: the Penetration test report prints an image its author placed in a written section (Insert image, in the report text editor) there and the rest under the finding's Evidence, each after the text of the comment or note it is attached to; the Remediation worklist prints only images placed in a recommendation; the Executive brief prints none. The line below says what this report does. WebP images cannot be placed in every format and are skipped.">
@@ -845,7 +856,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                 </Button>
               )}
             </div>
-            <p className="text-caption text-muted-foreground">Markdown. Written for this report only.</p>
+            {editable && <p className="text-caption text-muted-foreground">Markdown. Written for this report only.</p>}
             <MarkdownField id="report-summary" label={report.kind === 'addendum' ? 'Summary of changes' : 'Executive summary'}
               rows={8} maxLength={65536} value={form.executive_summary} disabled={!editable || saving}
               onChange={(v) => edit({ executive_summary: v })} />

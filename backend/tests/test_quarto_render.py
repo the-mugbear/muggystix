@@ -847,9 +847,15 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
         assert captions[0].startswith("Figure 1: SYSFIGURE-ALT")          # the report's own image, first in the document
         assert html.index("SYSDESC-MARK") < html.index("SYSFIGURE-ALT") < html.index("EVTEXT-MARK")
     elif shipped:
-        # A template that does not print them does not leak them either.
+        # The brief prints the author and the written disclaimer too (as
+        # text, like everything else here), and nothing of a finding's
+        # evidence; a template that prints none of them leaks none.
+        printed = ("DISCLAIMER-MARK", "AUTHOR-MARK") if template.name == "executive-brief" else ()
         for mark in marks:
-            assert mark not in html and mark not in docx, mark
+            for text in (html, docx):
+                assert (mark in text) == (mark in printed), mark
+        if printed:
+            assert "point-in-time analysis" not in html
 
     # --- 2.495.0: the classification in the Word header and footer ---------------
     import xml.etree.ElementTree as ET

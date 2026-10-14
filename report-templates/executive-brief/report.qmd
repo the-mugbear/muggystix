@@ -59,6 +59,12 @@ format:
 | | |
 |:---------------|:--|
 | Client | << engagement.client_name or todo("Client name") >> |
+<# Who produced the report (resolved in the data: this report's, else the
+   project's, else the installation's), as in the Penetration test report.
+   .get(): a report issued before the author existed has no such key. #>
+<% if engagement.get("author_name") or report.draft %>
+| Prepared by | << engagement.get("author_name") or todo("Author (who produced this report)") >> |
+<% endif %>
 | Assessment | << project.name >><% if engagement.engagement_type %> — << engagement.engagement_type >><% endif %> |
 | Dates | <% if project.start_date and project.end_date %><< project.start_date >> to << project.end_date >><% else %><< todo("Set the project's start and end dates") >><% endif %> |
 | Classification | << engagement.classification or todo("Classification") >> |
@@ -108,8 +114,10 @@ Nothing has changed since report << report.baseline.number >>.
 <% set actionable = findings|rejectattr("severity", "equalto", "info")|list %>
 <% if actionable %>
 
+<# The dashes set the column widths: "Systems" needs eleven or the header
+   breaks mid-word in Word. #>
 | Ref | Finding | Severity | Systems | Status |
-|:------|:---------------------------------------------|:-----------|:--------|:----------------------|
+|:------|:------------------------------------------|:-----------|:-----------|:----------------------|
 <% for f in actionable %>
 | << f.ref >> | << f.title >> | << f.severity_label >> | << f.affected_count >> | << f.status_note or "Confirmed" >> |
 <% endfor %>
@@ -158,4 +166,10 @@ Nothing to action above informational severity.
 
 ---
 
+<# The disclaimer written for this report, its project or the installation
+   (resolved in the data); with none written anywhere, the brief's own. #>
+<% if (engagement.get("disclaimer") or "")|trim %>
+<< md("engagement.disclaimer") >>
+<% else %>
 *A security assessment is a point-in-time analysis of the systems tested during the dates above. The full report, with evidence and affected systems for every finding, is available on request.*
+<% endif %>

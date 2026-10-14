@@ -430,6 +430,20 @@ describe('Report detail — draft', () => {
     expect(dialog.container).toHaveTextContent(sentence);
   });
 
+  // The template issued is whatever the Preview selector was last set to.
+  it('the issue dialog names the template the report is issued with', async () => {
+    const base = report();
+    mocked.getClientReport.mockResolvedValue(report({ summary: { ...base.summary, missing_text: [] } }));
+    renderDetail();
+    const issue = await screen.findByRole('button', { name: /Issue report/ });
+    await waitFor(() => expect(mocked.listReportTemplates).toHaveBeenCalled());
+    confirmMock.mockResolvedValueOnce(false);
+    fireEvent.click(issue);
+    await waitFor(() => expect(confirmMock).toHaveBeenCalled());
+    const dialog = render(<div>{confirmMock.mock.calls[0][0].body}</div>);
+    expect(dialog.getByTestId('issue-template')).toHaveTextContent(/^It is issued with the .+ template/);
+  });
+
   it('a draft’s empty Author says what the report inherits, and its own is saved with the details', async () => {
     mocked.getClientReport.mockResolvedValue(report({ inherited: { author_name: 'Example Security Ltd', disclaimer: null } }));
     mocked.updateClientReport.mockResolvedValue(report({ settings: { ...settings, author_name: 'Red Team Ltd' } }));

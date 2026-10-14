@@ -125,7 +125,10 @@ const EngagementSettingsFields: React.FC<Props> = ({
         </div>
         <div className="min-w-0 space-y-xxs">
           <Label htmlFor={`${idPrefix}-author`}>Author</Label>
-          <Input id={`${idPrefix}-author`} maxLength={255} placeholder="e.g. Example Security Ltd"
+          <Input id={`${idPrefix}-author`} maxLength={255}
+            // No example on a report that cannot be edited: in a disabled
+            // field it reads as the author the report was issued with.
+            placeholder={readOnly ? undefined : 'e.g. Example Security Ltd'}
             title="Who produced the report"
             aria-describedby={inheritedAuthor ? `${idPrefix}-author-inherited` : undefined}
             // As issued (readOnly): what the report printed — its own, else
@@ -296,6 +299,9 @@ const EngagementSettingsFields: React.FC<Props> = ({
             onClick={() => set('disclaimer', inheritedDisclaimer)}>
             <Copy className="size-3.5" aria-hidden /> Edit a copy
           </Button>
+        )}
+        {readOnly && disclaimerEmpty && !(inherited?.disclaimer ?? '').trim() && (
+          <p className="text-caption text-muted-foreground">None was written: the template’s own disclaimer was printed.</p>
         )}
         {!readOnly && disclaimerEmpty && !inheritedDisclaimer && (
           <p className="text-caption text-muted-foreground">Empty: the template’s own disclaimer is printed.</p>
