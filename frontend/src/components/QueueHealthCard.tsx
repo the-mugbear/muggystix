@@ -17,7 +17,11 @@ import { AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react';
 
 import {
   getQueueMetrics,
+  type DatabaseSnapshot,
   type DiskSnapshot,
+  type HostSnapshot,
+  type ProcessMemory,
+  type WorkerMemory,
   type FailedJobsInProject,
   type QueueSnapshot,
 } from '../services/api';
@@ -148,6 +152,89 @@ export const assessDisk = (disk: DiskSnapshot): Verdict => (disk.low
   }
   : { tone: 'ok', headline: `Disk — ${gb(disk.free_bytes)} free of ${gb(disk.total_bytes)}` });
 
+/*
+ * v5.389.0 — the host and each process, for "is it slow because the box is
+ * short of something".  A line is said only for what the server could read;
+ * each warning says what to change.
+ */
+const WORKER_LABEL: Record<string, { label: string; limit: string }> = {
+  ingestion_jobs: { label: 'Ingestion worker', limit: 'WORKER_MEM_LIMIT' },
+  report_jobs: { label: 'Report worker', limit: 'REPORT_WORKER_MEM_LIMIT' },
+};
+
+/** The host's memory and load, one line each; nothing for what was not read. */
+export const assessHost = (host: HostSnapshot): Verdict[] => {
+  const out: Verdict[] = [];
+  if (host.memory_total_bytes != null && host.memory_available_bytes != null) {
+    const line = `${gb(host.memory_available_bytes)} available of ${gb(host.memory_total_bytes)}`;
+    out.push(host.memory_low
+      ? {
+        tone: 'bad',
+        headline: `Host memory low — ${line}`,
+        action: 'Under a tenth is available: the kernel starts killing processes when it runs out. '
+          + 'See what is using it on the host ("docker stats"), or give the host more memory.',
+      }
+      : { tone: 'ok', headline: `Host memory — ${line}` });
+  }
+  if (host.load_1 != null && host.load_5 != null && host.load_15 != null) {
+    const cpus = host.cpu_count != null ? ` on ${host.cpu_count} CPU${host.cpu_count === 1 ? '' : 's'}` : '';
+    const line = `${host.load_1.toFixed(2)} · ${host.load_5.toFixed(2)} · ${host.load_15.toFixed(2)} (1, 5, 15 min)${cpus}`;
+    out.push(host.load_high
+      ? {
+        tone: 'warn',
+        headline: `Host load high — ${line}`,
+        action: 'More is waiting to run than there are CPUs, so everything is slower: a large import or a '
+          + 'report render is the usual cause here, and it passes. Persistent load needs more CPUs.',
+      }
+      : { tone: 'ok', headline: `Host load — ${line}` });
+  }
+  return out;
+};
+
+const memoryLine = (m: ProcessMemory): string => {
+  const limit = m.limit_bytes != null ? ` of a ${gb(m.limit_bytes)} limit` : ' (no limit set)';
+  return m.peak_bytes != null
+    ? `peaked at ${gb(m.peak_bytes)}${limit}, ${gb(m.current_bytes)} now`
+    : `${gb(m.current_bytes)}${limit}`;
+};
+
+/** A process against ITS OWN limit: the kernel kills it there however much
+ *  the host has free, so this is judged by the peak. */
+export const assessProcessMemory = (m: ProcessMemory, label: string, limitSetting: string): Verdict => (m.near_limit
+  ? {
+    tone: 'bad',
+    headline: `${label} memory near its limit — ${memoryLine(m)}`,
+    action: `It is killed when it reaches the limit, whatever the host has free; a job it was running then `
+      + `looks stalled and is started again. Raise ${limitSetting} in .env and deploy, or split a very large file.`,
+  }
+  : { tone: 'ok', headline: `${label} memory — ${memoryLine(m)}` });
+
+export const assessWorker = (w: WorkerMemory): Verdict => {
+  const known = WORKER_LABEL[w.name] ?? { label: w.name, limit: 'its memory limit' };
+  if (w.stale) {
+    return {
+      tone: 'warn',
+      headline: `${known.label} is not reporting — last heard ${formatAge(w.age_seconds)} ago`
+        + ` (then: ${memoryLine(w)})`,
+      action: 'It is stopped, was killed, or is stuck in one step. On the host: "docker compose ps" and '
+        + '"docker compose logs" for that worker.',
+    };
+  }
+  return assessProcessMemory(w, known.label, known.limit);
+};
+
+export const assessDatabase = (d: DatabaseSnapshot): Verdict => {
+  const line = `${gb(d.size_bytes)}, ${d.connections} of ${d.max_connections} connections in use`;
+  return d.connections_high
+    ? {
+      tone: 'warn',
+      headline: `Database connections nearly used up — ${line}`,
+      action: 'Requests wait, then fail, when none is left. Raise PG_MAX_CONNECTIONS in .env and deploy '
+        + '(each connection uses memory on the database).',
+    }
+    : { tone: 'ok', headline: `Database — ${line}` };
+};
+
 const linkClass =
   'rounded text-caption text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
@@ -243,7 +330,7 @@ export const QueueHealthCard: React.FC = () => {
   return (
     <PostureSection
       title="Worker queues"
-      description="Ingestion and report workers across the whole deployment."
+      description="Ingestion and report workers across the whole deployment, and what the host and each process are using."
       actions={
         <Button
           variant="ghost"
@@ -267,6 +354,12 @@ export const QueueHealthCard: React.FC = () => {
             <VerdictRow verdict={assess(metrics.ingestion, 'scan ingestion', INGESTION_SURFACE)} />
             <VerdictRow verdict={assess(metrics.report, 'report', REPORT_SURFACE)} />
             {metrics.disk && <VerdictRow verdict={assessDisk(metrics.disk)} />}
+            {metrics.host && assessHost(metrics.host).map((v) => <VerdictRow key={v.headline} verdict={v} />)}
+            {metrics.backend_memory && (
+              <VerdictRow verdict={assessProcessMemory(metrics.backend_memory, 'API', 'BACKEND_MEM_LIMIT')} />
+            )}
+            {(metrics.workers ?? []).map((w) => <VerdictRow key={w.name} verdict={assessWorker(w)} />)}
+            {metrics.database && <VerdictRow verdict={assessDatabase(metrics.database)} />}
             <p className="text-caption text-muted-foreground">
               Checked {new Date(metrics.generated_at).toLocaleTimeString()}
             </p>

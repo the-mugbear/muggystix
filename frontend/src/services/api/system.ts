@@ -38,6 +38,54 @@ export interface QueueMetrics {
   /** v5.302.0 — free space on the uploads filesystem (on one host, the disk
    *  Postgres and Docker share); null when it could not be read. */
   disk?: DiskSnapshot | null;
+  /** v5.389.0 — what the host and each process are using.  Each is null /
+   *  empty where the server could not read it (and absent from an older one). */
+  host?: HostSnapshot | null;
+  /** The API process's own memory against its container's limit. */
+  backend_memory?: ProcessMemory | null;
+  /** Each worker's last report: only where the kernel keeps a peak. */
+  workers?: WorkerMemory[];
+  database?: DatabaseSnapshot | null;
+}
+
+export interface HostSnapshot {
+  memory_total_bytes: number | null;
+  memory_available_bytes: number | null;
+  /** Under a tenth of the host's memory available. */
+  memory_low: boolean;
+  load_1: number | null;
+  load_5: number | null;
+  load_15: number | null;
+  cpu_count: number | null;
+  /** The 5-minute load is above the number of CPUs. */
+  load_high: boolean;
+}
+
+export interface ProcessMemory {
+  current_bytes: number;
+  /** The most it has used since it started; null where the kernel keeps none. */
+  peak_bytes: number | null;
+  /** Null: the container has no limit. */
+  limit_bytes: number | null;
+  /** Its peak (else its current use) reached 90% of its limit. */
+  near_limit: boolean;
+}
+
+export interface WorkerMemory extends ProcessMemory {
+  /** The queue the worker serves: `ingestion_jobs` or `report_jobs`. */
+  name: string;
+  peak_bytes: number;
+  age_seconds: number;
+  /** No report for two minutes: killed, stopped or wedged. */
+  stale: boolean;
+}
+
+export interface DatabaseSnapshot {
+  size_bytes: number;
+  connections: number;
+  max_connections: number;
+  /** At 85% of the connections the database accepts. */
+  connections_high: boolean;
 }
 
 export interface DiskSnapshot {

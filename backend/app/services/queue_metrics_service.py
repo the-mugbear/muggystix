@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db import models
+from app.services import resource_metrics
 from app.services.import_attention_service import superseded_import_condition
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,12 @@ def queue_metrics(db: Session) -> dict:
             db, models.ReportJob, settings.REPORT_JOB_TIMEOUT_SECONDS
         ),
         "disk": disk_snapshot(),
+        # v2.496.0 — what the host and each process are using
+        # (``resource_metrics``): each is None / empty where it cannot be read.
+        "host": resource_metrics.host_snapshot(),
+        "backend_memory": resource_metrics.process_memory(),
+        "workers": resource_metrics.worker_reports(),
+        "database": resource_metrics.database_snapshot(db),
     }
 
 

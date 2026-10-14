@@ -83,7 +83,7 @@ const sections: GuideSection[] = [
           Besides the project role, an account is either a <strong>member</strong> or a{' '}
           <strong>global administrator</strong>. A global administrator passes every project check
           and alone sees the <strong>Administration</strong> hub: <strong>All projects</strong>{' '}
-          (create a project), <strong>System</strong> (worker health, accounts, remediation
+          (create a project), <strong>System</strong> (worker health — with the host&apos;s memory and load, each process&apos;s memory against its own limit, and the database&apos;s size and connections —, accounts, remediation
           tracking, the installation&rsquo;s report author and disclaimer, report writing guidance — its
           own section below), <strong>Audit log</strong> and{' '}
           <strong>Agent Feedback</strong>, plus <strong>Oversight</strong>. Deleting a project,

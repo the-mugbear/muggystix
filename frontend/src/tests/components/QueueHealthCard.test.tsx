@@ -47,6 +47,63 @@ describe('QueueHealthCard', () => {
     expect(screen.getByText(/docker builder prune -f/)).toBeInTheDocument();
   });
 
+  // v5.389.0 — the host and each process.  A worker is killed at ITS limit
+  // whatever the host has free, so it is judged by its peak.
+  it('says what the host, the API, each worker and the database are using', async () => {
+    const GB = 1024 ** 3;
+    mocked.getQueueMetrics.mockResolvedValue({
+      ...metrics(),
+      host: {
+        memory_total_bytes: 64 * GB, memory_available_bytes: 55 * GB, memory_low: false,
+        load_1: 1.5, load_5: 0.75, load_15: 0.5, cpu_count: 32, load_high: false,
+      },
+      backend_memory: { current_bytes: 0.9 * GB, peak_bytes: 1.2 * GB, limit_bytes: 2 * GB, near_limit: false },
+      workers: [
+        { name: 'ingestion_jobs', current_bytes: 1 * GB, peak_bytes: 3.9 * GB, limit_bytes: 4 * GB, near_limit: true, age_seconds: 3, stale: false },
+        { name: 'report_jobs', current_bytes: 0.2 * GB, peak_bytes: 0.4 * GB, limit_bytes: 2 * GB, near_limit: false, age_seconds: 400, stale: true },
+      ],
+      database: { size_bytes: 1.7 * GB, connections: 14, max_connections: 120, connections_high: false },
+    });
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
+
+    expect(await screen.findByText('Host memory — 55 GB available of 64 GB')).toBeInTheDocument();
+    expect(screen.getByText('Host load — 1.50 · 0.75 · 0.50 (1, 5, 15 min) on 32 CPUs')).toBeInTheDocument();
+    expect(screen.getByText('API memory — peaked at 1.2 GB of a 2.0 GB limit, 0.9 GB now')).toBeInTheDocument();
+    // Plenty of host memory, and the worker is still about to be killed.
+    expect(screen.getByText('Ingestion worker memory near its limit — peaked at 3.9 GB of a 4.0 GB limit, 1.0 GB now')).toBeInTheDocument();
+    expect(screen.getByText(/Raise WORKER_MEM_LIMIT in \.env/)).toBeInTheDocument();
+    // A worker that stopped reporting is said to be silent, never shown as calm.
+    expect(screen.getByText(/^Report worker is not reporting — last heard 7m ago/)).toBeInTheDocument();
+    expect(screen.getByText('Database — 1.7 GB, 14 of 120 connections in use')).toBeInTheDocument();
+  });
+
+  it('warns about low host memory, high load and connections nearly used up — and says nothing for what was not read', async () => {
+    const GB = 1024 ** 3;
+    mocked.getQueueMetrics.mockResolvedValue({
+      ...metrics(),
+      host: {
+        memory_total_bytes: 16 * GB, memory_available_bytes: 1 * GB, memory_low: true,
+        load_1: 9, load_5: 8.25, load_15: 3, cpu_count: 4, load_high: true,
+      },
+      backend_memory: null,
+      workers: [],
+      database: { size_bytes: 40 * GB, connections: 110, max_connections: 120, connections_high: true },
+    });
+    const first = render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
+    expect(await screen.findByText('Host memory low — 1.0 GB available of 16 GB')).toBeInTheDocument();
+    expect(screen.getByText(/^Host load high — 9\.00 · 8\.25 · 3\.00/)).toBeInTheDocument();
+    expect(screen.getByText('Database connections nearly used up — 40 GB, 110 of 120 connections in use')).toBeInTheDocument();
+    expect(screen.queryByText(/API memory/)).toBeNull();
+    expect(screen.queryByText(/worker memory|not reporting/)).toBeNull();
+    first.unmount();
+
+    // An older server, or a host that exposes none of it: the queues and nothing else.
+    mocked.getQueueMetrics.mockResolvedValue({ ...metrics(), host: null, database: null });
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
+    await screen.findByText(/Checked /);
+    expect(screen.queryByText(/Host memory|Host load|Database/)).toBeNull();
+  });
+
   it('shows the free space quietly when it is fine', async () => {
     mocked.getQueueMetrics.mockResolvedValue({
       ...metrics(), disk: { total_bytes: 160 * 1024 ** 3, free_bytes: 38 * 1024 ** 3, low: false },

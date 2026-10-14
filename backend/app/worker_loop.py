@@ -19,6 +19,7 @@ import time
 from typing import Callable, List, Optional
 
 from app.db.session import engine
+from app.services import resource_metrics
 
 # Cooperative-shutdown flag, flipped by the signal handlers and honored at every
 # sleep/loop checkpoint so SIGTERM drains in <1s.
@@ -53,6 +54,9 @@ def is_shutting_down() -> bool:
 # perfectly healthy worker unhealthy (review 2026-09-23 R3).
 _heartbeat_path: Optional[str] = None
 _heartbeat_logger: Optional[logging.Logger] = None
+# The name this worker's memory report is written under (its queue's channel);
+# None outside a running loop, where no report is written.
+_status_name: Optional[str] = None
 
 
 def touch_heartbeat() -> None:
@@ -73,6 +77,11 @@ def write_heartbeat(path: str, logger: logging.Logger) -> None:
             fh.write(str(time.time()))
     except OSError as exc:
         logger.warning("Could not write heartbeat to %s: %s", path, exc)
+    # After the heartbeat, and unable to affect it: what this worker's memory
+    # peaked at against its limit, for System settings (it never raises, and
+    # writes at most every few seconds).
+    if _status_name:
+        resource_metrics.write_worker_report(_status_name)
 
 
 def _open_listen_connection(channel: str):
@@ -116,8 +125,9 @@ def run_listen_loop(
     Wrapped in an outer reconnect loop so a Postgres restart / blip doesn't kill
     the worker — DB errors close the connection, log, back off, and retry.
     """
-    global _heartbeat_path, _heartbeat_logger
+    global _heartbeat_path, _heartbeat_logger, _status_name
     _heartbeat_path, _heartbeat_logger = heartbeat_path, logger
+    _status_name = channel       # the report's name: the queue this worker serves
     periodic = periodic or []
     backoff = _RECONNECT_INITIAL_DELAY
     # Write one heartbeat immediately so the file exists from the start (the

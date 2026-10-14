@@ -335,7 +335,7 @@ backup_uploads() {
         --entrypoint tar \
         "$image" czf - -C /uploads \
             --exclude=./ingestion_queue --exclude=./report_artifacts \
-            --exclude=./initial-admin-password.txt . > "$BACKUP_DIR/$out" \
+            --exclude=./initial-admin-password.txt --exclude=./.worker-status . > "$BACKUP_DIR/$out" \
         || ! archive_is_readable "$BACKUP_DIR/$out"; then
         print_error "Archiving uploads/ failed — the database backup is kept, but evidence files are NOT backed up."
         rm -f "$BACKUP_DIR/$out"

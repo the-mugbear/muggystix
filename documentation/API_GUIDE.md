@@ -280,7 +280,7 @@ Self-service TOTP enrollment, sharing the `/auth` prefix (no password-change gat
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/system/queue-metrics` | Deployment-wide durable job-queue operational metrics (ingestion + report queues): depth, in-flight, failed (undismissed; ingestion also `failed_by_project`), oldest-pending age. Admin only. |
+| GET | `/system/queue-metrics` | Deployment-wide durable job-queue operational metrics (ingestion + report queues): depth, in-flight, failed (undismissed; ingestion also `failed_by_project`), oldest-pending age; `disk` (free / total on the uploads filesystem, `low`). **v2.496.0 — what the host and each process are using**, each `null` (or `[]`) where the server cannot read it: `host` (`memory_total_bytes`, `memory_available_bytes`, `memory_low` — under a tenth available; `load_1` / `load_5` / `load_15`, `cpu_count`, `load_high` — the 5-minute load above the CPU count); `backend_memory` (the API container's `current_bytes`, `peak_bytes`, `limit_bytes`, `near_limit`); `workers` (each worker's last report, written beside its heartbeat: `name` — `ingestion_jobs` or `report_jobs` —, the same four memory fields, `age_seconds`, and `stale` when none arrived for two minutes; only on a host whose kernel keeps a memory peak, since a sampled figure misses the spike that gets a worker killed); `database` (`size_bytes`, `connections` of `max_connections`, `connections_high` at 85%). `near_limit` is judged by the PEAK against the container's own limit — the kernel kills a container there however much memory the host has free. Admin only. |
 
 ---
 

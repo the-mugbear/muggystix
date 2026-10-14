@@ -218,6 +218,9 @@ backend/app/
 │   ├── client_report_service.py, client_report_render.py, quarto_render.py (+ quarto_fields.lua),
 │   │   report_template_service.py, report_draft_service.py, report_images.py, report_scope.py,
 │   │   report_defaults.py (a report's author and disclaimer: its own, else the project's, else the installation's)
+│   ├── queue_metrics_service.py (worker queues, disk) + resource_metrics.py (host memory and load, each
+│   │   process's memory peak against its own limit — workers report theirs beside the heartbeat —, database
+│   │   size and connections): what System settings' worker-health section shows
 │   │                         # client reports: content, issue/revise/addenda, Quarto rendering (§8)
 │   ├── host_query_suggest.py # DSL value autocomplete (/hosts/query/suggest)
 │   ├── totp_service.py, webhook_dispatcher.py
