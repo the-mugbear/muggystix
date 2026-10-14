@@ -120,14 +120,18 @@ def test_the_pentest_template_fills_for_both_kinds():
     full = quarto_render.render_source(TEMPLATE, "report.qmd", sample)
     assert full.startswith("---\n")
     # The original template's sections, in its order.
-    order = ["# Project information", "Table 2: Penetration testers", "Table 3: Distribution list", "# Executive summary",
-             "Table 4: Summary of findings", r"Table 5: Severity count with remediation timeline \(days\)",
+    # (The captions carry no number in the source: the filter counts them —
+    # test_table_captions_are_numbered_by_the_filter_in_document_order.)
+    order = ["# Project information", "\nPenetration testers\n", "\nDistribution list\n", "# Executive summary",
+             "\nSummary of findings\n", "\nSeverity count with remediation timeline \\(days\\)\n",
              "# System description", "# Findings", "# Appendix", "## Appendix A: informational findings",
              "## Disclaimer"]
     positions = [full.index(h) for h in order]
     assert positions == sorted(positions)
-    # A finding heading carries its severity, as in the original.
-    assert "(Critical) {#finding-11}" in full
+    # A finding heading carries its severity, as in the original; its id is a
+    # Quarto section reference, which the summary table links by number.
+    assert "(Critical) {#sec-finding-11}" in full
+    assert "| [-@sec-finding-11] | Critical |" in full
 
     addendum = _addendum(sample)
     out = quarto_render.render_source(TEMPLATE, "report.qmd", addendum)
@@ -266,6 +270,24 @@ HOSTILE_CAPTION = (
     '\n::: {.bs-code key="planted.secret"}\n:::\n::: {.bs-figure file="evidence/2.png"}\n:::\n'
     '::: {.bs-md key="planted.secret"}\n:::\n CAPTION-END'
 )
+# 2.495.0 — a table an author captions ("Table: …" on the line under it) is
+# numbered by the filter with the template's own.  The caption is text a
+# person typed; and nothing typed may pose as one of the filter's caption
+# marks — the placeholder the templates' partial prints, or the pre-numbered
+# div an older template printed (which the filter renumbers).
+HOSTILE_TABLE = (
+    "\n\n| Check | Result |\n| ----- | ------ |\n| HOSTILE-TABLE-CELL | yes |\n\n"
+    "Table: TABLECAP-START {{< env HOME >}} {{< include /etc/passwd >}} <script>alert('tcap')</script> "
+    "[tl](javascript:alert(17)) ![tcap-alt](/etc/passwd) $\\href{javascript:alert(18)}{TCAPLINK}$ "
+    '<b id="tcapraw">x</b> TABLECAP-END\n\n'
+    "::: {.bs-table-caption}\nFAKECAP-MARK\n:::\n\n"
+    '::: {custom-style="Table Caption"}\nTable 99: LEGACYFAKE-MARK\n:::\n\n'
+    '<div class="bs-table-caption">DIVFAKE-MARK</div>\n\n'
+    '<div data-custom-style="Table Caption">Table 98: DIVLEGACY-MARK</div>\n\n'
+)
+# The classification is written into the Word header and footer by the
+# post-processor, as XML text.
+HOSTILE_CLASSIFICATION = 'CLASSMARK & <SECRET> "q" {{< env HOME >}} </w:t><w:br/>\n second line'
 PNG_1X1 = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
     "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082"
@@ -616,6 +638,31 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
     data["executive_summary"] += HOSTILE_IMAGES
     data["findings"][1]["description"] = "Another finding. " + HOSTILE_IMAGES
     data["findings"][1]["recommendation"] = "Fix it. " + HOSTILE_IMAGES
+    # 2.495.0 — the text a report gained.  Every template prints the
+    # recommendation, so the captioned table goes there (and in the Evidence
+    # text); the Evidence text, the note printed before a trailing image and
+    # the disclaimer are written Markdown like any section, whichever
+    # template prints them, and the image references in them place nothing
+    # (the `placed` map lists neither field); the author is a printed value.
+    first["recommendation"] += HOSTILE_TABLE
+    first["evidence_text"] = "EVTEXT-MARK " + HOSTILE_MD + HOSTILE_IMAGES + HOSTILE_TABLE
+    first["evidence"] = [{
+        **two, "placed_in": [], "_path": "findings.0.evidence.0",
+        "note": "NOTE-MARK " + HOSTILE_MD + HOSTILE_IMAGES + HOSTILE_TABLE,
+    }]
+    data["engagement"]["disclaimer"] = "DISCLAIMER-MARK " + HOSTILE_MD + HOSTILE_IMAGES
+    data["engagement"]["author_name"] = "AUTHOR-MARK " + HOSTILE
+    data["engagement"]["classification"] = HOSTILE_CLASSIFICATION
+    # The report's own images: the system description places attachment 1
+    # (the map says so) — and its hostile references place nothing else.
+    data["engagement"]["system_description"] = (
+        "SYSDESC-MARK\n\n![SYSFIGURE-ALT](evidence:1)\n\n"
+        "![sysforeign-alt](evidence:2) ![syspath-alt](../../etc/passwd) ![sysjs-alt](javascript:alert(19))\n"
+        + HOSTILE_MD
+    )
+    data["engagement"]["images"] = [{**one, "placed_in": ["system_description"]}]
+    data["engagement"]["placed"] = {"system_description": {"1": one, "7": {
+        "attachment_id": 7, "file": "/etc/passwd", "caption": "x"}}}
     # M4 — what an author-typed placeholder asks for.  No template prints it.
     data["planted"] = {"secret": PLANTED}
 
@@ -684,13 +731,15 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
     assert "evidence:" not in docx_links and "passwd" not in docx_links and "example.com/x.png" not in docx_links
     assert "<b id" not in docx
     # Where a figure prints: per template, never in the executive summary or
-    # in the other finding.  pentest prints the description (2 references to
-    # image 1), the recommendation (3) and the trailing block (image 2);
+    # in the other finding.  pentest prints the system description (the one
+    # reference its map lists), the description (2 references to image 1),
+    # the recommendation (3) and the trailing block (image 2) — none from the
+    # Evidence text, the note or the disclaimer, whose maps list nothing;
     # the worklist prints the recommendation; the brief prints no evidence.
     figures = re.findall(r'<figure class="bs-figure[^>]*>.*?</figure>', html, re.S)
     # An operator's own template is held to everything else here; the count
     # is pinned for the shipped ones.
-    expected = {"pentest": 6, "remediation-worklist": 3, "executive-brief": 0}.get(template.name, len(figures))
+    expected = {"pentest": 7, "remediation-worklist": 3, "executive-brief": 0}.get(template.name, len(figures))
     assert len(figures) == expected
     assert docx.count("<w:drawing>") == expected
     assert not [n for n in docx_media if n.endswith((".svg", ".html")) or "passwd" in n]
@@ -751,6 +800,88 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
         assert "export PATH=$HOME/bin:$PATH  $\\href{javascript:alert(15)}{CODELINK}$" in block
         assert '::: {.bs-code key="planted.secret"}' in block.replace("&quot;", '"')
         assert '::: {.bs-figure file="evidence/2.png"}' in block.replace("&quot;", '"')
+
+    # --- 2.495.0: table captions ------------------------------------------------
+    # One count through the document, whoever wrote the caption: the
+    # template's own and the one typed under a table in written text.
+    shipped = template.name in ("pentest", "remediation-worklist", "executive-brief", "contact-report")
+    table_captions = _table_captions(html)
+    assert [c.split(":")[0] for c in table_captions] == [f"Table {n}" for n in range(1, len(table_captions) + 1)]
+    written = [c for c in table_captions if "TABLECAP-START" in c]
+    # The recommendation's, everywhere; pentest also prints the Evidence text
+    # and the note, each with its own.
+    wanted = {"pentest": 3}.get(template.name, 1) if shipped else len(written)
+    assert len(written) == wanted and wanted >= 1
+    for caption in written:
+        # Printed whole, as the text that was typed.
+        assert "TABLECAP-END" in caption and "{{&lt; env HOME &gt;}}" in caption
+        assert "&lt;script&gt;" in caption and "<script" not in caption and "&lt;b id=" in caption
+        assert "tcap-alt" in caption and "TCAPLINK" in caption and "<a " not in caption and "<img" not in caption
+        assert "$\\href{javascript:alert(18)}{TCAPLINK}$" in caption          # the formula is its characters
+    assert "<script>alert('tcap')" not in html and '<b id="tcapraw"' not in html
+    assert html.count("<td>HOSTILE-TABLE-CELL</td>") == wanted           # … and its table is a table
+    # Nothing typed became one of the filter's own caption marks.
+    for fake in ("FAKECAP-MARK", "LEGACYFAKE-MARK", "DIVFAKE-MARK", "DIVLEGACY-MARK"):
+        assert fake in html and fake in docx, fake
+        assert not [c for c in table_captions if fake in c], fake
+    assert "Table 99: LEGACYFAKE-MARK" in html and "Table 98: DIVLEGACY-MARK" in html      # not renumbered: text
+    word_captions = [text for style, text, _ in _word_paragraphs(files["docx"]) if style == "TableCaption"]
+    assert len(word_captions) == len(table_captions)
+    assert [c.split(":")[0] for c in word_captions] == [f"Table {n}" for n in range(1, len(word_captions) + 1)]
+    assert len([c for c in word_captions if "TABLECAP-START" in c and "TABLECAP-END" in c]) == wanted
+
+    # --- 2.495.0: the Evidence text, the note, the disclaimer, the author --------
+    marks = ("EVTEXT-MARK", "NOTE-MARK", "DISCLAIMER-MARK", "SYSDESC-MARK", "AUTHOR-MARK")
+    if template.name == "pentest":
+        for text in (html, docx):
+            for mark in marks:
+                assert mark in text, mark
+            # Their image references placed nothing; the system description's one did.
+            assert "sysforeign-alt" in text and "syspath-alt" in text and "sysjs-alt" in text
+        # The written disclaimer replaced the template's own.
+        assert "point-in-time analysis" not in html
+        # Under Evidence: the written text, the test result, then the note
+        # and — after it — the image it is attached to.
+        order = [html.index(m) for m in ("EVTEXT-MARK", "CONFIRM-COMMAND", "NOTE-MARK")]
+        assert order == sorted(order) and order[-1] < html.rindex("<figure class=\"bs-figure")
+        assert captions[0].startswith("Figure 1: SYSFIGURE-ALT")          # the report's own image, first in the document
+        assert html.index("SYSDESC-MARK") < html.index("SYSFIGURE-ALT") < html.index("EVTEXT-MARK")
+    elif shipped:
+        # A template that does not print them does not leak them either.
+        for mark in marks:
+            assert mark not in html and mark not in docx, mark
+
+    # --- 2.495.0: the classification in the Word header and footer ---------------
+    import xml.etree.ElementTree as ET
+    with zipfile.ZipFile(files["docx"]) as z:
+        margins = {n: z.read(n).decode("utf-8") for n in z.namelist()
+                   if re.fullmatch(r"word/(header|footer)\d*\.xml", n)}
+        for name in z.namelist():
+            if name.endswith(".xml"):
+                ET.fromstring(z.read(name))                               # every part is still XML
+    margin_texts = [
+        t.text or "" for xml in margins.values()
+        for t in ET.fromstring(xml).iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")
+    ]
+    typed = 'CLASSMARK & <SECRET> "q" {{< env HOME >}} </w:t><w:br/> second line'
+    if _placeholders_in(quarto_render.template_file(template, "reference.docx")):
+        # The Word styles this template renders with print the placeholder at
+        # the top and bottom of every page: it now says the report's
+        # classification — as text.  (Every shipped template with such a
+        # file: the brief has its own, the contact's list takes pentest's.)
+        assert margin_texts.count(typed) >= 2 and "CLASSIFICATION" not in margin_texts
+    if shipped:
+        assert (template.name != "remediation-worklist") == (typed in margin_texts)
+    assert not [t for t in margin_texts if "CLASSMARK" in t and t != typed]
+    assert "bs-report-" not in "".join(margin_texts)
+
+
+def _table_captions(html: str) -> list:
+    """The text of every table caption of an HTML report, in order."""
+    return [
+        re.sub(r"\s+", " ", c).strip()
+        for c in re.findall(r'<div data-custom-style="Table Caption">\s*<p>(.*?)</p>\s*</div>', html, re.S)
+    ]
 
 
 @needs_quarto
@@ -850,13 +981,15 @@ def test_a_template_prints_the_images_it_declares_and_the_fill_measures_them(tmp
     assert printed == declared
     assert docx.count("<w:drawing>") == len(declared)
     for caption in ("in description", "in impact", "in recommendation", "in references", "in steps_to_reproduce",
-                    "unplaced"):
+                    "in evidence_text", "unplaced"):
         assert (caption in docx) == (caption in declared), caption
 
     parts = templates.printed_parts(loaded, data)
     measured = sorted(f"in {field}" for field, images in parts["fields"].get(0, {}).items() if images)
     assert measured + (["unplaced"] if parts["figures"] else []) == printed
-    assert parts["figures"] in ([], ["evidence/6.png"])
+    # The unplaced image is one id after the written fields' (six of them
+    # since the Evidence text, 2.495.0).
+    assert parts["figures"] in ([], ["evidence/7.png"])
     assert templates.image_declaration_problem(loaded, data) is None
 
 
@@ -1093,8 +1226,14 @@ def test_every_table_label_keeps_with_its_table_in_word():
     # key/value table otherwise sits at the margin under a centred caption).
     table = re.search(r'<w:style [^>]*w:styleId="Table".*?</w:style>', styles, re.S).group(0)
     assert '<w:jc w:val="center"/>' in table.split("<w:tblStylePr")[0]
+    # The partial marks the caption; the filter numbers it and prints it in
+    # that style (2.495.0 — the number was a Jinja counter in the partial).
     partial = (TEMPLATE / "partials" / "_table_caption.qmd").read_text(encoding="utf-8")
-    assert '::: {custom-style="Table Caption"}\nTable << counter.table >>: << caption >>\n:::' in partial
+    assert '::: {.bs-table-caption}\n<< caption >>\n:::' in partial
+    filter_source = quarto_render.FIELDS_FILTER.read_text(encoding="utf-8")
+    assert 'local CAPTION_CLASS = "bs-table-caption"' in filter_source
+    assert 'local CAPTION_STYLE = "Table Caption"' in filter_source
+    assert '["custom-style"] = CAPTION_STYLE' in filter_source
     source = (TEMPLATE / "report.qmd").read_text(encoding="utf-8")
     lines = source.splitlines()
     labels = [i for i, line in enumerate(lines) if re.fullmatch(r"\*\*[^*]+\*\*", line.strip())]
@@ -1118,10 +1257,14 @@ def test_tables_figures_and_finding_sections_are_numbered_like_the_original():
     ]
     sample["findings"][1]["evidence"] = [{"attachment_id": 3, "file": "evidence/3.png", "caption": "Bind"}]
     out = quarto_render.render_source(TEMPLATE, "report.qmd", sample)
-    tables = re.findall(r"^Table (\d+): (.+)$", out, re.M)
-    assert [int(n) for n, _ in tables] == list(range(1, len(tables) + 1))
-    assert [t for _, t in tables][:3] == ["Project details", "Penetration testers", "Distribution list"]
-    assert "Summary of findings" in [t for _, t in tables]
+    # Table captions are placeholders too since 2.495.0: every table the
+    # template prints with a caption has one, in order, and none carries a
+    # number — the filter counts them with the tables an author captioned
+    # (test_table_captions_are_numbered_by_the_filter_in_document_order).
+    assert not re.search(r"^Table \d+", out, re.M)
+    tables = re.findall(r"^::: \{\.bs-table-caption\}\n(.+)\n:::$", out, re.M)
+    assert tables[:3] == ["Project details", "Penetration testers", "Distribution list"]
+    assert "Summary of findings" in tables and len(tables) >= 7
     # Figures are placeholders in the source — the filter captions and numbers
     # them in document order (test_figures_are_numbered_in_document_order).
     assert re.findall(r'\.bs-figure file="(evidence/\d\.png)"', out) == [
@@ -1129,8 +1272,8 @@ def test_tables_figures_and_finding_sections_are_numbered_like_the_original():
     ]
     assert "Figure" not in "".join(re.findall(r"^::: \{\.bs-figure.*$", out, re.M))
     assert "{.unnumbered}" not in (TEMPLATE / "partials" / "_finding.qmd").read_text(encoding="utf-8")
-    project = out.split("Table 1: Project details")[1]
-    assert project.split("\n:::\n", 1)[1].lstrip().startswith("| | |")
+    project = out.split("\nProject details\n")[1]
+    assert project.split(":::\n", 1)[1].lstrip().startswith("| | |")
 
 
 def _post_processor():
@@ -1169,6 +1312,161 @@ def test_tables_take_the_alignment_their_style_declares(tmp_path):
     assert first.find(f"{{{w}}}tblPr/{{{w}}}jc").get(f"{{{w}}}val") == "center"
     assert own.find(f"{{{w}}}tblPr/{{{w}}}jc").get(f"{{{w}}}val") == "right"
     assert plain.find(f"{{{w}}}tblPr/{{{w}}}jc") is None
+
+
+# --- 2.495.0: the report's classification in the Word header and footer -------------
+
+def _header_footer_folder(tmp_path: Path, parts: dict) -> Path:
+    """An unzipped docx with these ``word/<name>`` parts."""
+    folder = tmp_path / "docx"
+    (folder / "word").mkdir(parents=True)
+    for name, xml in parts.items():
+        (folder / "word" / name).write_text(xml, encoding="utf-8")
+    return folder
+
+
+def _hf(*runs: str) -> str:
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    return f'<w:hdr xmlns:w="{w}"><w:p>' + "".join(f"<w:r>{run}</w:r>" for run in runs) + "</w:p></w:hdr>"
+
+
+@needs_template
+def test_the_classification_read_for_the_word_header_is_one_plain_line(tmp_path):
+    fix = _post_processor()
+
+    def read(content) -> str:
+        (tmp_path / "data.json").write_text(content if isinstance(content, str) else json.dumps(content))
+        return fix.report_classification(str(tmp_path))
+
+    assert fix.report_classification(str(tmp_path / "nowhere")) == ""           # no data.json beside it
+    assert read({"engagement": {"classification": "Confidential"}}) == "Confidential"
+    assert read({"engagement": {"classification": "  TLP:AMBER\n+STRICT\t\x07 only "}}) == "TLP:AMBER +STRICT only"
+    assert read({"engagement": {"classification": "C" * 500}}) == "C" * 100
+    # Nothing written, or nothing usable: the placeholder stays (below).
+    for nothing in ({"engagement": {"classification": None}}, {"engagement": {"classification": "  \n "}},
+                    {"engagement": {}}, {"engagement": None}, {}, {"engagement": {"classification": ["x"]}},
+                    {"engagement": {"classification": 3}}, {"engagement": "text"}, [], "{ not json"):
+        assert read(nothing) == "", nothing
+
+
+@needs_template
+def test_the_classification_takes_the_placeholders_place_in_headers_and_footers(tmp_path):
+    """The shipped reference.docx prints the word CLASSIFICATION at the top
+    and bottom of every page, and before 2.495.0 that word was issued.  Only
+    the header and footer parts are written, only a run that is exactly the
+    placeholder, and the text goes in as text."""
+    fix = _post_processor()
+    placeholder = "<w:t>CLASSIFICATION</w:t>"
+    parts = {
+        "header1.xml": _hf(placeholder),
+        "header2.xml": _hf("<w:t>Page </w:t>", '<w:t xml:space="preserve">CLASSIFICATION</w:t>', placeholder),
+        "footer1.xml": _hf(placeholder, "<w:t>1</w:t>"),
+        "footer2.xml": _hf("<w:t>1</w:t>"),                                  # no placeholder: not rewritten
+        "document.xml": _hf(placeholder),                                    # the body is not a header
+        "headerless.xml": _hf(placeholder),
+        "header1.xml.bak": _hf(placeholder),
+    }
+    folder = _header_footer_folder(tmp_path, parts)
+    untouched = {name: (folder / "word" / name).stat().st_mtime_ns for name in parts}
+
+    assert fix.apply_classification(str(folder), 'R&D <internal> "draft" \\1 $HOME') == 4
+    escaped = 'R&amp;D &lt;internal&gt; "draft" \\1 $HOME'
+    read = lambda name: (folder / "word" / name).read_text(encoding="utf-8")  # noqa: E731
+    assert read("header1.xml") == _hf(f"<w:t>{escaped}</w:t>")
+    assert read("header2.xml") == _hf(
+        "<w:t>Page </w:t>", f'<w:t xml:space="preserve">{escaped}</w:t>', f"<w:t>{escaped}</w:t>",
+    )
+    assert read("footer1.xml") == _hf(f"<w:t>{escaped}</w:t>", "<w:t>1</w:t>")
+    for name in ("footer2.xml", "document.xml", "headerless.xml", "header1.xml.bak"):
+        assert read(name) == parts[name], name
+        assert (folder / "word" / name).stat().st_mtime_ns == untouched[name], name
+    # Still XML, and the text is the classification as typed.
+    import xml.etree.ElementTree as ET
+    for name in ("header1.xml", "header2.xml", "footer1.xml"):
+        texts = [t.text for t in ET.fromstring(read(name)).iter(f"{{{fix.WML}}}t")]
+        assert 'R&D <internal> "draft" \\1 $HOME' in texts and "CLASSIFICATION" not in texts
+    # A second pass finds nothing left to write.
+    assert fix.apply_classification(str(folder), "Again") == 0
+
+
+@needs_template
+def test_without_a_classification_or_a_placeholder_the_word_file_is_left_alone(tmp_path):
+    fix = _post_processor()
+    # None written: the placeholder stays — a gap a reviewer can see.
+    shipped = {"header1.xml": _hf("<w:t>CLASSIFICATION</w:t>"), "footer1.xml": _hf("<w:t>CLASSIFICATION</w:t>")}
+    folder = _header_footer_folder(tmp_path / "none", shipped)
+    assert fix.apply_classification(str(folder), "") == 0
+    assert {n: (folder / "word" / n).read_text() for n in shipped} == shipped
+
+    # An operator's own Word styles file says something else there: never rewritten.
+    own = {
+        "header1.xml": _hf("<w:t>ACME — Company Confidential</w:t>"),
+        "header2.xml": _hf("<w:t>CLASSIFICATION: see the cover</w:t>"),       # the word inside a longer run
+        "footer1.xml": _hf("<w:t>CLASSI</w:t>", "<w:t>FICATION</w:t>"),       # split across runs
+        "footer2.xml": _hf("<w:t>classification</w:t>"),                      # not the placeholder's spelling
+    }
+    folder = _header_footer_folder(tmp_path / "own", own)
+    before = {n: (folder / "word" / n).stat().st_mtime_ns for n in own}
+    assert fix.apply_classification(str(folder), "Secret") == 0
+    assert {n: (folder / "word" / n).read_text() for n in own} == own
+    assert {n: (folder / "word" / n).stat().st_mtime_ns for n in own} == before
+
+
+def _placeholders_in(reference_docx) -> dict:
+    """``{part: count}`` of runs that are exactly CLASSIFICATION in a Word
+    styles file (``{}`` when there is no file); asserts the word is never
+    inside a longer run."""
+    found = {}
+    if reference_docx is None or not Path(reference_docx).is_file():
+        return found
+    with zipfile.ZipFile(reference_docx) as z:
+        for name in z.namelist():
+            xml = z.read(name).decode("utf-8", errors="replace") if name.endswith(".xml") else ""
+            n = len(re.findall(r"<w:t(?: [^>]*)?>CLASSIFICATION</w:t>", xml))
+            if n:
+                found[name] = n
+            assert xml.count("CLASSIFICATION") == n, (reference_docx, name)
+    return found
+
+
+@needs_template
+def test_the_shipped_word_styles_still_carry_the_placeholder_the_report_fills():
+    """What the post-processor looks for is what reference.docx holds: a run
+    that is exactly CLASSIFICATION, in headers and footers only."""
+    fix = _post_processor()
+    assert fix.CLASSIFICATION_PLACEHOLDER == "CLASSIFICATION"
+    found = _placeholders_in(TEMPLATE / "reference.docx")
+    assert found and all(re.fullmatch(r"word/(header|footer)\d*\.xml", name) for name in found), found
+    assert any("header" in name for name in found) and any("footer" in name for name in found)
+
+
+@needs_template
+def test_every_template_whose_word_styles_print_the_placeholder_fills_it():
+    """The executive brief ships its own Word styles — with the placeholder —
+    and its own copy of the post-processor: fixing pentest's alone left the
+    brief issuing the word CLASSIFICATION at the top of every page.  Every
+    shipped template that renders Word with such a file runs a post-processor
+    that writes the classification, and every shipped copy of that script is
+    the same file."""
+    reference = (TEMPLATE / "scripts" / "fix-docx-report.py").read_bytes()
+    with_placeholder = []
+    for template in SHIPPED_TEMPLATES:
+        manifest = quarto_render.template_manifest(template)       # with what it takes from its base
+        if "docx" not in (manifest.get("formats") or []):
+            continue
+        if not _placeholders_in(quarto_render.template_file(template, "reference.docx")):
+            continue
+        with_placeholder.append(template.name)
+        script = (manifest.get("postprocess") or {}).get("docx")
+        assert script, template.name
+        source = quarto_render.template_file(template, script)
+        assert source is not None and "def apply_classification(" in source.read_text(encoding="utf-8"), template.name
+        assert "apply_classification(tmpdir, report_classification(assets_dir))" in source.read_text(encoding="utf-8")
+    assert {"pentest", "executive-brief", "contact-report"} <= set(with_placeholder)
+    copies = sorted(TEMPLATE.parent.glob("*/scripts/fix-docx-report.py"))
+    assert len(copies) >= 2
+    for copy_ in copies:
+        assert copy_.read_bytes() == reference, copy_
 
 
 @needs_template
@@ -1306,7 +1604,7 @@ def test_placed_images_print_in_their_section_and_figures_count_in_document_orde
         section = html[html.index(start):]
         return section[:section.index(end)]
 
-    first_html = between('id="finding-11"', 'id="finding-12"')
+    first_html = between('id="sec-finding-11"', 'id="sec-finding-12"')
     h_impact, h_steps, h_evidence, h_fix = (
         " Impact</h4>", " Steps to reproduce</h4>", " Evidence / proof of concept</h4>", " Recommendations</h3>",
     )
@@ -1375,3 +1673,298 @@ def test_a_template_written_for_jinja_figure_numbers_keeps_rendering_and_one_may
     dropped = html[html.index(">Dropped<"):html.index(">Trailing<")]
     assert "Words before." in dropped and "Words after." in dropped
     assert "<figure" not in dropped and "Dropped alt" not in dropped
+
+
+# --- 2.495.0: table captions are numbered by the filter -----------------------------
+
+def _numbered(captions: list) -> list:
+    return [f"Table {n}: {text}" if text else f"Table {n}" for n, text in enumerate(captions, start=1)]
+
+
+@needs_template
+@needs_quarto
+def test_table_captions_are_numbered_by_the_filter_in_document_order(tmp_path):
+    """Owner, 2026-10-13: a table an author writes in a section gets a
+    numbered caption — "Table: …" on the line under it — printed ABOVE the
+    table in the template's Table Caption style and counted with the
+    template's own tables, in the order a reader meets them.  (The count was
+    a Jinja counter, which never sees a table inside written text: the
+    template's later captions would have kept their old numbers.)"""
+    data = json.loads((TEMPLATE / "sample-data.json").read_text())
+    for f in data["findings"]:
+        f["images"], f["placed"], f["evidence"], f["confirmations"] = [], {}, [], []
+        f["evidence_text"] = None
+    data["executive_summary"] = (
+        "The summary.\n\n"
+        "| Area | Rating |\n| ---- | ------ |\n| SUMMARY-CELL | High |\n\n"
+        "Table: Written in the summary\n\nAfter the table."
+    )
+    first = data["findings"][0]
+    first["description"] = (
+        # No table before it: the words an author typed, not a caption.
+        "Table: NOT-A-CAPTION opens the section\n\n"
+        "| Host | Port |\n| ---- | ---- |\n| EMPTY-CAPTION-CELL | 445 |\n\n"
+        "Table:\n\n"                                               # an empty caption: the number alone
+        "Text between.\n\n"
+        "> | Quoted | Table |\n> | ------ | ----- |\n> | QUOTE-CELL | 1 |\n>\n> Table: Inside a **quote**, with `code`\n\n"
+        "| Lower | Case |\n| ----- | ---- |\n| LOWER-CELL | 2 |\n\n"
+        "table: lower-case spelling\n\n"
+        # A paragraph between the table and the line: not that table's caption.
+        "| Orphan | Table |\n| ------ | ----- |\n| ORPHAN-CELL | 3 |\n\n"
+        "Words between.\n\n"
+        "Table: ORPHAN-LINE follows a paragraph\n\n"
+        "The Table: MID-LINE words are prose."
+    )
+    first["evidence_text"] = (
+        "| Check | Result |\n| ----- | ------ |\n| EVIDENCE-CELL | Yes |\n\nTable: In the Evidence text"
+    )
+    # A screenshot placed in a cell becomes a figure that FOLLOWS its table
+    # (a figure in a cell is not framed in Word): the caption is still that
+    # table's, although the figure now stands between the two.
+    in_cell = _img(3, "The screenshot from the cell", ["steps_to_reproduce"])
+    first["steps_to_reproduce"] = (
+        "| Step | Shot |\n| ---- | ---- |\n| CELL-IMAGE-CELL | ![In a cell](evidence:3) |\n\n"
+        "Table: With a screenshot in a cell"
+    )
+    first["images"], first["placed"] = [in_cell], {"steps_to_reproduce": _placed(in_cell)}
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(_png(40, 20))
+    manifest = json.loads((TEMPLATE / "template.json").read_text())
+    files = quarto_render.render(
+        TEMPLATE, "report.qmd", data, ["html", "docx"], tmp_path / "out",
+        postprocess=manifest.get("postprocess"), timeout=240, resolve_evidence=lambda item: shot,
+    )
+    html = files["html"].read_text(encoding="utf-8")
+
+    expected = _numbered([
+        "Project details", "Penetration testers", "Distribution list",
+        "Written in the summary",                                  # 4: between the template's own
+        "Summary of findings", "Severity count with remediation timeline (days)",
+        "Networks", "Domains",
+        "",                                                        # 9: the empty one
+        "Inside a quote, with <code>code</code>",
+        "lower-case spelling",
+        "With a screenshot in a cell",                             # 12: steps to reproduce
+        "In the Evidence text",
+    ])
+    captions = _table_captions(html)
+    assert [re.sub(r"</?strong>", "", c) for c in captions] == expected
+    assert "Table 10: Inside a <strong>quote</strong>" in captions[9]         # inline formatting is kept
+    # The cell's figure follows its table, and the caption stayed above it.
+    cell = html[html.index(f"<p>{captions[11]}</p>"):]
+    cell = cell[:cell.index("Table 13:")]
+    assert cell.index("CELL-IMAGE-CELL") < cell.index("</table>") < cell.index("<figure")
+    assert _figcaptions(cell) == ["Figure 1: In a cell"] and "Table: With a screenshot" not in html
+
+    # Above its table: the caption, then the table that holds the cell —
+    # nothing but the table's own opening between them.
+    def table_after(caption: str) -> str:
+        rest = html[html.index(f"<p>{caption}</p>"):]
+        return rest[:rest.index("</table>")]
+
+    for caption, cell in ((captions[3], "SUMMARY-CELL"), (captions[8], "EMPTY-CAPTION-CELL"),
+                          (captions[9], "QUOTE-CELL"), (captions[10], "LOWER-CELL"),
+                          (captions[11], "CELL-IMAGE-CELL"), (captions[12], "EVIDENCE-CELL")):
+        block = table_after(caption)
+        assert cell in block and block.count("<table") == 1, caption
+        assert "<p>" not in block.split("</div>", 1)[1], caption
+    # The caption line itself is gone from under the table.
+    for typed in ("Table: Written in the summary", "Table: In the Evidence text", "table: lower-case spelling"):
+        assert typed not in html, typed
+    # What is not a caption stays the text it is, and takes no number.
+    for kept in ("Table: NOT-A-CAPTION opens the section", "Table: ORPHAN-LINE follows a paragraph",
+                 "The Table: MID-LINE words are prose."):
+        assert f"<p>{kept}</p>" in html, kept
+    orphan = html[html.index("ORPHAN-CELL"):html.index("ORPHAN-LINE")]
+    assert "Table Caption" not in orphan and "Words between." in orphan
+    assert 'data-custom-style="Table Caption"' not in html[html.rindex("</table>"):]
+
+    # Word: the same captions, in the Table Caption style, each directly
+    # above a table.
+    paragraphs = _word_paragraphs(files["docx"])
+    word = [text for style, text, _ in paragraphs if style == "TableCaption"]
+    assert word == [re.sub(r"<[^>]+>", "", c) for c in expected]
+    with zipfile.ZipFile(files["docx"]) as z:
+        doc = z.read("word/document.xml").decode("utf-8")
+    styled = [m for m in re.finditer(r"<w:p[ >].*?</w:p>", doc, re.S) if 'w:val="TableCaption"' in m.group(0)]
+    assert len(styled) == len(word)
+    for m in styled:
+        assert doc[m.end():].lstrip().startswith("<w:tbl>"), m.group(0)
+    assert "NOT-A-CAPTION" in doc and "ORPHAN-LINE" in doc
+
+
+@needs_quarto
+def test_a_caption_a_template_numbered_itself_joins_the_one_count(tmp_path):
+    """An issued report renders from the copy of its template it kept, whose
+    caption partial still prints "Table 3: …" from a Jinja counter — and an
+    operator's own template may too.  Such a caption is renumbered, so a
+    table captioned in written text does not make two tables share a number;
+    a Table Caption div that carries no number of its own is left as it is."""
+    folder = tmp_path / "tpl"
+    folder.mkdir()
+    legacy = (
+        "<% set counter.table = counter.table + 1 %>\n"
+        '::: {custom-style="Table Caption"}\nTable << counter.table >>: << caption >>\n:::\n\n'
+    )
+    (folder / "_caption.qmd").write_text(legacy)
+    (folder / "report.qmd").write_text(
+        "---\ntitle: x\nengine: markdown\nfilters:\n  - quarto\n  - _bluestick/fields.lua\n"
+        "format:\n  html:\n    embed-resources: true\n---\n\n"
+        "<% set counter = namespace(table=0) %>\n"
+        '<% with caption = "Legacy first" %><% include "_caption.qmd" %><% endwith %>\n'
+        "| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+        '<< md(findings[0], "description") >>\n\n'
+        '<% with caption = "Legacy second" %><% include "_caption.qmd" %><% endwith %>\n'
+        "| c | d |\n|---|---|\n| 3 | 4 |\n\n"
+        "::: {.bs-table-caption}\nMarked for the filter\n:::\n\n"
+        "| e | f |\n|---|---|\n| 5 | 6 |\n\n"
+        '::: {custom-style="Table Caption"}\nTable 41\n:::\n\n'
+        "| g | h |\n|---|---|\n| 7 | 8 |\n\n"
+        '::: {custom-style="Table Caption"}\nTables of this kind carry no number\n:::\n\n'
+        '::: {custom-style="Table Label"}\nTable 7: a label, not a caption\n:::\n'
+    )
+    data = {"findings": [{
+        "_path": "findings.0",
+        "description": "| w | x |\n|---|---|\n| WRITTEN-CELL | 0 |\n\nTable: Written between the two",
+    }]}
+    files = quarto_render.render(folder, "report.qmd", data, ["html"], tmp_path / "out", timeout=240)
+    html = files["html"].read_text(encoding="utf-8")
+    # The source said "Table 1", "Table 2" and "Table 41"; the document counts.
+    assert "Table 2: Legacy second" in quarto_render.render_source(folder, "report.qmd", data)
+    assert _table_captions(html) == [
+        "Table 1: Legacy first", "Table 2: Written between the two", "Table 3: Legacy second",
+        "Table 4: Marked for the filter", "Table 5", "Tables of this kind carry no number",
+    ]
+    assert "Table 41" not in html and "Table 2: Legacy second" not in html
+    assert "Table 7: a label, not a caption" in html                # another style is not a caption
+
+
+@needs_template
+@needs_quarto
+def test_the_sample_report_links_findings_by_section_and_prints_the_evidence_in_order(tmp_path):
+    """The shipped sample, rendered: the summary table's first column is the
+    finding's section number, linked to it (HTML and Word); the Evidence
+    section prints the written text with its captioned table, the test
+    result, then the note and the screenshot it is attached to; who prepared
+    the report is in the project details; and the Word header and footer say
+    the classification, not the word CLASSIFICATION."""
+    data = json.loads((TEMPLATE / "sample-data.json").read_text())
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(_png(40, 20))
+    manifest = json.loads((TEMPLATE / "template.json").read_text())
+    files = quarto_render.render(
+        TEMPLATE, "report.qmd", data, ["html", "docx"], tmp_path / "out",
+        resolve_evidence=lambda item: shot, postprocess=manifest.get("postprocess"), timeout=240,
+    )
+    html = files["html"].read_text(encoding="utf-8")
+    with zipfile.ZipFile(files["docx"]) as z:
+        doc = z.read("word/document.xml").decode("utf-8")
+        margins = "".join(
+            z.read(n).decode("utf-8") for n in z.namelist() if re.fullmatch(r"word/(header|footer)\d*\.xml", n)
+        )
+
+    # --- the summary table: Section | Severity | Finding -----------------------
+    summary = html[html.index("Summary of findings</p>"):]
+    summary = summary[:summary.index("</table>")]
+    assert re.findall(r"<th(?: [^>]*)?>(.*?)</th>", summary, re.S) == ["Section", "Severity", "Finding"]
+    rows = re.findall(r"<tr[^>]*>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>", summary, re.S)
+    assert len(rows) == len(data["findings"]) == 4
+    numbers = {}
+    for finding, (section, severity, title) in zip(data["findings"], rows):
+        link = re.fullmatch(
+            rf'\s*<a href="#sec-finding-{finding["id"]}"[^>]*>(?:<span[^>]*>)?\s*([0-9A-Za-z.]+)\s*(?:</span>)?</a>\s*',
+            section, re.S,
+        )
+        assert link, section                                       # the number, linked — and nothing else
+        numbers[finding["id"]] = link.group(1)
+        assert severity.strip() == finding["severity_label"]
+        assert "<a " not in title and finding["title"].split("'")[0] in title        # the title is text now
+    assert "?sec-finding" not in html and "?@sec" not in html      # every reference resolved
+    # The number in the table is the number on the finding's heading.
+    for finding in data["findings"]:
+        heading = re.search(
+            rf'id="sec-finding-{finding["id"]}".*?<span class="header-section-number">([^<]+)</span>', html, re.S)
+        assert heading and heading.group(1).strip() == numbers[finding["id"]], finding["id"]
+    assert len(set(numbers.values())) == 4
+    assert 'href="#finding-' not in html and 'id="finding-' not in html
+    # Word: a link to the heading's bookmark, per finding.
+    for finding in data["findings"]:
+        assert f'w:anchor="sec-finding-{finding["id"]}"' in doc, finding["id"]
+        assert f'w:name="sec-finding-{finding["id"]}"' in doc, finding["id"]
+
+    # --- the finding's own table: no Status; affected systems: no Port, no Note --
+    first = html[html.index('id="sec-finding-11"'):html.index('id="sec-finding-12"')]
+    headers = re.findall(r"<th(?: [^>]*)?>(.*?)</th>", first, re.S)
+    assert headers[:5] == ["Reference", "CVSS score", "Vector", "System", "Name"]
+    assert "Status" not in headers and "Port" not in headers and "Note" not in headers
+
+    # --- Evidence: text, its captioned table, the test result, the note, the image --
+    evidence = first[first.index(" Evidence / proof of concept</h4>"):first.index(" Recommendations</h3>")]
+    order = [evidence.index(marker) for marker in (
+        "The service identified itself with the build below",
+        "What the file server answered",                           # the caption, above …
+        "<td>SMBv1 enabled</td>",                                  # … its table
+        "against 192.0.2.10",                                      # the test result
+        "Banner captured from the assessment host",                # the note, as written
+        "<figure",                                                 # the screenshot it is attached to
+    )]
+    assert order == sorted(order)
+    assert evidence.count("<figure") == 1 and "The SMB banner of files01" in evidence
+    assert evidence.count("Banner captured from the assessment host") == 1
+    captions = _table_captions(html)
+    assert [c.split(":")[0] for c in captions] == [f"Table {n}" for n in range(1, len(captions) + 1)]
+    assert captions[-1].endswith(": What the file server answered") and "Table: What" not in html
+    # A finding with nothing to show and no image marked still owes its evidence.
+    third = html[html.index('id="sec-finding-13"'):html.index('id="sec-finding-14"')]
+    assert "Evidence / proof of concept" in third and "TODO: Write the evidence" in third
+
+    # --- who prepared it, the disclaimer, the classification -------------------
+    assert re.search(r"<td[^>]*>Prepared by</td>\s*<td[^>]*>Example Security Assessments</td>", html)
+    assert "A security assessment is a point-in-time analysis" in html
+    assert ">Prepared by</w:t>" in doc and ">Example Security Assessments</w:t>" in doc
+    assert margins.count("<w:t>Confidential</w:t>") >= 2 and "CLASSIFICATION" not in margins
+
+
+@needs_template
+@needs_quarto
+def test_a_finding_with_every_image_placed_has_no_evidence_section_and_a_written_disclaimer_prints(tmp_path):
+    data = json.loads((TEMPLATE / "sample-data.json").read_text())
+    for f in data["findings"]:
+        f["images"], f["placed"], f["evidence"], f["confirmations"] = [], {}, [], []
+        f["evidence_text"] = None
+    first = data["findings"][0]
+    one = _img(1, "Placed in the description", ["description"])
+    first["description"] = "Shown where it matters.\n\n![](evidence:1)"
+    first["images"], first["placed"] = [one], {"description": _placed(one)}
+    first["references"] = "  \n "
+    # The report's own image, in the system description; an id its map does
+    # not list prints as its alt text.
+    diagram = _img(9, "The assessed network", ["system_description"])
+    data["engagement"]["system_description"] = "The estate.\n\n![](evidence:9)\n\n![NOT-LISTED-ALT](evidence:1)"
+    data["engagement"]["images"] = [diagram]
+    data["engagement"]["placed"] = {"system_description": _placed(diagram)}
+    data["engagement"]["disclaimer"] = "OUR-DISCLAIMER applies.\n\n- First term\n- Second term"
+    data["engagement"]["author_name"] = None
+    data["report"]["draft"] = True
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(_png(40, 20))
+    files = quarto_render.render(
+        TEMPLATE, "report.qmd", data, ["html"], tmp_path / "out", resolve_evidence=lambda item: shot, timeout=240,
+    )
+    html = files["html"].read_text(encoding="utf-8")
+
+    first_html = html[html.index('id="sec-finding-11"'):html.index('id="sec-finding-12"')]
+    assert "Evidence / proof of concept" not in first_html and "TODO" not in first_html.split("Steps to reproduce")[1]
+    assert " References</h3>" not in first_html
+    assert " Steps to reproduce</h4>" in first_html and " Recommendations</h3>" in first_html
+    # The report's own figure comes first in the document, in its section.
+    assert _figcaptions(html) == ["Figure 1: The assessed network", "Figure 2: Placed in the description"]
+    system = html[html.index(" System description</h1>"):html.index(" Findings</h1>")]
+    assert _figcaptions(system) == ["Figure 1: The assessed network"] and "NOT-LISTED-ALT" in system
+    # The written disclaimer, as Markdown, in place of the template's own.
+    tail = html[html.index(" Disclaimer</h2>"):]
+    assert "OUR-DISCLAIMER applies." in tail and "<li>First term</li>" in tail
+    assert "point-in-time analysis" not in html
+    # A draft with no author anywhere says so, highlighted.
+    author = re.search(r"<td[^>]*>Prepared by</td>\s*<td[^>]*>(.*?)</td>", html, re.S)
+    assert author and "TODO: Author (who produced this report)" in author.group(1) and "bs-todo" in author.group(1)

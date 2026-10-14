@@ -568,6 +568,7 @@ def delete_project(
         for r in db.query(_models.NoteAttachment.annotation_id)
         .filter(_models.NoteAttachment.project_id == project.id)
         .all()
+        if r[0] is not None      # NULL: an image of the report's own text
     }
     project_name = project.name
     # The project's own history cascades with it, so the audit row is the
@@ -609,6 +610,8 @@ def delete_project(
     # before, and an issued report can be deleted no other way.
     from app.services.client_report_service import discard_project_report_files
     discard_project_report_files(_project_id)
+    from app.services.note_attachment_service import purge_project_report_images
+    purge_project_report_images(_project_id)
     return {"message": f"Project '{project_name}' deleted"}
 
 

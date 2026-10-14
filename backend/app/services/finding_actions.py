@@ -64,7 +64,7 @@ def require_modify(actor: FindingActor, finding: Finding, what: str) -> None:
 def apply_report_text(
     finding: Finding, actor: FindingActor, sent: Dict[str, Optional[object]],
 ) -> Dict[str, object]:
-    """Apply report-text fields (the five sections, ``cvss_vector``,
+    """Apply report-text fields (``REPORT_TEXT_FIELDS``, ``cvss_vector``,
     ``cvss_score``) that are present in ``sent``.  Only a field whose value
     actually changes needs the right, so resending an unchanged form after a
     triage edit is not refused.  Returns the applied changes; the caller

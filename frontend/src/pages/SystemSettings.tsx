@@ -30,6 +30,7 @@ import { SECRET_MUTATION, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import QueueHealthCard from '../components/QueueHealthCard';
 import RemediationSettingsSection from '../components/remediation/RemediationSettingsSection';
+import ReportDefaultsSection from '../components/reports/ReportDefaultsSection';
 import ReportWritingGuidanceSection from '../components/reports/ReportWritingGuidanceSection';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import { personInitials } from '../utils/people';
@@ -436,7 +437,8 @@ const SystemSettings: React.FC = () => {
         <TabsContent value="remediation" forceMount hidden={tab !== 'remediation'}>
           <RemediationSettingsSection />
         </TabsContent>
-        <TabsContent value="report-writing" forceMount hidden={tab !== 'report-writing'}>
+        <TabsContent value="report-writing" forceMount hidden={tab !== 'report-writing'} className="space-y-lg">
+          <ReportDefaultsSection />
           <ReportWritingGuidanceSection />
         </TabsContent>
 

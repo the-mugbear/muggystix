@@ -68,6 +68,10 @@ class ReportProfile(Base):
     thick_clients = Column(Text, nullable=True)
     other_targets = Column(Text, nullable=True)
     template = Column(String(100), nullable=True)      # report-templates/<name>
+    # v2.495.0 — who produced the report, and the disclaimer it closes with.
+    # NULL = the installation's (``report_defaults``).
+    author_name = Column(String(255), nullable=True)
+    disclaimer = Column(Text, nullable=True)           # Markdown
     updated_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -179,6 +183,22 @@ class ReportImage(Base):
     __table_args__ = (
         UniqueConstraint("report_id", "attachment_id", name="uq_report_image_attachment"),
     )
+
+
+class ReportDefault(Base):
+    """The installation's own report details — who produces its reports and
+    the disclaimer they close with — one row per key, written by a global
+    admin.  A project's report defaults override them, and a report its
+    project's.  No row = not set.  ``services/report_defaults`` is the one
+    reader and writer, and names the keys."""
+    __tablename__ = "report_defaults"
+
+    key = Column(String(40), primary_key=True)
+    text = Column(Text, nullable=False)
+    updated_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+
+    updated_by = relationship("User")
 
 
 class ReportWritingGuidance(Base):

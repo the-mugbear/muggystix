@@ -8,11 +8,11 @@
  * it when, the template fingerprint, and Revise (a new draft that supersedes
  * it once issued).
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isClientTemplate } from '../utils/reportTemplates';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Download, Loader2, RefreshCw, Sparkles, Stamp, Trash2 } from 'lucide-react';
+import { ArrowLeft, Loader2, RefreshCw, Sparkles, Stamp, Trash2 } from 'lucide-react';
 
 import {
   ClientReport,
@@ -54,6 +54,7 @@ import TemplateImages, {
   TemplateFilesLine, assetCountLabel, missingAssetsReason, missingRequiredAssets,
 } from '../components/reports/TemplateImages';
 import AiDraftReportDialog from '../components/AiDraftReportDialog';
+import DownloadButton from '../components/DownloadButton';
 import { DetailSkeleton } from '../components/PageSkeleton';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -85,6 +86,12 @@ export const evidenceRecordsNotice = (total: number, byAgent?: number | null): s
  *  details; they are not printed." — an addendum's already-reported findings. */
 export const evidenceRecordsNotPrintedNotice = (count: number): string =>
   `${count.toLocaleString()} further test result${count === 1 ? ' belongs' : 's belong'} to findings this report lists without their details; ${count === 1 ? 'it is' : 'they are'} not printed.`;
+
+/** "N notes are printed as written before the image attached to them, under
+ *  Evidence." — an image no section places is preceded by its note's text. */
+export const evidenceNotesNotice = (count: number): string =>
+  `${count.toLocaleString()} note${count === 1 ? ' is' : 's are'} printed as written before the `
+  + `image${count === 1 ? '' : 's'} attached to ${count === 1 ? 'it' : 'them'}, under Evidence.`;
 
 /** Images the report prints under their file's name, nobody having written a
  *  caption — the issue dialog's line; the page lists the findings. */
@@ -238,6 +245,22 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   // A preview whose status could not be re-read: the last reading stays on
   // its button, and the reader is told it may be old (it is asked again).
   const previewStale = followed.find((poll) => poll.running && poll.error != null)?.error;
+  // A finished preview is said once — a render takes a while and the reader
+  // has usually looked away.  Once per JOB: not on each poll or re-render, and
+  // not for a failure (its row says that).
+  const readyPreviews = (Object.entries(previews) as Array<[ClientReportFormat, ReportJob]>)
+    .filter(([, job]) => job.status === 'completed')
+    .map(([fmt, job]) => `${fmt}:${job.id}`)
+    .join(',');
+  const announcedPreviews = useRef(new Set<string>());
+  useEffect(() => {
+    for (const ready of readyPreviews ? readyPreviews.split(',') : []) {
+      if (announcedPreviews.current.has(ready)) continue;
+      announcedPreviews.current.add(ready);
+      const fmt = ready.split(':')[0] as ClientReportFormat;
+      toast.success(`The ${FORMAT_LABEL[fmt]} preview is ready.`, { id: `preview-ready-${ready}` });
+    }
+  }, [readyPreviews, toast]);
 
   const dirty = useMemo(() => {
     if (!report || !form) return false;
@@ -293,10 +316,6 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     onError: (err) => toast.error(formatApiError(err, 'Could not start the preview.')),
   });
   const preview = (fmt: ClientReportFormat) => { if (report) startPreview.mutate(fmt); };
-  const downloadPreview = useMutation({
-    mutationFn: (jobId: number) => downloadReportJob(projectId, jobId),
-    onError: (err) => toast.error(formatApiError(err, 'Could not download the preview.')),
-  });
 
   const issuing = useMutation({
     mutationFn: () => issueClientReport(projectId, reportId),
@@ -353,6 +372,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           {!!s?.evidence_records_not_printed && (
             <p className="mt-xs">{evidenceRecordsNotPrintedNotice(s.evidence_records_not_printed)}</p>
           )}
+          {!!s?.evidence_notes && (
+            <p className="mt-xs">{evidenceNotesNotice(s.evidence_notes)}</p>
+          )}
           {!!s?.scope_external?.file && (
             <p className="mt-xs">Its scope ({s.scope_external.networks.toLocaleString()} networks) is over the template&apos;s limit: the report names <span className="font-medium">{s.scope_external.file.name}</span> instead of listing it — send that file with the report.</p>
           )}
@@ -374,16 +396,6 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     onSuccess: (next) => { putReport(next); },
     onError: (err) => toast.error(formatApiError(err, 'Could not restart the rendering.')),
   });
-
-  // 5.319.0 — the scope file an over-cutoff report names.
-  const scopeDownload = useMutation({
-    mutationFn: (name: string) => downloadClientReportScope(projectId, reportId, name),
-    onError: (err) => toast.error(formatApiError(err, 'Could not download the scope file.')),
-  });
-  const downloadScope = () => {
-    const file = report?.summary?.scope_external?.file;
-    if (file) scopeDownload.mutate(file.name);
-  };
 
   const discarding = useMutation({
     mutationFn: () => deleteClientReport(projectId, reportId),
@@ -418,6 +430,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
 
   const isDraft = report.status === 'draft';
   const s = report.summary ?? {};
+  // 5.319.0 — the scope file an over-cutoff report names.
+  const scopeFile = s.scope_external?.file;
   const counts = s.counts;
   const editable = isDraft && report.can_edit;
   const template = templates.find((t) => t.name === report.template);
@@ -523,7 +537,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             {s.missing_text?.length ? 'Listed below' : 'Every finding has its text'}
           </PostureMeasure>
           <PostureMeasure label="Evidence images" value={s.images ?? 0}
-            info="Images are opt-in: tick “In report” on an image attached to a finding's evidence or comments. Where one prints depends on the report's template: the Penetration test report prints an image its author placed in a written section (Insert image, in the report text editor) there and the rest under the finding's Evidence; the Remediation worklist prints only images placed in a recommendation; the Executive brief prints none. The line below says what this report does. WebP images cannot be placed in every format and are skipped.">
+            info="Images are opt-in: tick “In report” on an image attached to a finding's evidence or comments. Where one prints depends on the report's template: the Penetration test report prints an image its author placed in a written section (Insert image, in the report text editor) there and the rest under the finding's Evidence, each after the text of the comment or note it is attached to; the Remediation worklist prints only images placed in a recommendation; the Executive brief prints none. The line below says what this report does. WebP images cannot be placed in every format and are skipped.">
             {s.images ? (
               // What THIS report's template prints (`evidenceImagesLine`); a
               // report issued before that was measured claims nothing.
@@ -637,8 +651,41 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           {evidenceRecordsNotPrintedNotice(s.evidence_records_not_printed)}
         </p>
       )}
+      {!!s.evidence_notes && !s.evidence_note_findings?.length && (
+        // A note was written for the team; this report shows it to the client.
+        <p className="break-words text-caption text-muted-foreground" data-testid="report-evidence-notes">
+          {evidenceNotesNotice(s.evidence_notes)}
+        </p>
+      )}
+      {!!s.evidence_note_findings?.length && (
+        // Listed, with how each begins: a note was written for the team, and
+        // a count alone names nothing a reviewer can open before issuing.
+        <PostureSection title={isDraft ? 'Notes the client will read' : 'Notes printed in this report'}
+          description={isDraft
+            ? 'Each is printed word for word under Evidence, before the image attached to it. To keep one out, place its image in a written section or untick “In report”.'
+            : 'Each was printed word for word under Evidence, before the image attached to it.'}>
+          <ul className="space-y-xs" data-testid="report-evidence-notes">
+            {s.evidence_note_findings.map((m) => (
+              <li key={m.id} className="min-w-0 text-body">
+                <span className="flex min-w-0 flex-wrap items-baseline gap-x-xs">
+                  <span className="tabular-nums text-muted-foreground">{m.ref}</span>
+                  <Link to={`/findings/${m.id}#${NEED_SECTION.uncaptioned_images}`}
+                    className="min-w-0 truncate text-info hover:underline" title={m.title}>{m.title}</Link>
+                </span>
+                <ul className="mt-xxs space-y-xxs">
+                  {m.notes.map((note, i) => (
+                    <li key={i} className="line-clamp-3 whitespace-pre-wrap border-l-2 border-border pl-xs text-caption text-muted-foreground [overflow-wrap:anywhere]">
+                      {note}
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+        </PostureSection>
+      )}
 
-      {s.scope_external?.file && (
+      {s.scope_external && scopeFile && (
         <PostureSection title="Scope file — send it with the report"
           description={isDraft
             ? 'The scope is over this template’s limit, so the report summarises it and names this file instead of listing it. The file is today’s scope; issuing freezes it with the report.'
@@ -647,15 +694,15 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             <strong>{s.scope_external.networks.toLocaleString()}</strong> network{s.scope_external.networks === 1 ? '' : 's'}
             {' '}and <strong>{s.scope_external.domains.toLocaleString()}</strong> domain{s.scope_external.domains === 1 ? '' : 's'}
             {s.scope_external.inline_max != null && <> (this template lists up to {s.scope_external.inline_max} networks)</>}.
-            {' '}The client needs <span className="font-medium">{s.scope_external.file.name}</span> to see what was in scope.
+            {' '}The client needs <span className="font-medium">{scopeFile.name}</span> to see what was in scope.
           </p>
           <dl className="mb-sm grid gap-x-lg gap-y-xxs text-caption sm:grid-cols-[10rem_minmax(0,1fr)]">
             <dt className="text-muted-foreground">SHA-256</dt>
-            <dd className="break-all font-mono">{s.scope_external.file.sha256}</dd>
+            <dd className="break-all font-mono">{scopeFile.sha256}</dd>
           </dl>
-          <Button size="sm" variant="outline" onClick={downloadScope} disabled={busy !== null}>
-            <Download className="size-4" aria-hidden /> Download scope file (CSV)
-          </Button>
+          <DownloadButton size="sm" variant="outline" label="Download scope file (CSV)"
+            filename={scopeFile.name} errorText="Could not download the scope file." disabled={busy !== null}
+            saveFn={() => downloadClientReportScope(projectId, reportId, scopeFile.name)} />
         </PostureSection>
       )}
 
@@ -724,10 +771,12 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                     {running ? `Rendering ${FORMAT_LABEL[fmt]}…` : `Preview ${FORMAT_LABEL[fmt]}`}
                   </Button>
                   {job?.status === 'completed' && (
-                    <Button size="sm" variant="ghost" aria-label={`Download the ${FORMAT_LABEL[fmt]} preview`}
-                      onClick={() => downloadPreview.mutate(job.id)}>
-                      <Download className="size-4" aria-hidden /> Download
-                    </Button>
+                    // The finished file is what the reader came back for: the
+                    // row's main button.  Keyed by its job, so a new preview's
+                    // button does not carry the previous file's "Downloaded".
+                    <DownloadButton key={job.id} size="sm" label={`Download ${FORMAT_LABEL[fmt]} preview`}
+                      errorText="Could not download the preview."
+                      saveFn={() => downloadReportJob(projectId, job.id)} />
                   )}
                   {job?.status === 'failed' && (
                     <span className="max-w-md truncate text-caption text-destructive" title={job.error_message ?? undefined}>
@@ -804,6 +853,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
 
           <EngagementSettingsFields idPrefix="report" value={form.settings} members={roster.members}
             membersStatus={roster.status} onRetryMembers={roster.retry} currentUser={currentUser}
+            inherited={report.inherited} inheritedFrom="project"
             readOnly={!editable} disabled={saving} onChange={(settings) => edit({ settings })} />
 
           {editable && (

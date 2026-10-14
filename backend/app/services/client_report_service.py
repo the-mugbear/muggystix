@@ -66,7 +66,7 @@ from app.db.models_reports import (
 from app.db.models_vulnerability import Vulnerability
 from app.services.report_text import REPORT_TEXT_FIELDS, internal_references
 from app.services import (
-    proposal_service, quarto_render, report_images, report_scope, report_template_service,
+    proposal_service, quarto_render, report_defaults, report_images, report_scope, report_template_service,
 )
 
 SCHEMA_VERSION = 1
@@ -156,6 +156,8 @@ def missing_required_text_condition():
 SETTINGS_KEYS = (
     "client_name", "classification", "engagement_type", "testers", "distribution",
     "system_description", "applications", "thick_clients", "other_targets",
+    # Inherited when empty (``report_defaults.resolve``).
+    "author_name", "disclaimer",
 )
 # v2.382.0 — report details the template prints as a highlighted TODO when
 # empty; the report page lists the same ones before issuing.  (The three
@@ -163,6 +165,7 @@ SETTINGS_KEYS = (
 REQUIRED_DETAILS = (
     ("executive_summary", "executive summary"),
     ("client_name", "client"),
+    ("author_name", "author"),
     ("classification", "classification"),
     ("engagement_type", "engagement type"),
     ("system_description", "system description"),
@@ -468,6 +471,10 @@ def freeze_report_images(db: Session, report: Report, dataset: dict) -> int:
         for img in finding.get("images") or []:
             if img.get("printed") is not False:
                 wanted.setdefault(img["attachment_id"], (img, finding))
+    # The report's own images (its system description's), by the same rule.
+    for img in (dataset.get("engagement") or {}).get("images") or []:
+        if img.get("printed") is not False:
+            wanted.setdefault(img["attachment_id"], (img, {"ref": "The system description"}))
     if not wanted:
         return 0
     attachments = {
@@ -688,6 +695,11 @@ class ClientReportService:
             settings["distribution"] = list(profile.distribution or [])
         if not settings["testers"]:
             settings["testers"] = self.project_team(project_id)
+        # The inherited details are NOT copied: a draft that writes none of
+        # its own keeps following the project's (and the installation's)
+        # until it is issued (``report_defaults.resolve``).
+        for key in report_defaults.KEYS:
+            settings[key] = None
         return settings
 
     @staticmethod
@@ -819,13 +831,43 @@ class ClientReportService:
                     by_agent += first
                 ticked.append(att)
             images, placed, unplaced = report_images.report_placement(by_id[fid], ticked)
+            note_of = {att.id: att.annotation_id for att in ticked}
+            for item in unplaced:
+                item["note_id"] = note_of.get(item["attachment_id"])
             by_finding[fid] = {
                 "images": images, "placed": placed, "evidence": unplaced,
                 # Not part of the dataset: the images whose caption above is
                 # the file's name, for the summary's warning.
                 "uncaptioned": {att.id for att in ticked if report_images.caption_missing(att)},
             }
+        self._note_preambles(by_finding)
         return by_finding, skipped, by_agent
+
+    def _note_preambles(self, by_finding: Dict[int, dict]) -> None:
+        """Give each image of a trailing evidence block the text it prints
+        after (owner, 2026-10-13): the note the image is attached to, as
+        written.  ``note`` is set on the FIRST image of each note within a
+        finding's block and None on the rest, so a note with three
+        screenshots is printed once, before them.  One statement for the
+        report, whatever the number of images."""
+        note_ids = {
+            item["note_id"] for entry in by_finding.values() for item in entry["evidence"]
+            if item.get("note_id") is not None
+        }
+        bodies: Dict[int, str] = {}
+        ids = sorted(note_ids)
+        for start in range(0, len(ids), _ID_CHUNK):
+            bodies.update(
+                self.db.query(Annotation.id, Annotation.body)
+                .filter(Annotation.id.in_(ids[start:start + _ID_CHUNK])).all()
+            )
+        for entry in by_finding.values():
+            said = set()
+            for item in entry["evidence"]:
+                note_id = item.pop("note_id", None)
+                body = (bodies.get(note_id) or "").strip()
+                item["note"] = body if body and note_id not in said else None
+                said.add(note_id)
 
     @staticmethod
     def _template(template):
@@ -1198,7 +1240,13 @@ class ClientReportService:
                 # section places; and the rest — the trailing evidence block.
                 "images": evidence.get(f.id, {}).get("images", []),
                 "placed": evidence.get(f.id, {}).get("placed", {}),
-                "evidence": evidence.get(f.id, {}).get("evidence", []),
+                # Each trailing image has its own data path, so the
+                # template's md(e, "note") can name the note printed before it.
+                "evidence": [
+                    {"_path": f"findings.{index}.evidence.{n}", **entry}
+                    for n, entry in enumerate(evidence.get(f.id, {}).get("evidence", []))
+                ],
+                "evidence_text": f.evidence_text,
                 # How it was confirmed (B8): each entry has its own data path
                 # so the template's code() can name its command and output.
                 "confirmations": [
@@ -1219,6 +1267,13 @@ class ClientReportService:
         # The team is linked to accounts; the distribution list is names typed in.
         settings["testers"], no_full_name = self._with_full_names(settings.get("testers"))
         settings["distribution"] = list(settings.get("distribution") or [])
+        # The author and the disclaimer are inherited when this report writes
+        # none: the project's, else the installation's.
+        settings.update(report_defaults.resolve(self.db, self.get_profile(report.project_id), settings))
+        # The report's own images, where its written details place them.
+        settings["images"], settings["placed"] = report_images.engagement_placement(
+            report_images.project_report_images(self.db, report.project_id), settings,
+        )
 
         revision_of = report.revision_of
         draft = issued_at is None and report.status == ReportStatus.DRAFT
@@ -1318,6 +1373,33 @@ class ClientReportService:
             "evidence_records": sum(len(i["confirmations"]) for i in items),
             "evidence_records_not_printed": printing["records_not_printed"] if printing else None,
             "agent_evidence_records": agent_records,
+            # Notes printed word for word before the image attached to them,
+            # under Evidence — said before the sign-off, never a block: a
+            # note was written for the team, and this report shows it to the
+            # client.  Counted over the trailing images THIS report prints.
+            "evidence_notes": sum(
+                1 for i in items
+                for e in i["evidence"]
+                if e.get("note") and any(
+                    img["attachment_id"] == e["attachment_id"] and img.get("printed", True)
+                    for img in i["images"]
+                )
+            ),
+            # The same notes, by finding, each with how it begins — so the
+            # page can list them with a link, as it lists images without a
+            # caption: a count alone names nothing a reviewer can open.
+            "evidence_note_findings": [
+                {"id": item["id"], "ref": item["ref"], "title": item["title"], "notes": notes}
+                for item in items
+                if (notes := [
+                    report_excerpt(e["note"], max_chars=200, max_lines=3)[0]
+                    for e in item["evidence"]
+                    if e.get("note") and any(
+                        img["attachment_id"] == e["attachment_id"] and img.get("printed", True)
+                        for img in item["images"]
+                    )
+                ])
+            ],
             "pending_proposals": [
                 {"id": item["id"], "ref": item["ref"], "title": item["title"], "count": pending[item["id"]]}
                 for item in items if pending.get(item["id"])
@@ -1379,6 +1461,12 @@ class ClientReportService:
         * ``confirmations`` are emptied when the template did not read them
           for that finding: the report's data holds the test results it
           prints, not those of a finding it shows as a table row.
+        * a trailing image's ``note`` is cleared when the template did not
+          ask for it (``md(e, "note")``): a note was written for the team,
+          so the report's data — the snapshot, the source bundle — holds only
+          the notes it prints, and ``summary.evidence_notes`` counts those.
+          A template that prints the image without its note (one written
+          before notes were printed, the contact's list) prints none.
         """
         template = ClientReportService._template(template)
         if template is None:
@@ -1390,6 +1478,9 @@ class ClientReportService:
         figures = set(parts["figures"])
         shown = set(parts["findings"])
         read = set(parts["confirmations"])
+        # Every other md() the template asked for, by data path (the value
+        # says whether its images print; the KEY that it was printed).
+        texts = parts.get("texts") or {}
         out = {
             "in_text": 0, "trailing": 0, "not_printed": 0, "records_not_printed": 0,
             # Why an image prints nowhere: its finding is listed without its
@@ -1420,6 +1511,15 @@ class ClientReportService:
                 out["records_not_printed"] += len(item["confirmations"])
                 item["confirmations"] = []
                 item["confirmations_omitted"] = 0
+            for entry in item.get("evidence") or []:
+                if entry.get("note") and f"{entry.get('_path')}.note" not in texts:
+                    entry["note"] = None
+        # The report's own images: printed where the template prints, with
+        # images, the written detail that places them.
+        engagement = dataset.get("engagement") or {}
+        for img in engagement.get("images") or []:
+            img["printed_in"] = [f for f in img.get("placed_in") or [] if texts.get(f"engagement.{f}")]
+            img["printed"] = bool(img["printed_in"])
         return out
 
     @staticmethod

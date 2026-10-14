@@ -33,6 +33,7 @@ vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 vi.mock('../../components/QueueHealthCard', () => ({ default: () => null }));
 vi.mock('../../components/remediation/RemediationSettingsSection', () => ({ default: () => null }));
 vi.mock('../../components/reports/ReportWritingGuidanceSection', () => ({ default: () => null }));
+vi.mock('../../components/reports/ReportDefaultsSection', () => ({ default: () => null }));
 vi.mock('../../components/UserMembershipsDialog', () => ({ default: () => null }));
 
 import SystemSettings from '../../pages/SystemSettings';

@@ -157,6 +157,7 @@ class AssistReportFinding(BaseModel):
     recommendation: Optional[str] = None
     references: Optional[Any] = None
     steps_to_reproduce: Optional[str] = None
+    evidence_text: Optional[str] = None
     affected: List[Dict[str, Any]] = Field(default_factory=list)
     affected_count: int = 0
     # Addendum only: why it is in this document ("new" / "new_hosts" /

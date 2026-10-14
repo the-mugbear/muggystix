@@ -34,6 +34,7 @@ export const FIELD_LABELS: Record<string, string> = {
   impact: 'Impact',
   recommendation: 'Recommendation',
   steps_to_reproduce: 'Steps to reproduce',
+  evidence_text: 'Evidence',
   references: 'References',
   cvss_vector: 'CVSS vector',
 };

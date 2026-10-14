@@ -11,13 +11,12 @@ import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isClientTemplate } from '../utils/reportTemplates';
 import { Link, useNavigate } from 'react-router-dom';
-import { Download, FilePlus2, Loader2, Pencil, RefreshCw } from 'lucide-react';
+import { FilePlus2, Loader2, Pencil, RefreshCw } from 'lucide-react';
 
 import {
   ClientReport,
   ClientReportKind,
   ClientReportList,
-  ReportFile,
   ReportProfile,
   ReportTemplate,
   ReportTemplateProblem,
@@ -41,6 +40,7 @@ import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import PostureLead from '../components/posture/PostureLead';
+import DownloadButton from '../components/DownloadButton';
 import EngagementSettingsFields, { cleanSettings } from '../components/reports/EngagementSettingsFields';
 import TemplateImages, { assetCountLabel, missingRequiredAssets } from '../components/reports/TemplateImages';
 import { Badge } from '../components/ui/badge';
@@ -144,13 +144,11 @@ export const reportKindLabel = (r: Pick<ClientReport, 'kind' | 'baseline' | 'rev
   return parts.join(' · ');
 };
 
+/** An issued report's files.  Each button is its own download (`DownloadButton`):
+ *  it says "Downloading…" while its file is fetched, cannot be pressed twice,
+ *  and keeps a check once the file is saved — the other formats stay usable. */
 export const FileButtons: React.FC<{ report: ClientReport }> = ({ report }) => {
-  const toast = useToast();
   const projectId = useProjectId();
-  const download = useMutation({
-    mutationFn: (file: ReportFile) => downloadClientReportFile(projectId, report.id, file),
-    onError: (err) => toast.error(formatApiError(err, 'Could not download the file.')),
-  });
   if (report.render_status === 'pending') {
     return (
       <span className="inline-flex items-center gap-xxs text-caption text-muted-foreground">
@@ -165,11 +163,10 @@ export const FileButtons: React.FC<{ report: ClientReport }> = ({ report }) => {
   return (
     <span className="inline-flex flex-wrap gap-xxs">
       {report.files.map((f) => (
-        <Button key={f.format} variant="outline" size="sm" className="h-7 px-xs text-caption"
-          aria-label={`Download ${f.filename}`}
-          onClick={() => download.mutate(f)}>
-          <Download className="size-3.5" aria-hidden /> {f.format.toUpperCase()}
-        </Button>
+        <DownloadButton key={f.format} compact variant="outline" size="sm" className="h-7 px-xs text-caption"
+          label={f.format.toUpperCase()} name={`Download ${f.filename}`} filename={f.filename}
+          errorText="Could not download the file."
+          saveFn={() => downloadClientReportFile(projectId, report.id, f)} />
       ))}
     </span>
   );
@@ -413,7 +410,7 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
     <>
     <PostureSection
       title="Defaults for new reports"
-      description="Every new draft starts from these; each report can change its own copy."
+      description="Every new draft starts from a copy of these, which it can change. The author and the disclaimer are not copied: a report that writes none of its own follows the project’s until it is issued."
       actions={canEdit && profile && !draft ? (
         <Button variant="ghost" size="sm" onClick={() => setEdits({})}>
           <Pencil className="size-4" aria-hidden /> Edit
@@ -424,6 +421,15 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
       {profile && !draft && (
         <dl className="grid gap-x-lg gap-y-xs text-body sm:grid-cols-[10rem_minmax(0,1fr)]">
           <dt className="text-muted-foreground">Client</dt><dd className="truncate">{safeFallback(profile.client_name, 'Not set')}</dd>
+          <dt className="text-muted-foreground">Author</dt>
+          <dd className="truncate" data-testid="profile-author"
+            title={profile.author_name?.trim() || profile.inherited?.author_name?.trim() || undefined}>
+            {profile.author_name?.trim()
+              ? profile.author_name
+              : profile.inherited?.author_name?.trim()
+                ? <>{profile.inherited.author_name} <span className="text-caption text-muted-foreground">(installation default)</span></>
+                : 'Not set'}
+          </dd>
           <dt className="text-muted-foreground">Classification</dt><dd className="truncate">{safeFallback(profile.classification, 'Not set')}</dd>
           <dt className="text-muted-foreground">Engagement type</dt><dd className="truncate">{safeFallback(profile.engagement_type, 'Not set')}</dd>
           <dt className="text-muted-foreground">Team</dt>
@@ -442,6 +448,7 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
         <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); save(); }}>
           <EngagementSettingsFields idPrefix="profile" value={draft} members={roster.members}
             membersStatus={roster.status} onRetryMembers={roster.retry} currentUser={currentUser}
+            inherited={profile?.inherited} inheritedFrom="installation"
             disabled={saving} onChange={(next) => setDraft({ ...draft, ...next })} />
           <div className="w-72 max-w-full space-y-xxs">
             <Label htmlFor="profile-template">Template</Label>

@@ -176,7 +176,10 @@ export const REPORT_FIELD_LABELS: Record<string, string> = {
   impact: 'Impact',
   recommendation: 'Recommendation',
   steps_to_reproduce: 'Steps to reproduce',
+  evidence_text: 'Evidence',
   references: 'References',
+  // A written detail of the report itself (the project's own images).
+  system_description: 'System description',
 };
 
 const fieldNames = (fields: readonly string[]): string =>
@@ -201,7 +204,8 @@ export const placementLine = (image: ImagePlacement): { text: string; tone: 'pla
   }
   return placed.length
     ? { text: `In: ${fieldNames(placed)}`, tone: 'plain' }
-    : { text: 'Not placed — prints under Evidence', tone: 'plain' };
+    // Said at the tick: the note is then the client's to read, as written.
+    : { text: 'Not placed — prints under Evidence, after the text of the comment or note it is attached to', tone: 'plain' };
 };
 
 /** An image the editor may insert: one of the finding's, ticked "In report". */

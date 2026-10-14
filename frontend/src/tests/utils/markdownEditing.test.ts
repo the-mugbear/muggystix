@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   TABLE_TEMPLATE,
+  tableCaptionOf,
   insertBlock,
   insertLink,
   prefixLines,
@@ -42,6 +43,21 @@ describe('toolbar edits', () => {
     expect(e.value.slice(e.start, e.end)).toBe('Column');
     expect(insertBlock(at('', 0), TABLE_TEMPLATE).value).toBe(TABLE_TEMPLATE);
     expect(insertBlock(at('Text\n\n', 6), TABLE_TEMPLATE).value).toBe(`Text\n\n${TABLE_TEMPLATE}`);
+  });
+
+  it('the table template holds no caption line: a placeholder left as it is would be issued', () => {
+    expect(TABLE_TEMPLATE).toBe('| Column | Column |\n| ------ | ------ |\n| Value  | Value  |');
+    expect(TABLE_TEMPLATE).not.toMatch(/Table:/i);
+  });
+
+  it('reads a caption only from a paragraph that opens with Table:', () => {
+    expect(tableCaptionOf('Table: Accounts found')).toBe('Accounts found');
+    expect(tableCaptionOf('table:no space')).toBe('no space');
+    expect(tableCaptionOf('Table:')).toBe('');
+    expect(tableCaptionOf('Table: over\ntwo lines')).toBe('over\ntwo lines');
+    expect(tableCaptionOf('TABLE: shouted')).toBeNull();
+    expect(tableCaptionOf('See Table: one')).toBeNull();
+    expect(tableCaptionOf('Tables: plural')).toBeNull();
   });
 });
 

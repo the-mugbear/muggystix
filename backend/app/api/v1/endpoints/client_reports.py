@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, defer, selectinload
 
@@ -28,7 +28,7 @@ from app.db.session import get_db
 from app.schemas.client_reports import (
     PreviewRequest, ReportCreate, ReportListOut, ReportOut,
     ReportProfileBody, ReportProfileOut, ReportTemplateAssetChangeOut, ReportTemplateOut,
-    ReportTemplateProblemOut, ReportUpdate, Tester,
+    ReportTemplateProblemOut, ReportTextImageOut, ReportUpdate, Tester,
 )
 from app.schemas.schemas import ReportJobSchema
 from app.services.client_report_service import (
@@ -40,7 +40,8 @@ from app.services.client_report_views import (
     serialize_report as _serialize,
 )
 from app.services.report_job_service import ReportJobService
-from app.services import report_scope
+from app.services import report_defaults, report_images, report_scope
+from app.services.note_attachment_service import store_image_attachment
 from app.services import report_template_service as templates
 from app.services import template_asset_store as asset_store_module
 
@@ -321,11 +322,14 @@ def _profile_out(db: Session, project_id: int, profile: Optional[ReportProfile])
     from_project = not team
     if from_project:
         team = ClientReportService(db).project_team(project_id)
+    inherited = report_defaults.installation(db)
     if profile is None:
         return ReportProfileOut(
             template=templates.default_template_name(), testers=team, testers_from_project=True,
+            inherited=inherited,
         )
     return ReportProfileOut(
+        author_name=profile.author_name, disclaimer=profile.disclaimer, inherited=inherited,
         client_name=profile.client_name, classification=profile.classification,
         engagement_type=profile.engagement_type, testers=team,
         distribution=profile.distribution or [], system_description=profile.system_description,
@@ -378,7 +382,9 @@ def put_report_profile(
     profile.engagement_type = data["engagement_type"]
     profile.testers = data["testers"]
     profile.distribution = data["distribution"]
-    profile.system_description = data["system_description"]
+    profile.system_description = report_images.normalise_references(data["system_description"])
+    profile.author_name = data["author_name"]
+    profile.disclaimer = data["disclaimer"]
     profile.applications = data["applications"]
     profile.thick_clients = data["thick_clients"]
     profile.other_targets = data["other_targets"]
@@ -387,6 +393,66 @@ def put_report_profile(
     db.commit()
     db.refresh(profile)
     return _profile_out(db, project.id, profile)
+
+
+# ---------------------------------------------------------------------------
+# The report's own images (v2.495.0)
+# ---------------------------------------------------------------------------
+
+def _may_modify_image(att, role: str, user: User) -> bool:
+    """The uploader, a project admin or a global admin — the rule the
+    attachment's own caption and delete routes apply."""
+    return att.uploaded_by_id in (None, user.id) or _is(role, ProjectRole.ADMIN)
+
+
+def _text_image_out(att, placed: dict, role: str, user: User) -> ReportTextImageOut:
+    return ReportTextImageOut(
+        id=att.id, filename=att.filename, caption=att.caption, content_type=att.content_type,
+        size_bytes=att.size_bytes, uploaded_by_id=att.uploaded_by_id, created_at=att.created_at,
+        placed_in=placed.get(att.id, []), can_modify=_may_modify_image(att, role, user),
+    )
+
+
+@router.get("/images", response_model=List[ReportTextImageOut])
+def list_report_text_images(
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
+):
+    """The images of the project's own report text — what "Insert image" on
+    the System description offers.  They belong to the project, so its report
+    defaults and every draft place the same ones.  The bytes, the caption and
+    the delete are the attachment's own routes (``/notes/attachments/{id}``)."""
+    role = _role(db, project, current_user)
+    placed = report_images.report_text_placements(db, project.id)
+    return [
+        _text_image_out(att, placed, role, current_user)
+        for att in report_images.project_report_images(db, project.id)
+    ]
+
+
+@router.post(
+    "/images", response_model=ReportTextImageOut, status_code=201,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
+def upload_report_text_image(
+    file: UploadFile = File(...),
+    caption: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
+):
+    """Add an image the report's own text can place (a network diagram in the
+    system description): PNG, JPEG or GIF, at most 10 MB, checked by its
+    bytes.  ``caption`` is what the report prints under it."""
+    try:
+        caption = report_images.clean_caption(caption)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    att = store_image_attachment(
+        db, note_id=None, project_id=project.id, uploaded_by_id=current_user.id, file=file, caption=caption,
+    )
+    return _text_image_out(att, {}, _role(db, project, current_user), current_user)
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +565,10 @@ def update_report(
     if "executive_summary" in sent:
         report.executive_summary = (body.executive_summary or "").strip() or None
     if "settings" in sent and body.settings is not None:
-        report.settings = body.settings.model_dump()
+        data = body.settings.model_dump()
+        for field in report_images.ENGAGEMENT_IMAGE_FIELDS:
+            data[field] = report_images.normalise_references(data.get(field))
+        report.settings = data
     db.commit()
     db.expire_all()
     return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True)

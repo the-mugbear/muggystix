@@ -554,7 +554,8 @@ def _provenance(proposal: AgentProposal) -> str:
 
 _FIELD_LABELS = {
     "description": "Description", "impact": "Impact", "recommendation": "Recommendation",
-    "references": "References", "steps_to_reproduce": "Steps to reproduce", "cvss_vector": "CVSS vector",
+    "references": "References", "steps_to_reproduce": "Steps to reproduce", "evidence_text": "Evidence",
+    "cvss_vector": "CVSS vector",
 }
 
 

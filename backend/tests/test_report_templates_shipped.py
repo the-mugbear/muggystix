@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -276,22 +277,26 @@ def _affected_block(out: str) -> str:
 def test_a_finding_on_many_systems_sets_them_four_across():
     """The user, 2026-10-07: a finding on hundreds of hosts printed one row
     per host — a single narrow column running for pages.  Past twelve systems
-    the plain addresses are set four to a row; a system with a name or a note
-    keeps its own row, so nothing the detailed table said is dropped."""
+    the plain addresses are set four to a row; a system the finding reaches
+    by an in-scope name keeps its own row.  Owner, 2026-10-13: the port and
+    the per-system note are not printed, so a remediated system is a plain
+    address like any other."""
     block = _affected_block(_fill("pentest", _with_affected(_sample("pentest"), 203)))
     assert "203 systems are affected." in block
     lines = [ln for ln in block.splitlines() if ln.startswith("|")]
-    grid = lines[2:lines.index("| System | Name | Port | Note |")]
+    grid = lines[2:lines.index("| System | Name |")]
     cells = [c.strip() for ln in grid for c in ln.strip("|").split("|")]
-    # 201 plain systems, four across: 51 rows, the last padded with empty cells.
+    # 202 plain systems, four across: 51 rows, the last padded with empty cells.
     assert all(ln.count("|") == 5 for ln in grid) and len(grid) == 51
-    assert [c for c in cells if c][:2] == ["10\\.9\\.0\\.0", "10\\.9\\.0\\.3 \\(445\\/tcp\\)"]
-    assert len([c for c in cells if c]) == 201 and cells[-3:] == ["", "", ""]
-    # The two that carry more than an address are rows of their own, once.
-    assert "| 10\\.9\\.0\\.1 | portal\\.example\\.com | 445\\/tcp |  |" in block
-    assert "| 10\\.9\\.0\\.2 |  |  | Remediated |" in block
+    assert [c for c in cells if c][:3] == ["10\\.9\\.0\\.0", "10\\.9\\.0\\.2", "10\\.9\\.0\\.3"]
+    assert len([c for c in cells if c]) == 202 and cells[-2:] == ["", ""]
+    # The one reached by a name is a row of its own, once.
+    assert "| 10\\.9\\.0\\.1 | portal\\.example\\.com |" in lines
+    assert lines[lines.index("| System | Name |") + 2:] == ["| 10\\.9\\.0\\.1 | portal\\.example\\.com |"]
     assert block.count("10\\.9\\.0\\.1 ") == 1 and block.count("10\\.9\\.0\\.2 ") == 1
-    # 203 rows became 51 + 2 (+ headers): the list no longer runs for pages.
+    # No port and no note, in either form.
+    assert "445" not in block and "Remediated" not in block and "Port" not in block and "Note" not in block
+    # 203 rows became 51 + 1 (+ headers): the list no longer runs for pages.
     assert len(lines) < 60
 
 
@@ -300,7 +305,33 @@ def test_a_finding_on_a_dozen_systems_keeps_one_row_each():
     block = _affected_block(_fill("pentest", _with_affected(_sample("pentest"), 12)))
     assert "systems are affected" not in block
     rows = [ln for ln in block.splitlines() if ln.startswith("| 10")]
-    assert len(rows) == 12 and "| 10\\.9\\.0\\.0 | srv0 |  |  |" in rows
+    assert len(rows) == 12 and "| 10\\.9\\.0\\.0 | srv0 |" in rows
+    assert "| 10\\.9\\.0\\.1 | portal\\.example\\.com |" in rows and "| 10\\.9\\.0\\.2 | srv2 |" in rows
+    assert "| System | Name |" in block.splitlines()
+    assert "445" not in block and "Remediated" not in block
+
+
+@needs_templates
+def test_the_contact_list_keeps_the_port_the_note_and_the_status(monkeypatch):
+    """The owner's 2026-10-13 change is the client report's: a contact's
+    remediation list has its own finding and affected-systems partials and
+    still says which port, and what was remediated.  It does not print the
+    Evidence text, and says so: its declaration names the five sections it
+    prints with their images ("all" would now claim a sixth)."""
+    monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(ROOT))
+    contact = templates.get_template("contact-report")
+    assert contact.images == {"fields": ALL_FIELDS[:5], "trailing": True}
+    probe = templates.image_probe_dataset(_sample("contact-report"))
+    assert templates.image_declaration_problem(contact, probe) is None
+    assert "evidence_text" not in _fill("contact-report", probe)
+    partials = ROOT / "contact-report" / "partials"
+    affected = (partials / "_affected.qmd").read_text(encoding="utf-8")
+    finding = (partials / "_finding.qmd").read_text(encoding="utf-8")
+    assert "| System | Name | Port | Due | Deadline |" in affected and "e.state" in affected
+    assert "| Reference | CVSS score | Vector | Status |" in finding
+    assert "{#finding-<< f.id >>}" in finding and "sec-finding" not in finding
+    pentest = (ROOT / "pentest" / "partials" / "_finding.qmd").read_text(encoding="utf-8")
+    assert "Status" not in pentest and "{#sec-finding-<< f.id >>}" in pentest
 
 
 @needs_templates
@@ -327,7 +358,7 @@ def test_the_shipped_templates_declare_the_default_cutoff(monkeypatch):
 def test_the_pentest_report_prints_how_a_finding_was_confirmed():
     sample = _sample("pentest")
     out = _fill("pentest", sample)
-    smb = out.split("{#finding-11}")[1].split("{#finding-12}")[0]
+    smb = out.split("{#sec-finding-11}")[1].split("{#sec-finding-12}")[0]
     evidence = smb.split("Evidence / proof of concept")[1].split("Recommendations")[0]
     # Who, what, where and when are printed values (escaped) …
     assert "**nmap** against 192\\.0\\.2\\.10, 2026\\-09\\-18, by Alex Tester" in evidence
@@ -341,8 +372,8 @@ def test_the_pentest_report_prints_how_a_finding_was_confirmed():
     # A confirmed test is the evidence: no "mark the screenshots" TODO for it.
     assert "TODO" not in evidence
     # A finding with neither still asks for evidence; an agent's record names its operator.
-    tls = out.split("{#finding-13}")[1].split("{#finding-14}")[0]
-    assert "bs-code" not in tls and "Mark the evidence screenshots" in tls
+    tls = out.split("{#sec-finding-13}")[1].split("{#sec-finding-14}")[0]
+    assert "bs-code" not in tls and "mark the evidence screenshots" in tls
     assert "by Sam Analyst" in out and "agent session" not in out
 
 
@@ -357,9 +388,242 @@ def test_results_that_were_not_printed_are_counted_and_old_reports_still_fill():
         for key in ("confirmations", "confirmations_omitted", "previous_severity", "previous_severity_label"):
             f.pop(key)
     out = _fill("pentest", old)
-    assert "bs-code" not in out and "Mark the evidence screenshots" in out
+    assert "bs-code" not in out and "mark the evidence screenshots" in out
     for name in ("executive-brief", "remediation-worklist"):
         assert _fill(name, old)
+
+
+# --- owner's requests 2026-10-13: what the penetration test report prints ---------------
+
+def _finding_section(out: str, finding_id: int) -> str:
+    """One finding's part of the filled source, from its heading to the next
+    finding's (or the page break that ends it)."""
+    section = out.split(f"{{#sec-finding-{finding_id}}}", 1)[1]
+    return re.split(r"\{#sec-finding-\d+\}|\n# ", section, maxsplit=1)[0]
+
+
+def _evidence_section(section: str) -> str:
+    return section.split("Evidence / proof of concept", 1)[1].split("Recommendations", 1)[0]
+
+
+def _bare(sample: dict, index: int = 0) -> dict:
+    """The sample with finding ``index`` stripped of everything the Evidence
+    section could print."""
+    data = copy.deepcopy(sample)
+    f = data["findings"][index]
+    f.update(evidence_text=None, confirmations=[], confirmations_omitted=0, images=[], placed={}, evidence=[])
+    return data
+
+
+@needs_templates
+def test_the_summary_tables_link_each_finding_by_its_section_number():
+    """The first column is the finding's SECTION number, linked (a Quarto
+    section reference to the heading's id); the title is text, not a link,
+    and the reference (F-01) stays in the finding's own table."""
+    sample = _sample("pentest")
+    out = _fill("pentest", sample)
+    summary = out.split("Summary of findings")[1].split("{{< pagebreak >}}")[0]
+    assert "| Section | Severity | Finding |" in summary
+    rows = [ln for ln in summary.splitlines() if ln.startswith("| [")]
+    assert [ln.split(" | ")[0] for ln in rows] == [f"| [-@sec-finding-{f['id']}]" for f in sample["findings"]]
+    assert "| [-@sec-finding-12] | High | Anonymous LDAP bind returns the directory |" in rows
+    assert "](#" not in summary and "| Ref |" not in out
+    # Every reference has its heading, and no heading keeps the old id.
+    for f in sample["findings"]:
+        assert out.count(f"{{#sec-finding-{f['id']}}}") == 1
+    assert "{#finding-" not in out and "(#finding-" not in out
+    # The addendum's table of new findings is the same.
+    addendum = _fill("pentest", _addendum(sample))
+    new = addendum.split("Summary of new findings")[1].split("{{< pagebreak >}}")[0]
+    assert "| Section | Severity | Finding | Systems |" in new
+    assert "| [-@sec-finding-11] | Critical | Remote code execution in the file server\\'s SMB service | 1 |" in new
+
+
+@needs_templates
+def test_the_pentest_finding_prints_no_status_port_or_note():
+    data = _sample("pentest")
+    first = data["findings"][0]
+    first["status_note"] = "STATUSNOTE remediated on 2 of 3"
+    first["affected"] = [
+        {"address": "192.0.2.10", "hostname": "files01", "name": None, "port": "445/tcp", "state": "STATENOTE"},
+    ]
+    section = _finding_section(_fill("pentest", data), first["id"])
+    assert "| Reference | CVSS score | Vector |\n" in section
+    assert "| System | Name |\n" in section and "| 192\\.0\\.2\\.10 | files01 |\n" in section
+    for gone in ("Status", "STATUSNOTE", "Port", "445", "Note", "STATENOTE"):
+        assert gone not in section, gone
+
+
+@needs_templates
+def test_the_evidence_heading_is_printed_only_with_something_under_it():
+    """A finding whose screenshots are all placed in its other sections, with
+    no Evidence text and no test result, has no Evidence section at all
+    (before, a bare heading).  Anything to print brings it back; so does a
+    finding with no marked image, which still owes its evidence."""
+    sample = _sample("pentest")
+    placed = {"attachment_id": 7, "file": "evidence/7.png", "caption": "Placed"}
+
+    data = _bare(sample)
+    first = data["findings"][0]
+    first["description"] = "Shown here.\n\n![](evidence:7)"
+    first["images"] = [{**placed, "placed_in": ["description"]}]
+    first["placed"] = {"description": {"7": dict(placed)}}
+    section = _finding_section(_fill("pentest", data), first["id"])
+    assert "Evidence / proof of concept" not in section and "TODO" not in section.split("Steps to reproduce")[1]
+    assert "bs-figure" not in section
+    # The sections on either side are still there, in order.
+    assert section.index("Steps to reproduce") < section.index("Recommendations")
+
+    def evidence(**changes) -> str:
+        with_it = copy.deepcopy(data)
+        with_it["findings"][0].update(changes)
+        return _evidence_section(_finding_section(_fill("pentest", with_it), first["id"]))
+
+    # … its written text;
+    text = evidence(evidence_text="The banner names the build.")
+    assert 'key="findings.0.evidence_text"' in text and "TODO" not in text
+    assert "Evidence / proof of concept" not in _finding_section(
+        _fill("pentest", {**data, "findings": [{**first, "evidence_text": "  \n "}] + data["findings"][1:]}), first["id"])
+    # … a test result;
+    confirmed = evidence(confirmations=sample["findings"][0]["confirmations"])
+    assert 'key="findings.0.confirmations.0.command"' in confirmed and "TODO" not in confirmed
+    # … an image no section places (beside the placed one);
+    loose = {"attachment_id": 8, "file": "evidence/8.png", "caption": "Loose", "placed_in": []}
+    unplaced = evidence(
+        images=first["images"] + [loose], evidence=[{"_path": "findings.0.evidence.0", **loose, "note": None}],
+    )
+    assert '.bs-figure file="evidence/8.png"' in unplaced and "bs-md" not in unplaced and "TODO" not in unplaced
+
+    # No image marked at all: the evidence is still owed (or, for an
+    # informational finding, said to be absent).
+    nothing = _bare(sample)
+    owed = _evidence_section(_finding_section(_fill("pentest", nothing), first["id"]))
+    assert "Write the evidence\\, or mark the evidence screenshots" in owed and "bs-todo" in owed
+    info = _bare(sample, 3)
+    assert "No evidence attached." in _evidence_section(_finding_section(_fill("pentest", info), 14))
+
+
+@needs_templates
+def test_a_note_is_printed_once_before_the_first_of_its_images():
+    """Owner, 2026-10-13: an unplaced image prints after the text of the note
+    it is attached to.  The dataset names the note on the FIRST image of each
+    note; the template prints it there, without images of its own, and each
+    reads its own data path."""
+    data = _bare(_sample("pentest"))
+    first = data["findings"][0]
+
+    def shot(n, note):
+        return {"_path": f"findings.0.evidence.{n}", "attachment_id": 20 + n, "file": f"evidence/{20 + n}.png",
+                "caption": f"Shot {n}", "placed_in": [], "note": note}
+
+    first["evidence"] = [shot(0, "Taken from the jump host."), shot(1, None), shot(2, None), shot(3, "Another note.")]
+    first["images"] = [{k: v for k, v in e.items() if k not in ("_path", "note")} for e in first["evidence"]]
+    evidence = _evidence_section(_finding_section(_fill("pentest", data), first["id"]))
+    blocks = re.findall(r'::: \{\.(bs-md key="[^"]+"[^}]*|bs-figure file="[^"]+")', evidence)
+    assert blocks == [
+        'bs-md key="findings.0.evidence.0.note" images="none"', 'bs-figure file="evidence/20.png"',
+        'bs-figure file="evidence/21.png"', 'bs-figure file="evidence/22.png"',
+        'bs-md key="findings.0.evidence.3.note" images="none"', 'bs-figure file="evidence/23.png"',
+    ]
+    # The note's words are not in the source: the filter fills them from the data.
+    assert "jump host" not in evidence and "TODO" not in evidence
+
+
+@needs_templates
+def test_the_references_heading_needs_references():
+    data = _sample("pentest")
+    first = data["findings"][0]
+    assert "### References" in _finding_section(_fill("pentest", data), first["id"])
+    for empty in (None, "", "   ", "\n\n \t\n"):
+        first["references"] = empty
+        section = _finding_section(_fill("pentest", data), first["id"])
+        assert "References" not in section and 'key="findings.0.references"' not in section, repr(empty)
+
+
+@needs_templates
+def test_the_project_details_name_who_prepared_the_report():
+    """Set (here or inherited — resolved in the data): the value.  Not set on
+    a draft: a TODO.  A dataset frozen before the author existed has no such
+    key, is not a draft, and prints no row."""
+    def details(data) -> str:
+        return _fill("pentest", data).split("Project details")[1].split("Penetration testers")[0]
+
+    data = _sample("pentest")
+    assert "| Client | Example Corp |\n| Prepared by | Example Security Assessments |\n| Dates |" in details(data)
+
+    data["engagement"]["author_name"] = None
+    data["report"]["draft"] = True
+    assert "| Prepared by | [TODO\\: Author \\(who produced this report\\)]{.bs-todo} |" in details(data)
+
+    old = _sample("pentest")
+    del old["engagement"]["author_name"]
+    old["report"]["draft"] = False
+    assert "Prepared by" not in details(old) and "Author" not in details(old)
+    # An issued report that named one keeps printing it.
+    issued = _sample("pentest")
+    issued["report"]["draft"] = False
+    assert "| Prepared by | Example Security Assessments |" in details(issued)
+
+
+@needs_templates
+def test_a_written_disclaimer_replaces_the_templates_own():
+    built_in = "A security assessment is a point-in-time analysis"
+    data = _sample("pentest")
+    tail = _fill("pentest", data).split("## Disclaimer")[1]
+    assert built_in in tail and "bs-md" not in tail
+    for unset in ("", "  \n "):
+        data["engagement"]["disclaimer"] = unset
+        assert built_in in _fill("pentest", data).split("## Disclaimer")[1]
+    del data["engagement"]["disclaimer"]                  # a report issued before the key
+    assert built_in in _fill("pentest", data).split("## Disclaimer")[1]
+
+    data["engagement"]["disclaimer"] = "Our own terms apply; see the contract."
+    tail = _fill("pentest", data).split("## Disclaimer")[1]
+    # Written Markdown: a placeholder the filter fills, never the words.
+    assert '::: {.bs-md key="engagement.disclaimer"}' in tail
+    assert built_in not in tail and "Our own terms" not in tail
+
+
+@needs_templates
+def test_a_dataset_frozen_before_these_keys_still_fills():
+    """An issued report renders from its snapshot for ever: no
+    ``evidence_text``, no ``note`` or ``_path`` on a trailing image, no
+    author, no disclaimer, no images of the report's own."""
+    old = _sample("pentest")
+    old["report"]["draft"] = False
+    for key in ("author_name", "disclaimer", "images", "placed"):
+        old["engagement"].pop(key, None)
+    for f in old["findings"]:
+        f.pop("evidence_text", None)
+        f["evidence"] = [
+            {k: v for k, v in e.items() if k not in ("_path", "note")} for e in f.get("evidence") or []
+        ]
+    assert old["findings"][0]["evidence"] and "_path" not in old["findings"][0]["evidence"][0]
+    out = _fill("pentest", old)
+    first = _evidence_section(_finding_section(out, 11))
+    assert '.bs-figure file="evidence/2.png"' in first and "bs-md" not in first
+    assert "Prepared by" not in out and "point-in-time analysis" in out
+    parts = _parts("pentest", old)
+    assert parts["figures"] == ["evidence/2.png"] and parts["findings"] == [0, 1, 2, 3]
+    for name in ("executive-brief", "remediation-worklist"):
+        assert _fill(name, old)
+
+
+@needs_templates
+def test_no_shipped_template_counts_its_tables_any_more():
+    """The caption partial prints a placeholder and the filter numbers it
+    (test_quarto_render.py pins the numbers): a Jinja counter cannot see a
+    table an author captioned inside a written section."""
+    partial = (ROOT / "pentest" / "partials" / "_table_caption.qmd").read_text(encoding="utf-8")
+    assert "::: {.bs-table-caption}\n<< caption >>\n:::" in partial
+    for qmd in sorted(ROOT.glob("*/**/*.qmd")):
+        source = qmd.read_text(encoding="utf-8")
+        assert "namespace(table" not in source and "counter.table" not in source, qmd
+    out = _fill("pentest", _sample("pentest"))
+    assert not re.search(r"^Table \d+:", out, re.M)
+    captions = re.findall(r"^::: \{\.bs-table-caption\}\n(.+)\n:::$", out, re.M)
+    assert captions[:3] == ["Project details", "Penetration testers", "Distribution list"]
+    assert "Summary of findings" in captions and len(captions) == len(set(captions))
 
 
 @needs_templates
@@ -473,7 +737,10 @@ def test_the_worklist_addendum_names_a_rerated_finding_without_adding_work():
 # --- branch review 2026-10-01 S2: which evidence images a template prints ----------------
 
 SHIPPED = ("pentest", "executive-brief", "remediation-worklist")
-ALL_FIELDS = ["description", "impact", "recommendation", "references", "steps_to_reproduce"]
+# The written sections that may place an image; the Evidence text since 2.495.0.
+ALL_FIELDS = ["description", "impact", "recommendation", "references", "steps_to_reproduce", "evidence_text"]
+#: The probe's image that no section places: one id after the fields'.
+UNPLACED = f"evidence/{len(ALL_FIELDS) + 1}.png"
 
 
 @needs_templates
@@ -569,7 +836,13 @@ def test_what_each_template_prints_of_a_full_report_is_measured_from_its_fill():
     # first one's five sections with their images, and the unplaced image.
     assert parts["findings"] == [0, 1, 2, 3]
     assert parts["fields"][0] == {f: True for f in ALL_FIELDS}
-    assert parts["figures"] == ["evidence/6.png"]
+    assert parts["figures"] == [UNPLACED]
+    # The report's own written details, and whether their images print: the
+    # system description's do (2.495.0); a note printed before its image
+    # never brings images of its own.
+    assert parts["texts"]["engagement.system_description"] is True
+    assert parts["texts"]["executive_summary"] is True
+    assert not any(key.startswith("findings.") and images for key, images in parts["texts"].items())
     assert parts["confirmations"] == [0, 1]          # the sample's findings with test results
 
     # The brief prints the recommendation of each finding above informational
@@ -610,10 +883,14 @@ def test_an_addendum_prints_evidence_only_for_what_it_shows_in_detail():
         parts = _parts("pentest", probe)
         assert parts["findings"] == [0] and parts["confirmations"] == [0]
         assert set(parts["fields"]) == {0}
-        assert parts["figures"] == (["evidence/6.png"] if index == 0 else [])
+        assert parts["figures"] == ([UNPLACED] if index == 0 else [])
 
     parts = _parts("remediation-worklist", addendum("remediation-worklist"))
     assert parts["fields"] == {0: {"recommendation": True}, 1: {"recommendation": True}}
     assert parts["confirmations"] == []
     parts = _parts("executive-brief", addendum("executive-brief"))
-    assert parts == {"fields": {}, "figures": [], "confirmations": [], "findings": []}
+    assert {k: parts[k] for k in ("fields", "figures", "confirmations", "findings")} == {
+        "fields": {}, "figures": [], "confirmations": [], "findings": [],
+    }
+    # Nothing of a finding; the one written text it prints is the summary.
+    assert set(parts["texts"]) == {"executive_summary"}

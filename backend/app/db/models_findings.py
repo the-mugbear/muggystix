@@ -123,6 +123,9 @@ class Finding(Base):
     recommendation = Column(Text, nullable=True)
     references = Column(Text, nullable=True)          # Markdown (usually a list of links)
     steps_to_reproduce = Column(Text, nullable=True)
+    # v2.495.0 — the written text of the Evidence section.  The report prints
+    # it before the images no section places (each after its note's text).
+    evidence_text = Column(Text, nullable=True)
     # A 3.x / 2.0 vector determines the score (cvss_service); a 4.0 vector's
     # score is entered, since its scoring table is not reimplemented here.
     cvss_vector = Column(String(200), nullable=True)

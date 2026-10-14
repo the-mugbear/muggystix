@@ -32,7 +32,9 @@ vi.mock('../../contexts/AuthContext', () => ({
 // The project on screen: every request names it first.
 vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1, name: 'P' } }) }));
 
-import ReportDetail, { evidenceRecordsNotPrintedNotice, evidenceRecordsNotice } from '../../pages/ReportDetail';
+import ReportDetail, {
+  evidenceNotesNotice, evidenceRecordsNotPrintedNotice, evidenceRecordsNotice,
+} from '../../pages/ReportDetail';
 
 const addendum = (summary: Record<string, unknown>) => ({
   id: 12, project_id: 1, kind: 'addendum', status: 'issued', title: 'Addendum', number: 4, template: 'pentest',
@@ -77,6 +79,48 @@ describe('ReportDetail — what an addendum says changed', () => {
     const old = await show({ delta: { new_findings: 1, findings_with_new_endpoints: 0, withdrawn: 2 } });
     expect(old).not.toContain('changed severity');
     expect(old).toContain('2 withdrawals.');
+  });
+});
+
+// An image no section places prints under Evidence after the text of the note
+// it is attached to — a note written for the team.  The page says how many.
+describe('ReportDetail — notes printed with their images', () => {
+  const delta = { new_findings: 0, findings_with_new_endpoints: 0, withdrawn: 0 };
+
+  it('says how many notes are printed as written, beside the test-results notice', async () => {
+    await show({ delta, evidence_records: 2, evidence_notes: 3 });
+    const notice = screen.getByTestId('report-evidence-notes');
+    expect(notice.textContent).toBe('3 notes are printed as written before the images attached to them, under Evidence.');
+    expect(screen.getByTestId('report-evidence-notice').compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+
+  it('singular, thousands, and nothing at 0 or on a report issued before it was counted', async () => {
+    expect(evidenceNotesNotice(1)).toBe('1 note is printed as written before the image attached to it, under Evidence.');
+    expect(evidenceNotesNotice(1200)).toContain('1,200 notes are printed');
+    await show({ delta, evidence_notes: 0 });
+    expect(screen.queryByTestId('report-evidence-notes')).toBeNull();
+  });
+
+  it('…absent field', async () => {
+    await show({ delta });
+    expect(screen.queryByTestId('report-evidence-notes')).toBeNull();
+  });
+
+  it('lists each note under its finding, with a link to it — a count names nothing to open', async () => {
+    await show({
+      delta, evidence_notes: 2,
+      evidence_note_findings: [
+        { id: 359, ref: 'F-02', title: 'SMB signing not required', notes: ['Agreed — keep it critical for the report.', 'x'.repeat(200)] },
+      ],
+    });
+    const list = screen.getByTestId('report-evidence-notes');
+    expect(list.tagName).toBe('UL');
+    expect(list).toHaveTextContent('Agreed — keep it critical for the report.');
+    expect(screen.getByRole('link', { name: 'SMB signing not required' }).getAttribute('href'))
+      .toMatch(/^\/findings\/359#/);
+    // This fixture is an issued report: the same list, in the past tense.
+    expect(screen.getByText('Notes printed in this report')).toBeInTheDocument();
   });
 });
 

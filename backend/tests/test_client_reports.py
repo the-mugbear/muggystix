@@ -614,7 +614,7 @@ def test_the_summary_names_the_report_details_still_empty(client, test_project):
     report = _create(client, test_project)
     missing = report["summary"]["missing_details"]
     assert missing == [
-        "executive summary", "client", "classification", "engagement type",
+        "executive summary", "client", "author", "classification", "engagement type",
         "system description", "assessment team", "distribution list", "project dates",
     ]
     r = client.patch(f"{_base(test_project)}/{report['id']}", json={
@@ -622,10 +622,17 @@ def test_the_summary_names_the_report_details_still_empty(client, test_project):
         "settings": {"client_name": "Example Corp", "classification": "Confidential",
                      "testers": [{"name": "Ana"}], "applications": "- https://app.example.com"},
     })
+    # The author (2.495.0) is owed until this report, its project or the
+    # installation names one (the inherited cases: test_report_defaults.py).
     assert r.json()["summary"]["missing_details"] == [
-        "engagement type", "system description", "distribution list", "project dates",
+        "author", "engagement type", "system description", "distribution list", "project dates",
     ]
     assert r.json()["settings"]["applications"] == "- https://app.example.com"
+    r = client.patch(f"{_base(test_project)}/{report['id']}", json={
+        "settings": {"client_name": "Example Corp", "classification": "Confidential",
+                     "testers": [{"name": "Ana"}], "author_name": "Example Security"},
+    })
+    assert "author" not in r.json()["summary"]["missing_details"]
 
 
 def test_projects_say_what_role_the_caller_has(client, test_project, people, act_as):

@@ -480,11 +480,15 @@ export const getReportJob = async (projectId: number, jobId: number, signal?: Ab
   return response.data as ReportJob;
 };
 
-export const downloadReportJob = async (projectId: number, jobId: number): Promise<void> => {
+/** Save a finished job's file; answers the name it was saved under (the
+ *  server's), so the page can say which file the reader now has. */
+export const downloadReportJob = async (projectId: number, jobId: number): Promise<string> => {
   const response = await api.get(`${projectPath(projectId)}/reports/jobs/${jobId}/download`, { responseType: 'blob' });
-  saveBlob(new Blob([response.data]), filenameFromContentDisposition(
+  const filename = filenameFromContentDisposition(
     response.headers['content-disposition'] as string | undefined, `report_${jobId}`,
-  ));
+  );
+  saveBlob(new Blob([response.data]), filename);
+  return filename;
 };
 
 export const listReportJobs = async (projectId: number, limit = 20, signal?: AbortSignal): Promise<ReportJob[]> => {

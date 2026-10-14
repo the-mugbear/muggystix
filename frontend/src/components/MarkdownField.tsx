@@ -19,7 +19,7 @@ import {
   Bold, CircleHelp, Code, ImageOff, ImagePlus, Italic, Link2, List, ListOrdered, Loader2, SquareCode, Table,
 } from 'lucide-react';
 
-import type { EvidenceImages } from '../utils/evidenceImages';
+import type { EvidenceImages, ImageSource } from '../utils/evidenceImages';
 import {
   CODE_TEMPLATE,
   Edit,
@@ -46,22 +46,40 @@ interface Props {
   maxLength?: number;
   disabled?: boolean;
   /**
-   * A finding's report section: the finding's images ticked "In report".
+   * A finding's report section: the finding's images ticked "In report" —
+   * or the report's System description: the project's own report images
+   * (`useReportTextImages`; the resolver's `source` chooses the words).
    * Adds "Insert image" (it writes an empty reference, `![](evidence:<id>)`, on a line of
    * its own) and shows placed images in the preview.  Left out — the
-   * executive summary, any text that is not a finding's — the field takes no
-   * images, as before.
+   * executive summary, any other text — the field takes no images.
    */
   images?: MarkdownImages;
 }
 
-const NO_IMAGES_REASON = 'No image to insert: attach one to a comment below and tick “In report”.';
+/** What the picker says about the images it offers — by whose they are
+ *  (`images.resolver.source`): a finding's, or the report's own text's. */
+const IMAGE_WORDS: Record<ImageSource, { none: string; title: string; picker: string; guide: string }> = {
+  finding: {
+    none: 'No image to insert: attach one to a comment below and tick “In report”.',
+    title: 'Insert one of this finding’s “In report” images',
+    picker: 'This finding’s images ticked “In report”. An image placed in the text prints there with its caption; '
+      + 'the rest print under Evidence, each after the text of the comment or note it is attached to.',
+    guide: 'only this finding’s own, ticked “In report”',
+  },
+  report: {
+    none: 'No image to insert: upload one below.',
+    title: 'Insert one of the report’s own images',
+    picker: 'Images uploaded for the report’s own text, below. An image placed in the text prints there with its caption.',
+    guide: 'only the ones uploaded for the report’s own text, below',
+  },
+};
 
 const GUIDE: Array<[string, string]> = [
   ['**bold**  _italic_  `code`', 'Emphasis and inline code'],
   ['- item  /  1. item', 'Lists — one item per line'],
   ['```  …  ```', 'A code block (commands, output) on lines of its own'],
   ['| A | B |\n| - | - |\n| 1 | 2 |', 'A table — leave a blank line before it'],
+  ['Table: caption', 'On the line after a table (blank line between): its numbered caption'],
   ['[text](https://…)', 'A link — web and mail links only'],
   ['blank line', 'Starts a new paragraph (a single line break is a space)'],
 ];
@@ -80,6 +98,7 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
   // and is tried again the next time the picker opens.
   const source: EvidenceImages | undefined = images?.resolver;
   const ensureImage = source?.ensure;
+  const words = IMAGE_WORDS[source?.source ?? 'finding'];
   const sourceRef = useRef(source);
   sourceRef.current = source;
   useEffect(() => {
@@ -172,12 +191,12 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
         {images && (placeable.length === 0 ? (
           // A disabled button shows no tooltip in every browser: the span
           // carries the reason, and assistive technology reads it.
-          <span title={NO_IMAGES_REASON}>
+          <span title={words.none}>
             <Button type="button" variant="ghost" size="icon" className="size-7" disabled
               aria-label="Insert image" aria-describedby={`${id}-no-images`}>
               <ImagePlus className="size-4 shrink-0" aria-hidden />
             </Button>
-            <span id={`${id}-no-images`} className="sr-only">{NO_IMAGES_REASON}</span>
+            <span id={`${id}-no-images`} className="sr-only">{words.none}</span>
           </span>
         ) : (
           <Popover open={pickerOpen} onOpenChange={(open) => {
@@ -189,17 +208,14 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
           }}>
             <PopoverTrigger asChild>
               <Button type="button" variant="ghost" size="icon" className="size-7"
-                aria-label="Insert image" title="Insert one of this finding’s “In report” images"
+                aria-label="Insert image" title={words.title}
                 disabled={disabled || preview}>
                 <ImagePlus className="size-4 shrink-0" aria-hidden />
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-96 max-w-[90vw] space-y-xs text-caption">
               <p className="font-medium">Place an image here</p>
-              <p className="text-muted-foreground">
-                This finding’s images ticked “In report”. An image placed in the text prints there with its caption;
-                the rest print under Evidence.
-              </p>
+              <p className="text-muted-foreground">{words.picker}</p>
               <ul className="max-h-72 space-y-xxs overflow-y-auto" aria-label="Images to insert">
                 {placeable.map((img) => {
                   const src = images.urls[img.id];
@@ -260,7 +276,7 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
             </dl>
             {images ? (
               <p className="text-muted-foreground">
-                Images: only this finding&apos;s own, ticked &quot;In report&quot; — use Insert image, which writes{' '}
+                Images: {words.guide} — use Insert image, which writes{' '}
                 <span className="font-mono">![](evidence:57)</span>. Empty brackets print the image&apos;s own
                 caption; text in the brackets replaces it for that place. Any other image prints as its
                 text. Not printed: HTML (shown as text). A heading prints as bold text — the report&apos;s sections

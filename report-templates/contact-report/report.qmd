@@ -143,10 +143,9 @@ format:
 
 {{< pagebreak >}}
 
-<# Numbered captions: every table caption counts up through the whole report
-   (partials/_table_caption.qmd).  Figures are numbered by the filter
-   (_bluestick/fields.lua), which sees the images placed in written text. #>
-<% set counter = namespace(table=0) %>
+<# Numbered captions: table captions (partials/_table_caption.qmd) and
+   figures are both numbered by the filter (_bluestick/fields.lua), which
+   sees the tables and images an author put in written text. #>
 <% set contact = report.get("contact") or {} %>
 <% set summary = remediation if remediation is defined and remediation else {} %>
 # Remediation list

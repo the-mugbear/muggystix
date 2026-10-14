@@ -23,7 +23,7 @@ import PostureSection, { SectionCount } from '../posture/PostureSection';
 import ProposalItem, { describeProposal, FIELD_LABELS } from './ProposalItem';
 import { Button } from '../ui/button';
 
-const FIELD_ORDER = ['description', 'impact', 'recommendation', 'steps_to_reproduce', 'references', 'cvss_vector'];
+const FIELD_ORDER = ['description', 'impact', 'recommendation', 'steps_to_reproduce', 'evidence_text', 'references', 'cvss_vector'];
 
 interface Props {
   proposals: FindingProposals;

@@ -17,6 +17,7 @@ from app.core.security import check_permissions
 from app.db.models_project import ProjectRole
 from app.db.models_reports import Report, ReportStatus
 from app.schemas.client_reports import EngagementSettings, ReportFileOut, ReportOut, ReportRef
+from app.services import report_defaults
 from app.services.client_report_service import ClientReportService
 
 
@@ -36,6 +37,17 @@ def _ref(report: Optional[Report]) -> Optional[ReportRef]:
         id=report.id, number=report.number, title=report.title, status=report.status,
         issued_at=report.issued_at,
     )
+
+
+def _inherited(db: Session, report: Report, is_draft: bool) -> dict:
+    """What an inherited detail left empty in the report's own settings
+    prints: for a draft, the project's or the installation's as they stand;
+    for an issued report, what it was ISSUED with (its frozen dataset — a
+    report issued before the details existed has none)."""
+    if is_draft:
+        return report_defaults.for_project(db, ClientReportService(db).get_profile(report.project_id))
+    frozen = (((report.snapshot or {}).get("dataset") or {}).get("engagement")) or {}
+    return {key: frozen.get(key) or None for key in report_defaults.KEYS}
 
 
 def serialize_report(db: Session, report: Report, role: str, *, with_summary: bool) -> ReportOut:
@@ -69,6 +81,9 @@ def serialize_report(db: Session, report: Report, role: str, *, with_summary: bo
         created_by_name=_name(report.created_by), issued_by_name=_name(report.issued_by),
         created_at=report.created_at, updated_at=report.updated_at, issued_at=report.issued_at,
         summary=summary,
+        # Only where the page edits the details (one report, a draft): a list
+        # row does not pay for the two reads.
+        inherited=_inherited(db, report, is_draft) if with_summary else None,
         can_edit=is_draft and role_allows(role, ProjectRole.ANALYST),
         can_issue=is_draft and role_allows(role, ProjectRole.ADMIN),
     )

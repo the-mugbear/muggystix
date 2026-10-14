@@ -122,6 +122,54 @@ describe('FindingReportTextCard — drafting', () => {
   });
 });
 
+// Evidence — the sixth section: the written text of the report's Evidence
+// section.  Optional, saved like the others, and never the AI draft's.
+describe('FindingReportTextCard — Evidence', () => {
+  const withEvidence = (evidence_text: string | null, over: Record<string, unknown> = {}) => ({
+    id: 42, title: 'Weak TLS',
+    report_text: {
+      description: 'TLS 1.0 is accepted.', impact: 'Traffic can be read.', recommendation: 'Disable it.',
+      references: null, steps_to_reproduce: null, evidence_text, cvss_vector: null, cvss_score: null,
+      cvss_score_from_vector: false, ...over,
+    },
+  } as never);
+
+  it('shows the section after Steps to reproduce, rendered, and does not count it as missing', () => {
+    render(<FindingReportTextCard finding={withEvidence('The handshake **completed**.')} canEdit />);
+    const labels = Array.from(document.querySelectorAll('dt')).map((dt) => dt.textContent);
+    expect(labels).toEqual(['Description', 'Impact', 'Recommendation', 'Steps to reproduce', 'Evidence', 'References', 'CVSS']);
+    expect(screen.getByTestId('report-text-evidence_text').querySelector('strong')?.textContent).toBe('completed');
+    expect(screen.queryByText(/Still empty/)).toBeNull();
+  });
+
+  it('an empty Evidence is not required text, and is never offered to the AI draft', async () => {
+    draftFindingText.mockResolvedValue({ proposals: [{ id: 1, field: 'impact' }] });
+    render(<FindingReportTextCard finding={withEvidence(null, { impact: null })} canEdit />);
+    // Only what the report needs is "still empty".
+    expect(screen.getByText('impact')).toBeInTheDocument();
+    expect(screen.queryByText(/evidence/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Draft empty sections/ }));
+    await waitFor(() => expect(draftFindingText).toHaveBeenCalledWith(1, 42, ['impact']));
+  });
+
+  it('no draft is offered when Evidence is the only empty section', () => {
+    render(<FindingReportTextCard finding={withEvidence(null)} canEdit />);
+    expect(screen.queryByRole('button', { name: /Draft empty sections/ })).toBeNull();
+  });
+
+  it('is edited with its hint and saved as its own field', async () => {
+    updateFinding.mockResolvedValue(withEvidence('Captured with testssl.'));
+    render(<FindingReportTextCard finding={withEvidence(null)} canEdit startEditing />);
+    expect(screen.getByText(
+      'Printed under Evidence, before the test results and before any image no section places. '
+      + 'Each such image is preceded by the text of the note it is attached to.',
+    )).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Evidence'), { target: { value: ' Captured with testssl. ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save report text' }));
+    await waitFor(() => expect(updateFinding).toHaveBeenCalledWith(1, 42, { evidence_text: 'Captured with testssl.' }));
+  });
+});
+
 describe('FindingReportTextCard — v5.290.0 the written text is shown rendered, safely', () => {
   const withText = (description: string) => ({
     id: 42, title: 'Weak TLS',
@@ -159,17 +207,27 @@ describe('FindingReportTextCard — v5.290.0 the written text is shown rendered,
   // 5.293.0 — Markdown help while editing.
   const toolbar = () => within(screen.getByRole('toolbar', { name: 'Description formatting' }));
 
+  it('the Markdown help says how a table is captioned', () => {
+    render(<FindingReportTextCard finding={withText('Before.')} canEdit startEditing />);
+    fireEvent.click(toolbar().getByRole('button', { name: /Markdown help/ }));
+    expect(screen.getByText('Table: caption')).toBeInTheDocument();
+    expect(screen.getByText('On the line after a table (blank line between): its numbered caption')).toBeInTheDocument();
+  });
+
   it('inserts a table on lines of its own and previews it as the report prints it', () => {
     render(<FindingReportTextCard finding={withText('Before.')} canEdit startEditing />);
     const box = screen.getByLabelText('Description') as HTMLTextAreaElement;
     box.setSelectionRange(7, 7);
     fireEvent.click(toolbar().getByRole('button', { name: 'Table' }));
+    // No caption placeholder: one left as it is would be issued ("Table 5: Caption").
     expect(box.value).toBe('Before.\n\n| Column | Column |\n| ------ | ------ |\n| Value  | Value  |');
 
     fireEvent.click(toolbar().getByRole('button', { name: 'Preview' }));
     const preview = screen.getByTestId('rt-description-preview');
     expect(preview.querySelectorAll('tbody tr')).toHaveLength(1);
     expect(preview.querySelector('th')?.textContent).toBe('Column');
+    expect(preview.querySelector('caption')).toBeNull();
+    expect(Array.from(preview.querySelectorAll('p')).map((p) => p.textContent)).toEqual(['Before.']);
     fireEvent.click(toolbar().getByRole('button', { name: 'Write' }));
     expect(screen.getByLabelText('Description')).toHaveValue(box.value);
   });

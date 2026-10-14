@@ -39,6 +39,7 @@ from app.db.models_reports import Report, ReportImage
 from app.main import app
 from app.services import report_images
 from app.services.client_report_service import ClientReportService
+from app.services.report_text import REPORT_TEXT_FIELDS
 
 PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
@@ -709,9 +710,11 @@ def test_the_summary_counts_what_this_reports_template_prints(client, db_session
     assert summary["images_not_printed_reasons"] == {
         "finding_not_detailed": 0, "section_not_printed": 0, "no_evidence_block": 0,
     }
-    assert summary["template_images"] == {
-        "fields": ["description", "impact", "recommendation", "references", "steps_to_reproduce"], "trailing": True,
-    }
+    # Every written section, the Evidence text (2.495.0) included.
+    assert summary["template_images"] == {"fields": list(REPORT_TEXT_FIELDS), "trailing": True}
+    assert REPORT_TEXT_FIELDS == (
+        "description", "impact", "recommendation", "references", "steps_to_reproduce", "evidence_text",
+    )
     images = {i["attachment_id"]: i for i in dataset["findings"][0]["images"]}
     assert (images[a]["printed"], images[a]["printed_in"]) == (True, ["description"])
     assert (images[b]["printed"], images[b]["printed_in"]) == (True, ["recommendation"])
@@ -1121,9 +1124,7 @@ def test_the_template_list_says_which_images_each_template_prints(client, test_p
     listed = {t["name"]: t for t in client.get(f"{_base(test_project)}/client-reports/templates").json()}
     assert listed["brief"]["images"] == {"fields": [], "trailing": False}
     assert listed["worklist"]["images"] == {"fields": ["recommendation"], "trailing": False}
-    assert listed["pentest"]["images"] == {
-        "fields": ["description", "impact", "recommendation", "references", "steps_to_reproduce"], "trailing": True,
-    }
+    assert listed["pentest"]["images"] == {"fields": list(REPORT_TEXT_FIELDS), "trailing": True}
 
 
 def test_the_agents_finding_read_lists_the_images_the_page_lists(client, db_session, test_project):

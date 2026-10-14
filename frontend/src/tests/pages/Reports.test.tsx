@@ -25,6 +25,9 @@ vi.mock('../../services/api', () => ({
   fetchReportTemplateAssetPreview: vi.fn(() => Promise.reject(new Error('no preview in tests'))),
   getReportProfile: vi.fn(),
   saveReportProfile: vi.fn(),
+  // The project's own report images (the System description's): none here —
+  // `ReportTextImages.test.tsx` has them.
+  listReportTextImages: vi.fn(() => Promise.resolve([])),
   downloadClientReportFile: vi.fn(),
   listProjectMembers: vi.fn(),
   getProjectReportTeam: vi.fn(),
@@ -212,6 +215,26 @@ describe('Defaults for new reports', () => {
     expect(mocked.getReportProfile).toHaveBeenCalledTimes(1);
   });
 
+  // The author is inherited: the project's own, else the installation's.
+  it('shows the author — the project’s, else the installation’s marked as such, else "Not set"', async () => {
+    mocked.getReportProfile.mockResolvedValueOnce({ ...stored, inherited: { author_name: 'Example Security Ltd', disclaimer: null } });
+    const first = renderList();
+    expect(await screen.findByTestId('profile-author')).toHaveTextContent('Example Security Ltd (installation default)');
+    // In the form the empty field says the same, in the installation's words.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(await screen.findByText('Empty: uses the installation’s — “Example Security Ltd”')).toBeInTheDocument();
+    first.unmount();
+
+    mocked.getReportProfile.mockResolvedValueOnce({ ...stored, author_name: 'Red Team Ltd', inherited: { author_name: 'Example Security Ltd' } });
+    const second = renderList();
+    expect(await screen.findByTestId('profile-author')).toHaveTextContent(/^Red Team Ltd$/);
+    second.unmount();
+
+    mocked.getReportProfile.mockResolvedValueOnce({ ...stored, inherited: { author_name: null, disclaimer: null } });
+    renderList();
+    expect(await screen.findByTestId('profile-author')).toHaveTextContent('Not set');
+  });
+
   it('Cancel forgets the edits: the form opens on the stored defaults again', async () => {
     const client = await openForm();
     fireEvent.change(client, { target: { value: 'Somebody else' } });
@@ -248,14 +271,16 @@ describe('Report detail — draft', () => {
     mocked.getClientReport.mockResolvedValue(report());
     mocked.previewClientReport.mockResolvedValue({ id: 70, format: 'report-docx', status: 'queued' });
     mocked.getReportJob.mockResolvedValue({ id: 70, format: 'report-docx', status: 'completed' });
-    mocked.downloadReportJob.mockResolvedValue({ truncated: false });
+    // The name the file was saved under (the server's).
+    mocked.downloadReportJob.mockResolvedValue('example-report-preview.docx');
     renderDetail();
     fireEvent.click(await screen.findByRole('button', { name: 'Preview Word' }));
     await waitFor(() => expect(mocked.previewClientReport).toHaveBeenCalledWith(1, 5, 'docx'));
     // The job is asked about two seconds after it was queued (the page's own
     // poll, `pollEvery`).
-    fireEvent.click(await screen.findByRole('button', { name: 'Download the Word preview' }, { timeout: 4000 }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Download Word preview' }, { timeout: 4000 }));
     await waitFor(() => expect(mocked.downloadReportJob).toHaveBeenCalledWith(1, 70));
+    // What the download then shows is in ReportDetail.downloads.test.tsx.
   });
 
   // 5.352.0 (owner) — a status poll that fails was silent: the button went on
@@ -278,7 +303,7 @@ describe('Report detail — draft', () => {
     expect(screen.getByRole('button', { name: /Rendering Word/ })).toBeDisabled();
 
     // The next poll answers (asked half as often while failing): the file is offered, the notice goes.
-    expect(await screen.findByRole('button', { name: 'Download the Word preview' }, { timeout: 8000 })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Download Word preview' }, { timeout: 8000 })).toBeInTheDocument();
     expect(screen.queryByText(/Status may be stale/)).toBeNull();
   }, 15000);
 
@@ -357,6 +382,34 @@ describe('Report detail — draft', () => {
     fireEvent.click(issue);
     await waitFor(() => expect(mocked.issueClientReport).toHaveBeenCalledWith(1, 5));
     expect(await screen.findByText('Issued #3')).toBeInTheDocument();
+  });
+
+  // A note holding an unplaced "In report" image is printed before it, as
+  // written: said on the page and again before the sign-off.
+  it('says before issuing how many notes go to the client with their images', async () => {
+    const base = report();
+    mocked.getClientReport.mockResolvedValue(report({ summary: { ...base.summary, missing_text: [], evidence_notes: 2 } }));
+    renderDetail();
+    const sentence = '2 notes are printed as written before the images attached to them, under Evidence.';
+    expect(await screen.findByTestId('report-evidence-notes')).toHaveTextContent(sentence);
+    confirmMock.mockResolvedValueOnce(false);
+    fireEvent.click(screen.getByRole('button', { name: /Issue report/ }));
+    await waitFor(() => expect(confirmMock).toHaveBeenCalled());
+    const dialog = render(<div>{confirmMock.mock.calls[0][0].body}</div>);
+    expect(dialog.container).toHaveTextContent(sentence);
+  });
+
+  it('a draft’s empty Author says what the report inherits, and its own is saved with the details', async () => {
+    mocked.getClientReport.mockResolvedValue(report({ inherited: { author_name: 'Example Security Ltd', disclaimer: null } }));
+    mocked.updateClientReport.mockResolvedValue(report({ settings: { ...settings, author_name: 'Red Team Ltd' } }));
+    renderDetail();
+    expect(await screen.findByText('Empty: uses the project’s or installation’s default — “Example Security Ltd”'))
+      .toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Author'), { target: { value: 'Red Team Ltd' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, expect.objectContaining({
+      settings: expect.objectContaining({ author_name: 'Red Team Ltd' }),
+    })));
   });
 });
 

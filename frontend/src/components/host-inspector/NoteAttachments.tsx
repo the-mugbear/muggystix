@@ -66,6 +66,10 @@ interface NoteAttachmentsProps {
   reportMarking?: ReportMarking;
 }
 
+/** What ticking "In report" sends to the client — on the tick itself; the
+ *  placement line beside it says the same once the image is ticked. */
+const IN_REPORT_HINT = 'Printed in the client report. An image no section places prints under Evidence, after the text of the comment or note it is attached to — that text goes to the client as written.';
+
 export interface ReportMarking {
   canMark: (attachment: NoteAttachment) => boolean;
   /** Where the finding's report text places the image; undefined while the
@@ -441,7 +445,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
                   )}
                   <div className="flex min-w-0 flex-wrap items-center gap-x-sm gap-y-xxs text-caption text-muted-foreground">
                     {canMark ? (
-                      <label className="flex shrink-0 cursor-pointer items-center gap-xxs">
+                      <label className="flex shrink-0 cursor-pointer items-center gap-xxs" title={IN_REPORT_HINT}>
                         <Checkbox
                           checked={inReport}
                           onCheckedChange={(v) => onMark(att, v === true)}

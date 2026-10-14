@@ -742,6 +742,9 @@ def printed_parts(
       the template read (looped over), or printed a ``code()`` block from.
     * ``findings``: the indexes with any of the above — the findings the
       report shows in detail, not just as a table row.
+    * ``texts``: ``{data path: images}`` for every other ``md()`` the
+      template printed (``engagement.system_description`` …) — whether the
+      report's own images placed there print.
 
     A template decides these with its own logic (a brief that prints no
     evidence, a worklist that prints only the recommendation of findings
@@ -749,6 +752,7 @@ def printed_parts(
     only a fill can say.  Raises ``RenderError`` when the template cannot be
     filled."""
     fields: Dict[int, Dict[str, bool]] = {}
+    texts: Dict[str, bool] = {}
     figures: set = set()
     confirmations: set = set()
 
@@ -758,6 +762,8 @@ def printed_parts(
             if m:
                 seen = fields.setdefault(int(m.group(1)), {})
                 seen[m.group(2)] = seen.get(m.group(2), False) or images
+            else:
+                texts[value] = texts.get(value, False) or images
         elif kind == "figure":
             figures.add(value)
         elif kind == "code":
@@ -794,6 +800,7 @@ def printed_parts(
     return {
         "fields": fields, "figures": sorted(figures),
         "confirmations": sorted(confirmations), "findings": sorted(shown),
+        "texts": texts,
     }
 
 
@@ -850,7 +857,14 @@ def _place_evidence(dataset: dict, work: Path, resolve: Callable[[dict], Optiona
     without the key (frozen before it existed) needs every image, as before."""
     missing = []
     (work / "evidence").mkdir(exist_ok=True)
-    for finding in dataset.get("findings") or []:
+    # The report's own images (its system description's) have the shapes of a
+    # finding's — `images` and `placed`, no trailing block — so the same rules
+    # place them.
+    engagement = dataset.get("engagement")
+    owners = list(dataset.get("findings") or [])
+    if isinstance(engagement, dict) and (engagement.get("images") or engagement.get("placed")):
+        owners.append(engagement)
+    for finding in owners:
         present: Dict[str, bool] = {}
         marks: Dict[str, bool] = {}
         for item in finding.get("images") or []:
@@ -876,8 +890,16 @@ def _place_evidence(dataset: dict, work: Path, resolve: Callable[[dict], Optiona
             return present[file]
 
         for key in ("images", "evidence"):
-            if isinstance(finding.get(key), list) or key == "evidence":
+            if isinstance(finding.get(key), list) or (key == "evidence" and finding is not engagement):
                 finding[key] = [item for item in finding.get(key) or [] if have(item)]
+        # A trailing image names its own place in the data (`md(e, "note")`
+        # reads the note printed before it): say where it is NOW, after the
+        # entries whose file is missing were dropped.
+        base = finding.get("_path")
+        if isinstance(base, str):
+            for n, item in enumerate(finding.get("evidence") or []):
+                if isinstance(item, dict) and "_path" in item:
+                    item["_path"] = f"{base}.evidence.{n}"
         placed = finding.get("placed")
         if isinstance(placed, dict):
             finding["placed"] = {

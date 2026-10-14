@@ -33,6 +33,8 @@ vi.mock('../../components/remediation/RemediationSettingsSection', () => ({
 vi.mock('../../components/reports/ReportWritingGuidanceSection', () => ({
   default: () => <input aria-label="guidance form" />,
 }));
+// The Report writing tab's other form (`ReportDefaultsSection.test.tsx`).
+vi.mock('../../components/reports/ReportDefaultsSection', () => ({ default: () => null }));
 vi.mock('../../components/UserMembershipsDialog', () => ({ default: () => null }));
 
 const Where = () => <span data-testid="where">{useLocation().search}</span>;

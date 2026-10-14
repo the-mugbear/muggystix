@@ -21,6 +21,11 @@ Post-process the Word report — the two things Word styles cannot do:
    tables, but viewers ignored a style-level table alignment, so each table
    without its own gets the alignment its style declares.
 
+4. The classification.  The shipped reference.docx prints the word
+   CLASSIFICATION in the header and footer of every page; the report's own
+   (data.json → engagement.classification, beside this script when BlueStick
+   runs it) is written in its place.  Before this the word itself was issued.
+
 Everything else the original prototype's script did is now either a style in
 reference.docx or no longer needed (checked by rendering the template with
 screenshots, 2026-09-23):
@@ -310,6 +315,50 @@ _BEFORE_JC = ("tblStyle", "tblpPr", "tblOverlap", "bidiVisual", "tblStyleRowBand
               "tblStyleColBandSize", "tblW")
 
 
+CLASSIFICATION_PLACEHOLDER = "CLASSIFICATION"
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def report_classification(base):
+    """The report's classification (data.json → engagement.classification),
+    as one line of plain text, or '' when none is written."""
+    try:
+        with open(os.path.join(base, "data.json"), encoding="utf-8") as fh:
+            value = (json.load(fh).get("engagement") or {}).get("classification")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    if not isinstance(value, str):
+        return ""
+    return " ".join(_CONTROL.sub(" ", value).split())[:100]
+
+
+def apply_classification(tmpdir, classification):
+    """Write the report's classification where the shipped reference.docx
+    prints the word CLASSIFICATION — the header and footer of every page.
+    Only a run whose whole text is that word is changed, so an operator's own
+    Word styles file (which says something else there) is left alone; with no
+    classification written the placeholder stays, a gap a reviewer can see.
+    Returns the number of places changed."""
+    if not classification:
+        return 0
+    text = (classification.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    pattern = re.compile(r"(<w:t(?: [^>]*)?>)" + CLASSIFICATION_PLACEHOLDER + r"(</w:t>)")
+    changed = 0
+    word = os.path.join(tmpdir, "word")
+    for name in sorted(os.listdir(word)):
+        if not re.fullmatch(r"(header|footer)\d*\.xml", name):
+            continue
+        path = os.path.join(word, name)
+        with open(path, encoding="utf-8") as fh:
+            xml = fh.read()
+        new, n = pattern.subn(lambda m: m.group(1) + text + m.group(2), xml)
+        if n:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(new)
+            changed += n
+    return changed
+
+
 def align_tables_like_their_style(body, styles_path):
     """Give every table the alignment its table style declares (v2.410.1).
 
@@ -367,6 +416,7 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
         tree.write(doc_xml, xml_declaration=True, encoding="UTF-8")
 
         new_parts, removed, replaced = apply_template_images(tmpdir, installed_assets(assets_dir))
+        classified = apply_classification(tmpdir, report_classification(assets_dir))
 
         # Same parts, same order ([Content_Types].xml first, as Word expects).
         with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -375,7 +425,8 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
 
         if verbose:
             print(f"  Aligned {aligned} table(s) as their style says, added a border to {count} image(s), "
-                  f"placed {replaced} template image(s) → {docx_path}")
+                  f"placed {replaced} template image(s), wrote the classification in {classified} place(s) "
+                  f"→ {docx_path}")
         return count
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

@@ -28,7 +28,9 @@
 import React, { useEffect } from 'react';
 
 import type { EvidenceImages } from '../utils/evidenceImages';
-import { CellAlign, isTableRow, splitTableRow, tableAlignments } from '../utils/markdownEditing';
+import {
+  CellAlign, isTableRow, splitTableRow, tableAlignments, tableCaptionOf,
+} from '../utils/markdownEditing';
 import { findMentionSpans } from '../utils/mentions';
 import { EvidenceResolver, evidenceReferenceAt } from '../utils/reportImages';
 
@@ -163,6 +165,7 @@ const EvidenceImage: React.FC<{ id: number; alt: string; evidence: EvidenceImage
   }, [known, id, evidence]);
   if (!found) {
     const listStatus = evidence.listStatus ?? 'ready';
+    const ofReport = evidence.source === 'report';
     if (listStatus === 'loading') {
       return (
         <span className="my-xs block min-w-0" data-testid={`evidence-pending-${id}`} aria-busy="true">
@@ -173,7 +176,7 @@ const EvidenceImage: React.FC<{ id: number; alt: string; evidence: EvidenceImage
     if (listStatus === 'failed') {
       return (
         <span role="note" data-testid={`evidence-list-failed-${id}`} className={evidenceNoteClass}>
-          This finding’s images could not be loaded, so image {id} cannot be shown here. The report is not affected.
+          {ofReport ? 'The report’s images' : 'This finding’s images'} could not be loaded, so image {id} cannot be shown here. The report is not affected.
           {evidence.retryList && (
             <button type="button" className={evidenceRetryClass} onClick={() => evidence.retryList?.()}>Retry</button>
           )}
@@ -182,7 +185,8 @@ const EvidenceImage: React.FC<{ id: number; alt: string; evidence: EvidenceImage
     }
     return (
       <span role="note" data-testid={`evidence-missing-${id}`} className={evidenceNoteClass}>
-        Image not available: evidence:{id} is not one of this finding’s “In report” images, so the report prints
+        Image not available: evidence:{id} is not one of{' '}
+        {ofReport ? 'the images uploaded for the report’s own text' : 'this finding’s “In report” images'}, so the report prints
         {alt ? ` “${alt}” as text` : ' nothing here'}.
       </span>
     );
@@ -416,7 +420,9 @@ type Block =
   | { kind: 'rule' }
   | { kind: 'quote'; lines: string[] }
   | { kind: 'list'; ordered: boolean; start: number; items: string[][] }
-  | { kind: 'table'; align: CellAlign[]; head: string[]; rows: string[][] };
+  // `caption`: the text of a `Table:` paragraph directly after the table
+  // (`captionTables`); '' for a bare `Table:`.
+  | { kind: 'table'; align: CellAlign[]; head: string[]; rows: string[][]; caption?: string };
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const HEADING = /^ {0,3}#{1,6}(?:\s+(.*?))?\s*$/;
@@ -570,7 +576,29 @@ const parseBlocks =(source: string): Block[] => {
     i += 1;
   }
   flushPara();
-  return blocks;
+  return captionTables(blocks);
+};
+
+/**
+ * The report's table captions (`caption_tables` in quarto_fields.lua): a
+ * paragraph that opens with `Table:` DIRECTLY after a table is that table's
+ * caption — printed above it, numbered — and is no longer a paragraph.  The
+ * same paragraph anywhere else stays the text it is.
+ */
+const captionTables = (blocks: Block[]): Block[] => {
+  const out: Block[] = [];
+  for (let n = 0; n < blocks.length; n += 1) {
+    const block = blocks[n];
+    const next = blocks[n + 1];
+    const caption = block.kind === 'table' && next?.kind === 'para' ? tableCaptionOf(next.text) : null;
+    if (block.kind === 'table' && caption !== null) {
+      out.push({ ...block, caption });
+      n += 1;
+    } else {
+      out.push(block);
+    }
+  }
+  return out;
 };
 
 const renderBlocks = (blocks: Block[], keyPrefix: string, how: How = {}): React.ReactNode[] =>
@@ -617,6 +645,14 @@ const renderBlocks = (blocks: Block[], keyPrefix: string, how: How = {}): React.
         const textAlign = (a: CellAlign) => (a ? { textAlign: a } : undefined);
         return (
           <table key={key} className="w-full border-collapse text-caption" style={{ tableLayout: 'fixed' }}>
+            {b.caption !== undefined && (
+              // Above the table, as the report prints it; the number
+              // ("Table 3:") is the report's to give, so none is shown.
+              <caption className="caption-top break-words pb-xxs text-center font-semibold text-foreground [overflow-wrap:anywhere]"
+                data-testid="table-caption">
+                {b.caption ? <>Table: {renderInline(b.caption, `${key}-c`, how)}</> : 'Table'}
+              </caption>
+            )}
             <thead>
               <tr className="border-b border-border">
                 {b.head.map((c, j) => (

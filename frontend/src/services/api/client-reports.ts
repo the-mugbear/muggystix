@@ -39,6 +39,16 @@ export interface EngagementSettings {
   applications?: string | null;
   thick_clients?: string | null;
   other_targets?: string | null;
+  /** Who produced the report, and the disclaimer it closes with (Markdown).
+   *  Empty = inherited: the project's report defaults, else the installation's. */
+  author_name?: string | null;
+  disclaimer?: string | null;
+}
+
+/** What an inherited detail left empty will print (`author_name`, `disclaimer`). */
+export interface InheritedReportDetails {
+  author_name?: string | null;
+  disclaimer?: string | null;
 }
 
 export interface ReportProfile extends EngagementSettings {
@@ -46,6 +56,8 @@ export interface ReportProfile extends EngagementSettings {
   updated_at?: string | null;
   /** No team is saved: `testers` is the project's analysts and admins. */
   testers_from_project?: boolean;
+  /** The installation's values: what a detail this profile leaves empty uses. */
+  inherited?: InheritedReportDetails;
 }
 
 /** An image the template itself expects (logo, cover art) — declared in its
@@ -208,6 +220,12 @@ export interface ReportSummary {
   evidence_records_not_printed?: number | null;
   /** …and how many of those an agent recorded.  A notice, never a block. */
   agent_evidence_records?: number;
+  /** Notes printed as written before the image attached to them, under
+   *  Evidence.  A notice, never a block; absent from a report issued before it. */
+  evidence_notes?: number;
+  /** The same notes by finding, each with how it begins (at most 200
+   *  characters) — what the draft's page lists so a reviewer can read them. */
+  evidence_note_findings?: Array<{ id: number; ref: string; title: string; notes: string[] }>;
   /** Set when the summary could not be built (e.g. an addendum lost its baseline). */
   error?: string;
 }
@@ -236,6 +254,10 @@ export interface ClientReport {
   updated_at: string | null;
   issued_at: string | null;
   summary: ReportSummary | null;
+  /** A single DRAFT read: what an inherited detail left empty in `settings`
+   *  will print (the project's, else the installation's).  Null for an issued
+   *  report and for list rows. */
+  inherited?: InheritedReportDetails | null;
   can_edit: boolean;
   can_issue: boolean;
 }
@@ -336,8 +358,66 @@ export const getProjectReportTeam = async (projectId: number, signal?: AbortSign
 export const getReportProfile = async (projectId: number, signal?: AbortSignal): Promise<ReportProfile> =>
   (await api.get<ReportProfile>(`${base(projectId)}/profile`, { signal })).data;
 
-export const saveReportProfile = async (projectId: number, body: Omit<ReportProfile, 'updated_at'>): Promise<ReportProfile> =>
+export const saveReportProfile = async (
+  projectId: number, body: Omit<ReportProfile, 'updated_at' | 'inherited'>,
+): Promise<ReportProfile> =>
   (await api.put<ReportProfile>(`${base(projectId)}/profile`, body)).data;
+
+/** An image of the project's own report text (the system description): the
+ *  project's, so its report defaults and every draft place the same ones with
+ *  `![](evidence:<id>)`.  Its bytes, caption and delete are the attachment's
+ *  own functions (`getNoteAttachmentBlob`, `setNoteAttachmentCaption`,
+ *  `deleteNoteAttachment`). */
+export interface ReportTextImage {
+  id: number;
+  filename: string;
+  caption: string | null;
+  content_type: string;
+  size_bytes: number;
+  uploaded_by_id: number | null;
+  created_at: string | null;
+  /** Where the project's CURRENT text places it: `defaults` and / or
+   *  `report <id>` for each draft. */
+  placed_in: string[];
+  /** The uploader, a project admin or a global admin. */
+  can_modify: boolean;
+}
+
+export const listReportTextImages = async (projectId: number, signal?: AbortSignal): Promise<ReportTextImage[]> =>
+  (await api.get<ReportTextImage[]>(`${base(projectId)}/images`, { signal })).data;
+
+/** PNG, JPEG or GIF, at most 10 MB (analyst and above). */
+export const uploadReportTextImage = async (
+  projectId: number, file: File, caption?: string | null,
+): Promise<ReportTextImage> => {
+  const form = new FormData();
+  form.append('file', file);
+  if (caption?.trim()) form.append('caption', caption.trim());
+  // See `uploadReportTemplateAsset`: without this the file is sent as JSON.
+  return (await api.post<ReportTextImage>(
+    `${base(projectId)}/images`, form, { headers: { 'Content-Type': 'multipart/form-data' } },
+  )).data;
+};
+
+/** The installation's own report details: who produces its reports and the
+ *  disclaimer they close with.  Every signed-in user reads them; a global
+ *  admin writes them (System settings). */
+export interface ReportDefaults {
+  values: { author_name: string | null; disclaimer: string | null };
+  labels: Record<string, string>;
+  max_chars: Record<string, number>;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
+export const getReportDefaults = async (signal?: AbortSignal): Promise<ReportDefaults> =>
+  (await api.get<ReportDefaults>('/report-defaults', { signal })).data;
+
+/** Only the keys sent are touched; null or a blank text removes the value. */
+export const saveReportDefaults = async (
+  values: Partial<Record<'author_name' | 'disclaimer', string | null>>,
+): Promise<ReportDefaults> =>
+  (await api.put<ReportDefaults>('/report-defaults', { values })).data;
 
 /** v5.319.0 — save the report's complete scope as CSV: the file a report over its
  *  template's scope cutoff names.  A draft's is today's scope; an issued report's

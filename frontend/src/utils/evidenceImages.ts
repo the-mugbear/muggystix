@@ -26,7 +26,15 @@ export interface EvidenceImages extends EvidenceResolver {
   failed?: (id: number) => boolean;
   /** Fetch them again. */
   retry?: (id: number) => void;
+  /** Whose images these are — the words of "not available" and "could not be
+   *  loaded".  Absent means a finding's; `report` is the project's own report
+   *  images (the system description's, `useReportTextImages`). */
+  source?: ImageSource;
 }
+
+/** A finding's images ticked "In report", or the images uploaded for the
+ *  report's own text. */
+export type ImageSource = 'finding' | 'report';
 
 /** The comment thread's thumbnails, from the same cache as the placed images
  *  and the picker — one fetch per image for the page. */

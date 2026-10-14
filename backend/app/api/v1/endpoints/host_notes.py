@@ -612,6 +612,10 @@ def delete_note_attachment(
     # removed: deleting it would leave the section pointing at nothing.  (An
     # ISSUED report is unaffected either way — it holds its own copy.)
     report_images.refuse_if_placed(db, [att.id], action="delete this image", then="delete it")
+    if att.annotation_id is None:
+        # An image of the report's own text: the same rule, over the
+        # project's report defaults and its drafts.
+        report_images.refuse_if_report_text_places(db, att)
 
     storage_path = att.storage_path
     db.delete(att)
@@ -685,6 +689,12 @@ def set_note_attachment_report_flag(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
     if "include_in_report" in sent:
+        if att.annotation_id is None and not body.include_in_report:
+            raise HTTPException(
+                status_code=422,
+                detail="This image belongs to the report's own text and is always in the report; "
+                       "remove it from the text, or delete it.",
+            )
         if att.include_in_report and not body.include_in_report:
             # Un-ticking an image the text places would leave a hole, exactly
             # as deleting it would.

@@ -83,17 +83,44 @@ def require_readable_file(target: Path, what: str) -> None:
         raise HTTPException(status_code=404, detail=f"{what} file missing on disk")
 
 
+#: Where the images of a project's own report text are kept, under the
+#: attachments root: ``report/{project_id}/``.  Not a number, so the
+#: reconciler (which reaps note folders) never looks at it.
+REPORT_IMAGES_DIR = "report"
+
+
+def purge_project_report_images(project_id: int) -> None:
+    """Remove a DELETED project's report-text images from disk (their rows
+    cascaded with the project)."""
+    root = _attachments_root() / REPORT_IMAGES_DIR
+    try:
+        target = root / str(int(project_id))
+        target.resolve().relative_to(root.resolve())
+    except (TypeError, ValueError, OSError):
+        return
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+
+
 def store_image_attachment(
-    db: Session, *, note_id: int, project_id: int, uploaded_by_id: int,
-    file: UploadFile,
+    db: Session, *, note_id: Optional[int], project_id: int, uploaded_by_id: int,
+    file: UploadFile, caption: Optional[str] = None,
 ) -> "models.NoteAttachment":
     """Validate, store, and record an image attachment for note ``note_id``.
 
     The caller is responsible for having scoped ``note_id`` to the project
     (so an attachment can't be hung off another project's note via a tampered
     path) — this function only handles the file itself.  Commits the new row.
+
+    ``note_id=None`` (v2.495.0) stores an image of the project's own REPORT
+    text instead: no note, kept under ``report/{project_id}/``, marked for
+    the report from the start (that is all it is for) and only in a format
+    every report can print.
     """
     declared = (file.content_type or "").lower()
+    for_report = note_id is None
+    if for_report and declared == "image/webp":
+        raise HTTPException(status_code=400, detail="Only PNG, JPEG or GIF images can be printed in a report.")
     if declared not in _ATTACHMENT_TYPES:
         raise HTTPException(status_code=400, detail="Only PNG, JPEG, GIF, or WebP images are allowed.")
 
@@ -110,7 +137,8 @@ def store_image_attachment(
         raise HTTPException(status_code=400, detail="File content does not match an allowed image type.")
 
     # Store under uploads/note_attachments/{note_id}/{uuid}.{ext}, 0700/0600.
-    note_dir = _attachments_root() / str(note_id)
+    folder = f"{REPORT_IMAGES_DIR}/{int(project_id)}" if for_report else str(note_id)
+    note_dir = _attachments_root() / folder
     note_dir.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(note_dir, 0o700)
@@ -134,8 +162,10 @@ def store_image_attachment(
         filename=display_name,
         content_type=declared,
         size_bytes=len(data),
-        storage_path=f"{note_id}/{stored_name}",
+        storage_path=f"{folder}/{stored_name}",
         uploaded_by_id=uploaded_by_id,
+        include_in_report=for_report,
+        caption=caption,
     )
     db.add(att)
     try:

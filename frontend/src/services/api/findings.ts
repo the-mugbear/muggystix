@@ -106,6 +106,9 @@ export interface FindingReportText {
   recommendation: string | null;
   references: string | null;
   steps_to_reproduce: string | null;
+  /** The written text of the report's Evidence section.  Not required text,
+   *  and never AI-drafted.  Absent from a server older than it. */
+  evidence_text?: string | null;
   cvss_vector: string | null;
   cvss_score: number | null;
   /** A 3.x / 2.0 vector decides the score; the editor shows it read-only. */
@@ -113,7 +116,7 @@ export interface FindingReportText {
 }
 
 export type FindingReportTextField =
-  'description' | 'impact' | 'recommendation' | 'references' | 'steps_to_reproduce';
+  'description' | 'impact' | 'recommendation' | 'references' | 'steps_to_reproduce' | 'evidence_text';
 
 export type FindingReportTextUpdate = Partial<
   Record<FindingReportTextField | 'cvss_vector', string | null> & { cvss_score: number | null }

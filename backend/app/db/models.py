@@ -10,7 +10,7 @@ Key changes:
 """
 
 import enum
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, Index, func, JSON, BigInteger, Enum as SQLEnum, text
+from sqlalchemy import CheckConstraint, Column, Integer, String, Text, DateTime, Boolean, ForeignKey, UniqueConstraint, Index, func, JSON, BigInteger, Enum as SQLEnum, text
 from sqlalchemy.orm import relationship, backref
 from app.db.session import Base
 
@@ -1482,9 +1482,19 @@ class NoteAttachment(Base):
     serve/delete endpoints can scope by project without a join.
     """
     __tablename__ = "note_attachments"
+    __table_args__ = (
+        CheckConstraint("annotation_id IS NOT NULL OR project_id IS NOT NULL", name="ck_note_attachment_owner"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
-    annotation_id = Column(Integer, ForeignKey("annotations.id", ondelete="CASCADE"), nullable=False, index=True)
+    # NULL (v2.495.0): an image of the project's REPORT text — the system
+    # description — uploaded on the Reports page, not attached to a note.  It
+    # lives here so every image a report prints shares one id space (one
+    # reference grammar, one serve route, one copy at issue); it is always
+    # "in report", is no finding's image, and is stored under
+    # ``uploads/note_attachments/report/{project_id}/``.
+    # ``report_images.project_report_images`` is the one lookup.
+    annotation_id = Column(Integer, ForeignKey("annotations.id", ondelete="CASCADE"), nullable=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
     filename = Column(String(255), nullable=False)      # original name, sanitized for display
     content_type = Column(String(100), nullable=False)  # image/png | image/jpeg | ...

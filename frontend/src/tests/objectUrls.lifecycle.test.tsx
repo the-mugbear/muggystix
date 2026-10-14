@@ -3,8 +3,8 @@
  *
  * An object URL pins its bytes in the browser until it is revoked, and nothing
  * shows one that was missed.  For each place that shows authenticated bytes
- * (the finding page's image cache, a note's thumbnails, a web interface's
- * screenshot, a report template's image) this walks mount → replace → unmount
+ * (the finding page's image cache, a note's thumbnails, the report's own
+ * images, a web interface's screenshot, a report template's image) this walks mount → replace → unmount
  * with `URL.createObjectURL` and `URL.revokeObjectURL` counted, and asks that
  * each URL made was revoked exactly once by the end — the ones on show, the
  * ones replaced, and the one that arrives after its reader has gone.
@@ -29,6 +29,7 @@ const api = vi.hoisted(() => ({
   deleteNoteAttachment: vi.fn(),
   setNoteAttachmentInReport: vi.fn(),
   setNoteAttachmentCaption: vi.fn(),
+  listReportTextImages: vi.fn(),
 }));
 vi.mock('../services/api', () => api);
 vi.mock('../contexts/ToastContext', () => ({
@@ -40,6 +41,7 @@ import TemplateImages from '../components/reports/TemplateImages';
 import WebInterfacesCard from '../components/WebInterfacesCard';
 import { TooltipProvider } from '../components/ui/tooltip';
 import { useFindingImages } from '../hooks/useFindingImages';
+import { useReportTextImages } from '../hooks/useReportTextImages';
 
 /** Counts what the browser would: each URL made, each URL revoked. */
 const made: string[] = [];
@@ -132,6 +134,43 @@ describe('object URLs: made == revoked', () => {
     expect(made).toHaveLength(3);
 
     unmount();
+    expectAllRevokedOnce();
+  });
+
+  it('the report’s own images: two shown, one deleted, one that arrives late, then gone', async () => {
+    const reportImage = (id: number) => ({
+      id, filename: `diagram-${id}.png`, caption: null, content_type: 'image/png', size_bytes: 10,
+      uploaded_by_id: 1, created_at: null, placed_in: [], can_modify: true,
+    });
+    api.listReportTextImages.mockResolvedValue([reportImage(1), reportImage(2)]);
+    let late!: () => void;
+    api.getNoteAttachmentBlob.mockImplementation((_projectId: number, id: number) => (id === 3
+      ? new Promise<Blob>((resolve) => { late = () => resolve(bytes()); })
+      : Promise.resolve(bytes())));
+    const { result, unmount } = renderHook(() => useReportTextImages());
+    await waitFor(() => expect(result.current.images).toHaveLength(2));
+    act(() => {
+      result.current.ensure(1);                    // the list under the field
+      result.current.markdown.resolver.ensure(2);  // the preview
+      result.current.ensure(99);                   // not on the list: never fetched
+    });
+    await waitFor(() => expect(Object.keys(result.current.urls)).toHaveLength(2));
+    expect(made).toHaveLength(2);
+    expect(api.getNoteAttachmentBlob).toHaveBeenCalledTimes(2);
+
+    // Image 1 is deleted and image 3 uploaded: the list is read again.
+    api.listReportTextImages.mockResolvedValue([reportImage(2), reportImage(3)]);
+    act(() => { result.current.reload(); });
+    await waitFor(() => expect(result.current.images.map((i) => i.id)).toEqual([2, 3]));
+    await waitFor(() => expect(result.current.urls[1]).toBeUndefined());
+    expect(revoked).toEqual(['blob:made-1']);
+    act(() => { result.current.ensure(3); });
+    await waitFor(() => expect(late).toBeDefined());
+
+    unmount();
+    await act(async () => { late(); await Promise.resolve(); });
+    await waitFor(() => expect(made).toHaveLength(3));
+    await waitFor(() => expect(outstanding()).toEqual([]));
     expectAllRevokedOnce();
   });
 

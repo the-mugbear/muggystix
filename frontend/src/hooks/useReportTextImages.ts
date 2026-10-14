@@ -1,0 +1,91 @@
+/**
+ * The project's own report images — the ones the report's System description
+ * may place — as one load for a form: the editor's "Insert image" picker, the
+ * preview and the manager under the field (`ReportTextImages`) read this.
+ *
+ * They belong to the PROJECT, so its report defaults and every draft see the
+ * same list (`['listReportTextImages', projectId]`).  The bytes come through
+ * the attachment's own route, from the one cache of attachment images
+ * (`useAttachmentImages`: a few fetches at a time, a failure said with a
+ * retry, every object URL revoked by `lib/objectUrls`) — and only for an id
+ * on THIS list: a reference in the text never becomes a URL.
+ */
+import { useCallback, useEffect, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
+
+import { listReportTextImages } from '../services/api';
+import type { ReportTextImage } from '../services/api';
+import { queryErrorText } from '../lib/query';
+import type { EvidenceImages, ImageListStatus } from '../utils/evidenceImages';
+import type { MarkdownImages } from '../utils/reportImages';
+import { useAttachmentImages } from './useAttachmentImages';
+import { useProjectId } from './useProjectId';
+
+export interface ReportTextImagesState {
+  /** Every image of the project's report text, oldest first; empty until read. */
+  images: ReportTextImage[];
+  listStatus: ImageListStatus;
+  /** Why the last read of the list failed. */
+  error: string | null;
+  reload: () => void;
+  /** Object URLs loaded so far, by attachment id. */
+  urls: Record<number, string>;
+  /** Ask for an image's bytes (only one on the list; idempotent). */
+  ensure: (id: number) => void;
+  failed: (id: number) => boolean;
+  retry: (id: number) => void;
+  /** For `MarkdownField`: the picker's list and the preview's resolver. */
+  markdown: MarkdownImages;
+}
+
+const NO_IMAGES: ReportTextImage[] = [];
+
+export function useReportTextImages({ enabled = true }: { enabled?: boolean } = {}): ReportTextImagesState {
+  const projectId = useProjectId();
+  const list = useQuery({
+    queryKey: ['listReportTextImages', projectId],
+    queryFn: ({ signal }) => listReportTextImages(projectId, signal),
+    enabled,
+  });
+  const images = list.data ?? NO_IMAGES;
+  const error = queryErrorText(list.error, 'Could not load the report’s images.');
+  const listStatus: ImageListStatus = list.data ? 'ready' : error ? 'failed' : 'loading';
+  const { refetch } = list;
+  const reload = useCallback(() => { void refetch(); }, [refetch]);
+
+  const {
+    urls, failed, request, retry: fetchAgain, keepOnly,
+  } = useAttachmentImages(projectId);
+  const byId = useMemo(() => new Map(images.map((i) => [i.id, i])), [images]);
+  const read = list.data !== undefined;
+  // An image that left the list (deleted) is let go: its URL is revoked.
+  useEffect(() => {
+    if (read) keepOnly((id) => byId.has(id));
+  }, [read, byId, keepOnly]);
+
+  const ensure = useCallback((id: number) => {
+    if (byId.has(id)) request(id);
+  }, [byId, request]);
+  const retry = useCallback((id: number) => {
+    if (byId.has(id)) fetchAgain(id);
+  }, [byId, fetchAgain]);
+
+  const resolver = useMemo<EvidenceImages>(() => ({
+    lookup: (id) => {
+      const image = byId.get(id);
+      return image ? { caption: image.caption ?? image.filename, src: urls[id] } : null;
+    },
+    ensure,
+    listStatus,
+    retryList: reload,
+    failed,
+    retry,
+    source: 'report',
+  }), [byId, urls, ensure, listStatus, reload, failed, retry]);
+
+  const markdown = useMemo<MarkdownImages>(() => ({ placeable: images, urls, resolver }), [images, urls, resolver]);
+
+  return {
+    images, listStatus, error, reload, urls, ensure, failed, retry, markdown,
+  };
+}

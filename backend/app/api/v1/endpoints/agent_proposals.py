@@ -148,7 +148,7 @@ class FindingTextProposal(_ProposalBase):
     fields: Dict[str, str] = Field(
         ..., description=(
             "Report fields to propose: description, impact, recommendation, references, "
-            "steps_to_reproduce, cvss_vector. Markdown. One proposal per field. Each value is the "
+            "steps_to_reproduce, evidence_text (the text of the Evidence section), cvss_vector. Markdown. One proposal per field. Each value is the "
             "section's COMPLETE new text as it will read in the client report — accepting replaces "
             "the section with it — never a critique or suggestions (those go in rationale)."
         ),
@@ -161,7 +161,7 @@ class FindingProposal(_ProposalBase):
     host_ids: List[int] = Field(..., min_length=1, max_length=1000)
     status: Literal["open", "confirmed"] = Field("open", description="open (under investigation) or confirmed.")
     report_text: Optional[Dict[str, str]] = Field(
-        None, description="Optional report fields: description, impact, recommendation, references, steps_to_reproduce.",
+        None, description="Optional report fields: description, impact, recommendation, references, steps_to_reproduce, evidence_text.",
     )
 
 

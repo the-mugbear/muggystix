@@ -14,7 +14,13 @@ from app.services.cvss_service import normalize_cvss
 
 # The Markdown fields.  One list, so the endpoint, the report builder and the
 # report page's "missing text" count agree.
-REPORT_TEXT_FIELDS = ("description", "impact", "recommendation", "references", "steps_to_reproduce")
+# ``evidence_text`` (v2.495.0) is the written text of the Evidence section —
+# named so because the report's dataset already calls the images no section
+# places ``evidence``.  It is not required text and not drafted by a model
+# (``report_writing_guidance.SECTIONS`` leaves it out).
+REPORT_TEXT_FIELDS = (
+    "description", "impact", "recommendation", "references", "steps_to_reproduce", "evidence_text",
+)
 # Longest accepted value per field — a report section, not an evidence dump.
 REPORT_TEXT_MAX = 32768
 

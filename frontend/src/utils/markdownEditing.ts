@@ -57,7 +57,20 @@ export const insertBlock = (e: Edit, block: string, select?: string): Edit => {
     : { value, start: blockAt + block.length, end: blockAt + block.length };
 };
 
+/** What the Table button writes.  No caption line: a placeholder left
+ *  untouched would be issued as "Table 5: Caption" (walkthrough 2026-10-13).
+ *  The caption syntax — a paragraph that starts `Table:` straight after a
+ *  table — is in the field's Markdown help. */
 export const TABLE_TEMPLATE = '| Column | Column |\n| ------ | ------ |\n| Value  | Value  |';
+
+/** The caption a paragraph gives the table it DIRECTLY follows: the text after
+ *  a leading `Table:` / `table:` (empty for a bare `Table:` — the report
+ *  then prints "Table N" alone), else null.  The report's rule
+ *  (`caption_text` in `quarto_fields.lua`), shared with the preview. */
+export const tableCaptionOf = (paragraph: string): string | null => {
+  const m = /^[Tt]able:([\s\S]*)$/.exec(paragraph.trim());
+  return m ? m[1].trim() : null;
+};
 export const CODE_TEMPLATE = '```\ncommand or output\n```';
 
 // --- the report's table rules ------------------------------------------------

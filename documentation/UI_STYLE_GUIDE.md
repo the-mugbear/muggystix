@@ -1020,6 +1020,20 @@ From the codebase review of 2026-10-07 (5.339.0).
   `formatTimestamp` (ESLint refuses a hand-set `.download =` and a bare
   `new Date(x).toLocaleString()`). An export's error is `formatApiError`,
   never the raw "Request failed with status code 403".
+- **A download shows that it is running and that it finished.** A file save
+  changes nothing on the page by itself, so a silent one is pressed again and
+  the reader collects copies. The button that was pressed shows a spinner and
+  "Downloading…" and cannot be pressed again; when the file is saved a toast
+  names it ("Saved acme-report-3.docx to your downloads.") and the button keeps
+  a quiet "Downloaded" mark (a check) for the rest of the visit. The state is
+  that FILE's: one file on its way never disables another's button. A report
+  file is `components/DownloadButton` (one mutation per button; `saveFn`
+  answers the saved name when only the server knows it) — a draft's previews
+  (keyed by the job, so a new preview's button starts unmarked), an issued
+  report's files and the scope file. A background job that produces a file
+  also says once when it is ready (`The Word preview is ready.` — once per
+  job, not per poll, and never for a failure, which its row states), and its
+  download is then the row's main button.
 - **A panel that shows one record is keyed by that record** (§39), so nothing
   from the previous record can land in it. The one surface that still stays
   mounted across records — the remediation timeline sheet — checks every

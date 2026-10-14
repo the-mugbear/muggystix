@@ -50,6 +50,8 @@ class FindingReportText(BaseModel):
     recommendation: Optional[str] = None
     references: Optional[str] = None
     steps_to_reproduce: Optional[str] = None
+    # The written text of the Evidence section (v2.495.0).
+    evidence_text: Optional[str] = None
     cvss_vector: Optional[str] = None
     cvss_score: Optional[float] = None
     # True when the vector decides the score (3.x / 2.0) — the editor then
@@ -252,6 +254,7 @@ class FindingUpdateRequest(BaseModel):
     recommendation: Optional[str] = Field(None, max_length=32768)
     references: Optional[str] = Field(None, max_length=32768)
     steps_to_reproduce: Optional[str] = Field(None, max_length=32768)
+    evidence_text: Optional[str] = Field(None, max_length=32768)
     cvss_vector: Optional[str] = Field(None, max_length=200)
     cvss_score: Optional[float] = None
 

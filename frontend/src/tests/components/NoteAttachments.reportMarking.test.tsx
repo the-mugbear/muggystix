@@ -118,7 +118,13 @@ describe('NoteAttachments — captions and placement on a finding', () => {
     expect(screen.getByTestId('caption-1')).toHaveTextContent('The relayed session');
     expect(screen.getByTestId('caption-2')).toHaveTextContent('No caption — the report prints “shot-2.png”');
     expect(screen.getByTestId('placement-1')).toHaveTextContent('In: Description, Impact');
-    expect(screen.getByTestId('placement-2')).toHaveTextContent('Not placed — prints under Evidence');
+    // The disclosure at the tick: the note it is attached to goes to the client
+    // with it — said beside a ticked image, and on the tick itself before.
+    expect(screen.getByTestId('placement-2')).toHaveTextContent(
+      'Not placed — prints under Evidence, after the text of the comment or note it is attached to',
+    );
+    expect(screen.getByRole('checkbox', { name: 'Include shot-3.png in the report' }).closest('label'))
+      .toHaveAttribute('title', expect.stringContaining('that text goes to the client as written'));
     // Referenced by the text but not ticked: it will not print, and says so.
     expect(screen.getByTestId('placement-3')).toHaveTextContent('Referenced in Impact, but not ticked');
   });

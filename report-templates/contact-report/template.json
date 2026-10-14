@@ -12,7 +12,7 @@
   "scope_domains_inline_max": null,
   "evidence_records": true,
   "images": {
-    "fields": "all",
+    "fields": ["description", "impact", "recommendation", "references", "steps_to_reproduce"],
     "trailing": true
   }
 }

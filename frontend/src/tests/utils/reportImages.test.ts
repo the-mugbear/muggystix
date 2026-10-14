@@ -109,7 +109,12 @@ describe('placementLine — where an image prints', () => {
   it('names the sections, or says it prints under Evidence', () => {
     expect(placementLine({ ...base, placed_in: ['description', 'impact'] }).text).toBe('In: Description, Impact');
     expect(placementLine({ ...base, placed_in: ['steps_to_reproduce'] }).text).toBe('In: Steps to reproduce');
-    expect(placementLine(base)).toEqual({ text: 'Not placed — prints under Evidence', tone: 'plain' });
+    expect(placementLine({ ...base, placed_in: ['evidence_text'] }).text).toBe('In: Evidence');
+    // Said beside the tick: the note the image is attached to goes with it.
+    expect(placementLine(base)).toEqual({
+      text: 'Not placed — prints under Evidence, after the text of the comment or note it is attached to',
+      tone: 'plain',
+    });
   });
 
   it('warns about a reference that will not print', () => {

@@ -193,6 +193,7 @@ def normalise_references(text: Optional[str]) -> Optional[str]:
 FIELD_LABELS = {
     "description": "Description", "impact": "Impact", "recommendation": "Recommendation",
     "references": "References", "steps_to_reproduce": "Steps to reproduce",
+    "evidence_text": "Evidence",
 }
 
 
@@ -473,4 +474,97 @@ def report_placement(
         }
         for att in ticked
     ]
-    return images, placed, [img for img in images if not img["placed_in"]]
+    # Copies: the builder gives each trailing entry its note and data path.
+    return images, placed, [dict(img) for img in images if not img["placed_in"]]
+
+
+def project_report_images(db: Session, project_id: int) -> List[NoteAttachment]:
+    """The images of the project's own report text — uploaded on the Reports
+    page, attached to no note (``annotation_id`` NULL) — oldest first.  The
+    ONE lookup: the dataset builder, the page's list and the delete guard."""
+    return (
+        db.query(NoteAttachment)
+        .filter(NoteAttachment.project_id == project_id, NoteAttachment.annotation_id.is_(None))
+        .order_by(NoteAttachment.id)
+        .all()
+    )
+
+
+#: The written report details that may place one of those images.
+ENGAGEMENT_IMAGE_FIELDS = ("system_description",)
+
+
+def engagement_placement(
+    images: Sequence[NoteAttachment], settings: dict,
+) -> Tuple[List[dict], Dict[str, Dict[str, dict]]]:
+    """``(images, placed)`` for the dataset's ``engagement``: the project's
+    report images a written detail of THIS report places (an image no text
+    places is not part of the report), and the map the renderer shows them
+    by — the same shapes as a finding's."""
+    by_id = {att.id: att for att in images if printable(att)}
+    placed: Dict[str, Dict[str, dict]] = {}
+    placed_in: Dict[int, List[str]] = defaultdict(list)
+    for field in ENGAGEMENT_IMAGE_FIELDS:
+        for att_id in referenced_ids(settings.get(field)):
+            att = by_id.get(att_id)
+            if att is None:
+                continue
+            placed.setdefault(field, {})[str(att_id)] = {
+                "attachment_id": att_id, "file": evidence_file(att), "caption": caption_or_filename(att),
+            }
+            placed_in[att_id].append(field)
+    listed = [
+        {
+            "attachment_id": att_id, "file": evidence_file(by_id[att_id]),
+            "caption": caption_or_filename(by_id[att_id]), "placed_in": fields,
+        }
+        for att_id, fields in sorted(placed_in.items())
+    ]
+    return listed, placed
+
+
+def report_text_placements(db: Session, project_id: int) -> Dict[int, List[str]]:
+    """Attachment id → where the project's CURRENT report text places it:
+    ``"defaults"`` (the project's report defaults) and ``"report <id>"`` for
+    each DRAFT.  Issued reports are not listed: each holds its own copy."""
+    from app.db.models_reports import Report, ReportProfile, ReportStatus
+
+    out: Dict[int, List[str]] = defaultdict(list)
+    profile = db.query(ReportProfile).filter(ReportProfile.project_id == project_id).first()
+    if profile is not None:
+        for field in ENGAGEMENT_IMAGE_FIELDS:
+            for att_id in referenced_ids(getattr(profile, field, None)):
+                if "defaults" not in out[att_id]:
+                    out[att_id].append("defaults")
+    drafts = (
+        db.query(Report.id, Report.settings)
+        .filter(Report.project_id == project_id, Report.status == ReportStatus.DRAFT)
+        .order_by(Report.id)
+    )
+    for report_id, settings in drafts:
+        for field in ENGAGEMENT_IMAGE_FIELDS:
+            for att_id in referenced_ids((settings or {}).get(field)):
+                label = f"report {report_id}"
+                if label not in out[att_id]:
+                    out[att_id].append(label)
+    return dict(out)
+
+
+def refuse_if_report_text_places(db: Session, attachment) -> None:
+    """409 when the project's report defaults or a draft place this image of
+    the report's own text — the twin of ``refuse_if_placed`` for an image
+    that is no finding's."""
+    where = report_text_placements(db, attachment.project_id).get(attachment.id)
+    if not where:
+        return
+    named = ", ".join(
+        "the project's report defaults" if w == "defaults" else f"draft #{w.split()[-1]}" for w in where[:5]
+    ) + (f" (and {len(where) - 5} more)" if len(where) > 5 else "")
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"Cannot delete this image: the system description of {named} places it. The report "
+            f"would be left with a reference to nothing. Remove the reference — "
+            f"![…](evidence:{attachment.id}) — from that text first, then delete it."
+        ),
+    )

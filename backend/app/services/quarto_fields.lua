@@ -426,6 +426,95 @@ local function evidence_figure(el)
   return figure(file, caption_of(file), valid_width(el.attributes["width"]))
 end
 
+--[[
+Table captions.  A written table is captioned by the paragraph that follows
+it, when that paragraph opens with "Table:":
+
+    | Account | Role |
+    | ------- | ---- |
+    | svc-sql | DBA  |
+
+    Table: Accounts found on the file server
+
+(pandoc's own spelling; its gfm reader has no caption syntax, so the pair is
+made here.)  The paragraph becomes a `bs-table-caption` Div placed ABOVE the
+table — the same placeholder the templates' partials/_table_caption.qmd
+emits — and `number_captions` (the Pandoc pass at the end) writes "Table N:
+…" on every one, counting in DOCUMENT order: a written table sits between
+the template's own, and only this filter sees both.  A "Table:" paragraph
+that follows no table stays the text it is.
+]]
+local CAPTION_CLASS = "bs-table-caption"
+local CAPTION_STYLE = "Table Caption"
+
+-- The inlines after a leading "Table:", or nil when `block` is not a caption.
+local function caption_text(block)
+  if block == nil or block.t ~= "Para" then return nil end
+  local first = block.content[1]
+  if first == nil or first.t ~= "Str" then return nil end
+  local rest = first.text:match("^[Tt]able:(.*)$")
+  if rest == nil then return nil end
+  local inlines = pandoc.Inlines({})
+  if rest ~= "" then inlines:insert(pandoc.Str(rest)) end
+  for i = 2, #block.content do inlines:insert(block.content[i]) end
+  while #inlines > 0 and (inlines[1].t == "Space" or inlines[1].t == "SoftBreak") do
+    inlines:remove(1)
+  end
+  return inlines
+end
+
+local function caption_tables(blocks)
+  local out = pandoc.List()
+  local i = 1
+  while i <= #blocks do
+    local block = blocks[i]
+    local caption = block.t == "Table" and caption_text(blocks[i + 1]) or nil
+    if caption ~= nil then
+      out:insert(pandoc.Div({ pandoc.Para(caption) }, pandoc.Attr("", { CAPTION_CLASS })))
+      out:insert(block)
+      i = i + 2
+    else
+      out:insert(block)
+      i = i + 1
+    end
+  end
+  return out
+end
+
+-- "Table N: caption" in the Table Caption style ("Table N" for an empty one).
+local function numbered_caption(n, inlines)
+  local label = pandoc.Inlines({ pandoc.Str("Table"), pandoc.Space(), pandoc.Str(tostring(n)) })
+  if #inlines > 0 and not blank(inlines) then
+    label:insert(pandoc.Str(":"))
+    label:insert(pandoc.Space())
+    label:extend(inlines)
+  end
+  return pandoc.Div({ pandoc.Para(label) }, pandoc.Attr("", {}, { ["custom-style"] = CAPTION_STYLE }))
+end
+
+-- The caption of a Div the template (or `caption_tables`) marked, as inlines.
+local function caption_inlines(el)
+  local first = el.content[1]
+  if first ~= nil and (first.t == "Para" or first.t == "Plain") then return first.content end
+  return pandoc.Inlines({})
+end
+
+-- A caption a template numbered itself — "Table 3: …" in a Table Caption
+-- Div, as partials/_table_caption.qmd printed it before the count moved
+-- here.  The copy of its template an ISSUED report keeps still does, and so
+-- may an operator's own template: its number is replaced, so one document
+-- has one count.  Returns the inlines after "Table N:", or nil.
+local function legacy_caption(el)
+  if el.attributes["custom-style"] ~= CAPTION_STYLE then return nil end
+  local content = caption_inlines(el)
+  if #content < 3 or content[1].t ~= "Str" or content[1].text ~= "Table" then return nil end
+  if content[2].t ~= "Space" or content[3].t ~= "Str" or not content[3].text:match("^%d+:?$") then return nil end
+  local inlines = pandoc.Inlines({})
+  for i = 4, #content do inlines:insert(content[i]) end
+  while #inlines > 0 and inlines[1].t == "Space" do inlines:remove(1) end
+  return inlines
+end
+
 local function fill_field(el)
   if el.classes:includes("bs-code") then return verbatim(el) end
   if el.classes:includes("bs-figure") then return evidence_figure(el) end
@@ -444,7 +533,11 @@ local function fill_field(el)
   local drop = el.attributes["images"] == "none"
   local width = valid_width(el.attributes["image-width"])
   local used = {}
-  local blocks = lift(clean(doc.blocks, images, drop), images, width, used, 0)
+  -- Captions are paired with their tables BEFORE the figures are lifted: an
+  -- image in a table cell becomes a figure that FOLLOWS its table, and would
+  -- then stand between the table and its "Table:" line — which stayed text.
+  local cleaned = pandoc.Blocks(clean(doc.blocks, images, drop)):walk({ Blocks = caption_tables })
+  local blocks = lift(cleaned, images, width, used, 0)
   if not drop then
     -- The dataset says this field places an image the text did not yield
     -- (the reference sits in a code block, say): it is no longer in the
@@ -464,14 +557,27 @@ end
 --[[
 One pass over the finished document.  The placeholders are filled first, then
 every BlueStick figure is numbered in the order a reader meets it: "Figure 3:
-caption", or "Figure 3" for an image nobody captioned.  (Tables are numbered
-by the template — a Jinja counter — because Jinja writes every one of them.)
+caption", or "Figure 3" for an image nobody captioned.  Table captions are
+numbered in the same pass, by their own count: the template's and the ones an
+author wrote under a table in a written section.
 ]]
 function Pandoc(doc)
   doc = doc:walk({ Div = fill_field })
   local n = 0
+  local tables = 0
   return doc:walk({
     traverse = "topdown",
+    Div = function(el)
+      local inlines = nil
+      if el.classes:includes(CAPTION_CLASS) then
+        inlines = caption_inlines(el)
+      else
+        inlines = legacy_caption(el)
+      end
+      if inlines == nil then return nil end
+      tables = tables + 1
+      return numbered_caption(tables, inlines), false
+    end,
     Figure = function(el)
       if not el.classes:includes("bs-figure") then return nil end
       n = n + 1

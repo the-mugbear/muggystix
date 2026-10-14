@@ -46,6 +46,58 @@ describe('SafeMarkdown — tables (5.293.0), as the report prints them', () => {
   });
 });
 
+// The report numbers a caption written under a table: a paragraph that opens
+// with `Table:` DIRECTLY after a table prints above it (quarto_fields.lua,
+// `caption_tables`).  The preview shows the same pairing — without a number,
+// which is the report's to give.
+describe('SafeMarkdown — table captions, as the report pairs them', () => {
+  const TABLE = '| Account | Role |\n| ------- | ---- |\n| svc-sql | DBA  |';
+  const paragraphs = (c: HTMLElement) => Array.from(c.querySelectorAll('p')).map((p) => p.textContent);
+
+  it('prints a `Table:` paragraph after a table above it, and not under it', () => {
+    const c = md(`Intro.\n\n${TABLE}\n\nTable: Accounts found on the **file server**\n\nAfter.`);
+    const caption = c.querySelector('table caption') as HTMLElement;
+    expect(caption.textContent).toBe('Table: Accounts found on the file server');
+    expect(caption.className).toContain('caption-top');
+    expect(caption.className).toContain('text-center');
+    expect(caption.querySelector('strong')?.textContent).toBe('file server');
+    expect(paragraphs(c)).toEqual(['Intro.', 'After.']);
+  });
+
+  it('takes `table:` in lower case, and a bare `Table:` as a caption with no words', () => {
+    expect(md(`${TABLE}\n\ntable: lower case`).querySelector('caption')?.textContent).toBe('Table: lower case');
+    const bare = md(`${TABLE}\n\nTable:`);
+    expect(bare.querySelector('caption')?.textContent).toBe('Table');
+    expect(paragraphs(bare)).toEqual([]);
+  });
+
+  it('leaves a `Table:` paragraph that follows no table the paragraph it is', () => {
+    const c = md(`Table: not a caption\n\n${TABLE}\n\nA line between.\n\nTable: nor this one`);
+    expect(c.querySelector('caption')).toBeNull();
+    expect(paragraphs(c)).toEqual(['Table: not a caption', 'A line between.', 'Table: nor this one']);
+    // Only a paragraph that OPENS with it.
+    expect(md(`${TABLE}\n\nSee Table: one`).querySelector('caption')).toBeNull();
+    expect(md(`${TABLE}\n\n**Table:** bold`).querySelector('caption')).toBeNull();
+  });
+
+  it('captions only the table it follows when there are two', () => {
+    const c = md(`${TABLE}\n\n${TABLE}\n\nTable: the second`);
+    const tables = c.querySelectorAll('table');
+    expect(tables[0].querySelector('caption')).toBeNull();
+    expect(tables[1].querySelector('caption')?.textContent).toBe('Table: the second');
+  });
+
+  it('keeps hostile caption text as text', () => {
+    const c = md(`${TABLE}\n\nTable: <img src=x onerror="alert(1)"> ![shot](https://evil.example/x.png) [go](javascript:alert(1))`);
+    const caption = c.querySelector('caption') as HTMLElement;
+    expect(caption.querySelector('img')).toBeNull();
+    expect(caption.querySelector('a')).toBeNull();
+    expect(caption.textContent).toContain('<img src=x onerror="alert(1)">');
+    expect(caption.textContent).toContain('shot');
+    expect(c.querySelector('script')).toBeNull();
+  });
+});
+
 describe('SafeMarkdown', () => {
   it('renders emphasis, code and strikethrough', () => {
     const c = md('**bold** and *it* and `a<b>` and ~~gone~~ and snake_case_name');

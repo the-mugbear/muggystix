@@ -262,7 +262,8 @@ def image_probe_dataset(dataset: dict, index: int = 0) -> dict:
     finding ``index`` has one image placed in EVERY written field — captioned
     ``in <field>`` — and one placed nowhere (``unplaced``), and no other
     finding has any: what ``image_declaration_problem`` and the shipped
-    templates' render test check a declaration with.  Attachment ids 1…6;
+    templates' render test check a declaration with.  Attachment ids from 1:
+    one per field of ``REPORT_TEXT_FIELDS``, then the unplaced one (1…7);
     files ``evidence/<id>.png``."""
     import copy
 

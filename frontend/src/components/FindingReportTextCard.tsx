@@ -58,6 +58,12 @@ export const REPORT_TEXT_FIELDS: Array<{ key: FindingReportTextField; label: str
   { key: 'impact', label: 'Impact', hint: 'What an attacker gains, on this network.', rows: 3 },
   { key: 'recommendation', label: 'Recommendation', hint: 'What to change to fix it.', rows: 4 },
   { key: 'steps_to_reproduce', label: 'Steps to reproduce', hint: 'How it was demonstrated (a list works well).', rows: 5 },
+  // After the steps, as the report prints it.  Optional, and written by
+  // people only: the AI draft's sections are `DRAFTABLE`.
+  {
+    key: 'evidence_text', label: 'Evidence', rows: 4,
+    hint: 'Printed under Evidence, before the test results and before any image no section places. Each such image is preceded by the text of the note it is attached to.',
+  },
   { key: 'references', label: 'References', hint: 'Advisories and vendor guidance, one per line.', rows: 3 },
 ];
 
@@ -68,20 +74,22 @@ const toDraft = (t: FindingReportText | null | undefined): Draft => ({
   impact: t?.impact ?? '',
   recommendation: t?.recommendation ?? '',
   steps_to_reproduce: t?.steps_to_reproduce ?? '',
+  evidence_text: t?.evidence_text ?? '',
   references: t?.references ?? '',
   cvss_vector: t?.cvss_vector ?? '',
   cvss_score: t?.cvss_score != null ? String(t.cvss_score) : '',
 });
 
+/** The sections a report needs — the ones an AI draft may fill.  Steps to
+ *  reproduce, Evidence and References are optional and written by people. */
+const DRAFTABLE: FindingReportTextField[] = ['description', 'impact', 'recommendation'];
+
 /** The fields a report would show empty — the Reports page counts the same. */
 export const missingReportText = (t: FindingReportText | null | undefined): string[] =>
   REPORT_TEXT_FIELDS
-    .filter((f) => f.key !== 'steps_to_reproduce' && f.key !== 'references')
+    .filter((f) => DRAFTABLE.includes(f.key))
     .filter((f) => !(t?.[f.key] ?? '').trim())
     .map((f) => f.label.toLowerCase());
-
-/** The sections a report needs — the ones an AI draft may fill. */
-const DRAFTABLE: FindingReportTextField[] = ['description', 'impact', 'recommendation'];
 
 /** Nothing the report needs has been written — a finding that was just made.
  *  Its page opens ready to write: a wall of "Not written yet" behind an Edit
@@ -260,7 +268,7 @@ const FindingReportTextCard: React.FC<Props> = ({
             <span>Report text</span>
             <InfoTip
               label="About report text"
-              text={`What the client report says about this finding. Written in Markdown; shown as the report prints it.${images ? ' An image ticked “In report” can be placed in a section (Insert image); the rest print under Evidence.' : ''}`}
+              text={`What the client report says about this finding. Written in Markdown; shown as the report prints it.${images ? ' An image ticked “In report” can be placed in a section (Insert image); the rest print under Evidence, each after the text of the comment or note it is attached to — that text goes to the client as written.' : ''}`}
             />
           </>
         )}

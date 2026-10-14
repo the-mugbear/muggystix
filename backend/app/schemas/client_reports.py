@@ -32,10 +32,15 @@ class EngagementSettings(BaseModel):
     applications: Optional[str] = Field(None, max_length=32768)
     thick_clients: Optional[str] = Field(None, max_length=32768)
     other_targets: Optional[str] = Field(None, max_length=32768)
+    # v2.495.0 — who produced the report, and the disclaimer it closes with
+    # (Markdown).  Empty = inherited: the project's report defaults, else the
+    # installation's (`services/report_defaults`).
+    author_name: Optional[str] = Field(None, max_length=255)
+    disclaimer: Optional[str] = Field(None, max_length=32768)
 
     @field_validator(
         "client_name", "classification", "engagement_type", "system_description",
-        "applications", "thick_clients", "other_targets",
+        "applications", "thick_clients", "other_targets", "author_name", "disclaimer",
     )
     @classmethod
     def _blank_is_none(cls, v):
@@ -54,6 +59,24 @@ class ReportProfileOut(ReportProfileBody):
     # v2.382.0 — no team is saved, so `testers` is the project's analysts and
     # admins: what a new draft will list.
     testers_from_project: bool = False
+    # What a report of this project uses for an inherited detail the profile
+    # leaves empty: the installation's (`author_name`, `disclaimer`).
+    inherited: Dict[str, Optional[str]] = Field(default_factory=dict)
+
+
+class ReportTextImageOut(BaseModel):
+    """An image of the project's report text (the system description)."""
+    id: int
+    filename: str
+    caption: Optional[str] = None
+    content_type: str
+    size_bytes: int
+    uploaded_by_id: Optional[int] = None
+    created_at: Optional[datetime] = None
+    # Where the project's CURRENT text places it: "defaults" (the project's
+    # report defaults) and/or "report <id>" for each draft.
+    placed_in: List[str] = []
+    can_modify: bool = False
 
 
 class ReportTemplateAssetOut(BaseModel):
@@ -170,6 +193,10 @@ class ReportOut(BaseModel):
     issued_at: Optional[datetime] = None
     # What the report contains (live for a draft, frozen for an issued one).
     summary: Optional[Dict[str, Any]] = None
+    # What an inherited detail left empty in `settings` prints (`author_name`,
+    # `disclaimer`): a draft — the project's, else the installation's, as they
+    # stand; an issued report — what it was issued with.  None on list rows.
+    inherited: Optional[Dict[str, Optional[str]]] = None
     # What the CALLER may do.
     can_edit: bool = False
     can_issue: bool = False
