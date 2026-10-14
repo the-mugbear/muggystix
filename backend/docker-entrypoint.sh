@@ -51,6 +51,20 @@ uploads may not be writable (read-only mount?). seed_default_admin will \
 fail closed if so." >&2
     fi
 
+    # Close a folder an earlier deploy.sh opened to every account on the host
+    # (mode 1777 — its fallback when it ran without root, before this
+    # entrypoint took the tree over).  Only once it is ours, so a mount we
+    # could not chown stays writable; and only when it is world-writable, so
+    # a mode an operator chose is left alone.
+    for d in ingestion_queue note_attachments report_artifacts client_reports; do
+        p="$UPLOADS/$d"
+        if [ "$(stat -c '%u' "$p" 2>/dev/null)" = "$APP_UID" ] \
+            && [ -n "$(find "$p" -maxdepth 0 -perm -o+w 2>/dev/null)" ]; then
+            chmod 750 "$p" 2>/dev/null \
+                && echo "[entrypoint] $p was writable by every account on the host — now 750." >&2
+        fi
+    done
+
     exec gosu "$APP_USER" "$@"
 fi
 

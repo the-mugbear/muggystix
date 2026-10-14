@@ -542,8 +542,8 @@ ensure_uploads_dir() {
     # only way to chown is as root — and a deploy script must NEVER block on a
     # sudo password prompt mid-run.  So: do the clean thing automatically when
     # we already have root, leave a correctly-owned dir untouched, and
-    # otherwise fall back to a writable mode the unprivileged deploy user can
-    # set itself — no sudo, no prompt.
+    # otherwise only make the folders — the containers' entrypoint gives them
+    # to UID 999 at start.  No sudo, no prompt, nothing world-writable.
     for d in uploads/ingestion_queue uploads/report_artifacts; do
         mkdir -p "$d"
         if [ "$(id -u)" -eq 0 ]; then
@@ -558,12 +558,173 @@ ensure_uploads_dir() {
             chmod 750 "$d" 2>/dev/null || true
             continue
         fi
-        # Unprivileged deploy: make the dir writable for the container without
-        # root.  Sticky bit so co-tenants can't delete each other's files.  For
-        # least privilege on a shared host, run ONCE manually:
-        #   sudo chown -R 999:999 "$d" && sudo chmod 750 "$d"
-        chmod 1777 "$d"
+        # Unprivileged deploy: leave the folder as it was made.  It used to be
+        # opened to every account here (mode 1777) so the container could
+        # write to it; the containers' entrypoint takes the uploads tree over
+        # at start (root inside the container, before it drops to UID 999),
+        # so nothing has to be world-writable on the host, and it closes a
+        # folder an earlier deploy opened.
     done
+}
+
+# ------------------------------------------------------------------
+# Who owns the files this script and the containers rely on — checked
+# BEFORE anything is written (options 1–3), listed under option 5.
+#
+# The practice it holds to: run this script as one ordinary account that can
+# use Docker, every time.  Nothing here needs root, and a run as root leaves
+# .env, ssl/ and the backups root's — the next ordinary run then cannot renew
+# the certificate, back up the key or rewrite .env.  uploads/ is the
+# containers' (UID 999); they take it over themselves at start.
+#
+# A finding never blocks on a sudo prompt: what this account can put right
+# itself is offered as a fix, everything else is printed as the one command
+# to run, and the operator chooses to go on or stop.
+# ------------------------------------------------------------------
+PERM_WHAT=(); PERM_FIX=(); PERM_AUTO=()
+CONTAINER_UID=999
+
+perm_owner() { stat -c '%u' "$1" 2>/dev/null || echo -1; }
+perm_owner_name() { stat -c '%U' "$1" 2>/dev/null || echo '?'; }
+perm_mode() { stat -c '%a' "$1" 2>/dev/null || echo '?'; }
+# True when the group or anyone else has any access to it.
+perm_open_to_others() {
+    local m; m="$(stat -c '%a' "$1" 2>/dev/null)" || return 1
+    [[ -n "$m" && "${m: -2}" != "00" ]]
+}
+# <what is wrong and why it matters> <the command that fixes it> [<auto fix>]
+# An auto fix is `chmod600:<path>` or `chown-uploads`: only ever one of those
+# two, on a path named in this function's callers — never text to evaluate.
+perm_note() { PERM_WHAT+=("$1"); PERM_FIX+=("$2"); PERM_AUTO+=("${3:-}"); }
+
+audit_permissions() {
+    PERM_WHAT=(); PERM_FIX=(); PERM_AUTO=()
+    local uid me owner f auto
+    uid="$(id -u)"; me="$(id -un)"
+
+    if [[ "$uid" -eq 0 ]]; then
+        perm_note \
+            "This script is running as root. Nothing in it needs root, and every file it writes (.env, ssl/, backups) becomes root's: the next run as an ordinary account cannot renew the certificate, back up the key or rewrite .env." \
+            "Stop, and run it as an ordinary account that can use Docker (a member of the docker group) — the same one every time. To hand this folder back first:  chown -R ${SUDO_USER:-<that account>}: \"$PROJECT_ROOT\" && chown -R $CONTAINER_UID:$CONTAINER_UID \"$PROJECT_ROOT/uploads\""
+    fi
+
+    if [[ -e .env ]]; then
+        owner="$(perm_owner .env)"
+        if [[ "$uid" -ne 0 && "$owner" != "$uid" ]]; then
+            perm_note \
+                ".env belongs to $(perm_owner_name .env), not to $me: this script cannot update it (options 2 and 3 rewrite it)." \
+                "sudo chown $me: \"$PROJECT_ROOT/.env\""
+        fi
+        if perm_open_to_others .env; then
+            auto=""; [[ "$uid" -eq 0 || "$owner" == "$uid" ]] && auto="chmod600:.env"
+            perm_note \
+                ".env (mode $(perm_mode .env)) can be read by other accounts on this host. It holds SECRET_KEY and the database password." \
+                "chmod 600 \"$PROJECT_ROOT/.env\"" "$auto"
+        fi
+    fi
+
+    local foreign=()
+    for f in ssl ssl/certs ssl/certs/networkmapper.crt ssl/certs/networkmapper.key; do
+        [[ -e "$f" ]] || continue
+        owner="$(perm_owner "$f")"
+        if [[ "$uid" -ne 0 && "$owner" != "$uid" ]]; then foreign+=("$f ($(perm_owner_name "$f"))"); fi
+    done
+    if [[ ${#foreign[@]} -gt 0 ]]; then
+        perm_note \
+            "The certificate folder is not $me's — ${foreign[*]}. nginx reads it whoever owns it, so root is not needed there; but this script then cannot renew the certificate (option 3) or back up the key (option 6), and the local CA's install step refuses." \
+            "sudo chown -R $me: \"$PROJECT_ROOT/ssl\""
+    fi
+    f="ssl/certs/networkmapper.key"
+    if [[ -e "$f" ]] && perm_open_to_others "$f"; then
+        owner="$(perm_owner "$f")"
+        auto=""; [[ "$uid" -eq 0 || "$owner" == "$uid" ]] && auto="chmod600:$f"
+        perm_note \
+            "The TLS private key $f (mode $(perm_mode "$f")) can be read by other accounts on this host." \
+            "chmod 600 \"$PROJECT_ROOT/$f\"" "$auto"
+    fi
+
+    if [[ -d uploads ]]; then
+        owner="$(perm_owner uploads)"
+        if [[ "$owner" != "$CONTAINER_UID" && "$owner" != "$uid" ]]; then
+            auto=""; [[ "$uid" -eq 0 ]] && auto="chown-uploads"
+            perm_note \
+                "uploads/ belongs to $(perm_owner_name uploads). It is the containers' (UID $CONTAINER_UID): they take it over at start where Docker lets them, and until then this script cannot create its folders in it." \
+                "sudo chown -R $CONTAINER_UID:$CONTAINER_UID \"$PROJECT_ROOT/uploads\"" "$auto"
+        fi
+    fi
+}
+
+print_permission_findings() {
+    local i
+    for i in "${!PERM_WHAT[@]}"; do
+        print_warning "$((i + 1)). ${PERM_WHAT[$i]}"
+        echo "     Fix: ${PERM_FIX[$i]}"
+    done
+}
+
+# Apply the fixes this account can make itself; says each one.
+apply_permission_fixes() {
+    local i path
+    for i in "${!PERM_AUTO[@]}"; do
+        case "${PERM_AUTO[$i]}" in
+            chmod600:*)
+                path="${PERM_AUTO[$i]#chmod600:}"
+                if chmod 600 "$path"; then print_success "$path is now mode 600."
+                else print_error "Could not change the mode of $path."; fi ;;
+            chown-uploads)
+                if chown -R "$CONTAINER_UID:$CONTAINER_UID" uploads; then print_success "uploads/ now belongs to UID $CONTAINER_UID."
+                else print_error "Could not change the owner of uploads/."; fi ;;
+        esac
+    done
+}
+
+# Before a deploy writes anything: findings are listed with their fixes and the
+# operator fixes, goes on, or stops.  With no operator (a piped run) it says
+# so and goes on — none of these stops the application from running.
+permissions_gate() {
+    audit_permissions
+    [[ ${#PERM_WHAT[@]} -eq 0 ]] && return 0
+
+    local fixable a choice
+    while true; do
+        print_header "File ownership and permissions"
+        print_permission_findings
+        fixable=0
+        for a in "${PERM_AUTO[@]}"; do [[ -n "$a" ]] && fixable=$((fixable + 1)); done
+        if [[ "$fixable" -gt 0 ]]; then
+            ask choice "Fix the $fixable this script can fix itself [f], continue as it is [c], or stop [s]? " c
+        else
+            echo "  None of these can be fixed from here without another account's rights."
+            ask choice "Continue as it is [c], or stop and run the fix above [s]? " c
+        fi
+        case "${choice,,}" in
+            f)
+                if [[ "$fixable" -eq 0 ]]; then print_warning "There is nothing this script can fix itself."; continue; fi
+                apply_permission_fixes
+                audit_permissions
+                if [[ ${#PERM_WHAT[@]} -eq 0 ]]; then print_success "Ownership and permissions are as they should be."; return 0; fi
+                ;;
+            c)
+                print_warning "Continuing with the above as it is."
+                return 0 ;;
+            s)
+                print_info "Stopped before anything was changed. Run the fix shown, then start this script again."
+                exit 1 ;;
+            *)
+                print_warning "Answer f, c or s." ;;
+        esac
+    done
+}
+
+report_permissions() {
+    audit_permissions
+    if [[ ${#PERM_WHAT[@]} -eq 0 ]]; then
+        print_success "File ownership and permissions: nothing to fix (.env, ssl/, uploads/)"
+    else
+        print_warning "File ownership and permissions: ${#PERM_WHAT[@]} to look at"
+        print_permission_findings
+    fi
+    echo ""
 }
 
 # ------------------------------------------------------------------
@@ -1267,6 +1428,7 @@ case $DEPLOY_CHOICE in
             print_error "next to this folder), or delete it and run option 2 for a new installation."
             exit 1
         fi
+        permissions_gate
         ensure_env
         CONFIGURED_IP=$(get_configured_ip)
         ensure_ssl_certs "$CONFIGURED_IP"
@@ -1436,6 +1598,7 @@ case $DEPLOY_CHOICE in
     2)
         print_header "First-time Setup"
 
+        permissions_gate
         select_ip
         generate_env "$SELECTED_IP"
 
@@ -1531,6 +1694,7 @@ case $DEPLOY_CHOICE in
     3)
         print_header "Reconfigure IP Address"
 
+        permissions_gate
         select_ip
 
         # A CA-issued certificate is kept, never replaced by a self-signed
@@ -1761,6 +1925,7 @@ case $DEPLOY_CHOICE in
 
     5)
         check_ssl_status
+        report_permissions
         ;;
 
     6)

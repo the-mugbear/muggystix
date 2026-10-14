@@ -64,6 +64,10 @@ class Project:
         )
         (self.root / "ssl" / "certs" / "networkmapper.crt").write_text("cert")
         (self.root / "ssl" / "certs" / "networkmapper.key").write_text("key")
+        # As a careful operator keeps them: deploy.sh's ownership check finds
+        # nothing, so it asks nothing (its own tests loosen these).
+        (self.root / ".env").chmod(0o600)
+        (self.root / "ssl" / "certs" / "networkmapper.key").chmod(0o600)
         (self.root / "backend" / "Dockerfile").write_text("ARG PYTHON_IMAGE=python:3.11.16-slim-trixie\n")
         (self.root / "frontend" / "Dockerfile").write_text("ARG NODE_IMAGE=node:22.23.2-alpine\n")
 
@@ -557,6 +561,180 @@ def test_a_prompt_at_end_of_input_says_so(project):
 
     assert result.returncode == 1
     assert "No answer on standard input" in _output(result)
+
+
+# ---------------------------------------------------------------------------
+# Ownership and permissions — checked before a deploy writes anything
+# ---------------------------------------------------------------------------
+
+PERMISSIONS_HEADING = "File ownership and permissions"
+
+
+def _mode(path: pathlib.Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def _fake_owner(project, *paths: str, uid: int = 0, name: str = "root") -> None:
+    """A `stat` that says ``paths`` belong to another account — a test cannot
+    chown — and is the real one for everything else."""
+    real = shutil.which("stat")
+    fake = project.bin / "stat"
+    cases = "|".join(paths)
+    fake.write_text(
+        "#!/bin/sh\n"
+        'last=""; for a in "$@"; do last="$a"; done\n'
+        f'case "$last" in {cases})\n'
+        f'  case "$2" in %u) echo {uid}; exit 0;; %U) echo {name}; exit 0;; esac;;\n'
+        "esac\n"
+        f'exec {real} "$@"\n'
+    )
+    fake.chmod(0o755)
+
+
+def test_a_tree_kept_as_it_should_be_is_asked_nothing(project):
+    result = project.run("deploy.sh", stdin="1\n")
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert PERMISSIONS_HEADING not in out
+    assert "Deployment complete" in out
+
+
+def test_a_readable_env_and_key_are_fixed_when_the_operator_says_so(project):
+    env, key = project.root / ".env", project.root / "ssl" / "certs" / "networkmapper.key"
+    env.chmod(0o644)
+    key.chmod(0o640)
+
+    result = project.run("deploy.sh", stdin="1\nf\n")
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert PERMISSIONS_HEADING in out
+    assert ".env (mode 644) can be read by other accounts" in out and "chmod 600" in out
+    assert "TLS private key ssl/certs/networkmapper.key (mode 640)" in out
+    assert "Fix the 2 this script can fix itself [f]" in out
+    assert (_mode(env), _mode(key)) == (0o600, 0o600)
+    assert "Ownership and permissions are as they should be." in out
+    assert "Deployment complete" in out
+
+
+def test_stop_changes_nothing_and_builds_nothing(project):
+    env = project.root / ".env"
+    env.chmod(0o644)
+
+    result = project.run("deploy.sh", stdin="1\ns\n")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert "Stopped before anything was changed" in out
+    assert _mode(env) == 0o644
+    assert _index(project.calls(), "compose build") == -1
+    assert not (project.root / "uploads" / "ingestion_queue").exists()   # the step after the check
+
+
+def test_continue_goes_on_and_leaves_the_files_alone(project):
+    env = project.root / ".env"
+    env.chmod(0o644)
+
+    result = project.run("deploy.sh", stdin="1\nc\n")
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert "Continuing with the above as it is." in out and "Deployment complete" in out
+    assert _mode(env) == 0o644
+
+
+def test_with_no_operator_the_findings_are_said_and_the_deploy_goes_on(project):
+    """A piped deploy is not stopped by a finding (none keeps the application
+    from running) — and it is not silent about it either."""
+    (project.root / ".env").chmod(0o644)
+
+    result = project.run("deploy.sh", stdin="1\n")
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert PERMISSIONS_HEADING in out
+    assert "No answer on standard input — taking the default: 'c'" in out
+    assert "Deployment complete" in out
+
+
+def test_an_answer_that_is_none_of_the_three_is_asked_again(project):
+    (project.root / ".env").chmod(0o644)
+
+    result = project.run("deploy.sh", stdin="1\nyes\ns\n")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert "Answer f, c or s." in out and out.count(PERMISSIONS_HEADING) == 2
+
+
+def test_a_certificate_folder_that_is_roots_is_named_with_the_command_and_not_offered_as_a_fix(project):
+    """What needs another account's rights is never attempted and never a
+    sudo prompt: the command is printed, and the operator goes on or stops."""
+    _fake_owner(project, "ssl", "ssl/certs", "ssl/certs/networkmapper.crt", "ssl/certs/networkmapper.key")
+
+    result = project.run("deploy.sh", stdin="1\ns\n")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert "The certificate folder is not" in out and "ssl/certs/networkmapper.key (root)" in out
+    assert "nginx reads it whoever owns it, so root is not needed there" in out
+    assert "sudo chown -R" in out and f"{project.root}/ssl" in out
+    assert "None of these can be fixed from here" in out and "[f]" not in out
+    assert "sudo " not in "\n".join(project.calls())
+
+
+def test_an_uploads_folder_that_is_roots_is_named(project):
+    (project.root / "uploads").mkdir(exist_ok=True)
+    _fake_owner(project, "uploads")
+
+    result = project.run("deploy.sh", stdin="1\ns\n")
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert "uploads/ belongs to root" in out and "chown -R 999:999" in out
+
+
+def test_security_status_lists_the_findings_and_asks_nothing(project):
+    clean = project.run("deploy.sh", stdin="5\n")
+    assert clean.returncode == 0, _output(clean)
+    assert "File ownership and permissions: nothing to fix" in _output(clean)
+
+    (project.root / ".env").chmod(0o644)
+    result = project.run("deploy.sh", stdin="5\n")
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert "File ownership and permissions: 1 to look at" in out and "chmod 600" in out
+    assert "[c]" not in out
+    assert _mode(project.root / ".env") == 0o644
+
+
+def test_running_as_root_is_said_with_how_to_hand_the_folder_back(project):
+    """Reported under option 5 here: a test is not root, and the deploy
+    options go on to chown as root would."""
+    real = shutil.which("id")
+    fake = project.bin / "id"
+    fake.write_text(f'#!/bin/sh\n[ "$1" = "-u" ] && {{ echo 0; exit 0; }}\nexec {real} "$@"\n')
+    fake.chmod(0o755)
+
+    result = project.run("deploy.sh", stdin="5\n", env={"SUDO_USER": "deployer"})
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert "This script is running as root. Nothing in it needs root" in out
+    assert "chown -R deployer:" in out and "chown -R 999:999" in out
+
+
+def test_no_script_opens_a_folder_to_every_account():
+    """deploy.sh used to `chmod 1777` two upload folders when it ran without
+    root; the containers' entrypoint takes the tree over instead, and closes
+    a folder an earlier deploy opened."""
+    assert "chmod 1777" not in (SCRIPTS / "deploy.sh").read_text(encoding="utf-8")
+    entrypoint = SCRIPTS.parent / "backend" / "docker-entrypoint.sh"
+    if entrypoint.is_file():        # not in the image's own copy of the tree
+        text = entrypoint.read_text(encoding="utf-8")
+        assert "-perm -o+w" in text and "chmod 750" in text
 
 
 def test_low_disk_in_a_piped_deploy_is_a_stated_cancel(project):
