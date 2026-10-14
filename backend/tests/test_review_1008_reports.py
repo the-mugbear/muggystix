@@ -484,6 +484,9 @@ def test_the_contact_template_holds_only_what_differs_from_the_report(monkeypatc
         twin = pentest.path / rel
         assert not (twin.is_file() and twin.read_bytes() == (contact.path / rel).read_bytes()), (
             f"contact-report/{rel} is the same file as pentest's: delete it, the template extends pentest")
+    # (_table_caption.qmd is used by no shipped template since 2026-10-14; it
+    # is kept, and found through the base like this, for operators' templates
+    # that extend pentest and still include it.)
     for rel in ("reference.docx", "scripts/fix-docx-report.py", "filters/spacers.lua",
                 "partials/_confirmations.qmd", "partials/_table_caption.qmd"):
         assert quarto_render.template_file(contact.path, rel) == pentest.path / rel

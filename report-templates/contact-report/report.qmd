@@ -5,8 +5,8 @@
   This template EXTENDS ../pentest (template.json → "extends": "pentest"): it
   holds only what differs — this file, partials/_finding.qmd and
   partials/_affected.qmd — and takes every other file (the Word styles, the
-  post-processor, filters/spacers.lua, partials/_confirmations.qmd and
-  partials/_table_caption.qmd) from pentest, with the template.json keys it
+  post-processor, filters/spacers.lua and partials/_confirmations.qmd)
+  from pentest, with the template.json keys it
   does not state (the post-processor).  To change one of those for this
   document only, put your own file at the same path in this folder: it wins.
   Branding is its own (Word styles, logo, title page image — Reports page →
@@ -144,14 +144,14 @@ format:
 
 {{< pagebreak >}}
 
-<# Numbered captions: table captions (partials/_table_caption.qmd) and
-   figures are both numbered by the filter (_bluestick/fields.lua), which
-   sees the tables and images an author put in written text. #>
+<# The template's own tables carry no caption (owner, 2026-10-14): a heading
+   or a "Table Label" line says what each is.  The only numbered captions are
+   the ones an author wrote under a table of their own in written text, and
+   figures — both numbered by the filter (_bluestick/fields.lua). #>
 <% set contact = report.get("contact") or {} %>
 <% set summary = remediation if remediation is defined and remediation else {} %>
 # Remediation list
 
-<% with caption = "Prepared for" %><% include "partials/_table_caption.qmd" %><% endwith %>
 <# An empty header row makes a table without one.  The Deadlines row is
    longer than a line, and Pandoc then sizes the columns by the dashes below:
    a quarter for the label, the rest for the value (two dashes for the value
@@ -174,7 +174,10 @@ format:
 <% endif %>
 
 <% if findings %>
-<% with caption = "Findings assigned to you, most urgent first" %><% include "partials/_table_caption.qmd" %><% endwith %>
+::: {custom-style="Table Label"}
+**Findings assigned to you, most urgent first**
+:::
+
 | Ref | Finding | Severity | Systems | Most urgent |
 |:--------|:----------------------------------------|:----------------|:-----------|:--------------------|
 <% for f in findings %>

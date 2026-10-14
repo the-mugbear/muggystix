@@ -550,7 +550,7 @@ def test_the_project_details_name_who_prepared_the_report():
     a draft: a TODO.  A dataset frozen before the author existed has no such
     key, is not a draft, and prints no row."""
     def details(data) -> str:
-        return _fill("pentest", data).split("Project details")[1].split("Penetration testers")[0]
+        return _fill("pentest", data).split("# Project information")[1].split("**Penetration testers**")[0]
 
     data = _sample("pentest")
     assert "| Client | Example Corp |\n| Prepared by | Example Security Assessments |\n| Dates |" in details(data)
@@ -614,20 +614,26 @@ def test_a_dataset_frozen_before_these_keys_still_fills():
 
 
 @needs_templates
-def test_no_shipped_template_counts_its_tables_any_more():
-    """The caption partial prints a placeholder and the filter numbers it
-    (test_quarto_render.py pins the numbers): a Jinja counter cannot see a
-    table an author captioned inside a written section."""
+def test_only_written_tables_are_captioned():
+    """Owner, 2026-10-14: "Every table now has a caption where the intent was
+    to only caption user created tables.  Template tables don't need these
+    captions."  No shipped template captions — or counts — a table of its
+    own; only a table an author writes in a section gets "Table N: …", from
+    the filter (test_quarto_render.py pins the numbers).  The caption partial
+    stays for operators' templates that extend pentest and include it."""
     partial = (ROOT / "pentest" / "partials" / "_table_caption.qmd").read_text(encoding="utf-8")
     assert "::: {.bs-table-caption}\n<< caption >>\n:::" in partial
     for qmd in sorted(ROOT.glob("*/**/*.qmd")):
+        if qmd.name == "_table_caption.qmd":
+            continue
         source = qmd.read_text(encoding="utf-8")
         assert "namespace(table" not in source and "counter.table" not in source, qmd
-    out = _fill("pentest", _sample("pentest"))
-    assert not re.search(r"^Table \d+:", out, re.M)
-    captions = re.findall(r"^::: \{\.bs-table-caption\}\n(.+)\n:::$", out, re.M)
-    assert captions[:3] == ["Project details", "Penetration testers", "Distribution list"]
-    assert "Summary of findings" in captions and len(captions) == len(set(captions))
+        assert '% include "partials/_table_caption.qmd"' not in source, qmd
+        assert "bs-table-caption" not in source and '::: {custom-style="Table Caption"}' not in source, qmd
+    for name in (*SHIPPED, "contact-report"):
+        out = _fill(name, _sample(name))
+        assert not re.search(r"^Table \d+", out, re.M), name
+        assert "bs-table-caption" not in out and '::: {custom-style="Table Caption"}' not in out, name
 
 
 @needs_templates

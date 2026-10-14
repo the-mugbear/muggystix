@@ -451,12 +451,18 @@ it, when that paragraph opens with "Table:":
 
 (pandoc's own spelling; its gfm reader has no caption syntax, so the pair is
 made here.)  The paragraph becomes a `bs-table-caption` Div left where it
-is, UNDER the table — the same placeholder the templates'
-partials/_table_caption.qmd emits (there it comes before its table, and
-`captions_under_tables` moves it) — and the Pandoc pass at the end writes
-"Table N: …" on every one, counting in DOCUMENT order: a written table sits
-between the template's own, and only this filter sees both.  A "Table:"
-paragraph that follows no table stays the text it is.
+is, UNDER the table, and the Pandoc pass at the end writes "Table N: …" on
+every one, counting in DOCUMENT order.  A "Table:" paragraph that follows no
+table stays the text it is.
+
+The shipped templates caption none of their own tables (owner, 2026-10-14:
+"the intent was to only caption user created tables"), so the count is the
+authors' tables alone: 1, 2, 3…  The same Div may still come from a
+template — pentest's partials/_table_caption.qmd, kept for operators'
+templates that include it, before its table (`captions_under_tables` moves
+it) — or a numbered one a template copy kept by an issued report prints
+(`legacy_caption`); those are counted with the authors', in document order,
+which only this filter sees.
 
 Every table caption is printed under its table (owner, 2026-10-14: captions
 "are expected underneath their respective elements", as figures' are).
@@ -535,9 +541,10 @@ local function is_table_caption(el)
   return el.classes:includes(CAPTION_CLASS) or legacy_caption(el) ~= nil
 end
 
--- A template prints each caption BEFORE its table (partials/_table_caption.qmd,
--- and the numbered ones of a template copy an issued report keeps); the
--- caption goes under it.  Run before the written fields are filled, so it
+-- A template that captions its own tables (an operator's that still includes
+-- partials/_table_caption.qmd, and the numbered ones of a template copy an
+-- issued report keeps — the shipped templates caption none) prints each
+-- caption BEFORE its table; the caption goes under it.  Run before the written fields are filled, so it
 -- sees only the template's own captions: a written caption is placed under
 -- its table by `caption_tables`, and could otherwise be taken for the caption
 -- of a table that follows it.
@@ -599,12 +606,13 @@ local function fill_field(el)
 end
 
 --[[
-One pass over the finished document.  The template's table captions go under
-their tables, the placeholders are filled, then every BlueStick figure is numbered in the order a reader meets it: "Figure 3:
-caption", or "Figure 3" for an image nobody captioned.  Table captions are
-numbered in the same pass, by their own count: the template's and the ones an
-author wrote under a table in a written section.  Each is under its table by
-then, so the count follows the tables.
+One pass over the finished document.  A template's own table captions (none
+in the shipped templates) go under their tables, the placeholders are filled,
+then every BlueStick figure is numbered in the order a reader meets it:
+"Figure 3: caption", or "Figure 3" for an image nobody captioned.  Table
+captions are numbered in the same pass, by their own count: the ones an author
+wrote under a table in a written section (and any a template still prints).
+Each is under its table by then, so the count follows the tables.
 ]]
 function Pandoc(doc)
   doc = doc:walk({ Blocks = captions_under_tables })

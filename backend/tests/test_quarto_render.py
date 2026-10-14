@@ -120,10 +120,10 @@ def test_the_pentest_template_fills_for_both_kinds():
     full = quarto_render.render_source(TEMPLATE, "report.qmd", sample)
     assert full.startswith("---\n")
     # The original template's sections, in its order.
-    # (The captions carry no number in the source: the filter counts them —
-    # test_table_captions_are_numbered_by_the_filter_in_document_order.)
-    order = ["# Project information", "\nPenetration testers\n", "\nDistribution list\n", "# Executive summary",
-             "\nSummary of findings\n", "\nSeverity count with remediation timeline \\(days\\)\n",
+    # (The template's tables carry no caption, only a label where one is
+    # needed — test_report_templates_shipped.py::test_only_written_tables_are_captioned.)
+    order = ["# Project information", "\n**Penetration testers**\n", "\n**Distribution list**\n", "# Executive summary",
+             "\n**Summary of findings**\n", "\n**Severity count with remediation timeline (days)**\n",
              "# System description", "# Findings", "# Appendix", "## Appendix A: informational findings",
              "## Disclaimer"]
     positions = [full.index(h) for h in order]
@@ -802,8 +802,9 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
         assert '::: {.bs-figure file="evidence/2.png"}' in block.replace("&quot;", '"')
 
     # --- 2.495.0: table captions ------------------------------------------------
-    # One count through the document, whoever wrote the caption: the
-    # template's own and the one typed under a table in written text.
+    # One count through the document over the captions typed under a table in
+    # written text; a shipped template captions none of its own tables
+    # (owner, 2026-10-14), so its count is the written ones alone.
     shipped = template.name in ("pentest", "remediation-worklist", "executive-brief", "contact-report")
     table_captions = _table_captions(html)
     assert [c.split(":")[0] for c in table_captions] == [f"Table {n}" for n in range(1, len(table_captions) + 1)]
@@ -812,6 +813,8 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
     # and the note, each with its own.
     wanted = {"pentest": 3}.get(template.name, 1) if shipped else len(written)
     assert len(written) == wanted and wanted >= 1
+    if shipped:
+        assert len(table_captions) == wanted, table_captions
     for caption in written:
         # Printed whole, as the text that was typed.
         assert "TABLECAP-END" in caption and "{{&lt; env HOME &gt;}}" in caption
@@ -1235,20 +1238,29 @@ def test_every_table_label_keeps_with_its_table_in_word():
     # key/value table otherwise sits at the margin under a centred caption).
     table = re.search(r'<w:style [^>]*w:styleId="Table".*?</w:style>', styles, re.S).group(0)
     assert '<w:jc w:val="center"/>' in table.split("<w:tblStylePr")[0]
-    # The partial marks the caption; the filter numbers it and prints it in
-    # that style (2.495.0 — the number was a Jinja counter in the partial).
+    # The partial — included by no shipped template since 2026-10-14, kept for
+    # operators' templates that extend pentest — still marks a caption; the
+    # filter numbers it and prints it in that style, as it does a written one.
     partial = (TEMPLATE / "partials" / "_table_caption.qmd").read_text(encoding="utf-8")
     assert '::: {.bs-table-caption}\n<< caption >>\n:::' in partial
     filter_source = quarto_render.FIELDS_FILTER.read_text(encoding="utf-8")
     assert 'local CAPTION_CLASS = "bs-table-caption"' in filter_source
     assert 'local CAPTION_STYLE = "Table Caption"' in filter_source
     assert '["custom-style"] = CAPTION_STYLE' in filter_source
+    # The template's own tables carry a Table Label where a heading does not
+    # name them (owner, 2026-10-14: no caption on a template table) — and so
+    # do the three written lists.  Each label line is in the style.
+    for name in ("report.qmd", "partials/_scope_external.qmd"):
+        lines = (TEMPLATE / name).read_text(encoding="utf-8").splitlines()
+        for i in [i for i, line in enumerate(lines) if re.fullmatch(r"\*\*[^*]+\*\*", line.strip())]:
+            assert lines[i - 1] == '::: {custom-style="Table Label"}' and lines[i + 1] == ":::", lines[i]
     source = (TEMPLATE / "report.qmd").read_text(encoding="utf-8")
-    lines = source.splitlines()
-    labels = [i for i, line in enumerate(lines) if re.fullmatch(r"\*\*[^*]+\*\*", line.strip())]
-    assert len(labels) == 3
-    for i in labels:
-        assert lines[i - 1] == '::: {custom-style="Table Label"}' and lines[i + 1] == ":::", lines[i]
+    labels = re.findall(r'^::: \{custom-style="Table Label"\}\n\*\*(.+)\*\*\n:::$', source, re.M)
+    assert labels == [
+        "Penetration testers", "Distribution list", "Summary of new findings", "Summary of findings",
+        "Severity count with remediation timeline (days)", "Networks", "Domains",
+        "Application URLs and API endpoints", "Thick client applications", "Other targets",
+    ]
 
 
 @needs_template
@@ -1266,14 +1278,11 @@ def test_tables_figures_and_finding_sections_are_numbered_like_the_original():
     ]
     sample["findings"][1]["evidence"] = [{"attachment_id": 3, "file": "evidence/3.png", "caption": "Bind"}]
     out = quarto_render.render_source(TEMPLATE, "report.qmd", sample)
-    # Table captions are placeholders too since 2.495.0: every table the
-    # template prints with a caption has one, in order, and none carries a
-    # number — the filter counts them with the tables an author captioned
+    # The template captions none of its own tables (owner, 2026-10-14): only
+    # an author's written table is captioned and numbered, by the filter
     # (test_table_captions_are_numbered_by_the_filter_in_document_order).
     assert not re.search(r"^Table \d+", out, re.M)
-    tables = re.findall(r"^::: \{\.bs-table-caption\}\n(.+)\n:::$", out, re.M)
-    assert tables[:3] == ["Project details", "Penetration testers", "Distribution list"]
-    assert "Summary of findings" in tables and len(tables) >= 7
+    assert "bs-table-caption" not in out and "Table Caption" not in out.split("\n---\n", 1)[1]
     # Figures are placeholders in the source — the filter captions and numbers
     # them in document order (test_figures_are_numbered_in_document_order).
     assert re.findall(r'\.bs-figure file="(evidence/\d\.png)"', out) == [
@@ -1281,8 +1290,9 @@ def test_tables_figures_and_finding_sections_are_numbered_like_the_original():
     ]
     assert "Figure" not in "".join(re.findall(r"^::: \{\.bs-figure.*$", out, re.M))
     assert "{.unnumbered}" not in (TEMPLATE / "partials" / "_finding.qmd").read_text(encoding="utf-8")
-    project = out.split("\nProject details\n")[1]
-    assert project.split(":::\n", 1)[1].lstrip().startswith("| | |")
+    # The project details table stands directly under its heading.
+    project = out.split("\n# Project information\n")[1]
+    assert project.lstrip().startswith("| | |")
 
 
 def _post_processor():
@@ -1813,12 +1823,11 @@ def _numbered(captions: list) -> list:
 def test_table_captions_are_numbered_by_the_filter_in_document_order(tmp_path):
     """Owner, 2026-10-13: a table an author writes in a section gets a
     numbered caption — "Table: …" on the line under it — printed in the
-    template's Table Caption style and counted with the template's own
-    tables, in the order a reader meets them.  (The count was a Jinja
-    counter, which never sees a table inside written text: the template's
-    later captions would have kept their old numbers.)  Owner, 2026-10-14:
-    every table caption, the template's and the author's, is printed UNDER
-    its table, and in Word the table's last row keeps with it."""
+    template's Table Caption style, in the order a reader meets them.  Owner,
+    2026-10-14: every table caption is printed UNDER its table, and in Word
+    the table's last row keeps with it; and the template's OWN tables carry
+    no caption ("the intent was to only caption user created tables"), so
+    the written ones are numbered 1, 2, 3… among themselves."""
     data = json.loads((TEMPLATE / "sample-data.json").read_text())
     for f in data["findings"]:
         f["images"], f["placed"], f["evidence"], f["confirmations"] = [], {}, [], []
@@ -1866,27 +1875,24 @@ def test_table_captions_are_numbered_by_the_filter_in_document_order(tmp_path):
     html = files["html"].read_text(encoding="utf-8")
 
     expected = _numbered([
-        "Project details", "Penetration testers", "Distribution list",
-        "Written in the summary",                                  # 4: between the template's own
-        "Summary of findings", "Severity count with remediation timeline (days)",
-        "Networks", "Domains",
-        "",                                                        # 9: the empty one
+        "Written in the summary",                                  # 1: before the template's summary tables
+        "",                                                        # 2: the empty one
         "Inside a quote, with <code>code</code>",
         "lower-case spelling",
-        "With a screenshot in a cell",                             # 12: steps to reproduce
+        "With a screenshot in a cell",                             # 5: steps to reproduce
         "In the Evidence text",
     ])
     captions = _table_captions(html)
     assert [re.sub(r"</?strong>", "", c) for c in captions] == expected
-    assert "Table 10: Inside a <strong>quote</strong>" in captions[9]         # inline formatting is kept
+    assert "Table 3: Inside a <strong>quote</strong>" in captions[2]          # inline formatting is kept
     # The cell's figure follows its table and its caption.
     cell = html[html.index("CELL-IMAGE-CELL"):]
-    cell = cell[:cell.index("Table 13:")]
-    assert cell.index("</table>") < cell.index(f"<p>{captions[11]}</p>") < cell.index("<figure")
+    cell = cell[:cell.index("Table 6:")]
+    assert cell.index("</table>") < cell.index(f"<p>{captions[4]}</p>") < cell.index("<figure")
     assert _figcaptions(cell) == ["Figure 1: In a cell"] and "Table: With a screenshot" not in html
 
-    # EVERY caption — the template's, the authors', in document order — comes
-    # directly after the end of its table: nothing but whitespace between.
+    # EVERY caption, in document order, comes directly after the end of its
+    # table: nothing but whitespace between.
     starts = [m.start() for m in re.finditer(r'<div data-custom-style="Table Caption">', html)]
     assert len(starts) == len(expected)
     for at, caption in zip(starts, captions):
@@ -1898,12 +1904,19 @@ def test_table_captions_are_numbered_by_the_filter_in_document_order(tmp_path):
         before = html[:html.index(f"<p>{caption}</p>")]
         return before[before.rindex("<table"):]
 
-    for caption, cell in ((captions[3], "SUMMARY-CELL"), (captions[8], "EMPTY-CAPTION-CELL"),
-                          (captions[9], "QUOTE-CELL"), (captions[10], "LOWER-CELL"),
-                          (captions[11], "CELL-IMAGE-CELL"), (captions[12], "EVIDENCE-CELL")):
+    for caption, cell in ((captions[0], "SUMMARY-CELL"), (captions[1], "EMPTY-CAPTION-CELL"),
+                          (captions[2], "QUOTE-CELL"), (captions[3], "LOWER-CELL"),
+                          (captions[4], "CELL-IMAGE-CELL"), (captions[5], "EVIDENCE-CELL")):
         assert cell in table_before(caption), caption
-    # The template's own: "Project details" is under the table that lists them.
-    assert "Project name" in table_before(captions[0]) and "Penetration testers" not in table_before(captions[0])
+    # The template's own tables: no caption; a label names the ones a heading
+    # does not, and keeps two tables in a row two tables.
+    for name in ("Project details", "Penetration testers", "Distribution list", "Summary of findings"):
+        assert f": {name}</p>" not in html, name
+    project = html[html.index('id="project-information"'):html.index('id="executive-summary"')]
+    assert project.count("<table") == 3
+    for label in ("Penetration testers", "Distribution list"):
+        at = project.index(f'<div data-custom-style="Table Label">\n<p><strong>{label}</strong></p>')
+        assert project[:at].rstrip().endswith("</table>") and project[at:].index("<table") > 0, label
     # The caption line itself is gone from under the table.
     for typed in ("Table: Written in the summary", "Table: In the Evidence text", "table: lower-case spelling"):
         assert typed not in html, typed
@@ -1925,6 +1938,13 @@ def test_table_captions_are_numbered_by_the_filter_in_document_order(tmp_path):
         doc = z.read("word/document.xml").decode("utf-8")
     _assert_word_captions_under_their_tables(doc, len(word))
     assert "NOT-A-CAPTION" in doc and "ORPHAN-LINE" in doc
+    # No two tables of the body touch: Word would run them into one.
+    import xml.etree.ElementTree as ET
+    w = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    body = list(ET.fromstring(doc).find(f"{w}body"))
+    assert not [i for i in range(1, len(body)) if body[i].tag == body[i - 1].tag == f"{w}tbl"]
+    labels = [text for style, text, _ in paragraphs if style == "TableLabel"]
+    assert labels[:2] == ["Penetration testers", "Distribution list"]
 
 
 def _assert_word_captions_under_their_tables(doc: str, expected: int) -> None:
@@ -2052,15 +2072,15 @@ def test_the_sample_report_links_findings_by_section_and_prints_the_evidence_in_
     assert html.count("Prepared by <strong>Example Security Assessments</strong>") == 1
 
     # --- the project details: a quarter for the label, the rest for the value --
-    details = doc[:doc.index("Table 1: Project details")]            # the caption is under its table
-    details = details[details.rindex("<w:tblGrid>"):]
+    details = doc[doc.index("<w:tblGrid>"):]                          # the first table: no caption (owner, 2026-10-14)
+    assert ">Project name</w:t>" in details[:details.index("</w:tbl>")]
     details = details[:details.index("</w:tblGrid>")]
     label, value = (int(w) for w in re.findall(r'<w:gridCol w:w="(\d+)"', details))
     assert value == 3 * label
 
     # --- the summary table: Section | Severity | Finding -----------------------
-    summary = html[:html.index("Summary of findings</p>")]          # the caption is under its table
-    summary = summary[summary.rindex("<table"):]
+    summary = html[html.index("<strong>Summary of findings</strong>"):]     # its label is above it
+    summary = summary[summary.index("<table"):summary.index("</table>")]
     assert re.findall(r"<th(?: [^>]*)?>(.*?)</th>", summary, re.S) == ["Section", "Severity", "Finding"]
     rows = re.findall(r"<tr[^>]*>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>", summary, re.S)
     assert len(rows) == len(data["findings"]) == 4
@@ -2106,9 +2126,9 @@ def test_the_sample_report_links_findings_by_section_and_prints_the_evidence_in_
     assert order == sorted(order)
     assert evidence.count("<figure") == 1 and "The SMB banner of files01" in evidence
     assert evidence.count("Banner captured from the assessment host") == 1
+    # The sample's one written caption is the report's only one: Table 1.
     captions = _table_captions(html)
-    assert [c.split(":")[0] for c in captions] == [f"Table {n}" for n in range(1, len(captions) + 1)]
-    assert captions[-1].endswith(": What the file server answered") and "Table: What" not in html
+    assert captions == ["Table 1: What the file server answered"] and "Table: What" not in html
     _assert_word_captions_under_their_tables(doc, len(captions))     # Word: each under its table, kept with it
     # A finding with nothing for this block has no Evidence section and owes
     # no TODO (owner, 2026-10-14: its evidence is in the sections above).

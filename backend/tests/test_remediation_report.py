@@ -169,7 +169,9 @@ def test_the_filled_template_is_the_contacts_systems_and_nobody_elses(db_session
     assert "| Contact | Roger Smith" in text and "testdomain\\.com" in text
     assert "| Past the deadline | 1 |" in text and "| Due within 7 days | 1 |" in text
     assert "| Still open | 3 " in text and "1 more already reported fixed, not listed" in text
-    assert "Findings assigned to you\\, most urgent first" in text        # escaped in the source, a comma in print
+    # The table's label (owner, 2026-10-14: a template table has no caption).
+    assert '::: {custom-style="Table Label"}\n**Findings assigned to you, most urgent first**\n:::' in text
+    assert "bs-table-caption" not in text
     assert "1 more assigned to you is still being investigated" in text
     # The report's format: every finding with its sections, and the deadline
     # on each of its systems.
