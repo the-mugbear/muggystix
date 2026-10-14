@@ -284,8 +284,10 @@ def test_the_list_says_where_the_projects_text_places_each_image(client, db_sess
     })
     assert r.status_code == 200, r.text
     assert r.json()["system_description"] == f"The network.\n\n![Diagram](evidence:{a})"
-    first = _draft(client, test_project)                       # starts from the defaults
-    assert first["settings"]["system_description"] == f"The network.\n\n![Diagram](evidence:{a})"
+    first = _draft(client, test_project)                       # follows the defaults
+    assert "system_description" not in first["settings"]
+    assert first["effective"]["system_description"] == f"The network.\n\n![Diagram](evidence:{a})"
+    own = _draft(client, test_project, system_description=f"Ours.\n\n![Diagram](evidence:{a})")
     second = _draft(
         client, test_project,
         system_description=f"![](<evidence:{b}>) and again ![]( evidence:{b} ) `![code](evidence:{loose})`",
@@ -293,24 +295,31 @@ def test_the_list_says_where_the_projects_text_places_each_image(client, db_sess
     assert second["settings"]["system_description"].startswith(f"![](evidence:{b}) and again")
 
     listed = _listed(client, test_project)
-    assert listed[a]["placed_in"] == ["defaults", f"report {first['id']}"]
+    # A draft that FOLLOWS the defaults places what they place: "defaults"
+    # says it; only a draft that overrides the text is named.
+    assert listed[a]["placed_in"] == ["defaults", f"report {own['id']}"]
     assert listed[b]["placed_in"] == [f"report {second['id']}"]          # once, however often it is placed
     assert listed[loose]["placed_in"] == []                               # a reference in code places nothing
     assert report_images.report_text_placements(db_session, test_project.id) == {
-        a: ["defaults", f"report {first['id']}"], b: [f"report {second['id']}"],
+        a: ["defaults", f"report {own['id']}"], b: [f"report {second['id']}"],
     }
+    # The following draft prints the defaults' image.
+    dataset, _, _ = _build(db_session, first["id"])
+    assert [i["attachment_id"] for i in dataset["engagement"]["images"]] == [a]
 
 
 def test_a_placed_image_stays_until_the_text_lets_go_of_it(client, db_session, test_project, storage):
     att = _image(client, test_project)
     client.put(f"{_reports(test_project)}/profile", json={"system_description": f"![](evidence:{att})"})
-    draft = _draft(client, test_project)
+    following = _draft(client, test_project)
+    draft = _draft(client, test_project, system_description=f"Ours: ![](evidence:{att})")
     path = storage / "note_attachments" / db_session.get(NoteAttachment, att).storage_path
 
     r = client.delete(_attachment(test_project, att))
     assert r.status_code == 409, r.text
     detail = r.json()["detail"]
     assert "the project's report defaults" in detail and f"draft #{draft['id']}" in detail
+    assert f"draft #{following['id']}" not in detail          # it holds the defaults' text, named once
     assert f"evidence:{att}" in detail
     # It is always in the report: there is no "take it out" for it.
     r = client.patch(_attachment(test_project, att), json={"include_in_report": False})

@@ -163,14 +163,14 @@ def _build(db: Session, project_id: int, contact_email: str, *,
     name = next((row["contact_name"] for row in rows if row["contact_name"]), None)
     project = db.get(Project, project_id)
 
-    # A client report's dataset, from a report that is never stored, with the
-    # project's own engagement details (client name, classification — the
-    # title page and the page header print them).
+    # A client report's dataset, from a report that is never stored and
+    # overrides nothing, so it carries the project's own engagement details
+    # (client name, classification — the title page and the page header
+    # print them).
     service = ClientReportService(db)
-    details = dict(service.settings_from_profile(project_id) or {})
     transient = Report(
         project_id=project_id, template=contact_template().name, kind=ReportKind.FULL, status=ReportStatus.DRAFT,
-        title=f"Remediation list — {name or email}", settings=details, executive_summary=None,
+        title=f"Remediation list — {name or email}", settings={}, executive_summary=None,
     )
     dataset, _, _ = service.build(transient)
     # A reference is a finding's for good only once a report has been ISSUED

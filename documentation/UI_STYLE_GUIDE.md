@@ -1033,7 +1033,19 @@ From the codebase review of 2026-10-07 (5.339.0).
   report's files and the scope file. A background job that produces a file
   also says once when it is ready (`The Word preview is ready.` — once per
   job, not per poll, and never for a failure, which its row states), and its
-  download is then the row's main button.
+  download is then the row's main button — except an HTML file, which a
+  browser reads: its main button OPENS it in a new tab
+  (`components/reports/OpenPreviewButton`: the blank tab is opened inside the
+  click, the only moment a popup blocker allows one, then pointed at the bytes
+  by `utils/download.showBlobInTab`), with "Download" beside it; a blocked tab
+  falls back to the download and says so (2026-10-14).
+- **A list of what is still owed before an action is ONE checklist, and every
+  line is the way to fix it** (the draft report's "Before issuing",
+  2026-10-14): grouped by kind, each group with its count, long groups showing
+  ten lines and "Show all N"; a line opens the field, the record or the
+  setting where the gap is closed — never a sentence naming it. A record
+  opened from such a list says where it stands in it and steps to the
+  previous and next one (`?report=` on the finding page), and leads back.
 - **A panel that shows one record is keyed by that record** (§39), so nothing
   from the previous record can land in it. The one surface that still stays
   mounted across records — the remediation timeline sheet — checks every

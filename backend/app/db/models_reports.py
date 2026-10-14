@@ -94,9 +94,10 @@ class Report(Base):
     # Revision: the issued report it corrects (superseded when this is issued).
     revision_of_id = Column(Integer, ForeignKey("reports.id", ondelete="SET NULL"), nullable=True)
 
-    # Engagement details for THIS report (copied from the profile when the
-    # draft is created, then edited here): client_name, classification,
-    # engagement_type, testers, distribution, system_description.
+    # The engagement details THIS report OVERRIDES (revision f3a9c1e7d5b2,
+    # owner 2026-10-14): only those keys; a key absent follows the project's
+    # profile (``services/report_defaults``).  A list key present as [] is
+    # overridden to empty.
     settings = Column(JSON, nullable=True)
     executive_summary = Column(Text, nullable=True)   # Markdown, per report
 

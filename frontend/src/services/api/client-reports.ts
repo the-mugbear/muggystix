@@ -40,12 +40,19 @@ export interface EngagementSettings {
   thick_clients?: string | null;
   other_targets?: string | null;
   /** Who produced the report, and the disclaimer it closes with (Markdown).
-   *  Empty = inherited: the project's report defaults, else the installation's. */
+   *  In the project's defaults, empty = the installation's. */
   author_name?: string | null;
   disclaimer?: string | null;
 }
 
-/** What an inherited detail left empty will print (`author_name`, `disclaimer`). */
+/** A draft's OVERRIDES (owner, 2026-10-14: every detail follows the project
+ *  unless the report overrides it): only the keys it overrides.  A key absent
+ *  (or null) follows the project; a list present — even `[]` — is overridden
+ *  as a whole.  Sent to PATCH as the complete map: a key left out reverts. */
+export type EngagementOverrides = Partial<EngagementSettings>;
+
+/** The installation's author and disclaimer: what the project's defaults
+ *  use for one they leave empty (`ReportProfile.inherited`). */
 export interface InheritedReportDetails {
   author_name?: string | null;
   disclaimer?: string | null;
@@ -155,6 +162,11 @@ export interface ReportSummary {
   missing_text?: Array<{ id: number; ref: string; title: string; missing: string[] }>;
   /** v5.263.0 — report details still empty (printed as a highlighted TODO). */
   missing_details?: string[];
+  /** Parallel to `missing_details`: each one's stable key (a
+   *  `REQUIRED_DETAILS` key — `client_name`, `testers`, `project_dates`… — or
+   *  `account_full_name`), which the checklist opens the field by.  Absent
+   *  from a summary frozen before it. */
+  missing_detail_keys?: string[];
   images?: number;
   /** Of `images`: placed inside a finding's written section by its author,
    *  and left for the trailing evidence block. Absent on a report issued
@@ -241,7 +253,8 @@ export interface ClientReport {
   baseline: ReportRef | null;
   revision_of: ReportRef | null;
   superseded_by: ReportRef | null;
-  settings: EngagementSettings;
+  /** The details this report overrides — only those keys. */
+  settings: EngagementOverrides;
   executive_summary: string | null;
   template_fingerprint: string | null;
   quarto_version: string | null;
@@ -254,10 +267,15 @@ export interface ClientReport {
   updated_at: string | null;
   issued_at: string | null;
   summary: ReportSummary | null;
-  /** A single DRAFT read: what an inherited detail left empty in `settings`
-   *  will print (the project's, else the installation's).  Null for an issued
-   *  report and for list rows. */
-  inherited?: InheritedReportDetails | null;
+  /** A single read (null on list rows): every detail the report prints — a
+   *  draft's overrides over what it follows, as the project stands now; an
+   *  issued report's as it was issued. */
+  effective?: EngagementSettings | null;
+  /** A single DRAFT read: each detail's value were it not overridden (the
+   *  project's default, else the installation's author / disclaimer, else the
+   *  project's analysts and admins as the team).  Null for an issued report
+   *  and for list rows. */
+  followed?: EngagementSettings | null;
   can_edit: boolean;
   can_issue: boolean;
 }
@@ -274,7 +292,8 @@ export interface ClientReportUpdate {
   template?: string;
   baseline_report_id?: number;
   executive_summary?: string | null;
-  settings?: EngagementSettings;
+  /** The complete override map (replaces the stored one). */
+  settings?: EngagementOverrides;
 }
 
 const base = (projectId: number) => `${projectPath(projectId)}/client-reports`;

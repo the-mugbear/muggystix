@@ -20,7 +20,8 @@ class Recipient(BaseModel):
 
 
 class EngagementSettings(BaseModel):
-    """Engagement details — the profile's defaults, or one report's copy."""
+    """Engagement details — the project's defaults, or every value a report
+    prints (`ReportOut.effective` / `followed`)."""
     client_name: Optional[str] = Field(None, max_length=255)
     classification: Optional[str] = Field(None, max_length=100)
     engagement_type: Optional[str] = Field(None, max_length=100)
@@ -33,8 +34,8 @@ class EngagementSettings(BaseModel):
     thick_clients: Optional[str] = Field(None, max_length=32768)
     other_targets: Optional[str] = Field(None, max_length=32768)
     # v2.495.0 — who produced the report, and the disclaimer it closes with
-    # (Markdown).  Empty = inherited: the project's report defaults, else the
-    # installation's (`services/report_defaults`).
+    # (Markdown).  In the project's defaults, empty = the installation's
+    # (`services/report_defaults`).
     author_name: Optional[str] = Field(None, max_length=255)
     disclaimer: Optional[str] = Field(None, max_length=32768)
 
@@ -48,6 +49,17 @@ class EngagementSettings(BaseModel):
             return None
         v = v.strip()
         return v or None
+
+
+class EngagementOverrides(EngagementSettings):
+    """A draft's OVERRIDES (`PATCH /client-reports/{id}` → `settings`): the
+    complete map of the details this report does not take from the project.
+    A key left out — or a text sent blank or null, or a list sent null —
+    follows the project; a list sent (even `[]`) is overridden as a whole.
+    Read with `model_dump(exclude_unset=True)`: the defaults above would
+    otherwise make every key look sent."""
+    testers: Optional[List[Tester]] = Field(None, max_length=50)
+    distribution: Optional[List[Recipient]] = Field(None, max_length=100)
 
 
 class ReportProfileBody(EngagementSettings):
@@ -179,7 +191,10 @@ class ReportOut(BaseModel):
     baseline: Optional[ReportRef] = None
     revision_of: Optional[ReportRef] = None
     superseded_by: Optional[ReportRef] = None
-    settings: EngagementSettings
+    # The details this report OVERRIDES — only those keys, as stored
+    # (`report_defaults.overrides`): a text key with text, a list key present
+    # (`[]` = overridden to empty).  A key absent follows the project.
+    settings: Dict[str, Any] = Field(default_factory=dict)
     executive_summary: Optional[str] = None
     template_fingerprint: Optional[str] = None
     quarto_version: Optional[str] = None
@@ -193,10 +208,15 @@ class ReportOut(BaseModel):
     issued_at: Optional[datetime] = None
     # What the report contains (live for a draft, frozen for an issued one).
     summary: Optional[Dict[str, Any]] = None
-    # What an inherited detail left empty in `settings` prints (`author_name`,
-    # `disclaimer`): a draft — the project's, else the installation's, as they
-    # stand; an issued report — what it was issued with.  None on list rows.
-    inherited: Optional[Dict[str, Optional[str]]] = None
+    # A single read only (None on list rows).  `effective`: every detail the
+    # report prints — a draft's overrides over what it follows, as the
+    # project stands now; an issued report's as it was issued (its frozen
+    # dataset).  `followed`: a DRAFT's value for each detail were it not
+    # overridden (the project's default, else the installation's author /
+    # disclaimer, else the project's analysts and admins as the team) — what
+    # "Revert to the project's" returns to; None for an issued report.
+    effective: Optional[EngagementSettings] = None
+    followed: Optional[EngagementSettings] = None
     # What the CALLER may do.
     can_edit: bool = False
     can_issue: bool = False
@@ -223,7 +243,9 @@ class ReportUpdate(BaseModel):
     template: Optional[str] = Field(None, max_length=100)
     baseline_report_id: Optional[int] = None
     executive_summary: Optional[str] = Field(None, max_length=65536)
-    settings: Optional[EngagementSettings] = None
+    # The complete override map (replaces the stored one); see
+    # `EngagementOverrides`.
+    settings: Optional[EngagementOverrides] = None
 
 
 class PreviewRequest(BaseModel):

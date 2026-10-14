@@ -5,7 +5,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { downloadTextFile as fromClipboard } from '../../utils/clipboard';
-import { downloadTextFile, filenameFromContentDisposition, saveBlob } from '../../utils/download';
+import {
+  TAB_URL_LIFETIME_MS, downloadTextFile, filenameFromContentDisposition, saveBlob, showBlobInTab,
+} from '../../utils/download';
 
 const createObjectURL = vi.fn();
 const revokeObjectURL = vi.fn();
@@ -32,6 +34,29 @@ describe('saveBlob', () => {
     expect(clicked).toEqual([{ href: 'blob:saved', download: 'scope.csv', attached: true }]);
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:saved');
     expect(document.querySelector('a[download]')).toBeNull();
+  });
+});
+
+describe('showBlobInTab', () => {
+  it('cuts the tab off from the page, points it at the bytes typed as asked, and revokes the URL later', () => {
+    vi.useFakeTimers();
+    try {
+      const tab = { opener: {} as unknown, location: { href: '' } } as unknown as Window;
+      showBlobInTab(tab, new Blob(['<p>x</p>']), 'text/html');
+      expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe('text/html');
+      expect(tab.opener).toBeNull();
+      expect(tab.location.href).toBe('blob:saved');
+      expect(revokeObjectURL).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(TAB_URL_LIFETIME_MS);
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:saved');
+
+      // Bytes that carry a type of their own keep it.
+      const typed = new Blob(['x'], { type: 'text/plain' });
+      showBlobInTab(tab, typed, 'text/html');
+      expect(createObjectURL).toHaveBeenLastCalledWith(typed);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

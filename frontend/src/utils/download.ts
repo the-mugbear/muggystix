@@ -17,6 +17,30 @@ export function saveBlob(blob: Blob, filename: string): void {
   window.URL.revokeObjectURL(url);
 }
 
+/** How long a tab's object URL is kept: the tab has read the bytes long
+ *  before, and revoking it then does not unload the page it shows. */
+export const TAB_URL_LIFETIME_MS = 60_000;
+
+/**
+ * Show `blob` in `tab` — a tab the click handler opened blank
+ * (`window.open('', '_blank')`, the only moment a popup blocker allows one)
+ * before the bytes were fetched.  The tab is cut off from this page first
+ * (`opener`), then pointed at an object URL of the bytes, typed `type` when
+ * the blob carries no type of its own; the URL is revoked after
+ * `TAB_URL_LIFETIME_MS`.
+ */
+export function showBlobInTab(tab: Window, blob: Blob, type?: string): void {
+  const typed = type && !blob.type ? new Blob([blob], { type }) : blob;
+  const url = window.URL.createObjectURL(typed);
+  try {
+    tab.opener = null;
+  } catch {
+    // Not every browser lets the opener be cleared; the URL still opens.
+  }
+  tab.location.href = url;
+  window.setTimeout(() => window.URL.revokeObjectURL(url), TAB_URL_LIFETIME_MS);
+}
+
 /** In-memory text (a JSON or Markdown export, recovery codes) as a download. */
 export function downloadTextFile(filename: string, text: string, mime = 'text/plain'): void {
   saveBlob(new Blob([text], { type: mime }), filename);

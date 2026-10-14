@@ -316,8 +316,9 @@ def preview_report_template_asset(name: str, asset_id: str):
 
 
 def _profile_out(db: Session, project_id: int, profile: Optional[ReportProfile]) -> ReportProfileOut:
-    """The defaults a new draft starts from — with the project's analysts and
-    admins as the team when none is saved, flagged as such."""
+    """The project's report defaults — what a draft follows — with the
+    project's analysts and admins as the team when none is saved, flagged as
+    such."""
     team = list(profile.testers or []) if profile is not None else []
     from_project = not team
     if from_project:
@@ -368,8 +369,9 @@ def put_report_profile(
     project: Project = Depends(get_current_project),
     current_user: User = Depends(get_current_user),
 ):
-    """The engagement details every NEW report starts from.  Existing drafts
-    keep their own copy; issued reports never change."""
+    """The project's engagement details: what every draft prints for a
+    detail it does not override — so a change here reaches every such draft
+    at once.  Issued reports never change."""
     if body.template:
         _template_or_422(body.template, client=True)
     profile = ClientReportService(db).get_profile(project.id)
@@ -509,15 +511,14 @@ def create_report(
             else f"{project.name} — security assessment report"
         )
     # v2.404.0 — an addendum continues its baseline: same client, team and
-    # distribution as issued (its "Summary of changes" is new text, so the
-    # summary starts empty).  A new full report starts from the defaults.
+    # distribution as issued, held as its overrides (its "Summary of changes"
+    # is new text, so the summary starts empty).  A new full report overrides
+    # nothing: every detail follows the project's defaults until someone
+    # overrides it (``report_defaults.resolve``).
     report = Report(
         project_id=project.id, kind=body.kind, status=ReportStatus.DRAFT, title=title[:255],
         template=template_name, baseline_report_id=baseline.id if baseline else None,
-        settings=(
-            svc.settings_for_addendum(baseline) if baseline is not None
-            else svc.settings_from_profile(project.id)
-        ),
+        settings=ClientReportService.settings_from_issued(baseline) if baseline is not None else {},
         created_by_id=current_user.id,
     )
     db.add(report)
@@ -565,10 +566,14 @@ def update_report(
     if "executive_summary" in sent:
         report.executive_summary = (body.executive_summary or "").strip() or None
     if "settings" in sent and body.settings is not None:
-        data = body.settings.model_dump()
+        # The complete override map: only the keys the caller SENT (a key
+        # left out follows the project), normalised — a blank text is not an
+        # override, a list sent (even empty) is.
+        data = body.settings.model_dump(exclude_unset=True)
         for field in report_images.ENGAGEMENT_IMAGE_FIELDS:
-            data[field] = report_images.normalise_references(data.get(field))
-        report.settings = data
+            if field in data:
+                data[field] = report_images.normalise_references(data[field])
+        report.settings = report_defaults.overrides(data)
     db.commit()
     db.expire_all()
     return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True)

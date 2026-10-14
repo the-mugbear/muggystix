@@ -8,7 +8,7 @@ for field (CLAUDE.md, "Agent parity with the pages").
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, defer, selectinload
@@ -39,15 +39,20 @@ def _ref(report: Optional[Report]) -> Optional[ReportRef]:
     )
 
 
-def _inherited(db: Session, report: Report, is_draft: bool) -> dict:
-    """What an inherited detail left empty in the report's own settings
-    prints: for a draft, the project's or the installation's as they stand;
-    for an issued report, what it was ISSUED with (its frozen dataset — a
-    report issued before the details existed has none)."""
-    if is_draft:
-        return report_defaults.for_project(db, ClientReportService(db).get_profile(report.project_id))
-    frozen = (((report.snapshot or {}).get("dataset") or {}).get("engagement")) or {}
-    return {key: frozen.get(key) or None for key in report_defaults.KEYS}
+def _details(db: Session, report: Report, is_draft: bool) -> Tuple[EngagementSettings, Optional[EngagementSettings]]:
+    """``(effective, followed)`` — see ``ReportOut``.  A draft: its overrides
+    over what it follows, as the project stands (``report_defaults``'s order
+    — one read of the defaults for both); an issued report: what it was ISSUED
+    with (its frozen dataset — a detail a report issued before it existed is
+    empty), and nothing followed."""
+    if not is_draft:
+        frozen = (((report.snapshot or {}).get("dataset") or {}).get("engagement")) or {}
+        return EngagementSettings.model_validate(
+            {key: frozen.get(key) for key in report_defaults.DETAIL_KEYS if frozen.get(key) is not None},
+        ), None
+    followed = ClientReportService(db).followed_details(report.project_id)
+    effective = report_defaults.apply_overrides(followed, report.settings)
+    return EngagementSettings.model_validate(effective), EngagementSettings.model_validate(followed)
 
 
 def serialize_report(db: Session, report: Report, role: str, *, with_summary: bool) -> ReportOut:
@@ -62,12 +67,15 @@ def serialize_report(db: Session, report: Report, role: str, *, with_summary: bo
         )
     summary = ClientReportService(db).summary(report) if with_summary else None
     is_draft = report.status == ReportStatus.DRAFT
+    # Only where the page shows the details (one report): a list row does not
+    # pay for the reads.
+    effective, followed = _details(db, report, is_draft) if with_summary else (None, None)
     return ReportOut(
         id=report.id, project_id=report.project_id, kind=report.kind, status=report.status,
         title=report.title, number=report.number, template=report.template,
         baseline=_ref(report.baseline), revision_of=_ref(report.revision_of),
         superseded_by=_ref(superseded_by),
-        settings=EngagementSettings(**(report.settings or {})),
+        settings=report_defaults.overrides(report.settings),
         executive_summary=report.executive_summary,
         template_fingerprint=report.template_fingerprint, quarto_version=report.quarto_version,
         render_status=report.render_status, render_error=report.render_error,
@@ -80,10 +88,7 @@ def serialize_report(db: Session, report: Report, role: str, *, with_summary: bo
         ],
         created_by_name=_name(report.created_by), issued_by_name=_name(report.issued_by),
         created_at=report.created_at, updated_at=report.updated_at, issued_at=report.issued_at,
-        summary=summary,
-        # Only where the page edits the details (one report, a draft): a list
-        # row does not pay for the two reads.
-        inherited=_inherited(db, report, is_draft) if with_summary else None,
+        summary=summary, effective=effective, followed=followed,
         can_edit=is_draft and role_allows(role, ProjectRole.ANALYST),
         can_issue=is_draft and role_allows(role, ProjectRole.ADMIN),
     )

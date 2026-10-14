@@ -1,6 +1,6 @@
 /**
  * /reports (v5.261.0) — the project's client reports: drafts, the issued
- * history, and the defaults every new report starts from.
+ * history, and the report defaults every draft follows unless it overrides a detail.
  *
  * A report is a draft until a project admin issues it; issuing freezes what
  * it says and numbers it.  An addendum reports only what changed since an
@@ -52,6 +52,9 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from '../components/ui/dialog';
 import { referencedImageIds } from '../utils/reportImages';
 import { safeFallback } from '../utils/uiStyles';
 
@@ -231,6 +234,17 @@ const Reports: React.FC = () => {
   for (const r of drafts) titleCounts.set(r.title, (titleCounts.get(r.title) ?? 0) + 1);
   const latest = issued.find((r) => r.id === data?.latest_issued_id) ?? null;
 
+  // "New report" with drafts already there offers to continue one first
+  // (walkthrough 2026-10-14: three drafts under one title, each started by
+  // a click meant to go on with the last).  An addendum: only drafts of an
+  // addendum to the same report.
+  const [offering, setOffering] = useState<ClientReportKind | null>(null);
+  const draftsOf = (kind: ClientReportKind) => continuableDrafts(drafts, kind, latest?.id ?? null);
+  const newReport = (kind: ClientReportKind) => {
+    if (draftsOf(kind).length > 0) setOffering(kind);
+    else starting.mutate(kind);
+  };
+
   // A failed load is said: the lead read "Loading…" forever.
   let lead: React.ReactNode = error && !data ? 'The report list could not be loaded.' : 'Loading…';
   if (data) {
@@ -250,11 +264,11 @@ const Reports: React.FC = () => {
         {data?.can_create && (
           <div className="flex shrink-0 flex-col items-end gap-xxs">
             <div className="flex flex-wrap gap-xs">
-              <Button onClick={() => starting.mutate('full')} disabled={creating !== null}>
+              <Button onClick={() => newReport('full')} disabled={creating !== null}>
                 {creating === 'full' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <FilePlus2 className="size-4" aria-hidden />}
                 New report
               </Button>
-              <Button variant="outline" onClick={() => starting.mutate('addendum')}
+              <Button variant="outline" onClick={() => newReport('addendum')}
                 disabled={creating !== null || !latest}
                 aria-describedby={latest ? undefined : 'addendum-why'}
                 title={latest ? `Report what changed since #${latest.number}` : undefined}>
@@ -374,7 +388,86 @@ const Reports: React.FC = () => {
           <ProfileSection canEdit={data.can_create} />
         </>
       )}
+
+      <ContinueDraftDialog
+        kind={offering}
+        drafts={offering ? draftsOf(offering) : []}
+        onClose={() => setOffering(null)}
+        onContinue={(id) => { setOffering(null); navigate(`/reports/${id}`); }}
+        onStartNew={(kind) => { setOffering(null); starting.mutate(kind); }}
+      />
     </div>
+  );
+};
+
+/** The drafts "New report" (`full`) or "New addendum" offers to continue,
+ *  the most recently updated first: a full report's drafts (revisions
+ *  among them), or the drafts of an addendum to `baselineId`. */
+export const continuableDrafts = (
+  drafts: ClientReport[], kind: ClientReportKind, baselineId: number | null,
+): ClientReport[] => drafts
+  .filter((r) => r.status === 'draft'
+    && (kind === 'addendum' ? r.kind === 'addendum' && r.baseline?.id === baselineId : r.kind !== 'addendum'))
+  .sort((a, b) => Date.parse(b.updated_at ?? b.created_at ?? '') - Date.parse(a.updated_at ?? a.created_at ?? ''));
+
+const ContinueDraftDialog: React.FC<{
+  kind: ClientReportKind | null;
+  drafts: ClientReport[];
+  onClose: () => void;
+  onContinue: (id: number) => void;
+  onStartNew: (kind: ClientReportKind) => void;
+}> = ({ kind, drafts, onClose, onContinue, onStartNew }) => {
+  const [first, ...others] = drafts;
+  return (
+    <Dialog open={kind !== null && first != null} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Continue a draft?</DialogTitle>
+          <DialogDescription>
+            {kind === 'addendum'
+              ? `${drafts.length === 1 ? 'A draft addendum to the same report is' : `${drafts.length} draft addenda to the same report are`} already in progress.`
+              : `${drafts.length === 1 ? 'A draft report is' : `${drafts.length} draft reports are`} already in progress.`}
+          </DialogDescription>
+        </DialogHeader>
+        {first && (
+          <div className="min-w-0 space-y-sm">
+            <Button className="h-auto w-full justify-start py-xs text-left" onClick={() => onContinue(first.id)}
+              aria-label={`Continue draft #${first.id}`}>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate" title={first.title}>Continue draft #{first.id} — {first.title}</span>
+                <span className="block text-caption font-normal opacity-80">
+                  updated <TimeAgo value={first.updated_at ?? first.created_at} absoluteAfterDays={30} />
+                </span>
+              </span>
+            </Button>
+            {others.length > 0 && (
+              <div className="min-w-0">
+                <p className="text-caption text-muted-foreground">Other drafts</p>
+                <ul className="mt-xxs max-h-48 space-y-xxs overflow-y-auto" data-testid="other-drafts">
+                  {others.map((r) => (
+                    <li key={r.id} className="flex min-w-0 items-baseline gap-xs text-body">
+                      <button type="button" className="min-w-0 truncate text-left text-info hover:underline"
+                        onClick={() => onContinue(r.id)} title={r.title} aria-label={`Continue draft #${r.id}`}>
+                        #{r.id} — {r.title}
+                      </button>
+                      <span className="shrink-0 text-caption text-muted-foreground">
+                        updated <TimeAgo value={r.updated_at ?? r.created_at} absoluteAfterDays={30} />
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="outline" onClick={() => { if (kind) onStartNew(kind); }}>
+            Start a new draft
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 };
 
@@ -431,7 +524,7 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
     onSuccess: (saved) => {
       queryClient.setQueryData(['getReportProfile', projectId], saved);
       setEdits(null);
-      toast.success('Report defaults saved. Existing drafts keep their own details.');
+      toast.success('Report defaults saved. Drafts that follow them now use them.');
     },
     onError: (err) => toast.error(formatApiError(err, 'Could not save the report defaults.')),
   });
@@ -443,8 +536,8 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   return (
     <>
     <PostureSection
-      title="Defaults for new reports"
-      description="Every new draft starts from a copy of these, which it can change. The author and the disclaimer are not copied: a report that writes none of its own follows the project’s until it is issued."
+      title="Report defaults"
+      description="Every draft follows these until it is issued, except a detail it overrides — so a change here reaches every such draft. Issued reports keep what they were issued with."
       actions={canEdit && profile && !draft ? (
         <Button variant="ghost" size="sm" onClick={() => setEdits({})}>
           <Pencil className="size-4" aria-hidden /> Edit
@@ -492,7 +585,7 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
         <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); save(); }}>
           <EngagementSettingsFields idPrefix="profile" value={draft} members={roster.members}
             membersStatus={roster.status} onRetryMembers={roster.retry} currentUser={currentUser}
-            inherited={profile?.inherited} inheritedFrom="installation"
+            inherited={profile?.inherited}
             disabled={saving} onChange={(next) => setDraft({ ...draft, ...next })} />
           <div className="w-72 max-w-full space-y-xxs">
             <Label htmlFor="profile-template">Template</Label>

@@ -2,9 +2,9 @@
 and the disclaimer they close with.
 
 Not about one project: read by every signed-in user (a report page shows what
-an empty field inherits) and written by a global admin in System settings.  A
-project's report defaults override them and a report its project's —
-``services/report_defaults`` is the one reader of that order.
+a detail it does not override follows) and written by a global admin in System
+settings.  A project's report defaults override them and a report its
+project's — ``services/report_defaults`` is the one reader of that order.
 """
 from typing import Dict, Optional
 
@@ -24,7 +24,7 @@ router = APIRouter()
 class ReportDefaultsUpdate(BaseModel):
     values: Dict[str, Optional[str]] = Field(
         ..., description=(
-            "Key → the new text. Keys: " + ", ".join(defaults.KEYS) + ". A key left out is "
+            "Key → the new text. Keys: " + ", ".join(defaults.INSTALLATION_KEYS) + ". A key left out is "
             "not touched; null or a blank text removes it (reports then use their project's, "
             "or for the disclaimer their template's own)."
         ),

@@ -222,9 +222,10 @@ const FindingReportTextCard: React.FC<Props> = ({
       // unless another write reached the record while this one was out, in
       // which case the finding is read again (`putFindingAnswer`).
       // Saved text may place or release an image: where each one is placed
-      // is read again.
+      // is read again.  A draft report's summary counts this finding's
+      // missing text (the bar a report's checklist opens this page with).
       putFindingAnswer(queryClient, projectId, updated, sent, { history: false });
-      void invalidateReads(queryClient, 'getFindingImages');
+      void invalidateReads(queryClient, 'getFindingImages', 'getClientReport');
       setDraft(null);
       toast.success('Report text saved.');
     },

@@ -526,7 +526,10 @@ def engagement_placement(
 def report_text_placements(db: Session, project_id: int) -> Dict[int, List[str]]:
     """Attachment id → where the project's CURRENT report text places it:
     ``"defaults"`` (the project's report defaults) and ``"report <id>"`` for
-    each DRAFT.  Issued reports are not listed: each holds its own copy."""
+    each DRAFT that OVERRIDES its system description.  A draft that follows
+    the project's places what the defaults place, and is covered by
+    ``"defaults"`` (the 409 names the text to change: the defaults').  Issued
+    reports are not listed: each holds its own copy."""
     from app.db.models_reports import Report, ReportProfile, ReportStatus
 
     out: Dict[int, List[str]] = defaultdict(list)

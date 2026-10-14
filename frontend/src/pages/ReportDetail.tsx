@@ -11,14 +11,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isClientTemplate } from '../utils/reportTemplates';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Loader2, RefreshCw, Sparkles, Stamp, Trash2 } from 'lucide-react';
 
 import {
   ClientReport,
   ClientReportFormat,
   ReportFileFormat,
-  EngagementSettings,
+  EngagementOverrides,
   ReportJob,
   ReportSummary,
   ReportTemplate,
@@ -53,6 +53,9 @@ import EngagementSettingsFields, { cleanSettings } from '../components/reports/E
 import TemplateImages, {
   TemplateFilesLine, assetCountLabel, missingAssetsReason, missingRequiredAssets,
 } from '../components/reports/TemplateImages';
+import ReportChecklist, { focusReportDetail } from '../components/reports/ReportChecklist';
+import OpenPreviewButton from '../components/reports/OpenPreviewButton';
+import { REPORT_CHECKLIST_ANCHOR } from '../components/findings/ReportDraftBar';
 import AiDraftReportDialog from '../components/AiDraftReportDialog';
 import DownloadButton from '../components/DownloadButton';
 import { DetailSkeleton } from '../components/PageSkeleton';
@@ -166,7 +169,8 @@ interface Form {
   title: string;
   template: string;
   executive_summary: string;
-  settings: EngagementSettings;
+  /** The report's overrides; a detail left out follows the project. */
+  settings: EngagementOverrides;
 }
 
 const toForm = (r: ClientReport): Form => ({
@@ -175,9 +179,6 @@ const toForm = (r: ClientReport): Form => ({
   executive_summary: r.executive_summary ?? '',
   settings: r.settings,
 });
-
-/** "Before issuing" lists this many findings missing text, then "Show all". */
-const MISSING_PREVIEW = 10;
 
 const NO_TEMPLATES: ReportTemplate[] = [];
 /** How often a preview job still on the worker is asked about. */
@@ -191,7 +192,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
   const currentUser = user ? { id: user.id, name: user.full_name || user.username } : null;
-  const [showAllMissing, setShowAllMissing] = useState(false);
+  // The Report details form: a checklist line puts the caret in its field.
+  const detailsRef = useRef<HTMLFormElement>(null);
 
   const queryClient = useQueryClient();
   const roster = useProjectRoster();
@@ -276,6 +278,15 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renderStatus]);
+
+  // "Back to the report" from a finding the checklist opened lands on the
+  // checklist (`#report-checklist`), once the report is on screen.
+  const { hash } = useLocation();
+  const loaded = report != null;
+  useEffect(() => {
+    if (!loaded || hash !== `#${REPORT_CHECKLIST_ANCHOR}`) return;
+    document.getElementById(REPORT_CHECKLIST_ANCHOR)?.scrollIntoView?.({ block: 'start' });
+  }, [loaded, hash]);
 
   const dirty = useMemo(() => {
     if (!report || !form) return false;
@@ -465,9 +476,6 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const assetsBlock = missingAssetsReason(template);
   const missingText = s.missing_text ?? [];
   const missingDetails = s.missing_details ?? [];
-  const pendingProposals = s.pending_proposals ?? [];
-  const internalReferences = s.internal_references ?? [];
-  const uncaptionedImages = s.uncaptioned_images ?? [];
   // Issue is the main action only once nothing prints as TODO; until then
   // the page leads to the gaps and to previewing, not to freezing them.
   const ready = !missingText.length && !missingDetails.length;
@@ -486,6 +494,61 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       ? <>Covers <strong>{counts?.total ?? 0}</strong> finding{counts?.total === 1 ? '' : 's'}, as they stand now.</>
       : <>Covered <strong>{counts?.total ?? 0}</strong> finding{counts?.total === 1 ? '' : 's'} when issued.</>;
   }
+
+  // The template is a property of the report — what it is issued with, not
+  // only what a preview looks like — so it sits under the title, beside the
+  // report's kind (walkthrough 2026-10-14; it was in Preview).  Saved at once.
+  const templatePicker = (
+    <div className="mt-xs space-y-xxs" data-testid="report-template-picker">
+      <div className="flex min-w-0 flex-wrap items-center gap-xs">
+        {editable
+          ? <Label htmlFor="report-template" className="shrink-0">Template</Label>
+          : <span className="shrink-0 text-body font-medium">Template</span>}
+        {editable ? (
+          <Select value={report.template} onValueChange={changeTemplate} disabled={savingTemplate}>
+            <SelectTrigger id="report-template" className="h-8 w-[18rem] max-w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {templates.filter(isClientTemplate).map((t) => <SelectItem key={t.name} value={t.name}>{t.title}</SelectItem>)}
+              {!templates.some((t) => t.name === report.template) && (
+                <SelectItem value={report.template}>{report.template}</SelectItem>
+              )}
+            </SelectContent>
+          </Select>
+        ) : (
+          <span className="min-w-0 break-words text-body">{template?.title ?? report.template}</span>
+        )}
+        {savingTemplate && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Saving the template" />}
+        {editable && templates.length === 1 && (
+          <span className="text-caption text-muted-foreground">The only template installed.</span>
+        )}
+      </div>
+      {/* What the chosen template is for (v5.295.0) — with several
+          installed, the title alone does not say which reader it serves. */}
+      {template?.description && templates.length > 1 && (
+        <p className="max-w-3xl break-words text-caption text-muted-foreground" data-testid="template-description">
+          {template.description}
+        </p>
+      )}
+      {assetsBlock ? (
+        <div className="space-y-xxs">
+          <p className="text-caption text-destructive">
+            {assetCountLabel(template)} — preview and issue are unavailable until {missingRequiredAssets(template).length === 1 ? 'it is' : 'they are'} installed:
+          </p>
+          <TemplateImages
+            template={template}
+            templateName={report.template}
+            showServerPaths={isAdmin}
+          />
+        </div>
+      ) : template ? (
+        <TemplateFilesLine template={template} />
+      ) : templates.length > 0 && (
+        <p className="break-words text-caption text-destructive">
+          The template “{report.template}” is not installed on this server{editable ? ' — choose another' : ''}.
+        </p>
+      )}
+    </div>
+  );
 
   return (
     <div className="space-y-lg p-md md:p-lg">
@@ -511,6 +574,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                 Superseded by <Link className="text-info hover:underline" to={`/reports/${report.superseded_by.id}`}>report #{report.superseded_by.number}</Link>.
               </p>
             )}
+            {isDraft && templatePicker}
           </div>
           <div className="flex shrink-0 flex-wrap gap-xs">
             {isDraft && report.can_issue && (
@@ -538,7 +602,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             )}
             {isDraft && !dirty && assetsBlock && (
               <p className="w-full text-right text-caption text-destructive">
-                {missingRequiredAssets(template).length === 1 ? 'A required template file is' : 'Required template files are'} not installed — see Preview.
+                {missingRequiredAssets(template).length === 1 ? 'A required template file is' : 'Required template files are'} not installed — see Template.
               </p>
             )}
           </div>
@@ -558,9 +622,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           </PostureMeasure>
           <PostureMeasure label="Missing report text" value={s.missing_text?.length ?? 0}
             info="Findings in the report with no description, impact or recommendation written.">
-            {/* Only a draft lists them (Before issuing). */}
+            {/* Only a draft lists them: the checklist, never a second list. */}
             {!s.missing_text?.length ? 'Every finding has its text'
-              : isDraft ? 'Listed below' : 'Issued with a TODO in their place'}
+              : isDraft ? 'Listed under Before issuing' : 'Issued with a TODO in their place'}
           </PostureMeasure>
           <PostureMeasure label="Evidence images" value={s.images ?? 0}
             info="Images are opt-in: tick “In report” on an image attached to a finding's evidence or comments. Where one prints depends on the report's template: the Penetration test report prints an image its author placed in a written section (Insert image, in the report text editor) there and the rest under the finding's Evidence, each after the text of the comment or note it is attached to; the Remediation worklist prints only images placed in a recommendation; the Executive brief prints none. The line below says what this report does. WebP images cannot be placed in every format and are skipped.">
@@ -577,92 +641,10 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         </div>
       )}
 
-      {isDraft && pendingProposals.length > 0 && (
-        <PostureSection title="Proposals to review"
-          description="Changes an agent or an AI draft proposed for findings in this report. The report prints the findings as they stand; review these first if they should be in it.">
-          <ul className="space-y-xxs">
-            {pendingProposals.map((m) => (
-              <li key={m.id} className="flex min-w-0 flex-wrap items-baseline gap-x-xs text-body">
-                <span className="tabular-nums text-muted-foreground">{m.ref}</span>
-                <Link to={`/findings/${m.id}#proposals`} className="min-w-0 truncate text-info hover:underline"
-                  title={m.title}>{m.title}</Link>
-                <span className="text-caption text-muted-foreground">{m.count} proposal{m.count === 1 ? '' : 's'}</span>
-              </li>
-            ))}
-          </ul>
-        </PostureSection>
-      )}
-
-      {isDraft && internalReferences.length > 0 && (
-        <PostureSection title="Text the reader cannot follow"
-          description="These sections name a BlueStick record. The report’s reader has never seen BlueStick: name a finding by its title and a system by its address.">
-          <ul className="space-y-xxs">
-            {internalReferences.map((m) => (
-              <li key={m.id} className="flex min-w-0 flex-wrap items-baseline gap-x-xs text-body">
-                <span className="tabular-nums text-muted-foreground">{m.ref}</span>
-                <Link to={`/findings/${m.id}?edit=report-text`} className="min-w-0 truncate text-info hover:underline"
-                  title={m.title}>{m.title}</Link>
-                <span className="min-w-0 break-words text-caption text-muted-foreground">
-                  {m.fields.map((f) => `${REPORT_FIELD_LABELS[f.field] ?? f.field}: ${f.phrases.map((p) => `“${p}”`).join(', ')}`).join(' · ')}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </PostureSection>
-      )}
-
-      {isDraft && uncaptionedImages.length > 0 && (
-        <PostureSection title="Images without a caption"
-          description="Each prints under its file’s name. A caption is written on the image, in the finding’s comments.">
-          <ul className="space-y-xxs">
-            {uncaptionedImages.map((m) => (
-              <li key={m.id} className="flex min-w-0 flex-wrap items-baseline gap-x-xs text-body">
-                <span className="tabular-nums text-muted-foreground">{m.ref}</span>
-                <Link to={`/findings/${m.id}#${NEED_SECTION.uncaptioned_images}`}
-                  className="min-w-0 truncate text-info hover:underline" title={m.title}>{m.title}</Link>
-                <span className="text-caption tabular-nums text-muted-foreground">
-                  {m.count.toLocaleString()} image{m.count === 1 ? '' : 's'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </PostureSection>
-      )}
-
-      {isDraft && !ready && (
-        <PostureSection title="Before issuing"
-          description="Anything empty prints in the report as a highlighted TODO — search the preview for TODO to find each one.">
-          {!!missingDetails.length && (
-            <p className="mb-sm break-words text-body">
-              <span className="mr-xs rounded bg-warning/20 px-xxs text-caption font-semibold text-foreground">TODO</span>
-              Report details still empty: <span className="font-medium">{missingDetails.join(', ')}</span>
-              {missingDetails.includes('project dates') && (
-                <> (project dates are set in <Link to="/project-settings" className="text-info hover:underline">Project settings</Link>)</>
-              )}.
-            </p>
-          )}
-          {!!missingText.length && (
-            <p className="mb-xs text-body">
-              <span className="mr-xs rounded bg-warning/20 px-xxs text-caption font-semibold text-foreground">TODO</span>
-              {missingText.length} finding{missingText.length === 1 ? ' has' : 's have'} report text still to write — open one to write or draft it:
-            </p>
-          )}
-          <ul className="space-y-xxs">
-            {(showAllMissing ? missingText : missingText.slice(0, MISSING_PREVIEW)).map((m) => (
-              <li key={m.id} className="flex min-w-0 flex-wrap items-baseline gap-x-xs text-body">
-                <span className="tabular-nums text-muted-foreground">{m.ref}</span>
-                <Link to={`/findings/${m.id}?edit=report-text`} className="min-w-0 truncate text-info hover:underline"
-                  title={`${m.title} — open its report text to write or draft it`}>{m.title}</Link>
-                <span className="text-caption text-muted-foreground">missing {m.missing.join(', ')}</span>
-              </li>
-            ))}
-          </ul>
-          {missingText.length > MISSING_PREVIEW && (
-            <Button variant="ghost" size="sm" className="mt-xxs" onClick={() => setShowAllMissing((v) => !v)}>
-              {showAllMissing ? 'Show fewer' : `Show all ${missingText.length}`}
-            </Button>
-          )}
-        </PostureSection>
+      {isDraft && (
+        // Every gap, grouped, each line an action (walkthrough 2026-10-14).
+        <ReportChecklist reportId={reportId} summary={s} isAdmin={isAdmin}
+          onDetail={(key) => { focusReportDetail(detailsRef.current, key); }} />
       )}
 
       {!!s.evidence_records && (
@@ -683,13 +665,10 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           {evidenceNotesNotice(s.evidence_notes)}
         </p>
       )}
-      {!!s.evidence_note_findings?.length && (
-        // Listed, with how each begins: a note was written for the team, and
-        // a count alone names nothing a reviewer can open before issuing.
-        <PostureSection title={isDraft ? 'Notes the client will read' : 'Notes printed in this report'}
-          description={isDraft
-            ? 'Each is printed word for word under Evidence, before the image attached to it. To keep one out, place its image in a written section or untick “In report”.'
-            : 'Each was printed word for word under Evidence, before the image attached to it.'}>
+      {!isDraft && !!s.evidence_note_findings?.length && (
+        // What an issued report printed; a draft lists them in its checklist.
+        <PostureSection title="Notes printed in this report"
+          description="Each was printed word for word under Evidence, before the image attached to it.">
           <ul className="space-y-xs" data-testid="report-evidence-notes">
             {s.evidence_note_findings.map((m) => (
               <li key={m.id} className="min-w-0 text-body">
@@ -734,51 +713,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
 
       {isDraft ? (
         <PostureSection title="Preview"
-          description="Rendered from the live findings on the report worker, with the template chosen here. Previews expire after a day.">
-          <div className="mb-sm space-y-xs">
-            <div className="flex min-w-0 flex-wrap items-center gap-xs">
-              <Label htmlFor="report-template" className="shrink-0">Template</Label>
-              <Select value={report.template} onValueChange={changeTemplate}
-                disabled={!editable || savingTemplate}>
-                <SelectTrigger id="report-template" className="h-8 w-[18rem] max-w-full"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {templates.filter(isClientTemplate).map((t) => <SelectItem key={t.name} value={t.name}>{t.title}</SelectItem>)}
-                  {!templates.some((t) => t.name === report.template) && (
-                    <SelectItem value={report.template}>{report.template}</SelectItem>
-                  )}
-                </SelectContent>
-              </Select>
-              {savingTemplate && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Saving the template" />}
-              {templates.length === 1 && (
-                <span className="text-caption text-muted-foreground">The only template installed.</span>
-              )}
-            </div>
-            {/* What the chosen template is for (v5.295.0) — with several
-                installed, the title alone does not say which reader it serves. */}
-            {template?.description && templates.length > 1 && (
-              <p className="max-w-3xl break-words text-caption text-muted-foreground" data-testid="template-description">
-                {template.description}
-              </p>
-            )}
-            {assetsBlock ? (
-              <div className="space-y-xxs">
-                <p className="text-caption text-destructive">
-                  {assetCountLabel(template)} — preview and issue are unavailable until {missingRequiredAssets(template).length === 1 ? 'it is' : 'they are'} installed:
-                </p>
-                <TemplateImages
-                  template={template}
-                  templateName={report.template}
-                  showServerPaths={isAdmin}
-                />
-              </div>
-            ) : template ? (
-              <TemplateFilesLine template={template} />
-            ) : templates.length > 0 && (
-              <p className="break-words text-caption text-destructive">
-                The template “{report.template}” is not installed on this server — choose another.
-              </p>
-            )}
-          </div>
+          description="Rendered from the live findings on the report worker, with the report’s template. Previews expire after a day.">
           {dirty && (
             <p className="mb-xs text-caption text-muted-foreground">
               The report details below have unsaved changes — save them to preview them.
@@ -796,7 +731,18 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                     {running && <Loader2 className="size-4 animate-spin" aria-hidden />}
                     {running ? `Rendering ${FORMAT_LABEL[fmt]}…` : `Preview ${FORMAT_LABEL[fmt]}`}
                   </Button>
-                  {job?.status === 'completed' && (
+                  {job?.status === 'completed' && fmt === 'html' && (
+                    // HTML is read in the browser: opened in a new tab (the
+                    // row's main button), with the file still one press away.
+                    <>
+                      <OpenPreviewButton key={`open-${job.id}`} size="sm" projectId={projectId} jobId={job.id}
+                        label="Open HTML preview" />
+                      <DownloadButton key={job.id} size="sm" variant="ghost" label="Download"
+                        name="Download HTML preview" errorText="Could not download the preview."
+                        saveFn={() => downloadReportJob(projectId, job.id)} />
+                    </>
+                  )}
+                  {job?.status === 'completed' && fmt !== 'html' && (
                     // The finished file is what the reader came back for: the
                     // row's main button.  Keyed by its job, so a new preview's
                     // button does not carry the previous file's "Downloaded".
@@ -854,8 +800,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       )}
 
       <PostureSection title="Report details"
-        description={editable ? 'Saved with this report only. The defaults for new reports are on the Reports page.' : 'As issued.'}>
-        <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); save(); }}>
+        description={editable ? 'Each detail follows the project’s report defaults (Reports page) unless you override it here; an override is saved with this report only.' : 'As issued.'}>
+        <form ref={detailsRef} className="space-y-md" onSubmit={(e) => { e.preventDefault(); save(); }}>
           <div className="min-w-0 space-y-xxs">
             <Label htmlFor="report-title">Title</Label>
             <Input id="report-title" maxLength={255} value={form.title} disabled={!editable || saving}
@@ -877,9 +823,12 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               onChange={(v) => edit({ executive_summary: v })} />
           </div>
 
-          <EngagementSettingsFields idPrefix="report" value={form.settings} members={roster.members}
+          {/* A draft: its overrides over what it follows.  Read only (issued,
+              or not the reader's to edit): every value it prints — as issued. */}
+          <EngagementSettingsFields idPrefix="report"
+            value={editable ? form.settings : (report.effective ?? form.settings)} members={roster.members}
             membersStatus={roster.status} onRetryMembers={roster.retry} currentUser={currentUser}
-            inherited={report.inherited} inheritedFrom="project"
+            followed={editable ? report.followed : null}
             readOnly={!editable} disabled={saving} onChange={(settings) => edit({ settings })} />
 
           {editable && (

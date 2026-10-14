@@ -185,7 +185,7 @@ def test_issuing_freezes_the_report(client, db_session, test_project):
     assert client.get(f"{_base(test_project)}/{report['id']}").json()["summary"]["counts"]["high"] == 1
 
 
-def test_a_new_draft_starts_from_the_profile(client, test_project):
+def test_a_new_draft_follows_the_profile(client, test_project):
     r = client.put(f"{_base(test_project)}/profile", json={
         "client_name": "Example Corp", "classification": "Confidential",
         "testers": [{"name": "Ana", "role": "Lead"}], "distribution": [{"name": "CISO", "email": "ciso@example.com"}],
@@ -193,11 +193,16 @@ def test_a_new_draft_starts_from_the_profile(client, test_project):
     })
     assert r.status_code == 200, r.text
     report = _create(client, test_project)
-    assert report["settings"]["client_name"] == "Example Corp"
-    assert report["settings"]["testers"][0]["name"] == "Ana"
-    # Changing the profile afterwards does not rewrite the draft.
+    assert report["settings"] == {}
+    assert report["effective"]["client_name"] == "Example Corp"
+    assert report["effective"]["testers"][0]["name"] == "Ana"
+    # Changing the profile afterwards reaches the draft (owner, 2026-10-14) —
+    # unless the draft overrides that detail.
     client.put(f"{_base(test_project)}/profile", json={"client_name": "Renamed"})
-    assert client.get(f"{_base(test_project)}/{report['id']}").json()["settings"]["client_name"] == "Example Corp"
+    assert client.get(f"{_base(test_project)}/{report['id']}").json()["effective"]["client_name"] == "Renamed"
+    client.patch(f"{_base(test_project)}/{report['id']}", json={"settings": {"client_name": "Ours"}})
+    client.put(f"{_base(test_project)}/profile", json={"client_name": "Renamed again"})
+    assert client.get(f"{_base(test_project)}/{report['id']}").json()["effective"]["client_name"] == "Ours"
     assert client.put(f"{_base(test_project)}/profile", json={"template": "../etc"}).status_code == 422
 
 
@@ -239,20 +244,28 @@ def test_an_addendum_starts_from_its_baseline_details_not_the_defaults(client, t
     assert s["distribution"] == [{"name": "CISO", "email": "ciso@example.com"}]
     assert add["executive_summary"] is None
 
-    # A new FULL report still starts from the project's defaults.
-    assert _create(client, test_project)["settings"]["client_name"] == "Profile default"
+    # A new FULL report follows the project's defaults.
+    assert _create(client, test_project)["effective"]["client_name"] == "Profile default"
 
 
-def test_an_addendum_takes_the_default_only_where_its_baseline_had_nothing(client, test_project):
+def test_an_addendum_follows_the_project_only_where_its_baseline_printed_nothing(client, test_project):
     client.put(f"{_base(test_project)}/profile", json={"classification": "Internal", "template": "pentest"})
     report = _create(client, test_project)
     client.patch(f"{_base(test_project)}/{report['id']}", json={"settings": {
-        **_ISSUED_DETAILS, "classification": None,
+        **_ISSUED_DETAILS, "classification": None, "engagement_type": None,
     }})
     _issue(client, test_project, report["id"])
-    s = _create(client, test_project, kind="addendum")["settings"]
-    assert s["client_name"] == "Example Corp"
-    assert s["classification"] == "Internal"
+    client.put(f"{_base(test_project)}/profile", json={
+        "classification": "Public", "engagement_type": "Web", "template": "pentest",
+    })
+    add = _create(client, test_project, kind="addendum")
+    assert add["settings"]["client_name"] == "Example Corp"
+    # The baseline followed the project's classification and printed it: the
+    # client has "Internal", so the addendum overrides with it.
+    assert add["settings"]["classification"] == "Internal"
+    # It printed no engagement type: the addendum follows the project for it.
+    assert "engagement_type" not in add["settings"]
+    assert add["effective"]["engagement_type"] == "Web"
 
 
 def test_a_revision_starts_from_the_original_details_and_summary(client, db_session, test_project):
@@ -568,7 +581,9 @@ def test_only_images_marked_for_the_report_go_in(client, db_session, test_projec
 
 def test_a_new_draft_lists_the_projects_analysts_and_admins_as_the_team(client, test_project, people):
     report = _create(client, test_project)
-    team = report["settings"]["testers"]
+    # Followed, not copied: the draft overrides nothing.
+    assert "testers" not in report["settings"]
+    team = report["effective"]["testers"]
     # Analysts and admins are the team (leads first); auditors are not.
     assert [t["name"] for t in team] == ["Adm", "Ana", "Ben"]
     assert team[0]["role"] == "Engagement lead" and team[1]["role"] == "Tester"
@@ -577,9 +592,11 @@ def test_a_new_draft_lists_the_projects_analysts_and_admins_as_the_team(client, 
     profile = client.get(f"{_base(test_project)}/profile").json()
     assert profile["testers_from_project"] is True and len(profile["testers"]) == 3
     assert [t["name"] for t in client.get(f"{_base(test_project)}/team").json()] == ["Adm", "Ana", "Ben"]
-    # A saved team wins.
+    # A saved team wins — on the draft made before it too.
     client.put(f"{_base(test_project)}/profile", json={"testers": [{"name": "Contractor"}]})
-    assert [t["name"] for t in _create(client, test_project)["settings"]["testers"]] == ["Contractor"]
+    assert [t["name"] for t in _create(client, test_project)["effective"]["testers"]] == ["Contractor"]
+    again = client.get(f"{_base(test_project)}/{report['id']}").json()
+    assert [t["name"] for t in again["effective"]["testers"]] == ["Contractor"]
     assert client.get(f"{_base(test_project)}/profile").json()["testers_from_project"] is False
 
 
@@ -603,7 +620,11 @@ def test_the_report_names_people_by_full_name_not_username(client, db_session, t
         ],
     }})
     assert r.status_code == 200, r.text
-    assert "a full name on the account of ben (the report shows the username)" in r.json()["summary"]["missing_details"]
+    summary = r.json()["summary"]
+    assert "a full name on the account of ben (the report shows the username)" in summary["missing_details"]
+    # The page opens where each gap is fixed by its key, parallel to the label.
+    keys = dict(zip(summary["missing_details"], summary["missing_detail_keys"]))
+    assert keys["a full name on the account of ben (the report shows the username)"] == "account_full_name"
 
     dataset, _, _ = ClientReportService(db_session).build(db_session.get(Report, report["id"]))
     assert [t["name"] for t in dataset["engagement"]["testers"]] == ["Ana", "ben", "Dr. A. Admin", "Contractor"]
@@ -616,6 +637,12 @@ def test_the_summary_names_the_report_details_still_empty(client, test_project):
     assert missing == [
         "executive summary", "client", "author", "classification", "engagement type",
         "system description", "assessment team", "distribution list", "project dates",
+    ]
+    # One stable key per label, in the same order (the page's checklist
+    # focuses the field by it; the labels are for reading).
+    assert report["summary"]["missing_detail_keys"] == [
+        "executive_summary", "client_name", "author_name", "classification", "engagement_type",
+        "system_description", "testers", "distribution", "project_dates",
     ]
     r = client.patch(f"{_base(test_project)}/{report['id']}", json={
         "executive_summary": "Summary.",

@@ -480,14 +480,23 @@ export const getReportJob = async (projectId: number, jobId: number, signal?: Ab
   return response.data as ReportJob;
 };
 
-/** Save a finished job's file; answers the name it was saved under (the
- *  server's), so the page can say which file the reader now has. */
-export const downloadReportJob = async (projectId: number, jobId: number): Promise<string> => {
+/** A finished job's file as bytes, typed as the server sent them, with the
+ *  server's name for it — for a page that shows the file (an HTML preview
+ *  opened in a tab) rather than saving it.  Click-only, like the save. */
+export const fetchReportJobBlob = async (projectId: number, jobId: number): Promise<{ blob: Blob; filename: string }> => {
   const response = await api.get(`${projectPath(projectId)}/reports/jobs/${jobId}/download`, { responseType: 'blob' });
   const filename = filenameFromContentDisposition(
     response.headers['content-disposition'] as string | undefined, `report_${jobId}`,
   );
-  saveBlob(new Blob([response.data]), filename);
+  const type = (response.headers['content-type'] as string | undefined) ?? '';
+  return { blob: new Blob([response.data], type ? { type } : undefined), filename };
+};
+
+/** Save a finished job's file; answers the name it was saved under (the
+ *  server's), so the page can say which file the reader now has. */
+export const downloadReportJob = async (projectId: number, jobId: number): Promise<string> => {
+  const { blob, filename } = await fetchReportJobBlob(projectId, jobId);
+  saveBlob(blob, filename);
   return filename;
 };
 

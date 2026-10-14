@@ -182,6 +182,71 @@ describe('Reports list', () => {
     expect(screen.queryByText('(same title)')).not.toBeInTheDocument();
   });
 
+  // Walkthrough 2026-10-14: "New report" made a third draft under one title
+  // when the analyst meant to go on with the last one.
+  describe('New report with drafts already there', () => {
+    const issued7 = report({ id: 7, status: 'issued', number: 2, issued_at: '2026-09-21T00:00:00Z', render_status: 'done' });
+    const list = (items: unknown[]) => ({ items, latest_issued_id: 7, can_create: true, can_issue: true });
+
+    it('offers to continue the most recently updated draft first, the others below it', async () => {
+      mocked.listClientReports.mockResolvedValue(list([
+        report({ id: 21, title: 'Older draft', updated_at: '2026-09-22T00:00:00Z' }),
+        report({ id: 23, title: 'Latest draft', updated_at: '2026-10-13T08:00:00Z' }),
+        report({ id: 22, title: 'Middle draft', updated_at: '2026-10-01T00:00:00Z' }),
+        report({ id: 30, kind: 'addendum', baseline: { id: 7, number: 2 }, title: 'An addendum' }),
+        issued7,
+      ]));
+      renderList();
+      fireEvent.click(await screen.findByRole('button', { name: /^New report/ }));
+      const dialog = await screen.findByRole('dialog');
+      const primary = within(dialog).getByRole('button', { name: 'Continue draft #23' });
+      expect(primary).toHaveTextContent(/Continue draft #23 — Latest draft/);
+      expect(primary).toHaveTextContent(/updated /);
+      // The rest, newest first; the addendum is not a report's draft.
+      const others = within(within(dialog).getByTestId('other-drafts')).getAllByRole('button');
+      expect(others.map((b) => b.getAttribute('aria-label'))).toEqual(['Continue draft #22', 'Continue draft #21']);
+
+      fireEvent.click(primary);
+      expect(navigateSpy).toHaveBeenCalledWith('/reports/23');
+      expect(mocked.createClientReport).not.toHaveBeenCalled();
+    });
+
+    it('"Start a new draft" creates one', async () => {
+      mocked.listClientReports.mockResolvedValue(list([report({ id: 23 }), issued7]));
+      mocked.createClientReport.mockResolvedValue(report({ id: 31 }));
+      renderList();
+      fireEvent.click(await screen.findByRole('button', { name: /^New report/ }));
+      fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Start a new draft' }));
+      await waitFor(() => expect(mocked.createClientReport).toHaveBeenCalledWith(1, { kind: 'full' }));
+      expect(navigateSpy).toHaveBeenCalledWith('/reports/31');
+    });
+
+    it('with no draft, creates directly', async () => {
+      mocked.listClientReports.mockResolvedValue(list([issued7]));
+      mocked.createClientReport.mockResolvedValue(report({ id: 31 }));
+      renderList();
+      fireEvent.click(await screen.findByRole('button', { name: /^New report/ }));
+      await waitFor(() => expect(mocked.createClientReport).toHaveBeenCalledWith(1, { kind: 'full' }));
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('an addendum offers only drafts of an addendum to the same report', async () => {
+      mocked.listClientReports.mockResolvedValue(list([
+        report({ id: 23 }),
+        report({ id: 30, kind: 'addendum', baseline: { id: 7, number: 2 }, title: 'Addendum draft' }),
+        report({ id: 29, kind: 'addendum', baseline: { id: 6, number: 1 }, title: 'To an older report' }),
+        issued7,
+      ]));
+      renderList();
+      fireEvent.click(await screen.findByRole('button', { name: /New addendum to #2/ }));
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).getByRole('button', { name: 'Continue draft #30' })).toBeInTheDocument();
+      expect(within(dialog).queryByTestId('other-drafts')).toBeNull();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Start a new draft' }));
+      await waitFor(() => expect(mocked.createClientReport).toHaveBeenCalledWith(1, { kind: 'addendum' }));
+    });
+  });
+
   it('offers no addendum before anything is issued, and nothing to an auditor', async () => {
     mocked.listClientReports.mockResolvedValue({ items: [], latest_issued_id: null, can_create: true, can_issue: false });
     const { unmount } = renderList();
@@ -200,7 +265,7 @@ describe('Reports list', () => {
 
 // B31 — the form held a full copy of the profile; it holds the reader's edits
 // over the stored defaults.  What it shows, sends and forgets is pinned here.
-describe('Defaults for new reports', () => {
+describe('Report defaults', () => {
   const stored = { ...settings, classification: 'Confidential', template: 'pentest' };
   beforeEach(() => {
     mocked.listClientReports.mockResolvedValue({ items: [], latest_issued_id: null, can_create: true, can_issue: true });
@@ -208,7 +273,9 @@ describe('Defaults for new reports', () => {
   });
   const openForm = async () => {
     renderList();
-    await screen.findByText('Defaults for new reports');
+    await screen.findByText('Report defaults');
+    // A change here reaches every draft that follows them (owner, 2026-10-14).
+    expect(screen.getByText(/Every draft follows these until it is issued, except a detail it overrides/)).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
     return screen.findByLabelText('Client');
   };
@@ -311,8 +378,9 @@ describe('Report detail — draft', () => {
     mocked.getClientReport.mockResolvedValue(report());
     renderDetail();
     expect(await screen.findByText('Before issuing')).toBeInTheDocument();
-    // Opens the finding's report text in the editor, where it can be drafted.
-    expect(screen.getByRole('link', { name: 'Weak TLS' })).toHaveAttribute('href', '/findings/42?edit=report-text');
+    // Opens the finding's report text in the editor, where it can be drafted
+    // — naming the report, so the finding page steps through the rest.
+    expect(screen.getByRole('link', { name: 'Weak TLS' })).toHaveAttribute('href', '/findings/42?edit=report-text&report=5');
     expect(screen.getByText('missing impact, recommendation')).toBeInTheDocument();
     expect(screen.getByText('Still under investigation')).toBeInTheDocument();
   });
@@ -486,17 +554,36 @@ describe('Report detail — draft', () => {
     expect(dialog.getByTestId('issue-template')).toHaveTextContent(/^It is issued with the .+ template/);
   });
 
-  it('a draft’s empty Author says what the report inherits, and its own is saved with the details', async () => {
-    mocked.getClientReport.mockResolvedValue(report({ inherited: { author_name: 'Example Security Ltd', disclaimer: null } }));
-    mocked.updateClientReport.mockResolvedValue(report({ settings: { ...settings, author_name: 'Red Team Ltd' } }));
+  // Owner, 2026-10-14: every detail follows the project unless the report
+  // overrides it.  The page saves the override map only.
+  it('a draft follows the project’s details; one is overridden, another reverted, and only overrides are saved', async () => {
+    const followed = { ...settings, author_name: 'Example Security Ltd', classification: 'Confidential' };
+    mocked.getClientReport.mockResolvedValue(report({
+      settings: { client_name: 'Ours Ltd' }, followed, effective: { ...followed, client_name: 'Ours Ltd' },
+    }));
+    // The answer to the save: the project's defaults changed meanwhile, and
+    // the following details show the new values.
+    const renamed = { ...followed, classification: 'Public' };
+    mocked.updateClientReport.mockResolvedValue(report({
+      settings: { author_name: 'Red Team Ltd' }, followed: renamed, effective: { ...renamed, author_name: 'Red Team Ltd' },
+    }));
     renderDetail();
-    expect(await screen.findByText('Empty: uses the project’s or installation’s default — “Example Security Ltd”'))
-      .toBeInTheDocument();
+    const author = await screen.findByLabelText('Author');
+    expect(author).toHaveValue('Example Security Ltd');
+    expect(author).toBeDisabled();
+    expect(screen.getByLabelText('Client')).toHaveValue('Ours Ltd');
+    expect(screen.getByLabelText('Classification')).toHaveValue('Confidential');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Override Author for this report' }));
     fireEvent.change(screen.getByLabelText('Author'), { target: { value: 'Red Team Ltd' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revert Client to the project’s' }));
+    expect(screen.getByLabelText('Client')).toHaveValue(followed.client_name);
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, expect.objectContaining({
-      settings: expect.objectContaining({ author_name: 'Red Team Ltd' }),
+      settings: { author_name: 'Red Team Ltd' },
     })));
+    await waitFor(() => expect(screen.getByLabelText('Classification')).toHaveValue('Public'));
+    expect(screen.getByLabelText('Author')).toHaveValue('Red Team Ltd');
   });
 });
 
@@ -572,7 +659,8 @@ describe('Report detail — layout review (v5.286.0)', () => {
   it('lists the first ten findings missing text, then all of them on request', async () => {
     mocked.getClientReport.mockResolvedValue(report({ summary: { ...report().summary, missing_text: missing(23) } }));
     renderDetail();
-    expect(await screen.findByText(/23 findings have report text still to write/)).toBeInTheDocument();
+    const group = await screen.findByTestId('checklist-missing-text');
+    expect(within(group).getByRole('heading', { name: /Findings missing report text/ })).toHaveTextContent(/23$/);
     expect(screen.getByRole('link', { name: 'Finding 10' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Finding 11' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Show all 23' }));
@@ -648,11 +736,11 @@ describe('Report detail — TODOs and the team (v5.263.0)', () => {
       summary: { ...report().summary, missing_details: ['executive summary', 'project dates'] },
     }));
     renderDetail();
-    const todo = await screen.findByText(/Report details still empty/);
-    expect(todo).toHaveTextContent(
-      'Report details still empty: executive summary, project dates (project dates are set in Project settings).',
-    );
-    expect(within(todo).getByRole('link', { name: 'Project settings' })).toHaveAttribute('href', '/project-settings');
+    const todo = await screen.findByTestId('checklist-details');
+    expect(within(todo).getByRole('heading', { name: /Report details to fill/ })).toHaveTextContent(/TODO.*2$/);
+    // A summary with no keys (frozen before them) is read by its labels.
+    expect(within(todo).getByRole('button', { name: 'Go to executive summary in Report details' })).toBeInTheDocument();
+    expect(within(todo).getByRole('link', { name: 'project dates' })).toHaveAttribute('href', '/project-settings');
   });
 
   it("adds the project's members to the team once each", async () => {

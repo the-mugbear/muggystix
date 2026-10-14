@@ -56,6 +56,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import FindingEndpoints from '../components/findings/FindingEndpoints';
+import ReportDraftBar, { reportParam } from '../components/findings/ReportDraftBar';
 import {
   findingAsSent, findingHistoryKey, findingKey, putFinding, putFindingAnswer,
 } from '../components/findings/findingCache';
@@ -116,10 +117,14 @@ const FindingDetail: React.FC = () => {
     () => reportTextDirty.current,
     'The report text you changed has not been saved. Leave anyway?',
   );
-  const backToFindings = () => {
-    if (!reportTextDirty.current) { navigate(returnTo); return; }
-    void confirmLeave().then((ok) => { if (ok) navigate(returnTo); });
+  const leaveTo = (to: string) => {
+    if (!reportTextDirty.current) { navigate(to); return; }
+    void confirmLeave().then((ok) => { if (ok) navigate(to); });
   };
+  const backToFindings = () => leaveTo(returnTo);
+  // `?report=<id>` — opened from a draft report's checklist: the bar above
+  // the page goes through that report's findings still missing text.
+  const fromReport = reportParam(searchParams.get('report'));
 
   const queryClient = useQueryClient();
   // The finding is ONE query.  Every write route answers with the finding,
@@ -453,6 +458,9 @@ const FindingDetail: React.FC = () => {
   return (
     <div className="p-md md:p-lg">
       {leaveDialog}
+      {fromReport != null && (
+        <ReportDraftBar reportId={fromReport} findingId={finding.id} onNavigate={leaveTo} />
+      )}
       <Button variant="ghost" size="sm" onClick={backToFindings} className="mb-sm">
         <ArrowLeft className="size-4" aria-hidden /> Findings
       </Button>

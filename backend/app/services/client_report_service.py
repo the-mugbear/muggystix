@@ -153,12 +153,8 @@ def missing_required_text_condition():
     return or_(*blank_required_text().values())
 
 
-SETTINGS_KEYS = (
-    "client_name", "classification", "engagement_type", "testers", "distribution",
-    "system_description", "applications", "thick_clients", "other_targets",
-    # Inherited when empty (``report_defaults.resolve``).
-    "author_name", "disclaimer",
-)
+# The engagement details are ``report_defaults.DETAIL_KEYS``; a report holds
+# only those it overrides (``report_defaults.resolve``).
 # v2.382.0 — report details the template prints as a highlighted TODO when
 # empty; the report page lists the same ones before issuing.  (The three
 # optional target lists are "if applicable" and never a TODO.)
@@ -683,57 +679,46 @@ class ClientReportService:
                     unnamed.append(username)
         return entries, unnamed
 
-    def settings_from_profile(self, project_id: int) -> Dict[str, Any]:
-        """A new draft's engagement details: the profile's, with the project's
-        analysts and admins as the team when the profile names nobody."""
-        profile = self.get_profile(project_id)
-        if profile is None:
-            settings: Dict[str, Any] = {k: ([] if k in ("testers", "distribution") else None) for k in SETTINGS_KEYS}
-        else:
-            settings = {k: getattr(profile, k, None) for k in SETTINGS_KEYS}
-            settings["testers"] = list(profile.testers or [])
-            settings["distribution"] = list(profile.distribution or [])
-        if not settings["testers"]:
-            settings["testers"] = self.project_team(project_id)
-        # The inherited details are NOT copied: a draft that writes none of
-        # its own keeps following the project's (and the installation's)
-        # until it is issued (``report_defaults.resolve``).
-        for key in report_defaults.KEYS:
-            settings[key] = None
-        return settings
+    def resolved_details(self, project_id: int, settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Every engagement detail in force for a report of this project with
+        these ``settings`` (its overrides) — ``report_defaults.resolve`` with
+        this project's defaults and team."""
+        return report_defaults.resolve(
+            self.db, self.get_profile(project_id), settings, lambda: self.project_team(project_id),
+        )
+
+    def followed_details(self, project_id: int) -> Dict[str, Any]:
+        """What each detail a draft does not override prints, as the project
+        stands now (``report_defaults.followed``)."""
+        return report_defaults.followed(
+            self.db, self.get_profile(project_id), lambda: self.project_team(project_id),
+        )
 
     @staticmethod
     def settings_from_issued(report: Report) -> Dict[str, Any]:
-        """The engagement details an issued report went out with — what a
-        revision of it, or an addendum to it, starts from (v2.404.0; before,
-        an addendum started from the profile and a revision of an addendum
-        inherited that addendum's empty details).
+        """The engagement details an issued report went out with, as
+        OVERRIDES — what a revision of it, or an addendum to it, starts from
+        (v2.404.0): the same client, classification, team and distribution the
+        client already has, which a later change to the project's defaults
+        must not rewrite.
 
         ``Report.settings`` cannot change once issued (PATCH refuses), so it
-        is the frozen form as written; the snapshot's ``engagement`` fills any
-        key it lacks (a report issued before a key existed).  Copies — the new
-        draft never shares a list with the issued report."""
-        own = report.settings or {}
-        frozen = (((report.snapshot or {}).get("dataset") or {}).get("engagement")) or {}
+        is the frozen form as written; the snapshot's ``engagement`` (the
+        values it was issued with, resolved) fills any key it does not
+        override.  A detail it went out with EMPTY is not carried: the new
+        draft follows the project for it (an addendum always did; a revision
+        of a report issued with no distribution list now offers the project's
+        — override it to empty again if that was on purpose).  Copies — the
+        new draft never shares a list with the issued report."""
+        own = report_defaults.overrides(report.settings)
+        frozen = report_defaults.overrides(
+            (((report.snapshot or {}).get("dataset") or {}).get("engagement")) or {},
+        )
         settings: Dict[str, Any] = {}
-        for key in SETTINGS_KEYS:
-            value = own.get(key)
-            if value in (None, "", []):
-                value = frozen.get(key)
-            if key in ("testers", "distribution"):
-                value = [dict(e) for e in (value or []) if isinstance(e, dict)]
-            settings[key] = value
-        return settings
-
-    def settings_for_addendum(self, baseline: Report) -> Dict[str, Any]:
-        """An addendum's details: its baseline's, as issued — the same client,
-        classification, team and distribution the client already has.  A
-        detail the baseline left empty takes the project's report default."""
-        settings = self.settings_from_issued(baseline)
-        defaults = self.settings_from_profile(baseline.project_id)
-        for key in SETTINGS_KEYS:
-            if settings.get(key) in (None, "", []):
-                settings[key] = defaults.get(key)
+        for key in report_defaults.DETAIL_KEYS:
+            value = own.get(key) or frozen.get(key)
+            if value:
+                settings[key] = value
         return settings
 
     # ------------------------------------------------------------------
@@ -1263,13 +1248,12 @@ class ClientReportService:
                 counts[item["severity"]] += 1
         counts["total"] = sum(counts[s] for s in SEVERITY_ORDER)
 
-        settings = {k: (report.settings or {}).get(k) for k in SETTINGS_KEYS}
+        # Every detail: this report's override, else what it follows — the
+        # project's default, else the installation's (author, disclaimer) or
+        # the project's analysts and admins (team).
+        settings = self.resolved_details(report.project_id, report.settings)
         # The team is linked to accounts; the distribution list is names typed in.
-        settings["testers"], no_full_name = self._with_full_names(settings.get("testers"))
-        settings["distribution"] = list(settings.get("distribution") or [])
-        # The author and the disclaimer are inherited when this report writes
-        # none: the project's, else the installation's.
-        settings.update(report_defaults.resolve(self.db, self.get_profile(report.project_id), settings))
+        settings["testers"], no_full_name = self._with_full_names(settings["testers"])
         # The report's own images, where its written details place them.
         settings["images"], settings["placed"] = report_images.engagement_placement(
             report_images.project_report_images(self.db, report.project_id), settings,
@@ -1327,6 +1311,14 @@ class ClientReportService:
             agent_records = sum(1 for i in items for c in i["confirmations"] if c.get("by_agent"))
 
         pending = self._pending_proposals([item["id"] for item in items])
+        # Report details still empty — printed as a highlighted TODO.  The
+        # labels are what a person reads; the keys, in the same order, are
+        # what the report page opens (the field, Project settings, Users).
+        missing_details = self._missing_details(dataset) + (
+            [("account_full_name",
+              f"a full name on the account of {', '.join(no_full_name)} (the report shows the username)")]
+            if no_full_name else []
+        )
         summary = {
             "counts": counts,
             "findings_shown": len(items),
@@ -1339,11 +1331,10 @@ class ClientReportService:
                 for item in items
                 if missing_required_text(item)
             ],
-            # Report details still empty — printed as a highlighted TODO.
-            "missing_details": self._missing_details(dataset) + (
-                [f"a full name on the account of {', '.join(no_full_name)} (the report shows the username)"]
-                if no_full_name else []
-            ),
+            "missing_details": [label for _, label in missing_details],
+            # Parallel to `missing_details` (absent from a summary frozen
+            # before it): a `REQUIRED_DETAILS` key, or "account_full_name".
+            "missing_detail_keys": [key for key, _ in missing_details],
             "images": sum(len(i["images"]) for i in items),
             # Of those: placed inside a written section by its author, and
             # left for the trailing evidence block.
@@ -1523,7 +1514,9 @@ class ClientReportService:
         return out
 
     @staticmethod
-    def _missing_details(dataset: dict) -> List[str]:
+    def _missing_details(dataset: dict) -> List[Tuple[str, str]]:
+        """(key, label) of each required detail still empty, in
+        ``REQUIRED_DETAILS`` order."""
         engagement = dataset["engagement"]
         project = dataset["project"]
         values = {
@@ -1537,7 +1530,7 @@ class ClientReportService:
             if isinstance(value, str):
                 value = value.strip()
             if not value:
-                missing.append(label)
+                missing.append((key, label))
         return missing
 
     def _withdrawn(self, project_id: int, baseline: Dict[str, dict], current: Dict[str, dict]) -> List[dict]:
