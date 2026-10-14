@@ -208,6 +208,10 @@ export interface ReportSummary {
   internal_references?: Array<{
     id: number; ref: string; title: string; fields: Array<{ field: string; phrases: string[] }>;
   }>;
+  /** A report detail (the system description) that places an image the
+   *  project no longer has, so the report prints nothing there. A warning,
+   *  never a block; absent from a report read before it was counted. */
+  unresolved_images?: Array<{ field: string; ids: number[] }>;
   /** v5.319.0 — the scope is over the template's cutoff: the report summarises it
    *  and names this file (with its SHA-256), which must be sent with the report. */
   scope_external?: {

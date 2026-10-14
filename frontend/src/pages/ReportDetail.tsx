@@ -245,6 +245,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const [edits, setEdits] = useState<Partial<Form>>({});
   const form: Form | null = useMemo(() => (report ? { ...toForm(report), ...edits } : null), [report, edits]);
   const edit = (changed: Partial<Form>) => setEdits((e) => ({ ...e, ...changed }));
+  // The project's defaults being edited from this draft and not yet saved
+  // (`EngagementSettingsFields`' "Set for the project" / "Edit the project's
+  // default").  Held here so they count as unsaved: Issue froze the value
+  // saved before while the corrected one sat in the field (review 2026-10-14, H1).
+  const [projectEdits, setProjectEdits] = useState<Partial<EngagementSettings>>({});
 
   // Draft previews are report jobs.  `started` is each format's job as the
   // worker took it; the ones still running are asked about every two seconds,
@@ -313,12 +318,19 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     if (!report || !form) return false;
     return JSON.stringify(toForm(report)) !== JSON.stringify(form);
   }, [report, form]);
+  // A project default open for editing, or being written: nothing is issued,
+  // previewed or left behind until it is saved or cancelled.
+  const projectPending = Object.keys(projectEdits).length > 0;
+  const unsaved = dirty || projectPending;
   // The Back button and a tab close used to discard an unsaved narrative
   // without asking, although `dirty` was right here (review B-UI-7).
   const { confirmLeave, confirmEl: leaveDialog } = useDiscardGuard(
-    () => dirty,
-    'This draft has unsaved changes — the summary, details or engagement fields you edited. Leave anyway?',
+    () => unsaved,
+    'This draft has unsaved changes — the summary, details or engagement fields you edited, or a project default you are editing. Leave anyway?',
   );
+  const unsavedReason = projectPending && !dirty
+    ? 'Save or cancel the project default you are editing first'
+    : 'Save your changes first';
 
   const saveDetails = useMutation({
     mutationFn: (next: Form) => updateClientReport(projectId, reportId, {
@@ -676,8 +688,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           <div className="flex shrink-0 flex-wrap gap-xs">
             {isDraft && report.can_issue && (
               <Button variant={ready ? 'default' : 'outline'} onClick={() => void issue()}
-                disabled={busy !== null || dirty || !!s.error || !!assetsBlock}
-                title={dirty ? 'Save your changes first' : (assetsBlock ?? notReadyReason)}>
+                disabled={busy !== null || unsaved || !!s.error || !!assetsBlock}
+                title={unsaved ? unsavedReason : (assetsBlock ?? notReadyReason)}>
                 {busy === 'issue' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Stamp className="size-4" aria-hidden />}
                 Issue report
               </Button>
@@ -692,12 +704,13 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                 {busy === 'revise' && <Loader2 className="size-4 animate-spin" aria-hidden />} Revise
               </Button>
             )}
-            {isDraft && dirty && (
+            {isDraft && unsaved && (
               <p className="w-full text-right text-caption text-muted-foreground">
-                Save your changes below before issuing.
+                {dirty ? 'Save your changes below before issuing.'
+                  : 'Save or cancel the project default you are editing below before issuing.'}
               </p>
             )}
-            {isDraft && !dirty && assetsBlock && (
+            {isDraft && !unsaved && assetsBlock && (
               <p className="w-full text-right text-caption text-destructive">
                 {missingRequiredAssets(template).length === 1 ? 'A required template file is' : 'Required template files are'} not installed — see Template.
               </p>
@@ -807,9 +820,10 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       {isDraft ? (
         <PostureSection title="Preview"
           description="Rendered from the live findings on the report worker, with the report’s template. Previews expire after a day.">
-          {dirty && (
+          {unsaved && (
             <p className="mb-xs text-caption text-muted-foreground">
-              The report details below have unsaved changes — save them to preview them.
+              {dirty ? 'The report details below have unsaved changes — save them to preview them.'
+                : 'A project default below is being edited — save or cancel it to preview.'}
             </p>
           )}
           <div className="flex flex-wrap gap-sm">
@@ -819,8 +833,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               return (
                 <div key={fmt} className="flex min-w-0 items-center gap-xs">
                   <Button variant="outline" size="sm" onClick={() => preview(fmt)}
-                    disabled={!!running || !report.can_edit || dirty || !!assetsBlock}
-                    title={dirty ? 'Save your changes first' : assetsBlock}>
+                    disabled={!!running || !report.can_edit || unsaved || !!assetsBlock}
+                    title={unsaved ? unsavedReason : assetsBlock}>
                     {running && <Loader2 className="size-4 animate-spin" aria-hidden />}
                     {running ? `Rendering ${FORMAT_LABEL[fmt]}…` : `Preview ${FORMAT_LABEL[fmt]}`}
                   </Button>
@@ -929,6 +943,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               ? (key, value) => setForProject.mutateAsync({ key, value }) : undefined}
             onPromote={editable ? (key, value) => { void promote(key, value); } : undefined}
             projectBusy={setForProject.isPending || promoting.isPending}
+            projectEdits={projectEdits} onProjectEditsChange={setProjectEdits}
             readOnly={!editable} disabled={saving} onChange={(settings) => edit({ settings })} />
 
           {editable && (

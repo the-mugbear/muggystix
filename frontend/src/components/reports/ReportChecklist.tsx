@@ -154,7 +154,11 @@ interface Props {
 /** Whether a summary leaves anything for the checklist. */
 export const hasChecklist = (s: ReportSummary): boolean =>
   !!(s.missing_details?.length || s.missing_text?.length || s.pending_proposals?.length
-    || s.uncaptioned_images?.length || s.internal_references?.length || s.evidence_note_findings?.length);
+    || s.uncaptioned_images?.length || s.internal_references?.length || s.evidence_note_findings?.length
+    || s.unresolved_images?.length);
+
+/** The report details that may place an image, by their key. */
+const DETAIL_OF_FIELD: Record<string, string> = { system_description: 'System description' };
 
 const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAdmin, canEdit }) => {
   if (!hasChecklist(s)) return null;
@@ -164,6 +168,7 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
   const uncaptioned = s.uncaptioned_images ?? [];
   const references = s.internal_references ?? [];
   const notes = s.evidence_note_findings ?? [];
+  const unresolved = s.unresolved_images ?? [];
   const images = uncaptioned.reduce((n, m) => n + m.count, 0);
   const noteCount = notes.reduce((n, m) => n + m.notes.length, 0);
 
@@ -216,6 +221,27 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
             <Group id="details" title="Report details to fill" count={details.length} todo
               note={canEdit ? 'Written in Report details, below.' : 'Report details, below.'}
               items={details.map(detailItem)} />
+          )}
+          {unresolved.length > 0 && (
+            // Review 2026-10-14, H2: an image deleted after a report printed
+            // it, with no copy to restore — the report prints nothing there.
+            <Group id="unresolved-images" title="Images the report cannot print" count={unresolved.reduce((n, u) => n + u.ids.length, 0)}
+              note="The text places an image the project no longer has; nothing prints there. Upload it again and place it, or take the reference out."
+              items={unresolved.map((u) => {
+                const label = DETAIL_OF_FIELD[u.field] ?? u.field;
+                const what = `${u.ids.map((id) => `image ${id}`).join(', ')}`;
+                return (
+                  <li key={u.field} className={ROW}>
+                    {canEdit ? (
+                      <button type="button" className="text-left text-info hover:underline" onClick={() => onDetail(u.field)}
+                        aria-label={`Go to ${label} in Report details`}>
+                        {label}
+                      </button>
+                    ) : <span>{label}</span>}
+                    <span className="text-caption text-muted-foreground">places {what}</span>
+                  </li>
+                );
+              })} />
           )}
           {missingText.length > 0 && (
             <Group id="missing-text" title="Findings missing report text" count={missingText.length} todo

@@ -361,6 +361,8 @@ def test_the_summary_counts_the_notes_this_report_prints(client, db_session, tes
 
     full = _draft(client, test_project)
     assert full["summary"]["evidence_notes"] == 1
+    # The list says the same notes the count counts (one reading of them).
+    assert [m["notes"] for m in full["summary"]["evidence_note_findings"]] == [["Written for the team."]]
     # The page's summary is the builder's.
     assert client.get(f"{_base(test_project)}/client-reports/{full['id']}").json()["summary"]["evidence_notes"] == 1
     dataset, _ = _dataset(db_session, client, test_project)
@@ -370,6 +372,7 @@ def test_the_summary_counts_the_notes_this_report_prints(client, db_session, tes
     # trailing evidence block prints no image there, so no note …
     dataset, summary = _dataset(db_session, client, test_project, template="brief")
     assert summary["evidence_notes"] == 0 and summary["images_not_printed"] == 2
+    assert summary["evidence_note_findings"] == []
     assert [e["note"] for e in dataset["findings"][0]["evidence"]] == [None, None]
     # … and one that prints the images WITHOUT asking for their notes prints
     # none either: the page must not say a note goes to the client, and the

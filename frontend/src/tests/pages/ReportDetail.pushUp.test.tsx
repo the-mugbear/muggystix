@@ -177,6 +177,50 @@ describe('Set for the project', () => {
   });
 });
 
+// Review 2026-10-14, H1: a corrected project default typed but not saved left
+// Issue enabled, and issuing froze the value saved before.
+describe('A project default being edited', () => {
+  it('holds Issue and Preview until it is saved or cancelled', async () => {
+    mocked.getClientReport.mockResolvedValue(report({ can_issue: true }));
+    renderDetail();
+    const issueButton = await screen.findByRole('button', { name: /Issue report/ });
+    const previewButton = screen.getByRole('button', { name: 'Preview HTML' });
+    expect(issueButton).toBeEnabled();
+    expect(previewButton).toBeEnabled();
+
+    await fromMenu('Client', 'Edit Client in the project’s defaults');
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Client' }), { target: { value: 'Corrected Corp' } });
+    expect(issueButton).toBeDisabled();
+    expect(issueButton).toHaveAttribute('title', 'Save or cancel the project default you are editing first');
+    expect(previewButton).toBeDisabled();
+    expect(screen.getByText('Save or cancel the project default you are editing below before issuing.')).toBeInTheDocument();
+    // The draft's own Save has nothing to save: the edit is the project's.
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    // Leaving asks first, as it does for the draft's own edits.
+    confirmMock.mockResolvedValueOnce(false);
+    fireEvent.click(screen.getByRole('button', { name: /Reports/ }));
+    await waitFor(() => expect(confirmMock).toHaveBeenCalled());
+    expect(screen.getByRole('textbox', { name: 'Client' })).toHaveValue('Corrected Corp');
+
+    fireEvent.click(button('Cancel editing the project’s Client'));
+    expect(issueButton).toBeEnabled();
+    expect(previewButton).toBeEnabled();
+  });
+
+  it('is released once saved to the project', async () => {
+    mocked.getClientReport.mockResolvedValue(report({ can_issue: true }));
+    mocked.patchReportProfile.mockResolvedValue({});
+    renderDetail();
+    const issueButton = await screen.findByRole('button', { name: /Issue report/ });
+    await fromMenu('Client', 'Edit Client in the project’s defaults');
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Client' }), { target: { value: 'Corrected Corp' } });
+    expect(issueButton).toBeDisabled();
+    fireEvent.click(button('Save Client for the project'));
+    await waitFor(() => expect(mocked.patchReportProfile).toHaveBeenCalledWith(1, { client_name: 'Corrected Corp' }));
+    await waitFor(() => expect(issueButton).toBeEnabled());
+  });
+});
+
 describe('Who sees the actions', () => {
   it('someone who may not edit the draft reads its details with no action at all', async () => {
     mocked.getClientReport.mockResolvedValue(report({ can_edit: false, can_discard: false, settings: { client_name: 'Mine' } }));

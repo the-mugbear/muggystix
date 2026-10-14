@@ -246,6 +246,19 @@ describe('The draft’s checklist', () => {
     expect(within(checklist).getByRole('link', { name: 'Finding 23' })).toHaveAttribute('href', '/findings/123');
   });
 
+  // Review 2026-10-14, H2: a reference to an image the project no longer has
+  // printed nothing, and nothing said so.
+  it('names a report detail that places an image the report cannot print, and opens it', async () => {
+    mocked.getClientReport.mockResolvedValue(report({
+      summary: { ...fullSummary, unresolved_images: [{ field: 'system_description', ids: [7] }] },
+    }));
+    renderDetail();
+    const group = await screen.findByTestId('checklist-unresolved-images');
+    expect(heading(group)).toHaveTextContent('Images the report cannot print');
+    expect(group).toHaveTextContent('places image 7');
+    expect(within(group).getByRole('button', { name: 'Go to System description in Report details' })).toBeInTheDocument();
+  });
+
   it('an issued report has no checklist', async () => {
     mocked.getClientReport.mockResolvedValue(report({
       status: 'issued', number: 2, render_status: 'done', can_edit: false, can_issue: false,

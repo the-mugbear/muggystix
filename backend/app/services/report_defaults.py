@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.models_reports import ReportDefault, ReportProfile
@@ -160,14 +161,33 @@ def save(db: Session, values: Mapping[str, Optional[str]], user_id: Optional[int
     """Store the keys the caller sent → ``{key: {"from", "to"}}`` for those
     that changed.  A blank value removes the key.  Raises ``ValueError`` for
     an unknown key or a text that is too long."""
-    rows = {row.key: row for row in db.query(ReportDefault).with_for_update().all()}
-    changes: Dict[str, dict] = {}
+    texts: Dict[str, Optional[str]] = {}
     for key, value in values.items():
         if key not in INSTALLATION_KEYS:
             raise ValueError(f"Unknown report default '{key}'. Valid: {', '.join(INSTALLATION_KEYS)}")
         text = _clean(value)
         if text is not None and len(text) > MAX_CHARS[key]:
             raise ValueError(f"{LABELS[key]}: at most {MAX_CHARS[key]} characters.")
+        texts[key] = text
+    # A key with no row is created first, THEN every row is locked: `FOR
+    # UPDATE` on a row that does not exist locks nothing, so two first saves
+    # both inserted and the second failed on the key (review 2026-10-14, H3).
+    # A concurrent insert makes this one wait for it, then do nothing; keys go
+    # in one order so two saves of several keys cannot wait on each other.
+    created = set()
+    for key in sorted(k for k, t in texts.items() if t is not None):
+        inserted = db.execute(
+            pg_insert(ReportDefault).values(key=key, text=texts[key], updated_by_id=user_id)
+            .on_conflict_do_nothing(index_elements=[ReportDefault.key])
+        )
+        if inserted.rowcount:
+            created.add(key)
+    rows = {row.key: row for row in db.query(ReportDefault).with_for_update().populate_existing().all()}
+    changes: Dict[str, dict] = {}
+    for key, text in texts.items():
+        if key in created:
+            changes[key] = {"from": None, "to": text}
+            continue
         row = rows.get(key)
         before = row.text if row is not None else None
         if text == before:
@@ -175,6 +195,7 @@ def save(db: Session, values: Mapping[str, Optional[str]], user_id: Optional[int
         if text is None:
             db.delete(row)
         elif row is None:
+            # Deleted by a save that committed between our insert and lock.
             db.add(ReportDefault(key=key, text=text, updated_by_id=user_id))
         else:
             row.text = text

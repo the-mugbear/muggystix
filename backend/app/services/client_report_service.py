@@ -64,6 +64,7 @@ from app.db.models_reports import (
     RenderStatus, Report, ReportImage, ReportKind, ReportProfile, ReportStatus,
 )
 from app.db.models_vulnerability import Vulnerability
+from app.services.note_attachment_service import store_image_bytes
 from app.services.report_text import REPORT_TEXT_FIELDS, internal_references
 from app.services import (
     proposal_service, quarto_render, report_defaults, report_images, report_scope, report_template_service,
@@ -102,6 +103,19 @@ def missing_required_text(values: Any) -> List[str]:
     me" both read it."""
     get = values.get if hasattr(values, "get") else (lambda k: getattr(values, k, None))
     return [k for k in REQUIRED_TEXT if not (get(k) or "").strip()]
+
+
+def unresolved_engagement_images(engagement: dict) -> List[dict]:
+    """``[{"field", "ids"}]``: each written report detail that places an image
+    the dataset could not place (``engagement_placement`` lists only the
+    project's printable report images) — the report prints nothing there."""
+    placed = engagement.get("placed") or {}
+    out = []
+    for field in report_images.ENGAGEMENT_IMAGE_FIELDS:
+        ids = [i for i in report_images.referenced_ids(engagement.get(field)) if str(i) not in placed.get(field, {})]
+        if ids:
+            out.append({"field": field, "ids": ids})
+    return out
 
 
 def internal_reference_warnings(items: List[dict]) -> List[dict]:
@@ -726,6 +740,56 @@ class ClientReportService:
                 settings[key] = value
         return settings
 
+    def settings_carried_from(self, issued: Report, user_id: Optional[int]) -> Dict[str, Any]:
+        """``settings_from_issued`` for a NEW draft — a revision of ``issued``
+        or an addendum to it — with every image its system description places
+        that the project no longer has RESTORED from the issued report's own
+        copy (review 2026-10-14, H2): deleting a report-text image after the
+        report that printed it was issued is allowed (that report keeps its
+        copy), and the correction then lost the diagram without a word.  The
+        restored image is a new image of the project's report text (bytes,
+        type and caption as issued) and the reference points at it.  An image
+        with no copy (a report issued before copies existed, or one that did
+        not print it) is left as written: the draft's checklist names it
+        (``summary.unresolved_images``).  Commits each restored image."""
+        carried = self.settings_from_issued(issued)
+        engagement = (((issued.snapshot or {}).get("dataset") or {}).get("engagement")) or {}
+        captions = {e.get("attachment_id"): e.get("caption") for e in engagement.get("images") or []}
+        frozen = {img.attachment_id: img for img in issued.images}
+        live = None
+        for field in report_images.ENGAGEMENT_IMAGE_FIELDS:
+            text = carried.get(field)
+            ids = report_images.referenced_ids(text)
+            if not ids:
+                continue
+            if live is None:
+                live = {att.id for att in report_images.project_report_images(self.db, issued.project_id)}
+            new_ids: Dict[int, int] = {}
+            for old in ids:
+                copy = frozen.get(old)
+                if old in live or copy is None:
+                    continue
+                try:
+                    data = stored_file_path(copy.storage_path).read_bytes()
+                except (ValueError, OSError):
+                    continue
+                if hashlib.sha256(data).hexdigest() != copy.sha256:
+                    continue
+                try:
+                    caption = report_images.clean_caption(captions.get(old))
+                except ValueError:
+                    caption = None
+                ext = report_images.REPORT_IMAGE_TYPES.get(copy.content_type, "png")
+                att = store_image_bytes(
+                    self.db, note_id=None, project_id=issued.project_id, uploaded_by_id=user_id,
+                    data=data, content_type=copy.content_type,
+                    filename=f"image-{old}-from-report-{issued.number}.{ext}", caption=caption,
+                )
+                live.add(att.id)
+                new_ids[old] = att.id
+            carried[field] = report_images.rewrite_reference_ids(text, new_ids)
+        return carried
+
     # ------------------------------------------------------------------
     # Live state
     # ------------------------------------------------------------------
@@ -1324,6 +1388,16 @@ class ClientReportService:
               f"a full name on the account of {', '.join(no_full_name)} (the report shows the username)")]
             if no_full_name else []
         )
+        # Each finding's notes printed word for word before an image THIS
+        # report prints (an image with no `printed` mark is printed) — found
+        # once, by a set of the printed ids; the count and the list below
+        # both read it (review 2026-10-14, R2: two nested scans per note).
+        printed_notes: Dict[int, List[str]] = {}
+        for item in items:
+            printed_ids = {img["attachment_id"] for img in item["images"] if img.get("printed", True)}
+            printed_notes[item["id"]] = [
+                e["note"] for e in item["evidence"] if e.get("note") and e["attachment_id"] in printed_ids
+            ]
         summary = {
             "counts": counts,
             "findings_shown": len(items),
@@ -1373,28 +1447,14 @@ class ClientReportService:
             # under Evidence — said before the sign-off, never a block: a
             # note was written for the team, and this report shows it to the
             # client.  Counted over the trailing images THIS report prints.
-            "evidence_notes": sum(
-                1 for i in items
-                for e in i["evidence"]
-                if e.get("note") and any(
-                    img["attachment_id"] == e["attachment_id"] and img.get("printed", True)
-                    for img in i["images"]
-                )
-            ),
+            "evidence_notes": sum(len(notes) for notes in printed_notes.values()),
             # The same notes, by finding, each with how it begins — so the
             # page can list them with a link, as it lists images without a
             # caption: a count alone names nothing a reviewer can open.
             "evidence_note_findings": [
-                {"id": item["id"], "ref": item["ref"], "title": item["title"], "notes": notes}
-                for item in items
-                if (notes := [
-                    report_excerpt(e["note"], max_chars=200, max_lines=3)[0]
-                    for e in item["evidence"]
-                    if e.get("note") and any(
-                        img["attachment_id"] == e["attachment_id"] and img.get("printed", True)
-                        for img in item["images"]
-                    )
-                ])
+                {"id": item["id"], "ref": item["ref"], "title": item["title"],
+                 "notes": [report_excerpt(note, max_chars=200, max_lines=3)[0] for note in printed_notes[item["id"]]]}
+                for item in items if printed_notes[item["id"]]
             ],
             "pending_proposals": [
                 {"id": item["id"], "ref": item["ref"], "title": item["title"], "count": pending[item["id"]]}
@@ -1403,6 +1463,11 @@ class ClientReportService:
             # Written text that names a BlueStick record ("Finding #277"),
             # which the reader cannot look up — a warning, never a block.
             "internal_references": internal_reference_warnings(items),
+            # A report detail that places an image the report cannot print —
+            # the project no longer has it (review 2026-10-14, H2: deleted
+            # after an earlier report printed it, and no copy to restore).
+            # Printed as nothing, so said here — a warning, never a block.
+            "unresolved_images": unresolved_engagement_images(dataset["engagement"]),
             # Images this report prints with the file's name for a caption,
             # because nobody wrote one — a warning, never a block.  The rule
             # the Findings list's "report image without a caption" applies

@@ -118,15 +118,33 @@ def store_image_attachment(
     every report can print.
     """
     declared = (file.content_type or "").lower()
+    if note_id is None and declared == "image/webp":
+        raise HTTPException(status_code=400, detail="Only PNG, JPEG or GIF images can be printed in a report.")
+    if declared not in _ATTACHMENT_TYPES:
+        raise HTTPException(status_code=400, detail="Only PNG, JPEG, GIF, or WebP images are allowed.")
+    # Read with a hard cap (one extra byte detects an over-limit file without
+    # materialising the whole thing).
+    data = file.file.read(_ATTACHMENT_MAX_BYTES + 1)
+    return store_image_bytes(
+        db, note_id=note_id, project_id=project_id, uploaded_by_id=uploaded_by_id,
+        data=data, content_type=declared, filename=file.filename, caption=caption,
+    )
+
+
+def store_image_bytes(
+    db: Session, *, note_id: Optional[int], project_id: int, uploaded_by_id: Optional[int],
+    data: bytes, content_type: str, filename: Optional[str], caption: Optional[str] = None,
+) -> "models.NoteAttachment":
+    """``store_image_attachment`` for bytes already in hand — the ONE writer
+    of an image attachment's file and row (an upload, and an issued report's
+    frozen image restored for its revision or addendum).  Same checks, same
+    layout; commits the new row."""
+    declared = (content_type or "").lower()
     for_report = note_id is None
     if for_report and declared == "image/webp":
         raise HTTPException(status_code=400, detail="Only PNG, JPEG or GIF images can be printed in a report.")
     if declared not in _ATTACHMENT_TYPES:
         raise HTTPException(status_code=400, detail="Only PNG, JPEG, GIF, or WebP images are allowed.")
-
-    # Read with a hard cap (one extra byte detects an over-limit file without
-    # materialising the whole thing).
-    data = file.file.read(_ATTACHMENT_MAX_BYTES + 1)
     if len(data) > _ATTACHMENT_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Image is too large (max 10 MB).")
     if not data:
@@ -154,7 +172,7 @@ def store_image_attachment(
         pass
 
     # Sanitised original name for display only (never used as a path).
-    display_name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(file.filename or ""))[:255] or f"image.{ext}"
+    display_name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(filename or ""))[:255] or f"image.{ext}"
 
     att = models.NoteAttachment(
         annotation_id=note_id,

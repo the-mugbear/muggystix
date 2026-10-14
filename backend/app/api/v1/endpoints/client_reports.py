@@ -15,6 +15,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, defer, selectinload
 
 from app.api.deps import get_current_project, require_project_role
@@ -411,13 +412,18 @@ def _write_profile(db: Session, project_id: int, data: dict, user_id: int) -> Re
     normalised; a template is checked to be a client template."""
     if data.get("template"):
         _template_or_422(data["template"], client=True)
+    # Create the row if there is none, THEN lock it: `FOR UPDATE` on a row
+    # that does not exist locks nothing, so two first writes both inserted and
+    # the second failed on the unique project (review 2026-10-14, H3).  A
+    # concurrent insert makes this one wait for it, then do nothing.
+    db.execute(
+        pg_insert(ReportProfile).values(project_id=project_id)
+        .on_conflict_do_nothing(index_elements=[ReportProfile.project_id])
+    )
     profile = (
         db.query(ReportProfile).filter(ReportProfile.project_id == project_id)
-        .with_for_update().populate_existing().first()
+        .with_for_update().populate_existing().one()
     )
-    if profile is None:
-        profile = ReportProfile(project_id=project_id)
-        db.add(profile)
     for key, value in data.items():
         if key in report_defaults.LIST_KEYS:
             value = list(value or [])
@@ -547,10 +553,13 @@ def create_report(
     # is new text, so the summary starts empty).  A new full report overrides
     # nothing: every detail follows the project's defaults until someone
     # overrides it (``report_defaults.resolve``).
+    # An image the baseline printed that the project no longer has is
+    # restored from the baseline's copy (`settings_carried_from`).
+    carried = svc.settings_carried_from(baseline, current_user.id) if baseline is not None else {}
     report = Report(
         project_id=project.id, kind=body.kind, status=ReportStatus.DRAFT, title=title[:255],
         template=template_name, baseline_report_id=baseline.id if baseline else None,
-        settings=ClientReportService.settings_from_issued(baseline) if baseline is not None else {},
+        settings=carried,
         created_by_id=current_user.id,
     )
     db.add(report)
@@ -836,11 +845,14 @@ def revise_report(
     original = _load(db, project, report_id)
     if original.status != ReportStatus.ISSUED:
         raise HTTPException(status_code=409, detail="Only the current issue of a report can be revised.")
+    # An image the original printed that the project no longer has is
+    # restored from the original's copy (`settings_carried_from`).
+    carried = ClientReportService(db).settings_carried_from(original, current_user.id)
     draft = Report(
         project_id=project.id, kind=original.kind, status=ReportStatus.DRAFT,
         title=original.title, template=original.template,
         baseline_report_id=original.baseline_report_id, revision_of_id=original.id,
-        settings=ClientReportService.settings_from_issued(original),
+        settings=carried,
         executive_summary=original.executive_summary,
         created_by_id=current_user.id,
     )

@@ -505,6 +505,53 @@ def test_issuing_needs_the_file_of_a_report_image_it_prints_and_of_no_other(clie
     assert db_session.query(ReportImage).count() == 0
 
 
+@pytest.mark.parametrize("start", ["revise", "addendum"])
+def test_a_correction_restores_a_diagram_deleted_after_the_issue(client, db_session, test_project, storage, start):
+    """Review 2026-10-14, H2: the diagram may be deleted once the report that
+    printed it is issued (that report keeps its copy) — and a revision or an
+    addendum then copied the text and silently printed no diagram.  It is
+    restored from the issued copy: a new image of the project's report text,
+    as issued (bytes and caption), and the carried text points at it."""
+    diagram = _image(client, test_project, caption="As issued")
+    draft = _draft(client, test_project, system_description=f"Networks.\n\n![](evidence:{diagram})\n\n`![](evidence:{diagram})`")
+    assert _issue(client, test_project, draft["id"]).status_code == 200
+    assert client.delete(_attachment(test_project, diagram)).status_code == 204
+
+    r = (client.post(f"{_reports(test_project)}/{draft['id']}/revise") if start == "revise"
+         else client.post(_reports(test_project), json={"kind": "addendum", "baseline_report_id": draft["id"]}))
+    assert r.status_code in (200, 201), r.text
+    new = r.json()
+    restored = [i for i in _listed(client, test_project) if i != diagram]
+    assert len(restored) == 1
+    (restored_id,) = restored
+    row = _listed(client, test_project)[restored_id]
+    assert row["caption"] == "As issued"
+    assert row["placed_in"] == [f"report {new['id']}"]       # so it cannot be deleted from under the draft
+    db_session.expire_all()
+    att = db_session.get(NoteAttachment, restored_id)
+    assert att.annotation_id is None and att.project_id == test_project.id
+    assert (storage / "note_attachments" / att.storage_path).read_bytes() == PNG
+    # The placement points at the restored image; the example in code is as typed.
+    assert new["settings"]["system_description"] == (
+        f"Networks.\n\n![](evidence:{restored_id})\n\n`![](evidence:{diagram})`")
+    assert new["summary"]["unresolved_images"] == []
+    dataset, _, _ = _build(db_session, new["id"])
+    assert list(dataset["engagement"]["placed"]["system_description"]) == [str(restored_id)]
+    assert dataset["engagement"]["placed"]["system_description"][str(restored_id)]["caption"] == "As issued"
+
+
+def test_an_image_the_report_cannot_place_is_named_on_the_draft(client, db_session, test_project, storage):
+    """With nothing to restore (no copy), the reference prints nothing — so
+    the draft's summary names it (the page's checklist lists it)."""
+    diagram = _image(client, test_project, caption="Gone")
+    draft = _draft(client, test_project, system_description=f"![](evidence:{diagram})")
+    assert draft["summary"]["unresolved_images"] == []
+    db_session.query(NoteAttachment).filter(NoteAttachment.id == diagram).delete()
+    db_session.commit()
+    again = client.get(f"{_reports(test_project)}/{draft['id']}").json()
+    assert again["summary"]["unresolved_images"] == [{"field": "system_description", "ids": [diagram]}]
+
+
 # ---------------------------------------------------------------------------
 # The renderer's step (no Quarto): copy what is there, drop what is not
 # ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import or_
@@ -227,6 +227,23 @@ def iter_placements(text: Optional[str]) -> Iterator["re.Match[str]"]:
         if any(a <= match.start() < b for a, b in code):
             continue
         yield match
+
+
+def rewrite_reference_ids(text: Optional[str], new_ids: Mapping[int, int]) -> Optional[str]:
+    """``text`` with each PLACEMENT of an id in ``new_ids`` pointing at its new
+    id — the placements ``iter_placements`` reads, so a reference written in
+    code stays as typed.  Nothing else changes."""
+    if not text or not new_ids:
+        return text
+    out, at = [], 0
+    for match in iter_placements(text):
+        old = int(match.group("id"))
+        if old in new_ids:
+            out.append(text[at:match.start("id")])
+            out.append(str(new_ids[old]))
+            at = match.end("id")
+    out.append(text[at:])
+    return "".join(out)
 
 
 def referenced_ids(text: Optional[str]) -> List[int]:

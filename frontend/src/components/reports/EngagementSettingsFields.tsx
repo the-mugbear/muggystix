@@ -91,6 +91,14 @@ interface Props<T extends EngagementOverrides> {
   onPromote?: (key: DetailKey, value: EngagementSettings[DetailKey]) => void;
   /** A write to the project's defaults is running: its actions wait. */
   projectBusy?: boolean;
+  /** A draft: the project defaults being edited here and not yet saved
+   *  ("Set for the project" / "Edit the project's default"), held by the
+   *  PAGE so it counts them as unsaved changes — Issue, Preview and leaving
+   *  wait for them (review 2026-10-14, H1: they were this component's own
+   *  state, and Issue froze the value saved before).  Left out, the
+   *  component keeps them itself. */
+  projectEdits?: Partial<EngagementSettings>;
+  onProjectEditsChange?: React.Dispatch<React.SetStateAction<Partial<EngagementSettings>>>;
   /** The project's defaults only: the installation's author and disclaimer,
    *  which an empty one there uses (`ReportProfile.inherited`). */
   inherited?: InheritedReportDetails | null;
@@ -269,13 +277,16 @@ const FollowedRows: React.FC<{ rows: ReadonlyArray<ReportTester | ReportRecipien
 function EngagementSettingsFields<T extends EngagementOverrides>({
   value, onChange, members, membersStatus = 'ready', onRetryMembers, currentUser, disabled: busy, readOnly = false,
   followed, followedFrom, onSetForProject, onPromote, projectBusy = false, inherited, idPrefix,
+  projectEdits: heldProjectEdits, onProjectEditsChange,
 }: Props<T>): React.ReactElement {
   const disabled = busy || readOnly;
   // A draft: each detail is the report's override, the project's being
   // edited here, or the project's as it stands.
   const drafting = !readOnly && followed != null;
   // Keys whose PROJECT default is being edited here ("Set for the project").
-  const [projectEdits, setProjectEdits] = useState<Partial<EngagementSettings>>({});
+  const [ownProjectEdits, setOwnProjectEdits] = useState<Partial<EngagementSettings>>({});
+  const projectEdits = heldProjectEdits ?? ownProjectEdits;
+  const setProjectEdits = onProjectEditsChange ?? setOwnProjectEdits;
   const [savingKey, setSavingKey] = useState<DetailKey | null>(null);
   const mode = (key: DetailKey): Mode => {
     if (!drafting || isOverridden(value, key)) return 'own';
