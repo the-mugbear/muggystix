@@ -365,7 +365,11 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
     const v = (followed?.[key] ?? '').trim();
     return (
       <div className="min-w-0 space-y-xxs">
-        <span id={`${id}-label`} className="text-body font-medium">{LABELS[key]}</span>
+        {/* The detail's name as a small muted caption and its value as the
+            text: at one size and weight the two ran together (owner, 2026-10-14). */}
+        <span id={`${id}-label`} className="block text-caption font-medium uppercase tracking-wide text-muted-foreground">
+          {LABELS[key]}
+        </span>
         <div id={id} role="group" aria-labelledby={`${id}-label`} aria-describedby={describedBy(key)}
           data-followed="true" data-testid={`${id}-followed`}
           className={markdown && v
@@ -376,7 +380,7 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
           ) : markdown ? (
             <SafeMarkdown text={v} evidence={key === 'system_description' ? reportImages.markdown.resolver : undefined} />
           ) : (
-            <p className="whitespace-pre-wrap text-body [overflow-wrap:anywhere]">{v}</p>
+            <p className="whitespace-pre-wrap text-body font-medium text-foreground [overflow-wrap:anywhere]">{v}</p>
           )}
         </div>
         {sourceLine(key)}

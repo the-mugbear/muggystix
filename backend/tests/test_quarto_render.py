@@ -1421,6 +1421,43 @@ def test_word_is_asked_to_fill_in_the_table_of_contents_on_opening(tmp_path):
 
 
 @needs_template
+def test_the_table_of_contents_is_written_into_its_field(tmp_path):
+    """Word fills a TOC field only when it updates fields — not in Protected
+    View — and LibreOffice may not at all: the report showed an empty table
+    of contents (owner, 2026-10-14).  The post-processor writes the headings
+    as the field's RESULT: inside it (between separate and end, so Word
+    replaces them instead of adding a second table), linked to each heading's
+    bookmark, which Pandoc puts just before the heading."""
+    import xml.etree.ElementTree as ET
+    fix = _post_processor()
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    body = ET.fromstring(
+        f'<w:body xmlns:w="{w}">'
+        '<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/></w:docPartObj></w:sdtPr>'
+        '<w:sdtContent><w:p><w:r><w:t>Table of Contents</w:t></w:r></w:p>'
+        '<w:p><w:r><w:fldChar w:fldCharType="begin"/><w:instrText>TOC \\o "1-2" \\h</w:instrText>'
+        '<w:fldChar w:fldCharType="separate"/><w:fldChar w:fldCharType="end"/></w:r></w:p></w:sdtContent></w:sdt>'
+        '<w:bookmarkStart w:id="1" w:name="project-information"/>'
+        '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>1. Project information</w:t></w:r></w:p>'
+        '<w:p><w:r><w:t>Body text.</w:t></w:r></w:p>'
+        '<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>1.1 Details</w:t></w:r></w:p>'
+        '<w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr><w:r><w:t>Deeper</w:t></w:r></w:p>'
+        '</w:body>'
+    )
+    assert fix.fill_table_of_contents(body) == 2
+    xml = ET.tostring(body, encoding="unicode")
+    content = xml[xml.index("sdtContent"):]
+    order = [content.index(k) for k in ('fldCharType="begin"', 'fldCharType="separate"', "1. Project information",
+                                         "1.1 Details", 'fldCharType="end"')]
+    assert order == sorted(order)                                    # the entries are the field's result
+    assert 'anchor="project-information"' in content                 # linked to the bookmark beside the heading
+    assert "Deeper" not in content[:content.index("</ns0:sdtContent>" if "ns0:" in content else "sdtContent>")]
+    assert "TOC2" in content and "TOC1" in content
+    # No table of contents: nothing happens.
+    assert fix.fill_table_of_contents(ET.fromstring(f'<w:body xmlns:w="{w}"><w:p/></w:body>')) == 0
+
+
+@needs_template
 def test_the_classification_read_for_the_word_header_is_one_plain_line(tmp_path):
     fix = _post_processor()
 

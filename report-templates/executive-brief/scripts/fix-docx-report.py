@@ -84,6 +84,86 @@ for _prefix, _uri in {
     ET.register_namespace(_prefix, _uri)
 
 
+def fill_table_of_contents(body):
+    """Write the table of contents' entries into its field, so it is never
+    empty in a viewer that does not compute fields.
+
+    Pandoc writes the table as a TOC field with no result.  Word fills it
+    only when it updates fields (`ask_word_to_update_fields`) — which it does
+    not do in Protected View, where a downloaded file opens — and LibreOffice
+    may not at all: the report opened with an empty table of contents (owner,
+    2026-10-14).  Here the field's result is the document's level-1 and
+    level-2 headings, one TOC1 / TOC2 paragraph each, linked to the heading's
+    bookmark when it has one.  No page numbers (only a layout engine knows
+    them); Word replaces the whole result with its own, numbered, when it
+    updates the field.  Returns the number of entries written."""
+    sdt = None
+    for candidate in body.iter(f"{NS}sdt"):
+        gallery = candidate.find(f".//{NS}docPartGallery")
+        if gallery is not None and gallery.get(f"{NS}val") == "Table of Contents":
+            sdt = candidate
+            break
+    if sdt is None:
+        return 0
+    content = sdt.find(f"{NS}sdtContent")
+    field_p = None
+    for p in content.findall(f"{NS}p"):
+        instr = "".join(t.text or "" for t in p.iter(f"{NS}instrText"))
+        if instr.strip().startswith("TOC"):
+            field_p = p
+            break
+    if field_p is None:
+        return 0
+    # Begin, instruction and separate stay where they are; the END marker —
+    # in the same run as the others, as Pandoc writes it — moves to a run in a
+    # paragraph of its own after the entries, so the entries are the field's
+    # result (Word replaces them, rather than adding a second table).
+    end_fld = end_holder = None
+    for run in field_p.findall(f"{NS}r"):
+        for fld in run.findall(f"{NS}fldChar"):
+            if fld.get(f"{NS}fldCharType") == "end":
+                end_fld, end_holder = fld, run
+    if end_fld is None:
+        return 0
+    # A heading's bookmark is the body-level element just before it.
+    entries, pending = [], None
+    for child in list(body):
+        if child.tag == f"{NS}bookmarkStart":
+            pending = child.get(f"{NS}name")
+            continue
+        if child.tag != f"{NS}p":
+            pending = None
+            continue
+        style = child.find(f"{NS}pPr/{NS}pStyle")
+        level = {"Heading1": 1, "Heading2": 2}.get(style.get(f"{NS}val") if style is not None else "")
+        mark = child.find(f"{NS}bookmarkStart")
+        anchor = mark.get(f"{NS}name") if mark is not None else pending
+        pending = None
+        text = "".join(t.text or "" for t in child.iter(f"{NS}t")).strip() if level else ""
+        if text:
+            entries.append((level, text, anchor))
+    if not entries:
+        return 0
+    end_holder.remove(end_fld)
+    end_run = ET.Element(f"{NS}r")
+    end_run.append(end_fld)
+    position = list(content).index(field_p) + 1
+    for level, text, anchor in entries:
+        para = ET.Element(f"{NS}p")
+        ppr = ET.SubElement(para, f"{NS}pPr")
+        ET.SubElement(ppr, f"{NS}pStyle", {f"{NS}val": f"TOC{level}"})
+        holder = ET.SubElement(para, f"{NS}hyperlink", {f"{NS}anchor": anchor}) if anchor else para
+        run = ET.SubElement(holder, f"{NS}r")
+        t = ET.SubElement(run, f"{NS}t", {"{http://www.w3.org/XML/1998/namespace}space": "preserve"})
+        t.text = text
+        content.insert(position, para)
+        position += 1
+    closing = ET.Element(f"{NS}p")
+    closing.append(end_run)
+    content.insert(position, closing)
+    return len(entries)
+
+
 def add_image_borders(body):
     """Wrap each top-level image paragraph in a single-cell table with a tight
     border.  The cell border sits outside the cell content, giving the
@@ -538,6 +618,7 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
         aligned = align_tables_like_their_style(body, styles_path)
         kept = keep_table_captions_with_their_tables(body, styles_path)
         count = add_image_borders(body)
+        fill_table_of_contents(body)
         tree.write(doc_xml, xml_declaration=True, encoding="UTF-8")
 
         new_parts, removed, replaced = apply_template_images(tmpdir, installed_assets(assets_dir))

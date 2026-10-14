@@ -168,6 +168,11 @@ export const profileWritten = (
   };
 };
 
+/** A term of the defaults' summary: a small muted caption, so it reads
+ *  apart from its value (the two were the same size and weight — owner,
+ *  2026-10-14). */
+const DEFAULTS_TERM = 'text-caption font-medium uppercase tracking-wide text-muted-foreground';
+
 /** How often a page showing an issued report whose files are still rendering
  *  reads it again — the report's page and the list alike. */
 export const RENDER_POLL_MS = 3000;
@@ -617,9 +622,9 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
     >
       {error && <p className="text-caption text-destructive">{error}</p>}
       {profile && !draft && (
-        <dl className="grid gap-x-lg gap-y-xs text-body sm:grid-cols-[10rem_minmax(0,1fr)]">
-          <dt className="text-muted-foreground">Client</dt><dd className="truncate">{safeFallback(profile.client_name, 'Not set')}</dd>
-          <dt className="text-muted-foreground">Author</dt>
+        <dl className="grid items-baseline gap-x-lg gap-y-xs text-body text-foreground sm:grid-cols-[10rem_minmax(0,1fr)]">
+          <dt className={DEFAULTS_TERM}>Client</dt><dd className="truncate">{safeFallback(profile.client_name, 'Not set')}</dd>
+          <dt className={DEFAULTS_TERM}>Author</dt>
           <dd className="truncate" data-testid="profile-author"
             title={profile.author_name?.trim() || profile.inherited?.author_name?.trim() || undefined}>
             {profile.author_name?.trim()
@@ -628,28 +633,28 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
                 ? <>{profile.inherited.author_name} <span className="text-caption text-muted-foreground">(installation default)</span></>
                 : 'Not set'}
           </dd>
-          <dt className="text-muted-foreground">Classification</dt><dd className="truncate">{safeFallback(profile.classification, 'Not set')}</dd>
-          <dt className="text-muted-foreground">Engagement type</dt><dd className="truncate">{safeFallback(profile.engagement_type, 'Not set')}</dd>
-          <dt className="text-muted-foreground">Team</dt>
+          <dt className={DEFAULTS_TERM}>Classification</dt><dd className="truncate">{safeFallback(profile.classification, 'Not set')}</dd>
+          <dt className={DEFAULTS_TERM}>Engagement type</dt><dd className="truncate">{safeFallback(profile.engagement_type, 'Not set')}</dd>
+          <dt className={DEFAULTS_TERM}>Team</dt>
           <dd className="break-words">
             {profile.testers.length ? profile.testers.map((t) => t.name).join(', ') : 'Nobody listed'}
             {profile.testers_from_project && profile.testers.length > 0 && (
               <span className="text-caption text-muted-foreground"> — the project&apos;s analysts and admins, until a team is saved</span>
             )}
           </dd>
-          <dt className="text-muted-foreground">Distribution</dt>
+          <dt className={DEFAULTS_TERM}>Distribution</dt>
           <dd className="break-words">{profile.distribution.length ? profile.distribution.map((r) => r.name).join(', ') : 'Nobody listed'}</dd>
           {/* The long texts are SAID, not shown: this view is one line per
               detail, and the text itself is one click away (Edit).  Before,
               nothing here told a reader a description, a target list or a
               disclaimer had been written at all (walkthrough 2026-10-13). */}
-          <dt className="text-muted-foreground">System description</dt>
+          <dt className={DEFAULTS_TERM}>System description</dt>
           <dd className="break-words" data-testid="profile-system">{profileWritten(profile).system}</dd>
-          <dt className="text-muted-foreground">Other targets</dt>
+          <dt className={DEFAULTS_TERM}>Other targets</dt>
           <dd className="break-words" data-testid="profile-targets">{profileWritten(profile).targets}</dd>
-          <dt className="text-muted-foreground">Disclaimer</dt>
+          <dt className={DEFAULTS_TERM}>Disclaimer</dt>
           <dd className="break-words" data-testid="profile-disclaimer">{profileWritten(profile).disclaimer}</dd>
-          <dt className="text-muted-foreground">Template</dt><dd className="truncate">{templateTitle(profile.template)}</dd>
+          <dt className={DEFAULTS_TERM}>Template</dt><dd className="truncate">{templateTitle(profile.template)}</dd>
         </dl>
       )}
       {draft && (
