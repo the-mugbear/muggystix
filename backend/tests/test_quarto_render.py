@@ -1869,6 +1869,25 @@ def test_the_sample_report_links_findings_by_section_and_prints_the_evidence_in_
             z.read(n).decode("utf-8") for n in z.namelist() if re.fullmatch(r"word/(header|footer)\d*\.xml", n)
         )
 
+    # --- who prepared it, on the title page (owner, 2026-10-14) ----------------
+    # Word: the title page's Author line, after the title and the client.
+    title_page = [(style, text) for style, text, _ in _word_paragraphs(files["docx"])][:4]
+    assert title_page[:3] == [
+        ("Title", data["report"]["title"]), ("Subtitle", data["report"]["heading"]),
+        ("Author", "Example Security Assessments"),
+    ]
+    # HTML: Quarto builds its title block before the filter can name the
+    # author, so a byline follows it — once, and before the first heading.
+    byline = html.index("Prepared by <strong>Example Security Assessments</strong>")
+    assert byline < html.index('id="project-information"')
+    assert html.count("Prepared by <strong>Example Security Assessments</strong>") == 1
+
+    # --- the project details: a quarter for the label, the rest for the value --
+    details = doc[doc.index("Project details"):]
+    details = details[details.index("<w:tblGrid>"):details.index("</w:tblGrid>")]
+    label, value = (int(w) for w in re.findall(r'<w:gridCol w:w="(\d+)"', details))
+    assert value == 3 * label
+
     # --- the summary table: Section | Severity | Finding -----------------------
     summary = html[html.index("Summary of findings</p>"):]
     summary = summary[:summary.index("</table>")]
@@ -1920,9 +1939,10 @@ def test_the_sample_report_links_findings_by_section_and_prints_the_evidence_in_
     captions = _table_captions(html)
     assert [c.split(":")[0] for c in captions] == [f"Table {n}" for n in range(1, len(captions) + 1)]
     assert captions[-1].endswith(": What the file server answered") and "Table: What" not in html
-    # A finding with nothing to show and no image marked still owes its evidence.
+    # A finding with nothing for this block has no Evidence section and owes
+    # no TODO (owner, 2026-10-14: its evidence is in the sections above).
     third = html[html.index('id="sec-finding-13"'):html.index('id="sec-finding-14"')]
-    assert "Evidence / proof of concept" in third and "TODO: Write the evidence" in third
+    assert "Evidence / proof of concept" not in third and "evidence screenshots" not in third
 
     # --- who prepared it, the disclaimer, the classification -------------------
     assert re.search(r"<td[^>]*>Prepared by</td>\s*<td[^>]*>Example Security Assessments</td>", html)

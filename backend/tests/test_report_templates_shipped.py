@@ -371,9 +371,12 @@ def test_the_pentest_report_prints_how_a_finding_was_confirmed():
     assert "smb-vuln-ms17-010" not in out and "smb\\-vuln" not in out
     # A confirmed test is the evidence: no "mark the screenshots" TODO for it.
     assert "TODO" not in evidence
-    # A finding with neither still asks for evidence; an agent's record names its operator.
+    # A finding with neither has no Evidence section at all — no heading, no
+    # TODO (owner, 2026-10-14: its evidence is in the sections above).  An
+    # agent's record names its operator.
     tls = out.split("{#sec-finding-13}")[1].split("{#sec-finding-14}")[0]
-    assert "bs-code" not in tls and "mark the evidence screenshots" in tls
+    assert "bs-code" not in tls and "Evidence / proof of concept" not in tls
+    assert "evidence screenshots" not in tls and "No evidence attached" not in tls
     assert "by Sam Analyst" in out and "agent session" not in out
 
 
@@ -388,7 +391,7 @@ def test_results_that_were_not_printed_are_counted_and_old_reports_still_fill():
         for key in ("confirmations", "confirmations_omitted", "previous_severity", "previous_severity_label"):
             f.pop(key)
     out = _fill("pentest", old)
-    assert "bs-code" not in out and "mark the evidence screenshots" in out
+    assert "bs-code" not in out and "mark the evidence screenshots" not in out
     for name in ("executive-brief", "remediation-worklist"):
         assert _fill(name, old)
 
@@ -494,13 +497,14 @@ def test_the_evidence_heading_is_printed_only_with_something_under_it():
     )
     assert '.bs-figure file="evidence/8.png"' in unplaced and "bs-md" not in unplaced and "TODO" not in unplaced
 
-    # No image marked at all: the evidence is still owed (or, for an
-    # informational finding, said to be absent).
-    nothing = _bare(sample)
-    owed = _evidence_section(_finding_section(_fill("pentest", nothing), first["id"]))
-    assert "Write the evidence\\, or mark the evidence screenshots" in owed and "bs-todo" in owed
-    info = _bare(sample, 3)
-    assert "No evidence attached." in _evidence_section(_finding_section(_fill("pentest", info), 14))
+    # Nothing at all for this block — no text, no result, no image marked:
+    # no section and no TODO, whatever the severity (owner, 2026-10-14: the
+    # author has most likely put the evidence in the sections above).
+    for index in (0, 3):
+        bare = _bare(sample, index)
+        section = _finding_section(_fill("pentest", bare), bare["findings"][index]["id"])
+        assert "Evidence / proof of concept" not in section
+        assert "evidence screenshots" not in section and "No evidence attached." not in section
 
 
 @needs_templates

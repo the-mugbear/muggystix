@@ -18,6 +18,8 @@ title: "Security assessment brief"
 bluestick-meta:
   title: report.title
   subtitle: report.heading
+  # Word's title page Author line (HTML: the line under the title, below).
+  author: engagement.author_name
 date: << plain(report.date) >>
 engine: markdown
 filters:
@@ -54,10 +56,17 @@ format:
 :::
 
 <% endif %>
+<% if engagement.get("author_name") %>
+::: {.content-visible when-format="html"}
+Prepared by **<< engagement.author_name >>**
+:::
+
+<% endif %>
 {{< pagebreak >}}
 
+<# The dashes set the widths: a quarter for the label, the rest for the value. #>
 | | |
-|:---------------|:--|
+|:------------------------|:--------------------------------------------------------------------------|
 | Client | << engagement.client_name or todo("Client name") >> |
 <# Who produced the report (resolved in the data: this report's, else the
    project's, else the installation's), as in the Penetration test report.

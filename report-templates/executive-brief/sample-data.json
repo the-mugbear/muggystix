@@ -21,6 +21,7 @@
   },
   "engagement": {
     "client_name": "Example Corp",
+    "author_name": "Example Security Assessments",
     "classification": "Confidential",
     "engagement_type": "Internal network penetration test",
     "testers": [

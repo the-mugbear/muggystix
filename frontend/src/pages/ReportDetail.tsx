@@ -64,7 +64,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
 import MarkdownField from '../components/MarkdownField';
-import { FileButtons, reportKindLabel } from './Reports';
+import { FileButtons, RENDER_POLL_MS, isRendering, reportKindLabel } from './Reports';
 
 // `pdf` labels a file of a report issued before PDF was removed (5.293.0).
 const FORMAT_LABEL: Record<ReportFileFormat, string> = {
@@ -180,10 +180,6 @@ const toForm = (r: ClientReport): Form => ({
 const MISSING_PREVIEW = 10;
 
 const NO_TEMPLATES: ReportTemplate[] = [];
-/** How often an issued report still rendering is read again. */
-const RENDER_POLL_MS = 3000;
-const isRendering = (r: ClientReport | undefined): boolean =>
-  r != null && r.status !== 'draft' && r.render_status === 'pending';
 /** How often a preview job still on the worker is asked about. */
 const PREVIEW_POLL_MS = 2000;
 const isRunning = (job: ReportJob): boolean => job.status === 'queued' || job.status === 'processing';
@@ -261,6 +257,25 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       toast.success(`The ${FORMAT_LABEL[fmt]} preview is ready.`, { id: `preview-ready-${ready}` });
     }
   }, [readyPreviews, toast]);
+
+  // Issuing says "Rendering its files…"; the page then said nothing when they
+  // were ready (owner, 2026-10-14).  Announced once, when a render this page
+  // SAW running ends — never for a report opened already done.
+  const sawRendering = useRef(false);
+  const renderStatus = report?.status !== 'draft' ? report?.render_status ?? null : null;
+  useEffect(() => {
+    if (renderStatus === 'pending') { sawRendering.current = true; return; }
+    if (!sawRendering.current || !report) return;
+    sawRendering.current = false;
+    if (renderStatus === 'done') {
+      toast.success(`Report #${report.number} is issued and its files are ready to download.`,
+        { id: `report-files-ready-${report.id}` });
+    } else if (renderStatus === 'failed') {
+      toast.error(`Report #${report.number} is issued, but rendering its files failed — see Files.`,
+        { id: `report-files-failed-${report.id}` });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renderStatus]);
 
   const dirty = useMemo(() => {
     if (!report || !form) return false;

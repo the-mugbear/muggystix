@@ -26,6 +26,7 @@ import { useProjectRole } from '../../hooks/useProjectRole';
 import type { ReportTextImagesState } from '../../hooks/useReportTextImages';
 import { invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
+import ScreenshotLightbox from '../ScreenshotLightbox';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 
@@ -68,6 +69,8 @@ const ReportTextImages: React.FC<Props> = ({ state, disabled = false, idPrefix }
   // server's refusal of a delete names the text to edit first.
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<number, string>>({});
+  // The image open in the full-size viewer (its URL is the list's own).
+  const [viewing, setViewing] = useState<{ src: string; caption: string } | null>(null);
   const rowError = (id: number, message: string | null) => setRowErrors((m) => {
     const next = { ...m };
     if (message) next[id] = message; else delete next[id];
@@ -154,7 +157,13 @@ const ReportTextImages: React.FC<Props> = ({ state, disabled = false, idPrefix }
               <li key={image.id} className="flex min-w-0 items-start gap-sm py-xs">
                 <span className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-control border border-border bg-muted">
                   {src ? (
-                    <img src={src} alt="" className="size-full object-cover" />
+                    // Opens it full size: a 64-pixel thumbnail cannot tell
+                    // two network diagrams apart (owner, 2026-10-14).
+                    <button type="button" className="size-full cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={`View image ${image.id} (${image.filename}) full size`}
+                      onClick={() => setViewing({ src, caption: caption || image.filename })}>
+                      <img src={src} alt="" className="size-full object-cover" />
+                    </button>
                   ) : loadFailed ? (
                     <button type="button" className="flex size-full items-center justify-center"
                       aria-label={`${image.filename} could not be loaded — try again`} onClick={() => retry(image.id)}>
@@ -233,6 +242,8 @@ const ReportTextImages: React.FC<Props> = ({ state, disabled = false, idPrefix }
       {uploadError && (
         <p role="alert" className="text-caption text-destructive [overflow-wrap:anywhere]">{uploadError}</p>
       )}
+      <ScreenshotLightbox open={viewing !== null} onClose={() => setViewing(null)}
+        src={viewing?.src ?? null} caption={viewing?.caption} />
     </div>
   );
 };

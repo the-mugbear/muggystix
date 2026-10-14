@@ -79,6 +79,19 @@ describe('ReportTextImages — the list', () => {
     expect(api.listReportTextImages).toHaveBeenCalledWith(1, expect.anything());
   });
 
+  // Owner, 2026-10-14: a 64-pixel thumbnail could not show which image was uploaded.
+  it('opens an image full size from its thumbnail, with its caption, and closes again', async () => {
+    api.listReportTextImages.mockResolvedValue([image(3, { caption: 'The assessed network' })]);
+    render(<Harness />);
+    const open = await screen.findByRole('button', { name: 'View image 3 (diagram-3.png) full size' });
+    fireEvent.click(open);
+    const viewer = await screen.findByRole('dialog');
+    expect(viewer.querySelector('img[src="blob:image-3"]')).not.toBeNull();
+    expect(viewer).toHaveTextContent('The assessed network');
+    fireEvent.keyDown(viewer, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
   it('says when there are none, and when the list could not be read (with a retry)', async () => {
     api.listReportTextImages.mockResolvedValueOnce([]);
     const first = render(<Harness />);

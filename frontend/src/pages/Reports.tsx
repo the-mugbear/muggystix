@@ -36,7 +36,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRoster } from '../hooks/useProjectMembers';
-import { queryErrorText } from '../lib/query';
+import { pollEvery, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import PostureLead from '../components/posture/PostureLead';
@@ -162,6 +162,12 @@ export const profileWritten = (
   };
 };
 
+/** How often a page showing an issued report whose files are still rendering
+ *  reads it again — the report's page and the list alike. */
+export const RENDER_POLL_MS = 3000;
+export const isRendering = (r: ClientReport | undefined): boolean =>
+  r != null && r.status !== 'draft' && r.render_status === 'pending';
+
 export const reportKindLabel = (r: Pick<ClientReport, 'kind' | 'baseline' | 'revision_of'>): string => {
   const parts = [r.kind === 'addendum' ? `Addendum to #${r.baseline?.number ?? '?'}` : 'Full report'];
   if (r.revision_of) parts.push(`revises #${r.revision_of.number ?? '?'}`);
@@ -200,8 +206,12 @@ const Reports: React.FC = () => {
   const toast = useToast();
   const navigate = useNavigate();
   const projectId = useProjectId();
+  // Read again while an issued report's files render, and not otherwise: the
+  // row said "Rendering files…" until the page was reloaded (owner,
+  // 2026-10-14) — only the report's own page followed the render.
   const query = useQuery({
     queryKey: ['listClientReports', projectId], queryFn: ({ signal }) => listClientReports(projectId, signal),
+    ...pollEvery((q) => ((q.state.data as ClientReportList | undefined)?.items.some(isRendering) ? RENDER_POLL_MS : null)),
   });
   const data: ClientReportList | null = query.data ?? null;
   const error = queryErrorText(query.error, 'Could not load the reports.');

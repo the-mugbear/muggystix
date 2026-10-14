@@ -115,6 +115,25 @@ describe('Reports list', () => {
     expect(navigateSpy).toHaveBeenCalledWith('/reports/11');
   });
 
+  // Owner, 2026-10-14: after issuing, the list said "Rendering files…" until
+  // the page was reloaded — only the report's own page followed the render.
+  it('reads the list again while a report renders, and stops once its files are there', async () => {
+    const issued = (render_status: string, files: unknown[] = []) => ({
+      items: [report({ id: 7, status: 'issued', number: 2, issued_at: '2026-09-21T00:00:00Z', render_status, files })],
+      latest_issued_id: 7, can_create: true, can_issue: true,
+    });
+    mocked.listClientReports
+      .mockResolvedValueOnce(issued('pending'))
+      .mockResolvedValue(issued('done', [pdf]));
+    renderList();
+    expect(await screen.findByText('Rendering files…')).toBeInTheDocument();
+    // Without a reload: the next read (3 s on) shows the files.
+    expect(await screen.findByRole('button', { name: 'Download x-report-01.pdf' }, { timeout: 5000 })).toBeInTheDocument();
+    const reads = mocked.listClientReports.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 3500));
+    expect(mocked.listClientReports.mock.calls.length).toBe(reads);          // nothing rendering: no more reads
+  }, 12000);
+
   // v5.288.0: three drafts under the default title could not be told apart.
   it('tells drafts with the same title apart by start time and template, under their number', async () => {
     const title = 'Demo — security assessment report';
@@ -413,6 +432,29 @@ describe('Report detail — draft', () => {
     fireEvent.click(issue);
     await waitFor(() => expect(mocked.issueClientReport).toHaveBeenCalledWith(1, 5));
     expect(await screen.findByText('Issued #3')).toBeInTheDocument();
+  });
+
+  // Owner, 2026-10-14: issuing said "Rendering its files…" and then nothing.
+  it('says once, when the render it watched ends, that the files are ready — and offers them', async () => {
+    const pending = report({ status: 'issued', number: 3, render_status: 'pending', can_edit: false, can_issue: false });
+    const done = report({ ...pending, render_status: 'done', files: [pdf] });
+    mocked.getClientReport.mockResolvedValueOnce(pending).mockResolvedValue(done);
+    renderDetail();
+    expect(await screen.findByText('Rendering files…')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Download x-report-01.pdf' }, { timeout: 5000 })).toBeInTheDocument();
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith(
+      'Report #3 is issued and its files are ready to download.', { id: 'report-files-ready-5' },
+    ));
+    expect(toastMock.success.mock.calls.filter((c) => String(c[0]).includes('files are ready'))).toHaveLength(1);
+  }, 12000);
+
+  it('says nothing about files for a report opened after they were rendered', async () => {
+    mocked.getClientReport.mockResolvedValue(report({
+      status: 'issued', number: 3, render_status: 'done', files: [pdf], can_edit: false, can_issue: false,
+    }));
+    renderDetail();
+    expect(await screen.findByRole('button', { name: 'Download x-report-01.pdf' })).toBeInTheDocument();
+    expect(toastMock.success).not.toHaveBeenCalled();
   });
 
   // A note holding an unplaced "In report" image is printed before it, as
