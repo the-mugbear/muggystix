@@ -287,7 +287,20 @@ print_info "Collecting platform information..."
     [[ -f platform_version.json ]] && { echo "platform_version.json:"; cat platform_version.json; }
     echo ""
     echo "Uploads directory (counts and sizes only — no file names):"
-    if [[ -d uploads ]]; then
+    if [[ -d uploads ]] && ! [[ -r uploads && -x uploads ]]; then
+        # uploads/ is the containers' alone (mode 700, UID 999): counted from
+        # inside the backend, where it is /app/uploads.  Never as "0 files".
+        if compose_available && compose exec -T backend true >/dev/null 2>&1; then
+            compose exec -T backend sh -c '
+                cd /app/uploads || exit 0
+                echo "  total: $(du -sh . 2>/dev/null | cut -f1), files: $(find . -type f 2>/dev/null | wc -l)"
+                find . -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while IFS= read -r d; do
+                    echo "  $(basename "$d"): $(find "$d" -type f 2>/dev/null | wc -l) files, $(du -sh "$d" 2>/dev/null | cut -f1)"
+                done' 2>/dev/null || echo "  (could not be counted inside the backend)"
+        else
+            echo "  (not readable by this account — it is the containers' — and the backend is not running to count it)"
+        fi
+    elif [[ -d uploads ]]; then
         echo "  total: $(du -sh uploads 2>/dev/null | cut -f1), files: $(find uploads -type f 2>/dev/null | wc -l)"
         find uploads -mindepth 1 -maxdepth 1 -type d 2>/dev/null | while IFS= read -r d; do
             echo "  $(basename "$d"): $(find "$d" -type f 2>/dev/null | wc -l) files, $(du -sh "$d" 2>/dev/null | cut -f1)"

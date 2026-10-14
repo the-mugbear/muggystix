@@ -544,6 +544,12 @@ ensure_uploads_dir() {
     # we already have root, leave a correctly-owned dir untouched, and
     # otherwise only make the folders — the containers' entrypoint gives them
     # to UID 999 at start.  No sudo, no prompt, nothing world-writable.
+    # Once the containers have taken uploads/ over it is theirs alone (mode
+    # 700, UID 999): this account cannot look inside, and need not — the
+    # entrypoint makes these folders itself on every start.
+    if [[ -d uploads && "$(id -u)" -ne 0 ]] && ! [[ -x uploads && -w uploads ]]; then
+        return 0
+    fi
     for d in uploads/ingestion_queue uploads/report_artifacts; do
         mkdir -p "$d"
         if [ "$(id -u)" -eq 0 ]; then
@@ -1591,7 +1597,8 @@ case $DEPLOY_CHOICE in
         echo ""
         print_info "Default admin: username 'admin'. If DEFAULT_ADMIN_PASSWORD was not set,"
         print_info "the password was auto-generated on the FIRST boot — it is in"
-        print_info "./uploads/initial-admin-password.txt and nowhere else (it is never logged)."
+        print_info "./uploads/initial-admin-password.txt and nowhere else (it is never logged):"
+        print_info "  $DC exec backend cat /app/uploads/initial-admin-password.txt"
         print_info "Password change is required on first login."
         ;;
 
@@ -1645,32 +1652,11 @@ case $DEPLOY_CHOICE in
             exit 1
         fi
 
-        # Configure PostgreSQL SSL if script exists
-        if [[ -x "scripts/postgres/ensure-ssl.sh" ]]; then
-            print_info "Configuring database SSL..."
-            # Resolve the db container dynamically — the name varies with the
-            # compose project (COMPOSE_PROJECT_NAME / directory name), so the
-            # hardcoded "networkmapper-db-1" wasn't reliable.
-            db_cid="$($DC ps -q db 2>/dev/null)"
-            if [[ -n "$db_cid" ]]; then
-                docker cp scripts/postgres/ensure-ssl.sh "$db_cid":/tmp/ensure-ssl.sh 2>/dev/null || true
-                $DC exec -T db bash /tmp/ensure-ssl.sh 2>&1 | grep -E "\[ensure-ssl\]" || true
-            fi
-            sleep 2
-            # Captured and checked: under `set -e` a failed restart ended the
-            # script here, and a fixed sleep said nothing about the backend.
-            restart_rc=0
-            $DC restart backend > /dev/null 2>&1 || restart_rc=$?
-            ssl_wait_rc=0
-            wait_for_backend_healthy "$DEPLOY_HEALTH_TIMEOUT" || ssl_wait_rc=$?
-            if [[ "$restart_rc" -ne 0 || "$ssl_wait_rc" -ne 0 ]]; then
-                echo ""
-                print_error "The backend did not come back after the database SSL step"
-                print_error "('$DC restart backend' returned $restart_rc). First-time setup is NOT complete."
-                print_info "Check:   $DC ps      and      $DC logs backend | tail -n 50"
-                exit 1
-            fi
-        fi
+        # The database's TLS is no step of this script any more: the db
+        # container sets it up itself on every start
+        # (scripts/postgres/start-with-tls.sh), so there is nothing to copy
+        # in and no backend restart to wait for.  Security status, below,
+        # says whether it is on.
 
         print_success "First-time setup complete!"
         echo ""
@@ -1683,7 +1669,9 @@ case $DEPLOY_CHOICE in
         echo "  Username: admin"
         echo "  Password: auto-generated (unless DEFAULT_ADMIN_PASSWORD was set)."
         echo "            It is in ./uploads/initial-admin-password.txt and nowhere else"
-        echo "            (it is never written to the logs)."
+        echo "            (it is never written to the logs).  uploads/ is the application's"
+        echo "            alone, so read it with:"
+        echo "              $DC exec backend cat /app/uploads/initial-admin-password.txt"
         print_info "Password change is required on first login."
         echo ""
 
@@ -1903,7 +1891,14 @@ case $DEPLOY_CHOICE in
         # The database is gone, so the first-boot admin credential file no
         # longer opens anything — remove it so the next deploy's freshly
         # generated credential is the only one an operator can find.
-        rm -f uploads/initial-admin-password.txt
+        # uploads/ is the containers' (UID 999, mode 700): from an ordinary
+        # account this cannot be done, and a bare `rm -f` ended the script
+        # here under `set -e` before it said what was left.
+        if ! rm -f uploads/initial-admin-password.txt 2>/dev/null; then
+            print_warning "Could not remove uploads/initial-admin-password.txt (uploads/ is the containers')."
+            print_warning "It opens nothing now; the next first boot writes a new one over it. To remove it:"
+            print_warning "  sudo rm -f \"$PROJECT_ROOT/uploads/initial-admin-password.txt\""
+        fi
 
         nuke_left_containers="$(docker ps -aq --filter "$nuke_label" 2>/dev/null | wc -l | tr -d ' ')"
         nuke_left_volumes="$(docker volume ls -q --filter "$nuke_label" 2>/dev/null | wc -l | tr -d ' ')"

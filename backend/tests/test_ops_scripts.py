@@ -737,6 +737,55 @@ def test_no_script_opens_a_folder_to_every_account():
         assert "-perm -o+w" in text and "chmod 750" in text
 
 
+def test_a_deploy_goes_on_when_uploads_is_the_containers_alone(project):
+    """Once the containers have taken uploads/ over it is mode 700 and theirs:
+    the deploy account cannot look inside, and `mkdir -p uploads/…` there
+    ended the script under `set -e` without a word.  The entrypoint makes the
+    folders; the script leaves them to it."""
+    uploads = project.root / "uploads"
+    uploads.mkdir(exist_ok=True)
+    for child in list(uploads.iterdir()):
+        shutil.rmtree(child) if child.is_dir() else child.unlink()
+    uploads.chmod(0o000)                 # as another account's 700 folder is to this one
+    try:
+        result = project.run("deploy.sh", stdin="1\n")
+    finally:
+        uploads.chmod(0o755)
+
+    out = _output(result)
+    assert result.returncode == 0, out
+    assert "Deployment complete" in out and "Permission denied" not in out
+    assert list(uploads.iterdir()) == []
+
+
+def test_the_uploads_tree_and_the_database_key_are_set_up_by_the_containers():
+    """Two things no host script does any more, because the container that
+    needs them does them on every start: uploads/ closed to other accounts,
+    and the TLS pair handed to the postgres user."""
+    root = SCRIPTS.parent
+    entrypoint = root / "backend" / "docker-entrypoint.sh"
+    if entrypoint.is_file():
+        assert 'chmod 700 "$UPLOADS"' in entrypoint.read_text(encoding="utf-8")
+    assert not (SCRIPTS / "postgres" / "init-ssl.sh").exists()
+    assert not (SCRIPTS / "postgres" / "ensure-ssl.sh").exists()
+    tls = (SCRIPTS / "postgres" / "start-with-tls.sh").read_text(encoding="utf-8")
+    # On only for a pair PostgreSQL accepts; otherwise the database still starts.
+    assert "ssl=on" in tls and "starting WITHOUT TLS" in tls and 'exec docker-entrypoint.sh "$@"' in tls
+    assert "ensure-ssl" not in (SCRIPTS / "deploy.sh").read_text(encoding="utf-8")
+    compose = root / "docker-compose.yml"
+    if compose.is_file():
+        text = compose.read_text(encoding="utf-8")
+        assert 'entrypoint: ["bash", "/usr/local/bin/start-with-tls.sh"]' in text
+        assert "init-ssl.sh" not in text
+
+
+def test_the_upgrade_does_not_read_an_unreadable_uploads_folder_as_empty():
+    text = (SCRIPTS / "upgrade-instance.sh").read_text(encoding="utf-8")
+    guard = text.index('! [[ -r "$src" && -w "$src" && -x "$src" ]]')
+    assert guard < text.index('[[ -n "$(ls -A "$dst" 2>/dev/null)" ]]')
+    assert "sudo mv '$src' '$dst'" in text
+
+
 def test_low_disk_in_a_piped_deploy_is_a_stated_cancel(project):
     """upgrade-instance.sh pipes exactly "1\\n": the low-disk question then
     met end of input and the deploy ended without a word."""

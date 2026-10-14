@@ -65,6 +65,19 @@ fail closed if so." >&2
         fi
     done
 
+    # The tree itself is the containers' alone (v2.495.2).  It was 755 with
+    # most files world-readable: any account on the host could read uploaded
+    # scan files, evidence images and rendered reports.  Every process that
+    # uses it runs as $APP_UID, and the host's scripts reach it through a
+    # container, so nobody else needs a way in.  Only once it is ours (a
+    # mount we could not chown must stay reachable), and 700 rather than 750:
+    # GID 999 on the host is whatever group happens to hold that number.
+    if [ "$(stat -c '%u' "$UPLOADS" 2>/dev/null)" = "$APP_UID" ] \
+        && [ "$(stat -c '%a' "$UPLOADS" 2>/dev/null)" != "700" ]; then
+        chmod 700 "$UPLOADS" 2>/dev/null \
+            && echo "[entrypoint] $UPLOADS is now 700: readable by the application only." >&2
+    fi
+
     exec gosu "$APP_USER" "$@"
 fi
 

@@ -308,6 +308,15 @@ else
     src="$OLD/$rel"; dst="$PROJECT_ROOT/$rel"
     if [[ ! -d "$src" ]]; then
         warn "No $rel/ in the old folder — nothing to carry (deploy.sh will create an empty one)."
+    elif ! [[ -r "$src" && -w "$src" && -x "$src" ]] || { [[ -d "$dst" ]] && ! [[ -r "$dst" && -x "$dst" ]]; }; then
+        # The folder is the containers' (UID 999, mode 700): this account can
+        # neither look inside it nor move it (a folder changes parent only
+        # with write access to it).  Unreadable used to read as EMPTY below —
+        # "nothing to move" — and the upgrade went on without the data.
+        fail "$rel/ is the containers' (UID 999), not $(id -un)'s: it cannot be read or moved from here.
+   Move it yourself — this one command, not the whole script, needs root — then run this again:
+     sudo mv '$src' '$dst'
+   (if '$dst' already exists and is empty, remove it first:  sudo rmdir '$dst')"
     elif [[ -d "$dst" ]] && [[ -n "$(ls -A "$dst" 2>/dev/null)" ]]; then
         if [[ -n "$(ls -A "$src" 2>/dev/null)" ]]; then
             fail "$rel/ exists and is non-empty in BOTH folders.  Refusing to merge blindly.

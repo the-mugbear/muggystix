@@ -85,7 +85,7 @@ cp .env.example .env       # then set SECRET_KEY (and optionally DEFAULT_ADMIN_P
 docker compose up --build -d
 ```
 
-On first boot the backend seeds a default admin account. If `DEFAULT_ADMIN_PASSWORD` is unset, the generated password is written to **`./uploads/initial-admin-password.txt`** (mode 0600) — it is **not** printed to the logs. Read it there, then change it on first login.
+On first boot the backend seeds a default admin account. If `DEFAULT_ADMIN_PASSWORD` is unset, the generated password is written to **`./uploads/initial-admin-password.txt`** (mode 0600) — it is **not** printed to the logs. The `uploads/` folder is the application's alone (mode 700, the containers' user), so read it through the backend: `docker compose exec backend cat /app/uploads/initial-admin-password.txt`. Then change it on first login.
 
 > **2FA is enforced by default** (`REQUIRE_2FA=true`): the first login walks you through TOTP enrolment. Set `REQUIRE_2FA=false` in `.env` to make it opt-in (e.g. an air-gapped lab).
 

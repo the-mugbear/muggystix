@@ -37,6 +37,11 @@ services:
     # honors an explicit `docker compose stop` — so a deliberate
     # dev shutdown isn't fought by the daemon.
     restart: unless-stopped
+    # Turns TLS on from ./ssl/certs when the pair is one PostgreSQL will
+    # accept, says so loudly when it is not, then runs the image's own
+    # entrypoint with the command below.  `bash <file>`: a file copied onto a
+    # host without git keeps no execute bit.
+    entrypoint: ["bash", "/usr/local/bin/start-with-tls.sh"]
     # Stock postgres:16 ships max_connections=100 and shared_buffers=128MB.
     # 100 is below this stack's worst-case connection draw (4 uvicorn
     # workers + the ingestion worker, each with its own SQLAlchemy pool),
@@ -96,7 +101,9 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./ssl/certs:/certs:ro
-      - ./scripts/postgres/init-ssl.sh:/docker-entrypoint-initdb.d/10-init-ssl.sh:ro
+      # The entrypoint below: hands the TLS pair to the postgres user on every
+      # start (it cannot read a 600 key that is the deploy account's).
+      - ./scripts/postgres/start-with-tls.sh:/usr/local/bin/start-with-tls.sh:ro
     networks:
       - app-network
 
@@ -161,7 +168,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
-      APP_VERSION: ${APP_VERSION:-2.495.1}
+      APP_VERSION: ${APP_VERSION:-2.495.2}
       FRONTEND_VERSION: ${FRONTEND_VERSION:-5.388.2}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
@@ -260,7 +267,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.495.1}
+      APP_VERSION: ${APP_VERSION:-2.495.2}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -321,7 +328,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.495.1}
+      APP_VERSION: ${APP_VERSION:-2.495.2}
       PLATFORM_VERSION_FILE: /app/platform_version.json
       # One sequential loop — a small pool protects the Postgres
       # max_connections budget (4 API workers + ingestion worker + this).
@@ -344,7 +351,7 @@ services:
         REACT_APP_API_URL: ${REACT_APP_API_URL:-https://localhost}
         # Keep this fallback in sync with the APP_VERSION defaults above
         # (lines 49 + 87) and with platform_version.json's "backend".
-        BACKEND_VERSION: ${APP_VERSION:-2.495.1}
+        BACKEND_VERSION: ${APP_VERSION:-2.495.2}
         # CR4-8 — the build context is just frontend/, so platform_version.json
         # isn't visible during the Docker build; pass the frontend version in
         # so generate-build-info.js stamps the right version (shown under About BlueStick).  Keep in
