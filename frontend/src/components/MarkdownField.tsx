@@ -34,6 +34,7 @@ import {
   wrapSelection,
 } from '../utils/markdownEditing';
 import { formatApiError } from '../utils/apiErrors';
+import { imagesFromClipboard } from '../utils/clipboardImages';
 import { MarkdownImages, ReportImageProblem, imageReference } from '../utils/reportImages';
 import { Button } from './ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
@@ -173,7 +174,7 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
   const upload = images?.upload;
   const onPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     if (!upload) return;
-    const files = Array.from(event.clipboardData.files).filter((f) => f.type.startsWith('image/'));
+    const files = imagesFromClipboard(event.clipboardData);
     if (files.length === 0) return;
     event.preventDefault();
     const at = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd };

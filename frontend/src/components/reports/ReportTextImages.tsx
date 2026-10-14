@@ -27,6 +27,7 @@ import type { ReportTextImagesState } from '../../hooks/useReportTextImages';
 import { invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
 import { REPORT_IMAGE_TYPES, reportImageProblem } from '../../utils/reportImages';
+import { imagesFromClipboard } from '../../utils/clipboardImages';
 import ScreenshotLightbox from '../ScreenshotLightbox';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -91,9 +92,12 @@ interface Props {
   /** The form is saving: every control stays, greyed. */
   disabled?: boolean;
   idPrefix: string;
+  /** Where a pasted screenshot is taken as an upload (the project images
+   *  panel); without it, nothing is listened for. */
+  pasteScope?: React.RefObject<HTMLElement | null>;
 }
 
-const ReportTextImages: React.FC<Props> = ({ state, disabled = false, idPrefix }) => {
+const ReportTextImages: React.FC<Props> = ({ state, disabled = false, idPrefix, pasteScope }) => {
   const projectId = useProjectId();
   const { canWrite } = useProjectRole();
   const queryClient = useQueryClient();
@@ -130,6 +134,44 @@ const ReportTextImages: React.FC<Props> = ({ state, disabled = false, idPrefix }
     onError: (err) => setUploadError(formatApiError(err, 'Could not upload the image.')),
   });
   const uploading = upload.isPending;
+
+  // A screenshot pasted while the panel is in use is uploaded like a picked
+  // file (owner, 2026-10-14: "the new Project images pane would host this
+  // feature").  Only a paste made inside `pasteScope` (the panel) or with
+  // nothing focused, that no field has taken already (the System
+  // description takes its own and places it), and that carries an image —
+  // text pastes into the caption box as usual.
+  const uploadPasted = async (files: File[]) => {
+    for (const file of files) {
+      const problem = reportImageProblem(file);
+      if (problem) { setUploadError(problem); return; }
+      try {
+        await upload.mutateAsync(file);
+      } catch {
+        return;         // said by the mutation's onError
+      }
+    }
+  };
+  const onPaste = useRef<(event: ClipboardEvent) => void>(() => undefined);
+  onPaste.current = (event) => {
+    const scope = pasteScope?.current;
+    const target = event.target instanceof Node ? event.target : null;
+    if (!scope || event.defaultPrevented || disabled) return;
+    if (!(target === document.body || (target && scope.contains(target)))) return;
+    const files = imagesFromClipboard(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    if (uploading) { setUploadError('An image is still uploading — paste again once it has finished.'); return; }
+    void uploadPasted(files);
+  };
+  const takesPaste = !!pasteScope && canWrite;
+  useEffect(() => {
+    if (!takesPaste) return undefined;
+    const listener = (event: ClipboardEvent) => onPaste.current(event);
+    document.addEventListener('paste', listener);
+    return () => document.removeEventListener('paste', listener);
+  }, [takesPaste]);
+
   const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (fileRef.current) fileRef.current.value = '';
@@ -260,7 +302,9 @@ const ReportTextImages: React.FC<Props> = ({ state, disabled = false, idPrefix }
             {uploading ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <ImagePlus className="size-4" aria-hidden />}
             {uploading ? 'Uploading…' : 'Upload image'}
           </Button>
-          <span className="text-caption text-muted-foreground">PNG, JPEG or GIF, up to 10 MB.</span>
+          <span className="text-caption text-muted-foreground">
+            PNG, JPEG or GIF, up to 10 MB.{pasteScope ? ' Or paste a screenshot here (Ctrl+V).' : ''}
+          </span>
         </div>
       )}
       {uploadError && (

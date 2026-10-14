@@ -5,7 +5,7 @@
  * maintenance off the draft's own form).  Upload, caption and delete are the
  * images' own writes, outside the draft's Save; the panel says so.
  */
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Images } from 'lucide-react';
 
 import type { ReportTextImagesState } from '../../../hooks/useReportTextImages';
@@ -21,13 +21,15 @@ const ProjectImagesPanel: React.FC<{
 }> = ({ state, idPrefix }) => {
   const [open, setOpen] = useState(false);
   const count = state.images.length;
+  // A screenshot pasted anywhere in the panel is uploaded (owner, 2026-10-14).
+  const panelRef = useRef<HTMLDivElement>(null);
   return (
     <>
       <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)}>
         <Images className="size-4" aria-hidden /> Project images…{count ? ` (${count})` : ''}
       </Button>
       <SideSheet open={open} onOpenChange={setOpen}>
-        <SideSheetContent width="lg" overlay>
+        <SideSheetContent ref={panelRef} width="lg" overlay>
           <SideSheetHeader>
             <SideSheetTitle>Project images</SideSheetTitle>
             <p className="text-caption text-muted-foreground">
@@ -36,7 +38,7 @@ const ProjectImagesPanel: React.FC<{
             </p>
           </SideSheetHeader>
           <SideSheetBody>
-            <ReportTextImages idPrefix={idPrefix} state={state} />
+            <ReportTextImages idPrefix={idPrefix} state={state} pasteScope={panelRef} />
           </SideSheetBody>
         </SideSheetContent>
       </SideSheet>

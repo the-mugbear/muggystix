@@ -106,6 +106,7 @@ import { promotedResultMessage, testNeedsWork } from '../utils/hostTests';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
 import { cn } from '../utils/cn';
 import { announceMentionOutcome } from '../utils/mentions';
+import { imagesFromClipboard } from '../utils/clipboardImages';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { DetailSkeleton } from './PageSkeleton';
 import { useConfirm } from '../hooks/useConfirm';
@@ -751,15 +752,7 @@ const HostInspectorBody: React.FC<HostInspectorProps> = ({
   // attaches to the note on save instead of pasting a garbage data URL into
   // the text. Non-image clipboard content (plain text) pastes normally.
   const handleComposerPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    const files: File[] = [];
-    for (const it of items) {
-      if (it.kind === 'file' && it.type.startsWith('image/')) {
-        const f = it.getAsFile();
-        if (f) files.push(f);
-      }
-    }
+    const files = imagesFromClipboard(e.clipboardData);
     if (files.length) {
       e.preventDefault();
       addPendingImages(files);

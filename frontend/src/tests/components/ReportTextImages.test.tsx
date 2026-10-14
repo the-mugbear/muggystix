@@ -269,3 +269,75 @@ describe('ReportTextImages — who may change what', () => {
     expect(screen.getByRole('button', { name: 'Delete image 3 (diagram-3.png)' })).toBeDisabled();
   });
 });
+
+// Owner, 2026-10-14: "the new Project images pane would host this feature".
+describe('ReportTextImages — a pasted screenshot, in the project images panel', () => {
+  const PanelHarness: React.FC<{ scoped?: boolean }> = ({ scoped = true }) => {
+    const state = useReportTextImages();
+    const panel = React.useRef<HTMLDivElement>(null);
+    return (
+      <>
+        <div ref={panel} data-testid="panel">
+          <ReportTextImages idPrefix="t" state={state} pasteScope={scoped ? panel : undefined} />
+        </div>
+        <textarea aria-label="A field outside the panel" />
+      </>
+    );
+  };
+  const paste = (target: Element, clipboardData: unknown, { taken = false } = {}) => {
+    const event = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: clipboardData });
+    if (taken) event.preventDefault();
+    target.dispatchEvent(event);
+    return event;
+  };
+  beforeEach(() => {
+    api.listReportTextImages.mockResolvedValue([]);
+    api.uploadReportTextImage.mockResolvedValue(image(9));
+  });
+
+  it('is uploaded with the caption typed for it, and says it can be', async () => {
+    render(<PanelHarness />);
+    await screen.findByText('No image uploaded yet.');
+    expect(screen.getByText(/Or paste a screenshot here \(Ctrl\+V\)\./)).toBeInTheDocument();
+    const caption = screen.getByLabelText('Caption for the next image (optional)');
+    fireEvent.change(caption, { target: { value: 'The DMZ' } });
+    const file = png('screenshot.png');
+    const event = paste(caption, { files: [file], items: [] });
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(api.uploadReportTextImage).toHaveBeenCalledWith(1, file, 'The DMZ'));
+  });
+
+  it('takes an image the browser put only in the clipboard items', async () => {
+    render(<PanelHarness />);
+    await screen.findByText('No image uploaded yet.');
+    const file = png('only-in-items.png');
+    paste(screen.getByTestId('panel'), { files: [], items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }] });
+    await waitFor(() => expect(api.uploadReportTextImage).toHaveBeenCalledWith(1, file, ''));
+  });
+
+  it('leaves text, a paste a field already took, a paste outside the panel, and a panel-less list alone', async () => {
+    const { unmount } = render(<PanelHarness />);
+    await screen.findByText('No image uploaded yet.');
+    const text = paste(screen.getByLabelText('Caption for the next image (optional)'), { files: [], items: [] });
+    expect(text.defaultPrevented).toBe(false);
+    paste(screen.getByTestId('panel'), { files: [png()], items: [] }, { taken: true });
+    paste(screen.getByLabelText('A field outside the panel'), { files: [png()], items: [] });
+    unmount();
+
+    render(<PanelHarness scoped={false} />);
+    await screen.findByText('No image uploaded yet.');
+    expect(screen.queryByText(/Or paste a screenshot here/)).toBeNull();
+    paste(screen.getByTestId('panel'), { files: [png()], items: [] });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(api.uploadReportTextImage).not.toHaveBeenCalled();
+  });
+
+  it('refuses what a report cannot print before sending it', async () => {
+    render(<PanelHarness />);
+    await screen.findByText('No image uploaded yet.');
+    paste(screen.getByTestId('panel'), { files: [new File(['x'], 'shot.webp', { type: 'image/webp' })], items: [] });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Only PNG, JPEG or GIF images can be printed in a report.');
+    expect(api.uploadReportTextImage).not.toHaveBeenCalled();
+  });
+});

@@ -31,6 +31,7 @@ import { useProjectId } from '../hooks/useProjectId';
 import { invalidateReads } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { announceMentionOutcome } from '../utils/mentions';
+import { imagesFromClipboard } from '../utils/clipboardImages';
 import { safeFallback } from '../utils/uiStyles';
 import MessageBubble, { wasEdited } from './MessageBubble';
 
@@ -163,7 +164,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({
   // Paste a screenshot straight into the composer — collected as pending files
   // and attached to the comment once it's created on submit.
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const images = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith('image/'));
+    const images = imagesFromClipboard(e.clipboardData);
     if (images.length) {
       e.preventDefault();
       setPending((p) => [...p, ...images.map((file) => ({ id: newPendingId(), file }))]);
