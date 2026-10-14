@@ -254,7 +254,12 @@ describe('A draft — a change pushed up to the project (owner, 2026-10-14)', ()
     fireEvent.click(button('Set Engagement type for the project'));
     const field = textbox('Engagement type');
     expect(field).toHaveAccessibleDescription(/Editing the project’s default/);
+    // The caret is put in the field (walkthrough 2026-10-14: it opened
+    // unfocused and typing went nowhere), and an empty value cannot be saved.
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(button('Save Engagement type for the project')).toBeDisabled();
     fireEvent.change(field, { target: { value: ' Internal ' } });
+    expect(button('Save Engagement type for the project')).toBeEnabled();
     // Not an override: the draft's own map is untouched.
     expect(onChange).not.toHaveBeenCalled();
     fireEvent.click(button('Save Engagement type for the project'));

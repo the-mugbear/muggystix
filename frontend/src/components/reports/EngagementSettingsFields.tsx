@@ -139,11 +139,13 @@ type Mode = 'own' | 'project' | 'followed';
 const DetailSource: React.FC<{
   id: string; label: string; mode: Mode; source: FollowedSource | null; blank: boolean;
   disabled?: boolean; projectDisabled?: boolean; saving?: boolean;
+  /** The project's value being edited is empty: nothing to save yet. */
+  saveDisabled?: boolean;
   onOverride: () => void; onRevert: () => void;
   onSetForProject?: () => void; onPromote?: () => void;
   onSaveProject?: () => void; onCancelProject?: () => void;
 }> = ({
-  id, label, mode, source, blank, disabled, projectDisabled, saving,
+  id, label, mode, source, blank, disabled, projectDisabled, saving, saveDisabled,
   onOverride, onRevert, onSetForProject, onPromote, onSaveProject, onCancelProject,
 }) => {
   const items: React.ReactNode[] = [];
@@ -164,7 +166,8 @@ const DetailSource: React.FC<{
   } else if (mode === 'project') {
     words = 'Editing the project’s default — every draft that follows it will print it';
     items.push(
-      <Button key="save" type="button" size="sm" className="h-7 px-xs text-caption" disabled={projectDisabled}
+      <Button key="save" type="button" size="sm" className="h-7 px-xs text-caption" disabled={projectDisabled || saveDisabled}
+        title={saveDisabled ? 'Type a value first' : undefined}
         aria-label={`Save ${label} for the project`} onClick={onSaveProject}>
         {saving && <Loader2 className="size-3.5 animate-spin" aria-hidden />} Save for the project
       </Button>,
@@ -252,7 +255,24 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
     delete next[key];
     onChange(next);
   };
-  const editForProject = (key: DetailKey) => setProjectEdits((p) => ({ ...p, [key]: copyOf(key) }));
+  // Opening the field puts the caret in it: it used to open unfocused, so
+  // what the reader typed went nowhere (walkthrough, 2026-10-14).  The field
+  // is found by the source line it is described by (every editable detail
+  // carries it), else the first control under that line's detail.
+  const editForProject = (key: DetailKey) => {
+    setProjectEdits((p) => ({ ...p, [key]: copyOf(key) }));
+    window.requestAnimationFrame(() => {
+      const line = document.getElementById(sourceId(key));
+      const field = document.querySelector<HTMLElement>(`[aria-describedby~="${sourceId(key)}"]:not([disabled])`)
+        ?? line?.parentElement?.querySelector<HTMLElement>('input:not([disabled]), textarea:not([disabled])');
+      field?.focus();
+    });
+  };
+  // Nothing to save: an empty value would be "saved" as nothing.
+  const projectBlank = (key: DetailKey): boolean => {
+    const v = projectEdits[key];
+    return Array.isArray(v) ? v.length === 0 : !(typeof v === 'string' && v.trim());
+  };
   const cancelProject = (key: DetailKey) => setProjectEdits((p) => {
     const next = { ...p };
     delete next[key];
@@ -284,6 +304,7 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
   const sourceLine = (key: DetailKey) => drafting && (
     <DetailSource id={sourceId(key)} label={LABELS[key]} mode={mode(key)} source={source(key)} disabled={busy}
       projectDisabled={projectWriting} saving={savingKey === key}
+      saveDisabled={mode(key) === 'project' && projectBlank(key)}
       blank={mode(key) === 'own' && typeof value[key] === 'string' && !(value[key] as string).trim()}
       onOverride={() => override(key)} onRevert={() => revert(key)}
       onSetForProject={onSetForProject ? () => editForProject(key) : undefined}
