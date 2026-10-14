@@ -114,12 +114,31 @@ describe('Reports list', () => {
     renderList();
     expect(await screen.findByText(/the latest is/)).toHaveTextContent('1 issued report; the latest is #2');
     expect(screen.getByText('Superseded')).toBeInTheDocument();
+    expect(screen.getByText('Latest')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Download x-report-01.pdf' })).toBeInTheDocument();
 
     mocked.createClientReport.mockResolvedValue(report({ id: 11, kind: 'addendum' }));
     fireEvent.click(screen.getByRole('button', { name: /New addendum to #2/ }));
     await waitFor(() => expect(mocked.createClientReport).toHaveBeenCalledWith(1, { kind: 'addendum' }));
     expect(navigateSpy).toHaveBeenCalledWith('/reports/11');
+  });
+
+  // Walkthrough 2026-10-14: three separate full reports all said "Current".
+  it('marks only the newest issued report; an older one that was not revised is a dash', async () => {
+    mocked.listClientReports.mockResolvedValue({
+      items: [
+        report({ id: 8, status: 'issued', number: 3, issued_at: '2026-09-22T00:00:00Z', render_status: 'done' }),
+        report({ id: 7, status: 'issued', number: 2, issued_at: '2026-09-21T00:00:00Z', render_status: 'done' }),
+      ],
+      latest_issued_id: 8, can_create: true, can_issue: false,
+    });
+    renderList();
+    const table = await screen.findByRole('table', { name: 'Issued reports' });
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(rows[0]).toHaveTextContent('Latest');
+    expect(rows[1]).not.toHaveTextContent('Latest');
+    expect(rows[1]).toHaveTextContent('—');
+    expect(within(table).queryByText('Current')).toBeNull();
   });
 
   // Owner, 2026-10-14: after issuing, the list said "Rendering files…" until
@@ -142,20 +161,26 @@ describe('Reports list', () => {
   }, 12000);
 
   // v5.288.0: three drafts under the default title could not be told apart.
-  it('tells drafts with the same title apart by start time and template, under their number', async () => {
+  it('tells drafts with the same title apart by start time, overrides and template, under their number', async () => {
     const title = 'Demo — security assessment report';
+    mocked.listReportTemplates.mockResolvedValue([
+      { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx'] },
+      { name: 'brief', title: 'Executive brief', description: '', formats: ['html', 'docx'] },
+    ]);
     mocked.listClientReports.mockResolvedValue({
       items: [
-        report({ id: 12, title, created_at: '2026-09-22T09:00:00Z' }),
-        report({ id: 13, title, created_at: '2026-09-22T15:30:00Z', template: 'brief' }),
+        report({ id: 12, title, created_at: '2026-09-22T09:00:00Z', settings: {} }),
+        report({ id: 13, title, created_at: '2026-09-22T15:30:00Z', template: 'brief', settings: { classification: 'Secret' } }),
       ],
       latest_issued_id: null, can_create: true, can_issue: false,
     });
     renderList();
     const a = await screen.findByTestId('draft-meta-12');
     const b = screen.getByTestId('draft-meta-13');
-    expect(a).toHaveTextContent(/^started .+ · template pentest$/);
-    expect(b).toHaveTextContent(/^started .+ · template brief$/);
+    // The project's default template is not said; another is, by its title
+    // (every row used to read "template pentest").
+    expect(a).toHaveTextContent(/^started .+ · follows the project’s details$/);
+    await waitFor(() => expect(b).toHaveTextContent(/^started .+ · overrides 1 detail: classification · template Executive brief$/));
     expect(a.textContent).not.toBe(b.textContent);
     // U8: the number leads the row in its own cell, and the line under the
     // title wraps with its whole text on hover instead of being cut.

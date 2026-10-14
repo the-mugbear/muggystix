@@ -1053,7 +1053,19 @@ From the codebase review of 2026-10-07 (5.339.0).
   opened from such a list says where it stands in it and steps to the
   previous and next one (`?report=` on the finding page), and leads back. A
   page's figures strip does not repeat what the checklist counts (the draft
-  report's strip lost "Missing report text", 2026-10-14).
+  report's strip lost "Missing report text", 2026-10-14). **Someone who may
+  not close the gaps reads them** (an auditor on a draft, 2026-10-14): the
+  same groups and counts, but a line that would open a field or a setting
+  is plain text and a record opens as itself, not in its editor; the
+  section's line says who fixes them.
+- **A field's name has ONE look whatever its state** (2026-10-14, a draft
+  report's details): the small muted uppercase caption
+  (`EngagementSettingsFields.DETAIL_NAME`) over a followed value, an
+  editable field, a list's fieldset and the defaults' summary on the Reports
+  page alike. A name that changed style when the field was overridden, or a
+  list with a heading of its own among captioned fields, read as a
+  different rank. A group of several fields ("Other targets") keeps a
+  heading over their captions.
 - **A value inherited from elsewhere is TEXT, not a disabled field**
   (2026-10-14, a draft report's details that follow the project): a greyed
   input reads as "locked". It shows the value (wrapping; a long or Markdown

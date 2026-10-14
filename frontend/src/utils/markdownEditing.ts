@@ -57,11 +57,13 @@ export const insertBlock = (e: Edit, block: string, select?: string): Edit => {
     : { value, start: blockAt + block.length, end: blockAt + block.length };
 };
 
-/** What the Table button writes.  No caption line: a placeholder left
- *  untouched would be issued as "Table 5: Caption" (walkthrough 2026-10-13).
- *  The caption syntax — a paragraph that starts `Table:` straight after a
- *  table — is in the field's Markdown help. */
-export const TABLE_TEMPLATE = '| Column | Column |\n| ------ | ------ |\n| Value  | Value  |';
+/** What the Table button writes: the table and, after a blank line, an EMPTY
+ *  caption line — the caption syntax shown where it is used (walkthrough
+ *  2026-10-14: a caption needed knowing `Table:` from the help).  Empty, not a
+ *  placeholder word: one left untouched was issued as "Table 5: Caption"
+ *  (2026-10-13); a bare `Table:` prints "Table 5" alone. */
+export const TABLE_CAPTION_LINE = 'Table: ';
+export const TABLE_TEMPLATE = `| Column | Column |\n| ------ | ------ |\n| Value  | Value  |\n\n${TABLE_CAPTION_LINE}`;
 
 /** The caption a paragraph gives the table it DIRECTLY follows: the text after
  *  a leading `Table:` / `table:` (empty for a bare `Table:` — the report

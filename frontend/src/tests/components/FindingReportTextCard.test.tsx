@@ -219,14 +219,14 @@ describe('FindingReportTextCard — v5.290.0 the written text is shown rendered,
     const box = screen.getByLabelText('Description') as HTMLTextAreaElement;
     box.setSelectionRange(7, 7);
     fireEvent.click(toolbar().getByRole('button', { name: 'Table' }));
-    // No caption placeholder: one left as it is would be issued ("Table 5: Caption").
-    expect(box.value).toBe('Before.\n\n| Column | Column |\n| ------ | ------ |\n| Value  | Value  |');
+    // An empty caption line, never a placeholder word that could be issued.
+    expect(box.value).toBe('Before.\n\n| Column | Column |\n| ------ | ------ |\n| Value  | Value  |\n\nTable: ');
 
     fireEvent.click(toolbar().getByRole('button', { name: 'Preview' }));
     const preview = screen.getByTestId('rt-description-preview');
     expect(preview.querySelectorAll('tbody tr')).toHaveLength(1);
     expect(preview.querySelector('th')?.textContent).toBe('Column');
-    expect(preview.querySelector('caption')).toBeNull();
+    expect(preview.querySelector('caption')).not.toBeNull();
     expect(Array.from(preview.querySelectorAll('p')).map((p) => p.textContent)).toEqual(['Before.']);
     fireEvent.click(toolbar().getByRole('button', { name: 'Write' }));
     expect(screen.getByLabelText('Description')).toHaveValue(box.value);

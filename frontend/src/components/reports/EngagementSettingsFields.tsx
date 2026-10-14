@@ -106,6 +106,13 @@ export const DETAIL_LABELS: Record<DetailKey, string> = {
   other_targets: 'Other targets', disclaimer: 'Disclaimer',
 };
 const LABELS = DETAIL_LABELS;
+
+/** A report detail's name, wherever one is shown — a field's label, a
+ *  followed detail, the team and distribution lists, the defaults' summary on
+ *  the Reports page: a small muted caption, so it reads apart from its value
+ *  (owner, 2026-10-14). One style: a detail's name used to change with its
+ *  state, and the two lists had a heading of their own. */
+export const DETAIL_NAME = 'block text-caption font-medium uppercase tracking-wide text-muted-foreground';
 const LIST_KEYS: ReadonlyArray<DetailKey> = ['testers', 'distribution'];
 
 /** Is this detail overridden in a draft's override map?  Present = yes (a
@@ -365,9 +372,7 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
     const v = (followed?.[key] ?? '').trim();
     return (
       <div className="min-w-0 space-y-xxs">
-        {/* The detail's name as a small muted caption and its value as the
-            text: at one size and weight the two ran together (owner, 2026-10-14). */}
-        <span id={`${id}-label`} className="block text-caption font-medium uppercase tracking-wide text-muted-foreground">
+        <span id={`${id}-label`} className={DETAIL_NAME}>
           {LABELS[key]}
         </span>
         <div id={id} role="group" aria-labelledby={`${id}-label`} aria-describedby={describedBy(key)}
@@ -428,7 +433,7 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
     if (!editable(key)) return followedText(key, id);
     return (
       <div className="min-w-0 space-y-xxs">
-        <Label htmlFor={id}>{LABELS[key]}</Label>
+        <Label htmlFor={id} className={DETAIL_NAME}>{LABELS[key]}</Label>
         <Input id={id} maxLength={maxLength} value={text(key)} title={title}
           placeholder={placeholder(example)} aria-describedby={describedBy(key, extraId)}
           onChange={onText(key)} disabled={locked(key)} />
@@ -502,7 +507,7 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
 
       <fieldset id={`${idPrefix}-team`} className="min-w-0 space-y-xs" aria-describedby={describedBy('testers')}
         data-followed={editable('testers') ? undefined : 'true'}>
-        <legend className="text-body font-medium">Assessment team</legend>
+        <legend className={DETAIL_NAME}>Assessment team</legend>
         {sourceLine('testers')}
         {!editable('testers') ? followedList('testers', testers) : (
           <>
@@ -560,7 +565,7 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
 
       <fieldset id={`${idPrefix}-distribution`} className="min-w-0 space-y-xs" aria-describedby={describedBy('distribution')}
         data-followed={editable('distribution') ? undefined : 'true'}>
-        <legend className="text-body font-medium">Distribution</legend>
+        <legend className={DETAIL_NAME}>Distribution</legend>
         {sourceLine('distribution')}
         {!editable('distribution') ? followedList('distribution', distribution) : (
           <>
@@ -581,7 +586,7 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
       <div className="min-w-0 space-y-xxs">
         {editable('system_description') ? (
           <>
-            <Label htmlFor={`${idPrefix}-system`}>System description</Label>
+            <Label htmlFor={`${idPrefix}-system`} className={DETAIL_NAME}>System description</Label>
             <p className="text-caption text-muted-foreground">
               What was assessed, in the client&apos;s terms. Markdown. The scope&apos;s networks and domains are listed after it.
             </p>
@@ -605,7 +610,7 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
             <React.Fragment key={key}>
               {editable(key) ? (
                 <div className="min-w-0 space-y-xxs">
-                  <Label htmlFor={`${idPrefix}-${key}`}>{LABELS[key]}</Label>
+                  <Label htmlFor={`${idPrefix}-${key}`} className={DETAIL_NAME}>{LABELS[key]}</Label>
                   <Textarea id={`${idPrefix}-${key}`} rows={3} maxLength={32768} value={text(key)}
                     aria-describedby={describedBy(key)} onChange={onText(key)} disabled={locked(key)} />
                   {sourceLine(key)}
@@ -619,7 +624,7 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
       <div className="min-w-0 space-y-xxs">
         {editable('disclaimer') ? (
           <>
-            <Label htmlFor={`${idPrefix}-disclaimer`}>Disclaimer</Label>
+            <Label htmlFor={`${idPrefix}-disclaimer`} className={DETAIL_NAME}>Disclaimer</Label>
             <MarkdownField id={`${idPrefix}-disclaimer`} label="Disclaimer" rows={4} maxLength={32768}
               value={text('disclaimer')} onChange={(v) => typed('disclaimer', v)} disabled={locked('disclaimer')} />
             {sourceLine('disclaimer')}

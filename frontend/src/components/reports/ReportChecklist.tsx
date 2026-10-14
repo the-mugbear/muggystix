@@ -144,6 +144,11 @@ interface Props {
   onDetail: (key: string) => void;
   /** A global administrator: the one who sets someone else's full name. */
   isAdmin: boolean;
+  /** Whoever may change the draft (`can_edit`).  Anyone else — an auditor —
+   *  reads what it still lacks: a detail is plain text and a finding opens
+   *  as itself, not as report text to write (walkthrough 2026-10-14: every
+   *  line led to a place they could not fix). */
+  canEdit: boolean;
 }
 
 /** Whether a summary leaves anything for the checklist. */
@@ -151,7 +156,7 @@ export const hasChecklist = (s: ReportSummary): boolean =>
   !!(s.missing_details?.length || s.missing_text?.length || s.pending_proposals?.length
     || s.uncaptioned_images?.length || s.internal_references?.length || s.evidence_note_findings?.length);
 
-const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAdmin }) => {
+const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAdmin, canEdit }) => {
   if (!hasChecklist(s)) return null;
   const details = missingDetailEntries(s);
   const missingText = s.missing_text ?? [];
@@ -163,6 +168,9 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
   const noteCount = notes.reduce((n, m) => n + m.notes.length, 0);
 
   const detailItem = ({ key, label }: { key: string; label: string }) => {
+    if (!canEdit) {
+      return <li key={label} className={ROW}><span className="min-w-0 break-words">{label}</span></li>;
+    }
     if (key === 'project_dates') {
       return (
         <li key={label} className={ROW}>
@@ -200,21 +208,27 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
   return (
     <div id={REPORT_CHECKLIST_ANCHOR} data-testid="report-checklist" className="scroll-mt-24">
       <PostureSection title="Before issuing"
-        description="Each line opens where it is fixed. Empty details and findings without text print as a highlighted TODO; the rest are warnings, never blocks.">
+        description={canEdit
+          ? 'Each line opens where it is fixed. Empty details and findings without text print as a highlighted TODO; the rest are warnings, never blocks.'
+          : 'What this draft still lacks; whoever writes it fixes these before it is issued. Empty details and findings without text print as a highlighted TODO.'}>
         <div className="space-y-md">
           {details.length > 0 && (
             <Group id="details" title="Report details to fill" count={details.length} todo
-              note="Written in Report details, below."
+              note={canEdit ? 'Written in Report details, below.' : 'Report details, below.'}
               items={details.map(detailItem)} />
           )}
           {missingText.length > 0 && (
             <Group id="missing-text" title="Findings missing report text" count={missingText.length} todo
-              note="Open one to write or draft it; its page steps on to the next."
+              note={canEdit ? 'Open one to write or draft it; its page steps on to the next.' : 'Each opens its finding.'}
               items={missingText.map((m) => (
                 <li key={m.id} className={ROW}>
                   <span className="tabular-nums text-muted-foreground">{m.ref}</span>
-                  <Link to={findingFromReportPath(m.id, reportId)} className={LINK}
-                    title={`${m.title} — open its report text to write or draft it`}>{m.title}</Link>
+                  {canEdit ? (
+                    <Link to={findingFromReportPath(m.id, reportId)} className={LINK}
+                      title={`${m.title} — open its report text to write or draft it`}>{m.title}</Link>
+                  ) : (
+                    <Link to={`/findings/${m.id}`} className={LINK} title={m.title}>{m.title}</Link>
+                  )}
                   <span className="text-caption text-muted-foreground">missing {m.missing.join(', ')}</span>
                 </li>
               ))} />
@@ -249,7 +263,7 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
               items={references.map((m) => (
                 <li key={m.id} className={ROW}>
                   <span className="tabular-nums text-muted-foreground">{m.ref}</span>
-                  <Link to={`/findings/${m.id}?edit=report-text`} className={LINK} title={m.title}>{m.title}</Link>
+                  <Link to={canEdit ? `/findings/${m.id}?edit=report-text` : `/findings/${m.id}`} className={LINK} title={m.title}>{m.title}</Link>
                   <span className="min-w-0 break-words text-caption text-muted-foreground">
                     {m.fields.map((f) => `${REPORT_FIELD_LABELS[f.field] ?? f.field}: ${f.phrases.map((p) => `“${p}”`).join(', ')}`).join(' · ')}
                   </span>

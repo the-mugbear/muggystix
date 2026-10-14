@@ -53,7 +53,7 @@ import { safeFallback } from '../utils/uiStyles';
 import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import EngagementSettingsFields, {
-  DETAIL_LABELS, cleanSettings, hasValue,
+  DETAIL_LABELS, DETAIL_NAME, cleanSettings, hasValue,
 } from '../components/reports/EngagementSettingsFields';
 import TemplateImages, {
   TemplateFilesLine, assetCountLabel, missingAssetsReason, missingRequiredAssets,
@@ -736,7 +736,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
 
       {isDraft && (
         // Every gap, grouped, each line an action (walkthrough 2026-10-14).
-        <ReportChecklist reportId={reportId} summary={s} isAdmin={isAdmin}
+        <ReportChecklist reportId={reportId} summary={s} isAdmin={isAdmin} canEdit={report.can_edit}
           onDetail={(key) => { focusReportDetail(detailsRef.current, key); }} />
       )}
 
@@ -896,14 +896,14 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         description={editable ? 'Each detail follows the project’s report defaults (Reports page) unless you override it here; an override is saved with this report only.' : 'As issued.'}>
         <form ref={detailsRef} className="space-y-md" onSubmit={(e) => { e.preventDefault(); save(); }}>
           <div className="min-w-0 space-y-xxs">
-            <Label htmlFor="report-title">Title</Label>
+            <Label htmlFor="report-title" className={DETAIL_NAME}>Title</Label>
             <Input id="report-title" maxLength={255} value={form.title} disabled={!editable || saving}
               onChange={(e) => edit({ title: e.target.value })} />
           </div>
 
           <div className="min-w-0 space-y-xxs">
             <div className="flex flex-wrap items-end justify-between gap-xs">
-              <Label htmlFor="report-summary">{report.kind === 'addendum' ? 'Summary of changes' : 'Executive summary'}</Label>
+              <Label htmlFor="report-summary" className={DETAIL_NAME}>{report.kind === 'addendum' ? 'Summary of changes' : 'Executive summary'}</Label>
               {editable && (
                 <Button type="button" variant="ghost" size="sm" onClick={() => setAiOpen(true)}>
                   <Sparkles className="size-4" aria-hidden /> Draft with AI…

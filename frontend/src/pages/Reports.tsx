@@ -43,7 +43,7 @@ import PostureSection, { SectionCount } from '../components/posture/PostureSecti
 import PostureLead from '../components/posture/PostureLead';
 import DownloadButton from '../components/DownloadButton';
 import EngagementSettingsFields, {
-  DETAIL_LABELS, cleanSettings, isOverridden,
+  DETAIL_LABELS, DETAIL_NAME, cleanSettings, isOverridden,
 } from '../components/reports/EngagementSettingsFields';
 import TemplateImages, { assetCountLabel, missingRequiredAssets } from '../components/reports/TemplateImages';
 import { Badge } from '../components/ui/badge';
@@ -63,15 +63,35 @@ import { safeFallback } from '../utils/uiStyles';
 
 const day = (iso: string | null) => formatDate(iso);
 
-/** "started 23 Sep 2026, 14:05 · template default" — what sets
- *  apart drafts that share a title (v5.288.0). The time is there because two
- *  drafts are often started the same day. */
-export const draftMeta = (r: Pick<ClientReport, 'id' | 'created_at' | 'template'>): string => {
+/** "started 23 Sep 2026, 14:05 · overrides 1 detail: classification ·
+ *  template Executive brief" — what sets apart drafts that share a title
+ *  (v5.288.0). The time is there because two drafts are often started the
+ *  same day; the template only when it is not the project's default, and by
+ *  its title (walkthrough 2026-10-14: every row said "template pentest"). */
+export const draftMeta = (r: Pick<ClientReport, 'created_at' | 'settings'>, otherTemplate: string | null): string => {
   const started = formatTimestamp(r.created_at, null);
   // The draft's number is the row's first cell; it is not said again here.
-  return [started ? `started ${started}` : null, r.template ? `template ${r.template}` : null]
+  return [started ? `started ${started}` : null, overridesLine(r), otherTemplate ? `template ${otherTemplate}` : null]
     .filter(Boolean)
     .join(' · ');
+};
+
+/** The title of a draft's template when it is not the project's default,
+ *  else null — the list and the "Continue a draft?" dialog both say it. The
+ *  reads are the defaults section's, shared. */
+const useOtherTemplate = (enabled: boolean): ((r: Pick<ClientReport, 'template'>) => string | null) => {
+  const projectId = useProjectId();
+  const profile = useQuery({
+    queryKey: ['getReportProfile', projectId], queryFn: ({ signal }) => getReportProfile(projectId, signal),
+    enabled,
+  });
+  const templatesQuery = useQuery({
+    queryKey: ['listReportTemplates', projectId], queryFn: ({ signal }) => listReportTemplates(projectId, signal),
+    enabled,
+  });
+  const defaultTemplate = profile.data?.template ?? null;
+  return (r) => (defaultTemplate && r.template !== defaultTemplate
+    ? (templatesQuery.data?.find((t) => t.name === r.template)?.title ?? r.template) : null);
 };
 
 /**
@@ -168,10 +188,13 @@ export const profileWritten = (
   };
 };
 
-/** A term of the defaults' summary: a small muted caption, so it reads
- *  apart from its value (the two were the same size and weight — owner,
- *  2026-10-14). */
-const DEFAULTS_TERM = 'text-caption font-medium uppercase tracking-wide text-muted-foreground';
+/** An issued report's State cell: the newest issued report is "Latest", a
+ *  revised one "Superseded", any other a dash. */
+export const issuedState = (r: Pick<ClientReport, 'id' | 'status'>, latestId: number | null | undefined): React.ReactNode => {
+  if (r.status === 'superseded') return <Badge variant="muted">Superseded</Badge>;
+  if (r.id === latestId) return <Badge variant="success">Latest</Badge>;
+  return <span className="text-muted-foreground">—</span>;
+};
 
 /** How often a page showing an issued report whose files are still rendering
  *  reads it again — the report's page and the list alike. */
@@ -241,6 +264,7 @@ const Reports: React.FC = () => {
   const titleCounts = new Map<string, number>();
   for (const r of drafts) titleCounts.set(r.title, (titleCounts.get(r.title) ?? 0) + 1);
   const latest = issued.find((r) => r.id === data?.latest_issued_id) ?? null;
+  const otherTemplate = useOtherTemplate(drafts.length > 0);
 
   // "New report" with drafts already there offers to continue one first
   // (walkthrough 2026-10-14: three drafts under one title, each started by
@@ -337,9 +361,9 @@ const Reports: React.FC = () => {
                         <span
                           className="block break-words text-caption text-muted-foreground"
                           data-testid={`draft-meta-${r.id}`}
-                          title={draftMeta(r)}
+                          title={draftMeta(r, otherTemplate(r))}
                         >
-                          {draftMeta(r)}
+                          {draftMeta(r, otherTemplate(r))}
                         </span>
                       </TableCell>
                       <TableCell className="truncate text-caption" title={reportKindLabel(r)}>{reportKindLabel(r)}</TableCell>
@@ -381,9 +405,11 @@ const Reports: React.FC = () => {
                         {day(r.issued_at)}
                       </TableCell>
                       <TableCell>
-                        {r.status === 'superseded'
-                          ? <Badge variant="muted">Superseded</Badge>
-                          : <Badge variant="success">Current</Badge>}
+                        {/* "Current" was on every report not superseded, so
+                            three separate full reports all said it (walkthrough
+                            2026-10-14). The newest is the one marked; a
+                            revised one says so; the rest are a dash. */}
+                        {issuedState(r, data.latest_issued_id)}
                       </TableCell>
                       <TableCell><FileButtons report={r} /></TableCell>
                     </TableRow>
@@ -500,21 +526,8 @@ const ContinueDraftDialog: React.FC<{
   onContinue: (id: number) => void;
   onStartNew: (kind: ClientReportKind) => void;
 }> = ({ kind, drafts, onClose, onContinue, onStartNew }) => {
-  const projectId = useProjectId();
   const open = kind !== null;
-  // The project's default template (a draft on another is said so) and the
-  // templates' titles: the reads the defaults section makes, shared.
-  const profile = useQuery({
-    queryKey: ['getReportProfile', projectId], queryFn: ({ signal }) => getReportProfile(projectId, signal),
-    enabled: open,
-  });
-  const templatesQuery = useQuery({
-    queryKey: ['listReportTemplates', projectId], queryFn: ({ signal }) => listReportTemplates(projectId, signal),
-    enabled: open,
-  });
-  const defaultTemplate = profile.data?.template ?? null;
-  const otherTemplate = (r: ClientReport): string | null => (defaultTemplate && r.template !== defaultTemplate
-    ? (templatesQuery.data?.find((t) => t.name === r.template)?.title ?? r.template) : null);
+  const otherTemplate = useOtherTemplate(open);
   // Discarding the last one leaves "Start a new draft" — the dialog stays.
   const none = drafts.length === 0;
   return (
@@ -623,8 +636,8 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
       {error && <p className="text-caption text-destructive">{error}</p>}
       {profile && !draft && (
         <dl className="grid items-baseline gap-x-lg gap-y-xs text-body text-foreground sm:grid-cols-[10rem_minmax(0,1fr)]">
-          <dt className={DEFAULTS_TERM}>Client</dt><dd className="truncate">{safeFallback(profile.client_name, 'Not set')}</dd>
-          <dt className={DEFAULTS_TERM}>Author</dt>
+          <dt className={DETAIL_NAME}>Client</dt><dd className="truncate">{safeFallback(profile.client_name, 'Not set')}</dd>
+          <dt className={DETAIL_NAME}>Author</dt>
           <dd className="truncate" data-testid="profile-author"
             title={profile.author_name?.trim() || profile.inherited?.author_name?.trim() || undefined}>
             {profile.author_name?.trim()
@@ -633,28 +646,28 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
                 ? <>{profile.inherited.author_name} <span className="text-caption text-muted-foreground">(installation default)</span></>
                 : 'Not set'}
           </dd>
-          <dt className={DEFAULTS_TERM}>Classification</dt><dd className="truncate">{safeFallback(profile.classification, 'Not set')}</dd>
-          <dt className={DEFAULTS_TERM}>Engagement type</dt><dd className="truncate">{safeFallback(profile.engagement_type, 'Not set')}</dd>
-          <dt className={DEFAULTS_TERM}>Team</dt>
+          <dt className={DETAIL_NAME}>Classification</dt><dd className="truncate">{safeFallback(profile.classification, 'Not set')}</dd>
+          <dt className={DETAIL_NAME}>Engagement type</dt><dd className="truncate">{safeFallback(profile.engagement_type, 'Not set')}</dd>
+          <dt className={DETAIL_NAME}>Team</dt>
           <dd className="break-words">
             {profile.testers.length ? profile.testers.map((t) => t.name).join(', ') : 'Nobody listed'}
             {profile.testers_from_project && profile.testers.length > 0 && (
               <span className="text-caption text-muted-foreground"> — the project&apos;s analysts and admins, until a team is saved</span>
             )}
           </dd>
-          <dt className={DEFAULTS_TERM}>Distribution</dt>
+          <dt className={DETAIL_NAME}>Distribution</dt>
           <dd className="break-words">{profile.distribution.length ? profile.distribution.map((r) => r.name).join(', ') : 'Nobody listed'}</dd>
           {/* The long texts are SAID, not shown: this view is one line per
               detail, and the text itself is one click away (Edit).  Before,
               nothing here told a reader a description, a target list or a
               disclaimer had been written at all (walkthrough 2026-10-13). */}
-          <dt className={DEFAULTS_TERM}>System description</dt>
+          <dt className={DETAIL_NAME}>System description</dt>
           <dd className="break-words" data-testid="profile-system">{profileWritten(profile).system}</dd>
-          <dt className={DEFAULTS_TERM}>Other targets</dt>
+          <dt className={DETAIL_NAME}>Other targets</dt>
           <dd className="break-words" data-testid="profile-targets">{profileWritten(profile).targets}</dd>
-          <dt className={DEFAULTS_TERM}>Disclaimer</dt>
+          <dt className={DETAIL_NAME}>Disclaimer</dt>
           <dd className="break-words" data-testid="profile-disclaimer">{profileWritten(profile).disclaimer}</dd>
-          <dt className={DEFAULTS_TERM}>Template</dt><dd className="truncate">{templateTitle(profile.template)}</dd>
+          <dt className={DETAIL_NAME}>Template</dt><dd className="truncate">{templateTitle(profile.template)}</dd>
         </dl>
       )}
       {draft && (

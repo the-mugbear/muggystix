@@ -45,9 +45,10 @@ describe('toolbar edits', () => {
     expect(insertBlock(at('Text\n\n', 6), TABLE_TEMPLATE).value).toBe(`Text\n\n${TABLE_TEMPLATE}`);
   });
 
-  it('the table template holds no caption line: a placeholder left as it is would be issued', () => {
-    expect(TABLE_TEMPLATE).toBe('| Column | Column |\n| ------ | ------ |\n| Value  | Value  |');
-    expect(TABLE_TEMPLATE).not.toMatch(/Table:/i);
+  it('the table template ends with an EMPTY caption line: no placeholder word that could be issued', () => {
+    expect(TABLE_TEMPLATE).toBe('| Column | Column |\n| ------ | ------ |\n| Value  | Value  |\n\nTable: ');
+    // The report's rule reads it as a caption with no text ("Table N" alone).
+    expect(tableCaptionOf(TABLE_TEMPLATE.split('\n\n')[1])).toBe('');
   });
 
   it('reads a caption only from a paragraph that opens with Table:', () => {

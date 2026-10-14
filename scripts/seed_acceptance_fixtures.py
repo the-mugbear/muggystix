@@ -318,6 +318,9 @@ def _seed_report_content(db, base_url: str, pid: int, lead: Api, keys: dict, lea
         "engagement_type": "Internal network penetration test",
         "distribution": [{"name": "Head of IT", "email": "it-head@acceptance.invalid"}],
         "applications": "- https://portal.acceptance.invalid\n- https://intranet.acceptance.invalid",
+        # The project's own, so a draft shows one followed from the project
+        # rather than the installation's.
+        "disclaimer": "This report is a **point-in-time** assessment of the systems listed in it.",
     }
     missing = {k: v for k, v in wanted.items() if not profile.get(k)}
     if missing:

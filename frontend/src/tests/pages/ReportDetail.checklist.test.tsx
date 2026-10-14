@@ -231,6 +231,21 @@ describe('The draft’s checklist', () => {
     expect(group).toHaveTextContent(/each person sets their own in Profile/);
   });
 
+  // Walkthrough 2026-10-14: an auditor's lines led to places they could not fix.
+  it('someone who may not edit the draft reads what it lacks: details as text, findings open as themselves', async () => {
+    mocked.getClientReport.mockResolvedValue(report({ can_edit: false, can_issue: false }));
+    renderDetail();
+    const checklist = await screen.findByTestId('report-checklist');
+    expect(checklist).toHaveTextContent(/whoever writes it fixes these before it is issued/);
+    const details = screen.getByTestId('checklist-details');
+    expect(within(details).queryByRole('link')).toBeNull();
+    expect(within(details).queryByRole('button')).toBeNull();
+    expect(details).toHaveTextContent('project dates');
+    expect(within(screen.getByTestId('checklist-missing-text')).getByRole('link', { name: 'Finding 1' }))
+      .toHaveAttribute('href', '/findings/101');
+    expect(within(checklist).getByRole('link', { name: 'Finding 23' })).toHaveAttribute('href', '/findings/123');
+  });
+
   it('an issued report has no checklist', async () => {
     mocked.getClientReport.mockResolvedValue(report({
       status: 'issued', number: 2, render_status: 'done', can_edit: false, can_issue: false,
