@@ -26,7 +26,13 @@ Post-process the Word report — the two things Word styles cannot do:
    (data.json → engagement.classification, beside this script when BlueStick
    runs it) is written in its place.  Before this the word itself was issued.
 
-5. Table captions under their tables (owner, 2026-10-14).  A "Table N: …"
+6. Bookmarks inside their headings (owner, 2026-10-14).  Pandoc puts a
+   section's bookmark around the whole section at body level; Word sent
+   every link to one (the summary tables' links to the findings) to the top
+   of the document.  Each is moved into its heading paragraph, Word's shape.
+
+5. Table captions under their tables (owner, 2026-10-14) — and a code
+   block's "Listing N" caption under its code the same way.  A "Table N: …"
    caption follows its table; the table's last row keeps with it, and the
    caption itself does not keep with what follows (the Table Caption style
    was made for a caption above).  Per paragraph, because which side of its
@@ -162,6 +168,47 @@ def fill_table_of_contents(body):
     closing.append(end_run)
     content.insert(position, closing)
     return len(entries)
+
+
+def put_bookmarks_in_their_paragraphs(body):
+    """Pandoc writes a section's bookmark at BODY level: a `bookmarkStart`
+    before the heading paragraph and its `bookmarkEnd` after the section's
+    last element.  Word does not take such a bookmark as a place to go: in
+    Word every link to a finding from the summary tables went to the top of
+    the document (owner, 2026-10-14).  Word's own shape is a bookmark inside
+    the heading paragraph, around its text; each body-level bookmark is moved
+    there — into the first paragraph that follows it (a table's first
+    paragraph when a table comes first), its end at that paragraph's end.  A
+    bookmark with nothing after it to hold it is left where it is.  Returns
+    the number moved."""
+    ends = {}
+    for end in body.iter(f"{NS}bookmarkEnd"):
+        ends.setdefault(end.get(f"{NS}id"), end)
+    parents = {child: parent for parent in body.iter() for child in parent}
+    moved = 0
+    children = list(body)
+    for index, start in enumerate(children):
+        if start.tag != f"{NS}bookmarkStart":
+            continue
+        holder = None
+        for following in children[index + 1:]:
+            if following.tag == f"{NS}p":
+                holder = following
+            elif following.tag != f"{NS}bookmarkStart":
+                holder = following.find(f".//{NS}p")
+            if holder is not None or following.tag != f"{NS}bookmarkStart":
+                break
+        if holder is None:
+            continue
+        end = ends.get(start.get(f"{NS}id"))
+        body.remove(start)
+        if end is not None and end in parents:
+            parents[end].remove(end)
+        ppr = holder.find(f"{NS}pPr")
+        holder.insert(list(holder).index(ppr) + 1 if ppr is not None else 0, start)
+        holder.append(end if end is not None else ET.Element(f"{NS}bookmarkEnd", {f"{NS}id": start.get(f"{NS}id")}))
+        moved += 1
+    return moved
 
 
 def add_image_borders(body):
@@ -530,6 +577,14 @@ def _table_caption_style(styles_path):
     return ids, spacing
 
 
+def _is_code(element):
+    """A code block's paragraph (Pandoc's Source Code style)."""
+    if element.tag != f"{NS}p":
+        return False
+    style = element.find(f"{NS}pPr/{NS}pStyle")
+    return style is not None and style.get(f"{NS}val") == "SourceCode"
+
+
 def keep_table_captions_with_their_tables(body, styles_path):
     """A table's caption is printed UNDER it (owner, 2026-10-14), and must not
     start a page its table ended on the one before.
@@ -544,7 +599,9 @@ def keep_table_captions_with_their_tables(body, styles_path):
     it is).  The table's LAST ROW keeps with next instead — Word's way of
     holding a table's end and the paragraph after it on one page — so the
     caption takes at least that row with it; a long table still breaks
-    across pages as before.  Returns the number of captions."""
+    across pages as before.  A code block's caption ("Listing N", in the same
+    style) is treated alike: the code paragraph keeps with it.  Returns the
+    number of captions."""
     ids, spacing = _table_caption_style(styles_path)
     if not ids:
         return 0
@@ -557,11 +614,14 @@ def keep_table_captions_with_their_tables(body, styles_path):
     for parent in [body, *body.iter(f"{NS}tc")]:
         children = list(parent)
         for table, after in zip(children, children[1:]):
-            if table.tag != f"{NS}tbl" or after.tag != f"{NS}p":
+            if after.tag != f"{NS}p" or not (table.tag == f"{NS}tbl" or _is_code(table)):
                 continue
             style = after.find(f"{NS}pPr/{NS}pStyle")
             if style is None or style.get(f"{NS}val") not in ids:
                 continue
+            if table.tag == f"{NS}p":
+                # A code block: one Source Code paragraph.
+                _set_paragraph_property(table, ET.Element(f"{NS}keepNext"))
             rows = table.findall(f"{NS}tr")
             if rows:
                 for p in rows[-1].iter(f"{NS}p"):
@@ -618,6 +678,7 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
         aligned = align_tables_like_their_style(body, styles_path)
         kept = keep_table_captions_with_their_tables(body, styles_path)
         count = add_image_borders(body)
+        bookmarks = put_bookmarks_in_their_paragraphs(body)
         fill_table_of_contents(body)
         tree.write(doc_xml, xml_declaration=True, encoding="UTF-8")
 
@@ -632,7 +693,7 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
 
         if verbose:
             print(f"  Aligned {aligned} table(s) as their style says, kept {kept} caption(s) with their table, "
-                  f"added a border to {count} image(s), "
+                  f"added a border to {count} image(s), put {bookmarks} bookmark(s) in their heading, "
                   f"placed {replaced} template image(s), wrote the classification in {classified} place(s) "
                   f"→ {docx_path}")
         return count

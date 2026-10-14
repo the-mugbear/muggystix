@@ -1467,6 +1467,46 @@ def test_the_table_of_contents_is_written_into_its_field(tmp_path):
     assert fix.fill_table_of_contents(ET.fromstring(f'<w:body xmlns:w="{w}"><w:p/></w:body>')) == 0
 
 
+def test_section_bookmarks_are_moved_into_their_heading(tmp_path):
+    """Pandoc writes a section's bookmark at body level, around the whole
+    section.  In Word every link to a finding from the summary tables went to
+    the top of the document (owner, 2026-10-14).  Each bookmark is moved into
+    the paragraph after it — Word's own shape — start after the paragraph's
+    properties, end at its end; nested sections each get their own; a table
+    first takes its first paragraph; a bookmark with nothing after it stays."""
+    import xml.etree.ElementTree as ET
+    fix = _post_processor()
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    W = f"{{{w}}}"
+    body = ET.fromstring(
+        f'<w:body xmlns:w="{w}">'
+        '<w:bookmarkStart w:id="1" w:name="findings"/>'
+        '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>4. Findings</w:t></w:r></w:p>'
+        '<w:bookmarkStart w:id="2" w:name="sec-finding-11"/>'
+        '<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>4.1 SMB</w:t></w:r></w:p>'
+        '<w:p><w:r><w:t>Body.</w:t></w:r></w:p>'
+        '<w:bookmarkEnd w:id="2"/><w:bookmarkEnd w:id="1"/>'
+        '<w:bookmarkStart w:id="3" w:name="tbl"/>'
+        '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'
+        '<w:bookmarkEnd w:id="3"/>'
+        '<w:bookmarkStart w:id="4" w:name="last"/>'
+        '</w:body>'
+    )
+    assert fix.put_bookmarks_in_their_paragraphs(body) == 3
+    tags = [child.tag.split("}")[1] for child in body]
+    assert tags == ["p", "p", "p", "tbl", "bookmarkStart"]               # nothing left at body level but the last
+    findings, smb = body.findall(f"{W}p")[:2]
+    for para, mark in ((findings, "findings"), (smb, "sec-finding-11")):
+        inner = [child.tag.split("}")[1] for child in para]
+        assert inner == ["pPr", "bookmarkStart", "r", "bookmarkEnd"], inner
+        start, end = para.find(f"{W}bookmarkStart"), para.find(f"{W}bookmarkEnd")
+        assert start.get(f"{W}name") == mark and end.get(f"{W}id") == start.get(f"{W}id")
+    cell = body.find(f"{W}tbl").find(f".//{W}p")
+    assert [child.tag.split("}")[1] for child in cell] == ["bookmarkStart", "r", "bookmarkEnd"]
+    # The table of contents still finds a heading's bookmark (now inside it).
+    assert fix.put_bookmarks_in_their_paragraphs(body) == 0
+
+
 @needs_template
 def test_the_classification_read_for_the_word_header_is_one_plain_line(tmp_path):
     fix = _post_processor()
@@ -1820,6 +1860,45 @@ def _numbered(captions: list) -> list:
 
 @needs_template
 @needs_quarto
+def test_code_block_captions_have_their_own_count(tmp_path):
+    """Owner, 2026-10-14: code blocks an author writes have their own count,
+    as tables do — "Listing:" on the line under a code block makes it
+    "Listing N: …", numbered apart from the tables; a code block with no such
+    line, a "Listing:" after anything else and a template's own command
+    output (the test results) are not counted.  In Word the code keeps with
+    its caption."""
+    data = json.loads((TEMPLATE / "sample-data.json").read_text())
+    for f in data["findings"]:
+        f["images"], f["placed"], f["evidence"] = [], {}, []
+        f["evidence_text"] = None
+    first = data["findings"][0]
+    first["description"] = (
+        "```\nsmbclient -L //10.0.0.5 -N\n```\n\n"
+        "Listing: The anonymous share list\n\n"
+        "```\nUNCOUNTED-CODE\n```\n\n"
+        "| Host | Port |\n| ---- | ---- |\n| h | 445 |\n\nTable: A table between\n\n"
+        "Words.\n\nListing: ORPHAN-LISTING follows a paragraph\n\n"
+        "```\nid\n```\n\nlisting:\n"
+    )
+    manifest = json.loads((TEMPLATE / "template.json").read_text())
+    files = quarto_render.render(
+        TEMPLATE, "report.qmd", data, ["html", "docx"], tmp_path / "out",
+        postprocess=manifest.get("postprocess"), timeout=240,
+    )
+    html = files["html"].read_text(encoding="utf-8")
+    captions = _table_captions(html)
+    assert [c for c in captions if c.startswith("Listing")] == ["Listing 1: The anonymous share list", "Listing 2"]
+    assert "Table 1: A table between" in captions                   # the tables' count is their own
+    assert "Listing: ORPHAN-LISTING follows a paragraph" in html      # not a caption: the words typed
+    assert "UNCOUNTED-CODE" in html and "Listing 3" not in html
+    with zipfile.ZipFile(files["docx"]) as z:
+        doc = z.read("word/document.xml").decode("utf-8")
+    last = doc[:doc.index("Listing 1:")].rsplit("<w:p>", 2)[-2]
+    assert 'w:val="SourceCode"' in last and "<w:keepNext" in last
+
+
+@needs_template
+@needs_quarto
 def test_table_captions_are_numbered_by_the_filter_in_document_order(tmp_path):
     """Owner, 2026-10-13: a table an author writes in a section gets a
     numbered caption — "Table: …" on the line under it — printed in the
@@ -2102,16 +2181,19 @@ def test_the_sample_report_links_findings_by_section_and_prints_the_evidence_in_
         assert heading and heading.group(1).strip() == numbers[finding["id"]], finding["id"]
     assert len(set(numbers.values())) == 4
     assert 'href="#finding-' not in html and 'id="finding-' not in html
-    # Word: a link to the heading's bookmark, per finding.
+    # Word: a link to the heading's bookmark, per finding — the bookmark
+    # INSIDE the heading paragraph (at body level Word sent every link to the
+    # top of the document; owner, 2026-10-14).
     for finding in data["findings"]:
         assert f'w:anchor="sec-finding-{finding["id"]}"' in doc, finding["id"]
-        assert f'w:name="sec-finding-{finding["id"]}"' in doc, finding["id"]
+        assert re.search(rf'<w:p><w:pPr><w:pStyle w:val="Heading\d" /></w:pPr><w:bookmarkStart w:id="\d+" '
+                         rf'w:name="sec-finding-{finding["id"]}" />', doc), finding["id"]
 
     # --- the finding's own table: no Status; affected systems: no Port, no Note --
     first = html[html.index('id="sec-finding-11"'):html.index('id="sec-finding-12"')]
     headers = re.findall(r"<th(?: [^>]*)?>(.*?)</th>", first, re.S)
-    assert headers[:5] == ["Reference", "CVSS score", "Vector", "System", "Name"]
-    assert "Status" not in headers and "Port" not in headers and "Note" not in headers
+    assert headers[:4] == ["CVSS score", "Vector", "System", "Name"]
+    assert "Reference" not in headers and "Status" not in headers and "Port" not in headers and "Note" not in headers
 
     # --- Evidence: text, its captioned table, the test result, the note, the image --
     evidence = first[first.index(" Evidence / proof of concept</h4>"):first.index(" Recommendations</h3>")]

@@ -5,6 +5,10 @@ import { api, projectPath } from './client';
 export type RemediationStatus = 'open' | 'closed' | 'deferred';
 /** Where that record and the assessor's `endpoint_status` disagree (derived by the server). */
 export type RemediationVerification = 'reported_fixed_not_retested' | 'remediated_record_open';
+/** Where a finding on a host stands as a DEFECT (`remediation_policy.defect_expr`):
+ *  `remediated` — its endpoint was concluded fixed by the retest; `deferred`;
+ *  `open` — anything else.  A false-positive endpoint is none of them. */
+export type RemediationDefect = 'open' | 'remediated' | 'deferred';
 export type RemediationGroup = 'host' | 'finding' | 'contact' | 'due' | 'team';
 /** How many days past its deadline an overdue row is. */
 export type OverdueBand = '1-7' | '8-30' | '31-90' | '90+';
@@ -132,7 +136,12 @@ export interface RemediationPage {
 export interface RemediationQuery {
   status?: RemediationStatus;
   state?: RemediationState[];
-  severity?: string;
+  /** One severity, or several (repeated: "Critical & High"). */
+  severity?: string | string[];
+  /** Where the rows stand as defects; repeated for several. */
+  defect?: RemediationDefect[];
+  /** Cross-project list only: leave out archived projects. */
+  active_only?: boolean;
   team?: string;
   overdue_band?: OverdueBand;
   no_follow_up_days?: number;
@@ -204,15 +213,58 @@ export interface RemediationProjectRow {
   name: string;
   archived: boolean;
   states: Record<RemediationState, number>;
+  /** Every row of the project's list (`?project=`); absent from an older server. */
+  total?: number;
+  /** Rows whose ENDPOINT was concluded remediated by the retest
+   *  (`?project=&defect=remediated`); absent from an older server. */
+  remediated?: number;
 }
 export interface RemediationProjects {
   items: RemediationProjectRow[];
   totals: Record<RemediationState, number>;
+  defect_totals?: { total: number; remediated: number };
   as_of: string;
   policy: RemediationPolicy;
 }
 export const listRemediationProjects = async (signal?: AbortSignal): Promise<RemediationProjects> =>
   (await api.get<RemediationProjects>('/remediation-overview/projects', { signal })).data;
+
+/** One row of the defect metrics: Overall, Critical & High, one severity. */
+export interface DefectMetricRow {
+  key: string;
+  label: string;
+  /** The severities it counts (null: all) — what its cells open the list with. */
+  severities: string[] | null;
+  defects: number;
+  open: number;
+  remediated: number;
+  deferred: number;
+  /** Remediated / defects, as a percentage; null with no defect. */
+  remediation_rate: number | null;
+  /** Average days from assigned to remediated or deferred (today for one still open). */
+  mttr_days: number | null;
+  mttr_measured: number;
+  /** The same over the remediated and deferred defects only. */
+  mttr_closed_days: number | null;
+  mttr_closed_measured: number;
+  /** Defects nobody was assigned (no clock), and closed ones whose day was never recorded. */
+  not_assigned: number;
+  not_measured: number;
+}
+export interface DefectMetrics {
+  rows: DefectMetricRow[];
+  /** The project asked about; null = every one the caller administers that is not archived. */
+  project_id: number | null;
+  /** How many projects that is. */
+  projects: number;
+  as_of: string;
+}
+export const getRemediationDefectMetrics = async (
+  projectId: number | null, signal?: AbortSignal,
+): Promise<DefectMetrics> =>
+  (await api.get<DefectMetrics>('/remediation-overview/defect-metrics', {
+    params: projectId != null ? { project_id: projectId } : {}, signal,
+  })).data;
 
 /** One contact with their findings on hosts by state; most overdue first. */
 export interface RemediationContact {

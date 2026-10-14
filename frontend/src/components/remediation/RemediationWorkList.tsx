@@ -20,11 +20,10 @@ import {
   exportRemediation, exportRemediationOverview,
   listRemediation, listRemediationContacts, listRemediationOverview, listRemediationTeams,
   type RemediationContact, type RemediationPage, type RemediationPolicy, type RemediationQuery,
-  type RemediationRow, type RemediationState, type RemediationTeam,
+  type RemediationDefect, type RemediationRow, type RemediationState, type RemediationTeam,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { queryErrorText } from '../../lib/query';
-import { copyToClipboard } from '../../utils/clipboard';
 import { saveBlob } from '../../utils/download';
 import { usePagedList } from '../../hooks/usePagedList';
 import { useProjectId } from '../../hooks/useProjectId';
@@ -38,6 +37,7 @@ import {
   REMEDIATION_VERIFICATION_LABEL, REPORTED_FIXED, SEARCH_MAX, deadlineCell, idParam,
   isOverdueBand, isRemediationFlag, isRemediationGroup, isRemediationState, isRemediationVerification, remediationCsv,
   remediationPageSize, remediationSummary, searchParam, severityWord, timelineSummary, verificationNote,
+  defectFilterLabel, isRemediationDefect,
 } from '../../utils/remediation';
 import RemediationInsights, { RemediationVerificationCounts } from './RemediationInsights';
 import {
@@ -46,6 +46,7 @@ import {
 import RemediationEditDialog from './RemediationEditDialog';
 import RemediationContactReportDialog from './RemediationContactReportDialog';
 import RemediationFollowUpDialog from './RemediationFollowUpDialog';
+import RemediationSummaryDialog from './RemediationSummaryDialog';
 import RemediationTimeline from './RemediationTimeline';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
@@ -66,6 +67,7 @@ const UPCOMING_REMINDER_DAYS = 90;
 /** The three views' names: the tabs', and the heading over the list. */
 export const VIEW_TITLE = { rows: 'Findings on hosts', contacts: 'Contacts', teams: 'Teams' } as const;
 const ANY_SEVERITY = '__any__';
+const SEVERAL_SEVERITIES = '__several__';
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'];
 
 /** Findings on hosts still open in a project: every state but deferred and reported fixed. */
@@ -136,8 +138,16 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   const contactBox = useUrlSearchDraft('contact', { also: [] });
   const contact = contactBox.value;
   const unassigned = params.get('unassigned') === '1';
-  const severityParam = params.get('severity');
-  const severity = severityParam && SEVERITIES.includes(severityParam) ? severityParam : null;
+  // One severity, or several from a link ("Critical & High" in the defect
+  // metrics): the chooser shows one; several are a chip.
+  const severities = params.getAll('severity').filter((s) => SEVERITIES.includes(s));
+  const severity = severities.length === 1 ? severities[0] : null;
+  const severityKey = severities.join(',');
+  // Where the rows stand as defects (the server derives it; a link from the
+  // projects table or the defect metrics sets it).
+  const defectKey = params.getAll('defect').filter(isRemediationDefect).join(',');
+  const defects = useMemo(
+    () => (defectKey ? defectKey.split(',') as RemediationDefect[] : []), [defectKey]);
   const viewParam = params.get('view');
   const view: 'rows' | 'contacts' | 'teams' = viewParam === 'contacts' || viewParam === 'teams' ? viewParam : 'rows';
   const team = params.get('team') ?? '';
@@ -166,6 +176,9 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   const hostId = across ? null : idParam(params.get('host'));
   const findingId = across ? null : idParam(params.get('finding'));
   const projectId = across ? idParam(params.get('project')) : null;
+  // "All active projects" (the defect metrics without a project): archived
+  // ones left out.  Only meaningful across projects and with none chosen.
+  const activeOnly = across && projectId == null && params.get('active') === '1';
   const pageSize = remediationPageSize(params.get('per'));
 
   const setParam = (key: string, value: string | undefined) => {
@@ -185,21 +198,27 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   );
 
   const filtered = !!contact || unassigned || hostId != null || findingId != null || projectId != null
-    || severity != null || !!team || band != null || stale || verification != null || flag != null || !!q;
+    || severities.length > 0 || !!team || band != null || stale || verification != null || flag != null || !!q
+    || defects.length > 0 || activeOnly;
 
   // The filters of the list, as the API takes them — the list, the CSV and
   // nothing else read them, so the file holds exactly the rows on screen.
   const filters = useMemo((): RemediationQuery => ({
     state: state ? [state] : undefined, contact: contact || undefined, unassigned: unassigned || undefined,
-    host_id: hostId ?? undefined, finding_id: findingId ?? undefined, severity: severity ?? undefined,
+    host_id: hostId ?? undefined, finding_id: findingId ?? undefined,
+    // One severity is sent as before; several repeat the parameter.
+    severity: !severityKey ? undefined : severityKey.includes(',') ? severityKey.split(',') : severityKey,
     team: team || undefined, overdue_band: band ?? undefined,
     no_follow_up_days: stale ? (policy?.due_soon_days || 7) : undefined,
     verification: verification ?? undefined,
     // Left out entirely when unset, so the request reads as it always did.
     ...(flag ? { flag } : {}),
     ...(q ? { q } : {}),
+    ...(defects.length ? { defect: defects } : {}),
+    ...(activeOnly ? { active_only: true } : {}),
     project_id: projectId ?? undefined,
-  }), [state, contact, unassigned, hostId, findingId, severity, team, band, stale, verification, flag, q, projectId, policy]);
+  }), [state, contact, unassigned, hostId, findingId, severityKey, team, band, stale, verification, flag, q, projectId,
+    policy, defects, activeOnly]);
 
   // The rows' page is in the address (`?page=`): a reload, or Back from a
   // host or a finding, returns to the rows that were on screen.
@@ -309,14 +328,18 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     onError: () => toast.error('The CSV could not be built. Nothing was saved.'),
   });
   const exporting = csv.isPending;
-  const copySummary = async () => {
+  // "Copy summary" opens a dialog with the text as it will be copied (owner,
+  // 2026-10-14), made from the list on screen when the button is pressed.
+  const [summary, setSummary] = useState<{ text: string; where: string } | null>(null);
+  const openSummary = () => {
     if (!list.lastResponse) return;
-    const text = remediationSummary(list.lastResponse, {
-      where: filtered ? `${where} (filtered)` : where,
-      dueSoonDays: policy?.due_soon_days ?? 7, timeline: policy ? timelineSummary(policy) : undefined,
+    const scope = filtered ? `${where} (filtered)` : where;
+    setSummary({
+      where: scope,
+      text: remediationSummary(list.lastResponse, {
+        where: scope, dueSoonDays: policy?.due_soon_days ?? 7, timeline: policy ? timelineSummary(policy) : undefined,
+      }),
     });
-    if (await copyToClipboard(text)) toast.success('Summary copied.');
-    else toast.error('The summary could not be copied.');
   };
 
   const keys = useMemo(() => rows.map((r) => r.finding_host_id), [rows]);
@@ -366,6 +389,9 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   if (stale) extra.push({ key: 'stale', label: `Overdue or due soon, no follow-up in ${policy?.due_soon_days || 7} days` });
   if (verification) extra.push({ key: 'verification', label: REMEDIATION_VERIFICATION_LABEL[verification] });
   if (flag) extra.push({ key: 'flag', label: REMEDIATION_FLAG_LABEL[flag] });
+  if (severities.length > 1) extra.push({ key: 'severity', label: severities.map(severityWord).join(' & ') });
+  if (defects.length) extra.push({ key: 'defect', label: defectFilterLabel(defects) });
+  if (activeOnly) extra.push({ key: 'active', label: 'Active projects only' });
 
   // j / k move, Enter opens the row: the editor for an admin, the timeline otherwise.
   const { cursorRowProps } = useListCursor(
@@ -658,11 +684,14 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
               No contact yet
             </button>
             <Label htmlFor="rem-severity" className="shrink-0">Severity</Label>
-            <Select value={severity ?? ANY_SEVERITY}
+            <Select value={severities.length > 1 ? SEVERAL_SEVERITIES : severity ?? ANY_SEVERITY}
               onValueChange={(v) => setParam('severity', v === ANY_SEVERITY ? undefined : v)}>
               <SelectTrigger id="rem-severity" className="h-8 w-36"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value={ANY_SEVERITY}>Any</SelectItem>
+                {severities.length > 1 && (
+                  <SelectItem value={SEVERAL_SEVERITIES} disabled>{severities.map(severityWord).join(' & ')}</SelectItem>
+                )}
                 {SEVERITIES.map((s) => <SelectItem key={s} value={s}>{severityWord(s)}</SelectItem>)}
               </SelectContent>
             </Select>
@@ -675,7 +704,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
             </Select>
             <span className="ml-auto flex shrink-0 items-center gap-xs">
               <Button size="sm" variant="outline" className="h-8" disabled={!list.lastResponse}
-                title="Copy these counts as text, for a status mail" onClick={() => void copySummary()}>
+                title="These counts as text, for a status mail" onClick={openSummary}>
                 <Copy className="size-4" aria-hidden /> Copy summary
               </Button>
               <Button size="sm" variant="outline" className="h-8" disabled={exporting || list.total === 0}
@@ -722,7 +751,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
             empty={q
               ? (
                 <span className="break-words">
-                  No finding or host matches “{q}”{(state || contact || unassigned || severity || team || band || stale || verification || flag || projectId != null) ? ' with these filters' : ''}.
+                  No finding or host matches “{q}”{(state || contact || unassigned || severities.length || defects.length || team || band || stale || verification || flag || projectId != null) ? ' with these filters' : ''}.
                 </span>
               )
               : filtered || state
@@ -901,6 +930,9 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
           // The page on screen is re-read in place: the reader keeps their place.
           onSaved={changed}
         />
+      )}
+      {summary && (
+        <RemediationSummaryDialog summary={summary.text} where={summary.where} onClose={() => setSummary(null)} />
       )}
       {followUp && (
         <RemediationFollowUpDialog

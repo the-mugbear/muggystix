@@ -200,6 +200,12 @@ class FindingHost(Base):
     # row is where it was observed at the time.  Null for host-level findings.
     name_id = Column(Integer, ForeignKey("dns_names.id", ondelete="SET NULL"), nullable=True, index=True)
     host_status = Column(String(20), nullable=False, default=FindingHostStatus.OPEN.value)
+    # When the endpoint was last marked ``remediated`` (revision b7d2e5f9a1c3;
+    # the remediation pages' time to remediate).  Written only by
+    # ``FindingService._move_endpoint``, cleared when the endpoint leaves
+    # ``remediated``.  Back-filled from the history line of each move; NULL on
+    # a remediated endpoint whose move left no such line.
+    remediated_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     finding = relationship("Finding", back_populates="hosts")

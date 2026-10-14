@@ -166,9 +166,11 @@ def test_drafts_keep_only_their_overrides_and_print_what_they_printed(scratch):
     assert after[5] == {}                               # nothing to follow, nothing kept
     assert after[6] is None                             # nothing stored: nothing written
 
-    # What each draft prints is what it printed (the app's resolver, at head).
+    # What each draft prints is what it printed (the app's resolver, at head:
+    # the models are head's, so the database is taken there and back).
     from app.services.client_report_service import ClientReportService
 
+    _alembic(url, "upgrade", "head")
     with Session(eng) as db:
         svc = ClientReportService(db)
         printed = svc.resolved_details(1, after[1])
@@ -189,6 +191,7 @@ def test_drafts_keep_only_their_overrides_and_print_what_they_printed(scratch):
         # …and not the one that overrides it.
         assert svc.resolved_details(1, after[2])["client_name"] == "Other Corp"
         db.rollback()
+    _alembic(url, "downgrade", REVISION)
 
     # ---- downgrade -----------------------------------------------------------
     _alembic(url, "downgrade", BEFORE)

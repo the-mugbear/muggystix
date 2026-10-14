@@ -26,21 +26,12 @@ import { useProjectRole } from '../../hooks/useProjectRole';
 import type { ReportTextImagesState } from '../../hooks/useReportTextImages';
 import { invalidateReads } from '../../lib/query';
 import { formatApiError } from '../../utils/apiErrors';
+import { REPORT_IMAGE_TYPES, reportImageProblem } from '../../utils/reportImages';
 import ScreenshotLightbox from '../ScreenshotLightbox';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 
-/** What the server accepts (`store_image_attachment`, an image of the report). */
-export const REPORT_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif'];
-export const REPORT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const CAPTION_MAX = 2000;
-
-/** Why this file cannot be uploaded, said before it is sent — else null. */
-export const reportImageProblem = (file: Pick<File, 'type' | 'size'>): string | null => {
-  if (!REPORT_IMAGE_TYPES.includes(file.type)) return 'Only PNG, JPEG or GIF images can be printed in a report.';
-  if (file.size > REPORT_IMAGE_MAX_BYTES) return 'This image is larger than 10 MB. Choose a smaller one.';
-  return null;
-};
 
 /** "report defaults, draft #12" — the server's `placed_in`, in the page's words. */
 export const placedInLabel = (placedIn: readonly string[]): string =>
@@ -133,7 +124,8 @@ const ReportTextImages: React.FC<Props> = ({ state, disabled = false, idPrefix }
       {confirmEl}
       <p className="text-caption text-muted-foreground">
         <span className="font-medium text-foreground">Images</span> — they belong to the project, so its report
-        defaults and every draft can place the same ones; an image no text places is not printed.
+        defaults and every draft can place the same ones; an image no text places is not printed. A screenshot
+        pasted into the System description is uploaded here and placed where it was pasted.
       </p>
       {listStatus === 'loading' && <p className="text-caption text-muted-foreground">Loading the images…</p>}
       {error && (

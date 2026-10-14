@@ -555,11 +555,13 @@ describe('Report detail — draft', () => {
     mocked.getClientReport.mockResolvedValue(report());
     mocked.updateClientReport.mockResolvedValue(report({ executive_summary: 'Two criticals.' }));
     renderDetail();
+    // The summary is one of the report's details (owner, 2026-10-14):
+    // written here, it is this report's override.
     fireEvent.change(await screen.findByLabelText('Executive summary'), { target: { value: 'Two criticals.' } });
     expect(screen.getByRole('button', { name: /Issue report/ })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5,expect.objectContaining({
-      executive_summary: 'Two criticals.', title: 'Example report',
+    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, expect.objectContaining({
+      title: 'Example report', settings: expect.objectContaining({ executive_summary: 'Two criticals.' }),
     })));
     await waitFor(() => expect(screen.getByRole('button', { name: /Issue report/ })).toBeEnabled());
   });
@@ -683,6 +685,42 @@ describe('Report detail — draft', () => {
     })));
     await waitFor(() => expect(screen.getByRole('group', { name: 'Classification' })).toHaveTextContent('Public'));
     expect(screen.getByRole('textbox', { name: 'Author' })).toHaveValue('Red Team Ltd');
+  });
+
+  // Owner, 2026-10-14: the executive summary is the project's — copied by
+  // hand between drafts and issued reports before.  A full report follows it
+  // like any detail; an addendum's "Summary of changes" is its own.
+  it('the executive summary follows the project’s, and is overridden for this report on request', async () => {
+    const followed = { ...settings, executive_summary: 'The project’s summary.' };
+    mocked.getClientReport.mockResolvedValue(report({
+      settings: { client_name: 'Example Corp' }, followed, effective: followed,
+      followed_from: { executive_summary: 'project' },
+    }));
+    renderDetail();
+    const summary = await screen.findByRole('group', { name: 'Executive summary' });
+    expect(summary).toHaveTextContent('The project’s summary.');
+    expect(screen.getByRole('button', { name: /Draft with AI/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Override Executive summary for this report' }));
+    const box = screen.getByRole('textbox', { name: 'Executive summary' });
+    expect(box).toHaveValue('The project’s summary.');
+    fireEvent.change(box, { target: { value: 'Ours.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, expect.objectContaining({
+      settings: expect.objectContaining({ executive_summary: 'Ours.' }),
+    })));
+  });
+
+  it('an addendum’s summary of changes is its own: a field, never the project’s', async () => {
+    const followed = { ...settings, executive_summary: null };
+    mocked.getClientReport.mockResolvedValue(report({
+      kind: 'addendum', settings: {}, followed, effective: followed, followed_from: { executive_summary: null },
+    }));
+    renderDetail();
+    const box = await screen.findByRole('textbox', { name: 'Summary of changes' });
+    expect(box).toHaveValue('');
+    expect(screen.queryByRole('button', { name: /Override Summary of changes/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Set Summary of changes for the project/ })).toBeNull();
+    expect(screen.getByText(/written for this addendum/)).toBeInTheDocument();
   });
 });
 

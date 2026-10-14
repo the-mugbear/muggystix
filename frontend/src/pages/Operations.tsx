@@ -33,7 +33,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, Loader2, MessageCircleQuestion, RefreshCw, Sparkles } from 'lucide-react';
+import { AlertTriangle, Loader2, MessageCircleQuestion, RefreshCw, RotateCcw, Sparkles } from 'lucide-react';
 import StartAssistDialog from '../components/StartAssistDialog';
 import {
   OperationsBlockers,
@@ -615,7 +615,8 @@ const SetupBlock: React.FC<{ title: string; children: React.ReactNode }> = ({ ti
 interface LeadClause { key: string; to: string; text: string }
 
 /** What the lead's words count — on the (i), not a caption line under it. */
-const LEAD_DEFINITION = 'A decision is a finding under investigation or a proposal waiting for you; tests on hosts you review are listed with those hosts, not counted as assigned to you.';
+const RETEST_DEFINITION = 'A finding you own whose status is Retest, or one of whose hosts is marked Retest. Each row on the list says which. These are also counted among the decisions below.';
+const LEAD_DEFINITION = 'A decision is a finding under investigation or marked for retest, or a proposal waiting for you; tests on hosts you review are listed with those hosts, not counted as assigned to you.';
 
 const LeadLinks: React.FC<{ clauses: LeadClause[] }> = ({ clauses }) => (
   <>
@@ -668,6 +669,10 @@ const OperationsLead: React.FC<{
   const n = (v: number) => v.toLocaleString();
   const s = (v: number, one: string, many: string) => `${n(v)} ${v === 1 ? one : many}`;
 
+  // 0 — called out above the rest (owner, 2026-10-14): findings of the
+  // reader's marked for retest, the finding or one of its hosts.  They are
+  // also among the decisions below; this line opens just them.
+  const retest = counts.findingsRetest ?? 0;
   // 1 — what needs the reader, decisions first.
   const decide = counts.findingsDecide ?? 0;
   const write = counts.findingsWrite ?? 0;
@@ -723,6 +728,15 @@ const OperationsLead: React.FC<{
 
   return (
     <PostureLead tone={tone}>
+      {retest > 0 && (
+        <span className="mb-xxs flex items-center gap-xxs font-medium text-foreground" data-testid="lead-retest">
+          <RotateCcw className="size-4 shrink-0 text-warning" aria-hidden />
+          <Link to={toTab('findings', 'retest')} className={LINK}>
+            {retest === 1 ? '1 finding of yours is' : `${n(retest)} findings of yours are`} marked for retest
+          </Link>
+          <InfoTip text={RETEST_DEFINITION} label="What marked for retest means" />
+        </span>
+      )}
       <span className="block" data-testid="lead-needs-me">
         {needsMe ? (
           <>

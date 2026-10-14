@@ -22,6 +22,10 @@ class Recipient(BaseModel):
 class EngagementSettings(BaseModel):
     """Engagement details — the project's defaults, or every value a report
     prints (`ReportOut.effective` / `followed`)."""
+    # Owner, 2026-10-14 — the executive summary is the project's (Markdown):
+    # a full report follows it unless it overrides it; an addendum's (its
+    # "Summary of changes") is always its own.
+    executive_summary: Optional[str] = Field(None, max_length=65536)
     client_name: Optional[str] = Field(None, max_length=255)
     classification: Optional[str] = Field(None, max_length=100)
     engagement_type: Optional[str] = Field(None, max_length=100)
@@ -40,7 +44,7 @@ class EngagementSettings(BaseModel):
     disclaimer: Optional[str] = Field(None, max_length=32768)
 
     @field_validator(
-        "client_name", "classification", "engagement_type", "system_description",
+        "executive_summary", "client_name", "classification", "engagement_type", "system_description",
         "applications", "thick_clients", "other_targets", "author_name", "disclaimer",
     )
     @classmethod
@@ -215,6 +219,9 @@ class ReportOut(BaseModel):
     # (`report_defaults.overrides`): a text key with text, a list key present
     # (`[]` = overridden to empty).  A key absent follows the project.
     settings: Dict[str, Any] = Field(default_factory=dict)
+    # The summary it prints (`effective.executive_summary`; a single read
+    # only, None on list rows): a draft's override, else the project's (a
+    # full report); an issued report's as issued.
     executive_summary: Optional[str] = None
     template_fingerprint: Optional[str] = None
     quarto_version: Optional[str] = None
@@ -271,8 +278,7 @@ class ReportUpdate(BaseModel):
     title: Optional[str] = Field(None, max_length=255)
     template: Optional[str] = Field(None, max_length=100)
     baseline_report_id: Optional[int] = None
-    executive_summary: Optional[str] = Field(None, max_length=65536)
-    # The complete override map (replaces the stored one); see
+    # The complete override map (the executive summary is one of its keys) (replaces the stored one); see
     # `EngagementOverrides`.
     settings: Optional[EngagementOverrides] = None
 

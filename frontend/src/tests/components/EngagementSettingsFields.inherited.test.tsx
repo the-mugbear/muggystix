@@ -519,7 +519,7 @@ describe('System description — the project’s own report images', () => {
     await screen.findByText('No image uploaded yet.');
     const insert = systemToolbar().getByRole('button', { name: 'Insert image' });
     expect(insert).toBeDisabled();
-    expect(insert).toHaveAccessibleDescription('No image to insert: upload one below.');
+    expect(insert).toHaveAccessibleDescription('No image to insert: paste a screenshot into the text, or upload one below.');
   });
 
   it('no other field of the form takes images', async () => {

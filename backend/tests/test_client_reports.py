@@ -143,7 +143,7 @@ def test_roles_auditors_read_analysts_draft_admins_issue(client, db_session, tes
     act_as(people["analyst"])
     report = _create(client, test_project)
     assert report["can_edit"] is True and report["can_issue"] is False
-    r = client.patch(f"{_base(test_project)}/{report['id']}", json={"executive_summary": "  Two criticals.  "})
+    r = client.patch(f"{_base(test_project)}/{report['id']}", json={"settings": {"executive_summary": "  Two criticals.  "}})
     assert r.status_code == 200 and r.json()["executive_summary"] == "Two criticals."
     assert client.post(f"{_base(test_project)}/{report['id']}/issue").status_code == 403
 
@@ -219,7 +219,7 @@ _ISSUED_DETAILS = {
 def _issued_with_details(client, project, **create):
     report = _create(client, project, **create) if create else _create(client, project)
     r = client.patch(f"{_base(project)}/{report['id']}", json={
-        "settings": _ISSUED_DETAILS, "executive_summary": "What we found.",
+        "settings": {**_ISSUED_DETAILS, "executive_summary": "What we found."},
     })
     assert r.status_code == 200, r.text
     return _issue(client, project, report["id"])
@@ -242,7 +242,7 @@ def test_an_addendum_starts_from_its_baseline_details_not_the_defaults(client, t
     assert s["other_targets"] == "The **VPN** concentrator."
     assert [t["name"] for t in s["testers"]] == ["Ana Lead"]
     assert s["distribution"] == [{"name": "CISO", "email": "ciso@example.com"}]
-    assert add["executive_summary"] is None
+    assert add["executive_summary"] is None and "executive_summary" not in s
 
     # A new FULL report follows the project's defaults.
     assert _create(client, test_project)["effective"]["client_name"] == "Profile default"
@@ -273,12 +273,13 @@ def test_a_revision_starts_from_the_original_details_and_summary(client, db_sess
     rev = client.post(f"{_base(test_project)}/{first['id']}/revise").json()
     assert rev["settings"]["client_name"] == "Example Corp"
     assert rev["settings"]["distribution"] == [{"name": "CISO", "email": "ciso@example.com"}]
-    assert rev["executive_summary"] == "What we found."
+    assert rev["executive_summary"] == rev["settings"]["executive_summary"] == "What we found."
 
     # A revision of an ADDENDUM carries the addendum's details (which now
     # carry its baseline's) and its summary of changes.
     second = _create(client, test_project, kind="addendum")
-    r = client.patch(f"{_base(test_project)}/{second['id']}", json={"executive_summary": "Since #1: one new finding."})
+    r = client.patch(f"{_base(test_project)}/{second['id']}", json={"settings": {
+        **second["settings"], "executive_summary": "Since #1: one new finding."}})
     assert r.status_code == 200, r.text
     add = _issue(client, test_project, second["id"])
     rev_add = client.post(f"{_base(test_project)}/{add['id']}/revise").json()
@@ -645,8 +646,7 @@ def test_the_summary_names_the_report_details_still_empty(client, test_project):
         "system_description", "testers", "distribution", "project_dates",
     ]
     r = client.patch(f"{_base(test_project)}/{report['id']}", json={
-        "executive_summary": "Summary.",
-        "settings": {"client_name": "Example Corp", "classification": "Confidential",
+        "settings": {"executive_summary": "Summary.", "client_name": "Example Corp", "classification": "Confidential",
                      "testers": [{"name": "Ana"}], "applications": "- https://app.example.com"},
     })
     # The author (2.495.0) is owed until this report, its project or the
@@ -715,3 +715,50 @@ def test_a_replayed_issue_job_never_replaces_published_files(db_session, test_pr
         setattr(db.get(Report, rid), "render_status", RenderStatus.DONE) or db.get(Report, rid)))
     renderer.run_client_job(db_session, job)
     assert path.read_bytes() == b"render-1"
+
+
+def test_the_executive_summary_is_the_projects_unless_a_report_overrides_it(client, test_project):
+    """Owner, 2026-10-14: the executive summary belonged to one draft and was
+    copied by hand between drafts and issued reports.  It is a detail like the
+    others: the project's report defaults hold it, a full report prints it
+    unless it overrides it, and an override can be pushed up."""
+    client.put(f"{_base(test_project)}/profile", json={"executive_summary": "Project summary.", "template": "pentest"})
+    draft = _create(client, test_project)
+    assert "executive_summary" not in draft["settings"]
+    assert draft["executive_summary"] == draft["effective"]["executive_summary"] == "Project summary."
+    assert draft["followed"]["executive_summary"] == "Project summary."
+    assert draft["followed_from"]["executive_summary"] == "project"
+    assert "executive summary" not in draft["summary"]["missing_details"]
+
+    # Overridden for this report; then made the project's: the draft follows again.
+    r = client.patch(f"{_base(test_project)}/{draft['id']}", json={"settings": {"executive_summary": "Better."}})
+    assert r.json()["executive_summary"] == "Better."
+    r = client.post(f"{_base(test_project)}/{draft['id']}/promote", json={"values": {"executive_summary": "Better."}})
+    assert r.status_code == 200, r.text
+    assert "executive_summary" not in r.json()["settings"] and r.json()["executive_summary"] == "Better."
+    assert client.get(f"{_base(test_project)}/profile").json()["executive_summary"] == "Better."
+
+    # Issued, it keeps what it printed whatever the project says next.
+    issued = _issue(client, test_project, draft["id"])
+    client.patch(f"{_base(test_project)}/profile", json={"executive_summary": "Later."})
+    assert client.get(f"{_base(test_project)}/{issued['id']}").json()["executive_summary"] == "Better."
+    # Another full report follows the project as it stands now.
+    assert _create(client, test_project)["executive_summary"] == "Later."
+
+
+def test_an_addendum_writes_its_own_summary_of_changes(client, test_project):
+    """An addendum's summary is of what changed since its baseline: it never
+    follows the project's executive summary, and it cannot become it."""
+    client.put(f"{_base(test_project)}/profile", json={"executive_summary": "Project summary.", "template": "pentest"})
+    _issued_with_details(client, test_project)
+    add = _create(client, test_project, kind="addendum")
+    assert add["executive_summary"] is None and add["followed"]["executive_summary"] is None
+    assert add["followed_from"]["executive_summary"] is None
+    assert "executive summary" in add["summary"]["missing_details"]
+    r = client.patch(f"{_base(test_project)}/{add['id']}", json={"settings": {
+        **add["settings"], "executive_summary": "One new finding."}})
+    assert r.json()["executive_summary"] == "One new finding."
+    r = client.post(f"{_base(test_project)}/{add['id']}/promote",
+                    json={"values": {"executive_summary": "One new finding."}})
+    assert r.status_code == 422
+    assert client.get(f"{_base(test_project)}/profile").json()["executive_summary"] == "Project summary."

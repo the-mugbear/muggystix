@@ -21,6 +21,8 @@ Grouping = Literal["host", "finding", "contact", "due", "team"]
 OverdueBand = Literal["1-7", "8-30", "31-90", "90+"]
 #: What an admin is to look at beside the deadline states (``remediation_policy.FLAGS``).
 Flag = Literal["deferral_review_due", "deadline_overridden"]
+#: Where a row stands as a defect (`remediation_policy.defect_expr`).
+Defect = Literal["open", "remediated", "deferred"]
 #: How far ahead a reminder may look for deadlines that are not yet due soon.
 UPCOMING_MAX_DAYS = 365
 #: The longest timeline an installation can set (ten years).

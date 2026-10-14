@@ -76,10 +76,11 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
               contact: Optional[str] = None, contact_email: Optional[str] = None,
               unassigned: bool = False,
               host_id: Optional[int] = None, finding_id: Optional[int] = None,
-              severity: Optional[str] = None, team: Optional[str] = None,
+              severity: Optional[str | Sequence[str]] = None, team: Optional[str] = None,
               overdue_band: Optional[str] = None, no_follow_up_days: Optional[int] = None,
               verification: Optional[str] = None, flag: Optional[str] = None,
               q: Optional[str] = None, upcoming_days: Optional[int] = None,
+              defect: Optional[Sequence[str]] = None,
               group: str = "host", limit: int = 50, offset: int = 0,
               policy: Optional[deadlines.Policy] = None, today: Optional[date] = None,
               with_counts: bool = True) -> dict:
@@ -93,6 +94,8 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
     counted on its own."""
     policy = policy or deadlines.load(db)
     today = today or policy.today()
+    # One severity or several ("Critical & High" in the defect metrics).
+    severities = ({severity} if isinstance(severity, str) else set(severity)) if severity else None
     state_of, due = deadlines.state_expr(db, policy, today), deadlines.due_expr(db, policy)
     band_of = deadlines.overdue_band_expr(db, policy, today)
     verification_of = deadlines.verification_expr()
@@ -126,6 +129,10 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
         query = query.filter(FindingHost.host_id == host_id)
     if finding_id is not None:
         query = query.filter(FindingHost.finding_id == finding_id)
+    if defect:
+        # Where it stands as a defect (`defect_expr`): part of the selection,
+        # so every count follows it — the defect metrics' cells open this.
+        query = query.filter(deadlines.defect_expr().in_(tuple(defect)))
 
     # What a manager is asked first — how many of each severity are past or
     # near their deadline, and how late the overdue ones are — over the same
@@ -148,15 +155,15 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
     ) if with_counts else ():
         if sev in severity_counts:
             severity_counts[sev][value] += n
-        if severity and sev != severity:
+        if severities and sev not in severities:
             continue          # the breakdown by severity is of the whole selection; these follow the filter
         if band in overdue_ages:
             overdue_ages[band] += n
         if stale:
             not_followed_up += n
 
-    if severity:
-        query = query.filter(func.lower(Finding.severity) == severity)
+    if severities:
+        query = query.filter(func.lower(Finding.severity).in_(tuple(sorted(severities))))
     # Counted before the state and status filters: the chips show every state
     # of the current selection, whichever one is open.  The same statement
     # counts where the contact's record and the assessor's conclusion disagree
@@ -329,6 +336,106 @@ def state_counts_by_project(db, project_ids: Sequence[int], policy: deadlines.Po
                           .group_by(Finding.project_id, state_of)):
         out[pid][value] = n
     return out
+
+
+def defect_counts_by_project(db, project_ids: Sequence[int]) -> dict[int, dict[str, int]]:
+    """Each project's rows (``total``: the list's own rows, every state) and
+    its rows by defect state (``remediated``, ``deferred``, ``open`` —
+    ``remediation_policy.defect_expr``), in one grouped statement.  Each
+    opens the list: ``?project=`` and ``?project=&defect=<state>``.  Every
+    id is present."""
+    out = {pid: {"total": 0, **{name: 0 for name in deadlines.DEFECTS}} for pid in project_ids}
+    if not out:
+        return out
+    defect = deadlines.defect_expr()
+    for pid, value, n in (_rows(db, list(out)).with_entities(Finding.project_id, defect, func.count())
+                          .group_by(Finding.project_id, defect)):
+        out[pid]["total"] += n
+        if value in out[pid]:
+            out[pid][value] = n
+    return out
+
+
+#: The rows of the defect metrics, in order: (key, label, severities).
+DEFECT_METRIC_ROWS = (
+    ("overall", "Overall", None),
+    ("critical_high", "Critical & High", ("critical", "high")),
+    ("critical", "Critical", ("critical",)),
+    ("high", "High", ("high",)),
+    ("medium", "Medium", ("medium",)),
+    ("low", "Low", ("low",)),
+    ("info", "Informational", ("info",)),
+)
+
+
+def defect_metrics(db, project_ids: Sequence[int], policy: deadlines.Policy, today: date) -> dict:
+    """The defect metrics of the remediation deadlines page (owner,
+    2026-10-14), over the list's own rows (``_rows``) and ``defect_expr``,
+    in ONE grouped statement.
+
+    Per row of ``DEFECT_METRIC_ROWS``: ``defects`` (open + remediated +
+    deferred; a false-positive endpoint is no defect), each state's count,
+    ``remediation_rate`` (remediated / defects, a percentage; None with no
+    defect), and two times to remediate measured from the ASSIGNED date
+    (``notified_on``):
+
+    * ``mttr_days`` — the average over every assigned defect of (the day it
+      was remediated or deferred, else today) − assigned;
+    * ``mttr_closed_days`` — the same over the remediated and deferred ones
+      only.
+
+    Each average is the summed days divided by the rows measured (both
+    returned, so several rows add up); a row assigned after the day it
+    closed, or closed on a day nobody recorded, is not measured, and neither
+    is an unassigned one — ``not_assigned`` / ``not_measured`` say how many.
+    The Informational row is returned only when it has defects."""
+    defect = deadlines.defect_expr()
+    closed_day = deadlines.defect_closed_day_expr(db, policy)
+    end = case((defect == "open", deadlines._day(db, today)), else_=closed_day)
+    measured = and_(Remediation.notified_on.isnot(None), end.isnot(None), end >= Remediation.notified_on)
+    days = deadlines.days_between(db, end, Remediation.notified_on)
+    severity_of = func.lower(Finding.severity)
+    grouped: dict = {}
+    if project_ids:
+        for sev, value, n, unassigned, n_measured, total_days in (
+            _rows(db, list(project_ids)).filter(defect.isnot(None)).with_entities(
+                severity_of, defect, func.count(),
+                func.sum(case((Remediation.notified_on.is_(None), 1), else_=0)),
+                func.sum(case((measured, 1), else_=0)),
+                func.sum(case((measured, days), else_=0)),
+            ).group_by(severity_of, defect)
+        ):
+            grouped[(sev, value)] = (int(n), int(unassigned or 0), int(n_measured or 0), int(total_days or 0))
+
+    def row(key: str, label: str, severities) -> dict:
+        counts = {name: 0 for name in deadlines.DEFECTS}
+        unassigned = 0
+        all_n = all_days = closed_n = closed_days = 0
+        for (sev, value), (n, no_date, n_measured, total_days) in grouped.items():
+            if severities is not None and sev not in severities:
+                continue
+            counts[value] += n
+            unassigned += no_date
+            all_n += n_measured
+            all_days += total_days
+            if value != "open":
+                closed_n += n_measured
+                closed_days += total_days
+        defects = sum(counts.values())
+        return {
+            "key": key, "label": label, "severities": list(severities) if severities else None,
+            "defects": defects, **counts,
+            "remediation_rate": round(100 * counts["remediated"] / defects, 1) if defects else None,
+            "mttr_days": round(all_days / all_n, 1) if all_n else None,
+            "mttr_measured": all_n, "mttr_days_total": all_days,
+            "mttr_closed_days": round(closed_days / closed_n, 1) if closed_n else None,
+            "mttr_closed_measured": closed_n, "mttr_closed_days_total": closed_days,
+            "not_assigned": unassigned, "not_measured": defects - unassigned - all_n,
+        }
+
+    rows = [row(*spec) for spec in DEFECT_METRIC_ROWS]
+    rows = [r for r in rows if r["key"] != "info" or r["defects"]]
+    return {"rows": rows, "as_of": today.isoformat()}
 
 
 def durations_by_project(db, project_ids: Sequence[int], today: date,

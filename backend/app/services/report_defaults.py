@@ -23,6 +23,9 @@ cannot disagree, and the dataset's ``engagement`` carries the resolved values
 (so issuing freezes them).  With nothing written anywhere a text is None: the
 template then prints its own disclaimer, and an author is a missing detail.
 
+An ADDENDUM follows the project for every detail but ``OWN_IN_ADDENDUM``
+(the executive summary): its summary is of what changed, its own or none.
+
 Storage of level 3 is one row per key; saving a blank value removes the row.
 """
 from __future__ import annotations
@@ -37,10 +40,17 @@ from app.db.models_reports import ReportDefault, ReportProfile
 #: Every engagement detail — the keys of a report's ``settings`` and columns
 #: of ``report_profiles``.
 DETAIL_KEYS: Tuple[str, ...] = (
+    "executive_summary",
     "client_name", "classification", "engagement_type", "testers", "distribution",
     "system_description", "applications", "thick_clients", "other_targets",
     "author_name", "disclaimer",
 )
+#: Details an ADDENDUM never follows: its own text or nothing.  The
+#: executive summary (owner, 2026-10-14: "surfaced at the project level so
+#: the user doesn't have to copy and paste it between drafts and released
+#: reports") is the whole engagement's; an addendum's is its "Summary of
+#: changes" since the report it is compared with.
+OWN_IN_ADDENDUM: Tuple[str, ...] = ("executive_summary",)
 #: The details that are lists: overridden as a whole, and possibly to empty.
 LIST_KEYS: Tuple[str, ...] = ("testers", "distribution")
 #: The details the installation also holds (level 3).
@@ -92,24 +102,26 @@ FROM_INSTALLATION = "installation"
 FROM_PROJECT_TEAM = "project_team"
 
 
-def followed(db: Session, profile: Optional[ReportProfile], team: Team) -> Dict[str, Any]:
+def followed(db: Session, profile: Optional[ReportProfile], team: Team, kind: Optional[str] = None) -> Dict[str, Any]:
     """What a report of this project prints for a detail it does NOT
     override: the project's report default, else (author, disclaimer) the
     installation's, else (team) the project's analysts and admins.  ``team``
-    is asked only when the project's defaults name nobody."""
-    return followed_with_sources(db, profile, team)[0]
+    is asked only when the project's defaults name nobody.  An addendum
+    (``kind``) follows nothing for ``OWN_IN_ADDENDUM``."""
+    return followed_with_sources(db, profile, team, kind)[0]
 
 
 def followed_with_sources(
-    db: Session, profile: Optional[ReportProfile], team: Team,
+    db: Session, profile: Optional[ReportProfile], team: Team, kind: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Optional[str]]]:
     """:func:`followed`, and for each key the level its value came from
     (``FROM_PROJECT``, ``FROM_INSTALLATION``, ``FROM_PROJECT_TEAM``, or None
     when no level holds one) — what the page says beside a followed detail."""
     out: Dict[str, Any] = {}
     sources: Dict[str, Optional[str]] = {}
+    own = OWN_IN_ADDENDUM if kind == "addendum" else ()
     for key in DETAIL_KEYS:
-        value = getattr(profile, key, None) if profile is not None else None
+        value = getattr(profile, key, None) if profile is not None and key not in own else None
         out[key] = _entries(value) if key in LIST_KEYS else _clean(value)
         sources[key] = FROM_PROJECT if out[key] else None
     if not out["testers"]:
@@ -125,11 +137,13 @@ def followed_with_sources(
 
 def resolve(
     db: Session, profile: Optional[ReportProfile], settings: Optional[Mapping[str, Any]], team: Team,
+    kind: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """The value in force for every detail of a report with these
-    ``settings``: its override where it has one, else what it follows."""
+    """The value in force for every detail of a report (of this ``kind``)
+    with these ``settings``: its override where it has one, else what it
+    follows."""
     own = overrides(settings)
-    return apply_overrides(followed(db, profile, (lambda: []) if "testers" in own else team), own)
+    return apply_overrides(followed(db, profile, (lambda: []) if "testers" in own else team, kind), own)
 
 
 def apply_overrides(follows: Mapping[str, Any], settings: Optional[Mapping[str, Any]]) -> Dict[str, Any]:

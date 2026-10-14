@@ -29,6 +29,10 @@ export interface ReportRecipient {
 }
 
 export interface EngagementSettings {
+  /** Owner, 2026-10-14 — the executive summary (Markdown) is the PROJECT's: a
+   *  full report prints it unless it overrides it; an addendum's ("Summary of
+   *  changes") is always its own. */
+  executive_summary?: string | null;
   client_name: string | null;
   classification: string | null;
   engagement_type: string | null;
@@ -259,6 +263,8 @@ export interface ClientReport {
   superseded_by: ReportRef | null;
   /** The details this report overrides — only those keys. */
   settings: EngagementOverrides;
+  /** The summary it prints (`effective.executive_summary`); a single read
+   *  only — null on list rows. */
   executive_summary: string | null;
   template_fingerprint: string | null;
   quarto_version: string | null;
@@ -305,8 +311,8 @@ export interface ClientReportUpdate {
   title?: string;
   template?: string;
   baseline_report_id?: number;
-  executive_summary?: string | null;
-  /** The complete override map (replaces the stored one). */
+  /** The complete override map (replaces the stored one); the executive
+   *  summary is one of its keys. */
   settings?: EngagementOverrides;
 }
 

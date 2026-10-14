@@ -172,13 +172,15 @@ const written = (text: string | null | undefined): boolean => !!text?.trim();
  *  text of theirs.  Images are counted from the description's own references
  *  (`referencedImageIds`), so nothing is fetched to say it. */
 export const profileWritten = (
-  profile: Pick<ReportProfile, 'system_description' | 'applications' | 'thick_clients' | 'other_targets' | 'disclaimer' | 'inherited'>,
-): { system: string; targets: string; disclaimer: string } => {
+  profile: Pick<ReportProfile, 'executive_summary' | 'system_description' | 'applications' | 'thick_clients' | 'other_targets' | 'disclaimer' | 'inherited'>,
+): { summary: string; system: string; targets: string; disclaimer: string } => {
   const images = referencedImageIds(profile.system_description).length;
   const lists = ([
     ['applications', 'Applications'], ['thick_clients', 'Thick clients'], ['other_targets', 'Other'],
   ] as const).filter(([key]) => written(profile[key])).map(([, label]) => label);
   return {
+    // Every full report prints it unless it overrides it (owner, 2026-10-14).
+    summary: written(profile.executive_summary) ? 'Written — every full report prints it unless it overrides it' : 'Not written',
     system: !written(profile.system_description) ? 'Not written'
       : images ? `Written · ${images.toLocaleString()} image${images === 1 ? '' : 's'} placed` : 'Written',
     targets: lists.length ? `Written: ${lists.join(', ')}` : 'None written',
@@ -661,6 +663,8 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
               detail, and the text itself is one click away (Edit).  Before,
               nothing here told a reader a description, a target list or a
               disclaimer had been written at all (walkthrough 2026-10-13). */}
+          <dt className={DETAIL_NAME}>Executive summary</dt>
+          <dd className="break-words" data-testid="profile-summary">{profileWritten(profile).summary}</dd>
           <dt className={DETAIL_NAME}>System description</dt>
           <dd className="break-words" data-testid="profile-system">{profileWritten(profile).system}</dd>
           <dt className={DETAIL_NAME}>Other targets</dt>

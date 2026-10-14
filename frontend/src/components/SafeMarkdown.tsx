@@ -29,7 +29,7 @@ import React, { useEffect } from 'react';
 
 import type { EvidenceImages } from '../utils/evidenceImages';
 import {
-  CellAlign, isTableRow, splitTableRow, tableAlignments, tableCaptionOf,
+  CellAlign, isTableRow, listingCaptionOf, splitTableRow, tableAlignments, tableCaptionOf,
 } from '../utils/markdownEditing';
 import { findMentionSpans } from '../utils/mentions';
 import { EvidenceResolver, evidenceReferenceAt } from '../utils/reportImages';
@@ -416,7 +416,8 @@ const renderInline =(s: string, keyPrefix = 'i', how: How = {}): React.ReactNode
 type Block =
   | { kind: 'para'; text: string }
   | { kind: 'heading'; text: string }
-  | { kind: 'code'; text: string }
+  // `caption`: a `Listing:` paragraph directly after it ('' for a bare one).
+  | { kind: 'code'; text: string; caption?: string }
   | { kind: 'rule' }
   | { kind: 'quote'; lines: string[] }
   | { kind: 'list'; ordered: boolean; start: number; items: string[][] }
@@ -582,7 +583,8 @@ const parseBlocks =(source: string): Block[] => {
 /**
  * The report's table captions (`caption_tables` in quarto_fields.lua): a
  * paragraph that opens with `Table:` DIRECTLY after a table is that table's
- * caption — printed under it, numbered — and is no longer a paragraph.  The
+ * caption — printed under it, numbered — and is no longer a paragraph; one
+ * opening with `Listing:` directly after a code block is that block's.  The
  * same paragraph anywhere else stays the text it is.
  */
 const captionTables = (blocks: Block[]): Block[] => {
@@ -590,8 +592,10 @@ const captionTables = (blocks: Block[]): Block[] => {
   for (let n = 0; n < blocks.length; n += 1) {
     const block = blocks[n];
     const next = blocks[n + 1];
-    const caption = block.kind === 'table' && next?.kind === 'para' ? tableCaptionOf(next.text) : null;
-    if (block.kind === 'table' && caption !== null) {
+    const caption = next?.kind !== 'para' ? null
+      : block.kind === 'table' ? tableCaptionOf(next.text)
+        : block.kind === 'code' ? listingCaptionOf(next.text) : null;
+    if ((block.kind === 'table' || block.kind === 'code') && caption !== null) {
       out.push({ ...block, caption });
       n += 1;
     } else {
@@ -612,9 +616,19 @@ const renderBlocks = (blocks: Block[], keyPrefix: string, how: How = {}): React.
         return <p key={key}><strong>{renderInline(b.text, key, how)}</strong></p>;
       case 'code':
         return (
-          <pre key={key} className="overflow-x-auto rounded bg-muted p-sm font-mono text-caption">
-            <code>{b.text}</code>
-          </pre>
+          <figure key={key} className="m-0">
+            <pre className="overflow-x-auto rounded bg-muted p-sm font-mono text-caption">
+              <code>{b.text}</code>
+            </pre>
+            {b.caption !== undefined && (
+              // Under the code, as the report prints it; the number
+              // ("Listing 2:") is the report's to give.
+              <figcaption className="break-words pt-xxs text-center text-caption font-semibold text-foreground [overflow-wrap:anywhere]"
+                data-testid="listing-caption">
+                {b.caption ? <>Listing: {renderInline(b.caption, `${key}-c`, how)}</> : 'Listing'}
+              </figcaption>
+            )}
+          </figure>
         );
       case 'rule':
         return <hr key={key} className="border-border" />;

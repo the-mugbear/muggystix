@@ -220,8 +220,11 @@ def test_a_finding_under_investigation_needs_its_owner(client, db_session, test_
     db_session.commit()
     body = _my_findings(client, test_project.id)
     assert [i["finding_id"] for i in body["items"]] == [f.id] and body["total_open"] == 1
+    # A finding marked for retest says so (owner, 2026-10-14), in place of
+    # "under investigation".
     assert body["items"][0]["needs"] == [
-        {"kind": "under_investigation", "text": "under investigation", "count": 1},
+        {"kind": "under_investigation", "text": "under investigation", "count": 1} if status == "open"
+        else {"kind": "retest", "text": "marked for retest", "count": 1},
     ]
     # Unwritten text on a finding the report would not include yet is not owed.
     assert body["items"][0]["missing_text"] == []
@@ -357,6 +360,7 @@ def test_every_group_brings_its_own_rows_and_the_total_is_their_sum(
         "findings_needing_me": 1,
         "findings_to_decide": 1,
         "findings_to_write": 0,
+        "findings_to_retest": 0,
         "to_claim": 4,
     }
     # "In review" opens exactly the caller's hosts — not a teammate's.

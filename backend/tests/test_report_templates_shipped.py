@@ -451,9 +451,9 @@ def test_the_pentest_finding_prints_no_status_port_or_note():
         {"address": "192.0.2.10", "hostname": "files01", "name": None, "port": "445/tcp", "state": "STATENOTE"},
     ]
     section = _finding_section(_fill("pentest", data), first["id"])
-    assert "| Reference | CVSS score | Vector |\n" in section
+    assert "| CVSS score | Vector |\n" in section
     assert "| System | Name |\n" in section and "| 192\\.0\\.2\\.10 | files01 |\n" in section
-    for gone in ("Status", "STATUSNOTE", "Port", "445", "Note", "STATENOTE"):
+    for gone in ("| Reference", "Status", "STATUSNOTE", "Port", "445", "Note", "STATENOTE"):
         assert gone not in section, gone
 
 

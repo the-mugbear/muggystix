@@ -72,7 +72,6 @@ import { Label } from '../components/ui/label';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
-import MarkdownField from '../components/MarkdownField';
 import { FileButtons, RENDER_POLL_MS, isRendering, reportKindLabel } from './Reports';
 
 // `pdf` labels a file of a report issued before PDF was removed (5.293.0).
@@ -189,15 +188,14 @@ export const describeDetail = (v: EngagementSettings[DetailKey] | null | undefin
 interface Form {
   title: string;
   template: string;
-  executive_summary: string;
-  /** The report's overrides; a detail left out follows the project. */
+  /** The report's overrides; a detail left out follows the project — the
+   *  executive summary too (owner, 2026-10-14). */
   settings: EngagementOverrides;
 }
 
 const toForm = (r: ClientReport): Form => ({
   title: r.title,
   template: r.template,
-  executive_summary: r.executive_summary ?? '',
   settings: r.settings,
 });
 
@@ -336,7 +334,6 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     mutationFn: (next: Form) => updateClientReport(projectId, reportId, {
       title: next.title.trim(),
       template: next.template,
-      executive_summary: next.executive_summary.trim() || null,
       settings: cleanSettings(next.settings),
     }),
     onSuccess: (updated) => {
@@ -915,21 +912,6 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               onChange={(e) => edit({ title: e.target.value })} />
           </div>
 
-          <div className="min-w-0 space-y-xxs">
-            <div className="flex flex-wrap items-end justify-between gap-xs">
-              <Label htmlFor="report-summary" className={DETAIL_NAME}>{report.kind === 'addendum' ? 'Summary of changes' : 'Executive summary'}</Label>
-              {editable && (
-                <Button type="button" variant="ghost" size="sm" onClick={() => setAiOpen(true)}>
-                  <Sparkles className="size-4" aria-hidden /> Draft with AI…
-                </Button>
-              )}
-            </div>
-            {editable && <p className="text-caption text-muted-foreground">Markdown. Written for this report only.</p>}
-            <MarkdownField id="report-summary" label={report.kind === 'addendum' ? 'Summary of changes' : 'Executive summary'}
-              rows={8} maxLength={65536} value={form.executive_summary} disabled={!editable || saving}
-              onChange={(v) => edit({ executive_summary: v })} />
-          </div>
-
           {/* A draft: its overrides over what it follows.  Read only (issued,
               or not the reader's to edit): every value it prints — as issued. */}
           <EngagementSettingsFields idPrefix="report"
@@ -944,6 +926,15 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             onPromote={editable ? (key, value) => { void promote(key, value); } : undefined}
             projectBusy={setForProject.isPending || promoting.isPending}
             projectEdits={projectEdits} onProjectEditsChange={setProjectEdits}
+            // The executive summary is the project's (owner, 2026-10-14); an
+            // addendum's summary of changes is its own.
+            summaryLabel={report.kind === 'addendum' ? 'Summary of changes' : 'Executive summary'}
+            summaryOwn={report.kind === 'addendum'}
+            summaryAction={editable ? (
+              <Button type="button" variant="ghost" size="sm" onClick={() => setAiOpen(true)}>
+                <Sparkles className="size-4" aria-hidden /> Draft with AI…
+              </Button>
+            ) : undefined}
             readOnly={!editable} disabled={saving} onChange={(settings) => edit({ settings })} />
 
           {editable && (
@@ -962,7 +953,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
 
       <AiDraftReportDialog reportId={reportId} open={aiOpen} onClose={() => setAiOpen(false)}
         useLabel="Use as the summary"
-        onUse={(text) => edit({ executive_summary: text })} />
+        // The draft overrides the project's summary with it (Save keeps it;
+        // "Make this the project's default" pushes it up).
+        onUse={(text) => edit({ settings: { ...form.settings, executive_summary: text } })} />
       {confirmDialog}
       {leaveDialog}
     </div>

@@ -31,7 +31,7 @@ from app.db.session import get_db
 from app.schemas.remediation_schemas import (
     UPCOMING_MAX_DAYS, ApplyBody, AssignFromReportBody, ContactReportBody, Flag, FollowUpBody, Grouping,
     NoteCreate, NoteUpdate, OverdueBand, OverviewFollowUpBody, PolicyUpdate, RemediationState,
-    RemediationStatus, Severity, Verification,
+    RemediationStatus, Severity, Verification, Defect,
 )
 from app.services import remediation_policy, remediation_report
 from app.services import remediation_service as remediation
@@ -95,6 +95,13 @@ _TEAM = Query(None, min_length=1, max_length=100, description="Exactly this team
 _BAND = Query(None, description="Only OVERDUE rows this many days past their deadline.")
 _STALE = Query(None, ge=1, le=365, description=(
     "Only overdue and due-soon rows nobody recorded a follow-up for in this many days (or ever)."))
+_DEFECT = Query(None, description=(
+    "Where the row stands as a defect; repeat for several. `remediated` — the ENDPOINT is "
+    "`remediated` (the assessor's retest concluded it fixed; never the contact's \"Reported fixed\"); "
+    "`deferred` — not remediated and the record is deferred; `open` — anything else. A false-positive "
+    "endpoint is none of the three. Part of the selection: every count follows it."))
+_SEVERITY = Query(None, description="The finding's severity; repeat for several (\"Critical & High\").")
+_ACTIVE_ONLY = Query(False, description="Leave out archived projects (the defect metrics' \"all active projects\").")
 _TREND_DAYS = Query(90, ge=7, le=730, description="How many days of daily counts to return.")
 
 
@@ -113,10 +120,11 @@ def make_router(reader, admin, *, dependencies=(), page=None):
                 contact: Optional[str] = _CONTACT,
                 unassigned: bool = Query(False, description="Only rows with no contact."),
                 host_id: Optional[int] = Query(None, gt=0), finding_id: Optional[int] = Query(None, gt=0),
-                severity: Optional[Severity] = None, team: Optional[str] = _TEAM,
+                severity: Optional[List[Severity]] = _SEVERITY, team: Optional[str] = _TEAM,
                 overdue_band: Optional[OverdueBand] = _BAND, no_follow_up_days: Optional[int] = _STALE,
                 verification: Optional[Verification] = _VERIFICATION,
                 flag: Optional[Flag] = _FLAG, q: Optional[str] = _SEARCH,
+                defect: Optional[List[Defect]] = _DEFECT,
                 group: Grouping = "host",
                 limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
                 actor: Actor = Depends(reader), db: Session = Depends(get_db)):
@@ -125,7 +133,7 @@ def make_router(reader, admin, *, dependencies=(), page=None):
             db, [actor.project_id], status=status, state=state, contact=contact, unassigned=unassigned,
             host_id=host_id, finding_id=finding_id, severity=severity, team=team,
             overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, verification=verification,
-            flag=flag, q=q, group=group, limit=limit, offset=offset), limit, offset)
+            flag=flag, q=q, defect=defect, group=group, limit=limit, offset=offset), limit, offset)
 
     @router.get("/remediation/export",
                 summary="The list's rows for a file, in one answer (no counts; up to 20,000 rows)")
@@ -134,10 +142,11 @@ def make_router(reader, admin, *, dependencies=(), page=None):
                contact: Optional[str] = _CONTACT,
                unassigned: bool = Query(False, description="Only rows with no contact."),
                host_id: Optional[int] = Query(None, gt=0), finding_id: Optional[int] = Query(None, gt=0),
-               severity: Optional[Severity] = None, team: Optional[str] = _TEAM,
+               severity: Optional[List[Severity]] = _SEVERITY, team: Optional[str] = _TEAM,
                overdue_band: Optional[OverdueBand] = _BAND, no_follow_up_days: Optional[int] = _STALE,
                verification: Optional[Verification] = _VERIFICATION,
                flag: Optional[Flag] = _FLAG, q: Optional[str] = _SEARCH,
+               defect: Optional[List[Defect]] = _DEFECT,
                group: Grouping = "host",
                actor: Actor = Depends(reader), db: Session = Depends(get_db)):
         """Every filter of the list, the same rows in the same order — without
@@ -148,7 +157,7 @@ def make_router(reader, admin, *, dependencies=(), page=None):
             db, [actor.project_id], status=status, state=state, contact=contact, unassigned=unassigned,
             host_id=host_id, finding_id=finding_id, severity=severity, team=team,
             overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, verification=verification,
-            flag=flag, q=q, group=group)
+            flag=flag, q=q, defect=defect, group=group)
 
     @router.get("/remediation/contacts", summary="The contacts in use, with their counts")
     def contact_list(actor: Actor = Depends(reader), db: Session = Depends(get_db)):
@@ -374,10 +383,12 @@ account_router.include_router(
 )
 
 
-def _selected(projects: List[Project], project_id: Optional[int]) -> List[int]:
+def _selected(projects: List[Project], project_id: Optional[int], active_only: bool = False) -> List[int]:
+    """The projects asked about: ``project_id`` (archived or not), else every
+    administered project — only the ones not archived with ``active_only``."""
     ids = [p.id for p in projects]
     if project_id is None:
-        return ids
+        return [p.id for p in projects if p.status != "archived"] if active_only else ids
     if project_id not in ids:
         raise HTTPException(404, "Not a project whose remediation you follow up")
     return [project_id]
@@ -391,18 +402,19 @@ def overview(project_id: Optional[int] = Query(None, gt=0),
              contact: Optional[str] = _CONTACT,
              contact_email: Optional[str] = Query(None, min_length=3, max_length=254,
                                                   description="Exactly this contact."),
-             unassigned: bool = False, severity: Optional[Severity] = None, team: Optional[str] = _TEAM,
+             unassigned: bool = False, severity: Optional[List[Severity]] = _SEVERITY, team: Optional[str] = _TEAM,
              overdue_band: Optional[OverdueBand] = _BAND, no_follow_up_days: Optional[int] = _STALE,
              verification: Optional[Verification] = _VERIFICATION,
              flag: Optional[Flag] = _FLAG, q: Optional[str] = _SEARCH,
+             defect: Optional[List[Defect]] = _DEFECT, active_only: bool = _ACTIVE_ONLY,
              group: Grouping = "due",
              limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
              projects: List[Project] = Depends(administered_projects), db: Session = Depends(get_db)):
     return remediation.list_rows(
-        db, _selected(projects, project_id), status=status, state=state, contact=contact,
+        db, _selected(projects, project_id, active_only), status=status, state=state, contact=contact,
         contact_email=contact_email, unassigned=unassigned, severity=severity, team=team,
         overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, verification=verification,
-        flag=flag, q=q, group=group, limit=limit, offset=offset)
+        flag=flag, q=q, defect=defect, group=group, limit=limit, offset=offset)
 
 
 @account_router.get("/remediation-overview/export",
@@ -413,18 +425,19 @@ def overview_export(project_id: Optional[int] = Query(None, gt=0),
                     contact: Optional[str] = _CONTACT,
                     contact_email: Optional[str] = Query(None, min_length=3, max_length=254,
                                                          description="Exactly this contact."),
-                    unassigned: bool = False, severity: Optional[Severity] = None,
+                    unassigned: bool = False, severity: Optional[List[Severity]] = _SEVERITY,
                     team: Optional[str] = _TEAM,
                     overdue_band: Optional[OverdueBand] = _BAND, no_follow_up_days: Optional[int] = _STALE,
                     verification: Optional[Verification] = _VERIFICATION,
                     flag: Optional[Flag] = _FLAG, q: Optional[str] = _SEARCH,
+                    defect: Optional[List[Defect]] = _DEFECT, active_only: bool = _ACTIVE_ONLY,
                     group: Grouping = "due",
                     projects: List[Project] = Depends(administered_projects), db: Session = Depends(get_db)):
     return remediation.export_rows(
-        db, _selected(projects, project_id), status=status, state=state, contact=contact,
+        db, _selected(projects, project_id, active_only), status=status, state=state, contact=contact,
         contact_email=contact_email, unassigned=unassigned, severity=severity, team=team,
         overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, verification=verification,
-        flag=flag, q=q, group=group)
+        flag=flag, q=q, defect=defect, group=group)
 
 
 @account_router.get("/remediation-overview/projects",
@@ -432,11 +445,35 @@ def overview_export(project_id: Optional[int] = Query(None, gt=0),
 def overview_projects(projects: List[Project] = Depends(administered_projects),
                       policy: remediation_policy.Policy = Depends(enabled), db: Session = Depends(get_db)):
     today = policy.today()
-    counts = remediation.state_counts_by_project(db, [p.id for p in projects], policy, today)
+    ids = [p.id for p in projects]
+    counts = remediation.state_counts_by_project(db, ids, policy, today)
+    defects = remediation.defect_counts_by_project(db, ids)
     items = [{"project_id": p.id, "name": p.name, "archived": p.status == "archived",
-              "states": counts[p.id]} for p in projects]
+              "states": counts[p.id], "total": defects[p.id]["total"],
+              "remediated": defects[p.id]["remediated"]} for p in projects]
     totals = {name: sum(row["states"][name] for row in items) for name in remediation_policy.STATES}
-    return {"items": items, "totals": totals, "as_of": today.isoformat(), "policy": policy.as_dict()}
+    defect_totals = {"total": sum(row["total"] for row in items),
+                     "remediated": sum(row["remediated"] for row in items)}
+    return {"items": items, "totals": totals, "defect_totals": defect_totals, "as_of": today.isoformat(),
+            "policy": policy.as_dict()}
+
+
+@account_router.get("/remediation-overview/defect-metrics",
+                    summary="Defects by severity: counts, remediation rate and time to remediate")
+def overview_defect_metrics(project_id: Optional[int] = Query(None, gt=0, description=(
+                                "One project you administer (archived or not); without it every one "
+                                "you administer that is NOT archived.")),
+                            projects: List[Project] = Depends(administered_projects),
+                            policy: remediation_policy.Policy = Depends(enabled), db: Session = Depends(get_db)):
+    """Rows Overall, Critical & High, Critical, High, Medium, Low (and
+    Informational when it has defects); each count opens the list with
+    `defect=` (and `severity=`, `active_only=true` without `project_id`).
+    A defect is a finding on a host of the list; times to remediate are
+    measured from the assigned date (`remediation_service.defect_metrics`)."""
+    today = policy.today()
+    ids = _selected(projects, project_id, active_only=True)
+    return {**remediation.defect_metrics(db, ids, policy, today), "project_id": project_id,
+            "projects": len(ids)}
 
 
 @account_router.get("/remediation-overview/contacts",

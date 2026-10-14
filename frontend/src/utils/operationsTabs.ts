@@ -30,10 +30,12 @@ export const TEST_KIND_LABEL: Record<MyTaskReason, string> = {
   triage: 'Free to claim',
 };
 
-/** The two kinds of work the Findings tab lists — a finding is under ONE: a
- *  decision comes before the writing. */
-export const FINDING_NEEDS: FindingNeed[] = ['decide', 'write'];
+/** The kinds of work the Findings tab lists.  `decide` and `write`
+ *  partition it (a decision comes before the writing); `retest` narrows
+ *  `decide` to the findings marked for retest (owner, 2026-10-14). */
+export const FINDING_NEEDS: FindingNeed[] = ['retest', 'decide', 'write'];
 export const FINDING_NEED_LABEL: Record<FindingNeed, string> = {
+  retest: 'Marked for retest',
   decide: 'Needs a decision',
   write: 'Needs report text',
 };
@@ -49,6 +51,8 @@ export interface OperationsTabCounts {
   findingsDecide: number | null;
   /** …of which: only required report text is missing. */
   findingsWrite: number | null;
+  /** Of `findingsDecide`: marked for retest (the finding, or one of its hosts). */
+  findingsRetest: number | null;
   /** Hosts the reader has In Review. */
   hosts: number | null;
   /** Tests that are the reader's: assigned to them, or on a host they review. */
@@ -67,7 +71,7 @@ export interface OperationsTabCounts {
 }
 
 export const NO_COUNTS: OperationsTabCounts = {
-  findings: null, findingsDecide: null, findingsWrite: null,
+  findings: null, findingsDecide: null, findingsWrite: null, findingsRetest: null,
   hosts: null,
   tests: null, testsAssigned: null, testsInReview: null,
   toClaim: null, changed: null, pickup: null,
@@ -85,6 +89,7 @@ export function operationsTabCounts(
     findings: work?.findings_needing_me ?? workbench.my_findings?.total_open ?? null,
     findingsDecide: work?.findings_to_decide ?? null,
     findingsWrite: work?.findings_to_write ?? null,
+    findingsRetest: work?.findings_to_retest ?? null,
     hosts: work?.hosts_in_review ?? workbench.my_queue?.in_review_count ?? null,
     tests: work
       ? work.tests_assigned + work.tests_on_hosts_in_review

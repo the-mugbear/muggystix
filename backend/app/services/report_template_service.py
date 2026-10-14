@@ -98,6 +98,11 @@ class ReportTemplate:
     # Whether the template prints how each finding was confirmed (its
     # evidence records).  Opt-in: only a literal ``true`` in template.json.
     evidence_records: bool = False
+    # Whether a finding carries the tools that observed it (``corroboration``,
+    # printed by pentest as "Observed by Nessus, OpenVAS").  Opt-in (owner,
+    # 2026-10-14: a report should not name the identifying tool unless the
+    # template asks): only a literal ``true`` in template.json.
+    corroboration: bool = False
     # Which evidence images the template prints (review 2026-10-01 S2), from
     # template.json → "images": the written fields whose placed images it
     # prints, and whether it prints the rest in a trailing evidence block.
@@ -128,6 +133,7 @@ class ReportTemplate:
             "scope_inline_max": self.scope_inline_max,
             "scope_domains_inline_max": self.scope_domains_inline_max,
             "evidence_records": self.evidence_records,
+            "corroboration": self.corroboration,
             "images": self.images,
             "kind": self.kind,
         }
@@ -206,6 +212,7 @@ def _load(folder: Path, *, uploads: bool = True) -> ReportTemplate:
         description=str(data.get("description") or ""), entry=entry, formats=formats,
         postprocess=post, assets=assets,
         evidence_records=data.get("evidence_records") is True,
+        corroboration=data.get("corroboration") is True,
         image_fields=image_fields, image_trailing=image_trailing, kind=kind,
         extends=base.name if base is not None else None, **cutoffs,
     )

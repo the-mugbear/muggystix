@@ -371,6 +371,7 @@ def test_the_one_resolver_is_what_the_builder_uses(db_session, test_project):
     assert report_defaults.installation(db_session) == {"author_name": "Installation Ltd", "disclaimer": None}
     follows = report_defaults.followed(db_session, profile, project_team)
     assert follows == {
+        "executive_summary": None,
         "client_name": "Example Corp", "classification": None, "engagement_type": None, "testers": team,
         "distribution": [{"name": "CISO"}], "system_description": None, "applications": None,
         "thick_clients": None, "other_targets": None,

@@ -338,7 +338,7 @@ def _profile_out(db: Session, project_id: int, profile: Optional[ReportProfile])
         engagement_type=profile.engagement_type, testers=team,
         distribution=profile.distribution or [], system_description=profile.system_description,
         applications=profile.applications, thick_clients=profile.thick_clients,
-        other_targets=profile.other_targets,
+        other_targets=profile.other_targets, executive_summary=profile.executive_summary,
         template=profile.template or templates.default_template_name(),
         updated_at=profile.updated_at, testers_from_project=from_project,
     )
@@ -555,7 +555,10 @@ def create_report(
     # overrides it (``report_defaults.resolve``).
     # An image the baseline printed that the project no longer has is
     # restored from the baseline's copy (`settings_carried_from`).
-    carried = svc.settings_carried_from(baseline, current_user.id) if baseline is not None else {}
+    # Its summary is its own (`report_defaults.OWN_IN_ADDENDUM`): the
+    # baseline's executive summary is not carried.
+    carried = (svc.settings_carried_from(baseline, current_user.id, with_summary=False)
+               if baseline is not None else {})
     report = Report(
         project_id=project.id, kind=body.kind, status=ReportStatus.DRAFT, title=title[:255],
         template=template_name, baseline_report_id=baseline.id if baseline else None,
@@ -606,8 +609,6 @@ def update_report(
         if report.kind != ReportKind.ADDENDUM:
             raise HTTPException(status_code=422, detail="Only an addendum has a baseline.")
         report.baseline_report_id = _issued_baseline(db, project, body.baseline_report_id).id
-    if "executive_summary" in sent:
-        report.executive_summary = (body.executive_summary or "").strip() or None
     if "settings" in sent and body.settings is not None:
         # The complete override map: only the keys the caller SENT (a key
         # left out follows the project), normalised — a blank text is not an
@@ -654,6 +655,12 @@ def promote_report_details(
     report = _load_for_change(db, project, report_id)
     if report.status != ReportStatus.DRAFT:
         raise HTTPException(status_code=409, detail="An issued report cannot be changed; start a revision instead.")
+    own = [key for key in data if key in report_defaults.OWN_IN_ADDENDUM] if report.kind == "addendum" else []
+    if own:
+        raise HTTPException(
+            status_code=422,
+            detail="An addendum's summary of changes is its own: it cannot become the project's executive summary.",
+        )
     _write_profile(db, project.id, data, current_user.id)
     report.settings = {
         key: value for key, value in report_defaults.overrides(report.settings).items() if key not in data
@@ -853,7 +860,6 @@ def revise_report(
         title=original.title, template=original.template,
         baseline_report_id=original.baseline_report_id, revision_of_id=original.id,
         settings=carried,
-        executive_summary=original.executive_summary,
         created_by_id=current_user.id,
     )
     db.add(draft)

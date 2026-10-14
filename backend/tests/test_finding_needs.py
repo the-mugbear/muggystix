@@ -261,7 +261,7 @@ def test_operations_says_the_older_needs_as_before_and_lists_a_missing_caption(
         "Write": [("missing_text", "report text missing: description, impact")],
         "Caption": [("uncaptioned_images", "1 report image without a caption")],
     }
-    assert body["need_counts"] == {"decide": 1, "write": 2} and body["total_open"] == 3
+    assert body["need_counts"] == {"decide": 1, "write": 2, "retest": 0} and body["total_open"] == 3
     by_title = {i["title"]: i for i in body["items"]}
     assert by_title["Write"]["missing_text"] == ["description", "impact"]
     assert by_title["Caption"]["uncaptioned_images"] == 1

@@ -94,7 +94,7 @@ class FindingNeed(BaseModel):
     """One thing a finding still needs before the report goes out
     (``services/finding_needs.py``, the one definition)."""
     # missing_text | uncaptioned_images | proposals — and, on Operations'
-    # "Findings that need me" only, under_investigation.
+    # "Findings that need me" only, retest and under_investigation.
     kind: str
     # The sentence a row shows, the same on every page.
     text: str

@@ -9,7 +9,10 @@
  *   - a short guide to what the report accepts (no images or HTML, headings
  *     print as bold text);
  *   - a warning, with a one-click fix, for a table written straight after a
- *     line of text — the report joins it into that paragraph.
+ *     line of text — the report joins it into that paragraph;
+ *   - where the images can take one (`images.upload`: the System
+ *     description), a screenshot pasted into the text is uploaded and placed
+ *     where it was pasted, as on a finding's comment (owner, 2026-10-14).
  *
  * The label stays the caller's (`<Label htmlFor={id}>`), so the textarea is
  * found by its label as before.
@@ -30,7 +33,8 @@ import {
   tablesAfterText,
   wrapSelection,
 } from '../utils/markdownEditing';
-import { MarkdownImages, imageReference } from '../utils/reportImages';
+import { formatApiError } from '../utils/apiErrors';
+import { MarkdownImages, ReportImageProblem, imageReference } from '../utils/reportImages';
 import { Button } from './ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Textarea } from './ui/textarea';
@@ -67,10 +71,10 @@ const IMAGE_WORDS: Record<ImageSource, { none: string; title: string; picker: st
     guide: 'only this finding’s own, ticked “In report”',
   },
   report: {
-    none: 'No image to insert: upload one below.',
+    none: 'No image to insert: paste a screenshot into the text, or upload one below.',
     title: 'Insert one of the report’s own images',
     picker: 'Images uploaded for the report’s own text, below. An image placed in the text prints there with its caption.',
-    guide: 'only the ones uploaded for the report’s own text, below',
+    guide: 'only the ones uploaded for the report’s own text, below, or pasted into it (Ctrl/Cmd+V)',
   },
 };
 
@@ -80,6 +84,7 @@ const GUIDE: Array<[string, string]> = [
   ['```  …  ```', 'A code block (commands, output) on lines of its own'],
   ['| A | B |\n| - | - |\n| 1 | 2 |', 'A table — leave a blank line before it'],
   ['Table: caption', 'On the line after a table (blank line between): its numbered caption, printed under it'],
+  ['Listing: caption', 'On the line after a code block (blank line between): its numbered caption, printed under it'],
   ['[text](https://…)', 'A link — web and mail links only'],
   ['blank line', 'Starts a new paragraph (a single line break is a space)'],
 ];
@@ -154,6 +159,50 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
       event.preventDefault();
       apply(key === 'b' ? tools[0].run : tools[1].run);
     }
+  };
+
+  // A screenshot pasted into the text (where `images.upload` exists — the
+  // report's own images): stored, then its reference written where it was
+  // pasted, on a line of its own, as "Insert image" writes it.  The text may
+  // have changed while it uploaded, so the reference goes into the text as it
+  // is THEN, at the paste's place (or its end, if that text is now shorter).
+  const latest = useRef(value);
+  latest.current = value;
+  const [pasting, setPasting] = useState(0);
+  const [pasteError, setPasteError] = useState<string | null>(null);
+  const upload = images?.upload;
+  const onPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!upload) return;
+    const files = Array.from(event.clipboardData.files).filter((f) => f.type.startsWith('image/'));
+    if (files.length === 0) return;
+    event.preventDefault();
+    const at = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd };
+    setPasteError(null);
+    setPasting((n) => n + files.length);
+    void (async () => {
+      const ids: number[] = [];
+      for (const file of files) {
+        try {
+          ids.push(await upload(file));
+        } catch (err) {
+          setPasteError(err instanceof ReportImageProblem
+            ? err.message : formatApiError(err, 'Could not upload the pasted image.'));
+        }
+      }
+      setPasting((n) => n - files.length);
+      if (ids.length === 0) return;
+      const current = latest.current;
+      const edit = insertBlock(
+        { value: current, start: Math.min(at.start, current.length), end: Math.min(at.end, current.length) },
+        ids.map((id) => imageReference(id)).join('\n\n'),
+      );
+      if (maxLength !== undefined && edit.value.length > maxLength) {
+        setPasteError('The image was uploaded, but its reference would make the text too long — insert it from Insert image after shortening the text.');
+        return;
+      }
+      pendingSelection.current = { start: edit.start, end: edit.end };
+      onChange(edit.value);
+    })();
   };
 
   const joined = tablesAfterText(value);
@@ -299,7 +348,15 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
         </div>
       ) : (
         <Textarea ref={ref} id={id} rows={rows} maxLength={maxLength} value={value} disabled={disabled}
-          onKeyDown={onKeyDown} onChange={(e) => onChange(e.target.value)} className="font-mono" />
+          onKeyDown={onKeyDown} onPaste={onPaste} onChange={(e) => onChange(e.target.value)} className="font-mono" />
+      )}
+      {upload && !preview && (pasting > 0 || pasteError) && (
+        <p role={pasteError ? 'alert' : 'status'}
+          className={`text-caption [overflow-wrap:anywhere] ${pasteError ? 'text-destructive' : 'text-muted-foreground'}`}>
+          {pasting > 0
+            ? <><Loader2 className="mr-xxs inline size-3 animate-spin" aria-hidden />Uploading the pasted image…</>
+            : pasteError}
+        </p>
       )}
       {joined.length > 0 && (
         <p className="flex flex-wrap items-center gap-xs text-caption text-warning">

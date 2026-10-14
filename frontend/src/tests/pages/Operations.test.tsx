@@ -556,6 +556,33 @@ describe('Operations page', () => {
   describe('lead', () => {
     const leadOf = async () => (await screen.findByTestId('lead-needs-me')).closest('p') as HTMLElement;
 
+    // Owner, 2026-10-14: a finding of the reader's marked for retest — its
+    // status, or one of its hosts — is called out above the rest, opening
+    // exactly those (`?need=retest`, a part of the decisions).
+    it('calls out the findings marked for retest, and opens just them', async () => {
+      withWork({ my_work: { ...busy().my_work, findings_to_retest: 2 } });
+      mockedApi.getMyFindingsPage.mockResolvedValue({
+        items: [findingRow(21)], total_open: 24, need_counts: { ...NEEDS, retest: 2 },
+      });
+      const router = renderRouted('/operations?tab=hosts');
+      const callout = await screen.findByTestId('lead-retest');
+      expect(callout).toHaveTextContent('2 findings of yours are marked for retest');
+      expect(within(callout).getByRole('button', { name: 'What marked for retest means' })).toBeInTheDocument();
+      fireEvent.click(within(callout).getByRole('link', { name: /marked for retest/ }));
+      await waitFor(() => expect(router.state.location.search).toBe('?tab=findings&need=retest'));
+      await waitFor(() => expect(mockedApi.getMyFindingsPage).toHaveBeenLastCalledWith(
+        1, 'retest', expect.objectContaining({ offset: 0 }),
+      ));
+      expect(await screen.findByRole('button', { name: /^Marked for retest/ })).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('says nothing about retests when none is marked', async () => {
+      withWork();
+      renderRouted('/operations?tab=hosts');
+      await screen.findByTestId('lead-needs-me');
+      expect(screen.queryByTestId('lead-retest')).not.toBeInTheDocument();
+    });
+
     it('says each kind of work apart, in the order to do it, with NO total — each number a link to the list it counts', async () => {
       withWork({ blockers: { failed_import_count: 2, partial_import_count: 0, imports: [] } });
       const router = renderRouted('/operations?tab=hosts&tier=2');

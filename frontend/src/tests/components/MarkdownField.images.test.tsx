@@ -11,7 +11,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import MarkdownField from '../../components/MarkdownField';
-import type { MarkdownImages } from '../../utils/reportImages';
+import { ReportImageProblem, type MarkdownImages } from '../../utils/reportImages';
 
 const images = (over: Partial<MarkdownImages> = {}): MarkdownImages => ({
   placeable: [
@@ -117,5 +117,48 @@ describe('MarkdownField — Insert image', () => {
     expect(within(preview).getByRole('note')).toHaveTextContent('Image not available: evidence:404');
     // The picker is for writing.
     expect(screen.getByRole('button', { name: 'Insert image' })).toBeDisabled();
+  });
+});
+
+// Owner, 2026-10-14: the System description's images took no pasted
+// screenshot, unlike a finding's comment.  Where the images can take one
+// (`upload`), a pasted image is stored and placed where it was pasted.
+describe('MarkdownField — a pasted screenshot', () => {
+  const paste = (area: HTMLElement, files: File[]) => fireEvent.paste(area, { clipboardData: { files } });
+  const png = () => new File(['x'], 'image.png', { type: 'image/png' });
+
+  it('uploads it and writes its reference where it was pasted', async () => {
+    const upload = vi.fn().mockResolvedValue(91);
+    const onValue = vi.fn();
+    render(<Field initial={'First paragraph.\n\nSecond paragraph.'} images={images({ upload })} onValue={onValue} />);
+    const area = screen.getByRole('textbox') as HTMLTextAreaElement;
+    area.setSelectionRange(16, 16);
+    paste(area, [png()]);
+    expect(await screen.findByRole('status')).toHaveTextContent('Uploading the pasted image…');
+    await vi.waitFor(() => expect(onValue).toHaveBeenLastCalledWith(
+      'First paragraph.\n\n![](evidence:91)\n\nSecond paragraph.',
+    ));
+    expect(upload).toHaveBeenCalledWith(expect.objectContaining({ name: 'image.png' }));
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('says why when the upload is refused, and writes nothing', async () => {
+    const upload = vi.fn().mockRejectedValue(new ReportImageProblem('Only PNG, JPEG or GIF images can be printed in a report.'));
+    const onValue = vi.fn();
+    render(<Field initial="Text." images={images({ upload })} onValue={onValue} />);
+    paste(screen.getByRole('textbox'), [png()]);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Only PNG, JPEG or GIF images');
+    expect(onValue).not.toHaveBeenCalled();
+  });
+
+  it('leaves a paste alone where the images cannot take one (a finding’s), and text pastes always', () => {
+    const onValue = vi.fn();
+    render(<Field initial="Text." images={images()} onValue={onValue} />);
+    const area = screen.getByRole('textbox');
+    const event = new Event('paste', { bubbles: true, cancelable: true });
+    Object.assign(event, { clipboardData: { files: [png()] } });
+    area.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 });

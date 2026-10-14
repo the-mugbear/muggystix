@@ -39,13 +39,13 @@ from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException
-from sqlalchemy import Date, Integer, and_, case, cast, func, literal, null, or_
+from sqlalchemy import Date, Integer, and_, case, cast, func, literal, null, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models_findings import Finding, FindingHost, FindingHostStatus
 from app.db.models_remediation import (
     DEFAULT_DUE_SOON_DAYS, DEFAULT_TIME_ZONE, DEFAULT_TIMELINE_DAYS, TIMELINE_SEVERITIES,
-    FindingHostRemediation as Remediation, RemediationPolicy,
+    FindingHostRemediation as Remediation, RemediationEvent, RemediationPolicy,
 )
 
 #: Every state, in the order a work list shows them: what needs someone first.
@@ -274,6 +274,67 @@ def verification_expr():
          "remediated_record_open"),
         else_=None,
     )
+
+
+#: Where a finding on a host stands as a DEFECT (owner, 2026-10-14: the
+#: remediation deadlines page's "Remediated" column and its defect metrics).
+DEFECTS = ("open", "remediated", "deferred")
+
+
+def defect_expr():
+    """The ONE definition of a row's defect state; NULL for an endpoint the
+    team concluded is a false positive (not a defect).
+
+    * ``remediated`` — the ENDPOINT is ``remediated``: the assessor's retest
+      concluded it fixed (owner, 2026-10-14 — never the finding's status, and
+      never the contact's "Reported fixed").
+    * ``deferred`` — not remediated, and the record is ``deferred``.
+    * ``open`` — everything else, "Reported fixed" included: the contact's
+      claim is not the retest.
+    """
+    endpoint = FindingHost.host_status
+    return case(
+        (endpoint == FindingHostStatus.REMEDIATED.value, "remediated"),
+        (endpoint == FindingHostStatus.FALSE_POSITIVE.value, None),
+        (func.coalesce(Remediation.status, "open") == "deferred", "deferred"),
+        else_="open",
+    )
+
+
+def _local_day(db: Session, policy: Policy, moment):
+    """A stored moment as a day on the installation's calendar."""
+    if not _is_postgres(db):
+        return func.date(moment)
+    name = policy.time_zone if zone(policy.time_zone) is not None else "UTC"
+    return cast(func.timezone(name, moment), Date)
+
+
+def defect_closed_day_expr(db: Session, policy: Policy):
+    """The day a row stopped being an open defect, on the installation's
+    calendar: a remediated row's ``finding_hosts.remediated_at``; a deferred
+    row's latest recorded change of its status to ``deferred``.  NULL for an
+    open row, and for one whose day was never recorded (a remediated endpoint
+    with no history line to back-fill from)."""
+    deferred_at = (
+        select(func.max(RemediationEvent.occurred_at))
+        .where(RemediationEvent.finding_host_id == FindingHost.id, RemediationEvent.kind == "change",
+               RemediationEvent.field == "status", RemediationEvent.new_value == "deferred")
+        .correlate(FindingHost)
+        .scalar_subquery()
+    )
+    defect = defect_expr()
+    return case(
+        (defect == "remediated", _local_day(db, policy, FindingHost.remediated_at)),
+        (defect == "deferred", _local_day(db, policy, deferred_at)),
+        else_=None,
+    )
+
+
+def days_between(db: Session, end, start):
+    """Whole days from ``start`` to ``end`` (two dates)."""
+    if _is_postgres(db):
+        return end - start                       # date - date is whole days
+    return cast(func.julianday(end) - func.julianday(start), Integer)
 
 
 #: How long past its deadline an overdue row is: ``(name, first day, last day)``.

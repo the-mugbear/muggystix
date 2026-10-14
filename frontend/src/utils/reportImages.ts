@@ -168,6 +168,22 @@ export const captionAsAlt = (caption: string | null | undefined, max = 120): str
 };
 
 /** The Markdown that places image `id`. */
+/** What the server accepts for an image of the report's own text
+ *  (`store_image_attachment`): the upload button and a paste both ask
+ *  `reportImageProblem` before sending. */
+export const REPORT_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif'];
+export const REPORT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+
+/** Why this file cannot be uploaded, said before it is sent — else null. */
+export const reportImageProblem = (file: Pick<File, 'type' | 'size'>): string | null => {
+  if (!REPORT_IMAGE_TYPES.includes(file.type)) return 'Only PNG, JPEG or GIF images can be printed in a report.';
+  if (file.size > REPORT_IMAGE_MAX_BYTES) return 'This image is larger than 10 MB. Choose a smaller one.';
+  return null;
+};
+
+/** A file refused before it was sent; its message is the sentence to show. */
+export class ReportImageProblem extends Error {}
+
 export const imageReference = (id: number, caption?: string | null): string =>
   `![${captionAsAlt(caption)}](evidence:${id})`;
 
@@ -222,6 +238,10 @@ export interface MarkdownImages {
   /** Object URLs loaded so far, by attachment id (thumbnails). */
   urls: Record<number, string>;
   resolver: EvidenceResolver;
+  /** Where a pasted screenshot can be stored, answering its new id: the
+   *  report's own images have it (the System description; owner,
+   *  2026-10-14), a finding's do not — its screenshots go on a comment. */
+  upload?: (file: File) => Promise<number>;
 }
 
 /** What the preview needs to show a referenced image. */

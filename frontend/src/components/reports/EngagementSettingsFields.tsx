@@ -103,11 +103,19 @@ interface Props<T extends EngagementOverrides> {
    *  which an empty one there uses (`ReportProfile.inherited`). */
   inherited?: InheritedReportDetails | null;
   idPrefix: string;
+  /** The executive summary's name here ("Summary of changes" on an addendum). */
+  summaryLabel?: string;
+  /** An addendum: its summary is its OWN — never the project's executive
+   *  summary, no follow / override / push-up. */
+  summaryOwn?: boolean;
+  /** Beside the summary's name (a draft's "Draft with AI…"). */
+  summaryAction?: React.ReactNode;
 }
 
 const memberName = (m: ProjectMember) => m.full_name || m.username || `User ${m.user_id}`;
 
 export const DETAIL_LABELS: Record<DetailKey, string> = {
+  executive_summary: 'Executive summary',
   client_name: 'Client', author_name: 'Author', classification: 'Classification', engagement_type: 'Engagement type',
   testers: 'Assessment team', distribution: 'Distribution', system_description: 'System description',
   applications: 'Application URLs and API endpoints', thick_clients: 'Thick client applications',
@@ -278,6 +286,7 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
   value, onChange, members, membersStatus = 'ready', onRetryMembers, currentUser, disabled: busy, readOnly = false,
   followed, followedFrom, onSetForProject, onPromote, projectBusy = false, inherited, idPrefix,
   projectEdits: heldProjectEdits, onProjectEditsChange,
+  summaryLabel = DETAIL_LABELS.executive_summary, summaryOwn = false, summaryAction,
 }: Props<T>): React.ReactElement {
   const disabled = busy || readOnly;
   // A draft: each detail is the report's override, the project's being
@@ -288,8 +297,10 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
   const projectEdits = heldProjectEdits ?? ownProjectEdits;
   const setProjectEdits = onProjectEditsChange ?? setOwnProjectEdits;
   const [savingKey, setSavingKey] = useState<DetailKey | null>(null);
+  // An addendum's summary is its own text: never followed (`summaryOwn`).
+  const ownOnly = (key: DetailKey) => summaryOwn && key === 'executive_summary';
   const mode = (key: DetailKey): Mode => {
-    if (!drafting || isOverridden(value, key)) return 'own';
+    if (!drafting || isOverridden(value, key) || ownOnly(key)) return 'own';
     return key in projectEdits ? 'project' : 'followed';
   };
   const editable = (key: DetailKey) => mode(key) !== 'followed';
@@ -359,7 +370,7 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
   const onText = (key: TextKey) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => typed(key, e.target.value);
   const sourceId = (key: DetailKey) => `${idPrefix}-${key}-source`;
-  const sourceLine = (key: DetailKey) => drafting && (
+  const sourceLine = (key: DetailKey) => drafting && !ownOnly(key) && (
     <DetailSource id={sourceId(key)} label={LABELS[key]} mode={mode(key)} source={source(key)} disabled={busy}
       projectDisabled={projectWriting} saving={savingKey === key}
       saveDisabled={mode(key) === 'project' && projectBlank(key)}
@@ -370,7 +381,7 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
       onSaveProject={() => saveProject(key)} onCancelProject={() => cancelProject(key)} />
   );
   const describedBy = (key: DetailKey, extra?: string) =>
-    [drafting ? sourceId(key) : '', extra ?? ''].filter(Boolean).join(' ') || undefined;
+    [drafting && !ownOnly(key) ? sourceId(key) : '', extra ?? ''].filter(Boolean).join(' ') || undefined;
   const placeholder = (example?: string) => (readOnly ? undefined : example);
 
   // The project's own report images: what the System description may place.
@@ -498,6 +509,34 @@ function EngagementSettingsFields<T extends EngagementOverrides>({
 
   return (
     <div className="space-y-md">
+      <div className="min-w-0 space-y-xxs">
+        {editable('executive_summary') ? (
+          <>
+            <div className="flex flex-wrap items-end justify-between gap-xs">
+              <Label htmlFor={`${idPrefix}-summary`} className={DETAIL_NAME}>{summaryLabel}</Label>
+              {!readOnly && summaryAction}
+            </div>
+            {!readOnly && (
+              <p className="text-caption text-muted-foreground">
+                {summaryOwn
+                  ? 'Markdown. What changed since the report this addendum is compared with — written for this addendum.'
+                  : drafting
+                    ? 'Markdown. Written for this report only.'
+                    : 'Markdown. Every full report prints it unless it overrides it.'}
+              </p>
+            )}
+            <MarkdownField id={`${idPrefix}-summary`} label={summaryLabel} rows={8} maxLength={65536}
+              value={text('executive_summary')} onChange={(v) => typed('executive_summary', v)}
+              disabled={locked('executive_summary')} />
+            {sourceLine('executive_summary')}
+          </>
+        ) : (
+          <>
+            {summaryAction && <div className="flex justify-end">{summaryAction}</div>}
+            {followedText('executive_summary', `${idPrefix}-summary`, true)}
+          </>
+        )}
+      </div>
       <div className="grid gap-md md:grid-cols-2 xl:grid-cols-4">
         {lineDetail('client_name', 'client', 255)}
         {lineDetail('author_name', 'author', 255,

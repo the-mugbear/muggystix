@@ -24,12 +24,13 @@ from fastapi import Query
 #: declaration; ``test_agent_assist_operations.py`` pins that the page's route
 #: advertises exactly the same parameter.
 FindingNeedParam = Annotated[
-    Optional[Literal["decide", "write"]],
+    Optional[Literal["decide", "write", "retest"]],
     Query(
         description=(
-            "Only this kind of work: decide (under investigation, or a proposal waits "
-            "for a decision) or write (required report text missing, nothing to decide). "
-            "The two add up to the whole list."
+            "Only this kind of work: decide (under investigation, marked for retest, or a "
+            "proposal waits for a decision) or write (required report text missing, nothing to "
+            "decide) — the two add up to the whole list; or retest (the finding, or one of its "
+            "endpoints, is marked for retest — a part of decide)."
         ),
     ),
 ]

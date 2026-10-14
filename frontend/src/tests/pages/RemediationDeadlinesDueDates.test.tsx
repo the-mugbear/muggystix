@@ -18,6 +18,8 @@ const recordRemediationFollowUp = vi.fn();
 const recordRemediationFollowUpOverview = vi.fn();
 const prepareContactReport = vi.fn();
 vi.mock('../../services/api', () => ({
+  // The defect metrics (owner, 2026-10-14) are not what these tests are about.
+  getRemediationDefectMetrics: vi.fn(() => new Promise(() => undefined)),
   prepareContactReport: (...a: unknown[]) => prepareContactReport(...a),
   getContactReport: vi.fn(),
   downloadContactReport: vi.fn(),

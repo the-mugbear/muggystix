@@ -155,7 +155,7 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 | "What does this estate have a *problem* with?" | `assist_get_patterns` — blind spots, segment outliers, root causes |
 | "What's the evidence behind this finding?" | `assist_get_finding` — the notes and thread, the affected endpoints, scanner rows and evidence records, the report text and status history, `writing_guidance`, and the finding's `images`; `assist_get_image` to look at one |
 | "What is mine? What changed since I was last here?" | `assist_get_workbench` — the operator's Operations page (see below) |
-| "Which findings are waiting on me — all of them?" | `assist_list_my_findings` — whole and paged, `need=decide\|write`; `total` is the size of the list the call pages |
+| "Which findings are waiting on me — all of them?" | `assist_list_my_findings` — whole and paged, `need=decide\|write\|retest` (retest: marked for retest, a part of decide); `total` is the size of the list the call pages |
 | "What should we look at next?" | `assist_list_worth_a_look` — Operations' "Untouched, with a reason" queue |
 | "Which hosts do I have in review? What is the team already reviewing? Which reviewed hosts changed since?" | `assist_list_hosts q=follow:mine` (the operator's own) · `q=follow:in_review` (ANY teammate's) · `q=follow:revisit` (the operator's own finished reviews whose host changed afterwards) · `q=has:changed_since_review` (the same for any teammate's reviews) |
 | "Where does the engagement stand?" | `assist_list_hosts q=has:tested` and `q=has:untouched has:critical` → `total` · `assist_get_terrain` by address block · `assist_get_posture` / `assist_get_coverage` for the assessment |
@@ -172,7 +172,8 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 * `my_work` — what waits on them **by kind**: `findings_to_decide`,
   `findings_to_write` (required report text or a report image's caption is
   missing and nothing waits for a decision; the two add up to
-  `findings_needing_me`),
+  `findings_needing_me`; `findings_to_retest` is the part of the decisions
+  marked for retest — the finding or one of its hosts),
   `tests_assigned`, `hosts_in_review`, `tests_on_hosts_in_review`. `total` is
   those four parts added up; `to_claim` (unassigned critical / high tests) is
   shared work and is not in it.

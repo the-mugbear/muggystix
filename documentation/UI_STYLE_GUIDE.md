@@ -1095,6 +1095,12 @@ From the codebase review of 2026-10-07 (5.339.0).
   mounted across records — the remediation timeline sheet — checks every
   async completion is still for the host on screen; a new one is keyed
   instead.
+- **A text handed to someone else is shown before it is copied** (owner,
+  2026-10-14): "Copy summary" on the remediation pages opens a dialog with
+  the summary in a box the reader may adjust, and Copy beside it
+  (`RemediationSummaryDialog`, the shape of the follow-up dialog) — never a
+  button that copies unseen text straight to the clipboard. An export with
+  formats is `GeneratedTextDialog` (frontend rules).
 
 ### 46. Two statuses, two facts, one name each (2026-10-08)
 

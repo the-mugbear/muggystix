@@ -28,7 +28,8 @@ vi.mock('../../contexts/ProjectContext', () => ({
 const confirmMock = vi.hoisted(() => vi.fn());
 vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, confirmMock] }));
 
-import ReportTextImages, { placedInLabel, reportImageProblem } from '../../components/reports/ReportTextImages';
+import ReportTextImages, { placedInLabel } from '../../components/reports/ReportTextImages';
+import { reportImageProblem } from '../../utils/reportImages';
 import { useReportTextImages } from '../../hooks/useReportTextImages';
 import { blobFor, installBlobUrls } from '../helpers/blobUrls';
 

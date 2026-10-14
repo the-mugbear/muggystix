@@ -29,6 +29,8 @@ import PostureSection, { SectionCount } from '../components/posture/PostureSecti
 import RemediationWorkList, { VIEW_TITLE } from '../components/remediation/RemediationWorkList';
 import { RemediationLead } from './Remediation';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
+import { InfoTip } from '../components/ui/info-tip';
+import DefectMetricsSection from '../components/remediation/DefectMetricsSection';
 
 const COLUMNS: Array<{ state: RemediationState; label: string; tone?: string }> = [
   { state: 'overdue', label: 'Overdue', tone: 'text-destructive' },
@@ -38,6 +40,18 @@ const COLUMNS: Array<{ state: RemediationState; label: string; tone?: string }> 
   { state: 'deferred', label: 'Deferred' },
   { state: 'closed', label: REPORTED_FIXED },
 ];
+
+/** A count that opens its rows; a zero is plain, one not known a dash (a
+ *  server that predates it). */
+const countButton = (value: number | undefined, label: string, onClick: () => void, tone: string) => (
+  value == null ? <span className="text-muted-foreground">—</span>
+    : value === 0 ? <span className="text-muted-foreground">0</span> : (
+    <button type="button" onClick={onClick} aria-label={label} title={label}
+      className={`rounded hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${tone}`}>
+      {value.toLocaleString()}
+    </button>
+  )
+);
 
 const RemediationDeadlines: React.FC = () => {
   const { policy, enabled, loading, error: policyError, retry: retryPolicy } = useRemediationPolicy();
@@ -84,17 +98,28 @@ const RemediationDeadlines: React.FC = () => {
     );
   }
 
-  // A count in the projects table opens exactly its rows in the list below.
-  const open = (projectId: number, state: RemediationState) => {
+  // A count in the projects table or the defect metrics opens exactly its
+  // rows in the list below: the filters it was counted under, nothing else.
+  const openList = (set: { project?: number | null; state?: RemediationState; defect?: string[];
+    severity?: string[] | null; active?: boolean }) => {
     setParams((prev) => {
       const next = new URLSearchParams(prev);
-      next.delete('view'); next.delete('contact'); next.delete('unassigned');
-      next.set('project', String(projectId));
-      next.set('state', state);
+      ['view', 'contact', 'unassigned', 'state', 'defect', 'severity', 'active', 'band', 'stale', 'verification',
+        'flag', 'team', 'q', 'page'].forEach((k) => next.delete(k));
+      if (set.project != null) next.set('project', String(set.project)); else next.delete('project');
+      if (set.state) next.set('state', set.state);
+      set.defect?.forEach((d) => next.append('defect', d));
+      set.severity?.forEach((sev) => next.append('severity', sev));
+      if (set.active) next.set('active', '1');
       return next;
     });
     listRef.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
   };
+  const open = (projectId: number, state: RemediationState) => openList({ project: projectId, state });
+  // The defect metrics follow the page's project filter: one project, else
+  // every administered project that is not archived.
+  const metricsProject = idParam(params.get('project'));
+  const metricsProjectName = projects?.items.find((p) => p.project_id === metricsProject)?.name;
 
   const none = projects != null && projects.items.length === 0;
 
@@ -147,7 +172,15 @@ const RemediationDeadlines: React.FC = () => {
                   <TableHeader>
                     <TableRow className="hover:bg-transparent hover:shadow-none">
                       <TableHead>Project</TableHead>
+                      <TableHead className="w-[6rem] text-right">Total</TableHead>
                       {COLUMNS.map((c) => <TableHead key={c.state} className="w-[7rem] text-right">{c.label}</TableHead>)}
+                      <TableHead className="w-[8rem] text-right">
+                        <span className="inline-flex items-center justify-end gap-xxs">
+                          Remediated
+                          <InfoTip label="What Remediated counts"
+                            text={`Findings on hosts whose endpoint was marked Remediated after the retest — the assessment's conclusion, not the contact's "${REPORTED_FIXED}".`} />
+                        </span>
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -156,6 +189,10 @@ const RemediationDeadlines: React.FC = () => {
                         <TableCell className="min-w-0 align-middle">
                           <span className="block truncate font-medium" title={p.name}>{p.name}</span>
                           {p.archived && <span className="block text-caption text-muted-foreground">Archived</span>}
+                        </TableCell>
+                        <TableCell className="text-right align-middle tabular-nums">
+                          {countButton(p.total, `${p.name}: show every finding on a host (${(p.total ?? 0).toLocaleString()})`,
+                            () => openList({ project: p.project_id }), 'font-medium text-foreground')}
                         </TableCell>
                         {COLUMNS.map((c) => {
                           const value = p.states[c.state];
@@ -172,16 +209,26 @@ const RemediationDeadlines: React.FC = () => {
                             </TableCell>
                           );
                         })}
+                        <TableCell className="text-right align-middle tabular-nums">
+                          {countButton(p.remediated, `${p.name}: show remediated (${(p.remediated ?? 0).toLocaleString()})`,
+                            () => openList({ project: p.project_id, defect: ['remediated'] }), 'text-foreground')}
+                        </TableCell>
                       </TableRow>
                     ))}
                     {projects.items.length > 1 && (
                       <TableRow className="hover:bg-transparent hover:shadow-none">
                         <TableCell className="align-middle font-medium">All</TableCell>
+                        <TableCell className="text-right align-middle font-medium tabular-nums">
+                          {projects.defect_totals?.total.toLocaleString() ?? '—'}
+                        </TableCell>
                         {COLUMNS.map((c) => (
                           <TableCell key={c.state} className="text-right align-middle font-medium tabular-nums">
                             {projects.totals[c.state].toLocaleString()}
                           </TableCell>
                         ))}
+                        <TableCell className="text-right align-middle font-medium tabular-nums">
+                          {projects.defect_totals?.remediated.toLocaleString() ?? '—'}
+                        </TableCell>
                       </TableRow>
                     )}
                   </TableBody>
@@ -199,6 +246,18 @@ const RemediationDeadlines: React.FC = () => {
                 )}
               </div>
             )}
+          </PostureSection>
+
+          <PostureSection
+            title="Defect metrics"
+            description={metricsProject != null
+              ? `${metricsProjectName ?? 'The chosen project'}: each finding on a host is a defect, false positives left out.`
+              : 'Every project you administer that is not archived: each finding on a host is a defect, false positives left out. Choose a project in the list to see one.'}
+          >
+            <DefectMetricsSection projectId={metricsProject}
+              onOpen={({ defect, severity }) => openList({
+                project: metricsProject, defect, severity, active: metricsProject == null,
+              })} />
           </PostureSection>
 
           <div ref={listRef} className="scroll-mt-16">

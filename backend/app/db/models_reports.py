@@ -72,6 +72,9 @@ class ReportProfile(Base):
     # NULL = the installation's (``report_defaults``).
     author_name = Column(String(255), nullable=True)
     disclaimer = Column(Text, nullable=True)           # Markdown
+    # Revision c9e4a7b2d6f1 (owner, 2026-10-14) — the executive summary every
+    # full report of the project prints unless it overrides it (Markdown).
+    executive_summary = Column(Text, nullable=True)
     updated_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -98,8 +101,10 @@ class Report(Base):
     # owner 2026-10-14): only those keys; a key absent follows the project's
     # profile (``services/report_defaults``).  A list key present as [] is
     # overridden to empty.
+    # (The executive summary is one of them since revision c9e4a7b2d6f1 —
+    # the project's, unless the report overrides it; ``reports.executive_summary``
+    # is gone.)
     settings = Column(JSON, nullable=True)
-    executive_summary = Column(Text, nullable=True)   # Markdown, per report
 
     # Frozen at issue: {"dataset": {...}, "reported": {...}} (see
     # client_report_service).  NULL while a draft.

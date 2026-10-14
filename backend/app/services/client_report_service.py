@@ -693,28 +693,40 @@ class ClientReportService:
                     unnamed.append(username)
         return entries, unnamed
 
-    def resolved_details(self, project_id: int, settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Every engagement detail in force for a report of this project with
-        these ``settings`` (its overrides) — ``report_defaults.resolve`` with
-        this project's defaults and team."""
+    def resolved_details(self, project_id: int, settings: Optional[Dict[str, Any]],
+                         kind: Optional[str] = None) -> Dict[str, Any]:
+        """Every engagement detail in force for a report (of this ``kind``) of
+        this project with these ``settings`` (its overrides) —
+        ``report_defaults.resolve`` with this project's defaults and team."""
         return report_defaults.resolve(
-            self.db, self.get_profile(project_id), settings, lambda: self.project_team(project_id),
+            self.db, self.get_profile(project_id), settings, lambda: self.project_team(project_id), kind,
         )
 
-    def followed_details(self, project_id: int) -> Dict[str, Any]:
+    def followed_details(self, project_id: int, kind: Optional[str] = None) -> Dict[str, Any]:
         """What each detail a draft does not override prints, as the project
         stands now (``report_defaults.followed``)."""
-        return self.followed_details_with_sources(project_id)[0]
+        return self.followed_details_with_sources(project_id, kind)[0]
 
-    def followed_details_with_sources(self, project_id: int) -> Tuple[Dict[str, Any], Dict[str, Optional[str]]]:
+    def followed_details_with_sources(
+        self, project_id: int, kind: Optional[str] = None,
+    ) -> Tuple[Dict[str, Any], Dict[str, Optional[str]]]:
         """:meth:`followed_details`, and where each value comes from
         (``report_defaults.followed_with_sources``)."""
         return report_defaults.followed_with_sources(
-            self.db, self.get_profile(project_id), lambda: self.project_team(project_id),
+            self.db, self.get_profile(project_id), lambda: self.project_team(project_id), kind,
         )
 
     @staticmethod
-    def settings_from_issued(report: Report) -> Dict[str, Any]:
+    def issued_details(report: Report) -> Dict[str, Any]:
+        """Every detail an issued report went out with, from its frozen
+        dataset: the ``engagement`` block, and the executive summary, which
+        the dataset carries at the top level (where the templates read it).
+        A report issued before a detail existed has none of it."""
+        dataset = (report.snapshot or {}).get("dataset") or {}
+        return {**(dataset.get("engagement") or {}), "executive_summary": dataset.get("executive_summary")}
+
+    @staticmethod
+    def settings_from_issued(report: Report, *, with_summary: bool = True) -> Dict[str, Any]:
         """The engagement details an issued report went out with, as
         OVERRIDES — what a revision of it, or an addendum to it, starts from
         (v2.404.0): the same client, classification, team and distribution the
@@ -728,19 +740,23 @@ class ClientReportService:
         draft follows the project for it (an addendum always did; a revision
         of a report issued with no distribution list now offers the project's
         — override it to empty again if that was on purpose).  Copies — the
-        new draft never shares a list with the issued report."""
+        new draft never shares a list with the issued report.
+
+        ``with_summary=False`` (an addendum): the executive summary is not
+        carried — an addendum writes its own summary of what changed."""
         own = report_defaults.overrides(report.settings)
-        frozen = report_defaults.overrides(
-            (((report.snapshot or {}).get("dataset") or {}).get("engagement")) or {},
-        )
+        frozen = report_defaults.overrides(ClientReportService.issued_details(report))
         settings: Dict[str, Any] = {}
         for key in report_defaults.DETAIL_KEYS:
+            if key == "executive_summary" and not with_summary:
+                continue
             value = own.get(key) or frozen.get(key)
             if value:
                 settings[key] = value
         return settings
 
-    def settings_carried_from(self, issued: Report, user_id: Optional[int]) -> Dict[str, Any]:
+    def settings_carried_from(self, issued: Report, user_id: Optional[int], *,
+                              with_summary: bool = True) -> Dict[str, Any]:
         """``settings_from_issued`` for a NEW draft — a revision of ``issued``
         or an addendum to it — with every image its system description places
         that the project no longer has RESTORED from the issued report's own
@@ -752,7 +768,7 @@ class ClientReportService:
         with no copy (a report issued before copies existed, or one that did
         not print it) is left as written: the draft's checklist names it
         (``summary.unresolved_images``).  Commits each restored image."""
-        carried = self.settings_from_issued(issued)
+        carried = self.settings_from_issued(issued, with_summary=with_summary)
         engagement = (((issued.snapshot or {}).get("dataset") or {}).get("engagement")) or {}
         captions = {e.get("attachment_id"): e.get("caption") for e in engagement.get("images") or []}
         frozen = {img.attachment_id: img for img in issued.images}
@@ -1169,7 +1185,6 @@ class ClientReportService:
         project = self.db.get(Project, report.project_id)
         findings = self._included(report.project_id)
         ports = self._ports(findings)
-        corroboration = self._corroboration([f.id for f in findings])
         evidence, skipped_images, agent_images = self._evidence(findings)
         confirmations: Dict[int, List[dict]] = {}
         confirmations_omitted: Dict[int, int] = {}
@@ -1177,6 +1192,12 @@ class ClientReportService:
         # Loaded ONCE per build: the manifest, its base's and every asset's
         # presence are read from disk each time.
         template = self._template(report.template)
+        # The tools that observed each finding, only for a template that asks
+        # (`"corroboration": true`; owner, 2026-10-14 — the report named the
+        # identifying scanner on every finding).  Empty otherwise, so nothing
+        # is printed or frozen.
+        corroboration = (self._corroboration([f.id for f in findings])
+                         if template is not None and template.corroboration else {})
         if self._records_in_report(template):
             confirmations, confirmations_omitted, agent_records = self._confirmations(findings)
 
@@ -1320,7 +1341,9 @@ class ClientReportService:
         # Every detail: this report's override, else what it follows — the
         # project's default, else the installation's (author, disclaimer) or
         # the project's analysts and admins (team).
-        settings = self.resolved_details(report.project_id, report.settings)
+        settings = self.resolved_details(report.project_id, report.settings, report.kind)
+        # The templates read the summary at the top level of the data.
+        summary_text = settings.pop("executive_summary", None)
         # The team is linked to accounts; the distribution list is names typed in.
         settings["testers"], no_full_name = self._with_full_names(settings["testers"])
         # The report's own images, where its written details place them.
@@ -1362,7 +1385,7 @@ class ClientReportService:
                 "end_date": _date(project.end_date) if project else None,
             },
             "engagement": settings,
-            "executive_summary": report.executive_summary,
+            "executive_summary": summary_text,
             "scope": self._scope_block(
                 report, project, number if number is not None else report.number, template,
             ),

@@ -75,7 +75,7 @@ const FindingsPanel: React.FC<{
   need: FindingNeed | null;
   onNeed: (need: FindingNeed | null) => void;
   /** The workbench's count per kind of work, until this list has its own. */
-  pageNeeds: Record<FindingNeed, number | null>;
+  pageNeeds: Partial<Record<FindingNeed, number | null>>;
 }> = ({ need, onNeed, pageNeeds }) => {
   const projectId = useProjectId();
   const list = usePagedList<MyFindingItem, MyFindingsResponse & ListPage<MyFindingItem>>(
@@ -234,7 +234,7 @@ export const OperationsTabs: React.FC<OperationsTabsProps> = ({
   tier, onTier, testKind, onTestKind, testGroups = null, findingNeed, onFindingNeed,
 }) => {
   const panel: PanelProps = { canWrite };
-  const pageNeeds = { decide: counts.findingsDecide, write: counts.findingsWrite };
+  const pageNeeds = { decide: counts.findingsDecide, write: counts.findingsWrite, retest: counts.findingsRetest };
   const loadingOf = (t: OperationsTab) => (t === 'pickup' ? pickupLoading : countsLoading);
   return (
     <Tabs value={tab ?? ''} onValueChange={(v) => onTab(v as OperationsTab)} className="min-w-0">

@@ -29,7 +29,7 @@ const workbench = (over: Partial<WorkbenchResponse> = {}): WorkbenchResponse => 
   followups: { items: [], total: 27 },
   my_work: {
     total: 101, hosts_in_review: 37, tests_assigned: 12, tests_on_hosts_in_review: 28,
-    findings_needing_me: 24, findings_to_decide: 3, findings_to_write: 21, to_claim: 15,
+    findings_needing_me: 24, findings_to_decide: 3, findings_to_write: 21, findings_to_retest: 2, to_claim: 15,
   },
   ...over,
 });
@@ -42,7 +42,7 @@ describe('operationsTabCounts', () => {
   it('each tab’s count is the server’s, and the kinds within a tab add up to it', () => {
     const c = operationsTabCounts(workbench(), 112);
     expect(c).toEqual({
-      findings: 24, findingsDecide: 3, findingsWrite: 21,
+      findings: 24, findingsDecide: 3, findingsWrite: 21, findingsRetest: 2,
       hosts: 37,
       tests: 40, testsAssigned: 12, testsInReview: 28,
       toClaim: 15, changed: 27, pickup: 112,
@@ -60,7 +60,7 @@ describe('operationsTabCounts', () => {
     expect(operationsTabCounts(old, null)).toMatchObject({
       findings: 24, hosts: 37, tests: 40, testsAssigned: 12, testsInReview: 28, toClaim: 15,
       // Not known — never 0.
-      findingsDecide: null, findingsWrite: null,
+      findingsDecide: null, findingsWrite: null, findingsRetest: null,
     });
   });
 
@@ -75,7 +75,7 @@ describe('operationsTabCounts', () => {
 
 describe('firstNonEmptyTab', () => {
   const counts = (over: Partial<typeof NO_COUNTS>) => ({
-    findings: 0, findingsDecide: 0, findingsWrite: 0, hosts: 0,
+    findings: 0, findingsDecide: 0, findingsWrite: 0, findingsRetest: 0, hosts: 0,
     tests: 0, testsAssigned: 0, testsInReview: 0, toClaim: 0, changed: 0, pickup: 0, ...over,
   });
 

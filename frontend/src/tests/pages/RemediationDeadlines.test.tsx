@@ -13,7 +13,9 @@ const listRemediationOverview = vi.fn();
 const applyRemediation = vi.fn();
 const listRemediationTeams = vi.fn();
 const getRemediationTrend = vi.fn();
+const getRemediationDefectMetrics = vi.fn();
 vi.mock('../../services/api', () => ({
+  getRemediationDefectMetrics: (...a: unknown[]) => getRemediationDefectMetrics(...a),
   listRemediationTeams: (...a: unknown[]) => listRemediationTeams(...a),
   getRemediationTrend: (...a: unknown[]) => getRemediationTrend(...a),
   getRemediationPolicy: (...a: unknown[]) => getRemediationPolicy(...a),
@@ -65,6 +67,23 @@ const row = (id: number, projectId: number, projectName: string): RemediationRow
   verification: null,
 });
 
+const metricRow = (key: string, label: string, severities: string[] | null, over: Record<string, number | null> = {}) => ({
+  key, label, severities, defects: 0, open: 0, remediated: 0, deferred: 0, remediation_rate: null,
+  mttr_days: null, mttr_measured: 0, mttr_closed_days: null, mttr_closed_measured: 0, not_assigned: 0, not_measured: 0,
+  ...over,
+});
+const METRICS = {
+  project_id: null, projects: 1, as_of: '2026-11-10',
+  rows: [
+    metricRow('overall', 'Overall', null, { defects: 43, open: 25, remediated: 18, remediation_rate: 41.9, mttr_days: 43, mttr_closed_days: 15, not_assigned: 2 }),
+    metricRow('critical_high', 'Critical & High', ['critical', 'high'], { defects: 28, open: 17, remediated: 11, remediation_rate: 39.3, mttr_days: 41, mttr_closed_days: 10 }),
+    metricRow('critical', 'Critical', ['critical'], { defects: 5, open: 2, remediated: 3 }),
+    metricRow('high', 'High', ['high']),
+    metricRow('medium', 'Medium', ['medium']),
+    metricRow('low', 'Low', ['low']),
+  ],
+};
+
 const show = (path = '/remediation-deadlines') => render(
   <MemoryRouter initialEntries={[path]}><RemediationDeadlines /></MemoryRouter>,
 );
@@ -80,12 +99,13 @@ beforeEach(() => {
   listRemediationTeams.mockReset().mockResolvedValue([]);
   getRemediationTrend.mockReset().mockResolvedValue({ as_of: '2026-11-10', days: 90, daily: [], closed_by_month: [] });
   getRemediationPolicy.mockResolvedValue(POLICY);
+  getRemediationDefectMetrics.mockReset().mockResolvedValue(METRICS);
   listRemediationProjects.mockResolvedValue({
     items: [
-      { project_id: 4, name: 'Alpha', archived: false, states: states({ overdue: 2, not_assigned: 5 }) },
-      { project_id: 9, name: 'Old engagement', archived: true, states: states({ overdue: 1, closed: 3 }) },
+      { project_id: 4, name: 'Alpha', archived: false, states: states({ overdue: 2, not_assigned: 5 }), total: 7, remediated: 1 },
+      { project_id: 9, name: 'Old engagement', archived: true, states: states({ overdue: 1, closed: 3 }), total: 7, remediated: 1 },
     ],
-    totals: states({ overdue: 3, not_assigned: 5, closed: 3 }), as_of: '2026-11-10', policy: POLICY,
+    totals: states({ overdue: 3, not_assigned: 5, closed: 3 }), defect_totals: { total: 7, remediated: 1 }, as_of: '2026-11-10', policy: POLICY,
   });
   listRemediationOverview.mockResolvedValue({
     items: [row(1, 4, 'Alpha'), row(2, 9, 'Old engagement')], total: 2, has_more: false, limit: 25, offset: 0,
@@ -132,7 +152,7 @@ describe('Remediation deadlines (across projects)', () => {
     const order = (text: string) => container.textContent?.indexOf(text) ?? -1;
     expect(order('Remediation deadlines')).toBeLessThan(order('due within 7 days'));
     expect(screen.getAllByRole('heading').map((h) => h.textContent?.replace(/\d+$/, '')))
-      .toEqual(['Remediation deadlines', 'Projects', 'Findings on hosts', 'Over time']);
+      .toEqual(['Remediation deadlines', 'Projects', 'Defect metrics', 'Findings on hosts', 'Over time']);
 
     let answer: (v: unknown) => void = () => undefined;
     const whole = await listRemediationOverview.mock.results[0].value;
@@ -175,7 +195,7 @@ describe('Remediation deadlines (across projects)', () => {
   });
 
   it('says so when the reader administers no project', async () => {
-    listRemediationProjects.mockResolvedValue({ items: [], totals: states(), as_of: '2026-11-10', policy: POLICY });
+    listRemediationProjects.mockResolvedValue({ items: [], totals: states(), defect_totals: { total: 7, remediated: 1 }, as_of: '2026-11-10', policy: POLICY });
     show();
     expect(await screen.findByText(/You administer no project/)).toBeInTheDocument();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
@@ -275,12 +295,12 @@ describe('the project chooser (owner, 2026-10-08)', () => {
   it('lists only projects with open findings, each with its count', async () => {
     listRemediationProjects.mockResolvedValue({
       items: [
-        { project_id: 4, name: 'Alpha', archived: false, states: states({ overdue: 2, not_assigned: 5 }) },
-        { project_id: 9, name: 'Old engagement', archived: true, states: states({ overdue: 1, closed: 3 }) },
-        { project_id: 12, name: 'All fixed', archived: false, states: states({ closed: 8, deferred: 1 }) },
-        { project_id: 13, name: 'Empty', archived: false, states: states() },
+        { project_id: 4, name: 'Alpha', archived: false, states: states({ overdue: 2, not_assigned: 5 }), total: 7, remediated: 1 },
+        { project_id: 9, name: 'Old engagement', archived: true, states: states({ overdue: 1, closed: 3 }), total: 7, remediated: 1 },
+        { project_id: 12, name: 'All fixed', archived: false, states: states({ closed: 8, deferred: 1 }), total: 7, remediated: 1 },
+        { project_id: 13, name: 'Empty', archived: false, states: states(), total: 7, remediated: 1 },
       ],
-      totals: states({ overdue: 3, not_assigned: 5, closed: 11, deferred: 1 }), as_of: '2026-11-10', policy: POLICY,
+      totals: states({ overdue: 3, not_assigned: 5, closed: 11, deferred: 1 }), defect_totals: { total: 7, remediated: 1 }, as_of: '2026-11-10', policy: POLICY,
     });
     show();
     const chooser = await screen.findByRole('combobox', { name: 'Project' });
@@ -295,12 +315,80 @@ describe('the project chooser (owner, 2026-10-08)', () => {
   it('keeps the project named in the address even when nothing is open in it', async () => {
     listRemediationProjects.mockResolvedValue({
       items: [
-        { project_id: 4, name: 'Alpha', archived: false, states: states({ overdue: 2 }) },
-        { project_id: 12, name: 'All fixed', archived: false, states: states({ closed: 8 }) },
+        { project_id: 4, name: 'Alpha', archived: false, states: states({ overdue: 2 }), total: 7, remediated: 1 },
+        { project_id: 12, name: 'All fixed', archived: false, states: states({ closed: 8 }), total: 7, remediated: 1 },
       ],
-      totals: states({ overdue: 2, closed: 8 }), as_of: '2026-11-10', policy: POLICY,
+      totals: states({ overdue: 2, closed: 8 }), defect_totals: { total: 7, remediated: 1 }, as_of: '2026-11-10', policy: POLICY,
     });
     show('/remediation-deadlines?project=12');
     expect(await screen.findByRole('combobox', { name: 'Project' })).toHaveTextContent('All fixed · 0 open');
+  });
+});
+
+// Owner, 2026-10-14: the projects table says each project's total and how
+// many were REMEDIATED (the endpoint, after the retest); a defect metrics
+// table, scoped to one project or every active one; "Copy summary" opens a
+// dialog.  Every count opens exactly its rows.
+describe('defects on the deadlines page (owner, 2026-10-14)', () => {
+  it('Total and Remediated open the project’s rows and its remediated rows', async () => {
+    show();
+    const projects = await screen.findByRole('table', { name: 'Remediation deadlines by project' });
+    const [alpha] = within(projects).getAllByRole('row').slice(1);
+    fireEvent.click(within(alpha).getByRole('button', { name: 'Alpha: show remediated (1)' }));
+    await waitFor(() => expect(listRemediationOverview).toHaveBeenLastCalledWith(
+      expect.objectContaining({ project_id: 4, defect: ['remediated'] }), expect.anything(),
+    ));
+    fireEvent.click(within(alpha).getByRole('button', { name: 'Alpha: show every finding on a host (7)' }));
+    await waitFor(() => {
+      const query = listRemediationOverview.mock.lastCall?.[0];
+      expect(query).toMatchObject({ project_id: 4 });
+      expect(query.defect).toBeUndefined();
+      expect(query.state).toBeUndefined();
+    });
+    expect(screen.getByRole('button', { name: 'What Remediated counts' })).toBeInTheDocument();
+  });
+
+  it('the metrics cover every active project until one is chosen, and a cell opens its rows', async () => {
+    show();
+    const table = await screen.findByRole('table', { name: 'Defect metrics' });
+    expect(getRemediationDefectMetrics).toHaveBeenLastCalledWith(null, expect.anything());
+    // Both MTTR headings say how they are derived.
+    expect(within(table).getByRole('button', { name: 'How MTTR is derived' })).toBeInTheDocument();
+    expect(within(table).getByRole('button', { name: /How MTTR for remediated or deferred/ })).toBeInTheDocument();
+    expect(within(table).getByText('41.9%')).toBeInTheDocument();
+    expect(screen.getByText(/Not in the MTTR figures: 2 not assigned/)).toBeInTheDocument();
+    fireEvent.click(within(table).getByRole('button', { name: 'Critical & High: show open defects (17)' }));
+    await waitFor(() => expect(listRemediationOverview).toHaveBeenLastCalledWith(
+      expect.objectContaining({ defect: ['open'], severity: ['critical', 'high'], active_only: true }),
+      expect.anything(),
+    ));
+    expect(listRemediationOverview.mock.lastCall?.[0].project_id).toBeUndefined();
+    // Several severities read as a chip (as well as the metrics' row name).
+    await waitFor(() => expect(screen.getAllByText('Critical & High').length).toBeGreaterThan(1));
+  });
+
+  it('with a project chosen the metrics are that project’s, and its cells keep it', async () => {
+    show('/remediation-deadlines?project=4');
+    const table = await screen.findByRole('table', { name: 'Defect metrics' });
+    expect(getRemediationDefectMetrics).toHaveBeenLastCalledWith(4, expect.anything());
+    fireEvent.click(within(table).getByRole('button', { name: 'Overall: show defects (43)' }));
+    await waitFor(() => expect(listRemediationOverview).toHaveBeenLastCalledWith(
+      expect.objectContaining({ project_id: 4, defect: ['open', 'remediated', 'deferred'] }), expect.anything(),
+    ));
+    expect(listRemediationOverview.mock.lastCall?.[0].active_only).toBeUndefined();
+  });
+
+  it('Copy summary opens a dialog with the text, copied from there', async () => {
+    show();
+    const button = await screen.findByRole('button', { name: /Copy summary/ });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Summary' })).toBeInTheDocument();
+    expect((within(dialog).getByLabelText('Summary') as HTMLTextAreaElement).value)
+      .toContain('across the projects you administer');
+    expect(toast.success).not.toHaveBeenCalled();             // nothing is copied until asked
+    fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' })[0]);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 });

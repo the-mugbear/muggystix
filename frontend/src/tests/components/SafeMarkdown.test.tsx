@@ -46,6 +46,18 @@ describe('SafeMarkdown — tables (5.293.0), as the report prints them', () => {
   });
 });
 
+// Owner, 2026-10-14: a `Listing:` paragraph directly after a code block is
+// its caption ("Listing N" in the report), shown under it; anywhere else it is
+// the words typed.
+describe('SafeMarkdown — code block captions', () => {
+  it('makes a `Listing:` paragraph after a code block its caption, and leaves it text elsewhere', () => {
+    const c = md('```\nwhoami\n```\n\nListing: Who ran it\n\nWords.\n\nListing: STRAY');
+    const captions = Array.from(c.querySelectorAll('[data-testid="listing-caption"]')).map((e) => e.textContent);
+    expect(captions).toEqual(['Listing: Who ran it']);
+    expect(Array.from(c.querySelectorAll('p')).map((p) => p.textContent)).toEqual(['Words.', 'Listing: STRAY']);
+  });
+});
+
 // The report numbers a caption written under a table: a paragraph that opens
 // with `Table:` DIRECTLY after a table is that table's caption, printed under
 // it (quarto_fields.lua, `caption_tables`; owner, 2026-10-14).  The preview

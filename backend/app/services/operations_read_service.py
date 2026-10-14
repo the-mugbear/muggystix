@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, case, desc, distinct, false, func, not_, or_
+from sqlalchemy import and_, case, desc, distinct, exists, false, func, not_, or_
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -1071,11 +1071,28 @@ class MyFindingsResponse(BaseModel):
     #: ``write`` — nothing to decide: required report text is missing, or a
     #: report image has no caption.  Whole-list figures whatever ``need`` and
     #: the page say.
-    need_counts: Dict[str, int] = Field(default_factory=lambda: {"decide": 0, "write": 0})
+    #: ``retest`` (owner, 2026-10-14) — marked for retest: the finding's
+    #: status, or one of its endpoints.  A PART of ``decide``, not a third
+    #: part of the list: the call-out on Operations opens it.
+    need_counts: Dict[str, int] = Field(default_factory=lambda: {"decide": 0, "write": 0, "retest": 0})
 
 
-#: The two kinds of work a finding asks of its owner (``need=`` on the list).
-FINDING_NEEDS = ("decide", "write")
+#: The kinds of work a finding asks of its owner (``need=`` on the list):
+#: ``decide`` and ``write`` partition the list; ``retest`` narrows ``decide``.
+FINDING_NEEDS = ("decide", "write", "retest")
+
+
+def marked_for_retest_condition():
+    """The ONE definition of "marked for retest" on Operations (owner,
+    2026-10-14): the finding's status is ``retest``, or one of its endpoints
+    is — a correlated EXISTS, so a confirmed finding with one host to retest
+    is its owner's work too."""
+    from app.db.models_findings import FindingHostStatus, FindingStatus
+    return or_(
+        Finding.status == FindingStatus.RETEST.value,
+        exists().where(FindingHost.finding_id == Finding.id,
+                       FindingHost.host_status == FindingHostStatus.RETEST.value),
+    )
 
 
 def compute_my_findings(
@@ -1088,6 +1105,8 @@ def compute_my_findings(
     listed when at least one holds:
 
     * it is under investigation (``open`` / ``retest``);
+    * it is marked for retest — its status, or one of its ENDPOINTS
+      (``marked_for_retest_condition``; owner, 2026-10-14);
     * the client report would include it and a required report section is
       empty — ``client_report_service``'s own rule and field list, so this is
       the report page's "Missing report text" narrowed to the owner;
@@ -1108,6 +1127,9 @@ def compute_my_findings(
     the whole list whatever they say (a page past the end, or ``limit=0``,
     counts with one statement of the same filter).
 
+    ``need=retest`` narrows them to those marked for retest — a part of
+    ``decide`` (``need_counts["retest"]``), what the Operations call-out opens.
+
     ``need`` (v2.453.0) narrows the rows to one kind of work — ``decide``
     (under investigation, or a proposal to decide) or ``write`` (required
     report text or an image's caption missing, and nothing to decide).  The
@@ -1124,7 +1146,8 @@ def compute_my_findings(
     investigating = Finding.status.in_(UNDER_INVESTIGATION)
     if need is not None and need not in FINDING_NEEDS:
         raise ValueError(f"need must be one of {FINDING_NEEDS}, not {need!r}")
-    to_decide = or_(investigating, finding_needs.need_condition("proposals"))
+    marked_retest = marked_for_retest_condition()
+    to_decide = or_(investigating, finding_needs.need_condition("proposals"), marked_retest)
     to_write = or_(
         finding_needs.need_condition("missing_text"),
         finding_needs.need_condition("uncaptioned_images"),
@@ -1135,15 +1158,18 @@ def compute_my_findings(
         or_(to_decide, to_write),
     )
     narrowed = needs_me + (
-        (to_decide,) if need == "decide" else (not_(to_decide),) if need == "write" else ()
+        (to_decide,) if need == "decide" else (not_(to_decide),) if need == "write"
+        else (marked_retest,) if need == "retest" else ()
     )
 
     def _counts() -> Dict[str, int]:
         row = (
-            db.query(func.count(Finding.id), func.count(Finding.id).filter(to_decide))
+            db.query(func.count(Finding.id), func.count(Finding.id).filter(to_decide),
+                     func.count(Finding.id).filter(marked_retest))
             .filter(*needs_me).one()
         )
-        return {"decide": int(row[1] or 0), "write": int(row[0] or 0) - int(row[1] or 0)}
+        return {"decide": int(row[1] or 0), "write": int(row[0] or 0) - int(row[1] or 0),
+                "retest": int(row[2] or 0)}
 
     findings = (
         db.query(
@@ -1151,6 +1177,7 @@ def compute_my_findings(
             Finding.evidence_annotation_id, Finding.updated_at,
             func.count().over().label("total"),
             func.count().filter(to_decide).over().label("decide_total"),
+            func.count().filter(marked_retest).over().label("retest_total"),
         )
         .filter(*narrowed)
         .order_by(severity_rank, desc(Finding.updated_at), Finding.id)
@@ -1161,14 +1188,16 @@ def compute_my_findings(
     if not findings:
         # No row to carry the windows: nothing needs the owner, the page is
         # past the end, or only the counts were asked for.
-        counts = _counts() if (offset > 0 or limit <= 0 or need is not None) else {"decide": 0, "write": 0}
+        counts = (_counts() if (offset > 0 or limit <= 0 or need is not None)
+                  else {"decide": 0, "write": 0, "retest": 0})
         return MyFindingsResponse(
             items=[], total_open=counts["decide"] + counts["write"], need_counts=counts,
         )
     if need is None:
         # The windows are over the whole list: no further statement.
         decide_total = int(findings[0].decide_total)
-        need_counts = {"decide": decide_total, "write": int(findings[0].total) - decide_total}
+        need_counts = {"decide": decide_total, "write": int(findings[0].total) - decide_total,
+                       "retest": int(findings[0].retest_total)}
     else:
         need_counts = _counts()
     finding_ids = [f.id for f in findings]

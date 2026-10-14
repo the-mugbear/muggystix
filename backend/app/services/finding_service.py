@@ -6,6 +6,7 @@ a durable, roll-up-able record.  The annotation thread stays as the
 finding's evidence/discussion; the Finding carries severity + disposition +
 owner + the cross-host M2M.
 """
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
@@ -877,6 +878,10 @@ class FindingService:
             return False
         old = row.host_status
         row.host_status = host_status
+        # When it was concluded fixed: the remediation pages' time to
+        # remediate.  Gone with the conclusion.
+        row.remediated_at = (datetime.now(timezone.utc)
+                             if host_status == FindingHostStatus.REMEDIATED.value else None)
         if history:
             self._endpoint_line(
                 finding, actor_id,

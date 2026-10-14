@@ -86,6 +86,9 @@ class MyWorkTotals(BaseModel):
     #: waiting (under investigation, or a proposal), or only report text is.
     findings_to_decide: int = 0
     findings_to_write: int = 0
+    #: Of ``findings_to_decide``: marked for retest (the finding or one of its
+    #: endpoints; owner, 2026-10-14) — Operations' call-out.
+    findings_to_retest: int = 0
     #: Unassigned critical / high tests anyone may claim — shared work, not
     #: part of ``total``.
     to_claim: int = 0
@@ -282,6 +285,7 @@ def compute_workbench(
         findings_needing_me=my_findings.total_open,
         findings_to_decide=my_findings.need_counts["decide"],
         findings_to_write=my_findings.need_counts["write"],
+        findings_to_retest=my_findings.need_counts["retest"],
         to_claim=groups.triage,
     )
     my_work.total = (

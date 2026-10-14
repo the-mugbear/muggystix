@@ -109,6 +109,9 @@ local DEFAULT_WIDTH = "6in"
 local MARK = "bs-placed"
 -- A table caption's marking and its Word style (see "Table captions" below).
 local CAPTION_CLASS = "bs-table-caption"
+-- A written code block's caption (owner, 2026-10-14: code blocks "have their
+-- own count"): "Listing N: …", counted apart from the tables.
+local LISTING_CLASS = "bs-listing-caption"
 local CAPTION_STYLE = "Table Caption"
 
 local function plain_text(value)
@@ -466,14 +469,24 @@ which only this filter sees.
 
 Every table caption is printed under its table (owner, 2026-10-14: captions
 "are expected underneath their respective elements", as figures' are).
+
+Code blocks the same way, with their own count (owner, 2026-10-14): a
+paragraph opening "Listing:" directly after a code block an author wrote
+becomes its caption, a `bs-listing-caption` Div under it, numbered
+"Listing N: …" in document order — the editor's Code block button writes the
+empty line.  A command or tool output a TEMPLATE prints (`code()`, the test
+results) is not an author's code block and is never counted.
 ]]
 
--- The inlines after a leading "Table:", or nil when `block` is not a caption.
-local function caption_text(block)
+-- The inlines after a leading "Table:" (or `word`: "Listing"), or nil when
+-- `block` is not such a caption.
+local function caption_text(block, word)
   if block == nil or block.t ~= "Para" then return nil end
   local first = block.content[1]
   if first == nil or first.t ~= "Str" then return nil end
-  local rest = first.text:match("^[Tt]able:(.*)$")
+  word = word or "Table"
+  local pattern = "^[" .. word:sub(1, 1):upper() .. word:sub(1, 1):lower() .. "]" .. word:sub(2) .. ":(.*)$"
+  local rest = first.text:match(pattern)
   if rest == nil then return nil end
   local inlines = pandoc.Inlines({})
   if rest ~= "" then inlines:insert(pandoc.Str(rest)) end
@@ -489,10 +502,15 @@ local function caption_tables(blocks)
   local i = 1
   while i <= #blocks do
     local block = blocks[i]
-    local caption = block.t == "Table" and caption_text(blocks[i + 1]) or nil
+    local caption, class = nil, nil
+    if block.t == "Table" then
+      caption, class = caption_text(blocks[i + 1]), CAPTION_CLASS
+    elseif block.t == "CodeBlock" then
+      caption, class = caption_text(blocks[i + 1], "Listing"), LISTING_CLASS
+    end
     if caption ~= nil then
       out:insert(block)
-      out:insert(pandoc.Div({ pandoc.Para(caption) }, pandoc.Attr("", { CAPTION_CLASS })))
+      out:insert(pandoc.Div({ pandoc.Para(caption) }, pandoc.Attr("", { class })))
       i = i + 2
     else
       out:insert(block)
@@ -502,9 +520,10 @@ local function caption_tables(blocks)
   return out
 end
 
--- "Table N: caption" in the Table Caption style ("Table N" for an empty one).
-local function numbered_caption(n, inlines)
-  local label = pandoc.Inlines({ pandoc.Str("Table"), pandoc.Space(), pandoc.Str(tostring(n)) })
+-- "Table N: caption" in the Table Caption style ("Table N" for an empty
+-- one); `word` "Listing" for a code block's.
+local function numbered_caption(n, inlines, word)
+  local label = pandoc.Inlines({ pandoc.Str(word or "Table"), pandoc.Space(), pandoc.Str(tostring(n)) })
   if #inlines > 0 and not blank(inlines) then
     label:insert(pandoc.Str(":"))
     label:insert(pandoc.Space())
@@ -612,16 +631,22 @@ then every BlueStick figure is numbered in the order a reader meets it:
 "Figure 3: caption", or "Figure 3" for an image nobody captioned.  Table
 captions are numbered in the same pass, by their own count: the ones an author
 wrote under a table in a written section (and any a template still prints).
-Each is under its table by then, so the count follows the tables.
+Each is under its table by then, so the count follows the tables.  Code
+block captions ("Listing N") have a third count of their own.
 ]]
 function Pandoc(doc)
   doc = doc:walk({ Blocks = captions_under_tables })
   doc = doc:walk({ Div = fill_field })
   local n = 0
   local tables = 0
+  local listings = 0
   return doc:walk({
     traverse = "topdown",
     Div = function(el)
+      if el.classes:includes(LISTING_CLASS) then
+        listings = listings + 1
+        return numbered_caption(listings, caption_inlines(el), "Listing"), false
+      end
       local inlines = nil
       if el.classes:includes(CAPTION_CLASS) then
         inlines = caption_inlines(el)

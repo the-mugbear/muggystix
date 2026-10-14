@@ -137,9 +137,11 @@ export interface MyFindingsResponse {
 }
 
 /** What a finding asks of its owner (v2.453.0): `decide` — it is under
- *  investigation, or a proposal about it waits for a decision; `write` — only
- *  required report text is missing.  A finding with both is a `decide`. */
-export type FindingNeed = 'decide' | 'write';
+ *  investigation, marked for retest, or a proposal about it waits for a
+ *  decision; `write` — only required report text is missing.  A finding with
+ *  both is a `decide`.  `retest` (owner, 2026-10-14) — the finding or one of
+ *  its endpoints is marked for retest: a PART of `decide`, not a third part. */
+export type FindingNeed = 'decide' | 'write' | 'retest';
 
 /** The caller's work, counted (v2.450.0); `to_claim` is shared work, outside
  *  `total`.  The page says the kinds apart and never shows `total`. */
@@ -152,6 +154,8 @@ export interface MyWorkTotals {
   /** `findings_needing_me` in its two parts (v2.453.0); they add up to it. */
   findings_to_decide?: number;
   findings_to_write?: number;
+  /** Of `findings_to_decide`: marked for retest (the finding, or one of its hosts). */
+  findings_to_retest?: number;
   to_claim: number;
 }
 

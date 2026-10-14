@@ -338,8 +338,11 @@ def _seed_report_content(db, base_url: str, pid: int, lead: Api, keys: dict, lea
     draft = db.query(Report).filter(Report.project_id == pid, Report.title == REPORT_DRAFT_TITLE).first()
     if draft is None:
         created = lead("POST", "/client-reports", json={"kind": "full", "title": REPORT_DRAFT_TITLE})
+        # The executive summary is the project's (owner, 2026-10-14): the
+        # walkthrough draft follows it.
+        lead("PATCH", "/client-reports/profile", json={
+            "executive_summary": "The assessment found weaknesses in authentication and transport security."})
         lead("PATCH", f"/client-reports/{created['id']}", json={
-            "executive_summary": "The assessment found weaknesses in authentication and transport security.",
             "settings": {"classification": "Restricted — walkthrough"}})
         draft_id = created["id"]
     else:
@@ -893,8 +896,8 @@ def main() -> None:
     if not db.query(Report).filter(Report.project_id == pid, Report.status == ReportStatus.ISSUED).first():
         draft = lead("POST", "/client-reports", json={"template": "pentest", "title": f"{MARK} Assessment report"})
         lead("PATCH", f"/client-reports/{draft['id']}", json={
-            "executive_summary": "The assessment found exploitable weaknesses in SMB and TLS configuration.",
             "settings": {
+                "executive_summary": "The assessment found exploitable weaknesses in SMB and TLS configuration.",
                 "client_name": "Acceptance Client", "classification": "CONFIDENTIAL",
                 "engagement_type": "Internal network assessment",
                 "system_description": "The corporate, DMZ and lab networks.",

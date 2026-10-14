@@ -5,7 +5,7 @@
  */
 import type {
   OverdueBand, RemediationApplyRow, RemediationFields, RemediationFlag, RemediationGroup, RemediationPage,
-  RemediationPolicy, RemediationRow, RemediationState, RemediationStatus, RemediationVerification,
+  RemediationDefect, RemediationPolicy, RemediationRow, RemediationState, RemediationStatus, RemediationVerification,
 } from '../services/api';
 import type { QueryClient } from '@tanstack/react-query';
 
@@ -16,7 +16,7 @@ import { formatDate } from './relativeTime';
  *  message the reader may have edited, and is closed by the write. */
 const REMEDIATION_READS = new Set([
   'listRemediation', 'listRemediationOverview', 'listRemediationProjects', 'listRemediationContacts',
-  'listRemediationTeams', 'getRemediationTrend', 'listRemediationEvents',
+  'listRemediationTeams', 'getRemediationTrend', 'listRemediationEvents', 'getRemediationDefectMetrics',
 ]);
 
 /**
@@ -62,6 +62,20 @@ export const REMEDIATION_VERIFICATION_HELP: Record<RemediationVerification, stri
 };
 export const isRemediationVerification = (v: string | null): v is RemediationVerification =>
   v != null && (REMEDIATION_VERIFICATIONS as string[]).includes(v);
+
+/** Where a finding on a host stands as a defect (the server derives it,
+ *  `?defect=`; the deadlines page's Remediated column and defect metrics). */
+export const REMEDIATION_DEFECTS: RemediationDefect[] = ['open', 'remediated', 'deferred'];
+export const isRemediationDefect = (v: string | null): v is RemediationDefect =>
+  v != null && (REMEDIATION_DEFECTS as string[]).includes(v);
+/** The chip of a `?defect=` filter: one state, or "Defects" for all three. */
+export const defectFilterLabel = (defects: readonly RemediationDefect[]): string => {
+  if (REMEDIATION_DEFECTS.every((d) => defects.includes(d))) return 'Defects (not false positives)';
+  const words: Record<RemediationDefect, string> = {
+    open: 'Open defects', remediated: 'Remediated (retested fixed)', deferred: 'Deferred defects',
+  };
+  return defects.map((d) => words[d]).join(', ');
+};
 
 /** Rows a manager is asked to look at again: a deferral whose review date has
  *  arrived (or that never had one), and a due date somebody set by hand.

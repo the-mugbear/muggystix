@@ -5,7 +5,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CODE_TEMPLATE,
   TABLE_TEMPLATE,
+  listingCaptionOf,
   tableCaptionOf,
   insertBlock,
   insertLink,
@@ -84,5 +86,20 @@ describe('the report\'s table rules', () => {
     expect(tablesAfterText(table)).toEqual([]);
     expect(tablesAfterText(`\`\`\`\ntext\n${table}\n\`\`\``)).toEqual([]);
     expect(tablesAfterText(`One.\n${table}\n\nTwo.\n${table}`)).toEqual([2, 7]);
+  });
+});
+
+// Owner, 2026-10-14: code blocks have their own count.  The Code block button
+// writes an empty `Listing:` line, as the Table button writes `Table:`; the
+// preview pairs a `Listing:` paragraph with the code block it follows.
+describe('code block captions', () => {
+  it('the Code block button writes an empty caption line', () => {
+    expect(CODE_TEMPLATE).toBe('```\ncommand or output\n```\n\nListing: ');
+  });
+  it('reads a caption as the report does', () => {
+    expect(listingCaptionOf('Listing: The share list')).toBe('The share list');
+    expect(listingCaptionOf('listing:')).toBe('');
+    expect(listingCaptionOf('A Listing: in prose')).toBeNull();
+    expect(listingCaptionOf('Table: not a listing')).toBeNull();
   });
 });

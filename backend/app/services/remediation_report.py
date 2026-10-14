@@ -170,7 +170,7 @@ def _build(db: Session, project_id: int, contact_email: str, *,
     service = ClientReportService(db)
     transient = Report(
         project_id=project_id, template=contact_template().name, kind=ReportKind.FULL, status=ReportStatus.DRAFT,
-        title=f"Remediation list — {name or email}", settings={}, executive_summary=None,
+        title=f"Remediation list — {name or email}", settings={},
     )
     dataset, _, _ = service.build(transient)
     # A reference is a finding's for good only once a report has been ISSUED

@@ -73,7 +73,18 @@ export const tableCaptionOf = (paragraph: string): string | null => {
   const m = /^[Tt]able:([\s\S]*)$/.exec(paragraph.trim());
   return m ? m[1].trim() : null;
 };
-export const CODE_TEMPLATE = '```\ncommand or output\n```';
+/** The caption a paragraph gives the CODE BLOCK it directly follows: the text
+ *  after a leading `Listing:` / `listing:` (owner, 2026-10-14: code blocks
+ *  have their own count — "Listing N"), else null.  `caption_text(block,
+ *  "Listing")` in `quarto_fields.lua`, shared with the preview. */
+export const listingCaptionOf = (paragraph: string): string | null => {
+  const m = /^[Ll]isting:([\s\S]*)$/.exec(paragraph.trim());
+  return m ? m[1].trim() : null;
+};
+/** What the Code block button writes: the block and, after a blank line, an
+ *  EMPTY caption line, as the Table button does. */
+export const LISTING_CAPTION_LINE = 'Listing: ';
+export const CODE_TEMPLATE = `\`\`\`\ncommand or output\n\`\`\`\n\n${LISTING_CAPTION_LINE}`;
 
 // --- the report's table rules ------------------------------------------------
 

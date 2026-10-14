@@ -121,6 +121,7 @@ format:
           img.bs-logo { border: none; padding: 0; max-width: 2in; height: auto; }
           mark.bs-todo { background: #ffe066; color: #1a1a1a; padding: 0 .25em; }
           table:has(+ div[data-custom-style="Table Caption"]) { margin-bottom: 0; }
+          div.sourceCode:has(+ div[data-custom-style="Table Caption"]), pre:has(+ div[data-custom-style="Table Caption"]) { margin-bottom: 0; }
           div[data-custom-style="Table Caption"] { text-align: center; font-weight: bold; margin: .35em 0 1.25em; }
           div[data-custom-style="Table Caption"] p { margin: 0; }
           figure figcaption, .figure-caption { text-align: center !important; }

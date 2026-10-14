@@ -9,15 +9,19 @@
  * (`useAttachmentImages`: a few fetches at a time, a failure said with a
  * retry, every object URL revoked by `lib/objectUrls`) — and only for an id
  * on THIS list: a reference in the text never becomes a URL.
+ *
+ * `markdown.upload` stores a screenshot pasted into the text (the field
+ * writes its reference where it was pasted): the same route as "Upload
+ * image", with no caption — the list under the field then asks for one.
  */
 import { useCallback, useEffect, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { listReportTextImages } from '../services/api';
+import { listReportTextImages, uploadReportTextImage } from '../services/api';
 import type { ReportTextImage } from '../services/api';
-import { queryErrorText } from '../lib/query';
+import { invalidateReads, queryErrorText } from '../lib/query';
 import type { EvidenceImages, ImageListStatus } from '../utils/evidenceImages';
-import type { MarkdownImages } from '../utils/reportImages';
+import { ReportImageProblem, reportImageProblem, type MarkdownImages } from '../utils/reportImages';
 import { useAttachmentImages } from './useAttachmentImages';
 import { useProjectId } from './useProjectId';
 
@@ -83,7 +87,19 @@ export function useReportTextImages({ enabled = true }: { enabled?: boolean } = 
     source: 'report',
   }), [byId, urls, ensure, listStatus, reload, failed, retry]);
 
-  const markdown = useMemo<MarkdownImages>(() => ({ placeable: images, urls, resolver }), [images, urls, resolver]);
+  const queryClient = useQueryClient();
+  const { mutateAsync: store } = useMutation({
+    mutationFn: (file: File) => uploadReportTextImage(projectId, file),
+    onSuccess: () => { void invalidateReads(queryClient, 'listReportTextImages'); },
+  });
+  const upload = useCallback(async (file: File) => {
+    const problem = reportImageProblem(file);
+    if (problem) throw new ReportImageProblem(problem);
+    return (await store(file)).id;
+  }, [store]);
+
+  const markdown = useMemo<MarkdownImages>(
+    () => ({ placeable: images, urls, resolver, upload }), [images, urls, resolver, upload]);
 
   return {
     images, listStatus, error, reload, urls, ensure, failed, retry, markdown,

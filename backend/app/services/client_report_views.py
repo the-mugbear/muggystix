@@ -48,11 +48,11 @@ def _details(
     issued report: what it was ISSUED with (its frozen dataset — a detail a
     report issued before it existed is empty), and nothing followed."""
     if not is_draft:
-        frozen = (((report.snapshot or {}).get("dataset") or {}).get("engagement")) or {}
+        frozen = ClientReportService.issued_details(report)
         return EngagementSettings.model_validate(
             {key: frozen.get(key) for key in report_defaults.DETAIL_KEYS if frozen.get(key) is not None},
         ), None, None
-    followed, sources = ClientReportService(db).followed_details_with_sources(report.project_id)
+    followed, sources = ClientReportService(db).followed_details_with_sources(report.project_id, report.kind)
     effective = report_defaults.apply_overrides(followed, report.settings)
     return EngagementSettings.model_validate(effective), EngagementSettings.model_validate(followed), sources
 
@@ -89,7 +89,7 @@ def serialize_report(
         baseline=_ref(report.baseline), revision_of=_ref(report.revision_of),
         superseded_by=_ref(superseded_by),
         settings=report_defaults.overrides(report.settings),
-        executive_summary=report.executive_summary,
+        executive_summary=effective.executive_summary if effective is not None else None,
         template_fingerprint=report.template_fingerprint, quarto_version=report.quarto_version,
         render_status=report.render_status, render_error=report.render_error,
         files=[
