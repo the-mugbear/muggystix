@@ -18,6 +18,9 @@
  *   defaults, never as an override).  An overridden detail is the editable
  *   control with "Revert to the project's" and, given `onPromote`, "Make this
  *   the project's default".  Lists are overridden, and pushed up, as a whole.
+ *   ONE action per line is a visible link; the others are in a "⋯" menu
+ *   beside it ("More actions for <detail>", marked `data-more-actions`, which
+ *   a checklist line never focuses).
  * - `readOnly` (an issued report, or someone who may not edit): the values as
  *   they stand (an issued report's as issued), no action.
  *
@@ -27,7 +30,7 @@
 import React, { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Copy, Loader2, Plus, Users } from 'lucide-react';
+import { Copy, Loader2, MoreHorizontal, Plus, Users } from 'lucide-react';
 
 import {
   getProjectReportTeam, type EngagementOverrides, type EngagementSettings, type FollowedSource,
@@ -40,6 +43,9 @@ import { useReportTextImages } from '../../hooks/useReportTextImages';
 import MembersLoadError from '../MembersLoadError';
 import { formatApiError } from '../../utils/apiErrors';
 import { Button } from '../ui/button';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import {
@@ -136,6 +142,10 @@ const LINK_BUTTON = 'h-auto p-0 text-caption';
 /** A draft's detail: how it stands, and what can be done with it. */
 type Mode = 'own' | 'project' | 'followed';
 
+/** One action on a detail's source line: shown as a link, or as an item of
+ *  its "⋯" menu.  `aria` is its accessible name either way. */
+interface SourceAction { key: string; text: string; aria: string; onClick: () => void; off?: boolean }
+
 const DetailSource: React.FC<{
   id: string; label: string; mode: Mode; source: FollowedSource | null; blank: boolean;
   disabled?: boolean; projectDisabled?: boolean; saving?: boolean;
@@ -148,56 +158,86 @@ const DetailSource: React.FC<{
   id, label, mode, source, blank, disabled, projectDisabled, saving, saveDisabled,
   onOverride, onRevert, onSetForProject, onPromote, onSaveProject, onCancelProject,
 }) => {
-  const items: React.ReactNode[] = [];
-  const link = (key: string, text: string, aria: string, onClick: () => void, off?: boolean) => (
-    <Button key={key} type="button" variant="link" size="sm" className={LINK_BUTTON} disabled={off}
-      aria-label={aria} onClick={onClick}>
-      {text}
-    </Button>
-  );
+  // ONE visible action per state; the others in a small "⋯" menu beside it
+  // (owner, 2026-10-14: two or three links a line read as a wall of links).
+  let primary: SourceAction | null = null;
+  const more: SourceAction[] = [];
+  let projectEditing: React.ReactNode = null;
   let words: string | null;
   if (mode === 'own') {
     words = blank ? 'Overridden for this report — empty: saved, it follows the project’s again' : 'Overridden for this report';
-    items.push(link('revert', 'Revert to the project’s', `Revert ${label} to the project’s`, onRevert, disabled));
+    primary = { key: 'revert', text: 'Revert to the project’s', aria: `Revert ${label} to the project’s`, onClick: onRevert, off: disabled };
     if (onPromote && !blank) {
-      items.push(link('promote', 'Make this the project’s default', `Make ${label} the project’s default`,
-        onPromote, disabled || projectDisabled));
+      more.push({ key: 'promote', text: 'Make this the project’s default', aria: `Make ${label} the project’s default`,
+        onClick: onPromote, off: disabled || projectDisabled });
     }
   } else if (mode === 'project') {
     words = 'Editing the project’s default — every draft that follows it will print it';
-    items.push(
-      <Button key="save" type="button" size="sm" className="h-7 px-xs text-caption" disabled={projectDisabled || saveDisabled}
-        title={saveDisabled ? 'Type a value first' : undefined}
-        aria-label={`Save ${label} for the project`} onClick={onSaveProject}>
-        {saving && <Loader2 className="size-3.5 animate-spin" aria-hidden />} Save for the project
-      </Button>,
-      link('cancel', 'Cancel', `Cancel editing the project’s ${label}`, () => onCancelProject?.(), projectDisabled),
+    projectEditing = (
+      <>
+        <Button type="button" size="sm" className="h-7 px-xs text-caption" disabled={projectDisabled || saveDisabled}
+          title={saveDisabled ? 'Type a value first' : undefined}
+          aria-label={`Save ${label} for the project`} onClick={onSaveProject}>
+          {saving && <Loader2 className="size-3.5 animate-spin" aria-hidden />} Save for the project
+        </Button>
+        <span aria-hidden>·</span>
+        <Button type="button" variant="link" size="sm" className={LINK_BUTTON} disabled={projectDisabled}
+          aria-label={`Cancel editing the project’s ${label}`} onClick={() => onCancelProject?.()}>
+          Cancel
+        </Button>
+      </>
     );
   } else {
     words = source ? SOURCE_TEXT[source] : null;
-    const override = link('override', 'Override for this report', `Override ${label} for this report`, onOverride, disabled);
+    const override: SourceAction = { key: 'override', text: 'Override for this report',
+      aria: `Override ${label} for this report`, onClick: onOverride, off: disabled };
     if (!onSetForProject) {
-      items.push(override);
+      primary = override;
     } else if (source === 'project') {
-      items.push(override, link('edit-project', 'Edit the project’s default', `Edit ${label} in the project’s defaults`,
-        onSetForProject, disabled || projectDisabled));
+      primary = override;
+      more.push({ key: 'edit-project', text: 'Edit the project’s default', aria: `Edit ${label} in the project’s defaults`,
+        onClick: onSetForProject, off: disabled || projectDisabled });
     } else {
-      const set = link('set-project', 'Set for the project', `Set ${label} for the project`,
-        onSetForProject, disabled || projectDisabled);
-      // Empty in the project: setting it there is the first thing to do.
-      items.push(...(source == null ? [set, override] : [override, set]));
+      const set: SourceAction = { key: 'set-project', text: 'Set for the project', aria: `Set ${label} for the project`,
+        onClick: onSetForProject, off: disabled || projectDisabled };
+      // Empty in the project: setting it there is the common fix (the one a
+      // checklist line leads to).  From the installation or the members:
+      // overriding it here is.
+      if (source == null) { primary = set; more.push(override); } else { primary = override; more.push(set); }
     }
   }
   return (
-    <p id={id} className="flex min-w-0 flex-wrap items-center gap-x-xs gap-y-xxs text-caption text-muted-foreground">
+    <div id={id} className="flex min-w-0 flex-wrap items-center gap-x-xs gap-y-xxs text-caption text-muted-foreground">
       {words && <span>{words}</span>}
-      {items.map((item, i) => (
-        <React.Fragment key={i}>
-          {(i > 0 || words) && <span aria-hidden>·</span>}
-          {item}
-        </React.Fragment>
-      ))}
-    </p>
+      {words && (primary || projectEditing) && <span aria-hidden>·</span>}
+      {projectEditing}
+      {primary && (
+        <Button type="button" variant="link" size="sm" className={LINK_BUTTON} disabled={primary.off}
+          aria-label={primary.aria} onClick={primary.onClick}>
+          {primary.text}
+        </Button>
+      )}
+      {more.length > 0 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button type="button" variant="ghost" size="icon" className="size-5 text-muted-foreground"
+              data-more-actions="" disabled={disabled} aria-label={`More actions for ${label}`}>
+              <MoreHorizontal className="size-4" aria-hidden />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            {more.map((a) => (
+              <DropdownMenuItem key={a.key} disabled={a.off} aria-label={a.aria}
+                // A tick later: a confirmation, or the field taking the
+                // caret, must not race the menu handing focus back.
+                onSelect={() => { setTimeout(a.onClick, 0); }}>
+                {a.text}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </div>
   );
 };
 

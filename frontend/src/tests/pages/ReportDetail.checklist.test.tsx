@@ -6,6 +6,7 @@
  *   - the template is chosen beside the report's kind, not in Preview;
  *   - a finished HTML preview opens in a new tab, the file still a press away.
  */
+import type { ReactNode } from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -47,6 +48,13 @@ vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
 const auth = vi.hoisted(() => ({ user: { id: 99, username: 'admin', full_name: 'Administrator', role: 'admin' } as Record<string, unknown> }));
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: auth.user }) }));
 vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1, name: 'P' } }) }));
+// setupTests renders no tooltip content; the template's (i) is read here as
+// its trigger and, beside it, what it holds.
+vi.mock('../../components/ui/info-tip', () => ({
+  InfoTip: ({ text, label }: { text: ReactNode; label?: string }) => (
+    <span data-testid="info-tip" aria-label={label} role="note">{text}</span>
+  ),
+}));
 
 import * as api from '../../services/api';
 import ReportDetail from '../../pages/ReportDetail';
@@ -205,6 +213,8 @@ describe('The draft’s checklist', () => {
 
     fireEvent.click(within(group).getByRole('button', { name: 'Go to client in Report details' }));
     expect(screen.getByRole('button', { name: 'Override Client for this report' })).toHaveFocus();
+    // The visible action, never the "⋯" menu beside it.
+    expect(screen.getByRole('button', { name: 'More actions for Client' })).not.toHaveFocus();
     fireEvent.click(within(group).getByRole('button', { name: 'Go to assessment team in Report details' }));
     expect(screen.getByRole('button', { name: 'Override Assessment team for this report' })).toHaveFocus();
     // Empty in the project: "Set for the project" first.
@@ -257,12 +267,44 @@ describe('The template', () => {
     expect(picker.closest('header')).not.toBeNull();
     const preview = screen.getByRole('heading', { level: 2, name: /Preview/ }).closest('section')!;
     expect(within(preview).queryByRole('combobox', { name: 'Template' })).toBeNull();
-    expect(within(picker).getByTestId('template-description')).toHaveTextContent('Findings-first client report.');
+    // What the template is for is on the (i) beside the picker, not a
+    // paragraph in the header (owner, 2026-10-14).
+    const tip = within(picker).getByRole('note', { name: 'About this template' });
+    expect(within(tip).getByTestId('template-description')).toHaveTextContent('Findings-first client report.');
+    expect(screen.getAllByTestId('template-description')).toHaveLength(1);
 
     fireEvent.keyDown(within(picker).getByRole('combobox', { name: 'Template' }), { key: 'Enter' });
     fireEvent.click(await screen.findByRole('option', { name: 'Brief report' }));
     await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, { template: 'brief' }));
     await waitFor(() => expect(screen.getByTestId('template-description')).toHaveTextContent('For leadership.'));
+  });
+
+  it('the files line and “the only template” are in the tip; a missing required file is said on the page', async () => {
+    mocked.listReportTemplates.mockResolvedValue([
+      { name: 'pentest', title: 'Penetration test report', description: 'Findings-first client report.', formats: ['html'],
+        assets: [{ id: 'logo', label: 'Logo', path: 'branding/logo.png', present: false, required: false,
+          description: 'The client’s logo.', note: '', formats: ['html'] }] },
+    ]);
+    renderDetail();
+    const picker = await screen.findByTestId('report-template-picker');
+    const tip = await within(picker).findByRole('note', { name: 'About this template' });
+    expect(tip).toHaveTextContent('The only template installed.');
+    expect(within(tip).getByTestId('template-files')).toHaveTextContent('Logo: not installed (optional, left out)');
+    // One template: no description to choose by.
+    expect(within(tip).queryByTestId('template-description')).toBeNull();
+  });
+
+  it('a missing REQUIRED template file blocks preview and issue: said on the page, never only in the tip', async () => {
+    mocked.listReportTemplates.mockResolvedValue([
+      { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html'],
+        assets: [{ id: 'logo', label: 'Logo', path: 'branding/logo.png', present: false, required: true,
+          description: 'The client’s logo.', note: '', formats: ['html'] }] },
+    ]);
+    renderDetail();
+    const picker = await screen.findByTestId('report-template-picker');
+    const warning = await within(picker).findByText(/preview and issue are unavailable until it is installed/);
+    expect(warning.closest('[role="note"]')).toBeNull();
+    expect(screen.queryByTestId('template-files')).toBeNull();
   });
 
   it('someone who may not edit the draft reads its template, with no chooser', async () => {

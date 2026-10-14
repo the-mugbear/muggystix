@@ -3,10 +3,11 @@
  * follows the project unless the report overrides it").
  *
  * - A DRAFT (`followed` given): its `value` is the override map.  A followed
- *   detail shows the project's value, greyed, "From the project's defaults",
+ *   detail shows the project's value as text, "From the project's defaults",
  *   with "Override for this report"; an overridden one is the report's to
  *   edit, with "Revert to the project's".  Lists are overridden as a whole,
- *   and may be overridden to empty.
+ *   and may be overridden to empty.  One action per line is visible, the
+ *   others are in its "⋯" menu.
  * - The project's defaults (no `followed`): plain editing; an empty author or
  *   disclaimer says it uses the installation's.
  * - `readOnly` (an issued report): its values, no action.
@@ -70,6 +71,20 @@ const Harness: React.FC<HarnessProps> = ({ initial = settings(), followed, inher
 };
 const lastChange = () => onChange.mock.calls[onChange.mock.calls.length - 1][0] as EngagementOverrides;
 const button = (name: string) => screen.getByRole('button', { name });
+/** A detail's "⋯" menu, opened (Radix opens a menu on a key, not a click, in jsdom). */
+const openMore = async (label: string) => {
+  fireEvent.keyDown(button(`More actions for ${label}`), { key: 'Enter' });
+  return screen.findByRole('menu');
+};
+/** Choose `name` in the "⋯" menu of the detail `label`. */
+const fromMenu = async (label: string, name: string) => {
+  const menu = await openMore(label);
+  fireEvent.click(within(menu).getByRole('menuitem', { name }));
+};
+/** The buttons on a detail's source line, in order (the "⋯" trigger included). */
+const visibleActions = (key: string) =>
+  within(document.getElementById(`t-${key}-source`)!).getAllByRole('button')
+    .map((b) => b.getAttribute('aria-label'));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -229,27 +244,61 @@ describe('A draft — a change pushed up to the project (owner, 2026-10-14)', ()
     onPromote.mockReset();
   });
 
-  it('an overridden detail offers “Make this the project’s default” with the value shown — edited or not', () => {
+  it('one visible action per detail; the others in its “⋯” menu (owner, 2026-10-14)', async () => {
+    render(<Pushing initial={{ client_name: 'Other Corp' }} followed={{ ...PROJECT, engagement_type: null }}
+      from={{ client_name: 'project', classification: 'project', engagement_type: null,
+        author_name: 'installation', testers: 'project_team' }} />);
+    // Overridden: Revert; the menu makes it the project's default.
+    expect(visibleActions('client_name')).toEqual(['Revert Client to the project’s', 'More actions for Client']);
+    expect(button('Revert Client to the project’s')).toHaveTextContent('Revert to the project’s');
+    let menu = await openMore('Client');
+    expect(within(menu).getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Make this the project’s default']);
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    // Followed, the project holds a value: Override; the menu edits the default.
+    expect(visibleActions('classification'))
+      .toEqual(['Override Classification for this report', 'More actions for Classification']);
+    menu = await openMore('Classification');
+    expect(within(menu).getByRole('menuitem', { name: 'Edit Classification in the project’s defaults' }))
+      .toHaveTextContent('Edit the project’s default');
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    // Followed, empty in the project: Set for the project; the menu overrides.
+    expect(visibleActions('engagement_type'))
+      .toEqual(['Set Engagement type for the project', 'More actions for Engagement type']);
+    // From the installation or the project's members: Override; the menu sets it for the project.
+    expect(visibleActions('author_name')).toEqual(['Override Author for this report', 'More actions for Author']);
+    expect(visibleActions('testers'))
+      .toEqual(['Override Assessment team for this report', 'More actions for Assessment team']);
+    // The source words stay on the line.
+    expect(document.getElementById('t-classification-source')).toHaveTextContent('From the project’s defaults');
+    expect(document.getElementById('t-author_name-source')).toHaveTextContent('From the installation’s defaults');
+  });
+
+  it('an overridden detail offers “Make this the project’s default” with the value shown — edited or not', async () => {
     render(<Pushing initial={{ client_name: 'Other Corp', distribution: [] }} />);
     fireEvent.change(textbox('Client'), { target: { value: '  Renamed Corp ' } });
-    expect(button('Make Client the project’s default')).toHaveTextContent('Make this the project’s default');
-    fireEvent.click(button('Make Client the project’s default'));
-    expect(onPromote).toHaveBeenCalledWith('client_name', 'Renamed Corp');
+    await fromMenu('Client', 'Make Client the project’s default');
+    await waitFor(() => expect(onPromote).toHaveBeenCalledWith('client_name', 'Renamed Corp'));
     // A list as a whole, even empty.
-    fireEvent.click(button('Make Distribution the project’s default'));
-    expect(onPromote).toHaveBeenLastCalledWith('distribution', []);
-    // An emptied text has nothing to push up.
+    await fromMenu('Distribution', 'Make Distribution the project’s default');
+    await waitFor(() => expect(onPromote).toHaveBeenLastCalledWith('distribution', []));
+    // An emptied text has nothing to push up: no menu at all, Revert alone.
     fireEvent.change(textbox('Client'), { target: { value: ' ' } });
-    expect(screen.queryByRole('button', { name: 'Make Client the project’s default' })).toBeNull();
+    expect(visibleActions('client_name')).toEqual(['Revert Client to the project’s']);
   });
 
   it('a followed detail the project leaves empty: “Set for the project” first, edited here, saved to the project', async () => {
     const followed = { ...PROJECT, engagement_type: null };
     render(<Pushing followed={followed} from={{ engagement_type: null, client_name: 'project' }} />);
     expect(followedValue('Engagement type')).toHaveTextContent('Not set in the project’s defaults');
-    const actions = within(document.getElementById('t-engagement_type-source')!).getAllByRole('button');
-    expect(actions.map((b) => b.getAttribute('aria-label')))
-      .toEqual(['Set Engagement type for the project', 'Override Engagement type for this report']);
+    expect(visibleActions('engagement_type'))
+      .toEqual(['Set Engagement type for the project', 'More actions for Engagement type']);
+    const menu = await openMore('Engagement type');
+    expect(within(menu).getAllByRole('menuitem').map((m) => m.getAttribute('aria-label')))
+      .toEqual(['Override Engagement type for this report']);
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
 
     fireEvent.click(button('Set Engagement type for the project'));
     const field = textbox('Engagement type');
@@ -270,37 +319,41 @@ describe('A draft — a change pushed up to the project (owner, 2026-10-14)', ()
 
   it('Cancel leaves the project as it was; a failed save keeps the edit open', async () => {
     render(<Pushing from={{ classification: 'project' }} />);
-    fireEvent.click(button('Edit Classification in the project’s defaults'));
-    expect(textbox('Classification')).toHaveValue('Confidential');
+    await fromMenu('Classification', 'Edit Classification in the project’s defaults');
+    expect(await screen.findByRole('textbox', { name: 'Classification' })).toHaveValue('Confidential');
+    // Editing the project's default: Save and Cancel, no menu.
+    expect(visibleActions('classification'))
+      .toEqual(['Save Classification for the project', 'Cancel editing the project’s Classification']);
     fireEvent.click(button('Cancel editing the project’s Classification'));
     expect(screen.queryByRole('textbox', { name: 'Classification' })).toBeNull();
     expect(onSet).not.toHaveBeenCalled();
 
     onSet.mockRejectedValueOnce(new Error('refused'));
-    fireEvent.click(button('Edit Classification in the project’s defaults'));
-    fireEvent.click(button('Save Classification for the project'));
+    await fromMenu('Classification', 'Edit Classification in the project’s defaults');
+    fireEvent.click(await screen.findByRole('button', { name: 'Save Classification for the project' }));
     await waitFor(() => expect(onSet).toHaveBeenCalled());
     expect(textbox('Classification')).toBeInTheDocument();
   });
 
-  it('author and disclaimer from the installation say so, and “Set for the project” makes a project value', () => {
+  it('author and disclaimer from the installation say so, and “Set for the project” makes a project value', async () => {
     const followed = { ...PROJECT, author_name: 'Installation Ltd', disclaimer: 'The installation’s terms.' };
     render(<Pushing followed={followed} from={{ author_name: 'installation', disclaimer: 'installation' }} />);
     expect(followedValue('Author')).toHaveAccessibleDescription(/From the installation’s defaults/);
     expect(followedValue('Disclaimer')).toHaveAccessibleDescription(/From the installation’s defaults/);
-    fireEvent.click(button('Set Author for the project'));
-    expect(textbox('Author')).toHaveValue('Installation Ltd');           // starts from what it prints
+    await fromMenu('Author', 'Set Author for the project');
+    // starts from what it prints
+    expect(await screen.findByRole('textbox', { name: 'Author' })).toHaveValue('Installation Ltd');
     fireEvent.change(textbox('Author'), { target: { value: 'Project Team' } });
     fireEvent.click(button('Save Author for the project'));
     expect(onSet).toHaveBeenCalledWith('author_name', 'Project Team');
   });
 
-  it('a team taken from the project’s members says so, and can be set for the project', () => {
+  it('a team taken from the project’s members says so, and can be set for the project', async () => {
     render(<Pushing from={{ testers: 'project_team' }} />);
     expect(screen.getByRole('group', { name: 'Assessment team' }))
       .toHaveAccessibleDescription(/From the project’s analysts and admins/);
-    fireEvent.click(button('Set Assessment team for the project'));
-    expect(screen.getByLabelText('Team member 1 name')).toHaveValue('Ana Lead');
+    await fromMenu('Assessment team', 'Set Assessment team for the project');
+    expect(await screen.findByLabelText('Team member 1 name')).toHaveValue('Ana Lead');
     fireEvent.click(button('Save Assessment team for the project'));
     expect(onSet).toHaveBeenCalledWith('testers', [ANA]);
   });
@@ -308,6 +361,8 @@ describe('A draft — a change pushed up to the project (owner, 2026-10-14)', ()
   it('none of it for someone who may not write: no push-up actions without the handlers', () => {
     render(<Harness initial={{ client_name: 'Other Corp' }} followed={{ ...PROJECT, engagement_type: null }} />);
     expect(screen.queryByRole('button', { name: /project’s default|for the project|in the project’s defaults/ })).toBeNull();
+    // One action each: no "⋯" menu anywhere.
+    expect(screen.queryByRole('button', { name: /^More actions/ })).toBeNull();
     // Override and Revert stay.
     expect(button('Override Engagement type for this report')).toBeInTheDocument();
     expect(button('Revert Client to the project’s')).toBeInTheDocument();

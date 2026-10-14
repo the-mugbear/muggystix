@@ -17,7 +17,6 @@
  */
 import React, { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
 
 import {
   fetchReportTemplateAssetPreview, removeReportTemplateAsset, uploadReportTemplateAsset,
@@ -245,18 +244,19 @@ export interface TemplateImagesProps {
  * One line for a draft when nothing blocks rendering: which template files
  * are not installed and what happens instead. The full list is on the
  * Reports page; a draft shows it only when a required file is missing.
+ * Shown in the template's info tip (2026-10-14), so it holds no link — a
+ * tooltip cannot be tabbed into.
  */
 export const TemplateFilesLine: React.FC<{ template: ReportTemplate | undefined }> = ({ template }) => {
   const assets = template?.assets ?? [];
   if (!template || !assets.length) return null;
   const absent = assets.filter((a) => !a.present);
   return (
-    <p className="break-words text-caption text-muted-foreground">
+    <p className="break-words" data-testid="template-files">
       {absent.length === 0
         ? `All ${assets.length} template file${assets.length === 1 ? '' : 's'} installed.`
         : absent.map((a) => `${a.label}: ${a.replaces ? 'not installed, the shipped file is used' : 'not installed (optional, left out)'}`).join(' · ')}
-      {' '}
-      <Link to="/reports" className="text-info hover:underline">Details on the Reports page</Link>
+      {' '}The Reports page lists them under Template files.
     </p>
   );
 };

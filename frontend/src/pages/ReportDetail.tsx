@@ -65,6 +65,7 @@ import AiDraftReportDialog from '../components/AiDraftReportDialog';
 import DownloadButton from '../components/DownloadButton';
 import { DetailSkeleton } from '../components/PageSkeleton';
 import { Badge } from '../components/ui/badge';
+import { InfoTip } from '../components/ui/info-tip';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -401,6 +402,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           </>
         ),
         confirmLabel: 'Replace the project’s default',
+        // Undoable (set it back the same way): the normal primary button —
+        // red is for discarding and deleting (owner, 2026-10-14).
+        severity: 'info',
       });
       if (!ok) return;
     }
@@ -585,6 +589,23 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   // The template is a property of the report — what it is issued with, not
   // only what a preview looks like — so it sits under the title, beside the
   // report's kind (walkthrough 2026-10-14; it was in Preview).  Saved at once.
+  // What the template is for and how its files stand are on the (i) beside
+  // it (owner, 2026-10-14: the header read as a wall of text); what BLOCKS
+  // preview and issue stays on the page.
+  const onlyTemplate = editable && templates.length === 1;
+  const describeTemplate = !!template?.description && templates.length > 1;
+  const filesLine = !assetsBlock && !!template?.assets?.length;
+  const templateTip = (onlyTemplate || describeTemplate || filesLine) ? (
+    <div className="space-y-xxs">
+      {/* What the chosen template is for (v5.295.0) — with several
+          installed, the title alone does not say which reader it serves. */}
+      {describeTemplate && (
+        <p className="break-words" data-testid="template-description">{template?.description}</p>
+      )}
+      {onlyTemplate && <p>The only template installed.</p>}
+      {filesLine && <TemplateFilesLine template={template} />}
+    </div>
+  ) : null;
   const templatePicker = (
     <div className="mt-xs space-y-xxs" data-testid="report-template-picker">
       <div className="flex min-w-0 flex-wrap items-center gap-xs">
@@ -604,18 +625,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         ) : (
           <span className="min-w-0 break-words text-body">{template?.title ?? report.template}</span>
         )}
+        {templateTip && <InfoTip label="About this template" text={templateTip} />}
         {savingTemplate && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Saving the template" />}
-        {editable && templates.length === 1 && (
-          <span className="text-caption text-muted-foreground">The only template installed.</span>
-        )}
       </div>
-      {/* What the chosen template is for (v5.295.0) — with several
-          installed, the title alone does not say which reader it serves. */}
-      {template?.description && templates.length > 1 && (
-        <p className="max-w-3xl break-words text-caption text-muted-foreground" data-testid="template-description">
-          {template.description}
-        </p>
-      )}
       {assetsBlock ? (
         <div className="space-y-xxs">
           <p className="text-caption text-destructive">
@@ -627,9 +639,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             showServerPaths={isAdmin}
           />
         </div>
-      ) : template ? (
-        <TemplateFilesLine template={template} />
-      ) : templates.length > 0 && (
+      ) : !template && templates.length > 0 && (
         <p className="break-words text-caption text-destructive">
           The template “{report.template}” is not installed on this server{editable ? ' — choose another' : ''}.
         </p>

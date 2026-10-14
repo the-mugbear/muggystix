@@ -12,7 +12,7 @@
  *   then the draft is read again.
  * - Someone who may not edit the draft sees neither.
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -81,6 +81,12 @@ const renderDetail = () => render(
   </MemoryRouter>,
 );
 const button = (name: string) => screen.getByRole('button', { name });
+/** Choose `name` in the "⋯" menu of the detail `label` (Radix opens a menu on
+ *  a key, not a click, in jsdom). */
+const fromMenu = async (label: string, name: string) => {
+  fireEvent.keyDown(await screen.findByRole('button', { name: `More actions for ${label}` }), { key: 'Enter' });
+  fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name }));
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -101,10 +107,12 @@ describe('Make this the project’s default', () => {
     }));
     renderDetail();
     confirmMock.mockResolvedValueOnce(false);
-    fireEvent.click(await screen.findByRole('button', { name: 'Make Client the project’s default' }));
+    await fromMenu('Client', 'Make Client the project’s default');
     await waitFor(() => expect(confirmMock).toHaveBeenCalled());
     const asked = confirmMock.mock.calls[0][0];
     expect(asked.title).toBe('Replace the project’s Client?');
+    // Undoable: the normal primary button, not the red one (owner, 2026-10-14).
+    expect(asked.severity).toBe('info');
     const body = render(<div>{asked.body}</div>);
     expect(body.container).toHaveTextContent('The project’s default is “Example Corp”. It becomes “Renamed Corp”.');
     expect(body.container).toHaveTextContent(/Every other draft that follows the project’s Client changes with it/);
@@ -112,7 +120,7 @@ describe('Make this the project’s default', () => {
     expect(mocked.promoteClientReportDetails).not.toHaveBeenCalled();
 
     confirmMock.mockResolvedValueOnce(true);
-    fireEvent.click(button('Make Client the project’s default'));
+    await fromMenu('Client', 'Make Client the project’s default');
     await waitFor(() => expect(mocked.promoteClientReportDetails).toHaveBeenCalledWith(1, 5, { client_name: 'Renamed Corp' }));
     // The answer replaces the draft: it follows the new default.
     expect(await screen.findByRole('group', { name: 'Client' })).toHaveTextContent('Renamed Corp');
@@ -123,7 +131,7 @@ describe('Make this the project’s default', () => {
     mocked.getClientReport.mockResolvedValue(report({ settings: { classification: 'Secret' } }));
     mocked.promoteClientReportDetails.mockResolvedValue(report());
     renderDetail();
-    fireEvent.click(await screen.findByRole('button', { name: 'Make Classification the project’s default' }));
+    await fromMenu('Classification', 'Make Classification the project’s default');
     await waitFor(() => expect(mocked.promoteClientReportDetails).toHaveBeenCalledWith(1, 5, { classification: 'Secret' }));
     expect(confirmMock).not.toHaveBeenCalled();
   });
@@ -133,7 +141,7 @@ describe('Make this the project’s default', () => {
     mocked.promoteClientReportDetails.mockResolvedValue(report({ settings: { client_name: 'Mine' } }));
     renderDetail();
     fireEvent.change(await screen.findByRole('textbox', { name: 'Client' }), { target: { value: 'Mine, edited' } });
-    fireEvent.click(button('Make Classification the project’s default'));
+    await fromMenu('Classification', 'Make Classification the project’s default');
     await waitFor(() => expect(mocked.promoteClientReportDetails).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Classification' })).toBeNull());
     expect(screen.getByRole('textbox', { name: 'Client' })).toHaveValue('Mine, edited');
@@ -163,8 +171,8 @@ describe('Set for the project', () => {
     mocked.patchReportProfile.mockResolvedValue({});
     renderDetail();
     expect(await screen.findByRole('group', { name: 'Author' })).toHaveAccessibleDescription(/From the installation’s defaults/);
-    fireEvent.click(button('Set Author for the project'));
-    fireEvent.click(button('Save Author for the project'));
+    await fromMenu('Author', 'Set Author for the project');
+    fireEvent.click(await screen.findByRole('button', { name: 'Save Author for the project' }));
     await waitFor(() => expect(mocked.patchReportProfile).toHaveBeenCalledWith(1, { author_name: 'Installation Ltd' }));
   });
 });
@@ -174,6 +182,6 @@ describe('Who sees the actions', () => {
     mocked.getClientReport.mockResolvedValue(report({ can_edit: false, can_discard: false, settings: { client_name: 'Mine' } }));
     renderDetail();
     await screen.findByRole('heading', { name: /Report details/ });
-    expect(screen.queryByRole('button', { name: /project’s default|for the project|Override|Revert/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /project’s default|for the project|Override|Revert|More actions/ })).toBeNull();
   });
 });

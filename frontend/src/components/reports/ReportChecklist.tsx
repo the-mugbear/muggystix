@@ -84,10 +84,12 @@ export const focusReportDetail = (root: HTMLElement | null, key: string, idPrefi
   }
   if (!target) return false;
   // A draft's detail that follows the project is text, not a field
-  // (`data-followed`): the caret goes to its first action — "Set for the
-  // project" when the project has no value, else "Override for this report".
+  // (`data-followed`): the caret goes to its visible action — "Set for the
+  // project" when the project has no value, else "Override for this report"
+  // — never to the "⋯" menu beside it (`data-more-actions`).
   if (target.matches('[data-followed]') || !focusable || focusable.matches(':disabled')) {
-    focusable = root.querySelector<HTMLElement>(`#${idPrefix}-${key}-source button:not([disabled])`) ?? focusable;
+    focusable = root.querySelector<HTMLElement>(
+      `#${idPrefix}-${key}-source button:not([disabled]):not([data-more-actions])`) ?? focusable;
   }
   target.scrollIntoView?.({ block: 'center' });
   focusable?.focus?.({ preventScroll: true });

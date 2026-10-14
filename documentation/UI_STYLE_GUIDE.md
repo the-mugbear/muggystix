@@ -955,6 +955,12 @@ beside an (i) that already held the same words.
   about THIS data (what is still empty, how many are waiting). What the section
   *is*, how a figure is derived, and every "X, not Y" caveat go on the heading's
   `InfoTip`. A caveat is never deleted to save space — it moves.
+- **A control's description is on its (i), not under it** (2026-10-14, a draft
+  report's header): the template picker carries what the template is for and
+  how its files stand on an `InfoTip` beside it, so the header is the title,
+  the kind, the picker and the actions. What BLOCKS an action (a required
+  template file not installed) stays on the page — a tip is never the only
+  place a blocker is said. A tip holds no link (it cannot be tabbed into).
 - **A lead does not restate the strip under it.** The strip carries the counts
   as links; the lead says the one thing to act on (Scope: the hosts outside
   every scope, not the three counts again).
@@ -1054,10 +1060,24 @@ From the codebase review of 2026-10-07 (5.339.0).
   one in a bounded box that scrolls, Markdown rendered; a list as one line
   per row), says where it comes from ("From the project's defaults", "From
   the installation's defaults"), or "Not set in the project's defaults", and
-  offers its actions as compact links on that line — the first one is the
-  primary action, the one a checklist line focuses. The field appears only
-  once the value is the reader's to edit (overridden, or being edited for the
-  project).
+  offers ONE action as a compact link on that line — the primary action, the
+  one a checklist line focuses — with any others in a small "⋯" menu beside
+  it (below). The field appears only once the value is the reader's to edit
+  (overridden, or being edited for the project).
+- **One visible action per line; the rest in "⋯"** (2026-10-14, a draft
+  report's details): two or three links on one line read as a wall of small
+  links. Show the action the reader most often wants in that state (on a
+  draft's detail: "Set for the project" where the project leaves it empty,
+  "Revert to the project's" where the report overrides it, "Override for
+  this report" otherwise) and put the others in a `DropdownMenu` whose
+  ghost-icon trigger is named "More actions for <the thing>" and carries
+  `data-more-actions`, so a "go to" never focuses it. No menu when there is
+  only one action; a state whose controls are a form (Save / Cancel) has
+  none. A menu item keeps the accessible name the link had.
+- **A confirmation is red only for what cannot be taken back** (discard,
+  delete). Replacing a value the reader can set back the same way (a
+  project's report default) confirms with the normal primary button
+  (`severity: 'info'`).
 - **A panel that shows one record is keyed by that record** (§39), so nothing
   from the previous record can land in it. The one surface that still stays
   mounted across records — the remediation timeline sheet — checks every

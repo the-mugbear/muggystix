@@ -45,6 +45,13 @@ const auth = vi.hoisted(() => ({ user: { id: 99, username: 'admin', full_name: '
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: auth.user }) }));
 // The project on screen: every request names it first.
 vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1, name: 'P' } }) }));
+// setupTests renders no tooltip content; a draft's template description and
+// files line are on the template's (i) (2026-10-14), read here beside it.
+vi.mock('../../components/ui/info-tip', () => ({
+  InfoTip: ({ text, label }: { text: React.ReactNode; label?: string }) => (
+    <span data-testid="info-tip" aria-label={label} role="note">{text}</span>
+  ),
+}));
 
 import * as api from '../../services/api';
 import Reports from '../../pages/Reports';
@@ -772,6 +779,9 @@ describe('Report detail — layout review (v5.286.0)', () => {
     mocked.updateClientReport.mockResolvedValue(report({ template: 'executive-brief' }));
     renderDetail();
     expect(await screen.findByTestId('template-description')).toHaveTextContent('Findings-first client report.');
+    // On the template's (i), not a paragraph in the header (2026-10-14).
+    expect(screen.getByTestId('template-description').closest('[role="note"]'))
+      .toHaveAccessibleName('About this template');
     fireEvent.keyDown(screen.getByRole('combobox', { name: 'Template' }), { key: 'Enter' });
     fireEvent.click(await screen.findByRole('option', { name: 'Executive brief' }));
     await waitFor(() => expect(screen.getByTestId('template-description')).toHaveTextContent('A short report for leadership.'));
