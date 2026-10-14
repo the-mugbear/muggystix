@@ -85,21 +85,41 @@ def installation(db: Session) -> Dict[str, Optional[str]]:
     return {key: _clean(stored.get(key)) for key in INSTALLATION_KEYS}
 
 
+#: Where a followed value comes from (``followed_with_sources``).
+FROM_PROJECT = "project"
+FROM_INSTALLATION = "installation"
+FROM_PROJECT_TEAM = "project_team"
+
+
 def followed(db: Session, profile: Optional[ReportProfile], team: Team) -> Dict[str, Any]:
     """What a report of this project prints for a detail it does NOT
     override: the project's report default, else (author, disclaimer) the
     installation's, else (team) the project's analysts and admins.  ``team``
     is asked only when the project's defaults name nobody."""
+    return followed_with_sources(db, profile, team)[0]
+
+
+def followed_with_sources(
+    db: Session, profile: Optional[ReportProfile], team: Team,
+) -> Tuple[Dict[str, Any], Dict[str, Optional[str]]]:
+    """:func:`followed`, and for each key the level its value came from
+    (``FROM_PROJECT``, ``FROM_INSTALLATION``, ``FROM_PROJECT_TEAM``, or None
+    when no level holds one) — what the page says beside a followed detail."""
     out: Dict[str, Any] = {}
+    sources: Dict[str, Optional[str]] = {}
     for key in DETAIL_KEYS:
         value = getattr(profile, key, None) if profile is not None else None
         out[key] = _entries(value) if key in LIST_KEYS else _clean(value)
+        sources[key] = FROM_PROJECT if out[key] else None
     if not out["testers"]:
         out["testers"] = _entries(team())
+        sources["testers"] = FROM_PROJECT_TEAM if out["testers"] else None
     base = installation(db)
     for key in INSTALLATION_KEYS:
-        out[key] = out[key] or base[key]
-    return out
+        if not out[key] and base[key]:
+            out[key] = base[key]
+            sources[key] = FROM_INSTALLATION
+    return out, sources
 
 
 def resolve(

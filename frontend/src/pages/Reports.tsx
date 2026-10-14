@@ -11,7 +11,7 @@ import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isClientTemplate } from '../utils/reportTemplates';
 import { Link, useNavigate } from 'react-router-dom';
-import { FilePlus2, Loader2, Pencil, RefreshCw } from 'lucide-react';
+import { FilePlus2, Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react';
 
 import {
   ClientReport,
@@ -21,6 +21,7 @@ import {
   ReportTemplate,
   ReportTemplateProblem,
   createClientReport,
+  deleteClientReport,
   downloadClientReportFile,
   getReportProfile,
   listClientReports,
@@ -41,7 +42,9 @@ import { formatApiError } from '../utils/apiErrors';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import PostureLead from '../components/posture/PostureLead';
 import DownloadButton from '../components/DownloadButton';
-import EngagementSettingsFields, { cleanSettings } from '../components/reports/EngagementSettingsFields';
+import EngagementSettingsFields, {
+  DETAIL_LABELS, cleanSettings, isOverridden,
+} from '../components/reports/EngagementSettingsFields';
 import TemplateImages, { assetCountLabel, missingRequiredAssets } from '../components/reports/TemplateImages';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -410,6 +413,81 @@ export const continuableDrafts = (
     && (kind === 'addendum' ? r.kind === 'addendum' && r.baseline?.id === baselineId : r.kind !== 'addendum'))
   .sort((a, b) => Date.parse(b.updated_at ?? b.created_at ?? '') - Date.parse(a.updated_at ?? a.created_at ?? ''));
 
+/** What a draft overrides, in words: "follows the project's details", or
+ *  "overrides 2 details: client, distribution" (its `settings` are its
+ *  overrides only). */
+export const overridesLine = (r: Pick<ClientReport, 'settings'>): string => {
+  const keys = (Object.keys(DETAIL_LABELS) as Array<keyof typeof DETAIL_LABELS>)
+    .filter((key) => isOverridden(r.settings ?? {}, key));
+  if (!keys.length) return 'follows the project’s details';
+  return `overrides ${keys.length} detail${keys.length === 1 ? '' : 's'}: `
+    + keys.map((key) => DETAIL_LABELS[key].toLowerCase()).join(', ');
+};
+
+/** One draft the dialog offers: continue it, read what sets it apart
+ *  (owner, 2026-10-14: three drafts under one title showed nothing to choose
+ *  by), or discard it — whoever may (`can_discard`), after a second press. */
+const DraftChoice: React.FC<{
+  report: ClientReport;
+  primary: boolean;
+  /** The template's title when it is not the project's default; else null. */
+  otherTemplate: string | null;
+  onContinue: (id: number) => void;
+}> = ({ report: r, primary, otherTemplate, onContinue }) => {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const projectId = useProjectId();
+  const [confirming, setConfirming] = useState(false);
+  const discarding = useMutation({
+    mutationFn: () => deleteClientReport(projectId, r.id),
+    onSuccess: () => {
+      // Off the list at once; then read again.
+      queryClient.setQueryData<ClientReportList>(['listClientReports', projectId], (d) => (d
+        ? { ...d, items: d.items.filter((x) => x.id !== r.id) } : d));
+      void queryClient.invalidateQueries({ queryKey: ['listClientReports', projectId] });
+      toast.success(`Draft #${r.id} is discarded.`);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not discard the draft.')),
+  });
+  const started = formatTimestamp(r.created_at, null);
+  return (
+    <li className="min-w-0 space-y-xxs border-b border-border pb-xs last:border-b-0" data-testid={`draft-choice-${r.id}`}>
+      <div className="flex min-w-0 items-start gap-xs">
+        <Button variant={primary ? 'default' : 'link'} size="sm"
+          className={primary ? 'h-auto min-w-0 flex-1 justify-start py-xxs text-left' : 'h-auto min-w-0 flex-1 justify-start p-0 text-left'}
+          onClick={() => onContinue(r.id)} aria-label={`Continue draft #${r.id}`} title={r.title}>
+          <span className="min-w-0 truncate">{primary ? 'Continue draft ' : ''}#{r.id} — {r.title}</span>
+        </Button>
+        {r.can_discard && !confirming && (
+          <Button variant="ghost" size="sm" className="h-7 shrink-0 px-xs text-destructive"
+            aria-label={`Discard draft #${r.id}`} onClick={() => setConfirming(true)} disabled={discarding.isPending}>
+            <Trash2 className="size-3.5" aria-hidden /> Discard
+          </Button>
+        )}
+      </div>
+      <p className="break-words text-caption text-muted-foreground [overflow-wrap:anywhere]" data-testid={`draft-choice-meta-${r.id}`}>
+        started by {safeFallback(r.created_by_name, 'someone')}{started ? ` ${started}` : ''}
+        {' · '}last changed <TimeAgo value={r.updated_at ?? r.created_at} absoluteAfterDays={30} />
+        {' · '}{overridesLine(r)}
+        {otherTemplate ? ` · template ${otherTemplate}` : ''}
+      </p>
+      {confirming && (
+        <div className="flex flex-wrap items-center gap-xs text-caption" role="group" aria-label={`Discard draft #${r.id}?`}>
+          <span>Discard draft #{r.id}? It is deleted; findings are not affected.</span>
+          <Button variant="destructive" size="sm" className="h-7 px-xs" disabled={discarding.isPending}
+            onClick={() => discarding.mutate()}>
+            {discarding.isPending && <Loader2 className="size-3.5 animate-spin" aria-hidden />} Discard draft
+          </Button>
+          <Button variant="ghost" size="sm" className="h-7 px-xs" disabled={discarding.isPending}
+            onClick={() => setConfirming(false)}>
+            Keep it
+          </Button>
+        </div>
+      )}
+    </li>
+  );
+};
+
 const ContinueDraftDialog: React.FC<{
   kind: ClientReportKind | null;
   drafts: ClientReport[];
@@ -417,52 +495,45 @@ const ContinueDraftDialog: React.FC<{
   onContinue: (id: number) => void;
   onStartNew: (kind: ClientReportKind) => void;
 }> = ({ kind, drafts, onClose, onContinue, onStartNew }) => {
-  const [first, ...others] = drafts;
+  const projectId = useProjectId();
+  const open = kind !== null;
+  // The project's default template (a draft on another is said so) and the
+  // templates' titles: the reads the defaults section makes, shared.
+  const profile = useQuery({
+    queryKey: ['getReportProfile', projectId], queryFn: ({ signal }) => getReportProfile(projectId, signal),
+    enabled: open,
+  });
+  const templatesQuery = useQuery({
+    queryKey: ['listReportTemplates', projectId], queryFn: ({ signal }) => listReportTemplates(projectId, signal),
+    enabled: open,
+  });
+  const defaultTemplate = profile.data?.template ?? null;
+  const otherTemplate = (r: ClientReport): string | null => (defaultTemplate && r.template !== defaultTemplate
+    ? (templatesQuery.data?.find((t) => t.name === r.template)?.title ?? r.template) : null);
+  // Discarding the last one leaves "Start a new draft" — the dialog stays.
+  const none = drafts.length === 0;
   return (
-    <Dialog open={kind !== null && first != null} onOpenChange={(open) => { if (!open) onClose(); }}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Continue a draft?</DialogTitle>
+          <DialogTitle>{none ? 'Start a new draft?' : 'Continue a draft?'}</DialogTitle>
           <DialogDescription>
-            {kind === 'addendum'
-              ? `${drafts.length === 1 ? 'A draft addendum to the same report is' : `${drafts.length} draft addenda to the same report are`} already in progress.`
-              : `${drafts.length === 1 ? 'A draft report is' : `${drafts.length} draft reports are`} already in progress.`}
+            {none ? 'No draft is in progress any more.'
+              : kind === 'addendum'
+                ? `${drafts.length === 1 ? 'A draft addendum to the same report is' : `${drafts.length} draft addenda to the same report are`} already in progress.`
+                : `${drafts.length === 1 ? 'A draft report is' : `${drafts.length} draft reports are`} already in progress.`}
           </DialogDescription>
         </DialogHeader>
-        {first && (
-          <div className="min-w-0 space-y-sm">
-            <Button className="h-auto w-full justify-start py-xs text-left" onClick={() => onContinue(first.id)}
-              aria-label={`Continue draft #${first.id}`}>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate" title={first.title}>Continue draft #{first.id} — {first.title}</span>
-                <span className="block text-caption font-normal opacity-80">
-                  updated <TimeAgo value={first.updated_at ?? first.created_at} absoluteAfterDays={30} />
-                </span>
-              </span>
-            </Button>
-            {others.length > 0 && (
-              <div className="min-w-0">
-                <p className="text-caption text-muted-foreground">Other drafts</p>
-                <ul className="mt-xxs max-h-48 space-y-xxs overflow-y-auto" data-testid="other-drafts">
-                  {others.map((r) => (
-                    <li key={r.id} className="flex min-w-0 items-baseline gap-xs text-body">
-                      <button type="button" className="min-w-0 truncate text-left text-info hover:underline"
-                        onClick={() => onContinue(r.id)} title={r.title} aria-label={`Continue draft #${r.id}`}>
-                        #{r.id} — {r.title}
-                      </button>
-                      <span className="shrink-0 text-caption text-muted-foreground">
-                        updated <TimeAgo value={r.updated_at ?? r.created_at} absoluteAfterDays={30} />
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
+        {!none && (
+          <ul className="max-h-[50vh] min-w-0 space-y-xs overflow-y-auto" aria-label="Drafts in progress" data-testid="draft-choices">
+            {drafts.map((r, i) => (
+              <DraftChoice key={r.id} report={r} primary={i === 0} otherTemplate={otherTemplate(r)} onContinue={onContinue} />
+            ))}
+          </ul>
         )}
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="outline" onClick={() => { if (kind) onStartNew(kind); }}>
+          <Button variant={none ? 'default' : 'outline'} onClick={() => { if (kind) onStartNew(kind); }}>
             Start a new draft
           </Button>
         </DialogFooter>

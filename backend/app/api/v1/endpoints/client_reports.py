@@ -27,7 +27,8 @@ from app.db.models_reports import Report, ReportKind, ReportProfile, ReportStatu
 from app.db.session import get_db
 from app.schemas.client_reports import (
     PreviewRequest, ReportCreate, ReportListOut, ReportOut,
-    ReportProfileBody, ReportProfileOut, ReportTemplateAssetChangeOut, ReportTemplateOut,
+    ReportProfileBody, ReportProfileOut, ReportProfilePatch, ReportPromote,
+    ReportTemplateAssetChangeOut, ReportTemplateOut,
     ReportTemplateProblemOut, ReportTextImageOut, ReportUpdate, Tester,
 )
 from app.schemas.schemas import ReportJobSchema
@@ -36,6 +37,7 @@ from app.services.client_report_service import (
 )
 from app.services.client_report_views import (
     load_report,
+    may_discard,
     role_allows as _is,
     serialize_report as _serialize,
 )
@@ -371,30 +373,60 @@ def put_report_profile(
 ):
     """The project's engagement details: what every draft prints for a
     detail it does not override — so a change here reaches every such draft
-    at once.  Issued reports never change."""
-    if body.template:
-        _template_or_422(body.template, client=True)
-    profile = ClientReportService(db).get_profile(project.id)
-    if profile is None:
-        profile = ReportProfile(project_id=project.id)
-        db.add(profile)
-    data = body.model_dump()
-    profile.client_name = data["client_name"]
-    profile.classification = data["classification"]
-    profile.engagement_type = data["engagement_type"]
-    profile.testers = data["testers"]
-    profile.distribution = data["distribution"]
-    profile.system_description = report_images.normalise_references(data["system_description"])
-    profile.author_name = data["author_name"]
-    profile.disclaimer = data["disclaimer"]
-    profile.applications = data["applications"]
-    profile.thick_clients = data["thick_clients"]
-    profile.other_targets = data["other_targets"]
-    profile.template = data["template"]
-    profile.updated_by_id = current_user.id
+    at once.  Issued reports never change.  Every key is written (a key left
+    out is cleared); the page's one-detail writes use PATCH."""
+    profile = _write_profile(db, project.id, body.model_dump(), current_user.id)
     db.commit()
     db.refresh(profile)
     return _profile_out(db, project.id, profile)
+
+
+@router.patch(
+    "/profile", response_model=ReportProfileOut,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
+def patch_report_profile(
+    body: ReportProfilePatch,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
+):
+    """Change only the project's defaults SENT ("Set for the project" on a
+    draft's detail): the rest stay as stored, so a page that read the profile
+    a while ago cannot overwrite someone else's change to another detail."""
+    data = body.model_dump(exclude_unset=True)
+    if not data:
+        raise HTTPException(status_code=422, detail="Send at least one report default to change.")
+    profile = _write_profile(db, project.id, data, current_user.id)
+    db.commit()
+    db.refresh(profile)
+    return _profile_out(db, project.id, profile)
+
+
+def _write_profile(db: Session, project_id: int, data: dict, user_id: int) -> ReportProfile:
+    """Write ``data``'s keys (already validated by the body's schema) into the
+    project's report defaults, creating the row — the ONE writer of
+    ``report_profiles`` for PUT, PATCH and a draft's promote.  A list sent
+    null is empty; the system description's image references are
+    normalised; a template is checked to be a client template."""
+    if data.get("template"):
+        _template_or_422(data["template"], client=True)
+    profile = (
+        db.query(ReportProfile).filter(ReportProfile.project_id == project_id)
+        .with_for_update().populate_existing().first()
+    )
+    if profile is None:
+        profile = ReportProfile(project_id=project_id)
+        db.add(profile)
+    for key, value in data.items():
+        if key in report_defaults.LIST_KEYS:
+            value = list(value or [])
+        elif key in report_images.ENGAGEMENT_IMAGE_FIELDS:
+            value = report_images.normalise_references(value)
+        setattr(profile, key, value)
+    profile.updated_by_id = user_id
+    db.flush()
+    return profile
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +510,7 @@ def list_reports(
     rows.sort(key=lambda r: (r.status != ReportStatus.DRAFT, -(r.number or 0), -(r.id)))
     latest = ClientReportService(db).latest_issued(project.id)
     return ReportListOut(
-        items=[_serialize(db, r, role, with_summary=False) for r in rows],
+        items=[_serialize(db, r, role, with_summary=False, user_id=current_user.id) for r in rows],
         latest_issued_id=latest.id if latest else None,
         can_create=_is(role, ProjectRole.ANALYST),
         can_issue=_is(role, ProjectRole.ADMIN),
@@ -523,7 +555,8 @@ def create_report(
     )
     db.add(report)
     db.commit()
-    return _serialize(db, _load(db, project, report.id), _role(db, project, current_user), with_summary=True)
+    return _serialize(db, _load(db, project, report.id), _role(db, project, current_user), with_summary=True,
+                      user_id=current_user.id)
 
 
 @router.get("/{report_id}", response_model=ReportOut)
@@ -533,7 +566,8 @@ def get_report(
     project: Project = Depends(get_current_project),
     current_user: User = Depends(get_current_user),
 ):
-    return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True)
+    return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True,
+                      user_id=current_user.id)
 
 
 @router.patch(
@@ -576,7 +610,49 @@ def update_report(
         report.settings = report_defaults.overrides(data)
     db.commit()
     db.expire_all()
-    return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True)
+    return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True,
+                      user_id=current_user.id)
+
+
+@router.post(
+    "/{report_id}/promote", response_model=ReportOut,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+)
+def promote_report_details(
+    report_id: int,
+    body: ReportPromote,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
+):
+    """"Make this the project's default": write each detail sent into the
+    project's report defaults and drop it from this draft's overrides, in ONE
+    transaction — the draft (and every other draft that follows the project)
+    then prints it from the project.  The draft is locked first, then the
+    profile (the order every writer of both takes).  The values are the page's
+    (an override as edited, saved or not); a detail not sent is untouched."""
+    data = body.values.model_dump(exclude_unset=True)
+    if not data:
+        raise HTTPException(status_code=422, detail="Name at least one detail to make the project's default.")
+    for key, value in data.items():
+        if key not in report_defaults.LIST_KEYS and value is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{key}' is empty here: there is nothing to make the project's default.",
+            )
+        if key in report_defaults.LIST_KEYS and value is None:
+            raise HTTPException(status_code=422, detail=f"'{key}' must be a list (it may be empty).")
+    report = _load_for_change(db, project, report_id)
+    if report.status != ReportStatus.DRAFT:
+        raise HTTPException(status_code=409, detail="An issued report cannot be changed; start a revision instead.")
+    _write_profile(db, project.id, data, current_user.id)
+    report.settings = {
+        key: value for key, value in report_defaults.overrides(report.settings).items() if key not in data
+    }
+    db.commit()
+    db.expire_all()
+    return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True,
+                      user_id=current_user.id)
 
 
 @router.delete(
@@ -594,8 +670,7 @@ def delete_report(
     report = _load_for_change(db, project, report_id)
     if report.status != ReportStatus.DRAFT:
         raise HTTPException(status_code=409, detail="An issued report is part of the record and cannot be deleted.")
-    role = _role(db, project, current_user)
-    if report.created_by_id not in (None, current_user.id) and not _is(role, ProjectRole.ADMIN):
+    if not may_discard(report, _role(db, project, current_user), current_user.id):
         raise HTTPException(status_code=403, detail="Only the person who started this draft or a project admin can discard it.")
     db.delete(report)
     db.commit()
@@ -694,7 +769,8 @@ def issue_report(
         raise
     ReportJobService().enqueue_job(job.id, db=db)
     db.expire_all()
-    return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True)
+    return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True,
+                      user_id=current_user.id)
 
 
 @router.post(
@@ -741,7 +817,8 @@ def rerender_report(
                    commit=False)
     db.commit()
     ReportJobService().enqueue_job(job.id, db=db)
-    return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True)
+    return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True,
+                      user_id=current_user.id)
 
 
 @router.post(
@@ -769,7 +846,8 @@ def revise_report(
     )
     db.add(draft)
     db.commit()
-    return _serialize(db, _load(db, project, draft.id), _role(db, project, current_user), with_summary=True)
+    return _serialize(db, _load(db, project, draft.id), _role(db, project, current_user), with_summary=True,
+                      user_id=current_user.id)
 
 
 @router.get("/{report_id}/files/{fmt}")

@@ -276,9 +276,19 @@ export interface ClientReport {
    *  project's analysts and admins as the team).  Null for an issued report
    *  and for list rows. */
   followed?: EngagementSettings | null;
+  /** A single DRAFT read: where each `followed` value comes from (null: set
+   *  nowhere).  Null for an issued report and for list rows. */
+  followed_from?: Partial<Record<keyof EngagementSettings, FollowedSource | null>> | null;
   can_edit: boolean;
   can_issue: boolean;
+  /** Discard this draft: its creator or a project admin (on list rows too). */
+  can_discard?: boolean;
 }
+
+/** Where a draft's followed detail comes from: the project's report
+ *  defaults, the installation's (author, disclaimer), or the project's
+ *  analysts and admins (the team). */
+export type FollowedSource = 'project' | 'installation' | 'project_team';
 
 export interface ClientReportList {
   items: ClientReport[];
@@ -381,6 +391,22 @@ export const saveReportProfile = async (
   projectId: number, body: Omit<ReportProfile, 'updated_at' | 'inherited'>,
 ): Promise<ReportProfile> =>
   (await api.put<ReportProfile>(`${base(projectId)}/profile`, body)).data;
+
+/** Change only the project's report defaults SENT (a draft's "Set for the
+ *  project"): the rest stay as stored, so a stale read of the profile never
+ *  overwrites someone else's change to another detail. */
+export const patchReportProfile = async (
+  projectId: number, body: EngagementOverrides & { template?: string | null },
+): Promise<ReportProfile> =>
+  (await api.patch<ReportProfile>(`${base(projectId)}/profile`, body)).data;
+
+/** "Make this the project's default": each detail sent becomes the project's
+ *  report default and leaves the draft's overrides, in one transaction.
+ *  Answers the draft. */
+export const promoteClientReportDetails = async (
+  projectId: number, id: number, values: EngagementOverrides,
+): Promise<ClientReport> =>
+  (await api.post<ClientReport>(`${base(projectId)}/${id}/promote`, { values })).data;
 
 /** An image of the project's own report text (the system description): the
  *  project's, so its report defaults and every draft place the same ones with

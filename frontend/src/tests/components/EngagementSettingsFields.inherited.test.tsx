@@ -79,23 +79,31 @@ beforeEach(() => {
   api.getNoteAttachmentBlob.mockImplementation((_project: number, id: number) => Promise.resolve(blobFor(`blob:image-${id}`)));
 });
 
+const textbox = (name: string) => screen.getByRole('textbox', { name });
+const followedValue = (name: string) => screen.getByRole('group', { name });
+
 describe('A draft — every detail follows the project unless overridden', () => {
-  it('a new draft overrides nothing: each detail shows the project’s, greyed, and says so', () => {
+  it('a new draft overrides nothing: each detail is the project’s value as text, and says where it comes from', () => {
     render(<Harness initial={{}} followed={PROJECT} />);
-    const client = screen.getByLabelText('Client');
-    expect(client).toHaveValue('Example Corp');
-    expect(client).toBeDisabled();
+    // Text, not a greyed field (owner, 2026-10-14: a disabled box read as "locked").
+    expect(screen.queryByRole('textbox', { name: 'Client' })).toBeNull();
+    const client = followedValue('Client');
+    expect(client).toHaveTextContent('Example Corp');
     expect(client).toHaveAccessibleDescription(/From the project’s defaults/);
-    expect(screen.getByLabelText('Author')).toHaveValue('Project Team');
-    expect(screen.getByLabelText('Classification')).toHaveValue('Confidential');
-    expect(screen.getByLabelText('System description')).toHaveValue('The estate.');
-    expect(screen.getByLabelText('Disclaimer')).toHaveValue(DISCLAIMER);
-    // Nothing set in the project's defaults: said in the empty field.
-    expect(screen.getByLabelText('Engagement type')).toHaveAttribute('placeholder', 'Not set in the project’s defaults');
-    // The lists: the project's rows, not editable, no add control.
-    expect(screen.getByLabelText('Team member 1 name')).toHaveValue('Ana Lead');
-    expect(screen.getByLabelText('Team member 1 name')).toBeDisabled();
-    expect(screen.getByLabelText('Recipient 1 name')).toHaveValue('CISO');
+    expect(followedValue('Author')).toHaveTextContent('Project Team');
+    expect(followedValue('Classification')).toHaveTextContent('Confidential');
+    expect(followedValue('System description')).toHaveTextContent('The estate.');
+    // Markdown is rendered, in a bounded box that scrolls.
+    const disclaimer = followedValue('Disclaimer');
+    expect(disclaimer.querySelector('strong')?.textContent).toBe('confidential');
+    expect(disclaimer.className).toContain('max-h-48');
+    expect(disclaimer.className).toContain('overflow-y-auto');
+    // Nothing set in the project's defaults: said where the value would be.
+    expect(followedValue('Engagement type')).toHaveTextContent('Not set in the project’s defaults');
+    // The lists: the project's rows as text, no field, no add control.
+    expect(screen.getByTestId('t-testers-followed')).toHaveTextContent('Ana Lead — Engagement lead · ana@example.com');
+    expect(screen.queryByLabelText('Team member 1 name')).toBeNull();
+    expect(screen.getByTestId('t-distribution-followed')).toHaveTextContent('CISO · ciso@example.com');
     expect(screen.queryByRole('button', { name: /Someone else/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Add recipient/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Move .* up/ })).toBeNull();
@@ -116,31 +124,30 @@ describe('A draft — every detail follows the project unless overridden', () =>
     render(<Harness initial={{}} followed={PROJECT} />);
     fireEvent.click(button('Override Client for this report'));
     expect(lastChange()).toEqual({ client_name: 'Example Corp' });
-    const client = screen.getByLabelText('Client');
+    const client = textbox('Client');
     expect(client).toBeEnabled();
     expect(client).toHaveAccessibleDescription(/Overridden for this report/);
     fireEvent.change(client, { target: { value: 'Other Corp' } });
     expect(lastChange()).toEqual({ client_name: 'Other Corp' });
     // The others still follow.
-    expect(screen.getByLabelText('Classification')).toBeDisabled();
+    expect(screen.queryByRole('textbox', { name: 'Classification' })).toBeNull();
   });
 
   it('Revert follows the project again: the key leaves the override map', () => {
     render(<Harness initial={{ client_name: 'Other Corp', classification: 'Secret' }} followed={PROJECT} />);
-    expect(screen.getByLabelText('Client')).toHaveValue('Other Corp');
-    expect(screen.getByLabelText('Client')).toBeEnabled();
+    expect(textbox('Client')).toHaveValue('Other Corp');
     fireEvent.click(button('Revert Client to the project’s'));
     expect(lastChange()).toEqual({ classification: 'Secret' });
-    expect(screen.getByLabelText('Client')).toHaveValue('Example Corp');
-    expect(screen.getByLabelText('Client')).toBeDisabled();
+    expect(followedValue('Client')).toHaveTextContent('Example Corp');
+    expect(screen.queryByRole('textbox', { name: 'Client' })).toBeNull();
     expect(button('Override Client for this report')).toBeInTheDocument();
   });
 
   it('an override emptied while typing stays one, and says it will follow the project once saved', () => {
     render(<Harness initial={{ client_name: 'Other Corp' }} followed={PROJECT} />);
-    fireEvent.change(screen.getByLabelText('Client'), { target: { value: '' } });
+    fireEvent.change(textbox('Client'), { target: { value: '' } });
     expect(lastChange()).toEqual({ client_name: '' });
-    expect(screen.getByLabelText('Client')).toBeEnabled();
+    expect(textbox('Client')).toBeEnabled();
     expect(screen.getByText('Overridden for this report — empty: saved, it follows the project’s again')).toBeInTheDocument();
   });
 
@@ -167,34 +174,138 @@ describe('A draft — every detail follows the project unless overridden', () =>
     expect(screen.getByRole('button', { name: /Someone else/ })).toBeInTheDocument();
     fireEvent.click(button('Revert Assessment team to the project’s'));
     expect(lastChange()).toEqual({});
-    expect(screen.getByLabelText('Team member 1 name')).toHaveValue('Ana Lead');
+    expect(screen.getByTestId('t-testers-followed')).toHaveTextContent('Ana Lead');
   });
 
   it('a change of the project’s defaults shows on a following detail, never on an overridden one', () => {
     const view = render(<Harness initial={{ classification: 'Secret' }} followed={PROJECT} />);
-    expect(screen.getByLabelText('Client')).toHaveValue('Example Corp');
+    expect(followedValue('Client')).toHaveTextContent('Example Corp');
     view.rerender(
       <MemoryRouter>
         <EngagementSettingsFields idPrefix="t" value={{ classification: 'Secret' }} members={[]} onChange={onChange}
           followed={{ ...PROJECT, client_name: 'Renamed Corp', classification: 'Public', distribution: [] }} />
       </MemoryRouter>,
     );
-    expect(screen.getByLabelText('Client')).toHaveValue('Renamed Corp');
-    expect(screen.getByLabelText('Classification')).toHaveValue('Secret');
-    expect(screen.queryByLabelText('Recipient 1 name')).toBeNull();
+    expect(followedValue('Client')).toHaveTextContent('Renamed Corp');
+    expect(textbox('Classification')).toHaveValue('Secret');
+    expect(screen.getByTestId('t-distribution-followed')).toHaveTextContent('Not set in the project’s defaults');
   });
 
   it('a disclaimer the project leaves to the template says so', () => {
     render(<Harness initial={{}} followed={{ ...PROJECT, disclaimer: null }} />);
-    expect(screen.getByText('The project sets none: the template’s own disclaimer is printed.')).toBeInTheDocument();
+    expect(followedValue('Disclaimer')).toHaveTextContent('The project sets none: the template’s own disclaimer is printed.');
     fireEvent.click(button('Override Disclaimer for this report'));
     expect(lastChange()).toEqual({ disclaimer: '' });
     expect(screen.queryByText(/The project sets none/)).toBeNull();
   });
 
-  it('a long followed value is shown in its field, which bounds it', () => {
+  it('a long followed value wraps inside a bounded box that scrolls', () => {
     render(<Harness initial={{}} followed={{ ...PROJECT, author_name: LONG_AUTHOR }} />);
-    expect(screen.getByLabelText('Author')).toHaveValue(LONG_AUTHOR);
+    const author = followedValue('Author');
+    expect(author).toHaveTextContent(LONG_AUTHOR);
+    expect(author.className).toContain('max-h-24');
+    expect(author.className).toContain('overflow-y-auto');
+    expect(author.querySelector('p')?.className).toContain('[overflow-wrap:anywhere]');
+  });
+});
+
+describe('A draft — a change pushed up to the project (owner, 2026-10-14)', () => {
+  const onSet = vi.fn();
+  const onPromote = vi.fn();
+  const Pushing: React.FC<HarnessProps & {
+    from?: Partial<Record<keyof EngagementSettings, 'project' | 'installation' | 'project_team' | null>>;
+  }> = ({ initial = {}, followed = PROJECT, from }) => {
+    const [value, setValue] = useState<EngagementOverrides>(initial);
+    return (
+      <MemoryRouter>
+        <EngagementSettingsFields idPrefix="t" value={value} members={[]} followed={followed} followedFrom={from}
+          onSetForProject={onSet} onPromote={onPromote}
+          onChange={(next) => { onChange(next); setValue(next); }} />
+      </MemoryRouter>
+    );
+  };
+  beforeEach(() => {
+    onSet.mockReset().mockResolvedValue(undefined);
+    onPromote.mockReset();
+  });
+
+  it('an overridden detail offers “Make this the project’s default” with the value shown — edited or not', () => {
+    render(<Pushing initial={{ client_name: 'Other Corp', distribution: [] }} />);
+    fireEvent.change(textbox('Client'), { target: { value: '  Renamed Corp ' } });
+    expect(button('Make Client the project’s default')).toHaveTextContent('Make this the project’s default');
+    fireEvent.click(button('Make Client the project’s default'));
+    expect(onPromote).toHaveBeenCalledWith('client_name', 'Renamed Corp');
+    // A list as a whole, even empty.
+    fireEvent.click(button('Make Distribution the project’s default'));
+    expect(onPromote).toHaveBeenLastCalledWith('distribution', []);
+    // An emptied text has nothing to push up.
+    fireEvent.change(textbox('Client'), { target: { value: ' ' } });
+    expect(screen.queryByRole('button', { name: 'Make Client the project’s default' })).toBeNull();
+  });
+
+  it('a followed detail the project leaves empty: “Set for the project” first, edited here, saved to the project', async () => {
+    const followed = { ...PROJECT, engagement_type: null };
+    render(<Pushing followed={followed} from={{ engagement_type: null, client_name: 'project' }} />);
+    expect(followedValue('Engagement type')).toHaveTextContent('Not set in the project’s defaults');
+    const actions = within(document.getElementById('t-engagement_type-source')!).getAllByRole('button');
+    expect(actions.map((b) => b.getAttribute('aria-label')))
+      .toEqual(['Set Engagement type for the project', 'Override Engagement type for this report']);
+
+    fireEvent.click(button('Set Engagement type for the project'));
+    const field = textbox('Engagement type');
+    expect(field).toHaveAccessibleDescription(/Editing the project’s default/);
+    fireEvent.change(field, { target: { value: ' Internal ' } });
+    // Not an override: the draft's own map is untouched.
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(button('Save Engagement type for the project'));
+    expect(onSet).toHaveBeenCalledWith('engagement_type', 'Internal');
+    // Saved: the detail is text again (the page's re-read shows the new value).
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Engagement type' })).toBeNull());
+  });
+
+  it('Cancel leaves the project as it was; a failed save keeps the edit open', async () => {
+    render(<Pushing from={{ classification: 'project' }} />);
+    fireEvent.click(button('Edit Classification in the project’s defaults'));
+    expect(textbox('Classification')).toHaveValue('Confidential');
+    fireEvent.click(button('Cancel editing the project’s Classification'));
+    expect(screen.queryByRole('textbox', { name: 'Classification' })).toBeNull();
+    expect(onSet).not.toHaveBeenCalled();
+
+    onSet.mockRejectedValueOnce(new Error('refused'));
+    fireEvent.click(button('Edit Classification in the project’s defaults'));
+    fireEvent.click(button('Save Classification for the project'));
+    await waitFor(() => expect(onSet).toHaveBeenCalled());
+    expect(textbox('Classification')).toBeInTheDocument();
+  });
+
+  it('author and disclaimer from the installation say so, and “Set for the project” makes a project value', () => {
+    const followed = { ...PROJECT, author_name: 'Installation Ltd', disclaimer: 'The installation’s terms.' };
+    render(<Pushing followed={followed} from={{ author_name: 'installation', disclaimer: 'installation' }} />);
+    expect(followedValue('Author')).toHaveAccessibleDescription(/From the installation’s defaults/);
+    expect(followedValue('Disclaimer')).toHaveAccessibleDescription(/From the installation’s defaults/);
+    fireEvent.click(button('Set Author for the project'));
+    expect(textbox('Author')).toHaveValue('Installation Ltd');           // starts from what it prints
+    fireEvent.change(textbox('Author'), { target: { value: 'Project Team' } });
+    fireEvent.click(button('Save Author for the project'));
+    expect(onSet).toHaveBeenCalledWith('author_name', 'Project Team');
+  });
+
+  it('a team taken from the project’s members says so, and can be set for the project', () => {
+    render(<Pushing from={{ testers: 'project_team' }} />);
+    expect(screen.getByRole('group', { name: 'Assessment team' }))
+      .toHaveAccessibleDescription(/From the project’s analysts and admins/);
+    fireEvent.click(button('Set Assessment team for the project'));
+    expect(screen.getByLabelText('Team member 1 name')).toHaveValue('Ana Lead');
+    fireEvent.click(button('Save Assessment team for the project'));
+    expect(onSet).toHaveBeenCalledWith('testers', [ANA]);
+  });
+
+  it('none of it for someone who may not write: no push-up actions without the handlers', () => {
+    render(<Harness initial={{ client_name: 'Other Corp' }} followed={{ ...PROJECT, engagement_type: null }} />);
+    expect(screen.queryByRole('button', { name: /project’s default|for the project|in the project’s defaults/ })).toBeNull();
+    // Override and Revert stay.
+    expect(button('Override Engagement type for this report')).toBeInTheDocument();
+    expect(button('Revert Client to the project’s')).toBeInTheDocument();
   });
 });
 
@@ -362,7 +473,8 @@ describe('System description — the project’s own report images', () => {
     api.listReportTextImages.mockResolvedValue([image(31, 'The assessed network')]);
     render(<Harness initial={{}} followed={PROJECT} />);
     await screen.findByLabelText('Caption for image 31 (diagram-31.png)');
-    expect(systemToolbar().queryByRole('button', { name: 'Insert image' })).toBeNull();
+    // Followed: the description is text — no toolbar at all.
+    expect(screen.queryByRole('toolbar', { name: 'System description formatting' })).toBeNull();
     fireEvent.click(button('Override System description for this report'));
     expect(systemToolbar().getByRole('button', { name: 'Insert image' })).toBeEnabled();
   });

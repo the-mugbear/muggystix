@@ -690,7 +690,12 @@ class ClientReportService:
     def followed_details(self, project_id: int) -> Dict[str, Any]:
         """What each detail a draft does not override prints, as the project
         stands now (``report_defaults.followed``)."""
-        return report_defaults.followed(
+        return self.followed_details_with_sources(project_id)[0]
+
+    def followed_details_with_sources(self, project_id: int) -> Tuple[Dict[str, Any], Dict[str, Optional[str]]]:
+        """:meth:`followed_details`, and where each value comes from
+        (``report_defaults.followed_with_sources``)."""
+        return report_defaults.followed_with_sources(
             self.db, self.get_profile(project_id), lambda: self.project_team(project_id),
         )
 

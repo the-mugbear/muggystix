@@ -19,6 +19,7 @@ import {
   ClientReportFormat,
   ReportFileFormat,
   EngagementOverrides,
+  EngagementSettings,
   ReportJob,
   ReportSummary,
   ReportTemplate,
@@ -29,7 +30,9 @@ import {
   getReportJob,
   issueClientReport,
   listReportTemplates,
+  patchReportProfile,
   previewClientReport,
+  promoteClientReportDetails,
   rerenderClientReport,
   reviseClientReport,
   updateClientReport,
@@ -49,7 +52,9 @@ import { REPORT_FIELD_LABELS } from '../utils/reportImages';
 import { safeFallback } from '../utils/uiStyles';
 import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
-import EngagementSettingsFields, { cleanSettings } from '../components/reports/EngagementSettingsFields';
+import EngagementSettingsFields, {
+  DETAIL_LABELS, cleanSettings, hasValue,
+} from '../components/reports/EngagementSettingsFields';
 import TemplateImages, {
   TemplateFilesLine, assetCountLabel, missingAssetsReason, missingRequiredAssets,
 } from '../components/reports/TemplateImages';
@@ -163,6 +168,21 @@ export const evidenceImagesLine = (s: ReportSummary): string => {
     parts.push(`${unprinted.toLocaleString()} ticked image${unprinted === 1 ? ' is' : 's are'} not printed${notPrintedWhy(s)}`);
   }
   return parts.join(' · ');
+};
+
+type DetailKey = keyof EngagementSettings;
+
+/** A detail's value in a sentence: a text quoted (shortened past 200
+ *  characters), a list by its names. */
+export const describeDetail = (v: EngagementSettings[DetailKey] | null | undefined): string => {
+  if (Array.isArray(v)) {
+    if (!v.length) return 'an empty list';
+    const names = v.map((r) => r.name);
+    const shown = names.slice(0, 5).join(', ') + (names.length > 5 ? ` and ${names.length - 5} more` : '');
+    return `a list of ${v.length} (${shown})`;
+  }
+  const text = (v ?? '').trim();
+  return `“${text.length > 200 ? `${text.slice(0, 200)}…` : text}”`;
 };
 
 interface Form {
@@ -318,6 +338,73 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     if (!report || !form) return;
     if (!form.title.trim()) { toast.error('A report needs a title.'); return; }
     saveDetails.mutate(form);
+  };
+
+  // A draft's detail pushed up to the project's report defaults (owner,
+  // 2026-10-14): "Set for the project" writes that one key (PATCH — never the
+  // whole profile, which a stale read would overwrite); "Make this the
+  // project's default" writes it AND drops the override in one transaction.
+  // Either changes what every following draft prints, and the defaults.
+  const refreshProjectDetails = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['getReportProfile', projectId] }),
+    queryClient.invalidateQueries({ queryKey: ['listClientReports', projectId] }),
+  ]);
+  const setForProject = useMutation({
+    mutationFn: ({ key, value }: { key: DetailKey; value: EngagementSettings[DetailKey] }) =>
+      patchReportProfile(projectId, { [key]: value }),
+    onSuccess: async (_profile, { key, value }) => {
+      // The draft's `followed` is what changed on this page: re-read it before
+      // the edit closes, so the old value is not shown in between.
+      await Promise.all([queryClient.invalidateQueries({ queryKey: reportKey }), refreshProjectDetails()]);
+      const label = DETAIL_LABELS[key];
+      toast.success(value == null
+        ? `${label} is cleared in the project’s defaults.`
+        : `${label} is saved to the project’s defaults: every draft that follows them prints it.`);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not save the project’s default.')),
+  });
+  const promoting = useMutation({
+    mutationFn: ({ key, value }: { key: DetailKey; value: EngagementSettings[DetailKey] }) =>
+      promoteClientReportDetails(projectId, reportId, { [key]: value }),
+    onSuccess: (updated, { key }) => {
+      putReport(updated);
+      // An unsaved copy of the overrides still holds the key: it follows now.
+      setEdits((e) => {
+        if (!e.settings || !(key in e.settings)) return e;
+        const settings = { ...e.settings };
+        delete settings[key];
+        return { ...e, settings };
+      });
+      void refreshProjectDetails();
+      toast.success(`${DETAIL_LABELS[key]} is now the project’s default, and this draft follows it again.`);
+    },
+    onError: (err) => toast.error(formatApiError(err, 'Could not make it the project’s default.')),
+  });
+  const promote = async (key: DetailKey, value: EngagementSettings[DetailKey]) => {
+    if (!report) return;
+    // Confirmed only when it replaces a different value the project holds.
+    const current = report.followed_from?.[key] === 'project' ? report.followed?.[key] : null;
+    const differs = current != null && hasValue(key, current) && !(Array.isArray(current) && !current.length)
+      && JSON.stringify(current) !== JSON.stringify(value);
+    if (differs) {
+      const label = DETAIL_LABELS[key];
+      const ok = await confirm({
+        title: `Replace the project’s ${label}?`,
+        body: (
+          <>
+            <p className="break-words [overflow-wrap:anywhere]">
+              The project’s default is {describeDetail(current)}. It becomes {describeDetail(value)}.
+            </p>
+            <p className="mt-xs">
+              Every other draft that follows the project’s {label} changes with it; issued reports do not.
+            </p>
+          </>
+        ),
+        confirmLabel: 'Replace the project’s default',
+      });
+      if (!ok) return;
+    }
+    promoting.mutate({ key, value });
   };
 
   // The template is a rendering choice beside the Preview buttons, so it is
@@ -610,7 +697,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       </div>
 
       {counts && (
-        <div className="grid grid-cols-2 gap-y-md lg:grid-cols-4 lg:divide-x lg:divide-border">
+        // Three figures; what is still to do is the checklist's alone (owner,
+        // 2026-10-14: the strip repeated "Missing report text").
+        <div className="grid grid-cols-1 gap-y-md md:grid-cols-3 md:divide-x md:divide-border" data-testid="report-measures">
           <PostureMeasure label="Findings in the report" value={counts.total}
             info="Confirmed, risk-accepted and remediated findings (an addendum: only new ones). False-positive systems are left out.">
             {counts.critical} critical · {counts.high} high · {counts.medium} medium · {counts.low} low · {counts.info} info
@@ -619,12 +708,6 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             info="Open or retest findings. They are not in a report until they are confirmed, accepted or remediated."
             to={isDraft && s.under_investigation ? '/findings?status=open' : undefined} toLabel="Open findings">
             {isDraft ? 'Left out of this report' : 'Left out when issued'}
-          </PostureMeasure>
-          <PostureMeasure label="Missing report text" value={s.missing_text?.length ?? 0}
-            info="Findings in the report with no description, impact or recommendation written.">
-            {/* Only a draft lists them: the checklist, never a second list. */}
-            {!s.missing_text?.length ? 'Every finding has its text'
-              : isDraft ? 'Listed under Before issuing' : 'Issued with a TODO in their place'}
           </PostureMeasure>
           <PostureMeasure label="Evidence images" value={s.images ?? 0}
             info="Images are opt-in: tick “In report” on an image attached to a finding's evidence or comments. Where one prints depends on the report's template: the Penetration test report prints an image its author placed in a written section (Insert image, in the report text editor) there and the rest under the finding's Evidence, each after the text of the comment or note it is attached to; the Remediation worklist prints only images placed in a recommendation; the Executive brief prints none. The line below says what this report does. WebP images cannot be placed in every format and are skipped.">
@@ -829,6 +912,13 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             value={editable ? form.settings : (report.effective ?? form.settings)} members={roster.members}
             membersStatus={roster.status} onRetryMembers={roster.retry} currentUser={currentUser}
             followed={editable ? report.followed : null}
+            followedFrom={editable ? report.followed_from : null}
+            // Writing the project's defaults is an analyst's, as editing the
+            // draft is: one gate (`can_edit`).
+            onSetForProject={editable
+              ? (key, value) => setForProject.mutateAsync({ key, value }) : undefined}
+            onPromote={editable ? (key, value) => { void promote(key, value); } : undefined}
+            projectBusy={setForProject.isPending || promoting.isPending}
             readOnly={!editable} disabled={saving} onChange={(settings) => edit({ settings })} />
 
           {editable && (

@@ -8,7 +8,7 @@ for field (CLAUDE.md, "Agent parity with the pages").
 """
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, defer, selectinload
@@ -39,23 +39,36 @@ def _ref(report: Optional[Report]) -> Optional[ReportRef]:
     )
 
 
-def _details(db: Session, report: Report, is_draft: bool) -> Tuple[EngagementSettings, Optional[EngagementSettings]]:
-    """``(effective, followed)`` — see ``ReportOut``.  A draft: its overrides
-    over what it follows, as the project stands (``report_defaults``'s order
-    — one read of the defaults for both); an issued report: what it was ISSUED
-    with (its frozen dataset — a detail a report issued before it existed is
-    empty), and nothing followed."""
+def _details(
+    db: Session, report: Report, is_draft: bool,
+) -> Tuple[EngagementSettings, Optional[EngagementSettings], Optional[Dict[str, Optional[str]]]]:
+    """``(effective, followed, followed_from)`` — see ``ReportOut``.  A draft:
+    its overrides over what it follows, as the project stands
+    (``report_defaults``'s order — one read of the defaults for both); an
+    issued report: what it was ISSUED with (its frozen dataset — a detail a
+    report issued before it existed is empty), and nothing followed."""
     if not is_draft:
         frozen = (((report.snapshot or {}).get("dataset") or {}).get("engagement")) or {}
         return EngagementSettings.model_validate(
             {key: frozen.get(key) for key in report_defaults.DETAIL_KEYS if frozen.get(key) is not None},
-        ), None
-    followed = ClientReportService(db).followed_details(report.project_id)
+        ), None, None
+    followed, sources = ClientReportService(db).followed_details_with_sources(report.project_id)
     effective = report_defaults.apply_overrides(followed, report.settings)
-    return EngagementSettings.model_validate(effective), EngagementSettings.model_validate(followed)
+    return EngagementSettings.model_validate(effective), EngagementSettings.model_validate(followed), sources
 
 
-def serialize_report(db: Session, report: Report, role: str, *, with_summary: bool) -> ReportOut:
+def may_discard(report: Report, role: str, user_id: Optional[int]) -> bool:
+    """Whether the caller may discard this report: a DRAFT, by the analyst
+    who started it (or a draft nobody is recorded as starting) or a project
+    admin — the one rule the DELETE route applies and ``can_discard`` says."""
+    if report.status != ReportStatus.DRAFT or not role_allows(role, ProjectRole.ANALYST):
+        return False
+    return report.created_by_id is None or report.created_by_id == user_id or role_allows(role, ProjectRole.ADMIN)
+
+
+def serialize_report(
+    db: Session, report: Report, role: str, *, with_summary: bool, user_id: Optional[int] = None,
+) -> ReportOut:
     superseded_by = None
     if report.status == ReportStatus.SUPERSEDED:
         superseded_by = (
@@ -69,7 +82,7 @@ def serialize_report(db: Session, report: Report, role: str, *, with_summary: bo
     is_draft = report.status == ReportStatus.DRAFT
     # Only where the page shows the details (one report): a list row does not
     # pay for the reads.
-    effective, followed = _details(db, report, is_draft) if with_summary else (None, None)
+    effective, followed, followed_from = _details(db, report, is_draft) if with_summary else (None, None, None)
     return ReportOut(
         id=report.id, project_id=report.project_id, kind=report.kind, status=report.status,
         title=report.title, number=report.number, template=report.template,
@@ -88,9 +101,11 @@ def serialize_report(db: Session, report: Report, role: str, *, with_summary: bo
         ],
         created_by_name=_name(report.created_by), issued_by_name=_name(report.issued_by),
         created_at=report.created_at, updated_at=report.updated_at, issued_at=report.issued_at,
-        summary=summary, effective=effective, followed=followed,
+        summary=summary, effective=effective, followed=followed, followed_from=followed_from,
         can_edit=is_draft and role_allows(role, ProjectRole.ANALYST),
         can_issue=is_draft and role_allows(role, ProjectRole.ADMIN),
+        # Only a person's read names the person (an agent has no discard).
+        can_discard=user_id is not None and may_discard(report, role, user_id),
     )
 
 

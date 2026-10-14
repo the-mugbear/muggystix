@@ -201,14 +201,80 @@ describe('Reports list', () => {
       const dialog = await screen.findByRole('dialog');
       const primary = within(dialog).getByRole('button', { name: 'Continue draft #23' });
       expect(primary).toHaveTextContent(/Continue draft #23 — Latest draft/);
-      expect(primary).toHaveTextContent(/updated /);
-      // The rest, newest first; the addendum is not a report's draft.
-      const others = within(within(dialog).getByTestId('other-drafts')).getAllByRole('button');
-      expect(others.map((b) => b.getAttribute('aria-label'))).toEqual(['Continue draft #22', 'Continue draft #21']);
+      // Every draft, newest first; the addendum is not a report's draft.
+      const continues = within(within(dialog).getByTestId('draft-choices')).getAllByRole('button', { name: /^Continue/ });
+      expect(continues.map((b) => b.getAttribute('aria-label')))
+        .toEqual(['Continue draft #23', 'Continue draft #22', 'Continue draft #21']);
 
       fireEvent.click(primary);
       expect(navigateSpy).toHaveBeenCalledWith('/reports/23');
       expect(mocked.createClientReport).not.toHaveBeenCalled();
+    });
+
+    // Owner, 2026-10-14: three drafts under one title showed nothing to choose by.
+    it('says what sets each draft apart: who started it and when, its last change, its overrides, its template', async () => {
+      mocked.getReportProfile.mockResolvedValue({ ...settings, template: 'pentest' });
+      mocked.listReportTemplates.mockResolvedValue([
+        { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html'] },
+        { name: 'brief', title: 'Executive brief', description: '', formats: ['html'] },
+      ]);
+      mocked.listClientReports.mockResolvedValue(list([
+        report({ id: 21, title: 'Same', settings: {}, created_by_name: 'Ana', updated_at: '2026-10-13T08:00:00Z' }),
+        report({
+          id: 22, title: 'Same', template: 'brief', created_by_name: 'Ben', updated_at: '2026-10-01T00:00:00Z',
+          settings: { client_name: 'Other Corp', distribution: [] },
+        }),
+        issued7,
+      ]));
+      renderList();
+      fireEvent.click(await screen.findByRole('button', { name: /^New report/ }));
+      await screen.findByRole('dialog');
+      const first = screen.getByTestId('draft-choice-meta-21');
+      expect(first).toHaveTextContent(/^started by Ana .+ · last changed .+ · follows the project’s details$/);
+      const second = screen.getByTestId('draft-choice-meta-22');
+      expect(second).toHaveTextContent(/started by Ben/);
+      expect(second).toHaveTextContent('overrides 2 details: client, distribution');
+      await waitFor(() => expect(second).toHaveTextContent(/template Executive brief$/));
+      expect(first).not.toHaveTextContent(/template/);              // the project's default is not said
+    });
+
+    it('discards a draft from the dialog after a second press — only where the reader may', async () => {
+      const lists = [
+        list([report({ id: 21, can_discard: true }), report({ id: 22, can_discard: false }), issued7]),
+        list([report({ id: 22, can_discard: false }), issued7]),
+      ];
+      mocked.listClientReports.mockResolvedValueOnce(lists[0]).mockResolvedValue(lists[1]);
+      mocked.deleteClientReport.mockResolvedValue(undefined);
+      renderList();
+      fireEvent.click(await screen.findByRole('button', { name: /^New report/ }));
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).queryByRole('button', { name: 'Discard draft #22' })).toBeNull();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Discard draft #21' }));
+      // Asked first; "Keep it" leaves it.
+      const ask = within(dialog).getByRole('group', { name: 'Discard draft #21?' });
+      expect(mocked.deleteClientReport).not.toHaveBeenCalled();
+      fireEvent.click(within(ask).getByRole('button', { name: 'Discard draft' }));
+      await waitFor(() => expect(mocked.deleteClientReport).toHaveBeenCalledWith(1, 21));
+      await waitFor(() => expect(screen.queryByTestId('draft-choice-21')).toBeNull());
+      expect(screen.getByTestId('draft-choice-22')).toBeInTheDocument();
+      expect(toastMock.success).toHaveBeenCalledWith('Draft #21 is discarded.');
+    });
+
+    it('with the last draft discarded, the dialog becomes "Start a new draft"', async () => {
+      mocked.listClientReports
+        .mockResolvedValueOnce(list([report({ id: 21, can_discard: true }), issued7]))
+        .mockResolvedValue(list([issued7]));
+      mocked.deleteClientReport.mockResolvedValue(undefined);
+      mocked.createClientReport.mockResolvedValue(report({ id: 31 }));
+      renderList();
+      fireEvent.click(await screen.findByRole('button', { name: /^New report/ }));
+      const dialog = await screen.findByRole('dialog');
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Discard draft #21' }));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Discard draft' }));
+      expect(await within(dialog).findByText('Start a new draft?')).toBeInTheDocument();
+      expect(within(dialog).getByText('No draft is in progress any more.')).toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Start a new draft' }));
+      await waitFor(() => expect(mocked.createClientReport).toHaveBeenCalledWith(1, { kind: 'full' }));
     });
 
     it('"Start a new draft" creates one', async () => {
@@ -241,7 +307,7 @@ describe('Reports list', () => {
       fireEvent.click(await screen.findByRole('button', { name: /New addendum to #2/ }));
       const dialog = await screen.findByRole('dialog');
       expect(within(dialog).getByRole('button', { name: 'Continue draft #30' })).toBeInTheDocument();
-      expect(within(dialog).queryByTestId('other-drafts')).toBeNull();
+      expect(within(dialog).queryByRole('button', { name: /Continue draft #(23|29)/ })).toBeNull();
       fireEvent.click(within(dialog).getByRole('button', { name: 'Start a new draft' }));
       await waitFor(() => expect(mocked.createClientReport).toHaveBeenCalledWith(1, { kind: 'addendum' }));
     });
@@ -568,22 +634,23 @@ describe('Report detail — draft', () => {
       settings: { author_name: 'Red Team Ltd' }, followed: renamed, effective: { ...renamed, author_name: 'Red Team Ltd' },
     }));
     renderDetail();
-    const author = await screen.findByLabelText('Author');
-    expect(author).toHaveValue('Example Security Ltd');
-    expect(author).toBeDisabled();
-    expect(screen.getByLabelText('Client')).toHaveValue('Ours Ltd');
-    expect(screen.getByLabelText('Classification')).toHaveValue('Confidential');
+    // A followed detail is text; an overridden one its field.
+    const author = await screen.findByRole('group', { name: 'Author' });
+    expect(author).toHaveTextContent('Example Security Ltd');
+    expect(screen.queryByRole('textbox', { name: 'Author' })).toBeNull();
+    expect(screen.getByRole('textbox', { name: 'Client' })).toHaveValue('Ours Ltd');
+    expect(screen.getByRole('group', { name: 'Classification' })).toHaveTextContent('Confidential');
 
     fireEvent.click(screen.getByRole('button', { name: 'Override Author for this report' }));
-    fireEvent.change(screen.getByLabelText('Author'), { target: { value: 'Red Team Ltd' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Author' }), { target: { value: 'Red Team Ltd' } });
     fireEvent.click(screen.getByRole('button', { name: 'Revert Client to the project’s' }));
-    expect(screen.getByLabelText('Client')).toHaveValue(followed.client_name);
+    expect(screen.getByRole('group', { name: 'Client' })).toHaveTextContent(followed.client_name);
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, expect.objectContaining({
       settings: { author_name: 'Red Team Ltd' },
     })));
-    await waitFor(() => expect(screen.getByLabelText('Classification')).toHaveValue('Public'));
-    expect(screen.getByLabelText('Author')).toHaveValue('Red Team Ltd');
+    await waitFor(() => expect(screen.getByRole('group', { name: 'Classification' })).toHaveTextContent('Public'));
+    expect(screen.getByRole('textbox', { name: 'Author' })).toHaveValue('Red Team Ltd');
   });
 });
 

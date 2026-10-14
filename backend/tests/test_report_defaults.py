@@ -19,6 +19,7 @@ the dataset builder calls it — and the pages show what a detail follows
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import pytest
@@ -508,3 +509,183 @@ def test_an_addendum_takes_the_classification_its_baseline_was_issued_with(clien
     # …and a detail the baseline went out without follows the project.
     assert "engagement_type" not in r.json()["settings"]
     assert r.json()["effective"]["engagement_type"] == "Web"
+
+
+# ---------------------------------------------------------------------------
+# A draft's change pushed up to the project (owner, 2026-10-14: "if a user
+# modifies a draft they may want that change to become the standard for
+# future drafts")
+# ---------------------------------------------------------------------------
+
+def _patch_profile(client, project, **body):
+    return client.patch(f"{_reports(project)}/profile", json=body)
+
+
+@contextmanager
+def _signed_in_as():
+    """Sign in as another user inside the block (``use(user)``); the
+    ``client`` fixture's admin is back afterwards."""
+    before = app.dependency_overrides.get(get_current_user)
+
+    def use(user):
+        app.dependency_overrides[get_current_user] = lambda: user
+
+    try:
+        yield use
+    finally:
+        if before is None:
+            app.dependency_overrides.pop(get_current_user, None)
+        else:
+            app.dependency_overrides[get_current_user] = before
+
+
+def test_the_partial_profile_write_changes_only_the_keys_sent(client, db_session, test_project):
+    _profile(
+        client, test_project, client_name="Example Corp", classification="Confidential",
+        distribution=[{"name": "CISO", "email": "ciso@example.com"}], template="pentest",
+    )
+    r = _patch_profile(client, test_project, engagement_type="  Internal  ")
+    assert r.status_code == 200, r.text
+    saved = r.json()
+    # Trimmed like PUT; every other default as it was.
+    assert saved["engagement_type"] == "Internal"
+    assert (saved["client_name"], saved["classification"]) == ("Example Corp", "Confidential")
+    assert saved["distribution"] == [{"name": "CISO", "email": "ciso@example.com"}]
+    assert saved["template"] == "pentest"
+    # A blank text clears that default only; a list sent null is empty.
+    cleared = _patch_profile(client, test_project, client_name="   ", distribution=None).json()
+    assert cleared["client_name"] is None and cleared["distribution"] == []
+    assert cleared["classification"] == "Confidential"
+    # The system description's image references are normalised, as on PUT.
+    described = _patch_profile(client, test_project, system_description="![x](<evidence:57>)").json()
+    assert described["system_description"] == "![x](evidence:57)"
+
+
+def test_the_partial_profile_write_is_validated_like_put(client, db_session, test_project):
+    _profile(client, test_project, client_name="Example Corp")
+    assert _patch_profile(client, test_project).status_code == 422                       # nothing sent
+    assert _patch_profile(client, test_project, classification="x" * 101).status_code == 422
+    assert _patch_profile(client, test_project, testers=[{"name": ""}]).status_code == 422
+    assert _patch_profile(client, test_project, distribution=[{"name": "x"}] * 101).status_code == 422
+    assert _patch_profile(client, test_project, template="no-such-template").status_code == 422
+    assert client.get(f"{_reports(test_project)}/profile").json()["client_name"] == "Example Corp"
+
+
+def test_the_partial_profile_write_is_an_analysts(client, db_session, test_project):
+    analyst = _user(db_session, 411, "ana")
+    auditor = _user(db_session, 412, "aud")
+    db_session.add(ProjectMembership(project_id=test_project.id, user_id=analyst.id, role=ProjectRole.ANALYST.value))
+    db_session.add(ProjectMembership(project_id=test_project.id, user_id=auditor.id, role=ProjectRole.AUDITOR.value))
+    db_session.commit()
+    with _signed_in_as() as use:
+        use(auditor)
+        assert _patch_profile(client, test_project, client_name="Not mine").status_code == 403
+        use(analyst)
+        assert _patch_profile(client, test_project, client_name="Example Corp").status_code == 200
+    assert client.get(f"{_reports(test_project)}/profile").json()["client_name"] == "Example Corp"
+
+
+def test_a_followed_detail_says_where_its_value_comes_from(client, db_session, test_project, test_user):
+    _lead(db_session, test_project, test_user)
+    _put(client, author_name="Installation Ltd")
+    _profile(client, test_project, client_name="Example Corp")
+    one = client.get(f"{_reports(test_project)}/{_draft(client, test_project)['id']}").json()
+    sources = one["followed_from"]
+    assert sources["client_name"] == "project"
+    assert sources["author_name"] == "installation"
+    assert sources["testers"] == "project_team"
+    assert sources["classification"] is None and sources["disclaimer"] is None
+    assert sources["distribution"] is None
+    # A list row does not carry it.
+    assert all(row["followed_from"] is None for row in client.get(_reports(test_project)).json()["items"])
+
+
+def test_make_this_the_projects_default(client, db_session, test_project, test_user):
+    """The draft's override becomes the project's default and the draft
+    follows again — one transaction; every other following draft follows the
+    new value, and a draft overriding that detail keeps its own."""
+    _lead(db_session, test_project, test_user)
+    _profile(client, test_project, client_name="Example Corp", classification="Confidential")
+    draft = _draft(client, test_project)
+    follower = _draft(client, test_project)
+    keeper = _draft(client, test_project)
+    _patch(client, test_project, keeper["id"], client_name="Keeper Corp")
+    _patch(client, test_project, draft["id"], client_name="Renamed Corp", classification="Secret",
+           distribution=[{"name": "CISO", "email": "ciso@example.com"}])
+
+    r = client.post(f"{_reports(test_project)}/{draft['id']}/promote",
+                    json={"values": {"client_name": "Renamed Corp", "distribution": [{"name": "CISO", "email": "ciso@example.com"}]}})
+    assert r.status_code == 200, r.text
+    promoted = r.json()
+    # It no longer overrides them; the other override stays.
+    assert promoted["settings"] == {"classification": "Secret"}
+    assert promoted["followed"]["client_name"] == promoted["effective"]["client_name"] == "Renamed Corp"
+    assert promoted["followed_from"]["client_name"] == "project"
+    assert promoted["effective"]["distribution"] == [{"name": "CISO", "email": "ciso@example.com"}]
+    db_session.expire_all()
+    assert db_session.get(Report, draft["id"]).settings == {"classification": "Secret"}
+    profile = client.get(f"{_reports(test_project)}/profile").json()
+    assert profile["client_name"] == "Renamed Corp"
+    assert profile["classification"] == "Confidential"                    # not sent: untouched
+    # A following draft prints the new value; an overriding one its own.
+    assert _engagement(db_session, follower["id"])[0]["client_name"] == "Renamed Corp"
+    assert _engagement(db_session, keeper["id"])[0]["client_name"] == "Keeper Corp"
+
+
+def test_promote_refuses_what_it_cannot_make_a_default(client, db_session, test_project, test_user):
+    _lead(db_session, test_project, test_user)
+    _profile(client, test_project, client_name="Example Corp")
+    draft = _draft(client, test_project)
+    url = f"{_reports(test_project)}/{draft['id']}/promote"
+    _patch(client, test_project, draft["id"], client_name="Mine")
+    assert client.post(url, json={"values": {}}).status_code == 422
+    assert client.post(url, json={"values": {"client_name": "   "}}).status_code == 422
+    assert client.post(url, json={"values": {"distribution": None}}).status_code == 422
+    assert client.post(url, json={"values": {"classification": "x" * 101}}).status_code == 422
+    # Nothing changed: the draft still overrides, the project keeps its value.
+    db_session.expire_all()
+    assert db_session.get(Report, draft["id"]).settings == {"client_name": "Mine"}
+    assert client.get(f"{_reports(test_project)}/profile").json()["client_name"] == "Example Corp"
+    # An empty list may become the default.
+    _patch(client, test_project, draft["id"], client_name="Mine", distribution=[])
+    assert client.post(url, json={"values": {"distribution": []}}).status_code == 200
+    # An issued report: no.
+    assert client.post(f"{_reports(test_project)}/{draft['id']}/issue").status_code == 200
+    assert client.post(url, json={"values": {"client_name": "Mine"}}).status_code == 409
+    assert client.get(f"{_reports(test_project)}/profile").json()["client_name"] == "Example Corp"
+
+
+def test_promote_is_an_analysts(client, db_session, test_project):
+    draft = _draft(client, test_project)
+    url = f"{_reports(test_project)}/{draft['id']}/promote"
+    auditor = _user(db_session, 413, "aud2")
+    db_session.add(ProjectMembership(project_id=test_project.id, user_id=auditor.id, role=ProjectRole.AUDITOR.value))
+    db_session.commit()
+    with _signed_in_as() as use:
+        use(auditor)
+        assert client.post(url, json={"values": {"client_name": "Mine"}}).status_code == 403
+    assert client.get(f"{_reports(test_project)}/profile").json()["client_name"] is None
+
+
+def test_the_list_says_who_may_discard_each_draft(client, db_session, test_project):
+    """Its creator or a project admin — the DELETE route's rule, on the list
+    row (the "Continue a draft?" dialog offers Discard by it)."""
+    analyst = _user(db_session, 414, "ana2")
+    other = _user(db_session, 415, "oli")
+    for user in (analyst, other):
+        db_session.add(ProjectMembership(project_id=test_project.id, user_id=user.id, role=ProjectRole.ANALYST.value))
+    db_session.commit()
+    mine_by_admin = _draft(client, test_project)                   # started by the global admin
+    with _signed_in_as() as use:
+        use(analyst)
+        own = _draft(client, test_project)
+        rows = {row["id"]: row for row in client.get(_reports(test_project)).json()["items"]}
+        assert rows[own["id"]]["can_discard"] is True
+        assert rows[mine_by_admin["id"]]["can_discard"] is False
+        assert client.delete(f"{_reports(test_project)}/{mine_by_admin['id']}").status_code == 403
+        use(other)
+        assert not any(row["can_discard"] for row in client.get(_reports(test_project)).json()["items"])
+    # A project admin (here a global admin) may discard any draft.
+    rows = client.get(_reports(test_project)).json()["items"]
+    assert all(row["can_discard"] for row in rows)
+    assert client.delete(f"{_reports(test_project)}/{own['id']}").status_code == 204

@@ -83,9 +83,10 @@ export const focusReportDetail = (root: HTMLElement | null, key: string, idPrefi
     focusable = target?.querySelector<HTMLElement>(FOCUSABLE) ?? null;
   }
   if (!target) return false;
-  // A draft's detail that follows the project is shown greyed (disabled):
-  // the caret goes to its "Override for this report" instead.
-  if (!focusable || focusable.matches(':disabled')) {
+  // A draft's detail that follows the project is text, not a field
+  // (`data-followed`): the caret goes to its first action — "Set for the
+  // project" when the project has no value, else "Override for this report".
+  if (target.matches('[data-followed]') || !focusable || focusable.matches(':disabled')) {
     focusable = root.querySelector<HTMLElement>(`#${idPrefix}-${key}-source button:not([disabled])`) ?? focusable;
   }
   target.scrollIntoView?.({ block: 'center' });

@@ -50,6 +50,7 @@ vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentPr
 
 import * as api from '../../services/api';
 import ReportDetail from '../../pages/ReportDetail';
+import { focusReportDetail } from '../../components/reports/ReportChecklist';
 import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 import { blobFor, installBlobUrls } from '../helpers/blobUrls';
 
@@ -135,8 +136,14 @@ describe('The draft’s checklist', () => {
     expect(checklist.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // eslint-disable-next-line no-bitwise
     expect(checklist.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // The strip points at it instead of listing again.
-    expect(screen.getByText('Listed under Before issuing')).toBeInTheDocument();
+    // The strip does not repeat it (owner, 2026-10-14): three figures, none
+    // of them what the checklist counts.
+    const strip = screen.getByTestId('report-measures');
+    expect(within(strip).queryByText(/Missing report text/)).toBeNull();
+    expect(within(strip).queryByText(/Before issuing/)).toBeNull();
+    expect(within(strip).getByText('Findings in the report')).toBeInTheDocument();
+    expect(within(strip).getByText('Still under investigation')).toBeInTheDocument();
+    expect(within(strip).getByText('Evidence images')).toBeInTheDocument();
   });
 
   it('every line is an action: findings name the report, proposals / images / notes go to where they are decided', async () => {
@@ -182,18 +189,28 @@ describe('The draft’s checklist', () => {
     expect(team.contains(document.activeElement)).toBe(true);
   });
 
-  it('a missing detail the draft takes from the project goes to its “Override for this report”', async () => {
-    // Owner, 2026-10-14: a followed detail is the project's, shown greyed —
-    // the caret goes to the action that makes it the report's own.
-    mocked.getClientReport.mockResolvedValue(report({ settings: {}, followed: settings, effective: settings }));
+  it('a missing detail the draft takes from the project goes to its first action', async () => {
+    // Owner, 2026-10-14: a followed detail is the project's, shown as text —
+    // the caret goes to its first action: "Override for this report" when the
+    // project holds a value, "Set for the project" when it holds none.
+    const followed = { ...settings, client_name: 'Example Corp', testers: [{ name: 'Ana Lead' }] };
+    mocked.getClientReport.mockResolvedValue(report({
+      settings: {}, followed, effective: followed,
+      followed_from: { client_name: 'project', testers: 'project', classification: null },
+    }));
     renderDetail();
     const group = await screen.findByTestId('checklist-details');
-    expect(await screen.findByLabelText('Client')).toBeDisabled();
+    expect(await screen.findByRole('group', { name: 'Client' })).toHaveTextContent('Example Corp');
+    expect(screen.queryByRole('textbox', { name: 'Client' })).toBeNull();          // no field: text
 
     fireEvent.click(within(group).getByRole('button', { name: 'Go to client in Report details' }));
     expect(screen.getByRole('button', { name: 'Override Client for this report' })).toHaveFocus();
     fireEvent.click(within(group).getByRole('button', { name: 'Go to assessment team in Report details' }));
     expect(screen.getByRole('button', { name: 'Override Assessment team for this report' })).toHaveFocus();
+    // Empty in the project: "Set for the project" first.
+    expect(focusReportDetail(screen.getByRole('group', { name: 'Classification' }).closest('form'), 'classification'))
+      .toBe(true);
+    expect(screen.getByRole('button', { name: 'Set Classification for the project' })).toHaveFocus();
   });
 
   it('someone who is not a global admin is told who sets a full name, with no link they cannot open', async () => {

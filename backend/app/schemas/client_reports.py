@@ -66,6 +66,26 @@ class ReportProfileBody(EngagementSettings):
     template: Optional[str] = Field(None, max_length=100)
 
 
+class ReportProfilePatch(EngagementOverrides):
+    """`PATCH /client-reports/profile`: only the keys SENT change (read with
+    `exclude_unset`), with PUT's validation — so a page that edits one detail
+    never sends, and so never overwrites, the rest someone else may have
+    changed meanwhile.  A text sent blank or null clears that default; a list
+    sent null is an empty list."""
+    template: Optional[str] = Field(None, max_length=100)
+
+
+class ReportPromote(BaseModel):
+    """`POST /client-reports/{id}/promote`: details of this draft to make the
+    project's defaults.  `values` — the keys to promote, each with the value
+    the page shows (the override, as edited); every key sent is written to the
+    project's report defaults and removed from the draft's overrides, in one
+    transaction, so the draft follows the project again.  A text sent blank is
+    refused (there would be nothing to make the default); a list may be
+    empty."""
+    values: EngagementOverrides
+
+
 class ReportProfileOut(ReportProfileBody):
     updated_at: Optional[datetime] = None
     # v2.382.0 — no team is saved, so `testers` is the project's analysts and
@@ -217,9 +237,18 @@ class ReportOut(BaseModel):
     # "Revert to the project's" returns to; None for an issued report.
     effective: Optional[EngagementSettings] = None
     followed: Optional[EngagementSettings] = None
+    # A single DRAFT read: where each `followed` value comes from —
+    # `project` (the project's report defaults), `installation` (author,
+    # disclaimer: the installation's), `project_team` (the team: the
+    # project's analysts and admins), or null (set nowhere).  None for an
+    # issued report and for list rows.
+    followed_from: Optional[Dict[str, Optional[str]]] = None
     # What the CALLER may do.
     can_edit: bool = False
     can_issue: bool = False
+    # Discard this draft: its creator or a project admin (the DELETE route's
+    # rule), on list rows too.
+    can_discard: bool = False
 
 
 class ReportListOut(BaseModel):

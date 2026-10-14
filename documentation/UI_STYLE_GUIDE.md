@@ -1045,7 +1045,19 @@ From the codebase review of 2026-10-07 (5.339.0).
   ten lines and "Show all N"; a line opens the field, the record or the
   setting where the gap is closed — never a sentence naming it. A record
   opened from such a list says where it stands in it and steps to the
-  previous and next one (`?report=` on the finding page), and leads back.
+  previous and next one (`?report=` on the finding page), and leads back. A
+  page's figures strip does not repeat what the checklist counts (the draft
+  report's strip lost "Missing report text", 2026-10-14).
+- **A value inherited from elsewhere is TEXT, not a disabled field**
+  (2026-10-14, a draft report's details that follow the project): a greyed
+  input reads as "locked". It shows the value (wrapping; a long or Markdown
+  one in a bounded box that scrolls, Markdown rendered; a list as one line
+  per row), says where it comes from ("From the project's defaults", "From
+  the installation's defaults"), or "Not set in the project's defaults", and
+  offers its actions as compact links on that line — the first one is the
+  primary action, the one a checklist line focuses. The field appears only
+  once the value is the reader's to edit (overridden, or being edited for the
+  project).
 - **A panel that shows one record is keyed by that record** (§39), so nothing
   from the previous record can land in it. The one surface that still stays
   mounted across records — the remediation timeline sheet — checks every
