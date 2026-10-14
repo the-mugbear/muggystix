@@ -211,7 +211,7 @@ describe('FindingReportTextCard — v5.290.0 the written text is shown rendered,
     render(<FindingReportTextCard finding={withText('Before.')} canEdit startEditing />);
     fireEvent.click(toolbar().getByRole('button', { name: /Markdown help/ }));
     expect(screen.getByText('Table: caption')).toBeInTheDocument();
-    expect(screen.getByText('On the line after a table (blank line between): its numbered caption')).toBeInTheDocument();
+    expect(screen.getByText('On the line after a table (blank line between): its numbered caption, printed under it')).toBeInTheDocument();
   });
 
   it('inserts a table on lines of its own and previews it as the report prints it', () => {

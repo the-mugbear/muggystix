@@ -79,7 +79,7 @@ const GUIDE: Array<[string, string]> = [
   ['- item  /  1. item', 'Lists — one item per line'],
   ['```  …  ```', 'A code block (commands, output) on lines of its own'],
   ['| A | B |\n| - | - |\n| 1 | 2 |', 'A table — leave a blank line before it'],
-  ['Table: caption', 'On the line after a table (blank line between): its numbered caption'],
+  ['Table: caption', 'On the line after a table (blank line between): its numbered caption, printed under it'],
   ['[text](https://…)', 'A link — web and mail links only'],
   ['blank line', 'Starts a new paragraph (a single line break is a space)'],
 ];

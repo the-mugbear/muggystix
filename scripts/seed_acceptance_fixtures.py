@@ -211,6 +211,139 @@ class Api:
         return r.json() if r.content else None
 
 
+#: Findings whose report text is written — complete, or missing one or two
+#: required sections — so a report exercises every part of its template
+#: (owner, 2026-10-14: "complete findings and findings missing one or two
+#: fields … exercise all features of the reports").  Titles print in the
+#: report, so they carry no seed mark: a re-run finds each by its title and
+#: leaves an existing one alone.  Text is deliberately short and generic.
+REPORT_TABLE = (
+    "| Check | Result |\n| ----- | ------ |\n| Signing required | No |\n| Signing enabled | Yes |\n\n"
+    "Table: SMB signing settings observed"
+)
+REPORT_FINDINGS = (
+    {"title": "SMB signing not required on file servers", "severity": "high",
+     "description": "The file servers accept SMB sessions without message signing.",
+     "impact": "An attacker on the network can relay authentication to these servers.",
+     "recommendation": "Require SMB signing on servers through Group Policy.",
+     "steps_to_reproduce": "1. Connect to TCP 445.\n2. Negotiate a session.\n3. Observe signing is optional.",
+     "references": "- https://learn.microsoft.com/windows-server/storage/file-server/smb-signing",
+     "cvss_vector": "CVSS:3.1/AV:A/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+     "evidence_text": "The negotiation showed signing enabled but not required.\n\n" + REPORT_TABLE,
+     "image": "placed"},
+    {"title": "TLS 1.0 and 1.1 accepted by the web portal", "severity": "medium",
+     "description": "The portal negotiates the deprecated TLS 1.0 and 1.1 protocols.",
+     "impact": "Clients that fall back to these versions use weaker protection in transit.",
+     "recommendation": "Disable TLS 1.0 and 1.1 and allow TLS 1.2 and later only.",
+     "steps_to_reproduce": "Run `openssl s_client -tls1 -connect portal:443` and observe a completed handshake.",
+     "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N",
+     "image": "unplaced"},
+    {"title": "Default credentials on a network printer", "severity": "critical",
+     "description": "A network printer's management interface accepts the vendor's default credentials.",
+     "impact": "Anyone on the network can reconfigure the printer and read stored scan-to-email settings.",
+     "recommendation": "Change the default password and restrict the management interface to an admin network.",
+     "references": "- Vendor hardening guide",
+     "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:L",
+     "test_result": True},
+    {"title": "Server banner discloses its version", "severity": "info",
+     "description": "The web server names its product and version in every response.\n\n![](evidence:{image})",
+     "impact": "The version helps an attacker choose a matching public exploit.",
+     "recommendation": "Configure the server to omit its version from response headers.",
+     "image": "placed_only"},
+    # Missing ONE required section.
+    {"title": "Outdated SSH server version", "severity": "low",
+     "description": "An SSH server runs a release that is no longer supported.",
+     "impact": "Fixes released after end of support are not applied to this host."},
+    {"title": "Weak domain password policy", "severity": "medium",
+     "impact": "Short passwords are guessed quickly; see Finding #12 for the related lockout setting.",
+     "recommendation": "Require at least 14 characters and enable account lockout."},
+    # Missing TWO required sections.
+    {"title": "Directory listing enabled on the intranet site", "severity": "medium",
+     "description": "The intranet web server lists the contents of folders without an index page."},
+    {"title": "Unencrypted LDAP binds accepted", "severity": "high",
+     "recommendation": "Require LDAP signing and channel binding on all domain controllers."},
+)
+REPORT_DRAFT_TITLE = "Acceptance — walkthrough draft"
+
+
+def _seed_report_content(db, base_url: str, pid: int, lead: Api, keys: dict, lead_token: str) -> dict:
+    """What a client report prints, in every form: findings complete and
+    missing one or two sections, written and Evidence tables with captions,
+    placed and unplaced images (the latter after a sensible note), a finding
+    with no Evidence section, a test result, a text naming a BlueStick
+    record; the report defaults' empty details filled; project dates; one
+    walkthrough draft overriding one detail.  Re-runs add nothing twice."""
+    hosts = [h.id for h in db.query(models.Host).filter(models.Host.project_id == pid)
+             .order_by(models.Host.id).limit(len(REPORT_FINDINGS))]
+    made = {}
+    for n, spec in enumerate(REPORT_FINDINGS):
+        existing = db.query(Finding).filter(Finding.project_id == pid, Finding.title == spec["title"]).first()
+        if existing is not None:
+            made[spec["title"]] = existing.id
+            continue
+        host_id = hosts[n % len(hosts)]
+        finding = lead("POST", "/findings", json={
+            "title": spec["title"], "severity": spec["severity"], "status": "confirmed", "host_ids": [host_id]})
+        fid = finding["id"]
+        made[spec["title"]] = fid
+        text = {k: v for k, v in spec.items() if k in (
+            "description", "impact", "recommendation", "steps_to_reproduce", "references",
+            "cvss_vector", "evidence_text")}
+        image_kind = spec.get("image")
+        if image_kind:
+            note = lead("POST", f"/findings/{fid}/notes", json={
+                "body": "Screenshot taken from the assessment host while confirming the issue."})
+            att = lead("POST", f"/findings/{fid}/notes/{note['id']}/attachments",
+                       files={"file": (f"finding-{fid}.png", io.BytesIO(_png(160, 90)), "image/png")})
+            lead("PATCH", f"/hosts/notes/attachments/{att['id']}",
+                 json={"include_in_report": True, "caption": f"Observed on the host — {spec['title']}"})
+            if image_kind == "placed":
+                text["description"] = text["description"] + f"\n\n![](evidence:{att['id']})"
+            elif image_kind == "placed_only":
+                text["description"] = text["description"].replace("{image}", str(att["id"]))
+        lead("PATCH", f"/findings/{fid}", json=text)
+        if spec.get("test_result"):
+            r = httpx.post(f"{base_url}/api/v1/agent/evidence", timeout=60, headers={"X-API-Key": keys["analyst"]},
+                           json={"host_id": host_id, "finding_id": fid, "tool": "curl",
+                                 "command": "curl -s -o /dev/null -w '%{http_code}' -u admin:admin http://printer/",
+                                 "outcome": "finding", "summary": "The default credentials were accepted (HTTP 200).",
+                                 "raw_output": "200", "request_key": f"acceptance-report-{fid}"})
+            if r.status_code >= 400:
+                print(f"test result on finding {fid}: {r.status_code} {r.text[:200]}")
+        print(f"report finding {fid}: {spec['title']}")
+
+    # The report defaults: only the details still empty, so an owner's edits stay.
+    profile = lead("GET", "/client-reports/profile")
+    wanted = {
+        "engagement_type": "Internal network penetration test",
+        "distribution": [{"name": "Head of IT", "email": "it-head@acceptance.invalid"}],
+        "applications": "- https://portal.acceptance.invalid\n- https://intranet.acceptance.invalid",
+    }
+    missing = {k: v for k, v in wanted.items() if not profile.get(k)}
+    if missing:
+        lead("PATCH", "/client-reports/profile", json=missing)
+
+    # Project dates, so the report owes no TODO for them.
+    project = db.get(Project, pid)
+    if not (project.start_date and project.end_date):
+        r = httpx.put(f"{base_url}/api/v1/projects/{pid}", timeout=60, headers={"Authorization": f"Bearer {lead_token}"},
+                      json={"start_date": "2026-09-01", "end_date": "2026-09-19"})
+        if r.status_code >= 400:
+            print(f"project dates: {r.status_code} {r.text[:200]}")
+
+    # One walkthrough draft that overrides one detail.
+    draft = db.query(Report).filter(Report.project_id == pid, Report.title == REPORT_DRAFT_TITLE).first()
+    if draft is None:
+        created = lead("POST", "/client-reports", json={"kind": "full", "title": REPORT_DRAFT_TITLE})
+        lead("PATCH", f"/client-reports/{created['id']}", json={
+            "executive_summary": "The assessment found weaknesses in authentication and transport security.",
+            "settings": {"classification": "Restricted — walkthrough"}})
+        draft_id = created["id"]
+    else:
+        draft_id = draft.id
+    return {"findings": made, "draft_id": draft_id}
+
+
 def _start_key(api: Api, purpose: str) -> str:
     return api("POST", "/assist/start", json={"purpose": purpose})["api_key"]
 
@@ -706,7 +839,7 @@ def main() -> None:
         comment = analyst("POST", f"/findings/{critical.id}/notes", json={
             "body": f"{MARK} Reproduced with the vendor's PoC; evidence below."})
         answer = lead("POST", f"/findings/{critical.id}/notes", json={
-            "body": f"{MARK} Agreed — keep it critical for the report.", "parent_id": comment["id"]})
+            "body": "Output of the check against the host, captured during testing.", "parent_id": comment["id"]})
         att = lead("POST", f"/findings/{critical.id}/notes/{answer['id']}/attachments",
                    files={"file": ("poc-output.png", io.BytesIO(_png(96, 48)), "image/png")})
         lead("PATCH", f"/hosts/notes/attachments/{att['id']}", json={"include_in_report": True})
@@ -787,6 +920,8 @@ def main() -> None:
 
     fixtures: dict = {"imports": imports}
     fixtures["analyst_work"] = _seed_analyst_work(db, pid, users, lead, analyst)
+    fixtures["report_content"] = _seed_report_content(
+        db, args.base_url, pid, lead, keys, lead.c.headers["Authorization"].split(" ", 1)[1])
     fixtures["other_project"] = _seed_other_project(db, args.base_url, host.ip_address)
     fixtures["remediation"] = _seed_remediation(db, args.base_url, pid, users["acc-lead"], lead)
     fixtures["subnet_labels"] = _seed_subnet_labels(db, pid, lead)

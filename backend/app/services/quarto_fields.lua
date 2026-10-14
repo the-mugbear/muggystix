@@ -107,6 +107,9 @@ local IMAGE_EXT = { png = true, jpg = true, gif = true }
 local CAPTION_MAX = 2000
 local DEFAULT_WIDTH = "6in"
 local MARK = "bs-placed"
+-- A table caption's marking and its Word style (see "Table captions" below).
+local CAPTION_CLASS = "bs-table-caption"
+local CAPTION_STYLE = "Table Caption"
 
 local function plain_text(value)
   if type(value) ~= "string" then return "" end
@@ -239,7 +242,10 @@ local function lift(blocks, images, width, used, depth)
     })
   end
 
-  for _, block in ipairs(blocks) do
+  local i = 0
+  while i < #blocks do
+    i = i + 1
+    local block = blocks[i]
     local t = block.t
     if t == "Para" or t == "Plain" then
       local run = pandoc.Inlines({})
@@ -282,6 +288,13 @@ local function lift(blocks, images, width, used, depth)
       -- walk() needs a list for a single block of any other kind.
       local kept = hoist(pandoc.Blocks({ block }), pending)
       out:extend(kept)
+      -- A table's caption (`caption_tables` put it under the table) stays
+      -- with its table: the figures from the cells follow the caption.
+      local after = blocks[i + 1]
+      if t == "Table" and after ~= nil and after.t == "Div" and after.classes:includes(CAPTION_CLASS) then
+        out:extend(hoist(pandoc.Blocks({ after }), pending))
+        i = i + 1
+      end
       out:extend(pending)
     end
   end
@@ -437,15 +450,17 @@ it, when that paragraph opens with "Table:":
     Table: Accounts found on the file server
 
 (pandoc's own spelling; its gfm reader has no caption syntax, so the pair is
-made here.)  The paragraph becomes a `bs-table-caption` Div placed ABOVE the
-table — the same placeholder the templates' partials/_table_caption.qmd
-emits — and `number_captions` (the Pandoc pass at the end) writes "Table N:
-…" on every one, counting in DOCUMENT order: a written table sits between
-the template's own, and only this filter sees both.  A "Table:" paragraph
-that follows no table stays the text it is.
+made here.)  The paragraph becomes a `bs-table-caption` Div left where it
+is, UNDER the table — the same placeholder the templates'
+partials/_table_caption.qmd emits (there it comes before its table, and
+`captions_under_tables` moves it) — and the Pandoc pass at the end writes
+"Table N: …" on every one, counting in DOCUMENT order: a written table sits
+between the template's own, and only this filter sees both.  A "Table:"
+paragraph that follows no table stays the text it is.
+
+Every table caption is printed under its table (owner, 2026-10-14: captions
+"are expected underneath their respective elements", as figures' are).
 ]]
-local CAPTION_CLASS = "bs-table-caption"
-local CAPTION_STYLE = "Table Caption"
 
 -- The inlines after a leading "Table:", or nil when `block` is not a caption.
 local function caption_text(block)
@@ -470,8 +485,8 @@ local function caption_tables(blocks)
     local block = blocks[i]
     local caption = block.t == "Table" and caption_text(blocks[i + 1]) or nil
     if caption ~= nil then
-      out:insert(pandoc.Div({ pandoc.Para(caption) }, pandoc.Attr("", { CAPTION_CLASS })))
       out:insert(block)
+      out:insert(pandoc.Div({ pandoc.Para(caption) }, pandoc.Attr("", { CAPTION_CLASS })))
       i = i + 2
     else
       out:insert(block)
@@ -515,6 +530,34 @@ local function legacy_caption(el)
   return inlines
 end
 
+-- A Div the Pandoc pass numbers as a table caption.
+local function is_table_caption(el)
+  return el.classes:includes(CAPTION_CLASS) or legacy_caption(el) ~= nil
+end
+
+-- A template prints each caption BEFORE its table (partials/_table_caption.qmd,
+-- and the numbered ones of a template copy an issued report keeps); the
+-- caption goes under it.  Run before the written fields are filled, so it
+-- sees only the template's own captions: a written caption is placed under
+-- its table by `caption_tables`, and could otherwise be taken for the caption
+-- of a table that follows it.
+local function captions_under_tables(blocks)
+  local out = pandoc.List()
+  local i = 1
+  while i <= #blocks do
+    local block, after = blocks[i], blocks[i + 1]
+    if block.t == "Div" and after ~= nil and after.t == "Table" and is_table_caption(block) then
+      out:insert(after)
+      out:insert(block)
+      i = i + 2
+    else
+      out:insert(block)
+      i = i + 1
+    end
+  end
+  return out
+end
+
 local function fill_field(el)
   if el.classes:includes("bs-code") then return verbatim(el) end
   if el.classes:includes("bs-figure") then return evidence_figure(el) end
@@ -536,6 +579,7 @@ local function fill_field(el)
   -- Captions are paired with their tables BEFORE the figures are lifted: an
   -- image in a table cell becomes a figure that FOLLOWS its table, and would
   -- then stand between the table and its "Table:" line — which stayed text.
+  -- lift() keeps the caption under its table and puts that figure after it.
   local cleaned = pandoc.Blocks(clean(doc.blocks, images, drop)):walk({ Blocks = caption_tables })
   local blocks = lift(cleaned, images, width, used, 0)
   if not drop then
@@ -555,13 +599,15 @@ local function fill_field(el)
 end
 
 --[[
-One pass over the finished document.  The placeholders are filled first, then
-every BlueStick figure is numbered in the order a reader meets it: "Figure 3:
+One pass over the finished document.  The template's table captions go under
+their tables, the placeholders are filled, then every BlueStick figure is numbered in the order a reader meets it: "Figure 3:
 caption", or "Figure 3" for an image nobody captioned.  Table captions are
 numbered in the same pass, by their own count: the template's and the ones an
-author wrote under a table in a written section.
+author wrote under a table in a written section.  Each is under its table by
+then, so the count follows the tables.
 ]]
 function Pandoc(doc)
+  doc = doc:walk({ Blocks = captions_under_tables })
   doc = doc:walk({ Div = fill_field })
   local n = 0
   local tables = 0

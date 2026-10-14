@@ -582,7 +582,7 @@ const parseBlocks =(source: string): Block[] => {
 /**
  * The report's table captions (`caption_tables` in quarto_fields.lua): a
  * paragraph that opens with `Table:` DIRECTLY after a table is that table's
- * caption — printed above it, numbered — and is no longer a paragraph.  The
+ * caption — printed under it, numbered — and is no longer a paragraph.  The
  * same paragraph anywhere else stays the text it is.
  */
 const captionTables = (blocks: Block[]): Block[] => {
@@ -646,9 +646,9 @@ const renderBlocks = (blocks: Block[], keyPrefix: string, how: How = {}): React.
         return (
           <table key={key} className="w-full border-collapse text-caption" style={{ tableLayout: 'fixed' }}>
             {b.caption !== undefined && (
-              // Above the table, as the report prints it; the number
+              // Under the table, as the report prints it; the number
               // ("Table 3:") is the report's to give, so none is shown.
-              <caption className="caption-top break-words pb-xxs text-center font-semibold text-foreground [overflow-wrap:anywhere]"
+              <caption className="caption-bottom break-words pt-xxs text-center font-semibold text-foreground [overflow-wrap:anywhere]"
                 data-testid="table-caption">
                 {b.caption ? <>Table: {renderInline(b.caption, `${key}-c`, how)}</> : 'Table'}
               </caption>

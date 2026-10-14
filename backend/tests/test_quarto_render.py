@@ -1219,7 +1219,10 @@ def test_every_table_label_keeps_with_its_table_in_word():
     page and its table began the next: a bold label was a plain paragraph.
     v2.410.0 — tables carry the original template's numbered, centred
     captions (Table Caption style); the labels of written text that may be a
-    list keep Table Label.  Both styles keep with next."""
+    list keep Table Label.  Both styles keep with next.  (2026-10-14: a
+    caption is printed UNDER its table, and the post-processor turns its
+    keep-with-next off on each one there and keeps the table's last row with
+    it instead — test_a_caption_under_a_table_is_kept_with_the_table.)"""
     import re
     with zipfile.ZipFile(TEMPLATE / "reference.docx") as z:
         styles = z.read("word/styles.xml").decode()
@@ -1318,6 +1321,63 @@ def test_tables_take_the_alignment_their_style_declares(tmp_path):
     assert first.find(f"{{{w}}}tblPr/{{{w}}}jc").get(f"{{{w}}}val") == "center"
     assert own.find(f"{{{w}}}tblPr/{{{w}}}jc").get(f"{{{w}}}val") == "right"
     assert plain.find(f"{{{w}}}tblPr/{{{w}}}jc") is None
+
+
+@needs_template
+def test_a_caption_under_a_table_is_kept_with_the_table(tmp_path):
+    """Owner, 2026-10-14: a table's caption is printed under it.  The Table
+    Caption style was made for a caption above (keep with next, space
+    before), so the post-processor mirrors it on each caption that follows a
+    table — keep-with-next off, the style's space before and after swapped —
+    and keeps the table's LAST row with the caption instead.  A caption of an
+    operator's that still stands above its table, another style after a
+    table, and the other rows are left as they are."""
+    import xml.etree.ElementTree as ET
+    fix = _post_processor()
+    w = fix.WML
+    q = f"{{{w}}}"
+    (tmp_path / "styles.xml").write_text(
+        f'<w:styles xmlns:w="{w}">'
+        '<w:style w:type="paragraph" w:customStyle="1" w:styleId="TableCaption"><w:name w:val="Table Caption"/>'
+        '<w:pPr><w:keepNext w:val="true"/><w:spacing w:before="240" w:after="60"/><w:jc w:val="center"/></w:pPr></w:style>'
+        '</w:styles>'
+    )
+    row = '<w:tr><w:tc><w:p><w:pPr><w:pStyle w:val="Compact"/><w:jc w:val="left"/></w:pPr><w:r><w:t>{}</w:t></w:r></w:p></w:tc></w:tr>'
+    caption = '<w:p><w:pPr><w:pStyle w:val="TableCaption"/></w:pPr><w:r><w:t>{}</w:t></w:r></w:p>'
+    body = ET.fromstring(
+        f'<w:body xmlns:w="{w}">'
+        + caption.format("ABOVE") + "<w:tbl>" + row.format("a1") + "</w:tbl>"
+        + '<w:p><w:pPr><w:pStyle w:val="BodyText"/></w:pPr></w:p>'
+        + "<w:tbl>" + row.format("b1") + row.format("b2") + '<w:tr><w:tc><w:p><w:r><w:t>b3</w:t></w:r></w:p>'
+        '<w:p><w:r><w:t>b3 again</w:t></w:r></w:p></w:tc></w:tr></w:tbl>' + caption.format("UNDER")
+        + "<w:tbl>" + row.format("c1") + "</w:tbl>" + '<w:p><w:pPr><w:pStyle w:val="BodyText"/></w:pPr></w:p>'
+        + "</w:body>"
+    )
+    assert fix.keep_table_captions_with_their_tables(body, tmp_path / "styles.xml") == 1
+    above, under = [p for p in body.iter(f"{q}p") if p.find(f"{q}pPr/{q}pStyle") is not None
+                    and p.find(f"{q}pPr/{q}pStyle").get(f"{q}val") == "TableCaption"]
+    first, second, third = body.findall(f"{q}tbl")
+
+    def keep(p):
+        k = p.find(f"{q}pPr/{q}keepNext")
+        return None if k is None else k.get(f"{q}val", "on")
+
+    # Under its table: the caption keeps with nothing, its space mirrored.
+    assert [c.tag.split("}")[1] for c in under.find(f"{q}pPr")] == ["pStyle", "keepNext", "spacing"]   # schema order
+    assert keep(under) == "false"
+    assert under.find(f"{q}pPr/{q}spacing").attrib == {f"{q}before": "60", f"{q}after": "240"}
+    # Every paragraph of the table's last row keeps with the caption; no other row does.
+    rows = second.findall(f"{q}tr")
+    assert [keep(p) for p in rows[-1].iter(f"{q}p")] == ["on", "on"]
+    assert [keep(p) for r in rows[:-1] for p in r.iter(f"{q}p")] == [None, None]
+    assert [c.tag.split("}")[1] for c in rows[0].find(f".//{q}pPr")] == ["pStyle", "jc"]
+    # Above a table, and a table followed by another style: untouched.
+    assert keep(above) is None and above.find(f"{q}pPr/{q}spacing") is None
+    assert [keep(p) for p in first.iter(f"{q}p")] == [None]
+    assert [keep(p) for p in third.iter(f"{q}p")] == [None]
+    # A styles file with no Table Caption style: nothing to do.
+    (tmp_path / "plain.xml").write_text(f'<w:styles xmlns:w="{w}"/>')
+    assert fix.keep_table_captions_with_their_tables(body, tmp_path / "plain.xml") == 0
 
 
 # --- 2.495.0: the report's classification in the Word header and footer -------------
@@ -1715,11 +1775,13 @@ def _numbered(captions: list) -> list:
 @needs_quarto
 def test_table_captions_are_numbered_by_the_filter_in_document_order(tmp_path):
     """Owner, 2026-10-13: a table an author writes in a section gets a
-    numbered caption — "Table: …" on the line under it — printed ABOVE the
-    table in the template's Table Caption style and counted with the
-    template's own tables, in the order a reader meets them.  (The count was
-    a Jinja counter, which never sees a table inside written text: the
-    template's later captions would have kept their old numbers.)"""
+    numbered caption — "Table: …" on the line under it — printed in the
+    template's Table Caption style and counted with the template's own
+    tables, in the order a reader meets them.  (The count was a Jinja
+    counter, which never sees a table inside written text: the template's
+    later captions would have kept their old numbers.)  Owner, 2026-10-14:
+    every table caption, the template's and the author's, is printed UNDER
+    its table, and in Word the table's last row keeps with it."""
     data = json.loads((TEMPLATE / "sample-data.json").read_text())
     for f in data["findings"]:
         f["images"], f["placed"], f["evidence"], f["confirmations"] = [], {}, [], []
@@ -1780,24 +1842,31 @@ def test_table_captions_are_numbered_by_the_filter_in_document_order(tmp_path):
     captions = _table_captions(html)
     assert [re.sub(r"</?strong>", "", c) for c in captions] == expected
     assert "Table 10: Inside a <strong>quote</strong>" in captions[9]         # inline formatting is kept
-    # The cell's figure follows its table, and the caption stayed above it.
-    cell = html[html.index(f"<p>{captions[11]}</p>"):]
+    # The cell's figure follows its table and its caption.
+    cell = html[html.index("CELL-IMAGE-CELL"):]
     cell = cell[:cell.index("Table 13:")]
-    assert cell.index("CELL-IMAGE-CELL") < cell.index("</table>") < cell.index("<figure")
+    assert cell.index("</table>") < cell.index(f"<p>{captions[11]}</p>") < cell.index("<figure")
     assert _figcaptions(cell) == ["Figure 1: In a cell"] and "Table: With a screenshot" not in html
 
-    # Above its table: the caption, then the table that holds the cell —
-    # nothing but the table's own opening between them.
-    def table_after(caption: str) -> str:
-        rest = html[html.index(f"<p>{caption}</p>"):]
-        return rest[:rest.index("</table>")]
+    # EVERY caption — the template's, the authors', in document order — comes
+    # directly after the end of its table: nothing but whitespace between.
+    starts = [m.start() for m in re.finditer(r'<div data-custom-style="Table Caption">', html)]
+    assert len(starts) == len(expected)
+    for at, caption in zip(starts, captions):
+        assert html[:at].rstrip().endswith("</table>"), caption
+        assert html[at:].index(f"<p>{caption}</p>") < html[at:].index("</div>"), caption
+
+    # The table each written caption is under is the one that holds the cell.
+    def table_before(caption: str) -> str:
+        before = html[:html.index(f"<p>{caption}</p>")]
+        return before[before.rindex("<table"):]
 
     for caption, cell in ((captions[3], "SUMMARY-CELL"), (captions[8], "EMPTY-CAPTION-CELL"),
                           (captions[9], "QUOTE-CELL"), (captions[10], "LOWER-CELL"),
                           (captions[11], "CELL-IMAGE-CELL"), (captions[12], "EVIDENCE-CELL")):
-        block = table_after(caption)
-        assert cell in block and block.count("<table") == 1, caption
-        assert "<p>" not in block.split("</div>", 1)[1], caption
+        assert cell in table_before(caption), caption
+    # The template's own: "Project details" is under the table that lists them.
+    assert "Project name" in table_before(captions[0]) and "Penetration testers" not in table_before(captions[0])
     # The caption line itself is gone from under the table.
     for typed in ("Table: Written in the summary", "Table: In the Evidence text", "table: lower-case spelling"):
         assert typed not in html, typed
@@ -1810,17 +1879,43 @@ def test_table_captions_are_numbered_by_the_filter_in_document_order(tmp_path):
     assert 'data-custom-style="Table Caption"' not in html[html.rindex("</table>"):]
 
     # Word: the same captions, in the Table Caption style, each directly
-    # above a table.
+    # after a table — whose last row keeps with it, while the caption keeps
+    # with nothing after it (the style was made for a caption above).
     paragraphs = _word_paragraphs(files["docx"])
     word = [text for style, text, _ in paragraphs if style == "TableCaption"]
     assert word == [re.sub(r"<[^>]+>", "", c) for c in expected]
     with zipfile.ZipFile(files["docx"]) as z:
         doc = z.read("word/document.xml").decode("utf-8")
-    styled = [m for m in re.finditer(r"<w:p[ >].*?</w:p>", doc, re.S) if 'w:val="TableCaption"' in m.group(0)]
-    assert len(styled) == len(word)
-    for m in styled:
-        assert doc[m.end():].lstrip().startswith("<w:tbl>"), m.group(0)
+    _assert_word_captions_under_their_tables(doc, len(word))
     assert "NOT-A-CAPTION" in doc and "ORPHAN-LINE" in doc
+
+
+def _assert_word_captions_under_their_tables(doc: str, expected: int) -> None:
+    """Each Table Caption paragraph of a Word report's document.xml follows the
+    end of a table whose last row's paragraphs keep with next; the caption
+    itself does not keep with next, and has its larger space after."""
+    import xml.etree.ElementTree as ET
+    w = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    body = ET.fromstring(doc).find(f"{w}body")
+    found = 0
+    for parent in [body, *body.iter(f"{w}tc")]:
+        children = list(parent)
+        for i, p in enumerate(children):
+            style = p.find(f"{w}pPr/{w}pStyle") if p.tag == f"{w}p" else None
+            if style is None or style.get(f"{w}val") != "TableCaption":
+                continue
+            found += 1
+            text = "".join(t.text or "" for t in p.iter(f"{w}t"))
+            assert i > 0 and children[i - 1].tag == f"{w}tbl", text
+            last_row = children[i - 1].findall(f"{w}tr")[-1]
+            for cell_p in last_row.iter(f"{w}p"):
+                keep = cell_p.find(f"{w}pPr/{w}keepNext")
+                assert keep is not None and keep.get(f"{w}val") in (None, "true", "1", "on"), text
+            keep = p.find(f"{w}pPr/{w}keepNext")
+            assert keep is not None and keep.get(f"{w}val") == "false", text
+            spacing = p.find(f"{w}pPr/{w}spacing")
+            assert int(spacing.get(f"{w}after")) > int(spacing.get(f"{w}before")), text
+    assert found == expected
 
 
 @needs_quarto
@@ -1867,6 +1962,19 @@ def test_a_caption_a_template_numbered_itself_joins_the_one_count(tmp_path):
     ]
     assert "Table 41" not in html and "Table 2: Legacy second" not in html
     assert "Table 7: a label, not a caption" in html                # another style is not a caption
+    # Owner, 2026-10-14: each numbered caption is UNDER its table — the
+    # legacy ones too, which the template printed before it.
+    for caption, cell in (("Table 1: Legacy first", ">1<"), ("Table 2: Written between the two", "WRITTEN-CELL"),
+                          ("Table 3: Legacy second", ">3<"), ("Table 4: Marked for the filter", ">5<"),
+                          ("Table 5", ">7<")):
+        before = html[:html.index(f"<p>{caption}</p>")]
+        assert before.rstrip().endswith('<div data-custom-style="Table Caption">'), caption
+        before = before.rstrip()[:-len('<div data-custom-style="Table Caption">')]
+        assert before.rstrip().endswith("</table>"), caption
+        assert cell in before[before.rindex("<table"):], caption
+    # A Table Caption block that is not a numbered caption stays where it was.
+    unnumbered = html.index("Tables of this kind carry no number")
+    assert html.index(">7<") < html.index("</table>", html.index(">7<")) < unnumbered
 
 
 @needs_template
@@ -1907,14 +2015,15 @@ def test_the_sample_report_links_findings_by_section_and_prints_the_evidence_in_
     assert html.count("Prepared by <strong>Example Security Assessments</strong>") == 1
 
     # --- the project details: a quarter for the label, the rest for the value --
-    details = doc[doc.index("Project details"):]
-    details = details[details.index("<w:tblGrid>"):details.index("</w:tblGrid>")]
+    details = doc[:doc.index("Table 1: Project details")]            # the caption is under its table
+    details = details[details.rindex("<w:tblGrid>"):]
+    details = details[:details.index("</w:tblGrid>")]
     label, value = (int(w) for w in re.findall(r'<w:gridCol w:w="(\d+)"', details))
     assert value == 3 * label
 
     # --- the summary table: Section | Severity | Finding -----------------------
-    summary = html[html.index("Summary of findings</p>"):]
-    summary = summary[:summary.index("</table>")]
+    summary = html[:html.index("Summary of findings</p>")]          # the caption is under its table
+    summary = summary[summary.rindex("<table"):]
     assert re.findall(r"<th(?: [^>]*)?>(.*?)</th>", summary, re.S) == ["Section", "Severity", "Finding"]
     rows = re.findall(r"<tr[^>]*>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>", summary, re.S)
     assert len(rows) == len(data["findings"]) == 4
@@ -1951,8 +2060,8 @@ def test_the_sample_report_links_findings_by_section_and_prints_the_evidence_in_
     evidence = first[first.index(" Evidence / proof of concept</h4>"):first.index(" Recommendations</h3>")]
     order = [evidence.index(marker) for marker in (
         "The service identified itself with the build below",
-        "What the file server answered",                           # the caption, above …
-        "<td>SMBv1 enabled</td>",                                  # … its table
+        "<td>SMBv1 enabled</td>",                                  # the table …
+        "What the file server answered",                           # … with its caption under it
         "against 192.0.2.10",                                      # the test result
         "Banner captured from the assessment host",                # the note, as written
         "<figure",                                                 # the screenshot it is attached to
@@ -1963,6 +2072,7 @@ def test_the_sample_report_links_findings_by_section_and_prints_the_evidence_in_
     captions = _table_captions(html)
     assert [c.split(":")[0] for c in captions] == [f"Table {n}" for n in range(1, len(captions) + 1)]
     assert captions[-1].endswith(": What the file server answered") and "Table: What" not in html
+    _assert_word_captions_under_their_tables(doc, len(captions))     # Word: each under its table, kept with it
     # A finding with nothing for this block has no Evidence section and owes
     # no TODO (owner, 2026-10-14: its evidence is in the sections above).
     third = html[html.index('id="sec-finding-13"'):html.index('id="sec-finding-14"')]

@@ -26,6 +26,12 @@ Post-process the Word report — the two things Word styles cannot do:
    (data.json → engagement.classification, beside this script when BlueStick
    runs it) is written in its place.  Before this the word itself was issued.
 
+5. Table captions under their tables (owner, 2026-10-14).  A "Table N: …"
+   caption follows its table; the table's last row keeps with it, and the
+   caption itself does not keep with what follows (the Table Caption style
+   was made for a caption above).  Per paragraph, because which side of its
+   table a caption is on is not something a style can know.
+
 Everything else the original prototype's script did is now either a style in
 reference.docx or no longer needed (checked by rendering the template with
 screenshots, 2026-09-23):
@@ -400,6 +406,98 @@ def align_tables_like_their_style(body, styles_path):
     return count
 
 
+# CT_PPrBase's child order (ECMA-376), as far as `spacing`.
+_PPR_ORDER = ("pStyle", "keepNext", "keepLines", "pageBreakBefore", "framePr", "widowControl", "numPr",
+              "suppressLineNumbers", "pBdr", "shd", "tabs", "suppressAutoHyphens", "kinsoku", "wordWrap",
+              "overflowPunct", "topLinePunct", "autoSpaceDE", "autoSpaceDN", "bidi", "adjustRightInd",
+              "snapToGrid", "spacing")
+
+
+def _set_paragraph_property(p, element):
+    """Put `element` in the paragraph's pPr in its schema place, replacing
+    one of the same name."""
+    pPr = p.find(f"{NS}pPr")
+    if pPr is None:
+        pPr = ET.Element(f"{NS}pPr")
+        p.insert(0, pPr)
+    for old in pPr.findall(element.tag):
+        pPr.remove(old)
+    name = element.tag.split("}")[-1]
+    earlier = set(_PPR_ORDER[:_PPR_ORDER.index(name)])
+    at = 0
+    for i, child in enumerate(list(pPr)):
+        if child.tag.split("}")[-1] in earlier:
+            at = i + 1
+    pPr.insert(at, element)
+
+
+def _table_caption_style(styles_path):
+    """(style ids, {before/after attribute: value}) of the "Table Caption"
+    paragraph style: the ids it goes by, and the spacing it declares."""
+    try:
+        styles = ET.parse(styles_path).getroot()
+    except (OSError, ET.ParseError):
+        return set(), {}
+    ids, spacing = set(), {}
+    for style in styles.findall(f"{NS}style"):
+        name = style.find(f"{NS}name")
+        if style.get(f"{NS}type") != "paragraph" or name is None or name.get(f"{NS}val") != "Table Caption":
+            continue
+        ids.add(style.get(f"{NS}styleId"))
+        own = style.find(f"{NS}pPr/{NS}spacing")
+        if own is not None:
+            spacing = {k: v for k, v in own.attrib.items() if re.fullmatch(r"\{.*\}(before|after)(Lines|Autospacing)?", k)}
+    return ids, spacing
+
+
+def keep_table_captions_with_their_tables(body, styles_path):
+    """A table's caption is printed UNDER it (owner, 2026-10-14), and must not
+    start a page its table ended on the one before.
+
+    The Table Caption style in the shipped reference.docx was made for a
+    caption ABOVE its table: it keeps with the next paragraph and has its
+    space before.  Under a table that would tie the caption to whatever
+    follows, so each caption that follows a table is mirrored, on the
+    paragraph itself: no keep-with-next, and the style's space before and
+    after swapped (an operator's styles file is otherwise left to say how a
+    caption looks — and a caption of theirs ABOVE a table keeps the style as
+    it is).  The table's LAST ROW keeps with next instead — Word's way of
+    holding a table's end and the paragraph after it on one page — so the
+    caption takes at least that row with it; a long table still breaks
+    across pages as before.  Returns the number of captions."""
+    ids, spacing = _table_caption_style(styles_path)
+    if not ids:
+        return 0
+    mirrored = {}
+    for key, value in spacing.items():
+        ns, local = key.split("}")
+        other = local.replace("before", "\0").replace("after", "before").replace("\0", "after")
+        mirrored[f"{ns}}}{other}"] = value
+    count = 0
+    for parent in [body, *body.iter(f"{NS}tc")]:
+        children = list(parent)
+        for table, after in zip(children, children[1:]):
+            if table.tag != f"{NS}tbl" or after.tag != f"{NS}p":
+                continue
+            style = after.find(f"{NS}pPr/{NS}pStyle")
+            if style is None or style.get(f"{NS}val") not in ids:
+                continue
+            rows = table.findall(f"{NS}tr")
+            if rows:
+                for p in rows[-1].iter(f"{NS}p"):
+                    _set_paragraph_property(p, ET.Element(f"{NS}keepNext"))
+            off = ET.Element(f"{NS}keepNext")
+            off.set(f"{NS}val", "false")
+            _set_paragraph_property(after, off)
+            if mirrored:
+                sp = ET.Element(f"{NS}spacing")
+                for key, value in mirrored.items():
+                    sp.set(key, value)
+                _set_paragraph_property(after, sp)
+            count += 1
+    return count
+
+
 def ask_word_to_update_fields(tmpdir):
     """Have Word fill in the document's fields when it opens it.
 
@@ -436,7 +534,9 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
         tree = ET.parse(doc_xml)
         body = tree.getroot().find(f"{NS}body")
         # Before the image frames: those carry their own centred alignment.
-        aligned = align_tables_like_their_style(body, os.path.join(tmpdir, "word", "styles.xml"))
+        styles_path = os.path.join(tmpdir, "word", "styles.xml")
+        aligned = align_tables_like_their_style(body, styles_path)
+        kept = keep_table_captions_with_their_tables(body, styles_path)
         count = add_image_borders(body)
         tree.write(doc_xml, xml_declaration=True, encoding="UTF-8")
 
@@ -450,7 +550,8 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
                 zf.write(os.path.join(tmpdir, name), name)
 
         if verbose:
-            print(f"  Aligned {aligned} table(s) as their style says, added a border to {count} image(s), "
+            print(f"  Aligned {aligned} table(s) as their style says, kept {kept} caption(s) with their table, "
+                  f"added a border to {count} image(s), "
                   f"placed {replaced} template image(s), wrote the classification in {classified} place(s) "
                   f"→ {docx_path}")
         return count
