@@ -235,6 +235,37 @@ describe('Defaults for new reports', () => {
     expect(await screen.findByTestId('profile-author')).toHaveTextContent('Not set');
   });
 
+  // The read view shows none of the long texts: it used to say nothing about
+  // them either, so a saved description or disclaimer looked lost until Edit.
+  it('says whether the long texts are written, and what a report prints when they are not', async () => {
+    mocked.getReportProfile.mockResolvedValueOnce({ ...stored, inherited: { author_name: null, disclaimer: null } });
+    const empty = renderList();
+    expect(await screen.findByTestId('profile-system')).toHaveTextContent(/^Not written$/);
+    expect(screen.getByTestId('profile-targets')).toHaveTextContent(/^None written$/);
+    expect(screen.getByTestId('profile-disclaimer')).toHaveTextContent('The template’s own');
+    empty.unmount();
+
+    mocked.getReportProfile.mockResolvedValueOnce({
+      ...stored,
+      system_description: 'The estate.\n\n![](evidence:24)\n\n`![](evidence:25)` is how one is written.',
+      applications: '- https://portal.example.com', other_targets: 'The badge readers', thick_clients: '   ',
+      inherited: { author_name: null, disclaimer: 'Installation terms.' },
+    });
+    const filled = renderList();
+    // One image: the reference inside code places nothing.
+    expect(await screen.findByTestId('profile-system')).toHaveTextContent(/^Written · 1 image placed$/);
+    expect(screen.getByTestId('profile-targets')).toHaveTextContent(/^Written: Applications, Other$/);
+    expect(screen.getByTestId('profile-disclaimer')).toHaveTextContent('The installation’s default');
+    // The text itself is not printed here, whatever its length.
+    expect(screen.queryByText(/The estate\./)).toBeNull();
+    filled.unmount();
+
+    mocked.getReportProfile.mockResolvedValueOnce({ ...stored, disclaimer: 'Ours.', system_description: 'Plain.' });
+    renderList();
+    expect(await screen.findByTestId('profile-disclaimer')).toHaveTextContent('Written for this project');
+    expect(screen.getByTestId('profile-system')).toHaveTextContent(/^Written$/);
+  });
+
   it('Cancel forgets the edits: the form opens on the stored defaults again', async () => {
     const client = await openForm();
     fireEvent.change(client, { target: { value: 'Somebody else' } });

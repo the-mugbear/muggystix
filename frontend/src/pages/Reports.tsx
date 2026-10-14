@@ -52,6 +52,7 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
+import { referencedImageIds } from '../utils/reportImages';
 import { safeFallback } from '../utils/uiStyles';
 
 const day = (iso: string | null) => formatDate(iso);
@@ -136,6 +137,29 @@ const DraftTitle: React.FC<{
       )}
     </span>
   );
+};
+
+const written = (text: string | null | undefined): boolean => !!text?.trim();
+
+/** One line each for the defaults' long texts — whether one is written, and
+ *  what a report prints when it is not — for the read view, which shows no
+ *  text of theirs.  Images are counted from the description's own references
+ *  (`referencedImageIds`), so nothing is fetched to say it. */
+export const profileWritten = (
+  profile: Pick<ReportProfile, 'system_description' | 'applications' | 'thick_clients' | 'other_targets' | 'disclaimer' | 'inherited'>,
+): { system: string; targets: string; disclaimer: string } => {
+  const images = referencedImageIds(profile.system_description).length;
+  const lists = ([
+    ['applications', 'Applications'], ['thick_clients', 'Thick clients'], ['other_targets', 'Other'],
+  ] as const).filter(([key]) => written(profile[key])).map(([, label]) => label);
+  return {
+    system: !written(profile.system_description) ? 'Not written'
+      : images ? `Written · ${images.toLocaleString()} image${images === 1 ? '' : 's'} placed` : 'Written',
+    targets: lists.length ? `Written: ${lists.join(', ')}` : 'None written',
+    disclaimer: written(profile.disclaimer) ? 'Written for this project'
+      : written(profile.inherited?.disclaimer) ? 'The installation’s default'
+        : 'The template’s own',
+  };
 };
 
 export const reportKindLabel = (r: Pick<ClientReport, 'kind' | 'baseline' | 'revision_of'>): string => {
@@ -441,6 +465,16 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
           </dd>
           <dt className="text-muted-foreground">Distribution</dt>
           <dd className="break-words">{profile.distribution.length ? profile.distribution.map((r) => r.name).join(', ') : 'Nobody listed'}</dd>
+          {/* The long texts are SAID, not shown: this view is one line per
+              detail, and the text itself is one click away (Edit).  Before,
+              nothing here told a reader a description, a target list or a
+              disclaimer had been written at all (walkthrough 2026-10-13). */}
+          <dt className="text-muted-foreground">System description</dt>
+          <dd className="break-words" data-testid="profile-system">{profileWritten(profile).system}</dd>
+          <dt className="text-muted-foreground">Other targets</dt>
+          <dd className="break-words" data-testid="profile-targets">{profileWritten(profile).targets}</dd>
+          <dt className="text-muted-foreground">Disclaimer</dt>
+          <dd className="break-words" data-testid="profile-disclaimer">{profileWritten(profile).disclaimer}</dd>
           <dt className="text-muted-foreground">Template</dt><dd className="truncate">{templateTitle(profile.template)}</dd>
         </dl>
       )}
