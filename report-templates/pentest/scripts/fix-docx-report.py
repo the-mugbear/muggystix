@@ -400,6 +400,31 @@ def align_tables_like_their_style(body, styles_path):
     return count
 
 
+def ask_word_to_update_fields(tmpdir):
+    """Have Word fill in the document's fields when it opens it.
+
+    Pandoc writes the table of contents as a Word FIELD with no result: it is
+    computed by the program that opens the file, and Word computes it only
+    when asked — so every report opened with an empty table of contents
+    (owner, 2026-10-14).  `w:updateFields` in settings.xml is that request:
+    Word fills the table (with page numbers) on opening, after asking once.
+    Returns True when the setting was added."""
+    path = os.path.join(tmpdir, "word", "settings.xml")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            xml = fh.read()
+    except OSError:
+        return False
+    if "w:updateFields" in xml:
+        return False
+    new, n = re.subn(r"(<w:settings\b[^>]*>)", r'\1<w:updateFields w:val="true"/>', xml, count=1)
+    if not n:
+        return False
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(new)
+    return True
+
+
 def fix_document(docx_path, verbose=False, assets_dir="."):
     tmpdir = tempfile.mkdtemp()
     try:
@@ -417,6 +442,7 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
 
         new_parts, removed, replaced = apply_template_images(tmpdir, installed_assets(assets_dir))
         classified = apply_classification(tmpdir, report_classification(assets_dir))
+        ask_word_to_update_fields(tmpdir)
 
         # Same parts, same order ([Content_Types].xml first, as Word expects).
         with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as zf:

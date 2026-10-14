@@ -1337,6 +1337,30 @@ def _hf(*runs: str) -> str:
 
 
 @needs_template
+def test_word_is_asked_to_fill_in_the_table_of_contents_on_opening(tmp_path):
+    """Pandoc writes the table of contents as a field with no result, and
+    Word computes it only when asked: every report opened with an empty one
+    (owner, 2026-10-14).  The post-processor adds the request, once, and
+    both shipped copies of it are the same file."""
+    fix = _post_processor()
+    word = tmp_path / "word"
+    word.mkdir()
+    settings = word / "settings.xml"
+    settings.write_text(
+        '<?xml version="1.0"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:zoom w:percent="100"/></w:settings>', encoding="utf-8",
+    )
+    assert fix.ask_word_to_update_fields(str(tmp_path)) is True
+    text = settings.read_text(encoding="utf-8")
+    assert '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:updateFields w:val="true"/>' in text
+    assert fix.ask_word_to_update_fields(str(tmp_path)) is False             # never twice
+    assert text.count("w:updateFields") == 1
+    assert fix.ask_word_to_update_fields(str(tmp_path / "missing")) is False  # no settings part: left alone
+    brief = TEMPLATE.parent / "executive-brief" / "scripts" / "fix-docx-report.py"
+    assert brief.read_bytes() == (TEMPLATE / "scripts" / "fix-docx-report.py").read_bytes()
+
+
+@needs_template
 def test_the_classification_read_for_the_word_header_is_one_plain_line(tmp_path):
     fix = _post_processor()
 
