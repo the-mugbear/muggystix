@@ -45,7 +45,9 @@ class FindingStatus(str, enum.Enum):
     FALSE_POSITIVE = "false_positive"
     ACCEPTED_RISK = "accepted_risk"
     REMEDIATED = "remediated"
-    RETEST = "retest"
+    # No RETEST since 2.501.0 (owner, 2026-10-14): a retest is per host —
+    # ``FindingHostStatus.RETEST``.  Revision ``e5c1a7b3d9f2`` moved every
+    # finding off it; history rows may still name it as text.
 
 
 class FindingSource(str, enum.Enum):
@@ -206,6 +208,11 @@ class FindingHost(Base):
     # ``remediated``.  Back-filled from the history line of each move; NULL on
     # a remediated endpoint whose move left no such line.
     remediated_at = Column(DateTime(timezone=True), nullable=True)
+    # When this endpoint was put into ``retest`` (stamped and cleared ONLY by
+    # ``FindingService._move_endpoint``): a retest is closed by a result
+    # recorded since then.  NULL on one already in retest before 2.501.0 —
+    # any result recorded on it counts.
+    retest_requested_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     finding = relationship("Finding", back_populates="hosts")
@@ -247,9 +254,7 @@ def finding_active_on_host():
 # endpoint states they also honoured).  Per HOST, pair it with
 # ``finding_active_on_host()``; per ISSUE, with
 # ``engagement_metrics_service.finding_is_a_result()``.
-ACTIVE_FINDING_STATUSES = (
-    FindingStatus.OPEN.value, FindingStatus.CONFIRMED.value, FindingStatus.RETEST.value,
-)
+ACTIVE_FINDING_STATUSES = (FindingStatus.OPEN.value, FindingStatus.CONFIRMED.value)
 
 
 class FindingVulnerability(Base):

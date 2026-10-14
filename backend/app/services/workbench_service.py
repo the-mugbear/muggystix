@@ -86,12 +86,35 @@ class MyWorkTotals(BaseModel):
     #: waiting (under investigation, or a proposal), or only report text is.
     findings_to_decide: int = 0
     findings_to_write: int = 0
-    #: Of ``findings_to_decide``: marked for retest (the finding or one of its
-    #: endpoints; owner, 2026-10-14) — Operations' call-out.
+    #: Of ``findings_to_decide``: a host awaits a retest (owner, 2026-10-14)
+    #: — Operations' call-out.
     findings_to_retest: int = 0
     #: Unassigned critical / high tests anyone may claim — shared work, not
     #: part of ``total``.
     to_claim: int = 0
+
+
+class RetestsPending(BaseModel):
+    """Every host of the project awaiting a retest, whoever owns its finding
+    (owner, 2026-10-14: "Everyone should see a retest is pending as anyone
+    should be allowed to attempt to close it with evidence").  ``findings``
+    is the total of the Findings list ``host_state=retest`` opens
+    (``test_retest_workflow.py`` pins it)."""
+    findings: int = 0
+    hosts: int = 0
+
+
+def compute_retests_pending(db: Session, project: Project) -> RetestsPending:
+    """One statement over the project's endpoints in ``retest``."""
+    from app.db.models_findings import Finding, FindingHost, FindingHostStatus
+
+    findings, hosts = (
+        db.query(func.count(func.distinct(FindingHost.finding_id)), func.count(FindingHost.id))
+        .join(Finding, Finding.id == FindingHost.finding_id)
+        .filter(Finding.project_id == project.id, FindingHost.host_status == FindingHostStatus.RETEST.value)
+        .one()
+    )
+    return RetestsPending(findings=int(findings or 0), hosts=int(hosts or 0))
 
 
 class ProjectSetup(BaseModel):
@@ -109,6 +132,9 @@ class ProjectSetup(BaseModel):
 class WorkbenchResponse(BaseModel):
     # Project-wide and structural; in the light call too.
     setup: ProjectSetup = Field(default_factory=ProjectSetup)
+    #: Project-wide: every host awaiting a retest (2.501.0) — the lead's line
+    #: for every member, opening the Findings list ``host_state=retest``.
+    retests_pending: RetestsPending = Field(default_factory=RetestsPending)
     my_queue: MyAttentionResponse = Field(default_factory=MyAttentionResponse)
     my_tasks: MyTasksResponse = Field(default_factory=MyTasksResponse)
     # "What was I just doing?" — the caller's latest authored notes.  (Notes
@@ -324,6 +350,7 @@ def compute_workbench(
         blockers_unavailable = True
     return WorkbenchResponse(
         setup=setup,
+        retests_pending=compute_retests_pending(db, project),
         my_work=my_work,
         my_queue=my_queue,
         my_tasks=my_tasks,

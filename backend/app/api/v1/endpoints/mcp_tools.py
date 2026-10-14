@@ -366,7 +366,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "status": {
                 "enum": [
                     "open", "confirmed", "false_positive", "accepted_risk",
-                    "remediated", "retest", "active", "resolved", "all",
+                    "remediated", "active", "resolved", "all",
                 ],
             },
             "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
@@ -517,7 +517,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             "Your operator's Operations page. `my_work` is what waits on them BY "
             "KIND — answer with the kinds apart: findings_to_decide, "
             "findings_to_write (the two add up to findings_needing_me; "
-            "findings_to_retest, marked for retest, is part of findings_to_decide), "
+            "findings_to_retest — a host awaiting a retest — is part of findings_to_decide), "
             "tests_assigned, hosts_in_review, tests_on_hosts_in_review. `total` is "
             "hosts_in_review + tests_assigned + tests_on_hosts_in_review + "
             "findings_needing_me; `to_claim` (unassigned critical / high tests) is "
@@ -570,12 +570,13 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "description": (
             "Every finding your OPERATOR owns that needs something from them — "
             "the Operations 'Findings' tab, paged, severity first. Each row's "
-            "`needs` says why (marked for retest — the finding or how many of its "
-            "hosts —, under investigation, required report text missing, a "
-            "proposal to decide). need=decide (under investigation, marked for "
-            "retest, or a proposal waiting) and need=write (only report text "
-            "missing) never overlap and add up to the list; need=retest is the "
-            "part of decide marked for retest. `total` is the size of the list this "
+            "`needs` says why (how many of its hosts are awaiting a retest, under "
+            "investigation, required report text missing, a proposal to decide). "
+            "need=decide (under investigation, a host awaiting a retest, or a "
+            "proposal waiting) and need=write (only report text missing) never "
+            "overlap and add up to the list; need=retest is the part of decide "
+            "with a host awaiting a retest. Every pending retest of the project, "
+            "owned or not, is assist_list_findings host_state=retest. `total` is the size of the list this "
             "call pages; `total_open` and `need_counts` describe the whole list "
             "whatever `need` says. A finding they own that needs nothing is not "
             "here (assist_list_findings owner=me lists those too), and a "

@@ -25,7 +25,7 @@ def _start(client, project):
 def test_findings_list_treats_all_empty_and_any_as_no_filter(client, db_session, test_project):
     db_session.add_all([
         Finding(project_id=test_project.id, title="open one", severity="high", status="open", source="manual"),
-        Finding(project_id=test_project.id, title="retest one", severity="low", status="retest", source="manual"),
+        Finding(project_id=test_project.id, title="confirmed one", severity="low", status="confirmed", source="manual"),
     ])
     db_session.commit()
     h = _start(client, test_project)
@@ -35,8 +35,8 @@ def test_findings_list_treats_all_empty_and_any_as_no_filter(client, db_session,
         assert r.json()["total"] == 2, (value, r.json())
         assert r.json()["severity_counts"], value
     # A real status still filters.
-    r = client.get("/api/v1/agent/assist/findings", headers=h, params={"status": "retest"})
-    assert [f["title"] for f in r.json()["items"]] == ["retest one"]
+    r = client.get("/api/v1/agent/assist/findings", headers=h, params={"status": "confirmed"})
+    assert [f["title"] for f in r.json()["items"]] == ["confirmed one"]
 
 
 def test_vocabulary_statuses_and_severities_are_the_enums(client, test_project):

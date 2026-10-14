@@ -20,7 +20,7 @@ from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role, resolve_project_assignee
-from app.api.params import FindingNeedsParam
+from app.api.params import FindingHostStateParam, FindingNeedsParam
 from app.core.security import log_audit_event
 from app.services.finding_service import FindingService, endpoint_segments, validate_severity
 from app.services.finding_actions import (
@@ -37,7 +37,7 @@ from app.schemas.schemas import (
     Annotation as AnnotationSchema, AnnotationCreate, NoteAttachmentOut,
 )
 from app.schemas.findings import (
-    EndpointStatusBulkUpdate, EndpointStatusUpdate,
+    EndpointRetestResult, EndpointStatusBulkUpdate, EndpointStatusUpdate,
     FindingImage, FindingImageList,
     FindingResponse, FindingHostInfo, FindingListResponse, FindingReportText,
     PromoteVulnerabilityRequest, PromoteVulnerabilityPreview,
@@ -155,7 +155,7 @@ def _load(db: Session, project: Project, finding_id: int) -> Finding:
 @router.get("/findings", response_model=FindingListResponse)
 def list_findings(
     status: Optional[str] = Query(
-        None, description="A status, or a group: 'active' (open/confirmed/retest) | 'resolved' (terminal).",
+        None, description="A status, or a group: 'active' (open/confirmed) | 'resolved' (terminal).",
     ),
     severity: Optional[str] = Query(None),
     owner_id: Optional[int] = Query(None),
@@ -165,6 +165,7 @@ def list_findings(
     search: Optional[str] = Query(None, max_length=200, description="Case-insensitive substring match on finding title."),
     # The one declaration, shared with the agents' findings list.
     needs: FindingNeedsParam = None,
+    host_state: FindingHostStateParam = None,
     sort: Optional[str] = Query(
         None, description="severity | status | title | host_count | source | created_at | owner (default newest-first; unowned sorts last).",
     ),
@@ -179,11 +180,13 @@ def list_findings(
     rows, total = svc.list_findings(
         project_id=project.id, status=status, severity=severity,
         owner_id=owner_id, unowned=unowned, source=source, host_id=host_id,
-        search=search, needs=needs, limit=limit, offset=offset, sort=sort, sort_dir=dir,
+        search=search, needs=needs, host_state=host_state,
+        limit=limit, offset=offset, sort=sort, sort_dir=dir,
     )
     sev_counts = svc.severity_counts(
         project_id=project.id, status=status, owner_id=owner_id,
         unowned=unowned, source=source, host_id=host_id, search=search, needs=needs,
+        host_state=host_state,
     )
     # C2 (review 2026-10-01): a row carries the endpoint COUNT, the state
     # roll-up and a preview of five — two grouped statements for the page,
@@ -206,7 +209,7 @@ def list_findings(
         # count is the size of the list that owner opens.
         owner_counts=svc.owner_counts(
             project_id=project.id, status=status, severity=severity,
-            source=source, host_id=host_id, search=search, needs=needs,
+            source=source, host_id=host_id, search=search, needs=needs, host_state=host_state,
         ),
     )
 
@@ -557,6 +560,36 @@ def set_finding_endpoint_status(
     FindingService(db).set_endpoint_status(
         finding=finding, finding_host_id=finding_host_id,
         host_status=body.host_status, actor_id=current_user.id,
+    )
+    db.commit()
+    return _serialize(_load(db, project, finding_id), viewer)
+
+
+@router.post(
+    "/findings/{finding_id}/endpoints/{finding_host_id}/retest",
+    response_model=FindingResponse,
+    summary="Record the result of one host's retest (evidence + its new state)",
+)
+def record_endpoint_retest(
+    finding_id: int,
+    finding_host_id: int,
+    body: EndpointRetestResult,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
+    current_user: User = Depends(get_current_user),
+    viewer: FindingActor = Depends(get_finding_viewer),
+):
+    """2.501.0 — a retest is closed with its result (owner, 2026-10-14): an
+    evidence record on this endpoint, and the endpoint moves with it (fixed →
+    Remediated, not fixed → Still present), in one transaction.  Any analyst
+    of the project may record it; 409 when the endpoint is not awaiting a
+    retest."""
+    finding = _load(db, project, finding_id)
+    FindingService(db).record_retest(
+        finding=finding, finding_host_id=finding_host_id, fixed=body.fixed, tool=body.tool,
+        summary=body.summary, command=body.command, raw_output=body.raw_output,
+        actor_id=current_user.id,
     )
     db.commit()
     return _serialize(_load(db, project, finding_id), viewer)

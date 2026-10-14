@@ -48,7 +48,7 @@ const KINDS: Array<{ kind: ProposalKind; label: string; info: string }> = [
   { kind: 'finding_create', label: 'New findings', info: 'A finding an agent proposes, usually citing its evidence records.' },
   { kind: 'observation_promote', label: 'Confirm observations', info: 'A scanner observation an agent judged real: promote it to a confirmed finding.' },
   { kind: 'observation_dismiss', label: 'Dismiss observations', info: 'A scanner observation an agent judged a false positive (on one host, or every host).' },
-  { kind: 'endpoint_status', label: 'Endpoint status', info: 'One affected endpoint marked open, remediated, retest or false positive.' },
+  { kind: 'endpoint_status', label: 'Endpoint status', info: 'One affected endpoint marked still present, awaiting a retest, remediated or false positive. Remediated, from a pending retest, needs the retest’s result recorded on that host.' },
 ];
 
 const STATUSES: ProposalStatus[] = ['pending', 'accepted', 'rejected', 'superseded'];

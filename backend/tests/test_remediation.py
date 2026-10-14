@@ -175,12 +175,15 @@ def test_a_dry_run_writes_nothing(client, db_session, test_project, world):
     response = apply(client, test_project, [
         {"finding_host_id": world["smb_a"], "status": "closed", "notes": [{"body": "Called the owner"}]},
     ], dry_run=True)
+    # Reported fixed with no date is dated today (a second change), and it
+    # would ask for the host's retest (2.501.0).
     assert response.json()["summary"] == {
-        "targets": 1, "changed": 1, "unchanged": 0, "conflicts": 0,
-        "notes_added": 1, "notes_already_recorded": 0,
+        "targets": 1, "changed": 2, "unchanged": 0, "conflicts": 0,
+        "notes_added": 1, "notes_already_recorded": 0, "retests_requested": 1,
     }
     assert db_session.query(FindingHostRemediation).count() == 0
     assert db_session.query(RemediationEvent).count() == 0
+    assert db_session.get(FindingHost, world["smb_a"]).host_status == "open"
 
 
 def test_a_value_someone_set_is_kept_unless_overwrite_is_asked_for(client, test_project, world):
@@ -195,7 +198,8 @@ def test_a_value_someone_set_is_kept_unless_overwrite_is_asked_for(client, test_
     assert (row["status"], row["contact_email"], row["notified_on"]) == ("closed", "roger@example.com", "2026-10-01")
 
     result = apply(client, test_project, stale, overwrite=True).json()
-    assert result["summary"]["conflicts"] == 0 and result["summary"]["changed"] == 2
+    # The status, the contact, and the reported-fixed date reopening clears.
+    assert result["summary"]["conflicts"] == 0 and result["summary"]["changed"] == 3
     row = by_id(listing(client, test_project))[world["smb_a"]]
     assert (row["status"], row["contact_email"]) == ("open", "other@example.com")
 
@@ -250,11 +254,13 @@ def test_another_projects_finding_is_not_a_finding_here(client, db_session, test
     assert foreign.id not in by_id(listing(client, test_project))
 
 
-def test_tracking_never_moves_the_assessors_statuses(client, db_session, test_project, world):
+def test_tracking_concludes_nothing_for_the_assessor_and_asks_for_the_retest(client, db_session, test_project, world):
     apply(client, test_project, [{"finding_id": world["smb"], "status": "closed", "closed_on": "2026-10-06"}])
     db_session.expire_all()
     assert db_session.get(Finding, world["smb"]).status == "confirmed"
-    assert {fh.host_status for fh in db_session.query(FindingHost).filter_by(finding_id=world["smb"])} == {"open"}
+    # "Reported fixed" asks for each host's retest (2.501.0); only a recorded
+    # result makes one Remediated.
+    assert {fh.host_status for fh in db_session.query(FindingHost).filter_by(finding_id=world["smb"])} == {"retest"}
 
 
 # --- the timeline -----------------------------------------------------------
@@ -270,10 +276,13 @@ def test_every_field_change_is_an_entry_with_what_it_was(client, test_project, t
                                   "contact_email": "roger@example.com"}])
     apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "open"}], overwrite=True)
     timeline = events(client, test_project, world["a"])
-    assert timeline["total"] == 3
+    assert timeline["total"] == 5
     changes = {(e["field"], e["from"], e["to"]) for e in timeline["items"]}
-    assert changes == {("status", "open", "closed"), ("contact_email", None, "roger@example.com"),
-                       ("status", "closed", "open")}
+    today = datetime.now(timezone.utc).date().isoformat()          # the policy's zone here is UTC
+    # Reported fixed with no date is dated today; reopening clears it.
+    assert changes == {("status", "open", "closed"), ("closed_on", None, today),
+                       ("contact_email", None, "roger@example.com"),
+                       ("status", "closed", "open"), ("closed_on", today, None)}
     entry = timeline["items"][0]
     assert entry["kind"] == "change" and entry["finding_title"] == "SMB signing not required"
     assert entry["author"] == "Test Admin" and entry["can_modify"] is False
@@ -285,9 +294,9 @@ def test_an_unchanged_value_writes_no_entry(client, test_project, world):
     apply(client, test_project, row)
     assert apply(client, test_project, row).json()["summary"] == {
         "targets": 1, "changed": 0, "unchanged": 1, "conflicts": 0,
-        "notes_added": 0, "notes_already_recorded": 0,
+        "notes_added": 0, "notes_already_recorded": 0, "retests_requested": 0,
     }
-    assert events(client, test_project, world["a"])["total"] == 1
+    assert events(client, test_project, world["a"])["total"] == 2          # the status and its date
 
 
 def test_a_note_has_when_it_happened_and_when_it_was_recorded(client, test_project, world):
@@ -303,7 +312,7 @@ def test_a_note_has_when_it_happened_and_when_it_was_recorded(client, test_proje
 
     apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "closed"}])
     ordered = [e["kind"] for e in events(client, test_project, world["a"])["items"]]
-    assert ordered == ["change", "note"]   # by when it happened, newest first
+    assert ordered == ["change", "change", "note"]   # by when it happened, newest first (status, its date)
 
 
 def test_a_note_about_the_host_needs_no_finding_and_a_foreign_one_is_refused(client, test_project, world):
@@ -328,7 +337,7 @@ def test_a_repeated_request_key_is_the_same_note(client, test_project, world):
     assert apply(client, test_project, rows).json()["summary"]["notes_added"] == 2   # one per host
     assert apply(client, test_project, rows).json()["summary"] == {
         "targets": 2, "changed": 0, "unchanged": 0, "conflicts": 0,
-        "notes_added": 0, "notes_already_recorded": 2,
+        "notes_added": 0, "notes_already_recorded": 2, "retests_requested": 0,
     }
     assert events(client, test_project, world["b"])["total"] == 1
 
@@ -355,7 +364,7 @@ def test_a_note_is_its_authors_and_a_change_is_nobodys(client, db_session, test_
     edited = client.patch(f"{base(test_project)}/events/{mine['id']}", json={"body": "Mine, corrected"})
     assert edited.status_code == 200 and edited.json()["edited_at"] is not None
     assert client.delete(f"{base(test_project)}/events/{mine['id']}").status_code == 204
-    assert events(client, test_project, world["a"])["total"] == 2
+    assert events(client, test_project, world["a"])["total"] == 3          # theirs, the status and its date
 
 
 def test_the_timeline_outlives_the_finding(client, db_session, test_project, world):
@@ -365,7 +374,7 @@ def test_the_timeline_outlives_the_finding(client, db_session, test_project, wor
     db_session.commit()
     db_session.expire_all()
     timeline = events(client, test_project, world["a"])
-    assert timeline["total"] == 2
+    assert timeline["total"] == 3          # the status, its date and the note
     assert {e["finding_title"] for e in timeline["items"]} == {"TLS 1.0 enabled"}
     assert {e["finding_host_id"] for e in timeline["items"]} == {None}
     assert db_session.query(FindingHostRemediation).count() == 0
@@ -431,7 +440,8 @@ def test_an_agent_reads_and_writes_what_the_page_does_and_is_named(client, db_se
              "status": "closed", "notes": [{"body": "From the tracking sheet", "request_key": "r1"}]}]
     plan = client.post(f"{AGENT}/apply", json={"rows": rows, "dry_run": True}, headers=key)
     assert plan.status_code == 200, plan.text
-    assert plan.json()["summary"]["changed"] == 2 and db_session.query(RemediationEvent).count() == 0
+    # The contact, the status and the date it was reported fixed (today).
+    assert plan.json()["summary"]["changed"] == 3 and db_session.query(RemediationEvent).count() == 0
 
     done = client.post(f"{AGENT}/apply", json={"rows": rows, "agent_model": "test-model"}, headers=key)
     assert done.status_code == 200, done.text
@@ -442,7 +452,7 @@ def test_an_agent_reads_and_writes_what_the_page_does_and_is_named(client, db_se
     assert listed == listing(client, test_project, contact="roger")
 
     timeline = client.get(f"{AGENT}/hosts/{world['a']}/events", headers=key).json()
-    assert timeline["total"] == 3 and timeline["returned"] == 3
+    assert timeline["total"] == 4 and timeline["returned"] == 4   # contact, status, its date, the note
     assert all(e["agent_session_id"] is not None and e["author"] == "Test Admin" for e in timeline["items"])
     assert client.get(f"{AGENT}/contacts", headers=key).json()["items"][0]["contact_email"] == "roger@example.com"
 
@@ -514,8 +524,12 @@ def test_a_status_that_conflicts_takes_its_closed_date_with_it(client, db_sessio
 
 
 def test_a_closed_date_alone_is_fine_on_a_row_that_is_closed(client, db_session, test_project, world):
+    # Closed with no date is dated today (2.501.0), so correcting the day is
+    # changing a value someone set: it takes ``overwrite``, as any field does.
     apply(client, test_project, [{"finding_host_id": world["smb_a"], "status": "closed"}])
-    assert apply(client, test_project, [{"finding_host_id": world["smb_a"], "closed_on": "2026-10-06"}]).status_code == 200
+    fix = [{"finding_host_id": world["smb_a"], "closed_on": "2026-10-06"}]
+    assert apply(client, test_project, fix).json()["summary"]["conflicts"] == 1
+    assert apply(client, test_project, fix, overwrite=True).status_code == 200
     assert _stored(db_session, world["smb_a"]) == ("closed", "2026-10-06")
 
 
@@ -584,7 +598,7 @@ def test_five_hundred_findings_on_hosts_is_a_call_and_one_more_is_not(client, db
     assert over.status_code == 422 and "more than 500" in str(over.json())
     assert db_session.query(FindingHostRemediation).count() == 0
     ok = apply(client, test_project, [{"finding_id": most.id, "status": "closed"}])
-    assert ok.status_code == 200 and ok.json()["summary"]["changed"] == 500
+    assert ok.status_code == 200 and ok.json()["summary"]["changed"] == 1000   # each status and its date
 
 
 def test_naming_one_host_of_a_wide_finding_loads_only_that_host(client, db_session, test_project):

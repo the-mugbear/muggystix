@@ -107,12 +107,27 @@ describe('Findings — what a finding still needs', () => {
     expect(lastAsked().needs).toBeUndefined();
     await user.click(chooser());
     expect((await screen.findAllByRole('option')).map((o) => o.textContent)).toEqual([
-      'Needed or not', 'Needs anything', 'Needs report text', 'Needs an image caption', 'Has proposals to decide',
+      'Report readiness: any', 'Needs anything', 'Needs report text', 'Needs an image caption', 'Has proposals to decide',
     ]);
     await user.click(screen.getByRole('option', { name: 'Needs an image caption' }));
     await waitFor(() => expect(lastAsked()).toMatchObject({ needs: 'uncaptioned_images', offset: 0 }));
     expect(router.state.location.search).toBe('?status=all&needs=uncaptioned_images');
     expect(chooser()).toHaveTextContent('Needs an image caption');
+  });
+
+  // 5.395.0 — the project's pending retests are this list (Operations links
+  // here): everyone's, whoever owns the finding.
+  it('the host filter is in the address and asks the list for findings with a host in that state', async () => {
+    open('/findings?host_state=retest&status=all');
+    await screen.findByText('Finding 1');
+    expect(lastAsked()).toMatchObject({ host_state: 'retest' });
+    expect(screen.getByRole('combobox', { name: 'Hosts' })).toHaveTextContent('A host awaiting a retest');
+  });
+
+  it('a host state it does not know is no filter', async () => {
+    open('/findings?host_state=nonsense');
+    await screen.findByText('Finding 1');
+    expect(lastAsked().host_state).toBeUndefined();
   });
 
   it('opens on the filter the address names; a word it does not know is no filter', async () => {

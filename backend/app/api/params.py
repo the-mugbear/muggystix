@@ -27,10 +27,10 @@ FindingNeedParam = Annotated[
     Optional[Literal["decide", "write", "retest"]],
     Query(
         description=(
-            "Only this kind of work: decide (under investigation, marked for retest, or a "
+            "Only this kind of work: decide (under investigation, a host awaiting a retest, or a "
             "proposal waits for a decision) or write (required report text missing, nothing to "
-            "decide) — the two add up to the whole list; or retest (the finding, or one of its "
-            "endpoints, is marked for retest — a part of decide)."
+            "decide) — the two add up to the whole list; or retest (a host of the finding is "
+            "awaiting a retest — a part of decide)."
         ),
     ),
 ]
@@ -52,6 +52,20 @@ FindingNeedsParam = Annotated[
             "report has no caption, so its file name is printed), proposals (a proposal "
             "about it waits for a decision), or any of the three. Each row's `needs` says "
             "which."
+        ),
+    ),
+]
+
+
+#: ``host_state=`` on a findings list — the page's and the agents': only
+#: findings with at least one host in this state.  ``retest`` is the
+#: project's retest list (owner, 2026-10-14: everyone sees a pending retest).
+FindingHostStateParam = Annotated[
+    Optional[Literal["open", "retest", "remediated", "false_positive"]],
+    Query(
+        description=(
+            "Only findings with at least one host in this state: open (still present), retest "
+            "(awaiting a retest), remediated, false_positive."
         ),
     ),
 ]

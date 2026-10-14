@@ -442,7 +442,7 @@ describe('Remediation', () => {
     const table = await screen.findByRole('table', { name: /remediation/i });
     fireEvent.click(within(table).getByRole('button', { name: 'Timeline for 10.0.0.1' }));
     expect(await screen.findByText('Contacted owner, will respond on Friday')).toBeInTheDocument();
-    expect(screen.getByText(/Open → Deferred/)).toBeInTheDocument();
+    expect(screen.getByText(/Awaiting fix → Deferred/)).toBeInTheDocument();
     expect(screen.getByText(/none → roger@example.com/)).toBeInTheDocument();
     // One save's changes to one finding are ONE entry, its title said once.
     expect(within(screen.getByRole('dialog')).getAllByText('Finding 1')).toHaveLength(1);
@@ -1051,7 +1051,7 @@ describe('Remediation', () => {
       show();
       const table = await screen.findByRole('table', { name: /remediation deadlines$/i });
       fireEvent.click(within(table).getByRole('button', { name: 'Timeline for 10.0.0.1' }));
-      expect((await screen.findByText('Status')).closest('li')).toHaveTextContent('Status: Open → Reported fixed');
+      expect((await screen.findByText('Status')).closest('li')).toHaveTextContent('Status: Awaiting fix → Reported fixed');
       fireEvent.keyDown(document.body, { key: 'Escape' });
       fireEvent.click(within(table).getByRole('button', { name: 'Edit' }));
       const dialog = await screen.findByRole('dialog');

@@ -481,6 +481,55 @@ class NotificationService:
             notifications.append(notification)
         return notifications
 
+    def notify_retest_requested(self, finding, rows, actor_id: Optional[int]) -> List[Notification]:
+        """Hosts of ``finding`` now await a retest (2.501.0; owner,
+        2026-10-14): tell the finding's owner, or — "When there's no owner
+        notify all project members" — every active member, the person who
+        asked excepted.  ONE notification per recipient for the action
+        (``FindingService.announce_retests`` calls this once per finding).
+
+        ``type: retest``, ``source_type: finding_retest``, ``source_id`` the
+        first endpoint, ``finding_id`` set: the link opens the finding at that
+        endpoint.  ``host_id`` is set when one host is named.  The caller
+        commits."""
+        if not rows:
+            return []
+        if finding.owner_id is not None and finding.owner_id == actor_id:
+            # The owner asked for it themself: there is nobody to tell (the
+            # walkthrough found a global-admin owner — no membership row —
+            # read as "no owner", and the whole project was told).
+            return []
+        recipients = (self.current_members(finding.project_id, {finding.owner_id})
+                      if finding.owner_id is not None else set())
+        if not recipients:
+            # No owner — or one who can no longer be told (left the project,
+            # deactivated, a global admin with no membership): every member,
+            # so the retest is not lost.
+            recipients = {u.id for u in self._active_members(finding.project_id)}
+        recipients.discard(actor_id)
+        if not recipients:
+            return []
+        actor = self.db.get(User, actor_id) if actor_id else None
+        labels = [r.host.ip_address if r.host is not None else f"host {r.host_id}" for r in rows]
+        shown = ", ".join(labels[:3]) + (f" and {len(labels) - 3} more" if len(labels) > 3 else "")
+        n = len(rows)
+        title = f"Retest pending: {finding.title}"
+        body = (f"{n} host{'' if n == 1 else 's'} await{'s' if n == 1 else ''} a retest ({shown})"
+                + (f" — asked by {display_name(actor)}" if actor is not None else "")
+                + ". Anyone in the project may record the retest's result.")
+        host_ids = {r.host_id for r in rows}
+        out = []
+        for uid in sorted(recipients):
+            notification = Notification(
+                user_id=uid, project_id=finding.project_id, type="retest",
+                title=title[:255], body=body, source_type="finding_retest", source_id=rows[0].id,
+                finding_id=finding.id, host_id=next(iter(host_ids)) if len(host_ids) == 1 else None,
+                actor_id=actor_id,
+            )
+            self.db.add(notification)
+            out.append(notification)
+        return out
+
     def notify_report_job_finished(self, job) -> Optional[Notification]:
         """Tell the requester their async report finished (completed or failed).
 

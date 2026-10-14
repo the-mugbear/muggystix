@@ -13,8 +13,8 @@ export type FindingStatus =
   | 'confirmed'
   | 'false_positive'
   | 'accepted_risk'
-  | 'remediated'
-  | 'retest';
+  | 'remediated';
+// No 'retest' since 5.395.0: a retest is per host (`FindingHostStatus`).
 export type FindingSource = 'note' | 'scanner' | 'execution' | 'manual';
 
 /** The network segment an affected host belongs to: the project's one segment
@@ -181,6 +181,9 @@ export interface FindingFilters {
   search?: string;
   /** Only findings that still need this before the report. */
   needs?: FindingNeedsFilter;
+  /** Only findings with at least one host in this state — `retest` is the
+   *  project's list of pending retests (5.395.0). */
+  host_state?: FindingHostStatus;
   sort?: FindingSortField;
   dir?: 'asc' | 'desc';
   limit?: number;
@@ -287,8 +290,29 @@ export const setFindingStatus = async (
   return response.data;
 };
 
+/** What a retest of ONE host showed (5.395.0): recorded as evidence on that
+ *  host, and the host moves with it — fixed → Remediated, not fixed → Still
+ *  present.  Only a host awaiting a retest (409 otherwise). */
+export interface EndpointRetestResult {
+  fixed: boolean;
+  tool: string;
+  summary: string;
+  command?: string;
+  raw_output?: string;
+}
+
+export const recordEndpointRetest = async (
+  projectId: number, findingId: number, findingHostId: number, result: EndpointRetestResult,
+): Promise<Finding> => {
+  const response = await api.post<Finding>(
+    `${projectPath(projectId)}/findings/${findingId}/endpoints/${findingHostId}/retest`, result,
+  );
+  return response.data;
+};
+
 /** v5.225.0 — set ONE endpoint row's state (open / remediated / retest)
- *  without touching the finding's own status. */
+ *  without touching the finding's own status.  A host awaiting a retest is
+ *  made Remediated only with its result (`recordEndpointRetest`; 409 here). */
 export const setFindingEndpointStatus = async (
   projectId: number,
   findingId: number,

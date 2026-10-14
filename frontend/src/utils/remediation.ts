@@ -10,6 +10,7 @@ import type {
 import type { QueryClient } from '@tanstack/react-query';
 
 import { formatDate } from './relativeTime';
+import { ENDPOINT_STATUS_SHORT_LABEL } from './findingStatus';
 
 /** Every read that shows remediation records, by API function name.  Not a
  *  follow-up being prepared (`getRemediationFollowUp`): its dialog holds a
@@ -40,7 +41,9 @@ export const REMEDIATION_STATUSES: RemediationStatus[] = ['open', 'closed', 'def
  *  assessor's conclusion about the endpoint.  The stored value is unchanged. */
 export const REPORTED_FIXED = 'Reported fixed';
 export const REMEDIATION_STATUS_LABEL: Record<RemediationStatus, string> = {
-  open: 'Open',
+  // 5.395.0 — "Awaiting fix", never "Open": a finding's status, a host's
+  // state and this record each have their own words (owner, 2026-10-14).
+  open: 'Awaiting fix',
   closed: REPORTED_FIXED,
   deferred: 'Deferred',
 };
@@ -72,7 +75,9 @@ export const isRemediationDefect = (v: string | null): v is RemediationDefect =>
 export const defectFilterLabel = (defects: readonly RemediationDefect[]): string => {
   if (REMEDIATION_DEFECTS.every((d) => defects.includes(d))) return 'Defects (not false positives)';
   const words: Record<RemediationDefect, string> = {
-    open: 'Open defects', remediated: 'Remediated (retested fixed)', deferred: 'Deferred defects',
+    // "Outstanding", never "Open" (5.395.0): not remediated and not deferred —
+    // still present or awaiting a retest.
+    open: 'Outstanding defects', remediated: 'Remediated (retested fixed)', deferred: 'Deferred defects',
   };
   return defects.map((d) => words[d]).join(', ');
 };
@@ -578,12 +583,10 @@ export const csvCell = (value: string | number | null | undefined): string => {
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 };
 
-/** The assessor's endpoint status in the finding page's words (there `open`
- *  reads "Still present", so it is never taken for the record's Open). */
-const ENDPOINT_STATUS_WORD: Record<string, string> = {
-  open: 'Still present', remediated: 'Remediated', retest: 'Retest', false_positive: 'False positive',
-};
-const endpointStatusWord = (status: string): string => ENDPOINT_STATUS_WORD[status] ?? status;
+/** The assessor's endpoint status in the finding page's own words — its one
+ *  table (`findingStatus.ENDPOINT_STATUS_SHORT_LABEL`), not a copy. */
+const endpointStatusWord = (status: string): string =>
+  (ENDPOINT_STATUS_SHORT_LABEL as Record<string, string>)[status] ?? status;
 
 const CSV_COLUMNS: Array<[string, (r: RemediationRow) => string | number | null]> = [
   ['Project', (r) => r.project_name],

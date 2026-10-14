@@ -24,7 +24,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { ChevronRight, ClipboardCheck, Loader2, MoreHorizontal, Trash2, X } from 'lucide-react';
+import RecordRetestDialog from './RecordRetestDialog';
 
 import {
   Finding, FindingHostInfo, FindingHostStatus, Proposal, setFindingEndpointStatus, setFindingEndpointsStatus,
@@ -167,6 +168,9 @@ const FindingEndpoints: React.FC<Props> = ({
     mutationFn: (body: { finding_host_ids: number[]; host_status: FindingHostStatus; summary?: string }) =>
       setFindingEndpointsStatus(projectId, finding.id, body),
   });
+  // The host whose retest is being recorded (5.395.0): a pending retest is
+  // closed with its result, never by the picker alone.
+  const [retesting, setRetesting] = useState<FindingHostInfo | null>(null);
   const [bulkState, setBulkState] = useState<FindingHostStatus | ''>('');
   const [bulkSummary, setBulkSummary] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -298,6 +302,11 @@ const FindingEndpoints: React.FC<Props> = ({
 
   const setOne = async (row: FindingHostInfo, hostStatus: FindingHostStatus) => {
     if (row.host_status === hostStatus || saving.has(row.id)) return;
+    // Remediated, from a pending retest, is the retest's RESULT: recorded.
+    if (row.host_status === 'retest' && hostStatus === 'remediated') {
+      setRetesting(row);
+      return;
+    }
     // Busy from the click, not from the send: a queued row stays locked until
     // ITS request is back.
     setSaving((prev) => new Set(prev).add(row.id));
@@ -470,6 +479,15 @@ const FindingEndpoints: React.FC<Props> = ({
               {ENDPOINT_STATUS_LABEL[h.host_status] ?? h.host_status}
             </Badge>
           )}
+          {canManage && h.host_status === 'retest' && (
+            // The pending retest's one way to close: anyone who may change the
+            // state records it (owner, 2026-10-14).
+            <button type="button" className="mt-xxs block text-caption text-info hover:underline disabled:opacity-50"
+              disabled={rowBusy(h.id)} onClick={() => setRetesting(h)}
+              aria-label={`Record the retest of ${endpointName(h)}`}>
+              Record retest…
+            </button>
+          )}
         </TableCell>
         {canManage && (
           <TableCell className={cn(CELL, 'px-0')}>
@@ -486,6 +504,11 @@ const FindingEndpoints: React.FC<Props> = ({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                {h.host_status === 'retest' && (
+                  <DropdownMenuItem onSelect={() => { setTimeout(() => setRetesting(h), 0); }}>
+                    <ClipboardCheck className="size-4" aria-hidden /> Record retest…
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem
                   className="text-destructive focus:text-destructive"
                   // A tick later: the confirmation must not open while the
@@ -753,6 +776,15 @@ const FindingEndpoints: React.FC<Props> = ({
           </div>
         )}
       </div>
+      <RecordRetestDialog
+        finding={finding} row={retesting}
+        onOpenChange={(open) => { if (!open) setRetesting(null); }}
+        // Behind any change still on its way, like the table's own writes.
+        onRecorded={(updated, fixed) => {
+          void enqueue(async () => { applyAnswer(updated, sentOver()); });
+          toast.success(fixed ? 'Retest recorded: remediated on this host.' : 'Retest recorded: still present on this host.');
+        }}
+      />
     </div>
   );
 };

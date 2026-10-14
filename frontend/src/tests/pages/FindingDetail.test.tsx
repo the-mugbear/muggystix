@@ -217,13 +217,13 @@ describe('FindingDetail — item 7: each endpoint has its own state', () => {
     await screen.findByText('Weak TLS on portal');
 
     await user.click(screen.getByLabelText('State of 10.0.0.5'));
-    await user.click(await screen.findByRole('option', { name: 'Retest here' }));
+    await user.click(await screen.findByRole('option', { name: 'Retest pending' }));
 
     await waitFor(() => expect(mocked.setFindingEndpointStatus).toHaveBeenCalledWith(1, 7, 31, 'retest'));
     expect(mocked.setFindingStatus).not.toHaveBeenCalled();
     // C2 — the row comes from the route's response; the finding (every
     // endpoint of it) is not read a second time.  Only the history is.
-    await waitFor(() => expect(screen.getByLabelText('State of 10.0.0.5').textContent).toContain('Retest here'));
+    await waitFor(() => expect(screen.getByLabelText('State of 10.0.0.5').textContent).toContain('Retest pending'));
     expect(mocked.getFinding).toHaveBeenCalledTimes(1);
     expect(mocked.getFindingHistory).toHaveBeenCalledTimes(2);
   });
@@ -334,7 +334,7 @@ describe('FindingDetail — many endpoints', () => {
     expect(screen.getByRole('group', { name: 'Set the selected endpoints' }).textContent).toContain('1,200 selected');
 
     await user.click(screen.getByLabelText('Set the selected endpoints to'));
-    await user.click(await screen.findByRole('option', { name: 'Retest here' }));
+    await user.click(await screen.findByRole('option', { name: 'Retest pending' }));
     await user.click(screen.getByRole('button', { name: 'Set 1,200 endpoints' }));
 
     await waitFor(() => expect(mocked.setFindingEndpointsStatus).toHaveBeenCalledTimes(3));
@@ -523,7 +523,7 @@ describe('FindingDetail — each proposal is reviewed where it applies (5.334.0)
 
     // The endpoint change is on its row.
     const row = document.querySelector('[data-endpoint-row="55"]') as HTMLElement;
-    expect(within(row).getByText(/Proposed: Still present → Retest here/)).toBeInTheDocument();
+    expect(within(row).getByText(/Proposed: Still present → Retest pending/)).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: /^Accept$/ })).toBeInTheDocument();
   });
 

@@ -190,7 +190,8 @@ def test_a_change_to_an_endpoint_answers_with_the_segments_too(client, db_sessio
     one = client.patch(f"{base}/endpoints/{row['id']}", json={"host_status": "retest"})
     assert one.status_code == 200, one.text
     assert one.json()["hosts"][0]["segment"] == row["segment"]
-    several = client.patch(f"{base}/endpoints", json={"finding_host_ids": [row["id"]], "host_status": "remediated"})
+    # Back to still present (a pending retest closes only with its result).
+    several = client.patch(f"{base}/endpoints", json={"finding_host_ids": [row["id"]], "host_status": "open"})
     assert several.status_code == 200, several.text
     assert several.json()["hosts"][0]["segment"] == row["segment"]
 

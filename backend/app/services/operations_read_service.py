@@ -1071,9 +1071,9 @@ class MyFindingsResponse(BaseModel):
     #: ``write`` — nothing to decide: required report text is missing, or a
     #: report image has no caption.  Whole-list figures whatever ``need`` and
     #: the page say.
-    #: ``retest`` (owner, 2026-10-14) — marked for retest: the finding's
-    #: status, or one of its endpoints.  A PART of ``decide``, not a third
-    #: part of the list: the call-out on Operations opens it.
+    #: ``retest`` (owner, 2026-10-14) — a host of the finding awaits a
+    #: retest.  A PART of ``decide``, not a third part of the list: the
+    #: call-out on Operations opens it.
     need_counts: Dict[str, int] = Field(default_factory=lambda: {"decide": 0, "write": 0, "retest": 0})
 
 
@@ -1083,16 +1083,13 @@ FINDING_NEEDS = ("decide", "write", "retest")
 
 
 def marked_for_retest_condition():
-    """The ONE definition of "marked for retest" on Operations (owner,
-    2026-10-14): the finding's status is ``retest``, or one of its endpoints
-    is — a correlated EXISTS, so a confirmed finding with one host to retest
-    is its owner's work too."""
-    from app.db.models_findings import FindingHostStatus, FindingStatus
-    return or_(
-        Finding.status == FindingStatus.RETEST.value,
-        exists().where(FindingHost.finding_id == Finding.id,
-                       FindingHost.host_status == FindingHostStatus.RETEST.value),
-    )
+    """The ONE definition of "a host awaits a retest" on Operations: one of
+    the finding's endpoints is ``retest`` — a correlated EXISTS.  A retest is
+    per host since 2.501.0 (owner, 2026-10-14); the finding-level status
+    that also counted here is retired."""
+    from app.db.models_findings import FindingHostStatus
+    return exists().where(FindingHost.finding_id == Finding.id,
+                          FindingHost.host_status == FindingHostStatus.RETEST.value)
 
 
 def compute_my_findings(
@@ -1104,9 +1101,9 @@ def compute_my_findings(
     not a task, and 24 of them were inflating "my queue").  A finding is
     listed when at least one holds:
 
-    * it is under investigation (``open`` / ``retest``);
-    * it is marked for retest — its status, or one of its ENDPOINTS
-      (``marked_for_retest_condition``; owner, 2026-10-14);
+    * it is under investigation (``open``);
+    * one of its ENDPOINTS awaits a retest (``marked_for_retest_condition``;
+      owner, 2026-10-14);
     * the client report would include it and a required report section is
       empty — ``client_report_service``'s own rule and field list, so this is
       the report page's "Missing report text" narrowed to the owner;
@@ -1127,7 +1124,7 @@ def compute_my_findings(
     the whole list whatever they say (a page past the end, or ``limit=0``,
     counts with one statement of the same filter).
 
-    ``need=retest`` narrows them to those marked for retest — a part of
+    ``need=retest`` narrows them to those with a host awaiting a retest — a part of
     ``decide`` (``need_counts["retest"]``), what the Operations call-out opens.
 
     ``need`` (v2.453.0) narrows the rows to one kind of work — ``decide``

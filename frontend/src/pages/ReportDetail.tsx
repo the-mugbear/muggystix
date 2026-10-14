@@ -695,7 +695,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             {counts.critical} critical · {counts.high} high · {counts.medium} medium · {counts.low} low · {counts.info} info
           </PostureMeasure>
           <PostureMeasure label="Still under investigation" value={s.under_investigation ?? 0}
-            info="Open or retest findings. They are not in a report until they are confirmed, accepted or remediated."
+            info="Open findings. They are not in a report until they are confirmed, accepted or remediated."
             to={isDraft && s.under_investigation ? '/findings?status=open' : undefined} toLabel="Open findings">
             {isDraft ? 'Left out of this report' : 'Left out when issued'}
           </PostureMeasure>

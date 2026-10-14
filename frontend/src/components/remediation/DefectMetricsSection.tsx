@@ -78,7 +78,7 @@ const DefectMetricsSection: React.FC<{
           <TableRow className="hover:bg-transparent hover:shadow-none">
             <TableHead className="w-[10rem]">Severity</TableHead>
             <TableHead className="text-right">Defects</TableHead>
-            <TableHead className="text-right">Open</TableHead>
+            <TableHead className="text-right">Outstanding</TableHead>
             <TableHead className="text-right">Remediated</TableHead>
             <TableHead className="text-right">Deferred</TableHead>
             <TableHead className="text-right">Remediation rate</TableHead>

@@ -119,6 +119,13 @@ describe('notificationHref', () => {
     expect(href({ source_type: 'host_test', source_id: 31, host_id: null })).toBe('/operations');
   });
 
+  // 5.395.0 — a host now awaits a retest: the finding, at that host's row,
+  // even when the notification also names the host.
+  it('a retest notification opens the finding at its host', () => {
+    expect(href({ type: 'retest', source_type: 'finding_retest', source_id: 779, finding_id: 355, host_id: 5 }))
+      .toBe('/findings/355?endpoint=779#endpoints');
+  });
+
   it('a finding on the proposal notification still wins over the session', () => {
     expect(href({ type: 'proposal', source_type: 'agent_session_new', source_id: 88, finding_id: 7 }))
       .toBe('/findings/7#proposals');

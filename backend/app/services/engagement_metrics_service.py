@@ -94,7 +94,6 @@ FINDING_STATES = ("under_investigation", "confirmed", "closed")
 # findingStatus.ts's populations; false_positive is not a result (see above).
 _STATE_OF = {
     FindingStatus.OPEN.value: "under_investigation",
-    FindingStatus.RETEST.value: "under_investigation",
     FindingStatus.CONFIRMED.value: "confirmed",
     FindingStatus.ACCEPTED_RISK.value: "closed",
     FindingStatus.REMEDIATED.value: "closed",

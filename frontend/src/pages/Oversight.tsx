@@ -146,7 +146,7 @@ const plural = (v: number, one: string, many = `${one}s`) => `${n(v)} ${v === 1 
 const COLUMN_INFO = {
   tested: 'Hosts taken into review — in review or reviewed by anyone — of the hosts in the inventory, each counted once. Watching is not reviewing. Current. Wider than Portfolio\'s "Hosts with review concluded", which counts reviewed hosts only; and not "tested", which means a test result was recorded on the host.',
   review: 'Hosts in review · hosts reviewed. Current.',
-  findings: "Findings are analysts' conclusions, one per issue however many hosts it is on (critical to low). Their state: under investigation = open or retest; confirmed = validated; closed = accepted risk or remediated — the three add up to the total. False positives are not results and are counted apart.",
+  findings: "Findings are analysts' conclusions, one per issue however many hosts it is on (critical to low). Their state: under investigation = open; confirmed = validated; closed = accepted risk or remediated — the three add up to the total. False positives are not results and are counted apart.",
   observations: 'What the scanners reported, one per issue per host, critical to low (informational left out). Judged = a finding covers the observation on its host (promoted, dismissed there, or accepted); not yet judged = nobody has decided on it. Judged + not yet judged = the total.',
   withFinding: 'Of the hosts taken into review (in review or reviewed), the share with at least one critical — or high — finding that is not a false positive on that host. Both sides are hosts taken into review only, so it never passes 100%. Current.',
 } as const;

@@ -49,6 +49,10 @@ export const notificationHref = (n: Linkable): string | null => {
   if (remediation) {
     return `/remediation-deadlines?${remediation}${n.source_id ? `&project=${n.source_id}` : ''}`;
   }
+  // A host now awaits a retest (5.395.0): the finding, at that host's row.
+  if (n.source_type === 'finding_retest' && n.finding_id) {
+    return `/findings/${n.finding_id}${n.source_id ? `?endpoint=${n.source_id}` : ''}#endpoints`;
+  }
   if (n.source_type === 'scan' && n.source_id) return `/hosts?scan_ids=${n.source_id}`;
   if (n.source_type === 'report_job' && n.source_id) return `/hosts?reports=1&job=${n.source_id}`;
   if (n.source_type === 'note' && n.finding_id && n.source_id) return `/findings/${n.finding_id}#note-${n.source_id}`;

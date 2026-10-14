@@ -556,24 +556,36 @@ describe('Operations page', () => {
   describe('lead', () => {
     const leadOf = async () => (await screen.findByTestId('lead-needs-me')).closest('p') as HTMLElement;
 
-    // Owner, 2026-10-14: a finding of the reader's marked for retest — its
-    // status, or one of its hosts — is called out above the rest, opening
-    // exactly those (`?need=retest`, a part of the decisions).
-    it('calls out the findings marked for retest, and opens just them', async () => {
-      withWork({ my_work: { ...busy().my_work, findings_to_retest: 2 } });
+    // Owner, 2026-10-14: pending retests are called out above the rest —
+    // every host of the project awaiting one (everyone's; it opens the
+    // Findings list), and how many of those findings are the reader's
+    // (`?need=retest`, a part of the decisions).
+    it('calls out the project’s pending retests and the reader’s, each opening its own list', async () => {
+      withWork({ my_work: { ...busy().my_work, findings_to_retest: 2 }, retests_pending: { findings: 3, hosts: 5 } });
       mockedApi.getMyFindingsPage.mockResolvedValue({
         items: [findingRow(21)], total_open: 24, need_counts: { ...NEEDS, retest: 2 },
       });
       const router = renderRouted('/operations?tab=hosts');
       const callout = await screen.findByTestId('lead-retest');
-      expect(callout).toHaveTextContent('2 findings of yours are marked for retest');
-      expect(within(callout).getByRole('button', { name: 'What marked for retest means' })).toBeInTheDocument();
-      fireEvent.click(within(callout).getByRole('link', { name: /marked for retest/ }));
+      expect(within(callout).getByTestId('lead-retest-project')).toHaveTextContent('5 hosts await a retest across 3 findings');
+      expect(within(callout).getByRole('link', { name: /hosts await a retest/ }))
+        .toHaveAttribute('href', '/findings?host_state=retest&status=all');
+      expect(within(callout).getByTestId('lead-retest-mine')).toHaveTextContent('2 findings are yours');
+      expect(within(callout).getByRole('button', { name: 'What a pending retest is' })).toBeInTheDocument();
+      fireEvent.click(within(callout).getByRole('link', { name: /are yours/ }));
       await waitFor(() => expect(router.state.location.search).toBe('?tab=findings&need=retest'));
       await waitFor(() => expect(mockedApi.getMyFindingsPage).toHaveBeenLastCalledWith(
         1, 'retest', expect.objectContaining({ offset: 0 }),
       ));
-      expect(await screen.findByRole('button', { name: /^Marked for retest/ })).toHaveAttribute('aria-pressed', 'true');
+      expect(await screen.findByRole('button', { name: /^Retest pending/ })).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    it('says a pending retest nobody owns to every reader', async () => {
+      withWork({ retests_pending: { findings: 1, hosts: 1 } });
+      renderRouted('/operations?tab=hosts');
+      const callout = await screen.findByTestId('lead-retest');
+      expect(callout).toHaveTextContent('1 host awaits a retest');
+      expect(within(callout).queryByTestId('lead-retest-mine')).toBeNull();
     });
 
     it('says nothing about retests when none is marked', async () => {

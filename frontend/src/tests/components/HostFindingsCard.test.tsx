@@ -342,7 +342,7 @@ describe('HostFindingsCard', () => {
     expect(api.getFinding).not.toHaveBeenCalled();
 
     await user.click(state);
-    await user.click(await screen.findByRole('option', { name: 'Retest here' }));
+    await user.click(await screen.findByRole('option', { name: 'Retest pending' }));
     await waitFor(() => expect(api.setFindingEndpointStatus).toHaveBeenCalledWith(1, 7, 31, 'retest'));
     expect(api.getFinding).not.toHaveBeenCalled();
   });
@@ -364,7 +364,7 @@ describe('HostFindingsCard', () => {
     const state = await screen.findByLabelText('State of Weak TLS on this host');
     await waitFor(() => expect(api.getFinding).toHaveBeenCalledWith(1, 7, expect.any(AbortSignal)));
     await user.click(state);
-    await user.click(await screen.findByRole('option', { name: 'Retest here' }));
+    await user.click(await screen.findByRole('option', { name: 'Retest pending' }));
     // Every one of this host's six rows — the sixth was not in the preview.
     await waitFor(() => expect(api.setFindingEndpointStatus).toHaveBeenCalledTimes(6));
     expect(api.setFindingEndpointStatus).toHaveBeenCalledWith(1, 7, 45, 'retest');

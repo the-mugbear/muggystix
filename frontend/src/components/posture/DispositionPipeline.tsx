@@ -90,7 +90,7 @@ const DispositionPipeline: React.FC<DispositionPipelineProps> = ({ byStatus, sta
         ))}
       </div>
 
-      {/* The legend splits a population into its statuses (open / retest…).
+      {/* The legend splits a population into its statuses (accepted risk / remediated…).
           When no population holds more than one status it would repeat the
           heading word for word, under other names — so it is left out. */}
       {splits && <div className="flex flex-wrap gap-x-md gap-y-xxs">

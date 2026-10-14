@@ -187,7 +187,7 @@ export interface Host {
   // Count of recorded host-field data conflicts (scans disagreed on a value;
   // ConflictHistory rows) — drives the Hosts-list "conflict" data-quality badge.
   conflict_count?: number;
-  // Foundation 6d — count of ACTIVE findings (open/confirmed/retest)
+  // Foundation 6d — count of ACTIVE findings (open/confirmed)
   // affecting this host; drives the Hosts-list finding badge.
   finding_count?: number;
   // True when the host's most-recent scan flipped its state or added a port

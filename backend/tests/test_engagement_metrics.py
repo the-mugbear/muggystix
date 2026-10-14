@@ -209,15 +209,16 @@ def test_every_requested_project_is_present(db_session):
 
 
 def test_finding_states_add_up_to_the_findings_and_false_positives_stand_apart(db_session, test_project):
-    """Under investigation (open/retest) + confirmed + closed (accepted risk /
-    remediated) == the findings total; a false positive — by its own status or
-    on every endpoint — is counted apart, never in a state."""
+    """Under investigation (open — its hosts in any state, a pending retest
+    included) + confirmed + closed (accepted risk / remediated) == the findings
+    total; a false positive — by its own status or on every endpoint — is
+    counted apart, never in a state."""
     pid = test_project.id
     h = models.Host(project_id=pid, ip_address="10.9.3.1", state="up")
     db_session.add(h)
     db_session.flush()
     for i, (status, host_status) in enumerate((
-        ("open", "open"), ("retest", "open"), ("confirmed", "open"), ("accepted_risk", "open"),
+        ("open", "open"), ("open", "retest"), ("confirmed", "open"), ("accepted_risk", "open"),
         ("remediated", "remediated"), ("false_positive", "open"), ("open", "false_positive"),
     )):
         f = Finding(project_id=pid, title=f"f{i}", severity="high", status=status, source="manual")

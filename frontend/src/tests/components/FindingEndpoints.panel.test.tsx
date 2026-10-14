@@ -193,7 +193,7 @@ describe('FindingEndpoints — rows under their network', () => {
     expect(headers.map((tr) => within(tr).getByRole('button', { expanded: true }).textContent)).toEqual(['HQ', 'Lab', 'DMZ']);
     expect(within(groupRow('HQ')).getByTestId('group-count')).toHaveTextContent('3 endpoints');
     expect(within(groupRow('HQ')).getByTestId('group-states'))
-      .toHaveTextContent('Still present 1 · Retest 1 · Remediated 1');
+      .toHaveTextContent('Still present 1 · Retest pending 1 · Remediated 1');
     expect(within(groupRow('DMZ')).getByTestId('group-count')).toHaveTextContent('1 endpoint');
     expect(within(groupRow('DMZ')).getByTestId('group-states')).toHaveTextContent('False positive 1');
     // Network by network, numerically by address inside each.
@@ -293,7 +293,7 @@ describe('FindingEndpoints — the state bar', () => {
     render(<Harness initial={small()} />);
     const bar = screen.getByRole('group', { name: 'Endpoint states' });
     expect(within(bar).getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual([
-      '2 still present — filter', '1 retest — filter', '2 remediated — filter', '1 false positive — filter',
+      '2 still present — filter', '1 retest pending — filter', '2 remediated — filter', '1 false positive — filter',
     ]);
     const remediated = within(bar).getByRole('button', { name: '2 remediated — filter' });
     expect(remediated).toHaveAttribute('title', '2 remediated — filter');
@@ -333,7 +333,7 @@ describe('FindingEndpoints — the state bar', () => {
   it('sits beside the sentence, which stays the one explanation', () => {
     render(<Harness initial={small()} />);
     expect(screen.getByText(/The status above is the issue/)).toBeInTheDocument();
-    expect(screen.getByText('still present on 2 of 6 · 2 remediated · 1 retest · 1 false positive there')).toBeInTheDocument();
+    expect(screen.getByText('still present on 2 of 6 · 2 remediated · 1 awaiting a retest · 1 false positive there')).toBeInTheDocument();
     // No legend: the chips already name the states.
     expect(screen.getByRole('group', { name: 'Endpoint states' }).textContent).toBe('');
   });

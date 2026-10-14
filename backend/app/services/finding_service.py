@@ -133,7 +133,7 @@ def _validate_status(status: str) -> str:
 _SEVERITY_SORT = severity_rank(Finding.severity)
 _STATUS_SORT = case(
     (Finding.status == "open", 0), (Finding.status == "confirmed", 1),
-    (Finding.status == "retest", 2), (Finding.status == "remediated", 3),
+    (Finding.status == "remediated", 3),
     (Finding.status == "false_positive", 4), (Finding.status == "accepted_risk", 5),
     else_=6,
 )
@@ -186,6 +186,25 @@ def _finding_order(sort: Optional[str], sort_dir: Optional[str]):
 class FindingService:
     def __init__(self, db: Session):
         self.db = db
+        # Endpoints this service put into ``retest`` and has not yet
+        # announced: {finding id: (finding, [rows])} — ``announce_retests``.
+        self._retests_requested: Dict[int, Tuple[Finding, List[FindingHost]]] = {}
+
+    def announce_retests(self, actor_id: Optional[int]) -> None:
+        """Tell who must know that hosts now await a retest (owner,
+        2026-10-14: the finding's owner; "When there's no owner notify all
+        project members"): ONE notification per finding per action, never one
+        per host.  Every writer that can move an endpoint into ``retest``
+        calls it once its moves are made (the single and bulk endpoint
+        writes, ``remediation_service.apply``).  The caller commits."""
+        pending, self._retests_requested = self._retests_requested, {}
+        if not pending:
+            return
+        from app.services.notification_service import NotificationService
+
+        notifier = NotificationService(self.db)
+        for finding, rows in pending.values():
+            notifier.notify_retest_requested(finding, rows, actor_id)
 
     # ------------------------------------------------------------------
     # Create / promote
@@ -352,7 +371,7 @@ class FindingService:
             may_move = on_join == "set" or (
                 on_join == "confirm"
                 and status == FindingStatus.CONFIRMED.value
-                and finding.status in (FindingStatus.OPEN.value, FindingStatus.RETEST.value)
+                and finding.status == FindingStatus.OPEN.value
             )
             if status != finding.status and may_move:
                 self.set_status(finding=finding, status=status, actor_id=actor_id,
@@ -800,6 +819,7 @@ class FindingService:
             raise HTTPException(status_code=404, detail="Endpoint is not attached to this finding")
         if self._move_endpoint(finding, row, host_status, actor_id, note):
             self.db.flush()
+            self.announce_retests(actor_id)
         return finding
 
     def set_endpoint_statuses(
@@ -833,6 +853,7 @@ class FindingService:
             )
         moved = sum(1 for row in rows if self._move_endpoint(finding, row, host_status, actor_id, note))
         self.db.flush()
+        self.announce_retests(actor_id)
         return moved
 
     @staticmethod
@@ -862,6 +883,64 @@ class FindingService:
             changed_by_id=actor_id, summary=summary,
         ))
 
+    def record_retest(
+        self, *, finding: Finding, finding_host_id: int, fixed: bool, tool: str, summary: str,
+        actor_id: Optional[int], command: Optional[str] = None, raw_output: Optional[str] = None,
+    ):
+        """A person's retest of ONE host (2.501.0; owner, 2026-10-14: "anyone
+        should be allowed to attempt to close it with evidence"): the result is
+        an evidence record on this endpoint — ``no_finding`` when fixed,
+        ``finding`` when not — and the endpoint moves with it, Remediated or
+        Still present, in the caller's one transaction.  Only an endpoint
+        awaiting a retest (409 otherwise).  Returns the evidence record; the
+        caller commits."""
+        from app.services import agent_evidence_service
+
+        row = (
+            self.db.query(FindingHost)
+            .filter(FindingHost.finding_id == finding.id, FindingHost.id == finding_host_id)
+            .with_for_update().populate_existing().first()
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Endpoint is not attached to this finding")
+        if row.host_status != FindingHostStatus.RETEST.value:
+            raise HTTPException(status_code=409, detail=(
+                f"{self._endpoint_label(row)} is not awaiting a retest; mark it Retest pending first, "
+                "or set its state directly."))
+        record = agent_evidence_service.record_evidence(
+            self.db, project_id=finding.project_id, host_id=row.host_id, tool=tool,
+            outcome="no_finding" if fixed else "finding", summary=summary, command=command,
+            raw_output=raw_output, finding_id=finding.id, finding_host_id=row.id,
+            recorded_by_user_id=actor_id,
+        )
+        self.db.flush()
+        self._move_endpoint(
+            finding, row,
+            FindingHostStatus.REMEDIATED.value if fixed else FindingHostStatus.OPEN.value, actor_id,
+            f"retest: {'fixed' if fixed else 'still present'} (evidence record {record.id})",
+        )
+        self.db.flush()
+        return record
+
+    def request_retest(self, finding: Finding, row: FindingHost, actor_id: Optional[int], note: str) -> bool:
+        """Put one endpoint into ``retest`` — the endpoint write, for a caller
+        outside this service (``remediation_service.apply``: "Reported fixed"
+        asks for the retest).  The caller then calls :meth:`announce_retests`."""
+        return self._move_endpoint(finding, row, FindingHostStatus.RETEST.value, actor_id, note)
+
+    def retest_result_recorded(self, row: FindingHost) -> bool:
+        """Is there a result on this endpoint, recorded since its retest was
+        asked for, that shows the issue fixed (``no_finding``)?  The one rule
+        that lets a retest close."""
+        from app.db.models_proposals import EvidenceRecord
+
+        query = self.db.query(EvidenceRecord.id).filter(
+            EvidenceRecord.finding_host_id == row.id, EvidenceRecord.outcome == "no_finding",
+        )
+        if row.retest_requested_at is not None:
+            query = query.filter(EvidenceRecord.created_at >= row.retest_requested_at)
+        return self.db.query(query.exists()).scalar()
+
     def _move_endpoint(
         self, finding: Finding, row: FindingHost, host_status: str,
         actor_id: Optional[int], note: Optional[str], *, history: bool = True,
@@ -877,11 +956,28 @@ class FindingService:
         if row.host_status == host_status:
             return False
         old = row.host_status
+        retest, remediated = FindingHostStatus.RETEST.value, FindingHostStatus.REMEDIATED.value
+        # A retest is closed with its result (owner, 2026-10-14: "anyone
+        # should be allowed to attempt to close it with evidence"): Retest
+        # pending → Remediated needs a result showing it fixed, recorded on
+        # THIS endpoint since the retest was asked for.  Every way in —
+        # the picker, the bulk bar, an accepted proposal — comes through here.
+        if old == retest and host_status == remediated and not self.retest_result_recorded(row):
+            raise HTTPException(
+                status_code=409,
+                detail=(f"{self._endpoint_label(row)} is awaiting a retest: record the retest's result "
+                        "(it shows the issue fixed) to mark it remediated."),
+            )
         row.host_status = host_status
+        now = datetime.now(timezone.utc)
         # When it was concluded fixed: the remediation pages' time to
         # remediate.  Gone with the conclusion.
-        row.remediated_at = (datetime.now(timezone.utc)
-                             if host_status == FindingHostStatus.REMEDIATED.value else None)
+        row.remediated_at = now if host_status == remediated else None
+        # When the retest was asked for: what a result must postdate — on the
+        # DATABASE's clock, as the evidence's ``created_at`` is.
+        row.retest_requested_at = func.now() if host_status == retest else None
+        if host_status == retest:
+            self._retests_requested.setdefault(finding.id, (finding, []))[1].append(row)
         if history:
             self._endpoint_line(
                 finding, actor_id,
@@ -1074,6 +1170,7 @@ class FindingService:
         owner_id: Optional[int] = None, unowned: bool = False,
         source: Optional[str] = None, host_id: Optional[int] = None,
         search: Optional[str] = None, needs: Optional[str] = None,
+        host_state: Optional[str] = None,
     ):
         """The Findings list's filters, in ONE place (v2.474.0).
 
@@ -1104,6 +1201,11 @@ class FindingService:
             from app.services import finding_needs
 
             q = q.filter(finding_needs.need_condition(needs))
+        if host_state:
+            # At least one host in this state — ``retest`` is the project's
+            # retest list (2.501.0).  A correlated EXISTS.
+            FindingService._validate_endpoint_status(host_state)
+            q = q.filter(Finding.hosts.any(FindingHost.host_status == host_state))
         return q
 
     def list_findings(
@@ -1112,6 +1214,7 @@ class FindingService:
         owner_id: Optional[int] = None, source: Optional[str] = None,
         host_id: Optional[int] = None, unowned: bool = False,
         search: Optional[str] = None, needs: Optional[str] = None,
+        host_state: Optional[str] = None,
         limit: int = 100, offset: int = 0,
         sort: Optional[str] = None, sort_dir: Optional[str] = None,
     ):
@@ -1125,7 +1228,7 @@ class FindingService:
         q = self._selection(
             self.db.query(Finding).options(*options), project_id=project_id,
             status=status, severity=severity, owner_id=owner_id, unowned=unowned,
-            source=source, host_id=host_id, search=search, needs=needs,
+            source=source, host_id=host_id, search=search, needs=needs, host_state=host_state,
         )
         total = q.count()
         q = q.order_by(*_finding_order(sort, sort_dir))
@@ -1249,6 +1352,7 @@ class FindingService:
         status: Optional[str] = None, owner_id: Optional[int] = None,
         source: Optional[str] = None, host_id: Optional[int] = None,
         unowned: bool = False, search: Optional[str] = None, needs: Optional[str] = None,
+        host_state: Optional[str] = None,
     ) -> dict:
         """Per-severity finding counts for the rollup header.  Respects every
         filter EXCEPT severity (the point is to show the full severity
@@ -1257,7 +1361,7 @@ class FindingService:
         q = self._selection(
             self.db.query(Finding.severity, func.count(Finding.id)), project_id=project_id,
             status=status, owner_id=owner_id, unowned=unowned,
-            source=source, host_id=host_id, search=search, needs=needs,
+            source=source, host_id=host_id, search=search, needs=needs, host_state=host_state,
         )
         return {sev: int(c) for sev, c in q.group_by(Finding.severity).all()}
 
@@ -1266,6 +1370,7 @@ class FindingService:
         status: Optional[str] = None, severity: Optional[str] = None,
         source: Optional[str] = None, host_id: Optional[int] = None,
         search: Optional[str] = None, needs: Optional[str] = None,
+        host_state: Optional[str] = None,
     ) -> List[dict]:
         """Who owns the listed findings, and how many each (v2.474.0) — what
         the page's Owner filter offers.
@@ -1278,7 +1383,7 @@ class FindingService:
             self.db.query(Finding.owner_id, User.full_name, User.username, func.count(Finding.id))
             .outerjoin(User, User.id == Finding.owner_id),
             project_id=project_id, status=status, severity=severity,
-            source=source, host_id=host_id, search=search, needs=needs,
+            source=source, host_id=host_id, search=search, needs=needs, host_state=host_state,
         )
         rows = [
             {"owner_id": owner_id, "owner_name": (full_name or username) if owner_id is not None else None,

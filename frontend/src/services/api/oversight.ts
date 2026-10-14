@@ -15,7 +15,7 @@ export interface OversightSeverity {
 /** Findings by where they stand — the three add up to the findings total;
  *  false positives are not results and are counted apart. */
 export interface OversightFindingStates {
-  /** open / retest */
+  /** open */
   under_investigation: number;
   confirmed: number;
   /** accepted risk / remediated */

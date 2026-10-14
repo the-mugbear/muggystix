@@ -59,7 +59,7 @@ export const reviewedHostsUrl = (reviewed: boolean): string =>
 /**
  * Findings status filter — the real statuses plus two server-side groups that
  * the posture/disposition surfaces count against:
- *   active   = open | confirmed | retest
+ *   active   = open | confirmed
  *   resolved = remediated | false_positive | accepted_risk
  */
 export type FindingStatusFilter = FindingStatus | 'active' | 'resolved';

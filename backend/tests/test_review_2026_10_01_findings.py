@@ -118,10 +118,9 @@ def _notes(db, user_id, ntype=None):
     ("remediated", "confirmed", "remediated"),
     ("false_positive", "confirmed", "false_positive"),
     ("confirmed", "open", "confirmed"),       # never a downgrade
-    ("retest", "open", "retest"),
     ("open", "open", "open"),
     ("open", "confirmed", "confirmed"),       # the one move a result may make
-    ("retest", "confirmed", "confirmed"),
+    # (No finding-level "retest" since 2.501.0: a retest is per host.)
 ])
 def test_a_test_result_joins_a_finding_without_rejudging_the_issue(
     client, db_session, test_project, host, prior, requested, expected,

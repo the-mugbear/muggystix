@@ -17,10 +17,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const setFindingEndpointStatus = vi.fn();
 const setFindingEndpointsStatus = vi.fn();
+const recordEndpointRetest = vi.fn();
 const rejectProposal = vi.fn();
 vi.mock('../../services/api', () => ({
   setFindingEndpointStatus: (...a: unknown[]) => setFindingEndpointStatus(...a),
   setFindingEndpointsStatus: (...a: unknown[]) => setFindingEndpointsStatus(...a),
+  recordEndpointRetest: (...a: unknown[]) => recordEndpointRetest(...a),
   acceptProposal: vi.fn(),
   rejectProposal: (...a: unknown[]) => rejectProposal(...a),
 }));
@@ -140,6 +142,46 @@ const chip = (name: RegExp) =>
 beforeEach(() => {
   vi.clearAllMocks();
   readFinding.mockImplementation(neverAsked);
+});
+
+// 5.395.0 (owner, 2026-10-14): "anyone should be allowed to attempt to close
+// it with evidence" — a pending retest is closed with its result, never by
+// the state picker alone.
+describe('FindingEndpoints — a host awaiting a retest', () => {
+  it('offers "Record retest…" on that row only, and records what it showed', async () => {
+    const start = finding([endpoint(1, 'retest'), endpoint(2)]);
+    recordEndpointRetest.mockResolvedValue(withState(start, { 1: 'remediated' }));
+    render(<Harness initial={start} />);
+    expect(screen.queryByRole('button', { name: 'Record the retest of 10.0.0.2' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Record the retest of 10.0.0.1' }));
+
+    const dialog = await screen.findByRole('dialog');
+    const record = within(dialog).getByRole('button', { name: 'Record the retest' });
+    expect(record).toBeDisabled();                                         // the result is asked for
+    fireEvent.click(within(dialog).getByRole('radio', { name: /Fixed/ }));
+    fireEvent.change(within(dialog).getByLabelText('Tool'), { target: { value: 'nmap' } });
+    fireEvent.change(within(dialog).getByLabelText('What it showed'), { target: { value: 'Signing required now.' } });
+    fireEvent.click(record);
+
+    await waitFor(() => expect(recordEndpointRetest).toHaveBeenCalledWith(1, 7, 1, {
+      fixed: true, tool: 'nmap', summary: 'Signing required now.',
+    }));
+    await waitFor(() => expect(stateOf(1).value).toBe('remediated'));
+    expect(toast.success).toHaveBeenCalledWith('Retest recorded: remediated on this host.');
+    expect(setFindingEndpointStatus).not.toHaveBeenCalled();
+  });
+
+  it('choosing Remediated in the picker asks for the retest instead of setting it', async () => {
+    render(<Harness initial={finding([endpoint(1, 'retest')])} />);
+    fireEvent.change(stateOf(1), { target: { value: 'remediated' } });
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Record the retest');
+    expect(setFindingEndpointStatus).not.toHaveBeenCalled();
+    // …while Still present, from a pending retest, is set as before.
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    setFindingEndpointStatus.mockResolvedValue(finding([endpoint(1, 'open')]));
+    fireEvent.change(stateOf(1), { target: { value: 'open' } });
+    await waitFor(() => expect(setFindingEndpointStatus).toHaveBeenCalledWith(1, 7, 1, 'open'));
+  });
 });
 
 // Review 2026-10-12 H1.  The queue orders this table's own changes; a rename
@@ -524,7 +566,7 @@ describe('FindingEndpoints — a proposed endpoint change sits on its row', () =
       </MemoryRouter>,
     );
     const row = document.querySelector('[data-endpoint-row="2"]') as HTMLElement;
-    expect(within(row).getByText(/Proposed: Still present → Retest here/)).toBeInTheDocument();
+    expect(within(row).getByText(/Proposed: Still present → Retest pending/)).toBeInTheDocument();
     expect(within(row).getByText(/The patch shipped Friday/)).toBeInTheDocument();
     const other = document.querySelector('[data-endpoint-row="1"]') as HTMLElement;
     expect(within(other).queryByText(/Proposed:/)).toBeNull();

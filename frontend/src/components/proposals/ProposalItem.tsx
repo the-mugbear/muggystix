@@ -42,7 +42,7 @@ export const FIELD_LABELS: Record<string, string> = {
 const ENDPOINT_LABELS: Record<string, string> = {
   open: 'open',
   remediated: 'remediated',
-  retest: 'retest',
+  retest: 'awaiting a retest',
   false_positive: 'a false positive',
 };
 

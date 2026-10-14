@@ -32,10 +32,10 @@ export const TEST_KIND_LABEL: Record<MyTaskReason, string> = {
 
 /** The kinds of work the Findings tab lists.  `decide` and `write`
  *  partition it (a decision comes before the writing); `retest` narrows
- *  `decide` to the findings marked for retest (owner, 2026-10-14). */
+ *  `decide` to the findings with a host awaiting a retest (owner, 2026-10-14). */
 export const FINDING_NEEDS: FindingNeed[] = ['retest', 'decide', 'write'];
 export const FINDING_NEED_LABEL: Record<FindingNeed, string> = {
-  retest: 'Marked for retest',
+  retest: 'Retest pending',
   decide: 'Needs a decision',
   write: 'Needs report text',
 };
@@ -51,7 +51,7 @@ export interface OperationsTabCounts {
   findingsDecide: number | null;
   /** …of which: only required report text is missing. */
   findingsWrite: number | null;
-  /** Of `findingsDecide`: marked for retest (the finding, or one of its hosts). */
+  /** Of `findingsDecide`: a host of the finding awaits a retest. */
   findingsRetest: number | null;
   /** Hosts the reader has In Review. */
   hosts: number | null;

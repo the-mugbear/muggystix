@@ -615,8 +615,10 @@ const SetupBlock: React.FC<{ title: string; children: React.ReactNode }> = ({ ti
 interface LeadClause { key: string; to: string; text: string }
 
 /** What the lead's words count — on the (i), not a caption line under it. */
-const RETEST_DEFINITION = 'A finding you own whose status is Retest, or one of whose hosts is marked Retest. Each row on the list says which. These are also counted among the decisions below.';
-const LEAD_DEFINITION = 'A decision is a finding under investigation or marked for retest, or a proposal waiting for you; tests on hosts you review are listed with those hosts, not counted as assigned to you.';
+const RETEST_DEFINITION = 'Hosts of this project whose retest is pending — asked for by hand, or because the contact reported the issue fixed. Anyone in the project may retest one and record the result on the finding; a result showing it fixed is what makes the host Remediated. "Yours" are on findings you own, and are also counted among your decisions below.';
+const LEAD_DEFINITION = 'A decision is a finding under investigation or with a host awaiting a retest, or a proposal waiting for you; tests on hosts you review are listed with those hosts, not counted as assigned to you.';
+/** The project's pending retests: the Findings list, every status. */
+const RETESTS_PATH = '/findings?host_state=retest&status=all';
 
 const LeadLinks: React.FC<{ clauses: LeadClause[] }> = ({ clauses }) => (
   <>
@@ -669,9 +671,12 @@ const OperationsLead: React.FC<{
   const n = (v: number) => v.toLocaleString();
   const s = (v: number, one: string, many: string) => `${n(v)} ${v === 1 ? one : many}`;
 
-  // 0 — called out above the rest (owner, 2026-10-14): findings of the
-  // reader's marked for retest, the finding or one of its hosts.  They are
-  // also among the decisions below; this line opens just them.
+  // 0 — called out above the rest (owner, 2026-10-14): every host of the
+  // project awaiting a retest, whoever owns its finding ("Everyone should
+  // see a retest is pending"), and how many of those findings are the
+  // reader's (also among their decisions below).
+  const pending = workbench.retests_pending;
+  const retestHosts = pending?.hosts ?? 0;
   const retest = counts.findingsRetest ?? 0;
   // 1 — what needs the reader, decisions first.
   const decide = counts.findingsDecide ?? 0;
@@ -728,13 +733,24 @@ const OperationsLead: React.FC<{
 
   return (
     <PostureLead tone={tone}>
-      {retest > 0 && (
-        <span className="mb-xxs flex items-center gap-xxs font-medium text-foreground" data-testid="lead-retest">
+      {(retestHosts > 0 || retest > 0) && (
+        <span className="mb-xxs flex flex-wrap items-center gap-xxs font-medium text-foreground" data-testid="lead-retest">
           <RotateCcw className="size-4 shrink-0 text-warning" aria-hidden />
-          <Link to={toTab('findings', 'retest')} className={LINK}>
-            {retest === 1 ? '1 finding of yours is' : `${n(retest)} findings of yours are`} marked for retest
-          </Link>
-          <InfoTip text={RETEST_DEFINITION} label="What marked for retest means" />
+          {retestHosts > 0 && (
+            <Link to={RETESTS_PATH} className={LINK} data-testid="lead-retest-project">
+              {s(retestHosts, 'host awaits', 'hosts await')} a retest
+              {pending && pending.findings > 1 ? ` across ${n(pending.findings)} findings` : ''}
+            </Link>
+          )}
+          {retest > 0 && (
+            <>
+              {retestHosts > 0 && <span aria-hidden>·</span>}
+              <Link to={toTab('findings', 'retest')} className={LINK} data-testid="lead-retest-mine">
+                {retest === 1 ? '1 finding is yours' : `${n(retest)} findings are yours`}
+              </Link>
+            </>
+          )}
+          <InfoTip text={RETEST_DEFINITION} label="What a pending retest is" />
         </span>
       )}
       <span className="block" data-testid="lead-needs-me">

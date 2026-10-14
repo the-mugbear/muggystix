@@ -120,35 +120,36 @@ def test_findings_tab_count_is_the_list_it_pages_through(client, db_session, tes
 
 
 def test_findings_to_retest_are_the_list_the_call_out_opens(client, db_session, test_project, test_user):
-    """Owner, 2026-10-14: Operations calls out the caller's findings marked for
-    retest — the finding's status, or ONE OF ITS ENDPOINTS (a confirmed,
-    written-up finding with a host to retest was not on the tab at all).  The
-    count is the list ``need=retest`` pages through, a part of ``decide``,
-    and each row says what is marked."""
+    """Owner, 2026-10-14: Operations calls out the caller's findings with a
+    host awaiting a retest (a confirmed, written-up finding with a host to
+    retest was not on the tab at all; since 2.501.0 a retest is per host
+    only).  The count is the list ``need=retest`` pages through, a part of
+    ``decide``, and each row says how many hosts."""
     from app.db.models_findings import FindingHost
 
     pid = test_project.id
     written = {"description": "d", "impact": "i", "recommendation": "r", "steps_to_reproduce": "s"}
+    addresses = iter(range(1, 10_000))
 
-    def finding(title, status, endpoints=()):
+    def finding(title, status, endpoints=(), owned=True):
         f = Finding(project_id=pid, title=title, severity="high", status=status, source="manual",
-                    owner_id=test_user.id, created_by_id=test_user.id, **written)
+                    owner_id=test_user.id if owned else None, created_by_id=test_user.id, **written)
         db_session.add(f)
         db_session.flush()
-        for n, state in enumerate(endpoints):
-            host = models.Host(project_id=pid, ip_address=f"10.77.{len(title) % 200}.{n + 1}", state="up")
+        for state in endpoints:
+            n = next(addresses)
+            host = models.Host(project_id=pid, ip_address=f"10.77.{n // 250}.{n % 250 + 1}", state="up")
             db_session.add(host)
             db_session.flush()
             db_session.add(FindingHost(finding_id=f.id, host_id=host.id, host_status=state))
         return f
 
     for i in range(26):                                   # more than a page
-        finding(f"Retest {i}", "retest")
+        finding(f"Retest {i}", "confirmed", ["retest", "open"])
     hosts = finding("Two hosts to retest", "confirmed", ["retest", "retest", "remediated"])
     finding("Confirmed and written", "confirmed", ["open", "remediated"])          # needs nothing
     finding("Investigating", "open")
-    other = Finding(project_id=pid, title="Someone else's", severity="high", status="retest", source="manual")
-    db_session.add(other)
+    finding("Someone else's", "confirmed", ["retest"], owned=False)
     db_session.commit()
 
     counts = _counts(client, pid)["my_work"]
@@ -159,10 +160,13 @@ def test_findings_to_retest_are_the_list_the_call_out_opens(client, db_session, 
         assert page["need_counts"]["retest"] == 27 and page["total_open"] == 28
     rows = {i["title"]: i for p in pages for i in p["items"]}
     assert rows["Two hosts to retest"]["needs"][0] == {
-        "kind": "retest", "text": "2 hosts marked for retest", "count": 2}
-    assert rows["Retest 0"]["needs"][0] == {"kind": "retest", "text": "marked for retest", "count": 1}
+        "kind": "retest", "text": "2 hosts awaiting a retest", "count": 2}
+    assert rows["Retest 0"]["needs"][0] == {"kind": "retest", "text": "1 host awaiting a retest", "count": 1}
     assert hosts.id in {i["finding_id"] for i in rows.values()}
+    # The caller's tab is theirs; the project's pending retests — the
+    # unowned one included — are the Findings list everyone sees.
     assert "Investigating" not in rows and "Someone else's" not in rows
+    assert _counts(client, pid)["retests_pending"] == {"findings": 28, "hosts": 29}
 
 
 def test_findings_to_decide_and_to_write_are_the_lists_they_page_through(

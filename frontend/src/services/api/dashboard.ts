@@ -137,10 +137,10 @@ export interface MyFindingsResponse {
 }
 
 /** What a finding asks of its owner (v2.453.0): `decide` — it is under
- *  investigation, marked for retest, or a proposal about it waits for a
- *  decision; `write` — only required report text is missing.  A finding with
- *  both is a `decide`.  `retest` (owner, 2026-10-14) — the finding or one of
- *  its endpoints is marked for retest: a PART of `decide`, not a third part. */
+ *  investigation, a host of it awaits a retest, or a proposal about it waits
+ *  for a decision; `write` — only required report text is missing.  A finding
+ *  with both is a `decide`.  `retest` (owner, 2026-10-14) — a host of it
+ *  awaits a retest: a PART of `decide`, not a third part. */
 export type FindingNeed = 'decide' | 'write' | 'retest';
 
 /** The caller's work, counted (v2.450.0); `to_claim` is shared work, outside
@@ -154,7 +154,7 @@ export interface MyWorkTotals {
   /** `findings_needing_me` in its two parts (v2.453.0); they add up to it. */
   findings_to_decide?: number;
   findings_to_write?: number;
-  /** Of `findings_to_decide`: marked for retest (the finding, or one of its hosts). */
+  /** Of `findings_to_decide`: a host of the finding awaits a retest. */
   findings_to_retest?: number;
   to_claim: number;
 }
@@ -253,9 +253,18 @@ export interface ProjectSetup {
   has_scopes: boolean;
 }
 
+/** Every host of the project awaiting a retest, whoever owns its finding
+ *  (5.395.0): `findings` is the total of `/findings?host_state=retest&status=all`. */
+export interface RetestsPending {
+  findings: number;
+  hosts: number;
+}
+
 export interface WorkbenchResponse {
   /** Project-wide; in the light call too. */
   setup: ProjectSetup;
+  /** Project-wide; absent from a server before 2.501.0. */
+  retests_pending?: RetestsPending;
   my_queue: MyAttentionResponse;
   my_tasks: MyTasksResponse;
   recent_notes: MyRecentNotesResponse;

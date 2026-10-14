@@ -110,7 +110,8 @@ def test_a_draft_reports_what_was_judged_and_says_what_was_left_out(client, db_s
     _finding(db_session, test_project, "Weak TLS", "medium", status="accepted_risk", hosts=[a, (b, "false_positive")])
     _finding(db_session, test_project, "Default creds", "high", status="remediated", hosts=[(c, "remediated")])
     _finding(db_session, test_project, "Still looking", "high", status="open", hosts=[a])
-    _finding(db_session, test_project, "Retesting", "low", status="retest", hosts=[a])
+    # Under investigation, its host awaiting a retest (a retest is per host since 2.501.0).
+    _finding(db_session, test_project, "Retesting", "low", status="open", hosts=[(a, "retest")])
     _finding(db_session, test_project, "Scanner misfire", "high", status="false_positive", hosts=[a])
     _finding(db_session, test_project, "Every host a false positive", "high", hosts=[(a, "false_positive")])
     _finding(db_session, test_project, "Banner", "info", hosts=[b])

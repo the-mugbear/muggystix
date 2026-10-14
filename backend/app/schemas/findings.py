@@ -149,6 +149,22 @@ class EndpointStatusUpdate(BaseModel):
     host_status: str
 
 
+class EndpointRetestResult(BaseModel):
+    """Body for POST /findings/{id}/endpoints/{finding_host_id}/retest
+    (2.501.0): what a retest of ONE host showed.  It is recorded as an
+    evidence record on that endpoint (outcome ``no_finding`` when fixed,
+    ``finding`` when not) and moves the endpoint — Remediated, or Still
+    present — in one transaction."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    fixed: bool = Field(..., description="True: the issue is gone from this host. False: it is still there.")
+    tool: str = Field(..., min_length=1, max_length=100, description="What was used to retest it.")
+    summary: str = Field(..., min_length=1, max_length=10_000, description="What the retest showed.")
+    command: Optional[str] = Field(None, max_length=10_000, description="The command as run, verbatim.")
+    # Capped by the evidence service (5 MB, a 413), measured before hashing —
+    # deliberately no ``max_length`` (a 422 would echo the input back).
+    raw_output: Optional[str] = None
+
+
 class EndpointStatusBulkUpdate(BaseModel):
     """Body for PATCH /findings/{id}/endpoints (review 2026-10-01 B13): the
     same change as the single route, for the endpoints a person selected.

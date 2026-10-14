@@ -2,9 +2,11 @@
 
 The remediation record's ``closed`` is the CONTACT's claim ("Reported fixed");
 the endpoint's ``remediated`` is the ASSESSOR's conclusion ("Remediated").
-Nothing writes one from the other, so the gap between them is derived — one
-SQL expression, ``remediation_policy.verification_expr`` — and every count of
-it is the list its filter opens.  Stored values and API enums are unchanged.
+Neither concludes the other — the claim only ASKS for the retest (2.501.0:
+a host still present becomes Retest pending), and a recorded result makes it
+Remediated — so the gap between them is derived — one SQL expression,
+``remediation_policy.verification_expr`` — and every count of it is the list
+its filter opens.  Stored values and API enums are unchanged.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -143,8 +145,11 @@ def test_the_truth_table_of_the_gap(client, db_session, test_project, on):
             continue
         row = got[fh_id]
         assert row["verification"] == verification, (endpoint, record, row["verification"])
-        # Both facts are on the row, under their own stored values.
-        assert row["endpoint_status"] == endpoint and row["status"] == (record or "open")
+        # Both facts are on the row, under their own stored values — except
+        # that "Reported fixed" on a host still present asks for its retest
+        # (2.501.0): that host now awaits one.
+        after = "retest" if (endpoint, record) == ("open", "closed") else endpoint
+        assert row["endpoint_status"] == after and row["status"] == (record or "open")
     assert page["verification_counts"] == {NOT_RETESTED: 2, RECORD_OPEN: 2}
     # A record that was never written is exactly that: nothing was created to say so.
     stored = {r.finding_host_id for r in db_session.query(FindingHostRemediation)}
@@ -257,13 +262,14 @@ def test_a_remediated_endpoint_outside_the_list_stays_outside(client, db_session
     assert listing(client, base(test_project))["verification_counts"][RECORD_OPEN] == 2
 
 
-def test_neither_status_is_written_from_the_other(client, db_session, test_project, on):
+def test_the_claim_asks_for_a_retest_and_concludes_nothing(client, db_session, test_project, on):
     reported, concluded = _finding(db_session, test_project, ["open", "remediated"])
     apply(client, test_project, [{"finding_host_id": reported, "status": "closed", "closed_on": day(0)}])
     listing(client, base(test_project), verification=NOT_RETESTED)
     db_session.expire_all()
-    # The contact's report did not conclude anything for the assessor …
-    assert db_session.get(FindingHost, reported).host_status == "open"
+    # The contact's report concluded nothing for the assessor: it ASKED for
+    # the retest (2.501.0), and only a recorded result makes it Remediated …
+    assert db_session.get(FindingHost, reported).host_status == "retest"
     # … and the assessor's conclusion wrote no record for the contact.
     assert db_session.query(FindingHostRemediation).filter_by(finding_host_id=concluded).count() == 0
     # The stored value is still ``closed``: only the label changed.

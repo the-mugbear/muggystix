@@ -242,8 +242,9 @@ describe('one name per fact: the contact reports it fixed, the assessment calls 
       ...Object.values(REMEDIATION_STATE_HELP), ...Object.values(REMEDIATION_FIELD_LABEL),
     ].join(' | ');
     expect(said).not.toMatch(/closed/i);
-    // The other statuses keep their names.
-    expect(REMEDIATION_STATUS_LABEL).toMatchObject({ open: 'Open', deferred: 'Deferred' });
+    // The other statuses: "Awaiting fix", never "Open" (5.395.0 — a finding's
+    // status, a host's state and the record each have their own words).
+    expect(REMEDIATION_STATUS_LABEL).toMatchObject({ open: 'Awaiting fix', deferred: 'Deferred' });
   });
 
   it('the CSV says "Reported fixed", the assessment’s status and the gap between them', () => {

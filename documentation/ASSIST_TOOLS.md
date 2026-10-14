@@ -104,6 +104,7 @@ could write about an engagement.
 | Which site is worst (multi-site engagements) | `assist_get_posture` → `sites` |
 | What waits on my operator, by kind | `assist_get_workbench` → `my_work` |
 | Which findings are waiting on my operator — all of them | `assist_list_my_findings` (`need=decide\|write\|retest`; `total`) |
+| Which hosts await a retest — the project's, owned or not | `assist_list_findings` (`host_state=retest`) |
 | What should we look at next | `assist_list_worth_a_look` — Operations' "Untouched, with a reason" queue |
 | Which ranges has nobody touched | `assist_get_terrain` |
 | What is still unassessed, per domain and segment | `assist_list_evidence_gaps` |
@@ -132,7 +133,7 @@ service:
   `findings_to_write` (they add up to `findings_needing_me`; a finding with a
   decision AND missing text is a `decide`; a `write` is missing required report
   text or the caption of a report image; `findings_to_retest` is the part of
-  `decide` marked for retest — the finding or one of its hosts), `tests_assigned`, `hosts_in_review`,
+  `decide` with a host awaiting a retest), `tests_assigned`, `hosts_in_review`,
   `tests_on_hosts_in_review`. `total` is those four parts; `to_claim` is shared
   work and is not in it. An agent asked "what is waiting on me?" answers by
   kind.

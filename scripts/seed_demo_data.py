@@ -15,7 +15,7 @@ What it populates (the signals the insight services actually read):
     services (telnet/ftp/rdp/smb) — the Hygiene lenses (EOL OS, risky services).
   * Vulnerabilities by severity — the Project-state "Vulnerabilities" tile.
   * **Findings (the spine)** with FindingHost links — exposure counts spine
-    Findings (status open/confirmed/retest), NOT raw vulns, so these are what
+    Findings (status open/confirmed), NOT raw vulns, so these are what
     make AttentionCard / SubnetInsights exposure non-zero. Some unowned.
   * Scans dated fresh / stale / very-stale + spread last_seen — Neglect/staleness.
   * Host follows (assigned / in-review / reviewed) + authored notes for the

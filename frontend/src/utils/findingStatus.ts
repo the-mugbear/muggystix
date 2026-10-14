@@ -36,7 +36,6 @@ export const STATUS_LABEL: Record<FindingStatus, string> = {
   false_positive: 'False positive',
   accepted_risk: 'Accepted risk',
   remediated: 'Remediated',
-  retest: 'Retest',
 };
 
 /**
@@ -58,7 +57,7 @@ export const TERMINAL_STATUSES = new Set<FindingStatus>([
  *   scanner observations   what tools reported, per host, not yet judged
  *                          (the inspector's card; the /scans contribution)
  *   under investigation    a promoted finding still being worked
- *                          (open / retest)
+ *                          (open; a retest is per host since 5.395.0)
  *   confirmed              a finding an analyst validated
  *   closed                 false positive / accepted risk / remediated
  *
@@ -82,11 +81,16 @@ export const populationOf = (status: FindingStatus): FindingPopulation =>
  * v5.290.0 — the API value `open` reads "Still present" (the host still has
  * the issue), never "Open": beside a finding labelled Confirmed, "Open here"
  * read as the finding status Open.  Display only; the API values are unchanged.
+ *
+ * 5.395.0 — `retest` reads "Retest pending" (owner, 2026-10-14: the three
+ * layers — the finding, each host, the contact's claim — each have their own
+ * words; "Retest" was also a finding status).  A pending retest is closed
+ * with its result ("Record retest…"), never by the picker alone.
  */
 export const ENDPOINT_STATUS_LABEL: Record<FindingHostStatus, string> = {
   open: 'Still present',
   remediated: 'Remediated here',
-  retest: 'Retest here',
+  retest: 'Retest pending',
   // v5.238.0 — about this endpoint only; the finding's other hosts keep theirs.
   false_positive: 'False positive here',
 };
@@ -95,9 +99,19 @@ export const ENDPOINT_STATUS_LABEL: Record<FindingHostStatus, string> = {
  *  filter chips, a network's counts, the state bar. */
 export const ENDPOINT_STATUS_SHORT_LABEL: Record<FindingHostStatus, string> = {
   open: 'Still present',
-  retest: 'Retest',
+  retest: 'Retest pending',
   remediated: 'Remediated',
   false_positive: 'False positive',
+};
+
+/** The Findings list's host filter (`host_state=`, 5.395.0): a finding with
+ *  at least one host in this state.  "Awaiting a retest" is the project's
+ *  list of pending retests. */
+export const HOST_STATE_FILTER_LABEL: Record<FindingHostStatus, string> = {
+  open: 'A host still present',
+  retest: 'A host awaiting a retest',
+  remediated: 'A host remediated',
+  false_positive: 'A host false positive',
 };
 
 /** The read-only badge's tone for each endpoint state. */
@@ -118,7 +132,7 @@ export const ENDPOINT_STATUS_FILL: Record<FindingHostStatus, string> = {
 };
 
 /**
- * "Still present on 3 of 5 · 1 remediated · 1 retest" — how the endpoints
+ * "Still present on 3 of 5 · 1 remediated · 1 awaiting a retest" — how the endpoints
  * stand, so a finding's status is never read as one state for every host.
  * Null when every endpoint is still present (nothing to add to the count).
  */
@@ -134,7 +148,7 @@ export const describeEndpointStates = (
   if (open === total) return null;
   const parts: string[] = [`still present on ${open} of ${total}`];
   if (remediated) parts.push(`${remediated} remediated`);
-  if (retest) parts.push(`${retest} retest`);
+  if (retest) parts.push(`${retest} awaiting a retest`);
   if (falsePositive) parts.push(`${falsePositive} false positive there`);
   return parts.join(' · ');
 };

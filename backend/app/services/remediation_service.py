@@ -652,8 +652,15 @@ def _decide(record: Optional[Remediation], sent: dict, overwrite: bool, *, today
         if (wanted.get("status") not in (None, owner) and field not in wanted
                 and _current(record, field) is not None):
             wanted[field] = None
-            if field == "deferred_review_on":
-                implied.add(field)
+            # Either date: it was never the caller's request (a closed row
+            # always has its date since 2.501.0, so reopening one met this too).
+            implied.add(field)
+    # A row that BECOMES reported fixed with no date sent was reported fixed
+    # today (walkthrough 2026-10-14: two undated rows were invisible to the
+    # trend and to "on time / late").  The dry run decides it the same way.
+    if (wanted.get("status") == "closed" and status_now != "closed"
+            and "closed_on" not in wanted and _current(record, "closed_on") is None):
+        wanted["closed_on"] = today
     # The request itself must make sense, whatever is stored.
     asked_status = wanted.get("status", status_now)
     for field, owner in _DATE_OF_STATUS.items():
@@ -728,7 +735,7 @@ def apply(db, project_id: int, body, who) -> dict:
     now = datetime.now(timezone.utc)
     today = deadlines.load(db).today(now)
     summary = {"targets": len(ids), "changed": 0, "unchanged": 0, "conflicts": 0,
-               "notes_added": 0, "notes_already_recorded": 0}
+               "notes_added": 0, "notes_already_recorded": 0, "retests_requested": 0}
     report, plan, problems = [], [], []
     for index, (row, targets) in enumerate(zip(body.rows, resolved)):
         sent = row.changes()
@@ -746,6 +753,8 @@ def apply(db, project_id: int, body, who) -> dict:
             summary["changed"] += len(changes)
             summary["conflicts"] += len(conflicts)
             summary["unchanged"] += unchanged
+            if _asks_for_retest(fh, changes):
+                summary["retests_requested"] += 1
             notes = []
             for note in row.notes:
                 key = _note_key(note, fh)
@@ -773,6 +782,14 @@ def apply(db, project_id: int, body, who) -> dict:
 
     if not body.dry_run:
         refreeze = []
+        # "Reported fixed" asks for the retest (owner, 2026-10-14): the
+        # endpoint moves through the ONE endpoint write, in this transaction,
+        # and whoever must know is told once per finding.
+        from app.services.finding_service import FindingService
+        findings = FindingService(db)
+        for fh, changes, _ in plan:
+            if _asks_for_retest(fh, changes):
+                findings.request_retest(fh.finding, fh, who.user_id, "the contact reported it fixed")
         for fh, changes, notes in plan:
             record = records.get(fh.id)
             written = {field for field, _, _ in changes}
@@ -805,7 +822,16 @@ def apply(db, project_id: int, body, who) -> dict:
                               occurred_at=note.occurred_at or now, created_at=now, request_key=key))
         db.flush()
         _freeze_closed_deadlines(db, refreeze)
+        findings.announce_retests(who.user_id)
     return {"dry_run": body.dry_run, "overwrite": body.overwrite, "summary": summary, "rows": report}
+
+
+def _asks_for_retest(fh: FindingHost, changes) -> bool:
+    """A record that BECOMES reported fixed on an endpoint still present asks
+    for its retest (owner, 2026-10-14).  An endpoint already remediated,
+    false positive or awaiting a retest is left as it is."""
+    return (fh.host_status == FindingHostStatus.OPEN.value
+            and any(field == "status" and new == "closed" for field, _, new in changes))
 
 
 def _lock_for_write(db, finding_host_ids: Sequence[int]) -> list[Remediation]:

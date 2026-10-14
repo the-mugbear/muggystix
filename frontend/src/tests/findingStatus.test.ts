@@ -11,7 +11,7 @@ import { ENDPOINT_STATUS_LABEL, POPULATION_LABEL, describeEndpointStates, popula
 describe('populationOf', () => {
   it('maps every finding status to one of the three named populations', () => {
     expect(populationOf('open')).toBe('investigating');
-    expect(populationOf('retest')).toBe('investigating');
+    // (No finding-level 'retest' since 5.395.0: a retest is per host.)
     expect(populationOf('confirmed')).toBe('confirmed');
     expect(populationOf('false_positive')).toBe('closed');
     expect(populationOf('accepted_risk')).toBe('closed');
@@ -28,7 +28,7 @@ describe('describeEndpointStates', () => {
   });
 
   it('says how the endpoints stand when they differ', () => {
-    expect(describeEndpointStates({ open: 3, remediated: 1, retest: 1 }, 5)).toBe('still present on 3 of 5 · 1 remediated · 1 retest');
+    expect(describeEndpointStates({ open: 3, remediated: 1, retest: 1 }, 5)).toBe('still present on 3 of 5 · 1 remediated · 1 awaiting a retest');
     expect(describeEndpointStates({ remediated: 2 }, 2)).toBe('still present on 0 of 2 · 2 remediated');
   });
 

@@ -46,12 +46,12 @@ export const needsLine = (f: MyFindingItem): string =>
   (f.needs ?? []).map((n) => n.text).join(' · ');
 
 const NEED_TITLE: Record<FindingNeed, string> = {
-  retest: 'Findings marked for retest, or with a host marked for retest: retest them and record what you found.',
-  decide: 'Findings under investigation, marked for retest, or with a proposal waiting for your decision.',
+  retest: 'Findings of yours with a host awaiting a retest: retest each host and record the result on the finding.',
+  decide: 'Findings under investigation, with a host awaiting a retest, or with a proposal waiting for your decision.',
   write: 'Findings with nothing to decide whose required report text, or the caption of a report image, is missing.',
 };
 const EMPTY_NEED: Record<FindingNeed, string> = {
-  retest: 'Nothing here — no finding you own, and none of its hosts, is marked for retest.',
+  retest: 'Nothing here — no host of a finding you own awaits a retest.',
   decide: 'Nothing here — no finding you own is under investigation or has a proposal waiting for a decision.',
   write: 'Nothing here — no finding you own is only missing required report text or an image caption.',
 };
@@ -95,7 +95,7 @@ export const FindingsNeedingMeTable: React.FC<FindingsNeedingMeTableProps> = ({
         label="Filter by what the finding needs"
         allLabel="All"
         allCount={all}
-        // "Marked for retest" narrows the decisions: offered when there is one
+        // "Retest pending" narrows the decisions: offered when there is one
         // (or it is the filter in the address), never as a third part.
         chips={FINDING_NEEDS.filter((k) => k !== 'retest' || (needCounts.retest ?? 0) > 0 || need === 'retest').map((k) => ({
           key: k, label: FINDING_NEED_LABEL[k], count: needCounts[k] ?? null, title: NEED_TITLE[k],

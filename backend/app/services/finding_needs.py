@@ -96,7 +96,7 @@ class FindingNeeds:
 
 
 def _endpoints_to_retest():
-    """How many of the finding's endpoints are marked for retest (a scalar
+    """How many of the finding's endpoints await a retest (a scalar
     subquery correlated to ``Finding``)."""
     from app.db.models_findings import FindingHost, FindingHostStatus
     return (
@@ -116,8 +116,8 @@ def needs_of(
     proposals.  Each figure is the count behind the ``need_condition`` of the
     same name, so a row never says what its filter would not list.
 
-    ``with_status`` puts "marked for retest" (the finding, or how many of its
-    hosts) and "under investigation" first (Operations)."""
+    ``with_status`` puts "N hosts awaiting a retest" and "under
+    investigation" first (Operations)."""
     from app.services import proposal_service
     from app.services.client_report_service import (
         REQUIRED_TEXT, UNDER_INVESTIGATION, blank_required_text, reportable_finding_condition,
@@ -139,7 +139,7 @@ def needs_of(
             Finding.id, Finding.status, reportable.label("reportable"),
             *[blank[k].label(f"blank_{k}") for k in REQUIRED_TEXT],
             case((reportable, uncaptioned), else_=0).label("uncaptioned"),
-            # Operations only: how many of its endpoints are marked for retest.
+            # Operations only: how many of its endpoints await a retest.
             (_endpoints_to_retest() if with_status else literal(0)).label("endpoints_to_retest"),
         )
         .filter(Finding.id.in_(ids))
@@ -150,13 +150,11 @@ def needs_of(
     out: Dict[int, FindingNeeds] = {}
     for row in rows:
         needs: List[FindingNeed] = []
-        if with_status and row.status == "retest":
-            needs.append(FindingNeed(kind="retest", text="marked for retest", count=1))
-        elif with_status and int(row.endpoints_to_retest or 0):
+        if with_status and int(row.endpoints_to_retest or 0):
             n = int(row.endpoints_to_retest)
-            needs.append(FindingNeed(kind="retest", text=f"{n} host{'' if n == 1 else 's'} marked for retest",
+            needs.append(FindingNeed(kind="retest", text=f"{n} host{'' if n == 1 else 's'} awaiting a retest",
                                      count=n))
-        if with_status and row.status in UNDER_INVESTIGATION and row.status != "retest":
+        if with_status and row.status in UNDER_INVESTIGATION:
             needs.append(FindingNeed(kind="under_investigation", text="under investigation", count=1))
         missing = [k for k in REQUIRED_TEXT if getattr(row, f"blank_{k}")] if row.reportable else []
         if missing:

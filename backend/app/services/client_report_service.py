@@ -82,14 +82,13 @@ INCLUDED_STATUSES = (
     FindingStatus.ACCEPTED_RISK.value,
     FindingStatus.REMEDIATED.value,
 )
-UNDER_INVESTIGATION = (FindingStatus.OPEN.value, FindingStatus.RETEST.value)
+UNDER_INVESTIGATION = (FindingStatus.OPEN.value,)
 STATUS_NOTE = {
     FindingStatus.ACCEPTED_RISK.value: "Risk accepted",
     FindingStatus.REMEDIATED.value: "Remediated during the assessment",
 }
 STATUS_WORDS = {
     FindingStatus.OPEN.value: "back under investigation",
-    FindingStatus.RETEST.value: "back under investigation",
     FindingStatus.FALSE_POSITIVE.value: "judged a false positive",
 }
 # The report text a finding should have before a report goes out.

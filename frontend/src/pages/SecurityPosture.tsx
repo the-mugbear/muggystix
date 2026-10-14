@@ -547,7 +547,7 @@ const PromotedFindings: React.FC<{ data: PostureResponse }> = ({ data }) => {
     <PostureSection
       title={<>
         Promoted findings
-        <InfoTip text="Where promoted findings stand — what feeds the report. Under investigation = open / retest; Confirmed = an analyst validated it; Closed = false positive, accepted risk or remediated — a recorded conclusion, each counted separately, and not a measure of improved security." />
+        <InfoTip text="Where promoted findings stand — what feeds the report. Under investigation = open; Confirmed = an analyst validated it; Closed = false positive, accepted risk or remediated — a recorded conclusion, each counted separately, and not a measure of improved security." />
       </>}
       actions={<Link to="/findings" className="text-info hover:underline">Findings →</Link>}
     >

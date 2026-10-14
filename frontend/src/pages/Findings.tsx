@@ -14,6 +14,7 @@ import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-
 import {
   Finding,
   FindingFilters,
+  FindingHostStatus,
   FindingNeedsFilter,
   FindingListResponse,
   FindingSortField,
@@ -78,9 +79,10 @@ import { ViewTabs } from '../components/ui/view-tabs';
 const FINDINGS_VIEWS = [['findings', 'Findings'], ['observations', 'Scanner observations']] as const;
 import ScannerObservations from '../components/findings/ScannerObservations';
 import {
-  SOURCE_LABEL, SOURCE_OPTIONS, STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates, matchesStatusFilter,
+  HOST_STATE_FILTER_LABEL, SOURCE_LABEL, SOURCE_OPTIONS, STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates,
+  matchesStatusFilter,
 } from '../utils/findingStatus';
-import { endpointPreviewTitle } from '../utils/findingEndpoints';
+import { ENDPOINT_STATES, endpointPreviewTitle } from '../utils/findingEndpoints';
 import { NEED_FILTER_OPTIONS, NEED_SECTION, needsFilterOf, rowNeeds } from '../utils/findingNeeds';
 import { selectAllState } from '../utils/selection';
 
@@ -151,9 +153,10 @@ const Findings: React.FC = () => {
             text={
               <>
                 Scanner observations are what the scanners reported, not yet judged; promote one to make it a
-                finding. Open and Retest are under investigation; Confirmed is validated; False positive, Accepted
-                risk and Remediated are closed. A finding&apos;s status is the issue&apos;s; each affected host keeps
-                its own state on the finding page.
+                finding. Open is under investigation; Confirmed is validated; False positive, Accepted risk and
+                Remediated are closed. A finding&apos;s status is the issue&apos;s; each affected host keeps its own
+                state on the finding page — still present, awaiting a retest, remediated or false positive — and
+                the Hosts filter lists the findings with a host in one of them.
               </>
             }
           />
@@ -186,6 +189,11 @@ const FindingsList: React.FC = () => {
   const ownerFilter = ownerFilterOf(searchParams.get('owner'), user?.id);
   // What a finding still needs before the report (`utils/findingNeeds`).
   const needsFilter = needsFilterOf(searchParams.get('needs'));
+  // A host of the finding in this state (5.395.0): `retest` is the project's
+  // list of pending retests, everyone's (owner, 2026-10-14).
+  const hostStateParam = searchParams.get('host_state');
+  const hostStateFilter: FindingHostStatus | 'all' =
+    (ENDPOINT_STATES as string[]).includes(hostStateParam ?? '') ? (hostStateParam as FindingHostStatus) : 'all';
   // The search is the address's too (`search.value`, what the list is asked
   // for); the box shows `search.draft`, which is committed a moment after the
   // typing stops — replacing the entry, from the first page — and follows the
@@ -219,6 +227,7 @@ const FindingsList: React.FC = () => {
   const setSourceFilter = (v: FindingSource | 'all') => setFilterParam('source', v, 'all');
   const setOwnerFilter = (v: OwnerFilterValue) => setFilterParam('owner', v, 'any');
   const setNeedsFilter = (v: FindingNeedsFilter | 'all') => setFilterParam('needs', v, 'all');
+  const setHostStateFilter = (v: FindingHostStatus | 'all') => setFilterParam('host_state', v, 'all');
 
   // Page + sort live in the URL too (UX review M1): the detail page hands
   // this exact URL back on its "Findings" action, so an analyst working a
@@ -256,11 +265,13 @@ const FindingsList: React.FC = () => {
   const members = roster.members;
 
   const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all'
-    || sourceFilter !== 'all' || ownerFilter !== 'any' || needsFilter !== 'all' || searchValue !== '';
+    || sourceFilter !== 'all' || ownerFilter !== 'any' || needsFilter !== 'all'
+    || hostStateFilter !== 'all' || searchValue !== '';
   // The page opens on status 'active', so `hasActiveFilters` is true on a
   // clean URL. The empty state must not blame filters the analyst never set.
   const onlyDefaultFilter = statusFilter === 'active' && severityFilter === 'all'
-    && sourceFilter === 'all' && ownerFilter === 'any' && needsFilter === 'all' && searchValue === '';
+    && sourceFilter === 'all' && ownerFilter === 'any' && needsFilter === 'all'
+    && hostStateFilter === 'all' && searchValue === '';
 
   // Bulk-selection safety — mirrors the guard in Hosts.tsx. The selected set is
   // only meaningful for the result set it was made against: a filter change
@@ -270,8 +281,8 @@ const FindingsList: React.FC = () => {
   // they're deliberately excluded and selection survives them — the same
   // convention Hosts uses.
   const membershipSignature = useMemo(
-    () => JSON.stringify([statusFilter, severityFilter, sourceFilter, ownerFilter, needsFilter, searchValue]),
-    [statusFilter, severityFilter, sourceFilter, ownerFilter, needsFilter, searchValue],
+    () => JSON.stringify([statusFilter, severityFilter, sourceFilter, ownerFilter, needsFilter, hostStateFilter, searchValue]),
+    [statusFilter, severityFilter, sourceFilter, ownerFilter, needsFilter, hostStateFilter, searchValue],
   );
   const prevMembership = useRef<string | null>(null);
   useEffect(() => {
@@ -295,10 +306,12 @@ const FindingsList: React.FC = () => {
     else if (ownerFilter === 'me') { if (user?.id != null) f.owner_id = user.id; }
     else if (ownerFilter !== 'any') f.owner_id = Number(ownerFilter);
     if (needsFilter !== 'all') f.needs = needsFilter;
+    if (hostStateFilter !== 'all') f.host_state = hostStateFilter;
     if (searchValue) f.search = searchValue;
     if (sortBy) { f.sort = sortBy; f.dir = sortDir; }
     return f;
-  }, [statusFilter, severityFilter, sourceFilter, ownerFilter, needsFilter, searchValue, user?.id, sortBy, sortDir]);
+  }, [statusFilter, severityFilter, sourceFilter, ownerFilter, needsFilter, hostStateFilter, searchValue,
+    user?.id, sortBy, sortDir]);
 
   // Per-field default direction (worst/most-relevant first); a repeat click
   // toggles. Mirrors the backend's per-field default.
@@ -578,13 +591,13 @@ const FindingsList: React.FC = () => {
           label="Search findings"
         />
         <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilterValue)}>
-          {/* Wide enough for its longest label, "Active (open / confirmed /
-              retest)", to read whole (U4: at w-52 the default was cut). */}
+          {/* Wide enough for its longest label, "Active (open / confirmed)",
+              to read whole (U4: at w-52 the default was cut). */}
           <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-[17rem]')} aria-label="Status">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="active">Active (open / confirmed / retest)</SelectItem>
+            <SelectItem value="active">Active (open / confirmed)</SelectItem>
             <SelectItem value="resolved">Resolved (terminal)</SelectItem>
             <SelectItem value="all">All statuses</SelectItem>
             {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
@@ -634,9 +647,20 @@ const FindingsList: React.FC = () => {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">Needed or not</SelectItem>
+            <SelectItem value="all">Report readiness: any</SelectItem>
             {NEED_FILTER_OPTIONS.map(([value, label]) => (
               <SelectItem key={value} value={value}>{label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={hostStateFilter} onValueChange={(v) => setHostStateFilter(v as FindingHostStatus | 'all')}>
+          <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-52')} aria-label="Hosts">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Hosts: any state</SelectItem>
+            {ENDPOINT_STATES.map((state) => (
+              <SelectItem key={state} value={state}>{HOST_STATE_FILTER_LABEL[state]}</SelectItem>
             ))}
           </SelectContent>
         </Select>

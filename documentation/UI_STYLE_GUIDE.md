@@ -931,7 +931,7 @@ and the page was "confusing". The rules:
   put) and switched as tabs; their source lines alone cannot tell them apart, so
   a tab names its model only when no other draft shares it, else its opening words.
 - **Show the from and the to together.** An endpoint row's proposal reads
-  "Still present → Retest here": the state column is a table's width away.
+  "Still present → Retest pending": the state column is a table's width away.
 - **A jump lands below the chrome.** A target scrolled to with `block: 'start'`
   takes `uiStyles.scrollBelowChrome(extra)` (the layout's `--topbar-h` +
   `--secondary-nav-h`), never a fixed `scroll-mt-*` shorter than the header.
@@ -1129,15 +1129,27 @@ ONE name wherever a person reads it; the stored values do not change.
 | Fact | Stored | Said as |
 |---|---|---|
 | The CONTACT's progress (remediation record, kept by a project admin) | `closed` | **Reported fixed** — never "Closed" |
-| | `open`, `deferred` | Open, Deferred |
-| The ASSESSOR's conclusion (the finding's endpoint) | `remediated` | **Remediated** |
+| | `open`, `deferred` | **Awaiting fix** (5.395.0 — never "Open"), Deferred |
+| The ASSESSOR's evidence (the finding's endpoint) | `open`, `retest`, `remediated`, `false_positive` | Still present, **Retest pending**, **Remediated**, False positive |
+| The TEAM's judgement (the finding) | `open`, `confirmed`, … | Open (under investigation), Confirmed, … — no "Retest" (retired in 5.395.0: a retest is per host) |
 
+- Three layers, one fact each, and no word shared between them (owner,
+  2026-10-14: "the lines are blurry and confusing given they use very similar
+  language"). A defect that is neither remediated nor deferred is
+  **Outstanding**, not "Open".
 - A date, a count, a chart, a CSV column and a timeline entry follow the same
   word: "Reported fixed on", "Reported fixed late", "reported fixed on time".
-- The two are never synced, so the remediation pages show where they disagree
-  as two named, countable, openable states: **Reported fixed, not retested**
-  and **Remediated, record still open**. The server derives them
+- The claim never concludes anything for the assessor: "Reported fixed" ASKS
+  for the retest (the host becomes Retest pending), and only a recorded retest
+  result makes it Remediated. The remediation pages still show where the two
+  disagree as two named, countable, openable states: **Reported fixed, not
+  retested** and **Remediated, record still open**. The server derives them
   (`verification`); a page never works one out.
+- **A pending retest is closed with its result, by anyone who may change the
+  state** ("Record retest…" on the host's row; the picker's "Remediated" opens
+  the same dialog): what was run and what it showed are kept as evidence, and
+  the host takes its state from it. Every member sees the pending retests —
+  Operations' lead line and the Findings list's "Hosts" filter.
 - In a row the relation is a short line in the cell that already holds the
   state (the Deadline cell), with the definition on `title`; it is not a column,
   which would be empty on most rows. The counts are buttons that set

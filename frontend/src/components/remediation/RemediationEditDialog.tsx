@@ -279,9 +279,11 @@ export const RemediationEditDialog: React.FC<{
                 onValueChange={(v) => {
                   const status = v === UNCHANGED ? '' : (v as RemediationStatus);
                   // The date belongs to Reported fixed only, the review date to Deferred.
+                  // Reported fixed starts on the installation's today (5.395.0:
+                  // an undated one was invisible to the trend); it can be changed.
                   setDraft((d) => ({
                     ...d, status,
-                    closed_on: status === 'closed' ? d.closed_on : '',
+                    closed_on: status === 'closed' ? (d.closed_on || opened.closed_on || day) : '',
                     deferred_review_on: status === 'deferred' ? d.deferred_review_on : opened.deferred_review_on,
                   }));
                 }}>
@@ -300,6 +302,12 @@ export const RemediationEditDialog: React.FC<{
                 <Input id="rem-closed" type="date" ref={closedRef} value={draft.closed_on}
                   onBlur={checkDates} onKeyUp={checkDates}
                   onChange={(e) => set('closed_on', e.target.value)} />
+                {opened.status !== 'closed' && (
+                  <p className="mt-xxs text-caption text-muted-foreground" data-testid="rem-asks-retest">
+                    The contact&apos;s claim asks for a retest: a host still present becomes Retest pending, and
+                    the finding&apos;s owner — or, with none, the project — is told.
+                  </p>
+                )}
               </div>
             )}
             {draft.status === 'deferred' && (

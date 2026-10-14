@@ -62,13 +62,13 @@ export const LABEL_TONE: Record<PostureLabel, LabelTone> = {
 // ---------------------------------------------------------------------------
 // Finding lifecycle — status → colour + label, split into active vs resolved
 // for the disposition pipeline. Colours are meaningful: open = needs attention
-// (amber), confirmed = real (red), retest = in verification (blue), remediated
-// = fixed (green), false-positive / accepted-risk = closed-out (muted).
+// (amber), confirmed = real (red), remediated = fixed (green), false-positive
+// / accepted-risk = closed-out (muted).  (No finding-level retest since
+// 5.395.0: a retest is per host.)
 // ---------------------------------------------------------------------------
 export const STATUS_HSL: Record<string, string> = {
   open: 'hsl(var(--warning))',
   confirmed: 'hsl(var(--destructive))',
-  retest: 'hsl(var(--info))',
   remediated: 'hsl(var(--success))',
   false_positive: 'hsl(var(--muted-foreground))',
   // Lighter than false-positive: the two sit side by side in one bar.
@@ -86,7 +86,7 @@ export const STATUS_LABEL: Record<string, string> = FINDING_STATUS_LABEL;
  * closed finding is a recorded conclusion, never a claim of improved security.
  */
 export const POPULATION_STATUSES: Array<{ key: 'investigating' | 'confirmed' | 'closed'; statuses: string[] }> = [
-  { key: 'investigating', statuses: ['open', 'retest'] },
+  { key: 'investigating', statuses: ['open'] },
   { key: 'confirmed', statuses: ['confirmed'] },
   { key: 'closed', statuses: ['false_positive', 'accepted_risk', 'remediated'] },
 ];

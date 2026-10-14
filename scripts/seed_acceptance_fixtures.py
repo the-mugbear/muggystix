@@ -559,7 +559,7 @@ def _seed_remediation(db, base_url: str, pid: int, lead_user: User, lead: Api) -
         db.query(FindingHost.id).join(Finding, Finding.id == FindingHost.finding_id)
         .filter(Finding.project_id == pid, Finding.status == FindingStatus.CONFIRMED,
                 FindingHost.host_status == "open")
-        .order_by(FindingHost.finding_id, FindingHost.id).limit(3).all()
+        .order_by(FindingHost.finding_id, FindingHost.id).limit(4).all()
     )
     ids = [fh_id for (fh_id,) in rows]
     tracked = {
@@ -574,14 +574,43 @@ def _seed_remediation(db, base_url: str, pid: int, lead_user: User, lead: Api) -
         # …assigned recently…
         {"contact_email": "ops@acceptance.invalid", "contact_name": "Acceptance Ops",
          "team": "Infrastructure", "notified_on": (today - timedelta(days=2)).isoformat()},
-        # …and a contact with no date: no clock runs.
+        # …a contact with no date: no clock runs…
         {"contact_email": "apps@acceptance.invalid", "contact_name": "Acceptance Apps"},
+        # …and one the contact reported fixed: dated today, and its host now
+        # awaits a retest (2.501.0) — the retest list and its notification.
+        {"contact_email": "apps@acceptance.invalid", "contact_name": "Acceptance Apps",
+         "notified_on": (today - timedelta(days=40)).isoformat(), "status": "closed"},
     )
     todo = [{"finding_host_id": fh_id, **plan} for fh_id, plan in zip(ids, plans) if fh_id not in tracked]
     if todo:
         lead("POST", "/remediation/apply", json={"rows": todo})
         print(f"remediation records on {len(todo)} findings on hosts")
     return {"tracking_on": True, "finding_host_ids": ids}
+
+
+def _seed_retests(db, pid: int, lead: Api) -> dict:
+    """A host awaiting a retest on a finding NOBODY owns, whether or not
+    remediation tracking is on (2.501.0: everyone sees a pending retest, and
+    anyone may record its result) — through the people's endpoint route, so
+    the project's members are notified as they would be."""
+    pending = (
+        db.query(FindingHost.id).join(Finding, Finding.id == FindingHost.finding_id)
+        .filter(Finding.project_id == pid, Finding.owner_id.is_(None), FindingHost.host_status == "retest")
+        .first()
+    )
+    if pending is None:
+        row = (
+            db.query(FindingHost.finding_id, FindingHost.id).join(Finding, Finding.id == FindingHost.finding_id)
+            .filter(Finding.project_id == pid, Finding.owner_id.is_(None),
+                    Finding.status == FindingStatus.CONFIRMED, FindingHost.host_status == "open")
+            .order_by(FindingHost.finding_id, FindingHost.id).first()
+        )
+        if row is None:
+            return {"finding_host_id": None}
+        lead("PATCH", f"/findings/{row.finding_id}/endpoints/{row.id}", json={"host_status": "retest"})
+        print(f"a host awaiting a retest on unowned finding {row.finding_id}")
+        return {"finding_host_id": row.id}
+    return {"finding_host_id": pending[0]}
 
 
 def _seed_subnet_labels(db, pid: int, lead: Api) -> dict:
@@ -930,6 +959,7 @@ def main() -> None:
         db, args.base_url, pid, lead, keys, lead.c.headers["Authorization"].split(" ", 1)[1])
     fixtures["other_project"] = _seed_other_project(db, args.base_url, host.ip_address)
     fixtures["remediation"] = _seed_remediation(db, args.base_url, pid, users["acc-lead"], lead)
+    fixtures["retest"] = _seed_retests(db, pid, lead)
     fixtures["subnet_labels"] = _seed_subnet_labels(db, pid, lead)
     fixtures["scanner_integration"] = _seed_scanner_integration(db, args.base_url, admin_user)
 
