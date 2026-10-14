@@ -707,6 +707,68 @@ print_info "Collecting the served TLS certificate (derived facts only)..."
 } > "$LOG_DIR/tls.txt" 2>&1 || echo "(a TLS check command failed; the facts above are what was gathered)" >> "$LOG_DIR/tls.txt"
 
 # ----------------------------------------------------------------------
+# Ownership and permissions (2.496.1) — who owns what the scripts and the
+# containers rely on, and what the containers did about it at their last
+# start.  Derived facts only: an owner is "this account", "root", "the
+# containers' user" or "another account" — never a name — and the paths are
+# the fixed ones.  The findings are deploy.sh's own check
+# (scripts/permissions-lib.sh), by kind: its sentences name accounts.
+# ----------------------------------------------------------------------
+print_info "Recording ownership and permissions..."
+{
+    echo "=== OWNERSHIP AND PERMISSIONS ($(date -u +"%Y-%m-%d %H:%M:%S UTC")) ==="
+    if [[ -f "$SCRIPT_DIR/permissions-lib.sh" ]]; then
+        # shellcheck source=permissions-lib.sh
+        source "$SCRIPT_DIR/permissions-lib.sh"
+        echo "collected as: $([[ "$(id -u)" -eq 0 ]] && echo root || echo "an ordinary account")$(id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker && echo ', in the docker group' || true)"
+        if docker_info="$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null)"; then
+            echo "docker: $(grep -q rootless <<<"$docker_info" && echo rootless || echo 'not rootless'), $(grep -q userns <<<"$docker_info" && echo 'user namespaces remapped' || echo 'no user-namespace remapping')"
+            echo "  (rootless or remapped: a container's root cannot change the owner of a host folder — the entrypoint's fix then fails)"
+        else
+            echo "docker: could not be asked"
+        fi
+        echo ""
+        echo "--- Owner and mode (owner as a class, never a name) ---"
+        for f in .env ssl ssl/certs ssl/certs/networkmapper.crt ssl/certs/networkmapper.key uploads; do
+            if [[ -e "$f" ]]; then
+                printf '%-34s %-22s mode %s\n' "$f" "$(perm_owner_class "$f")" "$(perm_mode "$f")"
+            else
+                printf '%-34s %s\n' "$f" "(not there)"
+            fi
+        done
+        echo ""
+        echo "--- What deploy.sh would ask about (the same check, by kind) ---"
+        audit_permissions
+        if [[ ${#PERM_KIND[@]} -eq 0 ]]; then
+            echo "nothing to fix"
+        else
+            for i in "${!PERM_KIND[@]}"; do
+                echo "${PERM_KIND[$i]}$([[ -n "${PERM_AUTO[$i]}" ]] && echo '  (deploy.sh can fix it itself)' || echo '  (needs another account, or a decision)')"
+            done
+        fi
+    else
+        echo "scripts/permissions-lib.sh is missing — this copy of the scripts folder is incomplete."
+    fi
+    echo ""
+    echo "--- Database TLS ---"
+    if $DB_UP; then
+        echo "ssl: $(psql_q -tAc 'SHOW ssl' 2>/dev/null | tr -d '[:space:]' || echo unknown)"
+        echo "connections over TLS / from the network: $(psql_q -tAc "SELECT count(*) FILTER (WHERE s.ssl) || ' / ' || count(*) FROM pg_stat_ssl s JOIN pg_stat_activity a USING (pid) WHERE a.client_addr IS NOT NULL" 2>/dev/null | tr -d '[:space:]' || echo unknown)"
+    else
+        echo "database not running"
+    fi
+    echo ""
+    echo "--- What the containers said about it at their last start (the whole current log, whatever --since says) ---"
+    if compose_available; then
+        compose logs --no-color --timestamps db backend worker report-worker 2>&1 \
+            | grep -E '\[entrypoint\]|\[db-tls\]' | tail -n 40 \
+            || echo "(no such line — nothing needed changing, or the logs have rotated)"
+    else
+        echo "No docker compose binary on PATH."
+    fi
+} > "$LOG_DIR/permissions.txt" 2>&1 || echo "(a check failed; the facts above are what was gathered)" >> "$LOG_DIR/permissions.txt"
+
+# ----------------------------------------------------------------------
 # Container logs
 # ----------------------------------------------------------------------
 print_info "Collecting container logs${SINCE:+ (since $SINCE)}..."
@@ -850,6 +912,12 @@ Files:
                           normalised text (constants are \$n; no values), or
                           one line saying why it is unavailable
 - health.txt              reachability through nginx and the internal DB probe
+- permissions.txt         who owns .env, ssl/ and uploads/ (as a class — this
+                          account, root, the containers' user — never a name)
+                          and their modes; what deploy.sh's ownership check
+                          would ask about, by kind; whether Docker is rootless;
+                          the database's TLS; what the containers' entrypoints
+                          changed or could not change at their last start
 - tls.txt                 the certificate nginx serves: self-signed or CA-issued,
                           expiry, SAN counts, whether it names HOST_IP, whether it
                           is the file in ssl/certs and matches its key (no names)

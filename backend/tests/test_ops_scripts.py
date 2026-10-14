@@ -779,6 +779,57 @@ def test_the_uploads_tree_and_the_database_key_are_set_up_by_the_containers():
         assert "init-ssl.sh" not in text
 
 
+def _audit(tmp_path: pathlib.Path, setup: str = "") -> list[str]:
+    """Source the shared check in ``tmp_path`` and print one line per finding:
+    ``kind|auto``, then the owner class of .env."""
+    script = (
+        f'cd "{tmp_path}"\n{setup}\nsource "{SCRIPTS / "permissions-lib.sh"}"\naudit_permissions\n'
+        'for i in "${!PERM_KIND[@]}"; do echo "${PERM_KIND[$i]}|${PERM_AUTO[$i]}"; done\n'
+        'echo "class:$(perm_owner_class .env)"\n'
+    )
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.splitlines()
+
+
+def test_the_one_check_names_each_finding_by_kind(tmp_path):
+    """deploy.sh asks about these; the diagnostics bundle reports the same
+    ones — by kind, because the sentences name accounts and paths."""
+    (tmp_path / "ssl" / "certs").mkdir(parents=True)
+    env, key = tmp_path / ".env", tmp_path / "ssl" / "certs" / "networkmapper.key"
+    env.write_text("SECRET_KEY=x\n")
+    key.write_text("key")
+    env.chmod(0o600)
+    key.chmod(0o600)
+    assert _audit(tmp_path) == ["class:this account"]
+
+    env.chmod(0o644)
+    key.chmod(0o640)
+    assert _audit(tmp_path) == [
+        "env_readable_by_others|chmod600:.env",
+        "tls_key_readable_by_others|chmod600:ssl/certs/networkmapper.key",
+        "class:this account",
+    ]
+
+
+def test_the_bundle_reports_ownership_by_class_and_the_findings_by_kind():
+    """permissions.txt must hold no account name and no path of the host: it
+    prints `perm_owner_class` and PERM_KIND, never the owner's name or the
+    sentences deploy.sh shows at the terminal."""
+    script = (SCRIPTS / "collect-logs.sh").read_text(encoding="utf-8")
+    start = script.index('"=== OWNERSHIP AND PERMISSIONS')
+    section = script[start:script.index('"$LOG_DIR/permissions.txt"', start)]
+    assert 'source "$SCRIPT_DIR/permissions-lib.sh"' in section and "audit_permissions" in section
+    assert "perm_owner_class" in section and "PERM_KIND" in section
+    for forbidden in ("PERM_WHAT", "PERM_FIX", "perm_owner_name", "id -un", "whoami", "$PWD", "PROJECT_ROOT"):
+        assert forbidden not in section, forbidden
+    # The containers' own lines are taken whatever --since says, and the queries stay behind the lock timeout.
+    assert r"\[entrypoint\]|\[db-tls\]" in section and "psql_q" in section
+    # deploy.sh keeps no copy of the check.
+    deploy = (SCRIPTS / "deploy.sh").read_text(encoding="utf-8")
+    assert "audit_permissions() {" not in deploy and 'source "$SCRIPT_DIR/permissions-lib.sh"' in deploy
+
+
 def test_the_upgrade_does_not_read_an_unreadable_uploads_folder_as_empty():
     text = (SCRIPTS / "upgrade-instance.sh").read_text(encoding="utf-8")
     guard = text.index('! [[ -r "$src" && -w "$src" && -x "$src" ]]')

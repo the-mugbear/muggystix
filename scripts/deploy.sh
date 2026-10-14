@@ -587,78 +587,15 @@ ensure_uploads_dir() {
 # itself is offered as a fix, everything else is printed as the one command
 # to run, and the operator chooses to go on or stop.
 # ------------------------------------------------------------------
-PERM_WHAT=(); PERM_FIX=(); PERM_AUTO=()
-CONTAINER_UID=999
-
-perm_owner() { stat -c '%u' "$1" 2>/dev/null || echo -1; }
-perm_owner_name() { stat -c '%U' "$1" 2>/dev/null || echo '?'; }
-perm_mode() { stat -c '%a' "$1" 2>/dev/null || echo '?'; }
-# True when the group or anyone else has any access to it.
-perm_open_to_others() {
-    local m; m="$(stat -c '%a' "$1" 2>/dev/null)" || return 1
-    [[ -n "$m" && "${m: -2}" != "00" ]]
-}
-# <what is wrong and why it matters> <the command that fixes it> [<auto fix>]
-# An auto fix is `chmod600:<path>` or `chown-uploads`: only ever one of those
-# two, on a path named in this function's callers — never text to evaluate.
-perm_note() { PERM_WHAT+=("$1"); PERM_FIX+=("$2"); PERM_AUTO+=("${3:-}"); }
-
-audit_permissions() {
-    PERM_WHAT=(); PERM_FIX=(); PERM_AUTO=()
-    local uid me owner f auto
-    uid="$(id -u)"; me="$(id -un)"
-
-    if [[ "$uid" -eq 0 ]]; then
-        perm_note \
-            "This script is running as root. Nothing in it needs root, and every file it writes (.env, ssl/, backups) becomes root's: the next run as an ordinary account cannot renew the certificate, back up the key or rewrite .env." \
-            "Stop, and run it as an ordinary account that can use Docker (a member of the docker group) — the same one every time. To hand this folder back first:  chown -R ${SUDO_USER:-<that account>}: \"$PROJECT_ROOT\" && chown -R $CONTAINER_UID:$CONTAINER_UID \"$PROJECT_ROOT/uploads\""
-    fi
-
-    if [[ -e .env ]]; then
-        owner="$(perm_owner .env)"
-        if [[ "$uid" -ne 0 && "$owner" != "$uid" ]]; then
-            perm_note \
-                ".env belongs to $(perm_owner_name .env), not to $me: this script cannot update it (options 2 and 3 rewrite it)." \
-                "sudo chown $me: \"$PROJECT_ROOT/.env\""
-        fi
-        if perm_open_to_others .env; then
-            auto=""; [[ "$uid" -eq 0 || "$owner" == "$uid" ]] && auto="chmod600:.env"
-            perm_note \
-                ".env (mode $(perm_mode .env)) can be read by other accounts on this host. It holds SECRET_KEY and the database password." \
-                "chmod 600 \"$PROJECT_ROOT/.env\"" "$auto"
-        fi
-    fi
-
-    local foreign=()
-    for f in ssl ssl/certs ssl/certs/networkmapper.crt ssl/certs/networkmapper.key; do
-        [[ -e "$f" ]] || continue
-        owner="$(perm_owner "$f")"
-        if [[ "$uid" -ne 0 && "$owner" != "$uid" ]]; then foreign+=("$f ($(perm_owner_name "$f"))"); fi
-    done
-    if [[ ${#foreign[@]} -gt 0 ]]; then
-        perm_note \
-            "The certificate folder is not $me's — ${foreign[*]}. nginx reads it whoever owns it, so root is not needed there; but this script then cannot renew the certificate (option 3) or back up the key (option 6), and the local CA's install step refuses." \
-            "sudo chown -R $me: \"$PROJECT_ROOT/ssl\""
-    fi
-    f="ssl/certs/networkmapper.key"
-    if [[ -e "$f" ]] && perm_open_to_others "$f"; then
-        owner="$(perm_owner "$f")"
-        auto=""; [[ "$uid" -eq 0 || "$owner" == "$uid" ]] && auto="chmod600:$f"
-        perm_note \
-            "The TLS private key $f (mode $(perm_mode "$f")) can be read by other accounts on this host." \
-            "chmod 600 \"$PROJECT_ROOT/$f\"" "$auto"
-    fi
-
-    if [[ -d uploads ]]; then
-        owner="$(perm_owner uploads)"
-        if [[ "$owner" != "$CONTAINER_UID" && "$owner" != "$uid" ]]; then
-            auto=""; [[ "$uid" -eq 0 ]] && auto="chown-uploads"
-            perm_note \
-                "uploads/ belongs to $(perm_owner_name uploads). It is the containers' (UID $CONTAINER_UID): they take it over at start where Docker lets them, and until then this script cannot create its folders in it." \
-                "sudo chown -R $CONTAINER_UID:$CONTAINER_UID \"$PROJECT_ROOT/uploads\"" "$auto"
-        fi
-    fi
-}
+# The check itself — `audit_permissions` and the PERM_* arrays it fills — is
+# scripts/permissions-lib.sh: the diagnostics bundle (collect-logs.sh) runs
+# the same one, so what a deploy asked about is what a bundle reports.
+if [[ ! -f "$SCRIPT_DIR/permissions-lib.sh" ]]; then
+    print_error "scripts/permissions-lib.sh is missing — this copy of the scripts folder is incomplete."
+    exit 1
+fi
+# shellcheck source=permissions-lib.sh
+source "$SCRIPT_DIR/permissions-lib.sh"
 
 print_permission_findings() {
     local i
