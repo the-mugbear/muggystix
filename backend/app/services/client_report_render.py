@@ -26,6 +26,11 @@ the files nor block them; ``template_fingerprint`` is then only the label of
 what was issued.  A report issued before the copy existed renders from the
 live template, and only while its fingerprint is still the recorded one.
 
+A draft's preview records the fingerprint of the inputs it rendered
+(``inputs_fingerprint`` → ``report_jobs.inputs_fingerprint``); the page asks
+for the fingerprint as it would be now (``GET /client-reports/{id}/inputs``)
+and says a preview whose inputs changed since is out of date.
+
 An issued render refuses what would make its files differ from what was
 signed off (review 2026-09-23 C4): a template copy or an image copy that is
 gone or no longer matches its recorded hash (for a report without a template
@@ -35,6 +40,7 @@ restore from backup or a revision, not a re-render.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import shutil
@@ -88,6 +94,50 @@ def live_evidence_resolver(db: Session, project_id: int):
         return target if target.is_file() else None
 
     return resolve
+
+
+def _attachment_ids(value, found: set) -> set:
+    """Every ``attachment_id`` anywhere in the dataset: the images a render
+    may read (a finding's, its evidence, the system description's)."""
+    if isinstance(value, dict):
+        att_id = value.get("attachment_id")
+        if isinstance(att_id, int):
+            found.add(att_id)
+        for item in value.values():
+            _attachment_ids(item, found)
+    elif isinstance(value, list):
+        for item in value:
+            _attachment_ids(item, found)
+    return found
+
+
+def inputs_fingerprint(db: Session, report: Report, dataset: dict) -> str:
+    """One SHA-256 over what a draft's render reads: the dataset (keys
+    sorted) without today's date — the one field that changes by itself on
+    a draft — the template's ``fingerprint`` (its files, its base's, its
+    uploads) and the bytes of every image the dataset names.
+
+    "The inputs changed", not "what prints changed": a template may ignore
+    a field that changed.  The worker records it for each preview it renders
+    and the page compares it with this value as it would be now."""
+    report_part = {k: v for k, v in (dataset.get("report") or {}).items() if k != "date"}
+    canonical = json.dumps({**dataset, "report": report_part}, sort_keys=True, default=str,
+                           separators=(",", ":"))
+    digest = hashlib.sha256()
+    digest.update(b"dataset\0" + hashlib.sha256(canonical.encode("utf-8")).digest())
+    try:
+        template = templates.get_template(report.template)
+        digest.update(b"template\0" + templates.fingerprint(template).encode("ascii"))
+    except (LookupError, ValueError, OSError):
+        # A template that cannot be read is an input too: the preview of it
+        # failed, and whatever it rendered before is not what would render now.
+        digest.update(b"template\0missing:" + (report.template or "").encode("utf-8"))
+    resolve = live_evidence_resolver(db, report.project_id)
+    for att_id in sorted(_attachment_ids(dataset, set())):
+        path = resolve({"attachment_id": att_id})
+        digest.update(f"image:{att_id}\0".encode("ascii"))
+        digest.update(hashlib.sha256(path.read_bytes()).digest() if path is not None else b"missing")
+    return digest.hexdigest()
 
 
 def _issued_evidence_resolver(db: Session, report: Report):
@@ -190,6 +240,9 @@ def run_client_job(db: Session, job: ReportJob) -> Optional[Tuple[bytes, str, st
             raise ValueError("This report has been issued; download its files instead of a preview.")
         fmt = PREVIEW_FORMATS[job.format]
         dataset, _, _ = ClientReportService(db).build(report)
+        # What this preview renders; committed with the job's completion (a
+        # lost lease rolls it back with the rest).
+        job.inputs_fingerprint = inputs_fingerprint(db, report, dataset)
         basename = f"{file_slug(dataset['project']['name'])}-draft-{report.id}"
         with tempfile.TemporaryDirectory(prefix="bs-preview-") as tmp:
             files = _render(db, report, dataset, [fmt], Path(tmp), basename)

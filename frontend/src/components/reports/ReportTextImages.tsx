@@ -41,6 +41,50 @@ export const placedInLabel = (placedIn: readonly string[]): string =>
     return draft ? `draft #${draft[1]}` : where;
   }).join(', ');
 
+/** One image's caption: typed, then saved with Save (or Enter); Cancel (or
+ *  Escape) puts the stored caption back.  The buttons show only while what
+ *  is typed differs from what is stored. */
+const CaptionEditor: React.FC<{
+  caption: string;
+  image: ReportTextImage;
+  disabled: boolean;
+  saving: boolean;
+  onSave: (next: string) => void;
+}> = ({ caption, image, disabled, saving, onSave }) => {
+  const [draft, setDraft] = useState(caption);
+  const changed = draft.trim() !== caption;
+  const save = () => { if (changed) onSave(draft.trim()); };
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-xs">
+      <Input value={draft} maxLength={CAPTION_MAX} className="min-w-0 flex-1"
+        aria-label={`Caption for image ${image.id} (${image.filename})`}
+        placeholder="Caption — printed under the image; the file name is printed without one"
+        disabled={disabled || saving}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+            e.preventDefault();
+            save();
+          } else if (e.key === 'Escape') {
+            setDraft(caption);
+          }
+        }} />
+      {changed && (
+        <>
+          <Button type="button" size="sm" className="h-8" disabled={disabled || saving} onClick={save}
+            aria-label={`Save the caption of image ${image.id}`}>
+            {saving && <Loader2 className="size-3.5 animate-spin" aria-hidden />} Save
+          </Button>
+          <Button type="button" variant="ghost" size="sm" className="h-8" disabled={disabled || saving}
+            onClick={() => setDraft(caption)}>
+            Cancel
+          </Button>
+        </>
+      )}
+    </div>
+  );
+};
+
 interface Props {
   /** The form's one load of the images (`useReportTextImages`). */
   state: ReportTextImagesState;
@@ -167,26 +211,14 @@ const ReportTextImages: React.FC<Props> = ({ state, disabled = false, idPrefix }
                 </span>
                 <div className="min-w-0 flex-1 space-y-xxs">
                   {mayChange ? (
-                    // Saved on leaving the box or on Enter; Escape puts the
-                    // stored caption back.  Keyed by the stored caption, so a
+                    // Saved with its own Save (the report workspace, owner
+                    // 2026-10-14: a caption is shared by every text that
+                    // places the image — it no longer saves silently on
+                    // leaving the box).  Keyed by the stored caption, so a
                     // re-read shows the server's.
-                    <Input key={caption} defaultValue={caption} maxLength={CAPTION_MAX}
-                      aria-label={`Caption for image ${image.id} (${image.filename})`}
-                      placeholder="Caption — printed under the image; the file name is printed without one"
-                      disabled={disabled || savingCaption || deleting}
-                      onBlur={(e) => {
-                        const next = e.target.value.trim();
-                        if (next !== caption) captioning.mutate({ id: image.id, caption: next });
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
-                          // Not the form's submit: the caption is saved by itself.
-                          e.preventDefault();
-                          e.currentTarget.blur();
-                        } else if (e.key === 'Escape') {
-                          e.currentTarget.value = caption;
-                        }
-                      }} />
+                    <CaptionEditor key={caption} caption={caption} image={image}
+                      disabled={disabled || deleting} saving={savingCaption}
+                      onSave={(next) => captioning.mutate({ id: image.id, caption: next })} />
                   ) : (
                     <p className="line-clamp-3 text-body [overflow-wrap:anywhere]" title={caption || undefined}>
                       {caption || <span className="text-muted-foreground">No caption — the report prints the file name</span>}

@@ -295,6 +295,10 @@ describe('navigation manifest', () => {
     '/reference/sbom',
     // v5.296.0 — a Reference hub entry, like the SBOM.
     '/reference/tool-coverage',
+    // 5.394.0 — the report workspace: reached from the Reports page's links,
+    // under the Reports entry (like /scans/compare under Scans).
+    '/reports/defaults',
+    '/reports/templates',
   ]);
 
   it('no static top-level route is missing from the manifest', () => {

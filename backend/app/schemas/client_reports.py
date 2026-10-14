@@ -281,7 +281,20 @@ class ReportUpdate(BaseModel):
     # The complete override map (the executive summary is one of its keys) (replaces the stored one); see
     # `EngagementOverrides`.
     settings: Optional[EngagementOverrides] = None
+    # The details the author CHANGED in this save (the report workspace,
+    # owner 2026-10-14).  Only for these is an override equal to what the
+    # draft follows dropped ("changed back to the project's" = follows
+    # again); every other stored override is kept as it is, even one that
+    # happens to equal the project's value now.  Left out: no key is
+    # compared (the older page's behaviour).
+    edited: Optional[List[str]] = Field(None, max_length=20)
 
 
 class PreviewRequest(BaseModel):
     format: Literal["html", "docx", "qmd"] = "html"
+
+
+class ReportInputsOut(BaseModel):
+    """A draft's inputs as a preview would render them now; compared with a
+    preview job's `inputs_fingerprint`.  Null when the draft cannot be built."""
+    fingerprint: Optional[str] = None

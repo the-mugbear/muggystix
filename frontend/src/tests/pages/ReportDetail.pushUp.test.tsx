@@ -1,22 +1,29 @@
 /**
- * A draft's detail pushed up to the project's report defaults (owner,
+ * A draft's details pushed up to the project's report defaults (owner,
  * 2026-10-14: "if a user modifies a draft they may want that change to become
- * the standard for future drafts").
+ * the standard for future drafts") — in the report workspace (5.394.0) the
+ * ONE way a draft writes the project's defaults is "Update project
+ * defaults…" (the proposal, revised after its second review):
  *
- * - "Make this the project's default" on an overridden detail: one call
- *   (`promoteClientReportDetails`) writes the project's default and drops the
- *   override; confirmed only when it replaces a different value the project
- *   holds.
- * - "Set for the project" on a followed detail: a PATCH of that one key of
- *   the project's defaults (`patchReportProfile`) — never the whole profile —
- *   then the draft is read again.
- * - Someone who may not edit the draft sees neither.
+ * - offered only when the draft has details of its own (saved or pending);
+ * - the dialog lists each with the project's value now (and where it comes
+ *   from) → this report's, and how many other drafts follow it;
+ * - the ticked ones are promoted in one call; ONLY they leave the page's
+ *   pending edits — every other pending edit stays, unsaved, and a later
+ *   Save never sends a promoted key back; a failure keeps everything.
+ *
+ * Removed on purpose, with the inline project-default editing they guarded:
+ * "Set for the project" / "Edit the project's default" on a draft (the
+ * project's defaults are edited on /reports/defaults — ReportDefaults.test),
+ * the per-detail "Make this the project's default" menu item, and the page
+ * holding Issue while a project default was half-edited (review 2026-10-14,
+ * H1 — the state that caused it no longer exists: nothing on the draft writes
+ * a single project default).
  */
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// The page reads its report id from the address (setupTests stubs the router).
 vi.mock('react-router-dom', async () => vi.importActual('react-router-dom'));
 vi.mock('../../services/api', () => ({
   getClientReport: vi.fn(),
@@ -29,7 +36,9 @@ vi.mock('../../services/api', () => ({
   listReportTemplates: vi.fn(),
   patchReportProfile: vi.fn(),
   promoteClientReportDetails: vi.fn(),
+  getClientReportFollowers: vi.fn(),
   listReportTextImages: vi.fn(() => Promise.resolve([])),
+  uploadReportTextImage: vi.fn(),
   downloadClientReportScope: vi.fn(),
   listProjectMembers: vi.fn(),
   getProjectReportTeam: vi.fn(),
@@ -39,8 +48,7 @@ vi.mock('../../services/api', () => ({
   draftReportWithAI: vi.fn(),
   listLLMProviders: vi.fn(),
 }));
-const confirmMock = vi.fn();
-vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, confirmMock] }));
+vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, vi.fn()] }));
 const toastMock = { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() };
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
 vi.mock('../../contexts/AuthContext', () => ({
@@ -55,13 +63,14 @@ import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
 const followed = {
-  client_name: 'Example Corp', classification: null, engagement_type: null, testers: [], distribution: [],
+  executive_summary: 'The project’s summary.',
+  client_name: 'Example Corp', classification: 'Internal', engagement_type: null, testers: [], distribution: [],
   system_description: null, applications: null, thick_clients: null, other_targets: null,
   author_name: 'Installation Ltd', disclaimer: null,
 };
 const from = {
-  client_name: 'project', classification: null, engagement_type: null, testers: null, distribution: null,
-  system_description: null, applications: null, thick_clients: null, other_targets: null,
+  executive_summary: 'project', client_name: 'project', classification: 'project', engagement_type: null, testers: null,
+  distribution: null, system_description: null, applications: null, thick_clients: null, other_targets: null,
   author_name: 'installation', disclaimer: null,
 };
 const report = (over: Record<string, unknown> = {}) => ({
@@ -80,12 +89,11 @@ const renderDetail = () => render(
     <Routes><Route path="/reports/:reportId" element={<ReportDetail />} /></Routes>
   </MemoryRouter>,
 );
-const button = (name: string) => screen.getByRole('button', { name });
-/** Choose `name` in the "⋯" menu of the detail `label` (Radix opens a menu on
- *  a key, not a click, in jsdom). */
-const fromMenu = async (label: string, name: string) => {
-  fireEvent.keyDown(await screen.findByRole('button', { name: `More actions for ${label}` }), { key: 'Enter' });
-  fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name }));
+const section = (id: string) => within(screen.getByTestId(`report-section-${id}`));
+const editClient = async (value: string) => {
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit Client & engagement' }));
+  fireEvent.change(screen.getByLabelText('Client'), { target: { value } });
+  fireEvent.click(section('engagement').getByRole('button', { name: 'Done' }));
 };
 
 beforeEach(() => {
@@ -93,139 +101,131 @@ beforeEach(() => {
   resetProjectMembersCache();
   mocked.listReportTemplates.mockResolvedValue([
     { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html'] },
+    { name: 'brief', title: 'Brief report', description: '', formats: ['html'] },
   ]);
   mocked.listProjectMembers.mockResolvedValue([]);
+  mocked.getClientReportFollowers.mockResolvedValue({ client_name: 3, classification: 0, executive_summary: 2 });
 });
 
-describe('Make this the project’s default', () => {
-  it('replacing a different value the project holds is confirmed first, naming both', async () => {
+describe('Update project defaults…', () => {
+  it('is offered only once the draft has a detail of its own', async () => {
+    mocked.getClientReport.mockResolvedValue(report());
+    renderDetail();
+    await screen.findByTestId('report-section-engagement');
+    expect(screen.queryByRole('button', { name: 'Update project defaults…' })).toBeNull();
+    await editClient('Renamed Corp');                                    // pending, not saved
+    expect(screen.getByRole('button', { name: 'Update project defaults…' })).toBeInTheDocument();
+  });
+
+  it('lists each detail of its own with the project’s value → this report’s, and the drafts that follow it', async () => {
     mocked.getClientReport.mockResolvedValue(report({
-      settings: { client_name: 'Renamed Corp' }, effective: { ...followed, client_name: 'Renamed Corp' },
+      settings: { classification: 'Restricted' }, effective: { ...followed, classification: 'Restricted' },
     }));
+    renderDetail();
+    await editClient('Renamed Corp');
+    fireEvent.click(screen.getByRole('button', { name: 'Update project defaults…' }));
+    const dialog = await screen.findByRole('dialog');
+    const client = within(dialog).getByTestId('promote-client_name');
+    expect(client).toHaveTextContent('The project’s now: “Example Corp”');
+    expect(client).toHaveTextContent('This report’s: “Renamed Corp”');
+    expect(await within(client).findByText('3 other drafts follow it and will print the new value.')).toBeInTheDocument();
+    const classification = within(dialog).getByTestId('promote-classification');
+    expect(classification).toHaveTextContent('This report’s: “Restricted”');
+    expect(await within(classification).findByText('No other draft follows it.')).toBeInTheDocument();
+    expect(within(dialog).queryByTestId('promote-executive_summary')).toBeNull();   // not its own
+  });
+
+  it('promotes the ticked ones only; every other pending edit stays, and a later Save never sends them back', async () => {
+    mocked.getClientReport.mockResolvedValue(report({
+      settings: { classification: 'Restricted' }, effective: { ...followed, classification: 'Restricted' },
+    }));
+    // After the push-up the draft follows the project for Client.
+    mocked.promoteClientReportDetails.mockResolvedValue(report({
+      settings: { classification: 'Restricted' },
+      followed: { ...followed, client_name: 'Renamed Corp' },
+      effective: { ...followed, client_name: 'Renamed Corp', classification: 'Restricted' },
+    }));
+    mocked.updateClientReport.mockImplementation(async () => report());
+    renderDetail();
+    await editClient('Renamed Corp');
+    // Another pending edit, in another section.
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Executive summary' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Executive summary' }), { target: { value: 'Ours.' } });
+    fireEvent.click(section('summary').getByRole('button', { name: 'Done' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Update project defaults…' }));
+    const dialog = await screen.findByRole('dialog');
+    // Keep Classification as this report's own; push up Client and the Summary.
+    fireEvent.click(within(within(dialog).getByTestId('promote-classification')).getByRole('checkbox'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update 2 defaults' }));
+    await waitFor(() => expect(mocked.promoteClientReportDetails).toHaveBeenCalledWith(1, 5, {
+      executive_summary: 'Ours.', client_name: 'Renamed Corp',
+    }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(mocked.patchReportProfile).not.toHaveBeenCalled();
+    // The promoted keys left the pending edits; nothing else was pending, so the draft is clean.
+    expect(screen.getByTestId('report-save-status')).toHaveTextContent('All changes saved');
+  });
+
+  it('keeps an unrelated pending edit — the template — unsaved, and Save sends it without the promoted key', async () => {
+    mocked.getClientReport.mockResolvedValue(report());
     mocked.promoteClientReportDetails.mockResolvedValue(report({
       followed: { ...followed, client_name: 'Renamed Corp' }, effective: { ...followed, client_name: 'Renamed Corp' },
     }));
+    mocked.updateClientReport.mockImplementation(async () => report({ template: 'brief' }));
     renderDetail();
-    confirmMock.mockResolvedValueOnce(false);
-    await fromMenu('Client', 'Make Client the project’s default');
-    await waitFor(() => expect(confirmMock).toHaveBeenCalled());
-    const asked = confirmMock.mock.calls[0][0];
-    expect(asked.title).toBe('Replace the project’s Client?');
-    // Undoable: the normal primary button, not the red one (owner, 2026-10-14).
-    expect(asked.severity).toBe('info');
-    const body = render(<div>{asked.body}</div>);
-    expect(body.container).toHaveTextContent('The project’s default is “Example Corp”. It becomes “Renamed Corp”.');
-    expect(body.container).toHaveTextContent(/Every other draft that follows the project’s Client changes with it/);
-    body.unmount();
-    expect(mocked.promoteClientReportDetails).not.toHaveBeenCalled();
+    await editClient('Renamed Corp');
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Template' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('option', { name: 'Brief report' }));
 
-    confirmMock.mockResolvedValueOnce(true);
-    await fromMenu('Client', 'Make Client the project’s default');
-    await waitFor(() => expect(mocked.promoteClientReportDetails).toHaveBeenCalledWith(1, 5, { client_name: 'Renamed Corp' }));
-    // The answer replaces the draft: it follows the new default.
-    expect(await screen.findByRole('group', { name: 'Client' })).toHaveTextContent('Renamed Corp');
-    expect(toastMock.success).toHaveBeenCalledWith('Client is now the project’s default, and this draft follows it again.');
+    fireEvent.click(screen.getByRole('button', { name: 'Update project defaults…' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Update 1 default' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByTestId('report-save-status')).toHaveTextContent('Unsaved changes — Report');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, {
+      template: 'brief', settings: {}, edited: [],
+    }));
   });
 
-  it('a value the project does not hold is made its default at once', async () => {
-    mocked.getClientReport.mockResolvedValue(report({ settings: { classification: 'Secret' } }));
-    mocked.promoteClientReportDetails.mockResolvedValue(report());
-    renderDetail();
-    await fromMenu('Classification', 'Make Classification the project’s default');
-    await waitFor(() => expect(mocked.promoteClientReportDetails).toHaveBeenCalledWith(1, 5, { classification: 'Secret' }));
-    expect(confirmMock).not.toHaveBeenCalled();
-  });
-
-  it('an unsaved edit of another detail survives it', async () => {
-    mocked.getClientReport.mockResolvedValue(report({ settings: { classification: 'Secret', client_name: 'Mine' } }));
-    mocked.promoteClientReportDetails.mockResolvedValue(report({ settings: { client_name: 'Mine' } }));
-    renderDetail();
-    fireEvent.change(await screen.findByRole('textbox', { name: 'Client' }), { target: { value: 'Mine, edited' } });
-    await fromMenu('Classification', 'Make Classification the project’s default');
-    await waitFor(() => expect(mocked.promoteClientReportDetails).toHaveBeenCalled());
-    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Classification' })).toBeNull());
-    expect(screen.getByRole('textbox', { name: 'Client' })).toHaveValue('Mine, edited');
-  });
-});
-
-describe('Set for the project', () => {
-  it('writes only that key of the project’s defaults, then reads the draft again', async () => {
-    mocked.getClientReport
-      .mockResolvedValueOnce(report())
-      .mockResolvedValue(report({ followed: { ...followed, engagement_type: 'Internal' }, followed_from: { ...from, engagement_type: 'project' } }));
-    mocked.patchReportProfile.mockResolvedValue({});
-    renderDetail();
-    fireEvent.click(await screen.findByRole('button', { name: 'Set Engagement type for the project' }));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Engagement type' }), { target: { value: 'Internal' } });
-    fireEvent.click(button('Save Engagement type for the project'));
-    await waitFor(() => expect(mocked.patchReportProfile).toHaveBeenCalledWith(1, { engagement_type: 'Internal' }));
-    await waitFor(() => expect(mocked.getClientReport).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.getByRole('group', { name: 'Engagement type' })).toHaveTextContent('Internal'));
-    expect(mocked.updateClientReport).not.toHaveBeenCalled();      // never an override
-    expect(toastMock.success).toHaveBeenCalledWith(
-      'Engagement type is saved to the project’s defaults: every draft that follows them prints it.');
-  });
-
-  it('the author from the installation becomes a project value', async () => {
+  it('a failed push-up changes nothing: the edits stay pending', async () => {
     mocked.getClientReport.mockResolvedValue(report());
-    mocked.patchReportProfile.mockResolvedValue({});
+    mocked.promoteClientReportDetails.mockRejectedValue(new Error('down'));
     renderDetail();
-    expect(await screen.findByRole('group', { name: 'Author' })).toHaveAccessibleDescription(/From the installation’s defaults/);
-    await fromMenu('Author', 'Set Author for the project');
-    fireEvent.click(await screen.findByRole('button', { name: 'Save Author for the project' }));
-    await waitFor(() => expect(mocked.patchReportProfile).toHaveBeenCalledWith(1, { author_name: 'Installation Ltd' }));
+    await editClient('Renamed Corp');
+    fireEvent.click(screen.getByRole('button', { name: 'Update project defaults…' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Update 1 default' }));
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalled());
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('report-save-status')).toHaveTextContent('Unsaved changes — Client & engagement');
   });
 });
 
-// Review 2026-10-14, H1: a corrected project default typed but not saved left
-// Issue enabled, and issuing froze the value saved before.
-describe('A project default being edited', () => {
-  it('holds Issue and Preview until it is saved or cancelled', async () => {
-    mocked.getClientReport.mockResolvedValue(report({ can_issue: true }));
-    renderDetail();
-    const issueButton = await screen.findByRole('button', { name: /Issue report/ });
-    const previewButton = screen.getByRole('button', { name: 'Preview HTML' });
-    expect(issueButton).toBeEnabled();
-    expect(previewButton).toBeEnabled();
-
-    await fromMenu('Client', 'Edit Client in the project’s defaults');
-    fireEvent.change(await screen.findByRole('textbox', { name: 'Client' }), { target: { value: 'Corrected Corp' } });
-    expect(issueButton).toBeDisabled();
-    expect(issueButton).toHaveAttribute('title', 'Save or cancel the project default you are editing first');
-    expect(previewButton).toBeDisabled();
-    expect(screen.getByText('Save or cancel the project default you are editing below before issuing.')).toBeInTheDocument();
-    // The draft's own Save has nothing to save: the edit is the project's.
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
-    // Leaving asks first, as it does for the draft's own edits.
-    confirmMock.mockResolvedValueOnce(false);
-    fireEvent.click(screen.getByRole('button', { name: /Reports/ }));
-    await waitFor(() => expect(confirmMock).toHaveBeenCalled());
-    expect(screen.getByRole('textbox', { name: 'Client' })).toHaveValue('Corrected Corp');
-
-    fireEvent.click(button('Cancel editing the project’s Client'));
-    expect(issueButton).toBeEnabled();
-    expect(previewButton).toBeEnabled();
-  });
-
-  it('is released once saved to the project', async () => {
-    mocked.getClientReport.mockResolvedValue(report({ can_issue: true }));
-    mocked.patchReportProfile.mockResolvedValue({});
-    renderDetail();
-    const issueButton = await screen.findByRole('button', { name: /Issue report/ });
-    await fromMenu('Client', 'Edit Client in the project’s defaults');
-    fireEvent.change(await screen.findByRole('textbox', { name: 'Client' }), { target: { value: 'Corrected Corp' } });
-    expect(issueButton).toBeDisabled();
-    fireEvent.click(button('Save Client for the project'));
-    await waitFor(() => expect(mocked.patchReportProfile).toHaveBeenCalledWith(1, { client_name: 'Corrected Corp' }));
-    await waitFor(() => expect(issueButton).toBeEnabled());
-  });
-});
-
-describe('Who sees the actions', () => {
+describe('Who sees it', () => {
   it('someone who may not edit the draft reads its details with no action at all', async () => {
-    mocked.getClientReport.mockResolvedValue(report({ can_edit: false, can_discard: false, settings: { client_name: 'Mine' } }));
+    mocked.getClientReport.mockResolvedValue(report({
+      can_edit: false, settings: { classification: 'Restricted' }, effective: { ...followed, classification: 'Restricted' },
+    }));
     renderDetail();
-    await screen.findByRole('heading', { name: /Report details/ });
-    expect(screen.queryByRole('button', { name: /project’s default|for the project|Override|Revert|More actions/ })).toBeNull();
+    await screen.findByTestId('report-section-engagement');
+    expect(screen.queryByRole('button', { name: /^Edit / })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Update project defaults…' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Use the project’s/ })).toBeNull();
+    expect(screen.queryByTestId('report-action-bar')).not.toBeNull();       // status, no save
+    expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull();
+  });
+
+  it('an addendum’s summary of changes is its own: never offered as a project default', async () => {
+    mocked.getClientReport.mockResolvedValue(report({
+      kind: 'addendum', baseline: { id: 1, number: 1, title: 'R1', status: 'issued', issued_at: null },
+      settings: { executive_summary: 'One new finding.' },
+      followed: { ...followed, executive_summary: null }, effective: { ...followed, executive_summary: 'One new finding.' },
+      followed_from: { ...from, executive_summary: null },
+    }));
+    renderDetail();
+    await screen.findByRole('heading', { name: 'Summary of changes' });
+    expect(screen.queryByTestId('report-section-summary-status')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Update project defaults…' })).toBeNull();
   });
 });

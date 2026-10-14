@@ -452,6 +452,9 @@ export interface ReportJob {
   result_filename?: string | null;
   media_type?: string | null;
   file_size?: number | null;
+  /** A draft preview's: the inputs it rendered, compared with
+   *  `getClientReportInputs` (null on any other job). */
+  inputs_fingerprint?: string | null;
   retry_count?: number | null;
   last_error?: string | null;
   last_heartbeat?: string | null;

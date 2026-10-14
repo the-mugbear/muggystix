@@ -11,7 +11,7 @@ files on the report worker.  A draft's preview is an ordinary report job
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
@@ -27,7 +27,7 @@ from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models_reports import Report, ReportKind, ReportProfile, ReportStatus, RenderStatus
 from app.db.session import get_db
 from app.schemas.client_reports import (
-    PreviewRequest, ReportCreate, ReportListOut, ReportOut,
+    PreviewRequest, ReportCreate, ReportInputsOut, ReportListOut, ReportOut,
     ReportProfileBody, ReportProfileOut, ReportProfilePatch, ReportPromote,
     ReportTemplateAssetChangeOut, ReportTemplateOut,
     ReportTemplateProblemOut, ReportTextImageOut, ReportUpdate, Tester,
@@ -43,7 +43,7 @@ from app.services.client_report_views import (
     serialize_report as _serialize,
 )
 from app.services.report_job_service import ReportJobService
-from app.services import report_defaults, report_images, report_scope
+from app.services import client_report_render, report_defaults, report_images, report_scope
 from app.services.note_attachment_service import store_image_attachment
 from app.services import report_template_service as templates
 from app.services import template_asset_store as asset_store_module
@@ -617,7 +617,20 @@ def update_report(
         for field in report_images.ENGAGEMENT_IMAGE_FIELDS:
             if field in data:
                 data[field] = report_images.normalise_references(data[field])
-        report.settings = report_defaults.overrides(data)
+        own = report_defaults.overrides(data)
+        if body.edited:
+            unknown = sorted(set(body.edited) - set(report_defaults.DETAIL_KEYS))
+            if unknown:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Unknown report detail in 'edited': {', '.join(unknown)}. "
+                           f"Valid: {', '.join(report_defaults.DETAIL_KEYS)}",
+                )
+            # Changed back to what it follows: it follows again — for the
+            # details edited in this save only (`drop_followed`).
+            follows = ClientReportService(db).followed_details(project.id, report.kind)
+            own = report_defaults.drop_followed(own, follows, body.edited)
+        report.settings = own
     db.commit()
     db.expire_all()
     return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True,
@@ -669,6 +682,55 @@ def promote_report_details(
     db.expire_all()
     return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True,
                       user_id=current_user.id)
+
+
+@router.get("/{report_id}/followers", response_model=Dict[str, int])
+def report_detail_followers(
+    report_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """For "Update project defaults…" on a draft (the report workspace): per
+    engagement detail, how many OTHER drafts of the project follow the
+    project's value — they print the new default once it is pushed up.  A
+    draft follows a detail it does not override; an addendum never follows
+    its summary (`report_defaults.OWN_IN_ADDENDUM`).  An estimate when read:
+    the drafts may change before the push-up."""
+    _load(db, project, report_id)
+    counts = {key: 0 for key in report_defaults.DETAIL_KEYS}
+    others = (
+        db.query(Report.kind, Report.settings)
+        .filter(Report.project_id == project.id, Report.status == ReportStatus.DRAFT, Report.id != report_id)
+        .all()
+    )
+    for kind, settings in others:
+        own = report_defaults.overrides(settings)
+        for key in report_defaults.DETAIL_KEYS:
+            if key in own or (kind == ReportKind.ADDENDUM and key in report_defaults.OWN_IN_ADDENDUM):
+                continue
+            counts[key] += 1
+    return counts
+
+
+@router.get("/{report_id}/inputs", response_model=ReportInputsOut)
+def report_inputs(
+    report_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """A draft's inputs fingerprint as a preview would render it NOW
+    (`client_report_render.inputs_fingerprint`): the page compares it with
+    each preview's `inputs_fingerprint` and says one whose inputs changed
+    since is out of date.  Null when the draft cannot be built (the reason is
+    the summary's `error`)."""
+    report = _load(db, project, report_id)
+    if report.status != ReportStatus.DRAFT:
+        raise HTTPException(status_code=409, detail="An issued report has its files already.")
+    try:
+        dataset, _, _ = ClientReportService(db).build(report)
+    except ReportStateError:
+        return ReportInputsOut(fingerprint=None)
+    return ReportInputsOut(fingerprint=client_report_render.inputs_fingerprint(db, report, dataset))
 
 
 @router.delete(

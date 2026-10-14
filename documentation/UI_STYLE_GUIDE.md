@@ -1060,32 +1060,50 @@ From the codebase review of 2026-10-07 (5.339.0).
   section's line says who fixes them.
 - **A field's name has ONE look whatever its state** (2026-10-14, a draft
   report's details): the small muted uppercase caption
-  (`EngagementSettingsFields.DETAIL_NAME`) over a followed value, an
-  editable field, a list's fieldset and the defaults' summary on the Reports
-  page alike. A name that changed style when the field was overridden, or a
-  list with a heading of its own among captioned fields, read as a
-  different rank. A group of several fields ("Other targets") keeps a
-  heading over their captions.
-- **A value inherited from elsewhere is TEXT, not a disabled field**
-  (2026-10-14, a draft report's details that follow the project): a greyed
-  input reads as "locked". It shows the value (wrapping; a long or Markdown
-  one in a bounded box that scrolls, Markdown rendered; a list as one line
-  per row), says where it comes from ("From the project's defaults", "From
-  the installation's defaults"), or "Not set in the project's defaults", and
-  offers ONE action as a compact link on that line — the primary action, the
-  one a checklist line focuses — with any others in a small "⋯" menu beside
-  it (below). The field appears only once the value is the reader's to edit
-  (overridden, or being edited for the project).
-- **One visible action per line; the rest in "⋯"** (2026-10-14, a draft
-  report's details): two or three links on one line read as a wall of small
-  links. Show the action the reader most often wants in that state (on a
-  draft's detail: "Set for the project" where the project leaves it empty,
-  "Revert to the project's" where the report overrides it, "Override for
-  this report" otherwise) and put the others in a `DropdownMenu` whose
-  ghost-icon trigger is named "More actions for <the thing>" and carries
-  `data-more-actions`, so a "go to" never focuses it. No menu when there is
-  only one action; a state whose controls are a form (Save / Cancel) has
-  none. A menu item keeps the accessible name the link had.
+  (`components/reports/workspace/DetailSections.DETAIL_NAME`) over a read
+  value, an editable field and a list's fieldset alike. A name that changed
+  style when the field was overridden, or a list with a heading of its own
+  among captioned fields, read as a different rank. A group of several
+  fields ("Other targets") keeps a heading over their captions.
+- **A form of many values is a set of sections read as text, opened one at a
+  time** (the report workspace, 2026-10-14; `DetailSections` on a draft and
+  on `/reports/defaults`): a section shows its values as text (never a
+  disabled field: a greyed input reads as "locked") with ONE status line
+  ("Uses the project's defaults", "2 customised for this report",
+  "Unsaved changes") and one Edit. Edit turns that section's values into
+  fields; **Done** keeps the change pending on the page, **Cancel** returns
+  the section to what it was when Edit was pressed (not to the last save),
+  and "Discard changes in this section" (its "⋯" menu, shown only when it
+  has some) returns it to the last save. Nothing in one section touches
+  another. A value not the project's says where it comes from ("From the
+  installation's defaults") on its caption line; one the report chose is
+  marked "Customised for this report" with **"Use the project's"** beside
+  it. A list emptied where the project lists people says so ("This report
+  will list nobody here."). A Markdown value is rendered; a long one wraps
+  — no nested scrolling box.
+- **Pending changes are saved by ONE explicit action** (the report
+  workspace): the sticky action bar under the header says the save state,
+  and holds Discard changes / Save draft / Preview ("Save & preview" while
+  something is unsaved — a failed save previews nothing). Leaving with
+  unsaved changes asks first. A change to what OTHER records follow (the
+  project's report defaults) is never made from a draft's field: "Update
+  project defaults…" lists the draft's customised values with the old and
+  new value and how many other drafts follow each, and promotes the ones
+  ticked.
+- **A rendered copy says whether it is still what would be rendered now**
+  (a draft's previews, 2026-10-14): each finished preview reads "current",
+  "out of date — … changed after it was rendered" or "could not verify
+  whether this preview is current" (with Check again when the check
+  failed), checked again on entering the section, on return to the window
+  and before the issue's confirmation, which says when the preview is out of
+  date. Never "current" unless both sides are known and equal; the promise is
+  "its inputs changed", not "what it prints changed".
+- **One visible action per line; the rest in "⋯"** (2026-10-14): two or
+  three links on one line read as a wall of small links. Show the action
+  the reader most often wants in that state and put the others in a
+  `DropdownMenu` whose ghost-icon trigger is named "More actions for <the
+  thing>". No menu when there is only one action. A menu item keeps the
+  accessible name the link had.
 - **A confirmation is red only for what cannot be taken back** (discard,
   delete). Replacing a value the reader can set back the same way (a
   project's report default) confirms with the normal primary button

@@ -1,24 +1,32 @@
 /**
- * /reports/:reportId (v5.261.0) — one client report.
+ * /reports/:reportId — one client report, as the report WORKSPACE (owner,
+ * 2026-10-14: the workflow "seems cumbersome and the design feels like bad
+ * UX"; planning/PROPOSAL_report_workspace_2026-10-14.md).
  *
- * A DRAFT: what it will contain (built from the live findings — counts, what
- * is left out, findings still missing text), its details (title, executive
- * summary, engagement details), previews in each format, and — for a project
- * admin — Issue, which freezes it.  An ISSUED report: its files, who issued
- * it when, the template fingerprint, and Revise (a new draft that supersedes
- * it once issued).
+ * A header (title, kind, state) and, on a draft, an action bar that stays on
+ * screen: save status, Discard changes, Save draft, Preview (Save & preview
+ * with unsaved changes), and the readiness line.  Below, three sections in
+ * the address (`?section=details|review|issue`), freely reachable:
+ *
+ * - Details: the title and template, then the report's details in the order
+ *   the report reads (`DetailSections`): each follows the project's report
+ *   defaults unless this report customises it.  An edit is pending until
+ *   Save draft, across sections and tabs; nothing here writes the project's
+ *   defaults except "Update project defaults…" and the project images panel.
+ * - Review: what the report holds and what it still lacks (`ReportChecklist`).
+ * - Preview & issue: previews and Issue (a draft); files and Revise (issued).
+ *
+ * An issued report opens on Preview & issue and its details read as issued.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { isClientTemplate } from '../utils/reportTemplates';
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Loader2, RefreshCw, Sparkles, Stamp, Trash2 } from 'lucide-react';
 
 import {
   ClientReport,
   ClientReportFormat,
   ReportFileFormat,
-  EngagementOverrides,
   EngagementSettings,
   ReportJob,
   ReportSummary,
@@ -27,12 +35,11 @@ import {
   downloadClientReportScope,
   downloadReportJob,
   getClientReport,
+  getClientReportInputs,
   getReportJob,
   issueClientReport,
   listReportTemplates,
-  patchReportProfile,
   previewClientReport,
-  promoteClientReportDetails,
   rerenderClientReport,
   reviseClientReport,
   updateClientReport,
@@ -44,21 +51,27 @@ import { useDiscardGuard } from '../hooks/useDiscardGuard';
 import { useJobPolls } from '../hooks/useJobPoll';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRoster } from '../hooks/useProjectMembers';
+import { useReportTextImages } from '../hooks/useReportTextImages';
 import { pollEvery, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { NEED_SECTION } from '../utils/findingNeeds';
 import { formatTimestamp } from '../utils/relativeTime';
 import { REPORT_FIELD_LABELS } from '../utils/reportImages';
-import { safeFallback } from '../utils/uiStyles';
+import { isClientTemplate } from '../utils/reportTemplates';
+import { safeFallback, stickyFlushBelowChrome } from '../utils/uiStyles';
 import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
-import EngagementSettingsFields, {
-  DETAIL_LABELS, DETAIL_NAME, cleanSettings, hasValue,
-} from '../components/reports/EngagementSettingsFields';
+import DetailSections, { DETAIL_NAME, focusDetailField } from '../components/reports/workspace/DetailSections';
+import ProjectImagesPanel from '../components/reports/workspace/ProjectImagesPanel';
+import UpdateDefaultsDialog from '../components/reports/workspace/UpdateDefaultsDialog';
+import {
+  DETAIL_LABELS, DETAIL_SECTIONS, type DetailKey, customised, sectionOf, toSave,
+} from '../components/reports/workspace/detailModel';
+import { useDetailEdits } from '../components/reports/workspace/useDetailEdits';
 import TemplateImages, {
   TemplateFilesLine, assetCountLabel, missingAssetsReason, missingRequiredAssets,
 } from '../components/reports/TemplateImages';
-import ReportChecklist, { focusReportDetail } from '../components/reports/ReportChecklist';
+import ReportChecklist from '../components/reports/ReportChecklist';
 import OpenPreviewButton from '../components/reports/OpenPreviewButton';
 import { REPORT_CHECKLIST_ANCHOR } from '../components/findings/ReportDraftBar';
 import AiDraftReportDialog from '../components/AiDraftReportDialog';
@@ -139,12 +152,9 @@ const notPrintedWhy = (s: ReportSummary): string => {
 
 /**
  * Where the report's ticked images print — in THIS report, with ITS template
- * (review 2026-10-01 S2).  The line used to read "N placed in text, M under
- * Evidence" whatever the template: the Executive brief prints no image, the
- * Remediation worklist only those placed in a recommendation, and an addendum
- * lists a finding the client already has in one line.  The server measures
- * it; with no measurement (a report issued before this, or a template that
- * cannot be read) the line claims nothing.
+ * (review 2026-10-01 S2).  The server measures it; with no measurement (a
+ * report issued before this, or a template that cannot be read) the line
+ * claims nothing.
  */
 export const evidenceImagesLine = (s: ReportSummary): string => {
   const total = s.images ?? 0;
@@ -159,7 +169,6 @@ export const evidenceImagesLine = (s: ReportSummary): string => {
   }
   const parts: string[] = [];
   if (inText + trailing > 0) {
-    // "under Evidence" is left out for a template with no such block.
     parts.push(template && !template.trailing && trailing === 0
       ? `${inText.toLocaleString()} in the text`
       : `${inText.toLocaleString()} in the text, ${trailing.toLocaleString()} under Evidence`);
@@ -169,8 +178,6 @@ export const evidenceImagesLine = (s: ReportSummary): string => {
   }
   return parts.join(' · ');
 };
-
-type DetailKey = keyof EngagementSettings;
 
 /** A detail's value in a sentence: a text quoted (shortened past 200
  *  characters), a list by its names. */
@@ -185,24 +192,27 @@ export const describeDetail = (v: EngagementSettings[DetailKey] | null | undefin
   return `“${text.length > 200 ? `${text.slice(0, 200)}…` : text}”`;
 };
 
-interface Form {
-  title: string;
-  template: string;
-  /** The report's overrides; a detail left out follows the project — the
-   *  executive summary too (owner, 2026-10-14). */
-  settings: EngagementOverrides;
-}
-
-const toForm = (r: ClientReport): Form => ({
-  title: r.title,
-  template: r.template,
-  settings: r.settings,
-});
+export type WorkspaceSection = 'details' | 'review' | 'issue';
+const SECTIONS: Array<{ id: WorkspaceSection; label: string }> = [
+  { id: 'details', label: 'Details' },
+  { id: 'review', label: 'Review' },
+  { id: 'issue', label: 'Preview & issue' },
+];
+const isSection = (v: string | null): v is WorkspaceSection => v === 'details' || v === 'review' || v === 'issue';
 
 const NO_TEMPLATES: ReportTemplate[] = [];
 /** How often a preview job still on the worker is asked about. */
 const PREVIEW_POLL_MS = 2000;
 const isRunning = (job: ReportJob): boolean => job.status === 'queued' || job.status === 'processing';
+/** A finished preview against what it would render now.  "Inputs changed",
+ *  not "what prints changed": a template may ignore a changed field. */
+type Freshness = 'current' | 'out-of-date' | 'unknown' | 'checking';
+const FRESHNESS_TEXT: Record<Freshness, string> = {
+  current: 'current — nothing it was built from has changed.',
+  'out-of-date': 'out of date — the findings, details, images or template changed after it was rendered. Preview again to see them.',
+  unknown: 'could not verify whether this preview is current.',
+  checking: 'checking whether it is current…',
+};
 
 const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const toast = useToast();
@@ -211,15 +221,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
   const currentUser = user ? { id: user.id, name: user.full_name || user.username } : null;
-  // The Report details form: a checklist line puts the caret in its field.
-  const detailsRef = useRef<HTMLFormElement>(null);
-
   const queryClient = useQueryClient();
   const roster = useProjectRoster();
   const [aiOpen, setAiOpen] = useState(false);
+  const [promoteOpen, setPromoteOpen] = useState(false);
 
-  // An issued report renders its files on the worker: it is read again every
-  // three seconds until they are done, and not at all otherwise.
   const projectId = useProjectId();
   const reportKey = ['getClientReport', projectId, id];
   const query = useQuery({
@@ -228,7 +234,6 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     ...pollEvery((q) => (isRendering(q.state.data) ? RENDER_POLL_MS : null)),
   });
   const report: ClientReport | null = query.data ?? null;
-  // Every write names the report by the id it was loaded with.
   const reportId = report?.id ?? id;
   const error = queryErrorText(query.error, 'Could not load the report.');
   const putReport = (next: ClientReport) => queryClient.setQueryData(reportKey, next);
@@ -238,23 +243,75 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   });
   const templates: ReportTemplate[] = templatesQuery.data ?? NO_TEMPLATES;
 
-  // What the reader changed, over the report as stored: a save, an issue or a
-  // re-read cannot leave the form and the report out of step.
-  const [edits, setEdits] = useState<Partial<Form>>({});
-  const form: Form | null = useMemo(() => (report ? { ...toForm(report), ...edits } : null), [report, edits]);
-  const edit = (changed: Partial<Form>) => setEdits((e) => ({ ...e, ...changed }));
-  // The project's defaults being edited from this draft and not yet saved
-  // (`EngagementSettingsFields`' "Set for the project" / "Edit the project's
-  // default").  Held here so they count as unsaved: Issue froze the value
-  // saved before while the corrected one sat in the field (review 2026-10-14, H1).
-  const [projectEdits, setProjectEdits] = useState<Partial<EngagementSettings>>({});
+  const isDraft = report?.status === 'draft';
+  const editable = !!report && isDraft && report.can_edit;
 
-  // Draft previews are report jobs.  `started` is each format's job as the
-  // worker took it; the ones still running are asked about every two seconds,
-  // from that answer on.
+  // ---- the section in the address ---------------------------------------
+  const [params, setParams] = useSearchParams();
+  const asked = params.get('section');
+  const section: WorkspaceSection = isSection(asked) ? asked : (report && !isDraft ? 'issue' : 'details');
+  const goTo = (next: WorkspaceSection) => setParams((prev) => {
+    const p = new URLSearchParams(prev);
+    p.set('section', next);
+    return p;
+  });
+  // "Back to the report" from a finding the checklist opened
+  // (`#report-checklist`) lands on Review.
+  const { hash } = useLocation();
+  const loaded = report != null;
+  useEffect(() => {
+    if (!loaded || hash !== `#${REPORT_CHECKLIST_ANCHOR}`) return;
+    if (section !== 'review') {
+      // The hash stays, so the checklist is scrolled to once it is shown.
+      navigate({ search: '?section=review', hash: REPORT_CHECKLIST_ANCHOR }, { replace: true });
+    } else {
+      document.getElementById(REPORT_CHECKLIST_ANCHOR)?.scrollIntoView?.({ block: 'start' });
+    }
+  }, [loaded, hash, section, navigate]);
+
+  // ---- pending edits (held here: they survive switching sections) --------
+  const base = useMemo(() => ({
+    saved: (editable ? report?.settings : report?.effective) ?? {},
+    followed: editable ? (report?.followed ?? null) : null,
+    sources: editable ? (report?.followed_from ?? null) : null,
+    ownOnly: (report?.kind === 'addendum' ? ['executive_summary'] : []) as DetailKey[],
+  }), [editable, report]);
+  const edits = useDetailEdits(base);
+  const [title, setTitle] = useState<string | null>(null);
+  const [template, setTemplate] = useState<string | null>(null);
+  const titleChanged = report != null && title !== null && title !== report.title;
+  const templateChanged = report != null && template !== null && template !== report.template;
+  const dirty = edits.dirty || titleChanged || templateChanged;
+  const changedParts = [
+    ...(titleChanged || templateChanged ? ['Report'] : []),
+    ...DETAIL_SECTIONS.filter((s) => edits.dirtySections.includes(s.id))
+      .map((s) => (s.id === 'summary' && report?.kind === 'addendum' ? 'Summary of changes' : s.title)),
+  ];
+  const discardAll = () => { edits.discardAll(); setTitle(null); setTemplate(null); };
+  // The action bar's Discard asks first, as leaving does: what is typed is
+  // lost (walkthrough 2026-10-14 — one press beside Save draft threw it away).
+  const confirmDiscardAll = async () => {
+    const ok = await confirm({
+      title: 'Discard your unsaved changes?',
+      body: `What you changed in ${changedParts.join(', ')} goes back to the last save.`,
+      severity: 'danger', confirmLabel: 'Discard changes',
+    });
+    if (ok) discardAll();
+  };
+
+  const { confirmLeave, confirmEl: leaveDialog } = useDiscardGuard(
+    () => dirty,
+    'This draft has unsaved changes. Leave anyway?',
+  );
+
+  // The project's report images: the system description's picker, paste and
+  // preview; managed in the project images panel.
+  const reportImages = useReportTextImages({ enabled: editable });
+
+  // ---- previews -----------------------------------------------------------
   const [started, setStarted] = useState<Partial<Record<ClientReportFormat, ReportJob>>>({});
   const startedJobs = Object.entries(started) as Array<[ClientReportFormat, ReportJob]>;
-  const followed = useJobPolls({
+  const followedJobs = useJobPolls({
     jobs: startedJobs.map(([, job]) => job),
     queryKey: (job) => ['getReportJob', projectId, job.id],
     queryFn: (job, signal) => getReportJob(projectId, job.id, signal),
@@ -262,14 +319,10 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     isDone: (job) => !isRunning(job),
   });
   const previews: Partial<Record<ClientReportFormat, ReportJob>> = Object.fromEntries(
-    startedJobs.map(([fmt, job], i) => [fmt, followed[i]?.job ?? job]),
+    startedJobs.map(([fmt, job], i) => [fmt, followedJobs[i]?.job ?? job]),
   );
-  // A preview whose status could not be re-read: the last reading stays on
-  // its button, and the reader is told it may be old (it is asked again).
-  const previewStale = followed.find((poll) => poll.running && poll.error != null)?.error;
-  // A finished preview is said once — a render takes a while and the reader
-  // has usually looked away.  Once per JOB: not on each poll or re-render, and
-  // not for a failure (its row says that).
+  const previewStale = followedJobs.find((poll) => poll.running && poll.error != null)?.error;
+  // A finished preview is said once per job.
   const readyPreviews = (Object.entries(previews) as Array<[ClientReportFormat, ReportJob]>)
     .filter(([, job]) => job.status === 'completed')
     .map(([fmt, job]) => `${fmt}:${job.id}`)
@@ -284,9 +337,34 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     }
   }, [readyPreviews, toast]);
 
-  // Issuing says "Rendering its files…"; the page then said nothing when they
-  // were ready (owner, 2026-10-14).  Announced once, when a render this page
-  // SAW running ends — never for a report opened already done.
+  // What a preview would render NOW, compared with what each finished
+  // preview rendered (the proposal's "Preview freshness").  Its own
+  // lifecycle, on purpose: the findings, the project's defaults, its images
+  // and the template change on other pages and in other tabs, so it is read
+  // again on return to the window, as well as on entering Preview & issue,
+  // after a save, when a preview finishes and just before the issue's
+  // confirmation.
+  const inputs = useQuery({
+    queryKey: ['getClientReportInputs', projectId, reportId],
+    queryFn: ({ signal }) => getClientReportInputs(projectId, reportId, signal),
+    enabled: isDraft && section === 'issue' && readyPreviews !== '',
+    refetchOnWindowFocus: true,
+  });
+  useEffect(() => {
+    if (readyPreviews) void queryClient.invalidateQueries({ queryKey: ['getClientReportInputs', projectId, reportId] });
+  }, [readyPreviews, queryClient, projectId, reportId]);
+  /** A finished preview against the inputs now; never "current" unless both
+   *  fingerprints are known and equal. */
+  const freshnessOf = (job: ReportJob, now: { fingerprint: string | null } | undefined, failed: boolean): Freshness => {
+    if (failed) return 'unknown';
+    if (now === undefined) return 'checking';
+    if (!job.inputs_fingerprint || !now.fingerprint) return 'unknown';
+    return job.inputs_fingerprint === now.fingerprint ? 'current' : 'out-of-date';
+  };
+  const finishedPreviews = (Object.entries(previews) as Array<[ClientReportFormat, ReportJob]>)
+    .filter(([, job]) => job.status === 'completed');
+
+  // An issue's render, announced once when this page SAW it running.
   const sawRendering = useRef(false);
   const renderStatus = report?.status !== 'draft' ? report?.render_status ?? null : null;
   useEffect(() => {
@@ -303,153 +381,56 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renderStatus]);
 
-  // "Back to the report" from a finding the checklist opened lands on the
-  // checklist (`#report-checklist`), once the report is on screen.
-  const { hash } = useLocation();
-  const loaded = report != null;
-  useEffect(() => {
-    if (!loaded || hash !== `#${REPORT_CHECKLIST_ANCHOR}`) return;
-    document.getElementById(REPORT_CHECKLIST_ANCHOR)?.scrollIntoView?.({ block: 'start' });
-  }, [loaded, hash]);
-
-  const dirty = useMemo(() => {
-    if (!report || !form) return false;
-    return JSON.stringify(toForm(report)) !== JSON.stringify(form);
-  }, [report, form]);
-  // A project default open for editing, or being written: nothing is issued,
-  // previewed or left behind until it is saved or cancelled.
-  const projectPending = Object.keys(projectEdits).length > 0;
-  const unsaved = dirty || projectPending;
-  // The Back button and a tab close used to discard an unsaved narrative
-  // without asking, although `dirty` was right here (review B-UI-7).
-  const { confirmLeave, confirmEl: leaveDialog } = useDiscardGuard(
-    () => unsaved,
-    'This draft has unsaved changes — the summary, details or engagement fields you edited, or a project default you are editing. Leave anyway?',
-  );
-  const unsavedReason = projectPending && !dirty
-    ? 'Save or cancel the project default you are editing first'
-    : 'Save your changes first';
-
-  const saveDetails = useMutation({
-    mutationFn: (next: Form) => updateClientReport(projectId, reportId, {
-      title: next.title.trim(),
-      template: next.template,
-      settings: cleanSettings(next.settings),
-    }),
-    onSuccess: (updated) => {
-      putReport(updated);
-      setEdits({});
-      toast.success('Report saved.');
-    },
-    onError: (err) => toast.error(formatApiError(err, 'Could not save the report.')),
-  });
-  const saving = saveDetails.isPending;
-  const save = () => {
-    if (!report || !form) return;
-    if (!form.title.trim()) { toast.error('A report needs a title.'); return; }
-    saveDetails.mutate(form);
-  };
-
-  // A draft's detail pushed up to the project's report defaults (owner,
-  // 2026-10-14): "Set for the project" writes that one key (PATCH — never the
-  // whole profile, which a stale read would overwrite); "Make this the
-  // project's default" writes it AND drops the override in one transaction.
-  // Either changes what every following draft prints, and the defaults.
-  const refreshProjectDetails = () => Promise.all([
-    queryClient.invalidateQueries({ queryKey: ['getReportProfile', projectId] }),
-    queryClient.invalidateQueries({ queryKey: ['listClientReports', projectId] }),
-  ]);
-  const setForProject = useMutation({
-    mutationFn: ({ key, value }: { key: DetailKey; value: EngagementSettings[DetailKey] }) =>
-      patchReportProfile(projectId, { [key]: value }),
-    onSuccess: async (_profile, { key, value }) => {
-      // The draft's `followed` is what changed on this page: re-read it before
-      // the edit closes, so the old value is not shown in between.
-      await Promise.all([queryClient.invalidateQueries({ queryKey: reportKey }), refreshProjectDetails()]);
-      const label = DETAIL_LABELS[key];
-      toast.success(value == null
-        ? `${label} is cleared in the project’s defaults.`
-        : `${label} is saved to the project’s defaults: every draft that follows them prints it.`);
-    },
-    onError: (err) => toast.error(formatApiError(err, 'Could not save the project’s default.')),
-  });
-  const promoting = useMutation({
-    mutationFn: ({ key, value }: { key: DetailKey; value: EngagementSettings[DetailKey] }) =>
-      promoteClientReportDetails(projectId, reportId, { [key]: value }),
-    onSuccess: (updated, { key }) => {
-      putReport(updated);
-      // An unsaved copy of the overrides still holds the key: it follows now.
-      setEdits((e) => {
-        if (!e.settings || !(key in e.settings)) return e;
-        const settings = { ...e.settings };
-        delete settings[key];
-        return { ...e, settings };
-      });
-      void refreshProjectDetails();
-      toast.success(`${DETAIL_LABELS[key]} is now the project’s default, and this draft follows it again.`);
-    },
-    onError: (err) => toast.error(formatApiError(err, 'Could not make it the project’s default.')),
-  });
-  const promote = async (key: DetailKey, value: EngagementSettings[DetailKey]) => {
-    if (!report) return;
-    // Confirmed only when it replaces a different value the project holds.
-    const current = report.followed_from?.[key] === 'project' ? report.followed?.[key] : null;
-    const differs = current != null && hasValue(key, current) && !(Array.isArray(current) && !current.length)
-      && JSON.stringify(current) !== JSON.stringify(value);
-    if (differs) {
-      const label = DETAIL_LABELS[key];
-      const ok = await confirm({
-        title: `Replace the project’s ${label}?`,
-        body: (
-          <>
-            <p className="break-words [overflow-wrap:anywhere]">
-              The project’s default is {describeDetail(current)}. It becomes {describeDetail(value)}.
-            </p>
-            <p className="mt-xs">
-              Every other draft that follows the project’s {label} changes with it; issued reports do not.
-            </p>
-          </>
-        ),
-        confirmLabel: 'Replace the project’s default',
-        // Undoable (set it back the same way): the normal primary button —
-        // red is for discarding and deleting (owner, 2026-10-14).
-        severity: 'info',
-      });
-      if (!ok) return;
-    }
-    promoting.mutate({ key, value });
-  };
-
-  // The template is a rendering choice beside the Preview buttons, so it is
-  // saved on its own at once — other unsaved edits stay unsaved.
-  const templateChange = useMutation({
-    mutationFn: (name: string) => updateClientReport(projectId, reportId, { template: name }),
-    onSuccess: (updated) => {
-      putReport(updated);
-      setStarted({});
-    },
-    onError: (err) => toast.error(formatApiError(err, 'Could not change the template.')),
-  });
-  const savingTemplate = templateChange.isPending;
-  const changeTemplate = (name: string) => {
-    if (!report || name === report.template) return;
-    templateChange.mutate(name);
-  };
-
   const startPreview = useMutation({
     mutationFn: (fmt: ClientReportFormat) => previewClientReport(projectId, reportId, fmt),
     onSuccess: (job, fmt) => setStarted((prev) => ({ ...prev, [fmt]: job })),
     onError: (err) => toast.error(formatApiError(err, 'Could not start the preview.')),
   });
-  const preview = (fmt: ClientReportFormat) => { if (report) startPreview.mutate(fmt); };
 
+  // ---- save draft ---------------------------------------------------------
+  const saveDraft = useMutation({
+    mutationFn: () => {
+      const { settings, edited } = toSave(edits.ctx);
+      return updateClientReport(projectId, reportId, {
+        ...(titleChanged ? { title: (title ?? '').trim() } : {}),
+        ...(templateChanged ? { template: template ?? undefined } : {}),
+        settings, edited,
+      });
+    },
+    onSuccess: (updated) => {
+      putReport(updated);
+      if (templateChanged) setStarted({});
+      discardAll();
+      void queryClient.invalidateQueries({ queryKey: ['listClientReports', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['getClientReportInputs', projectId, reportId] });
+      toast.success('Draft saved.');
+    },
+    // A failed save keeps every edit, and previews nothing.
+    onError: (err) => toast.error(formatApiError(err, 'Could not save the draft.')),
+  });
+  const saving = saveDraft.isPending;
+  const save = async (): Promise<boolean> => {
+    if (titleChanged && !(title ?? '').trim()) { toast.error('A report needs a title.'); return false; }
+    try {
+      await saveDraft.mutateAsync();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const preview = async (fmt: ClientReportFormat) => {
+    if (!report) return;
+    if (dirty && !(await save())) return;
+    startPreview.mutate(fmt);
+    if (section !== 'issue') goTo('issue');
+  };
+
+  // ---- issue, revise, render again, discard -------------------------------
   const issuing = useMutation({
     mutationFn: () => issueClientReport(projectId, reportId),
     onSuccess: (issued) => {
       putReport(issued);
-      setEdits({});
-      // The project's reports gained a number; "start the clock from a
-      // report" and the Reports page read that list.
+      discardAll();
       void queryClient.invalidateQueries({ queryKey: ['listClientReports', projectId] });
       toast.success(`Issued as report #${issued.number}. Rendering its files…`);
     },
@@ -459,6 +440,12 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     if (!report) return;
     const s = report.summary;
     const issueTemplate = templates.find((t) => t.name === report.template);
+    // Checked again now: something may have changed since the page last asked.
+    let previewsNow: Freshness[] = [];
+    if (finishedPreviews.length) {
+      const now = await inputs.refetch();
+      previewsNow = finishedPreviews.map(([, job]) => freshnessOf(job, now.data, now.isError));
+    }
     const ok = await confirm({
       title: 'Issue this report?',
       body: (
@@ -468,9 +455,19 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             is kept as it is now, and it can no longer be edited or deleted. A correction is a revision
             that supersedes it.
           </p>
-          {/* The template is whatever the Preview selector was last set to:
-              named here, so a template chosen only to look at is not issued
-              by accident (walkthrough 2026-10-14). */}
+          <p className="mt-xs">
+            It is built from the findings and details as they stand at this moment, not from an earlier preview.
+          </p>
+          {previewsNow.includes('out-of-date') && (
+            <p className="mt-xs" data-testid="issue-preview-out-of-date">
+              Your preview is out of date: the findings, details, images or template changed after it was rendered.
+            </p>
+          )}
+          {!previewsNow.includes('out-of-date') && previewsNow.some((f) => f === 'unknown' || f === 'checking') && (
+            <p className="mt-xs" data-testid="issue-preview-unverified">
+              Whether your preview is still current could not be verified.
+            </p>
+          )}
           <p className="mt-xs break-words" data-testid="issue-template">
             It is issued with the <strong>{issueTemplate?.title ?? report.template}</strong> template
             {issueTemplate?.formats.length
@@ -498,7 +495,6 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             <p className="mt-xs">{s.agent_images} image{s.agent_images === 1 ? ' comes' : 's come'} from notes an agent wrote.</p>
           )}
           {!!s?.images_not_printed && (
-            // Said before the sign-off: a ticked image this report will not show.
             <p className="mt-xs break-words">Evidence images: {evidenceImagesLine(s)}.</p>
           )}
           {!!s?.evidence_records && (
@@ -525,13 +521,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     onSuccess: (draft) => navigate(`/reports/${draft.id}`),
     onError: (err) => toast.error(formatApiError(err, 'Could not start a revision.')),
   });
-
   const rerendering = useMutation({
     mutationFn: () => rerenderClientReport(projectId, reportId),
     onSuccess: (next) => { putReport(next); },
     onError: (err) => toast.error(formatApiError(err, 'Could not restart the rendering.')),
   });
-
   const discarding = useMutation({
     mutationFn: () => deleteClientReport(projectId, reportId),
     onSuccess: () => navigate('/reports'),
@@ -545,15 +539,23 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     });
     if (ok) discarding.mutate();
   };
-
-  // One of these at a time; the buttons wait for it.  A discarded draft's
-  // page stays busy until the list replaces it.
   const busy: 'issue' | 'revise' | 'render' | 'delete' | null = issuing.isPending ? 'issue'
     : revising.isPending ? 'revise' : rerendering.isPending ? 'render'
       : discarding.isPending || discarding.isSuccess ? 'delete' : null;
 
+  // A checklist line about a detail opens its section on Details and puts
+  // the caret in its field.
+  const openDetail = (key: string) => {
+    if (!(key in DETAIL_LABELS)) return;
+    const detail = key as DetailKey;
+    goTo('details');
+    edits.edit(sectionOf(detail).id);
+    // Once the section has rendered open.
+    window.setTimeout(() => { focusDetailField('report', detail); }, 0);
+  };
+
   if (!report && !error) return <DetailSkeleton />;
-  if (!report || !form) {
+  if (!report) {
     return (
       <div className="p-md md:p-lg">
         <Button variant="ghost" size="sm" onClick={() => navigate('/reports')}><ArrowLeft className="size-4" aria-hidden /> Reports</Button>
@@ -563,30 +565,34 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     );
   }
 
-  const isDraft = report.status === 'draft';
   const s = report.summary ?? {};
-  // 5.319.0 — the scope file an over-cutoff report names.
   const scopeFile = s.scope_external?.file;
   const counts = s.counts;
-  const editable = isDraft && report.can_edit;
-  const template = templates.find((t) => t.name === report.template);
-  const formats: ClientReportFormat[] = template?.formats ?? ['html', 'docx'];
-  // A required template image that is not installed blocks every render (the
-  // server refuses too); say so on the buttons instead of failing a job.
-  const assetsBlock = missingAssetsReason(template);
+  const tpl = templates.find((t) => t.name === (template ?? report.template));
+  const formats: ClientReportFormat[] = tpl?.formats ?? ['html', 'docx'];
+  const assetsBlock = missingAssetsReason(tpl);
   const missingText = s.missing_text ?? [];
   const missingDetails = s.missing_details ?? [];
-  // Issue is the main action only once nothing prints as TODO; until then
-  // the page leads to the gaps and to previewing, not to freezing them.
-  const ready = !missingText.length && !missingDetails.length;
-  const notReadyReason = ready ? undefined
-    : 'Parts of this report still print as TODO — see Before issuing';
+  const toFix = missingText.length + missingDetails.length;
+  const warnings = (s.pending_proposals?.length ?? 0) + (s.uncaptioned_images?.length ?? 0)
+    + (s.internal_references?.length ?? 0) + (s.unresolved_images?.length ?? 0);
+  const ready = !toFix;
+  // What refuses the issue — the server refuses these too.
+  const blockers = [
+    ...(dirty ? ['Unsaved changes: save the draft first.'] : []),
+    ...(assetsBlock ? [`${assetsBlock}.`] : []),
+    ...(s.error ? [`The report could not be built: ${s.error}`] : []),
+  ];
+  const anyRunning = Object.values(previews).some((j) => j && isRunning(j));
+  const summaryLabel = report.kind === 'addendum' ? 'Summary of changes' : 'Executive summary';
+  // What "Update project defaults…" offers: the details this report has as
+  // its own, saved or pending (never an addendum's summary).
+  const customisedKeys = DETAIL_SECTIONS.flatMap((x) => x.keys).filter((k) => customised(edits.ctx, k));
 
   let lead: React.ReactNode;
   if (s.error) {
     lead = <span className="text-destructive">{s.error}</span>;
   } else if (report.kind === 'addendum' && s.delta) {
-    // Reports issued before severity changes were counted lack the field.
     const reRated = s.delta.findings_with_changed_severity ?? 0;
     lead = <>Compared with report #{report.baseline?.number}: <strong>{s.delta.new_findings}</strong> new finding{s.delta.new_findings === 1 ? '' : 's'}, <strong>{s.delta.findings_with_new_endpoints}</strong> reported finding{s.delta.findings_with_new_endpoints === 1 ? '' : 's'} on further systems, <strong>{s.delta.withdrawn}</strong> withdrawal{s.delta.withdrawn === 1 ? '' : 's'}{reRated > 0 && <>, <strong>{reRated}</strong> reported finding{reRated === 1 ? '' : 's'} with a changed severity</>}.</>;
   } else {
@@ -595,130 +601,94 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       : <>Covered <strong>{counts?.total ?? 0}</strong> finding{counts?.total === 1 ? '' : 's'} when issued.</>;
   }
 
-  // The template is a property of the report — what it is issued with, not
-  // only what a preview looks like — so it sits under the title, beside the
-  // report's kind (walkthrough 2026-10-14; it was in Preview).  Saved at once.
-  // What the template is for and how its files stand are on the (i) beside
-  // it (owner, 2026-10-14: the header read as a wall of text); what BLOCKS
-  // preview and issue stays on the page.
+  // ---- Details -------------------------------------------------------------
+  // What the template is for (with several to choose from) and how its
+  // files stand are on the (i); what BLOCKS preview and issue is on the page.
   const onlyTemplate = editable && templates.length === 1;
-  const describeTemplate = !!template?.description && templates.length > 1;
-  const filesLine = !assetsBlock && !!template?.assets?.length;
+  const describeTemplate = !!tpl?.description && templates.length > 1;
+  const filesLine = !assetsBlock && !!tpl?.assets?.length;
   const templateTip = (onlyTemplate || describeTemplate || filesLine) ? (
     <div className="space-y-xxs">
-      {/* What the chosen template is for (v5.295.0) — with several
-          installed, the title alone does not say which reader it serves. */}
-      {describeTemplate && (
-        <p className="break-words" data-testid="template-description">{template?.description}</p>
-      )}
+      {describeTemplate && <p className="break-words" data-testid="template-description">{tpl?.description}</p>}
       {onlyTemplate && <p>The only template installed.</p>}
-      {filesLine && <TemplateFilesLine template={template} />}
+      {filesLine && <TemplateFilesLine template={tpl} />}
     </div>
   ) : null;
-  const templatePicker = (
-    <div className="mt-xs space-y-xxs" data-testid="report-template-picker">
-      <div className="flex min-w-0 flex-wrap items-center gap-xs">
-        {editable
-          ? <Label htmlFor="report-template" className="shrink-0">Template</Label>
-          : <span className="shrink-0 text-body font-medium">Template</span>}
-        {editable ? (
-          <Select value={report.template} onValueChange={changeTemplate} disabled={savingTemplate}>
-            <SelectTrigger id="report-template" className="h-8 w-[18rem] max-w-full"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {templates.filter(isClientTemplate).map((t) => <SelectItem key={t.name} value={t.name}>{t.title}</SelectItem>)}
-              {!templates.some((t) => t.name === report.template) && (
-                <SelectItem value={report.template}>{report.template}</SelectItem>
-              )}
-            </SelectContent>
-          </Select>
-        ) : (
-          <span className="min-w-0 break-words text-body">{template?.title ?? report.template}</span>
-        )}
-        {templateTip && <InfoTip label="About this template" text={templateTip} />}
-        {savingTemplate && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Saving the template" />}
-      </div>
-      {assetsBlock ? (
-        <div className="space-y-xxs">
-          <p className="text-caption text-destructive">
-            {assetCountLabel(template)} — preview and issue are unavailable until {missingRequiredAssets(template).length === 1 ? 'it is' : 'they are'} installed:
-          </p>
-          <TemplateImages
-            template={template}
-            templateName={report.template}
-            showServerPaths={isAdmin}
-          />
+  const details = (
+    <div className="space-y-lg">
+      <section className="min-w-0 space-y-sm" aria-labelledby="report-section-report" data-testid="report-section-report">
+        <h3 id="report-section-report" className="text-subheading font-medium">Report</h3>
+        <div className="grid gap-md md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+          <div className="min-w-0 space-y-xxs">
+            <Label htmlFor="report-title" className={DETAIL_NAME}>Title</Label>
+            {editable ? (
+              <Input id="report-title" maxLength={255} value={title ?? report.title} disabled={saving}
+                onChange={(e) => setTitle(e.target.value)} />
+            ) : <p className="break-words text-body font-medium">{report.title}</p>}
+          </div>
+          <div className="min-w-0 space-y-xxs" data-testid="report-template-picker">
+            <span className="flex items-center gap-xxs">
+              {editable
+                ? <Label htmlFor="report-template" className={DETAIL_NAME}>Template</Label>
+                : <span className={DETAIL_NAME}>Template</span>}
+              {templateTip && <InfoTip label="About this template" text={templateTip} />}
+            </span>
+            {editable ? (
+              <Select value={template ?? report.template} onValueChange={setTemplate} disabled={saving}>
+                <SelectTrigger id="report-template"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {templates.filter(isClientTemplate).map((t) => <SelectItem key={t.name} value={t.name}>{t.title}</SelectItem>)}
+                  {!templates.some((t) => t.name === report.template) && (
+                    <SelectItem value={report.template}>{report.template}</SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
+            ) : <p className="break-words text-body">{tpl?.title ?? report.template}</p>}
+          </div>
         </div>
-      ) : !template && templates.length > 0 && (
-        <p className="break-words text-caption text-destructive">
-          The template “{report.template}” is not installed on this server{editable ? ' — choose another' : ''}.
-        </p>
+        {assetsBlock ? (
+          <div className="space-y-xxs">
+            <p className="text-caption text-destructive">
+              {assetCountLabel(tpl)} — preview and issue are unavailable until {missingRequiredAssets(tpl).length === 1 ? 'it is' : 'they are'} installed:
+            </p>
+            <TemplateImages template={tpl} templateName={template ?? report.template} showServerPaths={isAdmin} />
+          </div>
+        ) : !tpl && templates.length > 0 && (
+          <p className="break-words text-caption text-destructive">
+            The template “{template ?? report.template}” is not installed on this server{editable ? ' — choose another' : ''}.
+          </p>
+        )}
+      </section>
+
+      <DetailSections edits={edits} canEdit={editable} idPrefix="report" busy={saving}
+        summaryLabel={summaryLabel}
+        summaryAction={editable ? (
+          <Button type="button" variant="ghost" size="sm" onClick={() => setAiOpen(true)}>
+            <Sparkles className="size-4" aria-hidden /> Draft with AI…
+          </Button>
+        ) : undefined}
+        images={editable ? reportImages.markdown : undefined}
+        scopeAction={editable ? <ProjectImagesPanel state={reportImages} idPrefix="report" /> : undefined}
+        members={roster.members} membersStatus={roster.status} onRetryMembers={roster.retry}
+        currentUser={currentUser} />
+
+      {editable && customisedKeys.length > 0 && (
+        <div className="flex flex-wrap items-center gap-xs border-t border-border pt-md">
+          <Button type="button" variant="outline" size="sm" onClick={() => setPromoteOpen(true)} disabled={saving}>
+            Update project defaults…
+          </Button>
+          <span className="text-caption text-muted-foreground">
+            Make this report’s customised details the project’s, for every draft that follows them.
+          </span>
+        </div>
       )}
     </div>
   );
 
-  return (
-    <div className="space-y-lg p-md md:p-lg">
-      <div>
-        <Button
-          variant="ghost" size="sm" className="mb-sm"
-          onClick={async () => { if (await confirmLeave()) navigate('/reports'); }}
-        >
-          <ArrowLeft className="size-4" aria-hidden /> Reports
-        </Button>
-        <header className="flex flex-wrap items-start justify-between gap-md">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-xs">
-              {isDraft ? <Badge variant="warning">Draft</Badge>
-                : report.status === 'superseded' ? <Badge variant="muted">Superseded</Badge>
-                  : <Badge variant="success">Issued #{report.number}</Badge>}
-              <span className="text-caption text-muted-foreground">{reportKindLabel(report)}</span>
-            </div>
-            <h1 className="mt-xxs break-words text-page-title">{report.title}</h1>
-            <p className="mt-xxs max-w-3xl text-body text-muted-foreground">{lead}</p>
-            {report.superseded_by && (
-              <p className="text-caption">
-                Superseded by <Link className="text-info hover:underline" to={`/reports/${report.superseded_by.id}`}>report #{report.superseded_by.number}</Link>.
-              </p>
-            )}
-            {isDraft && templatePicker}
-          </div>
-          <div className="flex shrink-0 flex-wrap gap-xs">
-            {isDraft && report.can_issue && (
-              <Button variant={ready ? 'default' : 'outline'} onClick={() => void issue()}
-                disabled={busy !== null || unsaved || !!s.error || !!assetsBlock}
-                title={unsaved ? unsavedReason : (assetsBlock ?? notReadyReason)}>
-                {busy === 'issue' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Stamp className="size-4" aria-hidden />}
-                Issue report
-              </Button>
-            )}
-            {isDraft && report.can_edit && (
-              <Button variant="ghost" className="text-destructive" onClick={() => void discard()} disabled={busy !== null}>
-                <Trash2 className="size-4" aria-hidden /> Discard draft
-              </Button>
-            )}
-            {report.status === 'issued' && (
-              <Button variant="outline" onClick={() => revising.mutate()} disabled={busy !== null}>
-                {busy === 'revise' && <Loader2 className="size-4 animate-spin" aria-hidden />} Revise
-              </Button>
-            )}
-            {isDraft && unsaved && (
-              <p className="w-full text-right text-caption text-muted-foreground">
-                {dirty ? 'Save your changes below before issuing.'
-                  : 'Save or cancel the project default you are editing below before issuing.'}
-              </p>
-            )}
-            {isDraft && !unsaved && assetsBlock && (
-              <p className="w-full text-right text-caption text-destructive">
-                {missingRequiredAssets(template).length === 1 ? 'A required template file is' : 'Required template files are'} not installed — see Template.
-              </p>
-            )}
-          </div>
-        </header>
-      </div>
-
+  // ---- Review --------------------------------------------------------------
+  const review = (
+    <div className="space-y-lg">
       {counts && (
-        // Three figures; what is still to do is the checklist's alone (owner,
-        // 2026-10-14: the strip repeated "Missing report text").
         <div className="grid grid-cols-1 gap-y-md md:grid-cols-3 md:divide-x md:divide-border" data-testid="report-measures">
           <PostureMeasure label="Findings in the report" value={counts.total}
             info="Confirmed, risk-accepted and remediated findings (an addendum: only new ones). False-positive systems are left out.">
@@ -730,10 +700,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             {isDraft ? 'Left out of this report' : 'Left out when issued'}
           </PostureMeasure>
           <PostureMeasure label="Evidence images" value={s.images ?? 0}
-            info="Images are opt-in: tick “In report” on an image attached to a finding's evidence or comments. Where one prints depends on the report's template: the Penetration test report prints an image its author placed in a written section (Insert image, in the report text editor) there and the rest under the finding's Evidence, each after the text of the comment or note it is attached to; the Remediation worklist prints only images placed in a recommendation; the Executive brief prints none. The line below says what this report does. WebP images cannot be placed in every format and are skipped.">
+            info="Images are opt-in: tick “In report” on an image attached to a finding's evidence or comments. Where one prints depends on the report's template. WebP images cannot be placed in every format and are skipped.">
             {s.images ? (
-              // What THIS report's template prints (`evidenceImagesLine`); a
-              // report issued before that was measured claims nothing.
               <span className="break-words" data-testid="report-images-line">
                 {evidenceImagesLine(s)}
                 {s.images_skipped ? ` · ${s.images_skipped} skipped (WebP)` : ''}
@@ -743,16 +711,28 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           </PostureMeasure>
         </div>
       )}
-
       {isDraft && (
-        // Every gap, grouped, each line an action (walkthrough 2026-10-14).
-        <ReportChecklist reportId={reportId} summary={s} isAdmin={isAdmin} canEdit={report.can_edit}
-          onDetail={(key) => { focusReportDetail(detailsRef.current, key); }} />
+        // What really refuses the issue, apart from what prints as TODO or is
+        // a warning (the checklist below): no new blocking rule (proposal §4.2).
+        <section className="min-w-0 space-y-xxs" aria-labelledby="review-blockers" data-testid="review-blockers">
+          <h2 id="review-blockers" className="text-subheading font-medium">What blocks issuing</h2>
+          {blockers.length ? (
+            <ul className="list-disc space-y-xxs pl-lg text-body text-destructive">
+              {blockers.map((b) => <li key={b} className="break-words">{b}</li>)}
+            </ul>
+          ) : (
+            <p className="text-body text-muted-foreground">Nothing blocks issuing. What is left below prints as TODO or is a warning.</p>
+          )}
+        </section>
       )}
-
+      {isDraft && (
+        <ReportChecklist reportId={reportId} summary={s} isAdmin={isAdmin} canEdit={report.can_edit}
+          onDetail={openDetail} />
+      )}
+      {isDraft && !toFix && !warnings && (
+        <p className="text-body text-muted-foreground" data-testid="review-clear">Nothing left to fix before issuing.</p>
+      )}
       {!!s.evidence_records && (
-        // A notice, never a block: what the report prints as its proof, and
-        // how much of it a person did not run.
         <p className="break-words text-caption text-muted-foreground" data-testid="report-evidence-notice">
           {evidenceRecordsNotice(s.evidence_records, s.agent_evidence_records)}
         </p>
@@ -763,13 +743,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         </p>
       )}
       {!!s.evidence_notes && !s.evidence_note_findings?.length && (
-        // A note was written for the team; this report shows it to the client.
         <p className="break-words text-caption text-muted-foreground" data-testid="report-evidence-notes">
           {evidenceNotesNotice(s.evidence_notes)}
         </p>
       )}
       {!isDraft && !!s.evidence_note_findings?.length && (
-        // What an issued report printed; a draft lists them in its checklist.
         <PostureSection title="Notes printed in this report"
           description="Each was printed word for word under Evidence, before the image attached to it.">
           <ul className="space-y-xs" data-testid="report-evidence-notes">
@@ -792,7 +770,6 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           </ul>
         </PostureSection>
       )}
-
       {s.scope_external && scopeFile && (
         <PostureSection title="Scope file — send it with the report"
           description={isDraft
@@ -813,158 +790,233 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             saveFn={() => downloadClientReportScope(projectId, reportId, scopeFile.name)} />
         </PostureSection>
       )}
+    </div>
+  );
 
-      {isDraft ? (
-        <PostureSection title="Preview"
-          description="Rendered from the live findings on the report worker, with the report’s template. Previews expire after a day.">
-          {unsaved && (
-            <p className="mb-xs text-caption text-muted-foreground">
-              {dirty ? 'The report details below have unsaved changes — save them to preview them.'
-                : 'A project default below is being edited — save or cancel it to preview.'}
-            </p>
-          )}
-          <div className="flex flex-wrap gap-sm">
-            {formats.map((fmt) => {
-              const job = previews[fmt];
-              const running = job != null && isRunning(job);
-              return (
-                <div key={fmt} className="flex min-w-0 items-center gap-xs">
-                  <Button variant="outline" size="sm" onClick={() => preview(fmt)}
-                    disabled={!!running || !report.can_edit || unsaved || !!assetsBlock}
-                    title={unsaved ? unsavedReason : assetsBlock}>
-                    {running && <Loader2 className="size-4 animate-spin" aria-hidden />}
-                    {running ? `Rendering ${FORMAT_LABEL[fmt]}…` : `Preview ${FORMAT_LABEL[fmt]}`}
-                  </Button>
-                  {job?.status === 'completed' && fmt === 'html' && (
-                    // HTML is read in the browser: opened in a new tab (the
-                    // row's main button), with the file still one press away.
-                    <>
-                      <OpenPreviewButton key={`open-${job.id}`} size="sm" projectId={projectId} jobId={job.id}
-                        label="Open HTML preview" />
-                      <DownloadButton key={job.id} size="sm" variant="ghost" label="Download"
-                        name="Download HTML preview" errorText="Could not download the preview."
-                        saveFn={() => downloadReportJob(projectId, job.id)} />
-                    </>
-                  )}
-                  {job?.status === 'completed' && fmt !== 'html' && (
-                    // The finished file is what the reader came back for: the
-                    // row's main button.  Keyed by its job, so a new preview's
-                    // button does not carry the previous file's "Downloaded".
-                    <DownloadButton key={job.id} size="sm" label={`Download ${FORMAT_LABEL[fmt]} preview`}
-                      errorText="Could not download the preview."
+  // ---- Preview & issue -----------------------------------------------------
+  const issuePanel = isDraft ? (
+    <div className="space-y-lg">
+      <PostureSection title="Preview"
+        description="Rendered from the live findings and this draft’s saved details, with its template. Previews expire after a day.">
+        {dirty && (
+          <p className="mb-xs text-caption text-warning" data-testid="preview-pending">
+            A preview shows the saved draft, not your unsaved changes — “Save & preview” saves them first.
+          </p>
+        )}
+        <div className="flex flex-wrap gap-sm">
+          {formats.map((fmt) => {
+            const job = previews[fmt];
+            const running = job != null && isRunning(job);
+            return (
+              <div key={fmt} className="flex min-w-0 items-center gap-xs">
+                <Button variant="outline" size="sm" onClick={() => void preview(fmt)}
+                  disabled={!!running || !report.can_edit || saving || !!assetsBlock}
+                  title={assetsBlock}>
+                  {running && <Loader2 className="size-4 animate-spin" aria-hidden />}
+                  {running ? `Rendering ${FORMAT_LABEL[fmt]}…` : `${dirty ? 'Save & preview' : 'Preview'} ${FORMAT_LABEL[fmt]}`}
+                </Button>
+                {job?.status === 'completed' && fmt === 'html' && (
+                  <>
+                    <OpenPreviewButton key={`open-${job.id}`} size="sm" projectId={projectId} jobId={job.id}
+                      label="Open HTML preview" />
+                    <DownloadButton key={job.id} size="sm" variant="ghost" label="Download"
+                      name="Download HTML preview" errorText="Could not download the preview."
                       saveFn={() => downloadReportJob(projectId, job.id)} />
+                  </>
+                )}
+                {job?.status === 'completed' && fmt !== 'html' && (
+                  <DownloadButton key={job.id} size="sm" label={`Download ${FORMAT_LABEL[fmt]} preview`}
+                    errorText="Could not download the preview."
+                    saveFn={() => downloadReportJob(projectId, job.id)} />
+                )}
+                {job?.status === 'failed' && (
+                  <span className="max-w-md truncate text-caption text-destructive" title={job.error_message ?? undefined}>
+                    Failed: {safeFallback(job.error_message, 'see the report worker log')}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {finishedPreviews.length > 0 && (
+          <ul className="mt-xs space-y-xxs text-caption" data-testid="preview-freshness">
+            {finishedPreviews.map(([fmt, job]) => {
+              const freshness = freshnessOf(job, inputs.data, inputs.isError);
+              return (
+                <li key={fmt} data-testid={`preview-freshness-${fmt}`} data-freshness={freshness}
+                  className={freshness === 'current' ? 'text-muted-foreground' : 'text-warning'}>
+                  {FORMAT_LABEL[fmt]} preview: {FRESHNESS_TEXT[freshness]}
+                  {freshness === 'unknown' && inputs.isError && (
+                    <Button variant="link" size="sm" className="ml-xs h-auto p-0" onClick={() => void inputs.refetch()}>
+                      Check again
+                    </Button>
                   )}
-                  {job?.status === 'failed' && (
-                    <span className="max-w-md truncate text-caption text-destructive" title={job.error_message ?? undefined}>
-                      Failed: {safeFallback(job.error_message, 'see the report worker log')}
-                    </span>
-                  )}
-                </div>
+                </li>
               );
             })}
-          </div>
-          {previewStale != null && (
-            <p role="status" className="mt-xs break-words text-caption text-warning">
-              Status may be stale — {formatApiError(previewStale, 'Could not refresh the status.')}
-            </p>
-          )}
-          {formats.includes('docx') && (
-            <p className="mt-xs text-caption text-muted-foreground">
-              For a PDF, open the Word report and export it (File › Save as PDF): the PDF keeps the Word design.
-            </p>
-          )}
-        </PostureSection>
-      ) : (
-        <PostureSection title="Files" description="Rendered from the frozen report; the checksum identifies each file.">
-          <div className="space-y-xs">
-            <FileButtons report={report} />
-            {report.render_status === 'failed' && (
-              <div className="space-y-xxs">
-                <p className="whitespace-pre-wrap break-words font-mono text-caption text-destructive">{report.render_error}</p>
-                <Button size="sm" variant="outline" onClick={() => rerendering.mutate()} disabled={busy !== null}>
-                  <RefreshCw className="size-4" aria-hidden /> Render again
-                </Button>
-              </div>
-            )}
-            <dl className="grid gap-x-lg gap-y-xxs text-caption sm:grid-cols-[10rem_minmax(0,1fr)]">
-              <dt className="text-muted-foreground">Issued</dt>
-              <dd>{when(report.issued_at)} by {safeFallback(report.issued_by_name, 'unknown')}</dd>
-              <dt className="text-muted-foreground">Template</dt>
-              <dd className="break-all">{template?.title ?? report.template} · <span className="font-mono">{report.template_fingerprint?.slice(0, 12) ?? '—'}</span></dd>
-              <dt className="text-muted-foreground">Quarto</dt><dd>{safeFallback(report.quarto_version, '—')}</dd>
-              {report.files.map((f) => (
-                <React.Fragment key={f.format}>
-                  <dt className="text-muted-foreground">{FORMAT_LABEL[f.format]} SHA-256</dt>
-                  <dd className="break-all font-mono">{f.sha256}</dd>
-                </React.Fragment>
-              ))}
-            </dl>
-          </div>
-        </PostureSection>
-      )}
-
-      <PostureSection title="Report details"
-        description={editable ? 'Each detail follows the project’s report defaults (Reports page) unless you override it here; an override is saved with this report only.' : 'As issued.'}>
-        <form ref={detailsRef} className="space-y-md" onSubmit={(e) => { e.preventDefault(); save(); }}>
-          <div className="min-w-0 space-y-xxs">
-            <Label htmlFor="report-title" className={DETAIL_NAME}>Title</Label>
-            <Input id="report-title" maxLength={255} value={form.title} disabled={!editable || saving}
-              onChange={(e) => edit({ title: e.target.value })} />
-          </div>
-
-          {/* A draft: its overrides over what it follows.  Read only (issued,
-              or not the reader's to edit): every value it prints — as issued. */}
-          <EngagementSettingsFields idPrefix="report"
-            value={editable ? form.settings : (report.effective ?? form.settings)} members={roster.members}
-            membersStatus={roster.status} onRetryMembers={roster.retry} currentUser={currentUser}
-            followed={editable ? report.followed : null}
-            followedFrom={editable ? report.followed_from : null}
-            // Writing the project's defaults is an analyst's, as editing the
-            // draft is: one gate (`can_edit`).
-            onSetForProject={editable
-              ? (key, value) => setForProject.mutateAsync({ key, value }) : undefined}
-            onPromote={editable ? (key, value) => { void promote(key, value); } : undefined}
-            projectBusy={setForProject.isPending || promoting.isPending}
-            projectEdits={projectEdits} onProjectEditsChange={setProjectEdits}
-            // The executive summary is the project's (owner, 2026-10-14); an
-            // addendum's summary of changes is its own.
-            summaryLabel={report.kind === 'addendum' ? 'Summary of changes' : 'Executive summary'}
-            summaryOwn={report.kind === 'addendum'}
-            summaryAction={editable ? (
-              <Button type="button" variant="ghost" size="sm" onClick={() => setAiOpen(true)}>
-                <Sparkles className="size-4" aria-hidden /> Draft with AI…
-              </Button>
-            ) : undefined}
-            readOnly={!editable} disabled={saving} onChange={(settings) => edit({ settings })} />
-
-          {editable && (
-            <div className="flex flex-wrap items-center gap-xs">
-              <Button type="submit" size="sm" disabled={saving || !dirty}>
-                {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save
-              </Button>
-              <Button type="button" variant="ghost" size="sm" disabled={saving || !dirty} onClick={() => setEdits({})}>
-                Undo changes
-              </Button>
-              {dirty && <span className="text-caption text-muted-foreground">Unsaved changes — save before previewing or issuing.</span>}
-            </div>
-          )}
-        </form>
+          </ul>
+        )}
+        {previewStale != null && (
+          <p role="status" className="mt-xs break-words text-caption text-warning">
+            Status may be stale — {formatApiError(previewStale, 'Could not refresh the status.')}
+          </p>
+        )}
+        {formats.includes('docx') && (
+          <p className="mt-xs text-caption text-muted-foreground">
+            For a PDF, open the Word report and export it (File › Save as PDF): the PDF keeps the Word design.
+          </p>
+        )}
       </PostureSection>
 
-      <AiDraftReportDialog reportId={reportId} open={aiOpen} onClose={() => setAiOpen(false)}
-        useLabel="Use as the summary"
-        // The draft overrides the project's summary with it (Save keeps it;
-        // "Make this the project's default" pushes it up).
-        onUse={(text) => edit({ settings: { ...form.settings, executive_summary: text } })} />
+      <PostureSection title="Issue"
+        description="Issuing numbers the report and freezes it: it can no longer be edited or deleted. A correction is a revision.">
+        <div className="flex flex-wrap items-center gap-xs">
+          {report.can_issue && (
+            <Button variant={ready ? 'default' : 'outline'} onClick={() => void issue()}
+              disabled={busy !== null || dirty || !!s.error || !!assetsBlock}
+              title={dirty ? 'Save your changes first' : (assetsBlock ?? undefined)}>
+              {busy === 'issue' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Stamp className="size-4" aria-hidden />}
+              Issue report
+            </Button>
+          )}
+          {report.can_discard && (
+            <Button variant="ghost" className="text-destructive" onClick={() => void discard()} disabled={busy !== null}>
+              <Trash2 className="size-4" aria-hidden /> Discard draft
+            </Button>
+          )}
+        </div>
+        {report.can_issue && dirty && (
+          <p className="mt-xs text-caption text-muted-foreground">Save your changes before issuing.</p>
+        )}
+        {report.can_issue && !dirty && !ready && (
+          <p className="mt-xs text-caption text-muted-foreground">
+            Parts of this report still print as TODO — see <button type="button" className="text-info hover:underline" onClick={() => goTo('review')}>Review</button>.
+          </p>
+        )}
+        {!report.can_issue && (
+          <p className="mt-xs text-caption text-muted-foreground">A project administrator issues the report.</p>
+        )}
+      </PostureSection>
+    </div>
+  ) : (
+    <PostureSection title="Files" description="Rendered from the frozen report; the checksum identifies each file.">
+      <div className="space-y-xs">
+        <FileButtons report={report} />
+        {report.render_status === 'failed' && (
+          <div className="space-y-xxs">
+            <p className="whitespace-pre-wrap break-words font-mono text-caption text-destructive">{report.render_error}</p>
+            <Button size="sm" variant="outline" onClick={() => rerendering.mutate()} disabled={busy !== null}>
+              <RefreshCw className="size-4" aria-hidden /> Render again
+            </Button>
+          </div>
+        )}
+        <dl className="grid gap-x-lg gap-y-xxs text-caption sm:grid-cols-[10rem_minmax(0,1fr)]">
+          <dt className="text-muted-foreground">Issued</dt>
+          <dd>{when(report.issued_at)} by {safeFallback(report.issued_by_name, 'unknown')}</dd>
+          <dt className="text-muted-foreground">Template</dt>
+          <dd className="break-all">{tpl?.title ?? report.template} · <span className="font-mono">{report.template_fingerprint?.slice(0, 12) ?? '—'}</span></dd>
+          <dt className="text-muted-foreground">Quarto</dt><dd>{safeFallback(report.quarto_version, '—')}</dd>
+          {report.files.map((f) => (
+            <React.Fragment key={f.format}>
+              <dt className="text-muted-foreground">{FORMAT_LABEL[f.format]} SHA-256</dt>
+              <dd className="break-all font-mono">{f.sha256}</dd>
+            </React.Fragment>
+          ))}
+        </dl>
+        {report.status === 'issued' && (
+          <Button variant="outline" size="sm" onClick={() => revising.mutate()} disabled={busy !== null}>
+            {busy === 'revise' && <Loader2 className="size-4 animate-spin" aria-hidden />} Revise
+          </Button>
+        )}
+      </div>
+    </PostureSection>
+  );
+
+  return (
+    <div className="space-y-md p-md md:p-lg">
+      <div>
+        <Button variant="ghost" size="sm" className="mb-sm"
+          onClick={async () => { if (await confirmLeave()) navigate('/reports'); }}>
+          <ArrowLeft className="size-4" aria-hidden /> Reports
+        </Button>
+        <div className="flex flex-wrap items-center gap-xs">
+          {isDraft ? <Badge variant="warning">Draft</Badge>
+            : report.status === 'superseded' ? <Badge variant="muted">Superseded</Badge>
+              : <Badge variant="success">Issued #{report.number}</Badge>}
+          <span className="text-caption text-muted-foreground">{reportKindLabel(report)}</span>
+        </div>
+        <h1 className="mt-xxs break-words text-page-title">{report.title}</h1>
+        <p className="mt-xxs max-w-3xl text-body text-muted-foreground">{lead}</p>
+        {report.superseded_by && (
+          <p className="text-caption">
+            Superseded by <Link className="text-info hover:underline" to={`/reports/${report.superseded_by.id}`}>report #{report.superseded_by.number}</Link>.
+          </p>
+        )}
+      </div>
+
+      {isDraft && (
+        // The action bar stays on screen in every section, under the app's
+        // header and tab strip (`top-0` hid it behind them).
+        <div style={stickyFlushBelowChrome} className="sticky z-10 -mx-md flex flex-wrap items-center justify-between gap-xs border-y border-border bg-background/95 px-md py-xs backdrop-blur md:-mx-lg md:px-lg"
+          data-testid="report-action-bar">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-sm gap-y-xxs text-caption">
+            <span data-testid="report-save-status" className={dirty ? 'text-warning' : 'text-muted-foreground'}>
+              {saving ? 'Saving…' : dirty ? `Unsaved changes — ${changedParts.join(', ')}` : 'All changes saved'}
+            </span>
+            <button type="button" className="text-info hover:underline" onClick={() => goTo('review')}
+              data-testid="report-readiness">
+              {toFix ? `${toFix} to fix` : 'Nothing to fix'}{warnings ? ` · ${warnings} warning${warnings === 1 ? '' : 's'}` : ''}
+            </button>
+          </div>
+          {editable && (
+            <div className="flex flex-wrap gap-xs">
+              <Button variant="ghost" size="sm" disabled={!dirty || saving} onClick={() => void confirmDiscardAll()}>Discard changes</Button>
+              <Button variant="outline" size="sm" disabled={!dirty || saving} onClick={() => void save()}>
+                {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save draft
+              </Button>
+              <Button size="sm" disabled={saving || anyRunning || !!assetsBlock} title={assetsBlock}
+                onClick={() => void preview('html')}>
+                {dirty ? 'Save & preview' : 'Preview'}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div role="tablist" aria-label="Report sections" className="flex gap-xxs border-b border-border">
+        {SECTIONS.map((t) => (
+          <button key={t.id} type="button" role="tab" aria-selected={section === t.id}
+            id={`report-tab-${t.id}`} aria-controls={`report-panel-${t.id}`}
+            onClick={() => goTo(t.id)}
+            className={`-mb-px border-b-2 px-sm py-xs text-body ${section === t.id ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+            {t.label}
+            {t.id === 'review' && isDraft && toFix > 0 && <span className="ml-xxs text-caption text-warning">{toFix}</span>}
+          </button>
+        ))}
+      </div>
+
+      <div role="tabpanel" id={`report-panel-${section}`} aria-labelledby={`report-tab-${section}`} className="pt-xs">
+        {section === 'details' ? details : section === 'review' ? review : issuePanel}
+      </div>
+
+      {editable && (
+        <>
+          <AiDraftReportDialog reportId={reportId} open={aiOpen} onClose={() => setAiOpen(false)}
+            useLabel="Use as the summary"
+            // The draft's own summary from then on (pending until Save draft).
+            onUse={(text) => { edits.edit('summary'); edits.set('executive_summary', text); }} />
+          <UpdateDefaultsDialog open={promoteOpen} onClose={() => setPromoteOpen(false)}
+            report={report} ctx={edits.ctx} keys={customisedKeys}
+            onPromoted={(updated, keys) => { putReport(updated); edits.forget(keys); }} />
+        </>
+      )}
       {confirmDialog}
       {leaveDialog}
     </div>
   );
 };
 
-/** Keyed on the report: "Revise" navigates to the new draft's id, and the
- *  same component instance kept the previous report's previews, AI dialog
- *  and form until the new one loaded (review 2026-09-23). */
+/** Keyed on the report: "Revise" navigates to the new draft's id. */
 const ReportDetail: React.FC = () => {
   const { reportId } = useParams<{ reportId: string }>();
   return <ReportDetailView key={reportId} id={Number(reportId)} />;

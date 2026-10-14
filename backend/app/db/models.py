@@ -1077,6 +1077,9 @@ class ReportJob(Base):
     result_filename = Column(String, nullable=True)
     media_type = Column(String, nullable=True)
     file_size = Column(BigInteger, nullable=True)
+    # A draft preview's: what it rendered (`client_report_render.inputs_fingerprint`),
+    # compared by the page with the value as it would be now.
+    inputs_fingerprint = Column(String(64), nullable=True)
 
     # Dead-letter / liveness (mirror IngestionJob).
     retry_count = Column(Integer, nullable=False, default=0, server_default="0")

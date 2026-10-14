@@ -468,6 +468,8 @@ const DETAIL_TITLES: Array<{ pattern: RegExp; title: string }> = [
   { pattern: /^\/findings\/[^/]+$/, title: 'Finding' },
   { pattern: /^\/scans\/compare$/, title: 'Compare scans' },
   { pattern: /^\/scans\/[^/]+$/, title: 'Scan' },
+  { pattern: /^\/reports\/defaults$/, title: 'Report defaults' },
+  { pattern: /^\/reports\/templates$/, title: 'Report templates' },
   { pattern: /^\/reports\/[^/]+$/, title: 'Report' },
   { pattern: /^\/agent-sessions\/[^/]+$/, title: 'Agent session' },
   { pattern: /^\/reference\/user-guide(\/.*)?$/, title: 'User guide' },

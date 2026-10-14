@@ -34,6 +34,14 @@ export const stickyBelowChrome: React.CSSProperties = {
   top: 'calc(var(--topbar-h, 76px) + var(--secondary-nav-h, 0px) + 0.5rem)',
 };
 
+/** Pinned FLUSH against the chrome: a full-width bar with a gap above it lets
+ *  the page scroll through the gap (`stickyBelowChrome` leaves 0.5rem, which
+ *  suits a small control, not a bar).  The space is the bar's own padding.
+ *  The section jump bar and the report workspace's action bar. */
+export const stickyFlushBelowChrome: React.CSSProperties = {
+  top: 'calc(var(--topbar-h, 76px) + var(--secondary-nav-h, 0px))',
+};
+
 /** Reusable `style` for a jump target (`scrollIntoView({block: 'start'})`):
  *  it lands below the fixed topbar + secondary nav, plus `extra` for a label
  *  printed above it.  A fixed `scroll-mt-24` was shorter than the chrome, so

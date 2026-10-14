@@ -160,17 +160,24 @@ describe('ReportTextImages — upload', () => {
 });
 
 describe('ReportTextImages — caption and delete', () => {
-  it('saves a changed caption on leaving the box or Enter, and nothing when it did not change', async () => {
+  // The report workspace (owner, 2026-10-14): a caption is shared by every
+  // text that places the image, so it is saved with its own Save — never
+  // silently on leaving the box.
+  it('saves a changed caption with its Save (or Enter), never on leaving the box; Cancel puts the stored one back', async () => {
     api.listReportTextImages.mockResolvedValue([image(3, { caption: 'Old' })]);
     api.setNoteAttachmentCaption.mockResolvedValue({});
     render(<Harness />);
     const box = await screen.findByLabelText('Caption for image 3 (diagram-3.png)');
+    expect(screen.queryByRole('button', { name: 'Save the caption of image 3' })).toBeNull();   // nothing changed
+    fireEvent.change(box, { target: { value: 'Typed' } });
     fireEvent.blur(box);
     expect(api.setNoteAttachmentCaption).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(box).toHaveValue('Old');
 
     api.listReportTextImages.mockResolvedValue([image(3, { caption: 'The assessed network' })]);
     fireEvent.change(box, { target: { value: '  The assessed network ' } });
-    fireEvent.blur(box);
+    fireEvent.click(screen.getByRole('button', { name: 'Save the caption of image 3' }));
     await waitFor(() => expect(api.setNoteAttachmentCaption).toHaveBeenCalledWith(1, 3, 'The assessed network'));
     // The list is read again and shows the stored caption.
     await waitFor(() => expect(screen.getByLabelText('Caption for image 3 (diagram-3.png)')).toHaveValue('The assessed network'));
@@ -183,7 +190,7 @@ describe('ReportTextImages — caption and delete', () => {
     render(<Harness />);
     const box = await screen.findByLabelText('Caption for image 3 (diagram-3.png)');
     fireEvent.change(box, { target: { value: 'Typed' } });
-    fireEvent.blur(box);
+    fireEvent.keyDown(box, { key: 'Enter' });
     expect(await screen.findByRole('alert')).toHaveTextContent('A caption is at most 2000 characters.');
     expect(screen.getByLabelText('Caption for image 3 (diagram-3.png)')).toHaveValue('Typed');
   });

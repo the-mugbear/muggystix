@@ -9,19 +9,19 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../../services/api', () => ({
+vi.mock('../../../services/api', () => ({
   getProjectReportTeam: vi.fn(),
-  listReportTextImages: vi.fn(() => Promise.resolve([])),
 }));
-vi.mock('../../contexts/ToastContext', () => ({
+vi.mock('../../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
 }));
-vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1, name: 'P' } }) }));
-// Not what is tested here (it has its own tests).
-vi.mock('../../components/MarkdownField', () => ({ default: () => null }));
+vi.mock('../../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1, name: 'P' } }) }));
 
-import type { EngagementSettings } from '../../services/api';
-import EngagementSettingsFields from '../../components/reports/EngagementSettingsFields';
+import type { EngagementSettings } from '../../../services/api';
+// The report workspace's list editors (5.394.0; they were part of the old
+// `EngagementSettingsFields`).  A section that is not open shows the rows as
+// text (`DetailRows`): nothing to reorder there.
+import { DetailRows, DistributionEditor, TeamEditor } from '../../../components/reports/workspace/DetailEditors';
 
 const person = (name: string, user_id: number | null = null) => ({ user_id, name, role: null, email: null });
 const settings = (over: Partial<EngagementSettings> = {}): EngagementSettings => ({
@@ -37,10 +37,23 @@ const Harness: React.FC<{ initial: EngagementSettings; readOnly?: boolean; disab
   { initial, readOnly, disabled },
 ) => {
   const [value, setValue] = useState(initial);
+  const set = (patch: Partial<EngagementSettings>) => {
+    const next = { ...value, ...patch };
+    onChange(next);
+    setValue(next);
+  };
+  if (readOnly) {
+    return (
+      <>
+        <DetailRows rows={value.testers} empty="Nobody listed" />
+        <DetailRows rows={value.distribution} empty="Nobody listed" />
+      </>
+    );
+  }
   return (
     <MemoryRouter>
-      <EngagementSettingsFields idPrefix="t" value={value} members={[]} readOnly={readOnly} disabled={disabled}
-        onChange={(next) => { onChange(next); setValue(next); }} />
+      <TeamEditor value={value.testers} members={[]} disabled={disabled} onChange={(testers) => set({ testers })} />
+      <DistributionEditor value={value.distribution} disabled={disabled} onChange={(distribution) => set({ distribution })} />
     </MemoryRouter>
   );
 };
@@ -173,7 +186,7 @@ describe('Assessment team — order', () => {
 
   it('read-only shows the people and no control to reorder or remove them', () => {
     show({ readOnly: true });
-    expect(screen.getByLabelText('Team member 1 name')).toHaveValue('Alice');
+    expect(screen.getByText('Alice')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^(Reorder|Move|Remove) / })).not.toBeInTheDocument();
     expect(document.querySelector('[draggable="true"]')).toBeNull();
   });

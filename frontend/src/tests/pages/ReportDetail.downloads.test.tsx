@@ -5,7 +5,8 @@
  * (a preview, an issued report's files, the scope file) says "Downloading…"
  * while it is fetched, takes no second press, and is marked once saved.
  */
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { focusManager } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -32,6 +33,7 @@ vi.mock('../../services/api', () => ({
   listProjectMembers: vi.fn(),
   getProjectReportTeam: vi.fn(),
   getReportJob: vi.fn(),
+  getClientReportInputs: vi.fn(),
   downloadReportJob: vi.fn(),
   draftReportWithAI: vi.fn(),
   listLLMProviders: vi.fn(),
@@ -77,9 +79,10 @@ const held = <T,>() => {
 };
 const readyToasts = (text: string) => toastMock.success.mock.calls.filter(([message]) => message === text).length;
 
+// Previews are on the workspace's "Preview & issue" section (5.394.0).
 const renderDetail = () =>
   render(
-    <MemoryRouter initialEntries={['/reports/5']}>
+    <MemoryRouter initialEntries={['/reports/5?section=issue']}>
       <Routes><Route path="/reports/:reportId" element={<ReportDetail />} /></Routes>
     </MemoryRouter>,
   );
@@ -91,6 +94,7 @@ beforeEach(() => {
   mocked.getReportProfile.mockResolvedValue({ ...settings, template: 'pentest' });
   mocked.listProjectMembers.mockResolvedValue([]);
   mocked.listReportTemplateProblems.mockResolvedValue([]);
+  mocked.getClientReportInputs.mockResolvedValue({ fingerprint: null });
 });
 
 describe('A draft’s previews', () => {
@@ -184,6 +188,60 @@ describe('A draft’s previews', () => {
   }, 20000);
 });
 
+// The proposal's "Preview freshness": a finished preview against what it
+// would render now — current, out of date, or not verified; never "current"
+// unless both fingerprints are known and equal.
+describe('Whether a preview is current', () => {
+  const finishedWith = (fingerprint: string | null) => {
+    mocked.getClientReport.mockResolvedValue(report());
+    mocked.previewClientReport.mockResolvedValue({ id: 71, format: 'report-html', status: 'queued' });
+    mocked.getReportJob.mockResolvedValue({ id: 71, format: 'report-html', status: 'completed', inputs_fingerprint: fingerprint });
+  };
+  const freshness = () => screen.findByTestId('preview-freshness-html');
+  // The job is polled every two seconds: its first reading is the POST's.
+  const freshnessIs = (state: string) => waitFor(
+    () => expect(screen.getByTestId('preview-freshness-html')).toHaveAttribute('data-freshness', state),
+    { timeout: 5000 },
+  );
+
+  it('is current while nothing changed, and out of date once something did — read again on return to the window', async () => {
+    finishedWith('f1');
+    mocked.getClientReportInputs.mockResolvedValue({ fingerprint: 'f1' });
+    renderDetail();
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview HTML' }));
+    await freshnessIs('current');
+    expect(await freshness()).toHaveTextContent('HTML preview: current — nothing it was built from has changed.');
+
+    // A finding changed in another tab: the reader comes back.
+    mocked.getClientReportInputs.mockResolvedValue({ fingerprint: 'f2' });
+    act(() => { focusManager.setFocused(false); });
+    act(() => { focusManager.setFocused(true); });
+    await freshnessIs('out-of-date');
+    expect(await freshness()).toHaveTextContent('Preview again to see them.');
+    act(() => { focusManager.setFocused(undefined); });
+  });
+
+  it('a check that failed says so, with a way to check again — never current', async () => {
+    finishedWith('f1');
+    mocked.getClientReportInputs.mockRejectedValueOnce(new Error('down')).mockResolvedValue({ fingerprint: 'f1' });
+    renderDetail();
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview HTML' }));
+    await freshnessIs('unknown');
+    expect(await freshness()).toHaveTextContent('could not verify whether this preview is current.');
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    await freshnessIs('current');
+  });
+
+  it('a preview that recorded nothing (rendered before the check existed) is not called current', async () => {
+    finishedWith(null);
+    mocked.getClientReportInputs.mockResolvedValue({ fingerprint: 'f1' });
+    renderDetail();
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview HTML' }));
+    await freshnessIs('unknown');
+    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull();
+  });
+});
+
 describe('An issued report’s files', () => {
   const issued = report({
     id: 7, status: 'issued', number: 3, files: [file('html'), file('docx')], render_status: 'done',
@@ -246,8 +304,9 @@ describe('An issued report’s files', () => {
     }));
     const scope = held<void>();
     mocked.downloadClientReportScope.mockReturnValue(scope.promise);
+    // The scope file is said on the workspace's Review section (5.394.0).
     render(
-      <MemoryRouter initialEntries={['/reports/7']}>
+      <MemoryRouter initialEntries={['/reports/7?section=review']}>
         <Routes><Route path="/reports/:reportId" element={<ReportDetail />} /></Routes>
       </MemoryRouter>,
     );

@@ -1,8 +1,8 @@
 /**
  * A draft report's ONE "Before issuing" checklist (walkthrough 2026-10-14):
  * every gap the summary names, grouped, each group with its count, and every
- * line an action — a missing detail goes to its field in Report details on
- * the same page (or to Project settings, or to where an administrator sets a
+ * line an action — a missing detail opens its section on the workspace's
+ * Details with the caret in its field (or goes to Project settings, or to where an administrator sets a
  * full name), a finding missing text opens its report text with a bar that
  * steps through the rest and back, a proposal / an image / a note opens the
  * finding where it is decided.  It replaced five sections (proposals, text
@@ -45,55 +45,6 @@ export const missingDetailEntries = (s: ReportSummary): Array<{ key: string; lab
     label,
     key: keys?.[i] ?? KEY_OF_LABEL[label] ?? (label.startsWith('a full name') ? 'account_full_name' : label),
   }));
-};
-
-/** Report details: the field each key is written in (`idPrefix` "report"). */
-const FIELD_ID: Record<string, string> = {
-  executive_summary: 'summary',
-  client_name: 'client',
-  author_name: 'author',
-  classification: 'classification',
-  engagement_type: 'type',
-  system_description: 'system',
-};
-/** The two lists: their fieldsets (`EngagementSettingsFields`). */
-const FIELDSET_ID: Record<string, string> = {
-  testers: 'team',
-  distribution: 'distribution',
-};
-
-const FOCUSABLE = 'input:not([disabled]), textarea:not([disabled]), button:not([disabled]), [role="combobox"]:not([disabled])';
-
-/**
- * Scroll to the field `key` is written in, within `root` (the Report details
- * form), and put the caret there.  Answers whether there was one.
- */
-export const focusReportDetail = (root: HTMLElement | null, key: string, idPrefix = 'report'): boolean => {
-  if (!root) return false;
-  let target: HTMLElement | null = null;
-  let focusable: HTMLElement | null = null;
-  const field = FIELD_ID[key];
-  if (field) {
-    const id = `${idPrefix}-${field}`;
-    // A Markdown field shown as its preview has the id on neither element.
-    target = root.querySelector<HTMLElement>(`#${id}`) ?? root.querySelector<HTMLElement>(`[data-testid="${id}-preview"]`);
-    focusable = target;
-  } else if (FIELDSET_ID[key]) {
-    target = root.querySelector<HTMLElement>(`#${idPrefix}-${FIELDSET_ID[key]}`);
-    focusable = target?.querySelector<HTMLElement>(FOCUSABLE) ?? null;
-  }
-  if (!target) return false;
-  // A draft's detail that follows the project is text, not a field
-  // (`data-followed`): the caret goes to its visible action — "Set for the
-  // project" when the project has no value, else "Override for this report"
-  // — never to the "⋯" menu beside it (`data-more-actions`).
-  if (target.matches('[data-followed]') || !focusable || focusable.matches(':disabled')) {
-    focusable = root.querySelector<HTMLElement>(
-      `#${idPrefix}-${key}-source button:not([disabled]):not([data-more-actions])`) ?? focusable;
-  }
-  target.scrollIntoView?.({ block: 'center' });
-  focusable?.focus?.({ preventScroll: true });
-  return true;
 };
 
 const ROW = 'flex min-w-0 flex-wrap items-baseline gap-x-xs text-body';
@@ -203,7 +154,7 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
     return (
       <li key={label} className={ROW}>
         <button type="button" className="text-left text-info hover:underline" onClick={() => onDetail(key)}
-          aria-label={`Go to ${label} in Report details`}>
+          aria-label={`Go to ${label} in Details`}>
           {label}
         </button>
       </li>
@@ -219,7 +170,7 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
         <div className="space-y-md">
           {details.length > 0 && (
             <Group id="details" title="Report details to fill" count={details.length} todo
-              note={canEdit ? 'Written in Report details, below.' : 'Report details, below.'}
+              note={canEdit ? 'Written on Details: each line opens its section there.' : 'On Details.'}
               items={details.map(detailItem)} />
           )}
           {unresolved.length > 0 && (
@@ -234,7 +185,7 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
                   <li key={u.field} className={ROW}>
                     {canEdit ? (
                       <button type="button" className="text-left text-info hover:underline" onClick={() => onDetail(u.field)}
-                        aria-label={`Go to ${label} in Report details`}>
+                        aria-label={`Go to ${label} in Details`}>
                         {label}
                       </button>
                     ) : <span>{label}</span>}

@@ -25,15 +25,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 
 import { cn } from '../utils/cn';
-import { scrollBelowChrome } from '../utils/uiStyles';
+import { scrollBelowChrome, stickyFlushBelowChrome } from '../utils/uiStyles';
 import { Combobox } from './ui/combobox';
-
-/** Pinned FLUSH against the chrome: a full-width bar with a gap above it lets
- *  the page scroll through the gap (`stickyBelowChrome` leaves 0.5rem, which
- *  suits a small control, not a bar).  The space is the bar's own padding. */
-const stickyFlushBelowChrome: React.CSSProperties = {
-  top: 'calc(var(--topbar-h, 76px) + var(--secondary-nav-h, 0px))',
-};
 
 /** More shown sections than this are a picker, not one button each. */
 export const JUMP_PICKER_ABOVE = 8;

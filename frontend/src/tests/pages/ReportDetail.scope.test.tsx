@@ -46,8 +46,10 @@ const report = (scopeExternal: unknown) => ({
   can_edit: false, can_issue: true,
 });
 
+// What a report holds — the scope file, the images line — is on the
+// workspace's Review section (5.394.0).
 const show = () => render(
-  <MemoryRouter initialEntries={['/reports/12']}>
+  <MemoryRouter initialEntries={['/reports/12?section=review']}>
     <Routes><Route path="/reports/:reportId" element={<ReportDetail />} /></Routes>
   </MemoryRouter>,
 );
@@ -148,7 +150,7 @@ describe('ReportDetail — the scope file', () => {
     getClientReport.mockResolvedValue(report(null));
     show();
     await waitFor(() => expect(getClientReport).toHaveBeenCalled());
-    await screen.findByText('Report details');
+    await screen.findByTestId('report-measures');
     expect(screen.queryByText(/Scope file/)).not.toBeInTheDocument();
   });
 });

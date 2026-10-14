@@ -144,6 +144,8 @@ const Reports = lazy(() => import('./pages/Reports'));
 const Remediation = lazy(() => import('./pages/Remediation'));
 const RemediationDeadlines = lazy(() => import('./pages/RemediationDeadlines'));
 const ReportDetail = lazy(() => import('./pages/ReportDetail'));
+const ReportDefaults = lazy(() => import('./pages/ReportDefaults'));
+const ReportTemplates = lazy(() => import('./pages/ReportTemplates'));
 
 /** `/parse-errors?status=failed` → `/scans?view=results&status=failed`. */
 function RedirectToImportResults() {
@@ -378,6 +380,25 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="auditor">
                             <Remediation />
+                          </ProtectedRoute>
+                        }
+                      />
+                      {/* The report workspace (owner, 2026-10-14): the
+                          project's report defaults and the installation's
+                          templates have pages of their own. */}
+                      <Route
+                        path="/reports/defaults"
+                        element={
+                          <ProtectedRoute requiredRole="auditor">
+                            <ReportDefaults />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/reports/templates"
+                        element={
+                          <ProtectedRoute requiredRole="auditor">
+                            <ReportTemplates />
                           </ProtectedRoute>
                         }
                       />

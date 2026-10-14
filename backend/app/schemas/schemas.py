@@ -959,6 +959,9 @@ class ReportJobSchema(BaseModel):
     result_filename: Optional[str] = None
     media_type: Optional[str] = None
     file_size: Optional[int] = None
+    # A draft preview's inputs, as rendered (null for any other job, and for
+    # a preview rendered before 2.500.0).
+    inputs_fingerprint: Optional[str] = None
     retry_count: Optional[int] = None
     last_error: Optional[str] = None
     last_heartbeat: Optional[datetime] = None

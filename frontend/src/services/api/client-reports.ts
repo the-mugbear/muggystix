@@ -314,6 +314,10 @@ export interface ClientReportUpdate {
   /** The complete override map (replaces the stored one); the executive
    *  summary is one of its keys. */
   settings?: EngagementOverrides;
+  /** The details the author CHANGED in this save: only for these is an
+   *  override equal to what the draft follows dropped (it follows again);
+   *  every other stored override is kept as it is. */
+  edited?: Array<keyof EngagementSettings>;
 }
 
 const base = (projectId: number) => `${projectPath(projectId)}/client-reports`;
@@ -417,6 +421,22 @@ export const promoteClientReportDetails = async (
   projectId: number, id: number, values: EngagementOverrides,
 ): Promise<ClientReport> =>
   (await api.post<ClientReport>(`${base(projectId)}/${id}/promote`, { values })).data;
+
+/** Per detail, how many OTHER drafts of the project follow the project's
+ *  value — what "Update project defaults…" says each push-up reaches.  An
+ *  estimate when read. */
+export const getClientReportFollowers = async (
+  projectId: number, id: number, signal?: AbortSignal,
+): Promise<Record<keyof EngagementSettings, number>> =>
+  (await api.get<Record<keyof EngagementSettings, number>>(`${base(projectId)}/${id}/followers`, { signal })).data;
+
+/** A draft's inputs as a preview would render them now: equal to a preview
+ *  job's `inputs_fingerprint` while nothing it was built from has changed.
+ *  Null when the draft cannot be built. */
+export const getClientReportInputs = async (
+  projectId: number, id: number, signal?: AbortSignal,
+): Promise<{ fingerprint: string | null }> =>
+  (await api.get<{ fingerprint: string | null }>(`${base(projectId)}/${id}/inputs`, { signal })).data;
 
 /** An image of the project's own report text (the system description): the
  *  project's, so its report defaults and every draft place the same ones with

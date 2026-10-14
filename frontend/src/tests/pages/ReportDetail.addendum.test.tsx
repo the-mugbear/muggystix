@@ -49,8 +49,9 @@ const addendum = (summary: Record<string, unknown>) => ({
 
 const show = async (summary: Record<string, unknown>) => {
   getClientReport.mockResolvedValue(addendum(summary));
+  // The notices are on the workspace's Review section (5.394.0).
   render(
-    <MemoryRouter initialEntries={['/reports/12']}>
+    <MemoryRouter initialEntries={['/reports/12?section=review']}>
       <Routes><Route path="/reports/:reportId" element={<ReportDetail />} /></Routes>
     </MemoryRouter>,
   );
