@@ -90,6 +90,10 @@ const NO_PROPOSALS = new Map<number, Proposal[]>();
 const NO_OVERRIDES = new Map<string, boolean>();
 
 const endpointName = (h: FindingHostInfo) => `${h.fqdn ? `${h.fqdn} on ` : ''}${h.ip_address || h.host_id}`;
+/** A retest stands on this host: Retest pending, or Still present after a
+ *  hand move kept the request (owner, 2026-10-15) — the server's rule
+ *  (`_move_endpoint`, `record_retest`). */
+const awaitsRetest = (h: FindingHostInfo) => h.host_status === 'retest' || !!h.retest_requested_at;
 
 /** A sticky cell needs an opaque fill, and draws its own rule: a collapsed
  *  table border does not travel with a stuck cell. */
@@ -302,8 +306,8 @@ const FindingEndpoints: React.FC<Props> = ({
 
   const setOne = async (row: FindingHostInfo, hostStatus: FindingHostStatus) => {
     if (row.host_status === hostStatus || saving.has(row.id)) return;
-    // Remediated, from a pending retest, is the retest's RESULT: recorded.
-    if (row.host_status === 'retest' && hostStatus === 'remediated') {
+    // Remediated, while a retest stands, is the retest's RESULT: recorded.
+    if (awaitsRetest(row) && hostStatus === 'remediated') {
       setRetesting(row);
       return;
     }
@@ -479,9 +483,17 @@ const FindingEndpoints: React.FC<Props> = ({
               {ENDPOINT_STATUS_LABEL[h.host_status] ?? h.host_status}
             </Badge>
           )}
-          {canManage && h.host_status === 'retest' && (
-            // The pending retest's one way to close: anyone who may change the
-            // state records it (owner, 2026-10-14).
+          {awaitsRetest(h) && h.host_status !== 'retest' && (
+            // A hand move to Still present keeps the request (owner,
+            // 2026-10-15): said on the row, or Remediated's refusal names a
+            // retest the reader cannot see.
+            <p className="mt-xxs text-caption text-muted-foreground" data-testid={`endpoint-${h.id}-retest-asked`}>
+              Retest still asked for
+            </p>
+          )}
+          {canManage && awaitsRetest(h) && (
+            // The retest's one way to close: anyone who may change the state
+            // records it (owner, 2026-10-14).
             <button type="button" className="mt-xxs block text-caption text-info hover:underline disabled:opacity-50"
               disabled={rowBusy(h.id)} onClick={() => setRetesting(h)}
               aria-label={`Record the retest of ${endpointName(h)}`}>
@@ -504,7 +516,7 @@ const FindingEndpoints: React.FC<Props> = ({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {h.host_status === 'retest' && (
+                {awaitsRetest(h) && (
                   <DropdownMenuItem onSelect={() => { setTimeout(() => setRetesting(h), 0); }}>
                     <ClipboardCheck className="size-4" aria-hidden /> Record retest…
                   </DropdownMenuItem>

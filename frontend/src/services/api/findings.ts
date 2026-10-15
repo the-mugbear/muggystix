@@ -44,6 +44,10 @@ export interface FindingHostInfo {
   host_status: FindingHostStatus;
   /** Single-finding responses only; a list row's preview sends null. */
   segment?: FindingEndpointSegment | null;
+  /** When a retest that still stands was asked for — on Retest pending, and
+   *  on Still present after a hand move kept the request (owner, 2026-10-15).
+   *  Single-finding responses only. */
+  retest_requested_at?: string | null;
 }
 
 /** `false_positive` (v5.238.0): the issue does not apply to THIS endpoint —

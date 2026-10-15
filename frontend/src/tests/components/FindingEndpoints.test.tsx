@@ -182,6 +182,21 @@ describe('FindingEndpoints — a host awaiting a retest', () => {
     fireEvent.change(stateOf(1), { target: { value: 'open' } });
     await waitFor(() => expect(setFindingEndpointStatus).toHaveBeenCalledWith(1, 7, 1, 'open'));
   });
+
+  // Walkthrough 2026-10-15: a hand move to Still present keeps the request
+  // (owner Q1), but the row said nothing of it and offered no way to record
+  // the retest — Remediated was refused for a result nobody could record.
+  it('a Still present host whose retest still stands says so and records it the same way', async () => {
+    const asked = { ...endpoint(1, 'open'), retest_requested_at: '2026-10-15T01:00:00Z' };
+    render(<Harness initial={finding([asked, endpoint(2)])} />);
+    expect(screen.getByTestId('endpoint-1-retest-asked')).toHaveTextContent('Retest still asked for');
+    expect(screen.queryByTestId('endpoint-2-retest-asked')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Record the retest of 10.0.0.1' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Record the retest of 10.0.0.2' })).toBeNull();
+    fireEvent.change(stateOf(1), { target: { value: 'remediated' } });
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Record the retest');
+    expect(setFindingEndpointStatus).not.toHaveBeenCalled();
+  });
 });
 
 // Review 2026-10-12 H1.  The queue orders this table's own changes; a rename

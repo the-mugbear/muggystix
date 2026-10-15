@@ -235,6 +235,24 @@ describe('Update project defaults…', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(screen.getByTestId('report-save-status')).toHaveTextContent('Unsaved changes — Client & engagement');
   });
+
+  // Walkthrough 2026-10-15: after the stale-page refusal the dialog kept the
+  // values it was refused for until the reader reloaded the page.
+  it('refused because the draft changed (409), the draft is read again and the dialog shows what it prints now', async () => {
+    mocked.getClientReport
+      .mockResolvedValueOnce(report({ settings: { classification: 'Restricted' } }))
+      .mockResolvedValue(report({ settings: { classification: 'Changed by B' } }));
+    mocked.promoteClientReportDetails.mockRejectedValue(
+      Object.assign(new Error('409'), { isAxiosError: true, response: { status: 409, data: { detail: 'This draft changed since you opened it (classification): reload it, then update the defaults.' } } }),
+    );
+    renderDetail();
+    fireEvent.click(await screen.findByRole('button', { name: 'Update project defaults…' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByTestId('promote-classification')).toHaveTextContent('This report’s: “Restricted”');
+    fireEvent.click(dialog.getByRole('button', { name: 'Update 1 default' }));
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalled());
+    await waitFor(() => expect(dialog.getByTestId('promote-classification')).toHaveTextContent('This report’s: “Changed by B”'));
+  });
 });
 
 describe('Who sees it', () => {

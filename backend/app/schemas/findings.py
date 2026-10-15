@@ -39,6 +39,11 @@ class FindingHostInfo(BaseModel):
     # Single-finding responses only (every endpoint is returned there, and the
     # page groups them by it); a list row's preview sends null.
     segment: Optional[FindingEndpointSegment] = None
+    # When a retest that still stands was asked for: set on Retest pending,
+    # and kept on a hand move back to Still present until a recorded result
+    # or a false-positive judgement closes it (owner, 2026-10-15). Single-
+    # finding responses only, like ``segment``.
+    retest_requested_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 

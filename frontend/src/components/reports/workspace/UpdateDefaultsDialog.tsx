@@ -22,7 +22,7 @@ import {
 import { useToast } from '../../../contexts/ToastContext';
 import { useProjectId } from '../../../hooks/useProjectId';
 import { invalidateReads, queryErrorText } from '../../../lib/query';
-import { formatApiError } from '../../../utils/apiErrors';
+import { asAxiosError, formatApiError } from '../../../utils/apiErrors';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/checkbox';
 import {
@@ -87,8 +87,16 @@ const UpdateDefaultsDialog: React.FC<{
       toast.success(`${chosen.length === 1 ? DETAIL_LABELS[chosen[0]] + ' is' : `${chosen.length} details are`} now the project’s default, and this draft follows ${chosen.length === 1 ? 'it' : 'them'} again.`);
       onClose();
     },
-    // Nothing changed: every edit stays as it was.
-    onError: (err) => toast.error(formatApiError(err, 'Could not update the project’s defaults.')),
+    // Nothing changed: every edit stays as it was.  A draft that prints
+    // something else now (409) is read again, so the dialog shows its saved
+    // values rather than the stale ones it was refused for (walkthrough
+    // 2026-10-15: it kept them until the reader reloaded the page).
+    onError: (err) => {
+      toast.error(formatApiError(err, 'Could not update the project’s defaults.'));
+      if (asAxiosError(err).response?.status === 409) {
+        void invalidateReads(queryClient, 'getClientReport', 'getReportProfile', 'getClientReportFollowers');
+      }
+    },
   });
 
   return (

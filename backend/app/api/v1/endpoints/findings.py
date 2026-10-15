@@ -22,7 +22,9 @@ from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role, resolve_project_assignee
 from app.api.params import FindingHostStateParam, FindingNeedsParam
 from app.core.security import log_audit_event
-from app.services.finding_service import FindingService, endpoint_segments, validate_severity
+from app.services.finding_service import (
+    FindingService, endpoint_segments, load_retest_requests, validate_severity,
+)
 from app.services.finding_actions import (
     FindingActor, apply_report_text, finding_actor, promote_or_dismiss_vulnerability, require_modify,
 )
@@ -93,6 +95,8 @@ def _serialize(
             endpoint_segments(db, finding.project_id, [fh.host_id for fh in finding.hosts])
             if db is not None else {}
         )
+        if db is not None:
+            load_retest_requests(db, finding.hosts)
         hosts = [
             FindingHostInfo(
                 id=fh.id,
@@ -102,6 +106,7 @@ def _serialize(
                 name_id=fh.name_id,
                 fqdn=fh.name.fqdn if fh.name else None,
                 host_status=fh.host_status,
+                retest_requested_at=fh.retest_requested_at,
                 segment=segments.get(fh.host_id),
             )
             for fh in finding.hosts

@@ -11,8 +11,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import func, case, select, asc, desc
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.db.models import Annotation, Host
 from app.db.models_auth import User
@@ -52,6 +54,22 @@ _ON_JOIN = ("set", "confirm", "keep")
 #: ``host_count`` is the true total; the finding's own page has them all.
 ENDPOINT_PREVIEW = 5
 _STATUS_GROUPS = {"active": _ACTIVE_STATUSES, "resolved": _TERMINAL_STATUSES}
+
+
+def load_retest_requests(db: Session, rows: Sequence[FindingHost]) -> None:
+    """The ``retest_requested_at`` of these endpoints, in ONE statement, for
+    the rows that do not hold it: a move into ``retest`` stamps it with the
+    database's ``now()``, which the flush expires, and an answer that read it
+    row by row made a bulk change one SELECT per endpoint
+    (``test_the_bulk_change_reads_nothing_per_endpoint``)."""
+    stale = [fh for fh in rows if "retest_requested_at" in sa_inspect(fh).unloaded]
+    if not stale:
+        return
+    by_id = {fh.id: fh for fh in stale}
+    for row_id, requested in db.query(FindingHost.id, FindingHost.retest_requested_at).filter(
+        FindingHost.id.in_(list(by_id))
+    ):
+        set_committed_value(by_id[row_id], "retest_requested_at", requested)
 
 
 def endpoint_segments(db: Session, project_id: int, host_ids: Sequence[int]) -> Dict[int, Dict[str, object]]:
@@ -892,9 +910,12 @@ class FindingService:
         should be allowed to attempt to close it with evidence"): the result is
         an evidence record on this endpoint — ``no_finding`` when fixed,
         ``finding`` when not — and the endpoint moves with it, Remediated or
-        Still present, in the caller's one transaction.  Only an endpoint
-        awaiting a retest (409 otherwise).  Returns the evidence record; the
-        caller commits."""
+        Still present, in the caller's one transaction; the result closes the
+        request either way.  Only an endpoint a retest stands on: Retest
+        pending, or moved back to Still present by hand after one was asked
+        for (409 otherwise — the walkthrough of 2026-10-15 found that row with
+        its request kept and no way to answer it).  Returns the evidence
+        record; the caller commits."""
         from app.services import agent_evidence_service
 
         row = (
@@ -904,7 +925,7 @@ class FindingService:
         )
         if row is None:
             raise HTTPException(status_code=404, detail="Endpoint is not attached to this finding")
-        if row.host_status != FindingHostStatus.RETEST.value:
+        if row.host_status != FindingHostStatus.RETEST.value and row.retest_requested_at is None:
             raise HTTPException(status_code=409, detail=(
                 f"{self._endpoint_label(row)} is not awaiting a retest; mark it Retest pending first, "
                 "or set its state directly."))
@@ -915,12 +936,18 @@ class FindingService:
             recorded_by_user_id=actor_id,
         )
         self.db.flush()
-        self._move_endpoint(
+        note = f"retest: {'fixed' if fixed else 'still present'} (evidence record {record.id})"
+        moved = self._move_endpoint(
             finding, row,
             FindingHostStatus.REMEDIATED.value if fixed else FindingHostStatus.OPEN.value, actor_id,
-            f"retest: {'fixed' if fixed else 'still present'} (evidence record {record.id})",
-            retest_result=True,
+            note, retest_result=True,
         )
+        if not moved:
+            # Already Still present (a hand move kept the request) and the
+            # retest found it still there: nothing moves, but the result
+            # closes the request and is said in the history.
+            row.retest_requested_at = None
+            self._endpoint_line(finding, actor_id, f"Endpoint {self._endpoint_label(row)}: {note}")
         self.db.flush()
         return record
 

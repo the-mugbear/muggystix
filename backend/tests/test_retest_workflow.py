@@ -152,6 +152,41 @@ def test_a_retest_request_stands_after_a_hand_move_to_still_present(client, db_s
     assert db_session.get(FindingHost, two).retest_requested_at is None
 
 
+def test_a_standing_request_on_a_still_present_host_is_shown_and_answered_where_it_stands(
+    client, db_session, test_project,
+):
+    """Walkthrough 2026-10-15: after a hand move to Still present the request
+    stood (above) but the page showed nothing of it, and recording the retest
+    was refused (only a Retest pending host was retested) — the refusal of
+    Remediated said to record a result nobody could record.  The row now
+    carries the request, the retest is recorded where the host stands, and a
+    "still present" result that moves nothing still closes the request and
+    is said in the history."""
+    finding, fh = _finding_on(client, db_session, test_project, ["10.9.0.7", "10.9.0.8"])
+    one, two = fh["10.9.0.7"], fh["10.9.0.8"]
+    for row in (one, two):
+        assert _move(client, test_project, finding["id"], row, "retest").status_code == 200
+        assert _move(client, test_project, finding["id"], row, "open").status_code == 200
+    shown = client.get(f"{_p(test_project)}/findings/{finding['id']}").json()
+    assert all(h["host_status"] == "open" and h["retest_requested_at"] for h in shown["hosts"])
+
+    # Still there: nothing moves, the request closes, the history says so.
+    r = _retest(client, test_project, finding["id"], one, fixed=False)
+    assert r.status_code == 200, r.text
+    row = {h["id"]: h for h in r.json()["hosts"]}[one]
+    assert row["host_status"] == "open" and row["retest_requested_at"] is None
+    history = client.get(f"{_p(test_project)}/findings/{finding['id']}/history").json()
+    lines = [h.get("summary") or "" for h in history]
+    assert any("10.9.0.7" in s and "retest: still present" in s for s in lines), lines
+    # And then the team's own Remediated is free again.
+    assert _move(client, test_project, finding["id"], one, "remediated").status_code == 200
+
+    # Fixed: it moves to Remediated with its evidence.
+    r = _retest(client, test_project, finding["id"], two, fixed=True)
+    assert r.status_code == 200, r.text
+    assert {h["id"]: h["host_status"] for h in r.json()["hosts"]}[two] == "remediated"
+
+
 def test_a_retest_that_finds_it_still_there_puts_the_host_back_to_still_present(client, db_session, test_project):
     finding, fh = _finding_on(client, db_session, test_project, ["10.9.0.3"])
     one = fh["10.9.0.3"]

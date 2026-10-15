@@ -3,8 +3,10 @@
  * 2026-10-14: "anyone should be allowed to attempt to close it with
  * evidence").  The result is recorded as evidence on that host and the host
  * moves with it, in one call (`POST /findings/{id}/endpoints/{fh}/retest`):
- * fixed → Remediated, still there → Still present.  A pending retest is
- * closed this way and no other: the state picker's "Remediated" opens this.
+ * fixed → Remediated, still there → Still present.  A standing retest
+ * (Retest pending, or Still present after a hand move kept the request —
+ * owner, 2026-10-15) is closed this way and no other: the state picker's
+ * "Remediated" opens this.
  *
  * Keyed by its opening (`useOpeningKey`): every opening starts clean.
  */
