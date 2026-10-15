@@ -35,7 +35,7 @@ const note = (over: Record<string, unknown>) => ({
 });
 
 const open = async (n: Record<string, unknown>) => {
-  getNotifications.mockResolvedValue({ notifications: [n], total: 1, unread_count: 1 });
+  getNotifications.mockResolvedValue({ notifications: [n], total_unread: 1 });
   render(<MemoryRouter initialEntries={['/activity?mentions=mine']}><Activity /></MemoryRouter>);
   fireEvent.click(await screen.findByRole('button', { name: new RegExp(String(n.title)) }));
 };
@@ -70,7 +70,7 @@ describe('Activity — the bell follows a notification marked read', () => {
   const bell = () => readsOnScreen({ getUnreadNotificationCount: 'the bell’s count' });
   const openPage = async (ReadsOnScreen: React.FC) => {
     getNotifications.mockResolvedValue({
-      notifications: [note({ id: 1, title: 'First' }), note({ id: 2, title: 'Second' })], total: 2, unread_count: 2,
+      notifications: [note({ id: 1, title: 'First' }), note({ id: 2, title: 'Second' })], total_unread: 2,
     });
     render(<MemoryRouter initialEntries={['/activity']}><ReadsOnScreen /><Activity /></MemoryRouter>);
     await screen.findByRole('button', { name: /First/ });
@@ -80,6 +80,8 @@ describe('Activity — the bell follows a notification marked read', () => {
     const { reread, ReadsOnScreen } = bell();
     await openPage(ReadsOnScreen);
     expect(reread).not.toHaveBeenCalled();
+    // The server's answer once it is read (the list is read again too).
+    getNotifications.mockResolvedValue({ notifications: [note({ id: 2, title: 'Second' })], total_unread: 1 });
     fireEvent.click(screen.getByRole('button', { name: /First/ }));
     await waitFor(() => expect(reread).toHaveBeenCalledWith('the bell’s count'));
     expect(reread).toHaveBeenCalledTimes(1);
@@ -90,10 +92,35 @@ describe('Activity — the bell follows a notification marked read', () => {
   it('“Mark all read” reads the count again, once', async () => {
     const { reread, ReadsOnScreen } = bell();
     await openPage(ReadsOnScreen);
+    getNotifications.mockResolvedValue({ notifications: [], total_unread: 0 });
     fireEvent.click(screen.getByRole('button', { name: 'Mark all read' }));
     await waitFor(() => expect(reread).toHaveBeenCalledWith('the bell’s count'));
     expect(reread).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('button', { name: /Second/ })).not.toBeInTheDocument();
+  });
+});
+
+// Review 2026-10-14, H11: the list is the first 50; the heading printed its
+// length as the total, and the 51st never came up after a dismissal.
+describe('Activity — more unread notifications than the list holds', () => {
+  it('says the server’s total, and how many are shown', async () => {
+    const fifty = Array.from({ length: 50 }, (_, i) => note({ id: i + 1, title: `Note ${i + 1}` }));
+    getNotifications.mockResolvedValue({ notifications: fifty, total_unread: 60 });
+    render(<MemoryRouter initialEntries={['/activity']}><Activity /></MemoryRouter>);
+    expect(await screen.findByText('60 unread notifications (the latest 50 shown)')).toBeInTheDocument();
+  });
+
+  it('a dismissal reads the list again, so the next one comes up', async () => {
+    const fifty = Array.from({ length: 50 }, (_, i) => note({ id: i + 1, title: `Note ${i + 1}` }));
+    getNotifications.mockResolvedValue({ notifications: fifty, total_unread: 51 });
+    render(<MemoryRouter initialEntries={['/activity']}><Activity /></MemoryRouter>);
+    await screen.findByRole('button', { name: /Note 1(?!\d)/ });
+    getNotifications.mockResolvedValue({
+      notifications: [...fifty.slice(1), note({ id: 51, title: 'Note 51' })], total_unread: 50,
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Note 1(?!\d)/ }));
+    expect(await screen.findByRole('button', { name: /Note 51/ })).toBeInTheDocument();
+    expect(screen.getByText('50 unread notifications')).toBeInTheDocument();
   });
 });
 

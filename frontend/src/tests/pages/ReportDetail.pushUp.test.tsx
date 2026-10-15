@@ -117,6 +117,21 @@ describe('Update project defaults…', () => {
     expect(screen.getByRole('button', { name: 'Update project defaults…' })).toBeInTheDocument();
   });
 
+  it('an empty team cannot be pushed up: it is said, and never sent (review 2026-10-14, H3)', async () => {
+    const team = [{ user_id: 3, name: 'Ana', role: null, email: null }];
+    mocked.getClientReport.mockResolvedValue(report({
+      settings: { client_name: 'Mine', testers: [] },
+      followed: { ...followed, testers: team }, effective: { ...followed, client_name: 'Mine', testers: [] },
+    }));
+    mocked.promoteClientReportDetails.mockResolvedValue(report({ settings: { testers: [] } }));
+    renderDetail();
+    fireEvent.click(await screen.findByRole('button', { name: 'Update project defaults…' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByTestId('promote-testers')).toHaveTextContent('The project’s team cannot be empty');
+    fireEvent.click(dialog.getByRole('button', { name: 'Update 1 default' }));
+    await waitFor(() => expect(mocked.promoteClientReportDetails).toHaveBeenCalledWith(1, 5, { client_name: 'Mine' }));
+  });
+
   it('lists each detail of its own with the project’s value → this report’s, and the drafts that follow it', async () => {
     mocked.getClientReport.mockResolvedValue(report({
       settings: { classification: 'Restricted' }, effective: { ...followed, classification: 'Restricted' },
@@ -185,7 +200,7 @@ describe('Update project defaults…', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, {
-      template: 'brief', settings: {}, edited: [],
+      template: 'brief', settings: {},
     }));
   });
 

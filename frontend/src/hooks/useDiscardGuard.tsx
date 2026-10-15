@@ -3,7 +3,8 @@
  *
  * The app uses <Routes>, not a data router, so a click on the global nav
  * cannot be intercepted; what can be is the page's own navigation (through
- * `confirmLeave`) and the browser's unload (tab close, reload).  HostDetail
+ * `confirmLeave`, and its links through `useLinkGuard`) and the browser's
+ * unload (tab close, reload).  HostDetail
  * had its own copy of this; ReportDetail had a `dirty` flag and a Back button
  * that discarded the narrative without asking.
  *
@@ -11,6 +12,7 @@
  * both work.
  */
 import React, { useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { useConfirm } from './useConfirm';
 
@@ -38,4 +40,28 @@ export function useDiscardGuard(
   };
 
   return { confirmLeave, confirmEl };
+}
+
+/**
+ * The page's own LINKS ask too (review 2026-10-14, H10: a checklist line
+ * opened a finding and the draft's pending edits were gone, with no word).
+ * Put the answer on the page's container as `onClickCapture`: a plain click
+ * on a link inside it to another page of the app is held, `confirmLeave`
+ * asked, and the link followed only if it says yes.  One guard for every
+ * link the page holds or will hold, never a handler per link.  A link to the
+ * same page (a tab, a hash), a new tab or window, a download and another
+ * site are left alone; so is a dialog's content, which is portaled outside
+ * the container.
+ */
+export function useLinkGuard(confirmLeave: () => Promise<boolean>): (e: React.MouseEvent) => void {
+  const navigate = useNavigate();
+  return (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const link = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+    if (!link || (link.target && link.target !== '_self') || link.hasAttribute('download')) return;
+    const url = new URL(link.href, window.location.href);
+    if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
+    e.preventDefault();
+    void confirmLeave().then((ok) => { if (ok) navigate(url.pathname + url.search + url.hash); });
+  };
 }

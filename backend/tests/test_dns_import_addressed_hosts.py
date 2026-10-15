@@ -179,6 +179,24 @@ def test_a_dnsx_import_changes_nothing_else_about_the_hosts_it_addresses(db_sess
         assert (host.state, host.last_updated_scan_id) == ("up", nmap.id)
 
 
+def test_a_host_a_dns_import_created_is_not_changed_when_a_scan_then_sees_it_up(db_session, test_project, tmp_path):
+    """Review 2026-10-14, H8: a host the import CREATES goes through dedup
+    with state 'unknown' — which says nothing about liveness — and the next
+    scan that saw it up read as a flip ("Changed" on Hosts and Operations)."""
+    pid = test_project.id
+    dns, _ = _dnsx_import(db_session, pid, tmp_path)
+    created = _host(db_session, pid, "10.70.0.9")
+    assert _history(db_session, dns.id)["10.70.0.9"][:2] == (True, "unknown")
+    db_session.execute(
+        models.HostScanHistory.__table__.update()
+        .where(models.HostScanHistory.scan_id == dns.id)
+        .values(discovered_at=models.HostScanHistory.discovered_at - timedelta(hours=2))
+    )
+    db_session.commit()
+    _nmap_hosts(db_session, pid, {"10.70.0.9": None})
+    assert hosts_changed_since_prior_scan(db_session, [created.id]) == set()
+
+
 def test_the_import_says_how_many_hosts_it_addressed_created_and_renamed(db_session, test_project, tmp_path):
     pid = test_project.id
     _nmap_hosts(db_session, pid, KNOWN)

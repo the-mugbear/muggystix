@@ -42,7 +42,7 @@ from fastapi import HTTPException
 from sqlalchemy import Date, Integer, and_, case, cast, func, literal, null, or_, select
 from sqlalchemy.orm import Session
 
-from app.db.models_findings import Finding, FindingHost, FindingHostStatus
+from app.db.models_findings import Finding, FindingHost, FindingHostStatus, FindingStatus
 from app.db.models_remediation import (
     DEFAULT_DUE_SOON_DAYS, DEFAULT_TIME_ZONE, DEFAULT_TIMELINE_DAYS, TIMELINE_SEVERITIES,
     FindingHostRemediation as Remediation, RemediationEvent, RemediationPolicy,
@@ -282,8 +282,11 @@ DEFECTS = ("open", "remediated", "deferred")
 
 
 def defect_expr():
-    """The ONE definition of a row's defect state; NULL for an endpoint the
-    team concluded is a false positive (not a defect).
+    """The ONE definition of a row's defect state; NULL for an endpoint — or
+    a whole finding — the team concluded is a false positive (not a defect;
+    review 2026-10-14, H5: a finding judged false positive moves no endpoint,
+    and its tracked rows counted as open defects).  Read over ``_rows``,
+    which joins ``Finding``.
 
     * ``remediated`` — the ENDPOINT is ``remediated``: the assessor's retest
       concluded it fixed (owner, 2026-10-14 — never the finding's status, and
@@ -294,6 +297,7 @@ def defect_expr():
     """
     endpoint = FindingHost.host_status
     return case(
+        (Finding.status == FindingStatus.FALSE_POSITIVE.value, None),
         (endpoint == FindingHostStatus.REMEDIATED.value, "remediated"),
         (endpoint == FindingHostStatus.FALSE_POSITIVE.value, None),
         (func.coalesce(Remediation.status, "open") == "deferred", "deferred"),

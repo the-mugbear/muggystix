@@ -3,9 +3,9 @@
  * planning/PROPOSAL_report_workspace_2026-10-14.md, "What a field becomes").
  *
  * The page never decides inheritance by itself.  It keeps PENDING edits over
- * what is saved, and sends the complete override map plus the keys it edited
- * (`edited`); the server drops an edited override that equals what the draft
- * follows (`report_defaults.drop_followed`).  Here:
+ * what is saved, and sends only the details it edited (`toSave`); the server
+ * drops a sent override that equals what the draft follows
+ * (`report_defaults.drop_followed`).  Here:
  *
  * - a pending value is an override as typed, or `null` — "use the project's"
  *   (the override is removed);
@@ -131,11 +131,11 @@ export const withEdit = (c: DetailContext, key: DetailKey, value: DetailValue | 
   return next;
 };
 
-/** The complete override map to save, and the keys edited — what PATCH takes. */
-export const toSave = (c: DetailContext): { settings: EngagementOverrides; edited: DetailKey[] } => {
+/** The complete override map with the pending edits applied — the values
+ *  the page shows as this report's own. */
+export const withPending = (c: DetailContext): EngagementOverrides => {
   const settings: EngagementOverrides = { ...c.saved };
-  const edited = Object.keys(c.pending) as DetailKey[];
-  for (const key of edited) {
+  for (const key of Object.keys(c.pending) as DetailKey[]) {
     const p = c.pending[key];
     if (p === null || p === undefined || (!isListKey(key) && trimmed(p) === null)) {
       delete settings[key];
@@ -146,7 +146,18 @@ export const toSave = (c: DetailContext): { settings: EngagementOverrides; edite
       (settings as Record<string, unknown>)[key] = p;
     }
   }
-  return { settings, edited };
+  return settings;
+};
+
+/** What a save sends: ONLY the details edited, each with its new value
+ *  (`null` = follow the project / clear the default).  A detail not edited
+ *  is not sent, so a page that read the report a while ago never reverts
+ *  someone else's change to it (review 2026-10-14, H1). */
+export const toSave = (c: DetailContext): EngagementOverrides => {
+  const all = withPending(c);
+  return Object.fromEntries(
+    (Object.keys(c.pending) as DetailKey[]).map((k) => [k, all[k] ?? null]),
+  ) as EngagementOverrides;
 };
 
 /** What a section's status line says (a draft): every value followed, or

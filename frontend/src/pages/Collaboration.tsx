@@ -35,7 +35,7 @@ import {
   NoteActivityResponse,
   markActivitySeen,
 } from '../services/api';
-import { NotificationRows, useUnreadNotifications } from '../components/UnreadNotifications';
+import { NotificationRows, unreadHeading, useUnreadNotifications } from '../components/UnreadNotifications';
 import { AgentAuthorBadge } from '../components/AgentAuthorBadge';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
@@ -218,7 +218,7 @@ const Activity: React.FC = () => {
   // zeroed out.  Notifications are NOT marked read just because the page
   // opened (§21): only when one is opened, or by "Mark all read".
   const {
-    notifications: unreadNotifications, failed: notificationsFailed, loaded: notificationsLoaded,
+    notifications: unreadNotifications, total: unreadTotal, failed: notificationsFailed, loaded: notificationsLoaded,
     open: openMention, markAllRead: markAllMentionsRead,
   } = useUnreadNotifications();
 
@@ -394,7 +394,7 @@ const Activity: React.FC = () => {
           <div className="mb-xs flex flex-wrap items-center justify-between gap-sm">
             <h2 className="flex items-center gap-xs text-metadata font-semibold text-foreground">
               <Bell className="size-4 text-info" aria-hidden />
-              {unreadNotifications.length} unread notification{unreadNotifications.length === 1 ? '' : 's'}
+              {unreadHeading(unreadTotal, unreadNotifications.length)}
             </h2>
             <div className="flex items-center gap-xs">
               <Button variant="ghost" size="sm" onClick={() => markAllMentionsRead()}>

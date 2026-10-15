@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers.cut_short import TruncatedFile, settle_cut
 from app.parsers.parser_utils import announce_scan, beat_while_reading
-from app.parsers.streaming_json import is_cut_last_line, iter_document
+from app.parsers.streaming_json import is_cut_last_line, iter_document, json_lines
 from app.db.models_attribution import (
     AttributionSource,
     NetworkAttribution,
@@ -220,7 +220,7 @@ class RdapParser:
         else:
             # R6 — the read phase heartbeats (only the committed scan row
             # exists so far).
-            lines = content.splitlines(keepends=True)
+            lines = json_lines(content)
             for lineno, raw_line in enumerate(beat_while_reading(lines, "lines read"), start=1):
                 line = raw_line.strip()
                 if not line:

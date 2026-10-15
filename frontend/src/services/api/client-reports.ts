@@ -311,13 +311,11 @@ export interface ClientReportUpdate {
   title?: string;
   template?: string;
   baseline_report_id?: number;
-  /** The complete override map (replaces the stored one); the executive
-   *  summary is one of its keys. */
+  /** The details CHANGED in this save, each with its new override (`null` =
+   *  follow the project; the executive summary is one of its keys).  A
+   *  detail not sent keeps what is stored; one sent equal to what the draft
+   *  follows follows it again. */
   settings?: EngagementOverrides;
-  /** The details the author CHANGED in this save: only for these is an
-   *  override equal to what the draft follows dropped (it follows again);
-   *  every other stored override is kept as it is. */
-  edited?: Array<keyof EngagementSettings>;
 }
 
 const base = (projectId: number) => `${projectPath(projectId)}/client-reports`;

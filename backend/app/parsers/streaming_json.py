@@ -140,7 +140,7 @@ def _load_records_eager(
             kept = _records_before_the_cut(file_path, head, array_keys, tool_label)
             if kept is not None:
                 return kept
-    return list(_iter_jsonl_lines(text.splitlines(keepends=True), tool_label))
+    return list(_iter_jsonl_lines(json_lines(text), tool_label))
 
 
 def _records_before_the_cut(
@@ -273,6 +273,17 @@ def file_ends_early(file_path: str) -> bool:
     return False
 
 
+def json_lines(text: str) -> List[str]:
+    """``text``'s lines WITH their endings, split where a JSON-lines writer
+    ends a line — ``\\n`` (``\\r\\n`` and ``\\r`` read as it, as a file opened
+    in text mode reads them, so the streamed and the in-memory reader agree).
+    Never ``str.splitlines``: it also splits at U+0085, U+2028, U+2029 and
+    other characters that are legal RAW inside a JSON string, so a page
+    title holding one made a valid line two broken ones — the first read as
+    the file's cut last line (review 2026-10-14, H6)."""
+    return io.StringIO(text, newline=None).readlines()
+
+
 def is_cut_last_line(line: str) -> bool:
     """For a JSON-lines reader, given a line that did not decode WITH its
     line ending as read: is it the file's last line, cut short?  Only a
@@ -364,7 +375,7 @@ def _looks_like_jsonl(head: bytes) -> bool:
     ``{``).  Used to disambiguate a leading ``{`` that carries no known
     top-level array key."""
     text = head.decode("utf-8", errors="ignore")
-    for line in text.splitlines():
+    for line in json_lines(text):
         s = line.strip()
         if not s:
             continue

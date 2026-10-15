@@ -953,8 +953,9 @@ class MasscanParser:
         read = 0
         opened_array: Optional[bool] = None
         closed_array = False
+        invalid = False
         with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
-            while True:
+            while not invalid:
                 chunk = handle.read(self._JSON_READ_CHUNK)
                 if not chunk:
                     break
@@ -974,10 +975,21 @@ class MasscanParser:
                     try:
                         entry, index = decoder.raw_decode(buffer)
                     except json.JSONDecodeError:
-                        # Normally "need more data" — break and read the next
-                        # chunk. But if the undecodable buffer is already huge,
-                        # it's malformed or a single oversized record; fail
-                        # instead of accumulating the whole file into memory.
+                        # A whole line (masscan writes a record per line)
+                        # that is not the beginning of a JSON value is text
+                        # that is not a record: decided NOW.  Read on, the
+                        # buffer grew until the cap below and the whole
+                        # import failed — whether the records before it were
+                        # kept depended on how much followed (review
+                        # 2026-10-14, H7).  The end of the file says what it
+                        # is (below).
+                        if "\n" in buffer and not ends_early(buffer):
+                            invalid = True
+                            break
+                        # Otherwise "need more data" — break and read the
+                        # next chunk. But if the undecodable buffer is already
+                        # huge, it's a single oversized record; fail instead
+                        # of accumulating the whole file into memory.
                         if len(buffer) > self._MAX_JSON_RECORD_BYTES:
                             raise ValueError(
                                 "Masscan JSON record exceeds "

@@ -235,6 +235,37 @@ def test_narrowing_the_document_does_not_change_whose_a_system_is(
     assert data["remediation"]["images_withheld"] == 1
 
 
+@needs_templates
+def test_whose_a_system_is_does_not_depend_on_how_many_rows_the_contact_has(
+        client, db_session, test_project, two_contacts, monkeypatch):
+    """Review 2026-10-14, H9: it was decided from the contact's rows read
+    with a cap (2,000, closed rows included); over it, EVERY finding's loose
+    images were withheld.  The cap is made 2 here: alice has 2 open rows and
+    2 closed ones."""
+    e = _host(db_session, test_project, "10.61.0.5")
+    old, (old_e,) = _finding(db_session, test_project, "Old issue", "low", [e],
+                             description="d", recommendation="r")
+    db_session.commit()
+    r = client.post(f"/api/v1/projects/{test_project.id}/remediation/apply", json={"overwrite": True, "rows": [
+        {"finding_host_id": old_e, "contact_email": "alice@testdomain.com", "notified_on": day(10),
+         "status": "closed", "closed_on": day(1)},
+    ]})
+    assert r.status_code == 200, r.text
+    monkeypatch.setattr(remediation_report, "MAX_ROWS", 2)
+
+    def evidence(self, findings):
+        loose = {"file": "evidence/x.png", "caption": "x", "placed_in": []}
+        return {f.id: {"images": [{**loose, "attachment_id": f.id * 10 + 2}],
+                       "evidence": [{**loose, "attachment_id": f.id * 10 + 2}], "placed": {}}
+                for f in findings}, 0, 0
+
+    monkeypatch.setattr(ClientReportService, "_evidence", evidence)
+    data = remediation_report.build_dataset(db_session, test_project.id, "alice@testdomain.com")
+    tls = next(f for f in data["findings"] if f["id"] == two_contacts["tls"])
+    assert [e["attachment_id"] for e in tls["evidence"]] == [tls["id"] * 10 + 2]
+    assert data["remediation"]["images_withheld"] == 1                 # SMB's: bob has a system of it
+
+
 def test_the_contacts_read_takes_any_iterable_of_projects(client, db_session, test_project, two_contacts):
     """`contacts()` reads its projects twice since 2.494.0 (the counts, then
     where each contact still has work): an iterator must not be spent by the first."""

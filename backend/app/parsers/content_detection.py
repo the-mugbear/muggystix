@@ -22,6 +22,8 @@ import json
 import re
 from typing import Optional, Tuple
 
+from app.parsers.streaming_json import json_lines
+
 
 # v2.45.1 — match the FIRST element tag of an XML document, skipping
 # the XML prolog.  Used by the structural format detectors below —
@@ -173,7 +175,7 @@ def _peek_json_shape(sample: bytes) -> Tuple[str, Optional[dict]]:
     # ``{``.  Bound the scan to a few KiB of the sample so a giant
     # leading comment block (rare but possible) doesn't burn cycles.
     scan = text[:8192]
-    for line in scan.splitlines():
+    for line in json_lines(scan):
         line = line.strip()
         if not line or not line.startswith("{"):
             continue

@@ -540,6 +540,33 @@ def test_a_correction_restores_a_diagram_deleted_after_the_issue(client, db_sess
     assert dataset["engagement"]["placed"]["system_description"][str(restored_id)]["caption"] == "As issued"
 
 
+@pytest.mark.parametrize("start", ["revise", "addendum"])
+def test_a_correction_never_turns_a_findings_image_into_a_figure(client, db_session, test_project, storage, start):
+    """Review 2026-10-14, H4: the issued report keeps a copy of every image
+    it PRINTED, a finding's included.  A system description that referenced
+    a finding's screenshot (printed there as alt text only) was carried with
+    the screenshot restored as a new report-text image — the correction
+    printed it in the system description and the images panel gained it."""
+    finding = _finding(db_session, test_project)
+    shot = _finding_image(client, test_project, finding)
+    r = client.patch(f"{_base(test_project)}/findings/{finding.id}", json={"description": f"![](evidence:{shot})"})
+    assert r.status_code == 200, r.text
+    text = f"Networks.\n\n![](evidence:{shot})"
+    draft = _draft(client, test_project, system_description=text)
+    assert _issue(client, test_project, draft["id"]).status_code == 200
+    db_session.expire_all()
+    assert shot in {img.attachment_id for img in db_session.get(Report, draft["id"]).images}
+    before = db_session.query(NoteAttachment).count()
+
+    r = (client.post(f"{_reports(test_project)}/{draft['id']}/revise") if start == "revise"
+         else client.post(_reports(test_project), json={"kind": "addendum", "baseline_report_id": draft["id"]}))
+    assert r.status_code in (200, 201), r.text
+    assert r.json()["settings"]["system_description"] == text
+    db_session.expire_all()
+    assert db_session.query(NoteAttachment).count() == before
+    assert _listed(client, test_project) == {}
+
+
 def test_an_image_the_report_cannot_place_is_named_on_the_draft(client, db_session, test_project, storage):
     """With nothing to restore (no copy), the reference prints nothing — so
     the draft's summary names it (the page's checklist lists it)."""

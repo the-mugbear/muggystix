@@ -242,11 +242,29 @@ class LLMProviderService:
 # Connection test — verifies credentials before saving / at user request
 # ---------------------------------------------------------------------------
 
-#: What ``test_connection`` answers whenever the provider did not answer.
+#: What ``test_connection`` and ``chat_completion`` answer whenever the
+#: provider did not answer.
 PROVIDER_UNREACHABLE = (
     "Could not reach the provider. Check the address, and that the service is "
     "running and reachable from the BlueStick server."
 )
+
+
+def _did_not_answer(where: str, provider: LLMProvider, exc: BaseException) -> str:
+    """The ONE reading of "the provider did not answer" — refused, timed out,
+    did not resolve, a blocked address, an unreadable body: log the reason
+    for whoever runs the server and give the caller the fixed text.  The
+    exception's own text told the caller WHICH, for any private host and
+    port an ``ollama`` provider names: an internal port probe (review
+    2026-10-14, H2 — ``chat_completion`` still passed it on)."""
+    if isinstance(exc, (httpx.RequestError, TimeoutError, ValueError)):
+        logger.warning(
+            "LLM provider %s could not reach provider %s: %s: %s",
+            where, provider.id, type(exc).__name__, exc,
+        )
+    else:
+        logger.error("LLM provider %s failed", where, exc_info=exc)
+    return PROVIDER_UNREACHABLE
 
 
 def test_connection(provider: LLMProvider) -> Dict[str, Any]:
@@ -317,20 +335,7 @@ def test_connection(provider: LLMProvider) -> Dict[str, Any]:
         )
         return {"ok": False, "detail": f"Provider returned HTTP {exc.response.status_code}."}
     except Exception as exc:  # noqa: BLE001
-        # One fixed answer for every failure in which the provider did not
-        # answer — refused, timed out, did not resolve, a blocked address, an
-        # unreadable body.  The exception's own text told the caller WHICH
-        # (open / refused / timeout), for any private host and port an
-        # ``ollama`` provider names: an internal port probe.  The reason is
-        # logged for whoever runs the server.
-        if isinstance(exc, (httpx.RequestError, TimeoutError, ValueError)):
-            logger.warning(
-                "LLM provider test_connection could not reach provider %s: %s: %s",
-                provider.id, type(exc).__name__, exc,
-            )
-        else:
-            logger.exception("LLM provider test_connection failed")
-        return {"ok": False, "detail": PROVIDER_UNREACHABLE}
+        return {"ok": False, "detail": _did_not_answer("test_connection", provider, exc)}
 
 
 # ---------------------------------------------------------------------------
@@ -549,11 +554,10 @@ def chat_completion(
         raise RuntimeError(
             f"{provider.provider_type} provider returned HTTP {exc.response.status_code}."
         ) from exc
-    except httpx.RequestError as exc:
-        raise RuntimeError(f"{provider.provider_type} request failed: {exc}") from exc
-    except ValueError as exc:  # non-JSON body from r.json()
-        raise RuntimeError(
-            f"{provider.provider_type} returned a non-JSON response."
-        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        # Refused, timed out, a blocked address, a non-JSON body — anything
+        # else the transport raised, whose text the route would pass on as
+        # a 400: one text.
+        raise RuntimeError(_did_not_answer("chat_completion", provider, exc)) from exc
 
     return {"content": adapter.parse_response(data), "raw": data}

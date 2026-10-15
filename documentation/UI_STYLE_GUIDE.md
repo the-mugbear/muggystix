@@ -999,7 +999,9 @@ From the codebase review of 2026-10-07 (5.339.0).
   a project page drops them, because they name the previous project's ids. A narrowing that came from the URL (`?host=`, `?finding=`) is always
   shown as a removable chip naming what it narrows to.
 - **Unsaved writing is guarded.** An editor holding text the reader typed uses
-  `hooks/useDiscardGuard`; an expired session returns to where the reader was
+  `hooks/useDiscardGuard` — its own Back through `confirmLeave`, and every
+  link on the page through `useLinkGuard` on the page's container, never a
+  handler per link (the report draft and the report defaults); an expired session returns to where the reader was
   (`utils/loginReturn` — only a path inside the app is honoured).
 - **A session stays open while the reader works, and ends after they stop.**
   It ends a fixed time after the reader last pressed a key or clicked

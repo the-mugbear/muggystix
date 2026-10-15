@@ -12,7 +12,7 @@
  * ONLY those keys leave the page's pending edits (`onPromoted`); every other
  * pending edit stays, unsaved.  A failure changes nothing.
  */
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
@@ -29,7 +29,7 @@ import {
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../../ui/dialog';
 import {
-  DETAIL_LABELS, type DetailContext, type DetailKey, current, sourceCaption, toSave,
+  DETAIL_LABELS, type DetailContext, type DetailKey, current, sourceCaption, withPending,
 } from './detailModel';
 
 /** A value in a line: a text shortened, a list by its names, nothing said. */
@@ -57,7 +57,12 @@ const UpdateDefaultsDialog: React.FC<{
   const toast = useToast();
   const queryClient = useQueryClient();
   const [unticked, setUnticked] = useState<Set<DetailKey>>(new Set());
-  const chosen = keys.filter((k) => !unticked.has(k));
+  const settings = withPending(ctx);
+  // An empty team cannot be the project's: with no team saved, a draft
+  // lists the project's analysts and admins (review 2026-10-14, H3 — the
+  // server refuses it too).  It stays this report's own.
+  const cannot = (key: DetailKey) => key === 'testers' && Array.isArray(settings.testers) && !settings.testers.length;
+  const chosen = keys.filter((k) => !unticked.has(k) && !cannot(k));
 
   const followers = useQuery({
     queryKey: ['getClientReportFollowers', projectId, report.id],
@@ -66,13 +71,10 @@ const UpdateDefaultsDialog: React.FC<{
   });
   const followersError = queryErrorText(followers.error, 'Could not count the drafts that follow them.');
 
-  const values = useMemo(() => {
-    const { settings } = toSave(ctx);
-    return Object.fromEntries(chosen.map((k) => [k, settings[k]])) as EngagementOverrides;
-  }, [ctx, chosen]);
-
   const promoting = useMutation({
-    mutationFn: () => promoteClientReportDetails(projectId, report.id, values),
+    mutationFn: () => promoteClientReportDetails(
+      projectId, report.id, Object.fromEntries(chosen.map((k) => [k, settings[k]])) as EngagementOverrides,
+    ),
     onSuccess: (updated) => {
       onPromoted(updated, chosen);
       void invalidateReads(queryClient, 'getReportProfile', 'listClientReports', 'getClientReportFollowers');
@@ -104,7 +106,8 @@ const UpdateDefaultsDialog: React.FC<{
               const others = followers.data?.[key];
               return (
                 <li key={key} className="flex min-w-0 items-start gap-sm" data-testid={`promote-${key}`}>
-                  <Checkbox id={`promote-${key}`} checked={!unticked.has(key)} disabled={promoting.isPending}
+                  <Checkbox id={`promote-${key}`} checked={!unticked.has(key) && !cannot(key)}
+                    disabled={promoting.isPending || cannot(key)}
                     onCheckedChange={(on) => setUnticked((s) => {
                       const next = new Set(s);
                       if (on) next.delete(key); else next.add(key);
@@ -119,7 +122,8 @@ const UpdateDefaultsDialog: React.FC<{
                       This report’s: {valueWords(current(ctx, key))}
                     </span>
                     <span className="block text-caption text-muted-foreground">
-                      {others == null ? 'Counting the drafts that follow it…'
+                      {cannot(key) ? 'The project’s team cannot be empty: with none saved, drafts list the project’s analysts and admins. It stays this report’s own.'
+                        : others == null ? 'Counting the drafts that follow it…'
                         : others === 0 ? 'No other draft follows it.'
                           : `${others.toLocaleString()} other draft${others === 1 ? ' follows' : 's follow'} it and will print the new value.`}
                     </span>

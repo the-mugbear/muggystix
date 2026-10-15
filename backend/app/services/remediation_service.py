@@ -14,7 +14,7 @@ from sqlalchemy import DateTime, Integer, String, and_, case, cast, func, insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import aliased, joinedload
 
 from app.db import models
 from app.db.models_findings import Finding, FindingHost, FindingHostStatus
@@ -69,6 +69,30 @@ def _rows(db, project_ids: Sequence[int]):
         .filter(Finding.project_id.in_(tuple(project_ids)))
         .filter(or_(reportable, Remediation.id.isnot(None)))
     )
+
+
+def findings_wholly_of(db, project_id: int, finding_ids: Iterable[int], contact_email: str) -> set:
+    """Of ``finding_ids``, the findings EVERY system of which (each host of
+    an endpoint that is not a false positive) is this contact's — the contact
+    has a record on that finding and host, in any state.  Asked in SQL, with
+    no cap: read from the contact's rows capped at 2,000, a contact with more
+    rows than that lost every finding's evidence in their document (review
+    2026-10-14, H9)."""
+    ids = tuple(set(finding_ids))
+    if not ids:
+        return set()
+    email = contact_email.strip().lower()
+    theirs = aliased(FindingHost)
+    someone_elses = select(FindingHost.id).where(
+        FindingHost.finding_id == Finding.id,
+        FindingHost.host_status != FindingHostStatus.FALSE_POSITIVE.value,
+        ~select(theirs.id).join(Remediation, Remediation.finding_host_id == theirs.id).where(
+            theirs.finding_id == FindingHost.finding_id, theirs.host_id == FindingHost.host_id,
+            Remediation.contact_email == email,
+        ).correlate(FindingHost).exists(),
+    ).correlate(Finding).exists()
+    return {fid for (fid,) in db.query(Finding.id).filter(
+        Finding.project_id == project_id, Finding.id.in_(ids), ~someone_elses)}
 
 
 def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,

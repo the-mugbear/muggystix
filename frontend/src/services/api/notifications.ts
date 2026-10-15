@@ -26,9 +26,10 @@ export interface NotificationItem {
 }
 
 export interface NotificationListResponse {
+  /** At most `limit` of them: a preview, never the count. */
   notifications: NotificationItem[];
-  total: number;
-  unread_count: number;
+  /** Every unread notification of the reader — what the server sends. */
+  total_unread: number;
 }
 
 export const getNotifications = async (

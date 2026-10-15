@@ -19,7 +19,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
-import { useDiscardGuard } from '../hooks/useDiscardGuard';
+import { useDiscardGuard, useLinkGuard } from '../hooks/useDiscardGuard';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRoster } from '../hooks/useProjectMembers';
 import { useProjectRole } from '../hooks/useProjectRole';
@@ -77,14 +77,14 @@ const ReportDefaults: React.FC = () => {
   const images = useReportTextImages({ enabled: canWrite });
 
   const { confirmLeave, confirmEl } = useDiscardGuard(() => dirty, 'The report defaults have unsaved changes. Leave anyway?');
+  const guardLinks = useLinkGuard(confirmLeave);
   const [discardDialog, confirmDiscard] = useConfirm();
 
   const saving = useMutation({
     mutationFn: () => {
       // Only what changed: a stale read never overwrites another person's
       // change to a detail this page did not touch.
-      const { settings, edited } = toSave(edits.ctx);
-      const body: Record<string, unknown> = Object.fromEntries(edited.map((k) => [k, settings[k] ?? null]));
+      const body: Record<string, unknown> = { ...toSave(edits.ctx) };
       if (templateChanged) body.template = template;
       return patchReportProfile(projectId, body as EngagementOverrides);
     },
@@ -133,7 +133,7 @@ const ReportDefaults: React.FC = () => {
   const templateValue = template ?? profile.template ?? '';
 
   return (
-    <div className="space-y-lg p-md md:p-lg">
+    <div className="space-y-lg p-md md:p-lg" onClickCapture={guardLinks}>
       <div>
         <Button variant="ghost" size="sm" className="mb-sm"
           onClick={async () => { if (await confirmLeave()) navigate('/reports'); }}>

@@ -735,7 +735,8 @@ class ClientReportService:
         ``Report.settings`` cannot change once issued (PATCH refuses), so it
         is the frozen form as written; the snapshot's ``engagement`` (the
         values it was issued with, resolved) fills any key it does not
-        override.  A detail it went out with EMPTY is not carried: the new
+        override; an override is carried as written, an empty list included.
+        A detail it FOLLOWED and went out with empty is not carried: the new
         draft follows the project for it (an addendum always did; a revision
         of a report issued with no distribution list now offers the project's
         — override it to empty again if that was on purpose).  Copies — the
@@ -749,9 +750,14 @@ class ClientReportService:
         for key in report_defaults.DETAIL_KEYS:
             if key == "executive_summary" and not with_summary:
                 continue
-            value = own.get(key) or frozen.get(key)
-            if value:
-                settings[key] = value
+            if key in own:
+                # Its own override, as written — an empty team or list
+                # included: "nobody" was chosen on purpose (review
+                # 2026-10-14, H3: `[]` was read as "went out empty", and the
+                # revision printed the project's whole team).
+                settings[key] = own[key]
+            elif frozen.get(key):
+                settings[key] = frozen[key]
         return settings
 
     def settings_carried_from(self, issued: Report, user_id: Optional[int], *,
@@ -782,7 +788,11 @@ class ClientReportService:
             new_ids: Dict[int, int] = {}
             for old in ids:
                 copy = frozen.get(old)
-                if old in live or copy is None:
+                # Only an image the issued report printed AS report text: a
+                # finding's image it printed has a copy too, and a reference
+                # to one here (printed as alt text only) became a new
+                # system-description figure (review 2026-10-14, H4).
+                if old in live or copy is None or old not in captions:
                     continue
                 try:
                     data = stored_file_path(copy.storage_path).read_bytes()

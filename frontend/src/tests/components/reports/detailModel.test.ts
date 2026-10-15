@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  type DetailContext, current, customised, sectionStatus, toSave, withEdit, DETAIL_SECTIONS,
+  type DetailContext, current, customised, sectionStatus, toSave, withEdit, withPending, DETAIL_SECTIONS,
 } from '../../../components/reports/workspace/detailModel';
 import type { EngagementSettings } from '../../../services/api';
 
@@ -26,7 +26,10 @@ describe('what a field becomes', () => {
     const c = ctx({ saved: { classification: 'B' } });
     expect(current(c, 'classification')).toBe('B');
     expect(customised(c, 'classification')).toBe(true);
-    expect(toSave(c)).toEqual({ settings: { classification: 'B' }, edited: [] });
+    // Not sent: a save never repeats an override it did not edit, so a stale
+    // page cannot revert someone else's (review 2026-10-14, H1).
+    expect(toSave(c)).toEqual({});
+    expect(withPending(c)).toEqual({ classification: 'B' });
   });
 
   it('typing the value it already has is no edit — the draft stays clean', () => {
@@ -38,7 +41,7 @@ describe('what a field becomes', () => {
     let c = ctx();
     c = { ...c, pending: withEdit(c, 'client_name', 'Other') };
     expect(customised(c, 'client_name')).toBe(true);
-    expect(toSave(c)).toEqual({ settings: { client_name: 'Other' }, edited: ['client_name'] });
+    expect(toSave(c)).toEqual({ client_name: 'Other' });
     c = { ...c, pending: withEdit(c, 'client_name', 'Example Corp') };
     expect(c.pending).toEqual({});
   });
@@ -48,22 +51,22 @@ describe('what a field becomes', () => {
     c = { ...c, pending: withEdit(c, 'classification', null) };
     expect(current(c, 'classification')).toBe('A');
     expect(customised(c, 'classification')).toBe(false);
-    expect(toSave(c)).toEqual({ settings: {}, edited: ['classification'] });
+    expect(toSave(c)).toEqual({ classification: null });
   });
 
   it('a cleared text follows the project once saved', () => {
     let c = ctx({ saved: { classification: 'B' } });
     c = { ...c, pending: withEdit(c, 'classification', '   ') };
-    expect(toSave(c).settings).toEqual({});
+    expect(toSave(c)).toEqual({ classification: null });
   });
 
   it('emptying a list is an override to nobody; rows without a name are dropped', () => {
     let c = ctx();
     c = { ...c, pending: withEdit(c, 'distribution', []) };
     expect(customised(c, 'distribution')).toBe(true);           // "nobody", where the project lists the CISO
-    expect(toSave(c).settings).toEqual({ distribution: [] });
+    expect(toSave(c)).toEqual({ distribution: [] });
     c = { ...c, pending: withEdit(c, 'testers', [{ user_id: null, name: '  Bo ', role: null, email: null }, { user_id: null, name: ' ', role: null, email: null }]) };
-    expect(toSave(c).settings.testers).toEqual([{ user_id: null, name: 'Bo', role: null, email: null }]);
+    expect(toSave(c).testers).toEqual([{ user_id: null, name: 'Bo', role: null, email: null }]);
   });
 
   it('an addendum\'s summary is its own: never customised, never followed', () => {
@@ -71,7 +74,7 @@ describe('what a field becomes', () => {
     expect(current(c, 'executive_summary')).toBeUndefined();
     const edited = { ...c, pending: withEdit(c, 'executive_summary', 'Since #1.') };
     expect(customised(edited, 'executive_summary')).toBe(false);
-    expect(toSave(edited)).toEqual({ settings: { executive_summary: 'Since #1.' }, edited: ['executive_summary'] });
+    expect(toSave(edited)).toEqual({ executive_summary: 'Since #1.' });
   });
 
   it('a section says whether it uses the project\'s defaults, and how many are its own', () => {

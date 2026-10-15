@@ -47,7 +47,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
-import { useDiscardGuard } from '../hooks/useDiscardGuard';
+import { useDiscardGuard, useLinkGuard } from '../hooks/useDiscardGuard';
 import { useJobPolls } from '../hooks/useJobPoll';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRoster } from '../hooks/useProjectMembers';
@@ -303,6 +303,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     () => dirty,
     'This draft has unsaved changes. Leave anyway?',
   );
+  const guardLinks = useLinkGuard(confirmLeave);
 
   // The project's report images: the system description's picker, paste and
   // preview; managed in the project images panel.
@@ -390,11 +391,10 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   // ---- save draft ---------------------------------------------------------
   const saveDraft = useMutation({
     mutationFn: () => {
-      const { settings, edited } = toSave(edits.ctx);
       return updateClientReport(projectId, reportId, {
         ...(titleChanged ? { title: (title ?? '').trim() } : {}),
         ...(templateChanged ? { template: template ?? undefined } : {}),
-        settings, edited,
+        settings: toSave(edits.ctx),
       });
     },
     onSuccess: (updated) => {
@@ -936,7 +936,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   );
 
   return (
-    <div className="space-y-md p-md md:p-lg">
+    <div className="space-y-md p-md md:p-lg" onClickCapture={guardLinks}>
       <div>
         <Button variant="ghost" size="sm" className="mb-sm"
           onClick={async () => { if (await confirmLeave()) navigate('/reports'); }}>

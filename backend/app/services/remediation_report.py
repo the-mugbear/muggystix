@@ -191,11 +191,8 @@ def _build(db: Session, project_id: int, contact_email: str, *,
     # the listed rows plus the closed ones held only while the document listed
     # everything open: narrowed, a finding wholly this contact's lost its
     # evidence because one of its systems was due later.)
-    owned = remediation_service.list_rows(
-        db, [project_id], contact_email=email, group="due",
-        limit=MAX_ROWS + 1, policy=policy, today=today, with_counts=False)
-    theirs = {(row["finding_id"], row["ip_address"]) for row in owned["items"]}
-    owned_complete = owned["total"] <= len(owned["items"])
+    wholly_theirs = remediation_service.findings_wholly_of(
+        db, project_id, {row["finding_id"] for row in rows}, email)
 
     # The contact's findings, each with its systems most urgent first — and
     # the findings themselves in that order (the list's own, `group="due"`):
@@ -233,8 +230,7 @@ def _build(db: Session, project_id: int, contact_email: str, *,
         # so it is printed only when every result could have been this
         # contact's.
         listed = {entry["address"] for entry in affected}
-        all_theirs = owned_complete and all(
-            (finding["id"], endpoint["address"]) in theirs for endpoint in finding["affected"])
+        all_theirs = finding["id"] in wholly_theirs
         confirmations = [entry for entry in finding.get("confirmations") or [] if entry.get("host") in listed]
         # Images are the finding's, not a system's.  One the author placed in
         # the finding's text is part of that text; one that is only attached

@@ -284,9 +284,9 @@ def test_a_new_draft_overrides_nothing_and_follows_every_project_default(client,
 
 
 def test_a_draft_overrides_one_detail_and_reverts_it(client, db_session, test_project):
-    """PATCH `settings` is the COMPLETE override map: a key sent overrides, a
-    key left out follows.  The page overrides one detail and reverts it by
-    leaving it out."""
+    """PATCH `settings` carries the details changed: a key sent overrides, a
+    key left out keeps what is stored, a key sent null or blank follows the
+    project again (review 2026-10-14, H1 — it was the complete map)."""
     _profile(client, test_project, client_name="Example Corp", classification="Confidential",
              distribution=[{"name": "CISO", "email": "ciso@example.com"}])
     draft = _draft(client, test_project)
@@ -297,15 +297,15 @@ def test_a_draft_overrides_one_detail_and_reverts_it(client, db_session, test_pr
     assert one["followed"]["client_name"] == "Example Corp"             # what Revert returns to
     assert one["effective"]["classification"] == "Confidential"         # still followed
 
-    # Another override; the first one is kept only because it is sent again.
-    two = _patch(client, test_project, draft["id"], client_name="Other Corp", classification="Secret")
+    # Another override; the first one is kept though it is not sent again.
+    two = _patch(client, test_project, draft["id"], classification="Secret")
     assert two["settings"] == {"client_name": "Other Corp", "classification": "Secret"}
-    # Revert the client: left out of the map.
-    reverted = _patch(client, test_project, draft["id"], classification="Secret")
+    # Revert the client: sent null.
+    reverted = _patch(client, test_project, draft["id"], client_name=None)
     assert reverted["settings"] == {"classification": "Secret"}
     assert reverted["effective"]["client_name"] == "Example Corp"
     # A blank or null text is not an override either: it follows again.
-    blank = _patch(client, test_project, draft["id"], classification="   ", client_name=None)
+    blank = _patch(client, test_project, draft["id"], classification="   ")
     assert blank["settings"] == {}
     assert blank["effective"]["classification"] == "Confidential"
     db_session.expire_all()
@@ -330,7 +330,7 @@ def test_a_list_is_overridden_as_a_whole_and_may_be_overridden_to_empty(client, 
     assert engagement["distribution"] == [] and "distribution list" in summary["missing_details"]
     # The team too — and an empty override does not fall back to the project's members.
     team = _patch(client, test_project, draft["id"], testers=[])
-    assert team["settings"] == {"testers": []}
+    assert team["settings"] == {"distribution": [], "testers": []}
     assert _engagement(db_session, draft["id"])[0]["testers"] == []
     # A list sent null follows again.
     back = _patch(client, test_project, draft["id"], distribution=None, testers=None)
@@ -643,6 +643,10 @@ def test_promote_refuses_what_it_cannot_make_a_default(client, db_session, test_
     assert client.post(url, json={"values": {"client_name": "   "}}).status_code == 422
     assert client.post(url, json={"values": {"distribution": None}}).status_code == 422
     assert client.post(url, json={"values": {"classification": "x" * 101}}).status_code == 422
+    # Review 2026-10-14, H3: an empty team cannot be the project's — with none
+    # saved, drafts list the project's analysts and admins.
+    nobody = client.post(url, json={"values": {"testers": []}})
+    assert nobody.status_code == 422 and "cannot be empty" in nobody.text
     # Nothing changed: the draft still overrides, the project keeps its value.
     db_session.expire_all()
     assert db_session.get(Report, draft["id"]).settings == {"client_name": "Mine"}

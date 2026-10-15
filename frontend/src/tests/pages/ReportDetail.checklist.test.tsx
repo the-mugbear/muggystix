@@ -326,6 +326,36 @@ describe('Discard changes', () => {
   });
 });
 
+// Review 2026-10-14, H10: only the back button asked; a checklist link left
+// with the pending edits.
+describe('A link out of the draft', () => {
+  it('asks first when there are unsaved changes, and stays when declined', async () => {
+    render(
+      <MemoryRouter initialEntries={['/reports/5']}>
+        <Routes>
+          <Route path="/reports/:reportId" element={<ReportDetail />} />
+          <Route path="/findings/:id" element={<p>The finding page</p>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.change(await screen.findByLabelText('Title'), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByRole('tab', { name: /Review/ }));
+    const checklist = await screen.findByTestId('report-checklist');
+    const link = within(checklist).getAllByRole('link').find((a) => a.getAttribute('href')?.startsWith('/findings/'))!;
+
+    confirmMock.mockResolvedValueOnce(false);
+    fireEvent.click(link);
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({
+      body: 'This draft has unsaved changes. Leave anyway?',
+    })));
+    expect(screen.queryByText('The finding page')).toBeNull();
+
+    confirmMock.mockResolvedValueOnce(true);
+    fireEvent.click(link);
+    expect(await screen.findByText('The finding page')).toBeInTheDocument();
+  });
+});
+
 describe('The template', () => {
   it('is chosen on Details beside the title, and saved with Save draft like any other edit', async () => {
     mocked.updateClientReport.mockResolvedValue(report({ template: 'brief' }));
@@ -344,7 +374,7 @@ describe('The template', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, {
-      template: 'brief', settings, edited: [],
+      template: 'brief', settings: {},
     }));
   });
 

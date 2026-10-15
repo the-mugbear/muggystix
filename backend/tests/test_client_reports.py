@@ -289,6 +289,20 @@ def test_a_revision_starts_from_the_original_details_and_summary(client, db_sess
     assert rev_add["executive_summary"] == "Since #1: one new finding."
 
 
+def test_a_revision_keeps_an_empty_team_override(client, db_session, test_project):
+    """Review 2026-10-14, H3: a report issued with its team overridden to
+    nobody was revised into a draft that followed the project — and printed
+    every analyst and admin."""
+    report = _create(client, test_project)
+    r = client.patch(f"{_base(test_project)}/{report['id']}", json={
+        "settings": {**_ISSUED_DETAILS, "testers": [], "executive_summary": "What we found."}})
+    assert r.status_code == 200, r.text
+    issued = _issue(client, test_project, report["id"])
+    rev = client.post(f"{_base(test_project)}/{issued['id']}/revise").json()
+    assert rev["settings"]["testers"] == []
+    assert rev["effective"]["testers"] == []
+
+
 def test_a_revision_fills_a_detail_missing_from_settings_from_the_snapshot(client, db_session, test_project):
     """A report issued before a detail existed has it only in the frozen
     snapshot's engagement; the revision still starts with it."""

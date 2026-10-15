@@ -30,6 +30,14 @@ export const UNREAD_KEY = ['getNotifications', true, UNREAD_LIMIT] as const;
 
 const NO_NOTIFICATIONS: NotificationItem[] = [];
 
+/** "60 unread notifications" — the server's total, never the preview's
+ *  length; and how many are shown when that is fewer. */
+export const unreadHeading = (total: number, shown: number): string => {
+  const all = Math.max(total, shown);
+  const words = `${all.toLocaleString()} unread notification${all === 1 ? '' : 's'}`;
+  return shown < all ? `${words} (the latest ${shown.toLocaleString()} shown)` : words;
+};
+
 /** The unread notifications and what can be done with them.  `enabled`:
  *  a panel that is closed asks for nothing. */
 export const useUnreadNotifications = (enabled = true) => {
@@ -42,14 +50,19 @@ export const useUnreadNotifications = (enabled = true) => {
   });
 
   // A notification leaves the list at once; the server is told, and the
-  // bell's count is read again either way.
+  // bell's count AND the list are read again either way — the list is the
+  // first UNREAD_LIMIT, so the one after them comes up only by a re-read
+  // (review 2026-10-14, H11).
   const bellChanged = useCallback(() => {
-    void invalidateReads(queryClient, 'getUnreadNotificationCount');
+    void invalidateReads(queryClient, 'getUnreadNotificationCount', 'getNotifications');
   }, [queryClient]);
   const setUnread = useCallback((keep: (n: NotificationItem) => boolean) => {
-    queryClient.setQueryData<NotificationListResponse>(UNREAD_KEY, (old) => (
-      old ? { ...old, notifications: old.notifications.filter(keep) } : old
-    ));
+    queryClient.setQueryData<NotificationListResponse>(UNREAD_KEY, (old) => {
+      if (!old) return old;
+      const notifications = old.notifications.filter(keep);
+      const gone = old.notifications.length - notifications.length;
+      return { ...old, notifications, total_unread: Math.max(0, old.total_unread - gone) };
+    });
   }, [queryClient]);
   const { mutate: dismiss } = useMutation({
     mutationFn: (id: number) => markNotificationsRead([id]),
@@ -71,6 +84,8 @@ export const useUnreadNotifications = (enabled = true) => {
 
   return {
     notifications: query.data?.notifications ?? NO_NOTIFICATIONS,
+    /** Every unread notification — the list above is at most UNREAD_LIMIT of them. */
+    total: query.data?.total_unread ?? 0,
     failed: query.isError, loaded: query.isSuccess, loading: query.isLoading,
     open, markAllRead: () => markAllRead(),
   };
@@ -80,14 +95,14 @@ export const useUnreadNotifications = (enabled = true) => {
  *  on.  Opening one, or going to Collaboration, closes it. */
 export const BellPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const navigate = useNavigate();
-  const { notifications, failed, loading, open, markAllRead } = useUnreadNotifications();
+  const { notifications, total, failed, loading, open, markAllRead } = useUnreadNotifications();
   return (
     <div className="min-w-0">
       <div className="mb-xs flex flex-wrap items-center justify-between gap-sm">
         <h2 className="text-metadata font-semibold text-foreground">
           {loading ? 'Notifications' : failed ? 'Notifications'
             : notifications.length === 0 ? 'No unread notifications'
-            : `${notifications.length.toLocaleString()} unread notification${notifications.length === 1 ? '' : 's'}`}
+            : unreadHeading(total, notifications.length)}
         </h2>
         {notifications.length > 0 && (
           <Button variant="ghost" size="sm" className="h-7" onClick={markAllRead}>Mark all read</Button>

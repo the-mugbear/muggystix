@@ -61,8 +61,12 @@ def changed_since_prior_scan_query(db: Session, host_ids: Union[Iterable[int], Q
         # (``state_at_scan`` NULL — a name answer does not say the host is
         # up), and ranked here it read as a flip from 'up' on every host it
         # named.  The comparison is between the two latest scans that SAID
-        # something about the host's state.
-        .filter(history.host_id.in_(host_ids), history.state_at_scan.isnot(None))
+        # something about the host's state — and 'unknown' says nothing (as
+        # dedup reads it): a host a DNS import CREATED is recorded 'unknown',
+        # and the next scan that saw it up read as "Changed" (review
+        # 2026-10-14, H8; a gnmap Ports-only line is 'unknown' too).
+        .filter(history.host_id.in_(host_ids), history.state_at_scan.isnot(None),
+                history.state_at_scan != "unknown")
         .cte("ranked_history")
     )
     latest, prior = aliased(ranked), aliased(ranked)

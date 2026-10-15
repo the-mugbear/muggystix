@@ -57,9 +57,10 @@ class EngagementSettings(BaseModel):
 
 class EngagementOverrides(EngagementSettings):
     """A draft's OVERRIDES (`PATCH /client-reports/{id}` → `settings`): the
-    complete map of the details this report does not take from the project.
-    A key left out — or a text sent blank or null, or a list sent null —
-    follows the project; a list sent (even `[]`) is overridden as a whole.
+    details changed, each with its new value.  A key left out keeps what is
+    stored; a text sent blank or null, or a list sent null, follows the
+    project again; a list sent (even `[]`) is overridden as a whole.  A
+    detail sent equal to what the draft follows follows it again.
     Read with `model_dump(exclude_unset=True)`: the defaults above would
     otherwise make every key look sent."""
     testers: Optional[List[Tester]] = Field(None, max_length=50)
@@ -278,16 +279,10 @@ class ReportUpdate(BaseModel):
     title: Optional[str] = Field(None, max_length=255)
     template: Optional[str] = Field(None, max_length=100)
     baseline_report_id: Optional[int] = None
-    # The complete override map (the executive summary is one of its keys) (replaces the stored one); see
-    # `EngagementOverrides`.
+    # The details changed in this save, each with its new override (the
+    # executive summary is one of its keys); see `EngagementOverrides`.  A
+    # detail not sent keeps what is stored.
     settings: Optional[EngagementOverrides] = None
-    # The details the author CHANGED in this save (the report workspace,
-    # owner 2026-10-14).  Only for these is an override equal to what the
-    # draft follows dropped ("changed back to the project's" = follows
-    # again); every other stored override is kept as it is, even one that
-    # happens to equal the project's value now.  Left out: no key is
-    # compared (the older page's behaviour).
-    edited: Optional[List[str]] = Field(None, max_length=20)
 
 
 class PreviewRequest(BaseModel):

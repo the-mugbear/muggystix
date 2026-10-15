@@ -392,7 +392,10 @@ describe('Report detail — draft', () => {
     expect(screen.getByTestId('preview-pending')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save & preview Word' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
-    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, { title: 'Round 2', settings, edited: [] }));
+    // A title-only save sends no detail: a stored override someone else
+    // changed meanwhile is never reverted to this page's copy (review
+    // 2026-10-14, H1).
+    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, { title: 'Round 2', settings: {} }));
     await waitFor(() => expect(screen.getByRole('button', { name: /Issue report/ })).toBeEnabled());
     expect(screen.getByTestId('report-save-status')).toHaveTextContent('All changes saved');
   });
@@ -507,7 +510,7 @@ describe('Report detail — draft', () => {
     fireEvent.click(section('engagement').getByRole('button', { name: 'Done' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, {
-      settings: { author_name: 'Red Team Ltd' }, edited: ['client_name', 'author_name'],
+      settings: { client_name: null, author_name: 'Red Team Ltd' },
     }));
     // The answer: the project changed meanwhile; a followed detail shows it.
     await waitFor(() => expect(section('engagement').getByText('Public')).toBeInTheDocument());
@@ -529,7 +532,7 @@ describe('Report detail — draft', () => {
     fireEvent.change(box, { target: { value: 'Ours.' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
     await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, {
-      settings: { executive_summary: 'Ours.' }, edited: ['executive_summary'],
+      settings: { executive_summary: 'Ours.' },
     }));
   });
 

@@ -64,7 +64,7 @@ from app.parsers.parser_utils import (
     resolve_host_cached,
     resolve_port_cached,
 )
-from app.parsers.streaming_json import iter_json_records
+from app.parsers.streaming_json import iter_json_records, json_lines
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ def looks_like_httpx(sample: bytes, filename: str) -> bool:
         text = sample.decode("utf-8", errors="replace")
     else:
         text = sample
-    for line in text.splitlines():
+    for line in json_lines(text):
         line = line.strip()
         if not line or not line.startswith("{"):
             continue

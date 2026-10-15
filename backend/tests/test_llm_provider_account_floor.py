@@ -157,6 +157,32 @@ def test_a_failed_connection_answers_one_fixed_text(client, world, acting_as, mo
         assert leaked not in resp.text
 
 
+@pytest.mark.parametrize("failure", [
+    httpx.ConnectError("[Errno 111] Connection refused"),
+    httpx.ConnectTimeout("timed out"),
+    httpx.RemoteProtocolError("Server disconnected without sending a response."),
+    ValueError("Host '10.1.2.3' resolves to a private address"),
+    TimeoutError("request budget exceeded"),
+    RuntimeError("anything else"),
+])
+def test_a_failed_completion_answers_the_same_fixed_text(client, world, acting_as, monkeypatch, failure):
+    """Review 2026-10-14, H2: `/complete` (and the drafter, which shares
+    `chat_completion`) passed the transport's text on as a 400 — the same
+    port probe the connection test had stopped answering."""
+    acting_as(world["analyst"])
+    pid = client.post(f"{URL}/", json=OLLAMA).json()["id"]
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(llm_provider_service, "safe_request", fail)
+    resp = client.post(f"{URL}/{pid}/complete", json={"prompt": "hi"})
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == PROVIDER_UNREACHABLE
+    for leaked in ("refused", "timed out", "10.1.2.3", "private", "disconnected", "anything else", "budget"):
+        assert leaked not in resp.text
+
+
 def test_a_provider_that_answered_still_says_its_status(client, world, acting_as, monkeypatch):
     acting_as(world["analyst"])
     pid = client.post(f"{URL}/", json=OLLAMA).json()["id"]

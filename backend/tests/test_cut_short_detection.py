@@ -257,6 +257,25 @@ def test_invalid_masscan_json_keeps_what_precedes_it_and_says_so(tmp_path, case)
         assert parser._json_unread_after == before
 
 
+@pytest.mark.parametrize("case", sorted(MASSCAN_INVALID))
+def test_invalid_masscan_json_is_decided_whatever_follows_it(tmp_path, case, monkeypatch):
+    """Review 2026-10-14, H7: an undecodable record was read as "need more
+    data" and the buffer grew until the record cap — so with more than the
+    cap after it the whole import FAILED and nothing was kept, where a small
+    file kept the records before it.  Decided at the line, it is the same at
+    any size (the cap and the chunk are made small here)."""
+    monkeypatch.setattr(MasscanParser, "_JSON_READ_CHUNK", 256)
+    monkeypatch.setattr(MasscanParser, "_MAX_JSON_RECORD_BYTES", 2048)
+    content, before = MASSCAN_INVALID[case]
+    if case == "a stray closing brace at the end":
+        pytest.skip("nothing follows it")
+    tail = "".join("\n,\n" + _RECORD.format(i=100 + i) for i in range(200))
+    content = content.replace("\n]\n", tail + "\n]\n")
+    entries, error, report = _masscan_entries(tmp_path, content)
+    assert error is None, error
+    assert len(entries) == before and report.cut_short is None
+
+
 def test_a_record_with_a_raw_control_character_was_never_read():
     """Which it is (owner's question, 2026-10-11): the masscan reader decodes
     with ``json.JSONDecoder()`` — strict — and always has, so a record whose
@@ -281,6 +300,26 @@ def test_a_record_with_a_raw_control_character_was_never_read():
 ])
 def test_the_beginning_of_a_json_value_is_told_from_text_that_is_not_json(text, expected):
     assert ends_early(text) is expected
+
+
+@pytest.mark.parametrize("threshold", [None, 1])           # read in memory, and streamed
+@pytest.mark.parametrize("raw", ["\u0085", " ", " ", "\x1c", "\x0b", "\x0c"])
+def test_a_character_python_breaks_lines_at_is_not_a_json_line_end(tmp_path, threshold, raw):
+    """Review 2026-10-14, H6: ``str.splitlines`` breaks at U+0085, U+2028,
+    U+2029 and a few controls, which are legal RAW inside a JSON string.  A
+    page title holding one turned a valid line into two broken ones — the
+    first read as the file's cut last line, so a complete file under 50 MB
+    was called cut short (and keeping it dropped every line after)."""
+    path = tmp_path / "httpx.jsonl"
+    lines = [{"url": "https://a", "title": f"x{raw}y"}, {"url": "https://b"}, {"url": "https://c"}]
+    path.write_text("".join(json.dumps(line, ensure_ascii=False) + "\n" for line in lines), encoding="utf-8")
+    from app.parsers.streaming_json import iter_json_records
+    assert list(iter_json_records(str(path), tool_label="httpx JSON", threshold_bytes=threshold)) == lines
+
+
+def test_json_lines_splits_where_a_writer_ends_a_line_only():
+    from app.parsers.streaming_json import json_lines
+    assert json_lines('{"a": "x\u0085y"}\r\n{"b": 1}\n{"c"') == ['{"a": "x\u0085y"}\n', '{"b": 1}\n', '{"c"']
 
 
 def test_only_a_files_last_line_can_be_a_cut_line():

@@ -78,7 +78,7 @@ describe('Report details — sections', () => {
     fireEvent.change(screen.getByLabelText('Client'), { target: { value: 'Second' } });
     fireEvent.click(section('engagement').getByRole('button', { name: 'Cancel' }));
     expect(section('engagement').getByText('First')).toBeInTheDocument();     // the Done before stays
-    expect(toSave(latest!.ctx)).toEqual({ settings: { client_name: 'First' }, edited: ['client_name'] });
+    expect(toSave(latest!.ctx)).toEqual({ client_name: 'First' });
   });
 
   it('a change in one section leaves another alone; "Use the project’s" removes an override', () => {
@@ -87,9 +87,8 @@ describe('Report details — sections', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Executive summary' }), { target: { value: 'Ours.' } });
     fireEvent.click(section('engagement').getByRole('button', { name: 'Use the project’s Classification' }));
     expect(section('engagement').getByText('Confidential')).toBeInTheDocument();
-    expect(toSave(latest!.ctx)).toEqual({
-      settings: { executive_summary: 'Ours.' }, edited: ['executive_summary', 'classification'],
-    });
+    // Only the edited details are sent; `null` = follow the project again.
+    expect(toSave(latest!.ctx)).toEqual({ executive_summary: 'Ours.', classification: null });
   });
 
   // Ported from the old EngagementSettingsFields tests (what still applies).
@@ -98,7 +97,7 @@ describe('Report details — sections', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit Team & distribution' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove CISO' }));
     expect(screen.getByTestId('report-distribution-nobody')).toHaveTextContent('This report will list nobody here.');
-    expect(toSave(latest!.ctx).settings).toEqual({ distribution: [] });
+    expect(toSave(latest!.ctx)).toEqual({ distribution: [] });
   });
 
   it('a disclaimer nobody wrote says the template’s own is printed', () => {

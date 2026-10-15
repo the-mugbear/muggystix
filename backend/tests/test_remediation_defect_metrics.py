@@ -56,6 +56,25 @@ def test_the_truth_table_of_a_defect(client, db_session, test_project, on):
         assert listed == {fh_id for fh_id, (_, _, d) in zip(ids, TRUTH) if d == defect}, defect
 
 
+def test_a_finding_judged_false_positive_is_no_defect(client, db_session, test_project, on):
+    """Review 2026-10-14, H5: setting the FINDING false positive moves no
+    endpoint, and its tracked rows stayed open defects — counted, with an
+    MTTR clock running to today, under a page that says false positives are
+    left out."""
+    ids = _finding(db_session, test_project, ["open", "open"])
+    apply(client, test_project, [{"finding_host_id": i, "contact_name": "Someone"} for i in ids])
+    finding_id = db_session.get(FindingHost, ids[0]).finding_id
+    r = client.post(f"/api/v1/projects/{test_project.id}/findings/{finding_id}/status",
+                    json={"status": "false_positive", "summary": "The service is not exposed."})
+    assert r.status_code == 200 and r.json()["status"] == "false_positive", r.text
+    db_session.expire_all()
+    expr = remediation_policy.defect_expr()
+    got = dict(remediation_service._rows(db_session, [test_project.id]).with_entities(FindingHost.id, expr).all())
+    assert got == {i: None for i in ids}                       # still tracked, never a defect
+    for defect in remediation_policy.DEFECTS:
+        assert listing(client, base(test_project), defect=defect)["total"] == 0, defect
+
+
 def test_the_endpoint_writer_stamps_and_clears_the_remediated_day(client, db_session, test_project, on):
     ids = _finding(db_session, test_project, ["open", "open"])
     finding_id = db_session.get(FindingHost, ids[0]).finding_id

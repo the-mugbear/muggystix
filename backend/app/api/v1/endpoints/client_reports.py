@@ -610,27 +610,21 @@ def update_report(
             raise HTTPException(status_code=422, detail="Only an addendum has a baseline.")
         report.baseline_report_id = _issued_baseline(db, project, body.baseline_report_id).id
     if "settings" in sent and body.settings is not None:
-        # The complete override map: only the keys the caller SENT (a key
-        # left out follows the project), normalised — a blank text is not an
-        # override, a list sent (even empty) is.
+        # Only the details SENT change; every other stored override is kept
+        # as it is, so a page that read the draft a while ago never reverts
+        # someone else's override of a detail it did not edit (review
+        # 2026-10-14, H1).  A text sent blank or null, or a list sent null,
+        # follows the project again; a list sent (even empty) is an override.
         data = body.settings.model_dump(exclude_unset=True)
         for field in report_images.ENGAGEMENT_IMAGE_FIELDS:
             if field in data:
                 data[field] = report_images.normalise_references(data[field])
-        own = report_defaults.overrides(data)
-        if body.edited:
-            unknown = sorted(set(body.edited) - set(report_defaults.DETAIL_KEYS))
-            if unknown:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Unknown report detail in 'edited': {', '.join(unknown)}. "
-                           f"Valid: {', '.join(report_defaults.DETAIL_KEYS)}",
-                )
-            # Changed back to what it follows: it follows again — for the
-            # details edited in this save only (`drop_followed`).
-            follows = ClientReportService(db).followed_details(project.id, report.kind)
-            own = report_defaults.drop_followed(own, follows, body.edited)
-        report.settings = own
+        own = {key: value for key, value in report_defaults.overrides(report.settings).items() if key not in data}
+        own.update(report_defaults.overrides(data))
+        # Changed back to what it follows: it follows again — for the details
+        # sent in this save only (`drop_followed`).
+        follows = ClientReportService(db).followed_details(project.id, report.kind)
+        report.settings = report_defaults.drop_followed(own, follows, data.keys())
     db.commit()
     db.expire_all()
     return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True,
@@ -665,6 +659,15 @@ def promote_report_details(
             )
         if key in report_defaults.LIST_KEYS and value is None:
             raise HTTPException(status_code=422, detail=f"'{key}' must be a list (it may be empty).")
+    if "testers" in data and not report_defaults.overrides(data).get("testers"):
+        # The project's defaults cannot say "nobody" for the team: with none
+        # saved a draft lists the project's analysts and admins, so promoting
+        # an empty team made every draft print them (review 2026-10-14, H3).
+        raise HTTPException(
+            status_code=422,
+            detail="The project's assessment team cannot be empty: with none saved, drafts list the "
+                   "project's analysts and admins. Keep the empty team as this report's own.",
+        )
     report = _load_for_change(db, project, report_id)
     if report.status != ReportStatus.DRAFT:
         raise HTTPException(status_code=409, detail="An issued report cannot be changed; start a revision instead.")
