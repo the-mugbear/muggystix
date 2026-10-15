@@ -107,7 +107,7 @@ def test_a_pending_retest_closes_only_with_a_result_recorded_since_it_was_asked_
     db_session.commit()
     assert _move(client, test_project, finding["id"], one, "retest").status_code == 200
     refused = _move(client, test_project, finding["id"], one, "remediated")
-    assert refused.status_code == 409 and "awaiting a retest" in refused.text
+    assert refused.status_code == 409 and "A retest was asked for" in refused.text
 
     # Recording the retest closes it, with the evidence on the endpoint.
     r = _retest(client, test_project, finding["id"], one, fixed=True)
@@ -119,6 +119,37 @@ def test_a_pending_retest_closes_only_with_a_result_recorded_since_it_was_asked_
 
     # A host never sent for retest is still set Remediated freely.
     assert _move(client, test_project, finding["id"], fh["10.9.0.2"], "remediated").status_code == 200
+
+
+def test_a_retest_request_stands_after_a_hand_move_to_still_present(client, db_session, test_project):
+    """Second review 2026-10-14, H2 (owner Q1): Retest pending → Still present
+    → Remediated walked round the guard — leaving Retest pending cleared the
+    request, so the second move was free and needed no evidence.  The request
+    now stands until a recorded result, or a false-positive judgement,
+    closes it."""
+    finding, fh = _finding_on(client, db_session, test_project, ["10.9.0.5", "10.9.0.6"])
+    one, two = fh["10.9.0.5"], fh["10.9.0.6"]
+    assert _move(client, test_project, finding["id"], one, "retest").status_code == 200
+    assert _move(client, test_project, finding["id"], one, "open").status_code == 200       # free
+    db_session.expire_all()
+    assert db_session.get(FindingHost, one).retest_requested_at is not None
+    refused = _move(client, test_project, finding["id"], one, "remediated")
+    assert refused.status_code == 409 and "A retest was asked for" in refused.text
+    # The bulk bar too.
+    bulk = client.patch(f"{_p(test_project)}/findings/{finding['id']}/endpoints",
+                        json={"finding_host_ids": [one], "host_status": "remediated"})
+    assert bulk.status_code == 409, bulk.text
+    # A recorded result closes it — here "still present" — and then the
+    # team's own conclusion is free again.
+    assert _move(client, test_project, finding["id"], one, "retest").status_code == 200
+    assert _retest(client, test_project, finding["id"], one, fixed=False).status_code == 200
+    db_session.expire_all()
+    assert db_session.get(FindingHost, one).retest_requested_at is None
+    # A false-positive judgement closes it too.
+    assert _move(client, test_project, finding["id"], two, "retest").status_code == 200
+    assert _move(client, test_project, finding["id"], two, "false_positive").status_code == 200
+    db_session.expire_all()
+    assert db_session.get(FindingHost, two).retest_requested_at is None
 
 
 def test_a_retest_that_finds_it_still_there_puts_the_host_back_to_still_present(client, db_session, test_project):
@@ -216,6 +247,16 @@ def test_the_project_retest_list_is_the_operations_count_on_both_doors(client, d
     assert page["total"] == agents["total"] == work["retests_pending"]["findings"] == 2
     assert work["retests_pending"]["hosts"] == 3
     assert client.get(f"{_p(test_project)}/findings", params={"host_state": "nonsense"}).status_code == 422
+
+    # Second review 2026-10-14, F1: "hosts" are hosts — 10.9.2.1 awaiting a
+    # retest on a second finding is still one host.
+    host_id = db_session.get(FindingHost, fa["10.9.2.1"]).host_id
+    c = client.post(f"{_p(test_project)}/findings", json={"title": "Weak TLS", "severity": "low", "host_ids": [host_id]})
+    assert c.status_code == 201, c.text
+    _move(client, test_project, c.json()["id"], c.json()["hosts"][0]["id"], "retest")
+    work = client.get(f"{_p(test_project)}/workbench", params={"include_investigate": "false",
+                                                                "include_rows": "false"}).json()
+    assert work["retests_pending"] == {"findings": 3, "hosts": 3}
 
 
 # --- "Reported fixed" asks for the retest ------------------------------------

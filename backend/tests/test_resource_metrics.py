@@ -172,6 +172,16 @@ def test_the_database_says_its_size_and_its_connections(db_session):
     assert snapshot["size_bytes"] > 0
     assert 1 <= snapshot["connections"] <= snapshot["max_connections"]
     assert snapshot["connections_high"] is (snapshot["connections"] >= snapshot["max_connections"] * 0.85)
+    # Client connections only — what max_connections limits; the server's
+    # own background processes (checkpointer, WAL writer…) were counted too
+    # (review 2026-10-14, nitpick; second review: no test).
+    from sqlalchemy import text
+
+    clients, everything = db_session.execute(text(
+        "SELECT count(*) FILTER (WHERE backend_type = 'client backend'), count(*) FROM pg_stat_activity"
+    )).one()
+    if everything > clients:          # background processes are listed on this server
+        assert snapshot["connections"] < everything
 
 
 def test_the_metrics_route_carries_the_blocks_and_loads_where_none_can_be_read(client, fake_host):

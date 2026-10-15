@@ -366,7 +366,12 @@ const NewReportDialog: React.FC<{
   const [title, setTitle] = useState('');
   const [template, setTemplate] = useState<string | null>(null);
   const templates = (templatesQuery.data ?? []).filter(isClientTemplate);
-  const chosen = template ?? profile.data?.template ?? templates[0]?.name ?? '';
+  // The project's default could not be read: no template is sent unless one
+  // is chosen, and the server starts the draft on the project's own default
+  // (second review 2026-10-14, nitpick: the first template was sent in its
+  // place, silently).
+  const defaultUnknown = profile.isError;
+  const chosen = template ?? profile.data?.template ?? (defaultUnknown ? '' : templates[0]?.name ?? '');
   const addendum = kind === 'addendum';
   // Until the project's default is known, "the template chosen" is not: the
   // first template would be sent in its place (review 2026-10-14, R13).
@@ -415,6 +420,11 @@ const NewReportDialog: React.FC<{
                 ))}
               </SelectContent>
             </Select>
+            {defaultUnknown && !template && (
+              <p className="text-caption text-muted-foreground" data-testid="new-report-default-unknown">
+                The project’s default template could not be read: the draft starts on it unless you choose one.
+              </p>
+            )}
           </div>
         </DialogBody>
         <DialogFooter>

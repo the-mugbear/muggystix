@@ -149,12 +149,19 @@ const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> =
       </p>
     ) : caption ? <p className="text-caption text-muted-foreground">{caption}</p> : null;
     const note = notes?.[key];
+    // The project's defaults (no follow status): an empty TEAM is not
+    // "nobody" there — with none saved, every draft lists the project's
+    // analysts and admins.  Said, not refused (owner, 2026-10-15, second
+    // review Q3).
+    const defaultsTeamEmpty = !ctx.followed && key === 'testers' && Array.isArray(value) && value.length === 0;
+    const projectTeamLine = 'With no team here, drafts list the project’s analysts and admins.';
 
     if (!open) {
       // Read view: the value as the report's details read.
       let body: React.ReactNode;
       if (isListKey(key)) {
-        body = <DetailRows rows={(value as Array<ReportTester | ReportRecipient> | undefined) ?? []} empty="Nobody listed" />;
+        body = <DetailRows rows={(value as Array<ReportTester | ReportRecipient> | undefined) ?? []}
+          empty={defaultsTeamEmpty ? projectTeamLine : 'Nobody listed'} />;
       } else {
         const text = typeof value === 'string' ? value.trim() : '';
         body = !text
@@ -220,6 +227,9 @@ const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> =
           <p className="text-caption text-warning" data-testid={`${id}-nobody`}>
             This report will list nobody here.
           </p>
+        )}
+        {defaultsTeamEmpty && (
+          <p className="text-caption text-muted-foreground" data-testid={`${id}-project-team`}>{projectTeamLine}</p>
         )}
         {mark}
         {note}

@@ -11,7 +11,7 @@ inventory into the agent-facing shapes:
   ports, so a caller does not have to walk the service strings itself.
 
 Read-only.  Bounding a host to a scope is subnet membership
-(``scope_host_ids``).  Was ``recon_summary_service`` until v2.433.1, when
+(``in_scope_condition``, a correlated EXISTS).  Was ``recon_summary_service`` until v2.433.1, when
 recon runs were gone and the module stopped importing from the API layer: the
 shapes below lived in ``agent_schemas`` only because this module used them.
 """
@@ -70,20 +70,6 @@ class WebTarget(BaseModel):
     url: str
 
 
-def scope_host_ids(scope_id: int):
-    """Host ids mapped into the scope through subnet correlation.
-
-    A host is in a scope iff one of its HostSubnetMapping rows points at a
-    subnet of that scope.  A ``Select`` (``Column.in_`` takes it directly).
-    """
-    return (
-        select(models.HostSubnetMapping.host_id)
-        .join(models.Subnet, models.Subnet.id == models.HostSubnetMapping.subnet_id)
-        .where(models.Subnet.scope_id == scope_id)
-        .distinct()
-    )
-
-
 def in_scope_condition(scope_id: int):
     """``Host`` is in the scope — a correlated EXISTS over its subnet
     mappings (the invariant: a host predicate over a child table is never
@@ -97,7 +83,7 @@ def in_scope_condition(scope_id: int):
     )
 
 
-def _ip_order_by(db: Session) -> List[Any]:
+def ip_order_by(db: Session) -> List[Any]:
     """Natural IP ordering on Postgres (via inet), lexical elsewhere.
 
     Unparseable addresses sort last; ``id`` is the final tiebreak so paging
@@ -121,7 +107,7 @@ def _scope_hosts_query(db: Session, scope_id: int):
     return (
         db.query(models.Host)
         .filter(in_scope_condition(scope_id))
-        .order_by(*_ip_order_by(db))
+        .order_by(*ip_order_by(db))
     )
 
 
@@ -196,7 +182,7 @@ def iter_scope_hosts(
         rows = (
             db.query(models.Host)
             .filter(models.Host.id.in_(page))
-            .order_by(*_ip_order_by(db))
+            .order_by(*ip_order_by(db))
             .all()
         )
         for brief in _briefs_for_hosts(db, rows):
@@ -391,9 +377,8 @@ def _subnet_scope_for_addresses(
     mapped = set()
     if host_ids:
         mapped = {
-            hid for (hid,) in db.execute(
-                scope_host_ids(scope_id).where(models.HostSubnetMapping.host_id.in_(host_ids))
-            ).all()
+            hid for (hid,) in db.query(models.Host.id)
+            .filter(models.Host.id.in_(host_ids), in_scope_condition(scope_id))
         }
     for ip in ips:
         if ip in host_by_ip:

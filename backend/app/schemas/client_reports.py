@@ -86,8 +86,16 @@ class ReportPromote(BaseModel):
     project's report defaults and removed from the draft's overrides, in one
     transaction, so the draft follows the project again.  A text sent blank is
     refused (there would be nothing to make the default); a list may be
-    empty."""
+    empty (not the team).
+
+    `expected` — for every key in `values`, what the page showed the draft
+    printing for it when it was read (the saved override, or the value it
+    followed); a draft that no longer prints that — someone saved another
+    value meanwhile — is a 409 and nothing changes (second review
+    2026-10-14, H1: a stale page's push-up reverted another person's
+    override and spread the old value to every following draft)."""
     values: EngagementOverrides
+    expected: EngagementOverrides
 
 
 class ReportProfileOut(EngagementSettings):

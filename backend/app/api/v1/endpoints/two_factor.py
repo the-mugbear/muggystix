@@ -126,6 +126,9 @@ def two_factor_setup(
     current_user.totp_secret_encrypted = totp_service.encrypt_secret(secret)
     current_user.totp_enabled = False
     current_user.totp_confirmed_at = None
+    # A new secret: the last step accepted belongs to the old one (a quick
+    # re-enrolment refused its first code — second review 2026-10-14).
+    current_user.totp_last_step = None
     db.commit()
 
     uri = totp_service.provisioning_uri(secret, account_name=current_user.username)
@@ -207,6 +210,7 @@ def two_factor_disable(
     current_user.totp_secret_encrypted = None
     current_user.totp_enabled = False
     current_user.totp_confirmed_at = None
+    current_user.totp_last_step = None
     db.query(UserRecoveryCode).filter(UserRecoveryCode.user_id == current_user.id).delete()
     db.commit()
     log_audit_event(

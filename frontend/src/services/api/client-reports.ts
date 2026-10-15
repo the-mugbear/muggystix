@@ -52,7 +52,8 @@ export interface EngagementSettings {
 /** A draft's OVERRIDES (owner, 2026-10-14: every detail follows the project
  *  unless the report overrides it): only the keys it overrides.  A key absent
  *  (or null) follows the project; a list present — even `[]` — is overridden
- *  as a whole.  Sent to PATCH as the complete map: a key left out reverts. */
+ *  as a whole.  Sent to PATCH as the details changed only (`detailModel.toSave`):
+ *  a key left out keeps what is stored, `null` follows the project again. */
 export type EngagementOverrides = Partial<EngagementSettings>;
 
 /** The installation's author and disclaimer: what the project's defaults
@@ -406,11 +407,13 @@ export const patchReportProfile = async (
 
 /** "Make this the project's default": each detail sent becomes the project's
  *  report default and leaves the draft's overrides, in one transaction.
- *  Answers the draft. */
+ *  `expected`: for the same details, what the page showed the draft printing
+ *  when it read it — a draft someone changed since is a 409 and nothing
+ *  changes.  Answers the draft. */
 export const promoteClientReportDetails = async (
-  projectId: number, id: number, values: EngagementOverrides,
+  projectId: number, id: number, values: EngagementOverrides, expected: EngagementOverrides,
 ): Promise<ClientReport> =>
-  (await api.post<ClientReport>(`${base(projectId)}/${id}/promote`, { values })).data;
+  (await api.post<ClientReport>(`${base(projectId)}/${id}/promote`, { values, expected })).data;
 
 /** Per detail, how many OTHER drafts of the project follow the project's
  *  value — what "Update project defaults…" says each push-up reaches.  An

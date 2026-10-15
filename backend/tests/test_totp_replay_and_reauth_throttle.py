@@ -106,6 +106,20 @@ def test_the_code_that_confirmed_an_enrolment_does_not_also_sign_in(client, db_s
     assert _second_step(client, test_user, totp.at(now + 30)).status_code == 200
 
 
+def test_a_quick_re_enrolment_accepts_its_first_code(client, db_session, test_user):
+    """Second review 2026-10-14 (nitpick): the last step accepted outlived
+    turning 2FA off, so enrolling again within the same 30 seconds refused
+    the new secret's first code."""
+    setup = client.post("/api/v1/auth/2fa/setup", json={}).json()
+    first = pyotp.TOTP(setup["secret"])
+    assert client.post("/api/v1/auth/2fa/enable", json={"code": first.now()}).status_code == 200
+    assert client.post("/api/v1/auth/2fa/disable", json={"password": TEST_USER_PASSWORD}).status_code == 200
+    db_session.expire_all()
+    assert db_session.get(User, test_user.id).totp_last_step is None
+    again = pyotp.TOTP(client.post("/api/v1/auth/2fa/setup", json={}).json()["secret"])
+    assert client.post("/api/v1/auth/2fa/enable", json={"code": again.now()}).status_code == 200
+
+
 # ---------------------------------------------------------------------------
 # Password re-authentication with a live token
 # ---------------------------------------------------------------------------

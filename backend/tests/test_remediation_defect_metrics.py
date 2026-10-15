@@ -75,6 +75,30 @@ def test_a_finding_judged_false_positive_is_no_defect(client, db_session, test_p
         assert listing(client, base(test_project), defect=defect)["total"] == 0, defect
 
 
+def test_a_false_positive_finding_reported_fixed_is_no_gap_and_asks_for_no_retest(
+        client, db_session, test_project, on):
+    """Second review 2026-10-14, H4: the defect rule above reached the defect
+    metrics only.  "Reported fixed" on such a finding's host still counted as
+    "Reported fixed, not retested", and sent the host for retest — notifying
+    people — while the metrics called it no defect."""
+    from app.db.models_project import Notification
+
+    ids = _finding(db_session, test_project, ["open"])
+    finding_id = db_session.get(FindingHost, ids[0]).finding_id
+    r = client.post(f"/api/v1/projects/{test_project.id}/findings/{finding_id}/status",
+                    json={"status": "false_positive", "summary": "The service is not exposed."})
+    assert r.status_code == 200, r.text
+    told_before = db_session.query(Notification).count()
+    summary = apply(client, test_project, [{"finding_host_id": ids[0], "status": "closed"}])["summary"]
+    assert summary["retests_requested"] == 0
+    db_session.expire_all()
+    assert db_session.get(FindingHost, ids[0]).host_status == "open"
+    assert db_session.query(Notification).count() == told_before
+    gaps = listing(client, base(test_project))["verification_counts"]
+    assert gaps["reported_fixed_not_retested"] == 0
+    assert listing(client, base(test_project), verification="reported_fixed_not_retested")["total"] == 0
+
+
 def test_the_endpoint_writer_stamps_and_clears_the_remediated_day(client, db_session, test_project, on):
     ids = _finding(db_session, test_project, ["open", "open"])
     finding_id = db_session.get(FindingHost, ids[0]).finding_id

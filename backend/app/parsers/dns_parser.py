@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers.parser_utils import (
     ProgressBeat,
+    ProjectHostsByAddress,
     ScanHostObservations,
     announce_scan,
     correlate_scan,
@@ -45,20 +46,17 @@ class DNSParser:
         # .record_addressed_hosts).  A host this import creates gets its row
         # from the dedup service.
         self._observed = ScanHostObservations()
-        # The project's hosts by address, read once per parse (review
-        # 2026-10-14, R15: a query per PTR / A / AAAA row); a host this
-        # import creates is added once its row's savepoint is released.
-        self._host_ids: Optional[Dict[str, int]] = None
+        # The project's hosts by address, read once per parse and shared with
+        # dnsx (`ProjectHostsByAddress`; review 2026-10-14, R15 and F3); set
+        # in parse_file, when the project is known.
+        self._hosts: Optional[ProjectHostsByAddress] = None
+        self._row_created_address: Optional[str] = None
 
     def _known_host(self, ip_address: str) -> Optional[models.Host]:
         """The project's host at this address, or None."""
-        if self._host_ids is None:
-            self._host_ids = dict(
-                self.db.query(models.Host.ip_address, models.Host.id)
-                .filter(models.Host.project_id == self._project_id)
-            )
-        host_id = self._host_ids.get(ip_address)
-        return self.db.get(models.Host, host_id) if host_id is not None else None
+        if self._hosts is None:
+            self._hosts = ProjectHostsByAddress(self.db, self._project_id)
+        return self._hosts.get(ip_address)
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         """Parse DNS records CSV file and create/update host records with DNS names"""
@@ -165,6 +163,7 @@ class DNSParser:
                     # flush, so every later row was rejected too and the
                     # import failed (the record-isolation rule, v2.419.0).
                     row_created_id = None
+                    self._row_created_address = None
                     with record_savepoint(self.db, self._observed, self._reset_caches):
                         record_observation(
                             self.db,
@@ -204,9 +203,14 @@ class DNSParser:
                                     'names_recorded': True,  # record_observation above wrote it
                                     'state': 'unknown',
                                 }
-                                row_created_id = self.dedup_service.find_or_create_host(
+                                created = self.dedup_service.find_or_create_host(
                                     ip_address, scan.id, host_data, project_id=self._project_id
-                                ).id
+                                )
+                                row_created_id = created.id
+                                # In the address map at once; out again if
+                                # the row rolls back (`_reset_caches`).
+                                self._hosts.add(created)
+                                self._row_created_address = ip_address
                         elif record_type in ('A', 'AAAA'):
                             # A forward row whose value is a KNOWN host's
                             # address: the scan addressed that host, as dnsx
@@ -222,8 +226,6 @@ class DNSParser:
                     dns_records_processed += 1
                     if row_created_id is not None:
                         created_host_ids.add(row_created_id)
-                        if self._host_ids is not None:
-                            self._host_ids[ip_address] = row_created_id
 
                 except Exception as e:
                     logger.warning(f"Error processing DNS record row {i}: {str(e)}")
@@ -303,6 +305,8 @@ class DNSParser:
         name memo and the dedup caches may hold rows that no longer exist."""
         self._name_cache = ObservationCache()
         self.dedup_service.discard_rolled_back_state()
+        if self._hosts is not None and self._row_created_address:
+            self._hosts.forget([self._row_created_address])
 
     def _normalize_row_keys(self, row: Dict[str, str]) -> Dict[str, str]:
         """Normalize CSV column names to handle different formats"""

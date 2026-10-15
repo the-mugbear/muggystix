@@ -180,14 +180,13 @@ class NmapXMLParser:
             )
             truncated = True
             if xml_cut_short(source, file_path):
-                settle_cut(hosts_read, label="Nmap XML", unit="host", cause=exc)
                 # Here only when the operator chose to keep what the file
-                # holds: no "re-upload" after they decided (review
-                # 2026-10-14, nitpick — as masscan says it).
-                parse_warnings.append(
-                    f"The file ends early; the {hosts_processed} host(s) in it were imported, as asked. "
-                    f"Hosts after the cut are MISSING, not down."
-                )
+                # holds: the dispatcher says that, and how many, once
+                # (`TruncatedFile.kept`).  Nmap adds only what it MEANS for an
+                # inventory — no count of its own (second review: two counts)
+                # and no "re-upload" after they decided (review 2026-10-14).
+                settle_cut(hosts_read, label="Nmap XML", unit="host", cause=exc)
+                parse_warnings.append("Hosts after the cut are MISSING from this import, not down.")
             else:
                 parse_warnings.append(
                     f"Incomplete XML — parsing stopped early, so hosts after this point "

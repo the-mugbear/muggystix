@@ -71,7 +71,10 @@ export function useDetailEdits(base: Omit<DetailContext, 'pending'>): DetailEdit
   return {
     ctx,
     isOpen: (id) => id in snapshots,
-    edit: (id) => setSnapshots((s) => ({ ...s, [id]: pick(pending, keysOf(id)) })),
+    // An open section keeps the snapshot of its FIRST Edit: opening it again
+    // (a checklist line focusing its field) must not move what Cancel returns
+    // to (second review 2026-10-14, nitpick).
+    edit: (id) => setSnapshots((s) => (id in s ? s : { ...s, [id]: pick(pending, keysOf(id)) })),
     done: close,
     cancel: (id) => {
       replaceSection(id, snapshots[id] ?? {});
@@ -86,11 +89,21 @@ export function useDetailEdits(base: Omit<DetailContext, 'pending'>): DetailEdit
       setSnapshots({});
     },
     set,
-    forget: (keys) => setPending((p) => {
-      const next = { ...p };
-      for (const k of keys) delete next[k];
-      return next;
-    }),
+    forget: (keys) => {
+      setPending((p) => {
+        const next = { ...p };
+        for (const k of keys) delete next[k];
+        return next;
+      });
+      // Out of every open section's snapshot too: Cancel after a push-up
+      // brought the promoted value back as a pending edit (second review
+      // 2026-10-14, nitpick).
+      setSnapshots((s) => Object.fromEntries(Object.entries(s).map(([id, snap]) => {
+        const kept = { ...snap };
+        for (const k of keys) delete kept[k];
+        return [id, kept];
+      })) as typeof s);
+    },
     dirtySections,
     dirty: dirtySections.length > 0,
   };

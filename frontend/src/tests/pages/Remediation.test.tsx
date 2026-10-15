@@ -360,6 +360,24 @@ describe('Remediation', () => {
     ]);
   });
 
+  // Second review 2026-10-14, H5: the dialog filled in today, and the save
+  // (always `overwrite`) moved row 2's recorded date to today.
+  it('a bulk "Reported fixed" sends no date: a date already recorded stays', async () => {
+    show();
+    const table = await screen.findByRole('table', { name: /remediation/i });
+    fireEvent.click(within(table).getByRole('checkbox', { name: 'Select Finding 1 on 10.0.0.1' }));
+    fireEvent.click(within(table).getByRole('checkbox', { name: /^Select .* on 10\.0\.0\.2$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Assign or update' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.keyDown(within(dialog).getByRole('combobox', { name: 'Status' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('option', { name: 'Reported fixed' }));
+    expect(within(dialog).getByLabelText('Reported fixed on')).toHaveValue('');
+    expect(within(dialog).getByTestId('rem-closed-blank')).toHaveTextContent('a date already recorded stays');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(applyRemediation).toHaveBeenCalledTimes(1));
+    for (const sent of applyRemediation.mock.calls[0][1]) expect(sent).not.toHaveProperty('closed_on');
+  });
+
   it('refuses a contact that is not an address before anything is sent', async () => {
     show();
     const table = await screen.findByRole('table', { name: /remediation/i });

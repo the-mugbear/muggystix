@@ -54,9 +54,6 @@ def load_operator(db: Session, request: Request) -> Optional[models_auth.User]:
 # Shared helpers for host filtering and enrichment
 # ---------------------------------------------------------------------------
 
-# Scope membership (host ids in a scope) is
-# ``scope_targets_service.scope_host_ids`` since v2.433.1.
-
 
 #: The discrete host filters' meaning, shown to agents in every route that
 #: takes them (OpenAPI and the MCP schemas carry it).

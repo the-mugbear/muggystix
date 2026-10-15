@@ -774,7 +774,8 @@ def test_the_executive_summary_is_the_projects_unless_a_report_overrides_it(clie
     # Overridden for this report; then made the project's: the draft follows again.
     r = client.patch(f"{_base(test_project)}/{draft['id']}", json={"settings": {"executive_summary": "Better."}})
     assert r.json()["executive_summary"] == "Better."
-    r = client.post(f"{_base(test_project)}/{draft['id']}/promote", json={"values": {"executive_summary": "Better."}})
+    r = client.post(f"{_base(test_project)}/{draft['id']}/promote", json={
+        "values": {"executive_summary": "Better."}, "expected": {"executive_summary": "Better."}})
     assert r.status_code == 200, r.text
     assert "executive_summary" not in r.json()["settings"] and r.json()["executive_summary"] == "Better."
     assert client.get(f"{_base(test_project)}/profile").json()["executive_summary"] == "Better."
@@ -800,6 +801,7 @@ def test_an_addendum_writes_its_own_summary_of_changes(client, test_project):
         **add["settings"], "executive_summary": "One new finding."}})
     assert r.json()["executive_summary"] == "One new finding."
     r = client.post(f"{_base(test_project)}/{add['id']}/promote",
-                    json={"values": {"executive_summary": "One new finding."}})
+                    json={"values": {"executive_summary": "One new finding."},
+                          "expected": {"executive_summary": "One new finding."}})
     assert r.status_code == 422
     assert client.get(f"{_base(test_project)}/profile").json()["executive_summary"] == "Project summary."

@@ -604,6 +604,12 @@ def test_a_followed_detail_says_where_its_value_comes_from(client, db_session, t
     assert all(row["followed_from"] is None for row in client.get(_reports(test_project)).json()["items"])
 
 
+def _promotion(values, expected=None):
+    """A promote body: `expected` defaults to the values themselves — the
+    page saw the draft print what it pushes up (a saved override)."""
+    return {"values": values, "expected": values if expected is None else expected}
+
+
 def test_make_this_the_projects_default(client, db_session, test_project, test_user):
     """The draft's override becomes the project's default and the draft
     follows again — one transaction; every other following draft follows the
@@ -618,7 +624,8 @@ def test_make_this_the_projects_default(client, db_session, test_project, test_u
            distribution=[{"name": "CISO", "email": "ciso@example.com"}])
 
     r = client.post(f"{_reports(test_project)}/{draft['id']}/promote",
-                    json={"values": {"client_name": "Renamed Corp", "distribution": [{"name": "CISO", "email": "ciso@example.com"}]}})
+                    json=_promotion({"client_name": "Renamed Corp",
+                                     "distribution": [{"name": "CISO", "email": "ciso@example.com"}]}))
     assert r.status_code == 200, r.text
     promoted = r.json()
     # It no longer overrides them; the other override stays.
@@ -642,13 +649,13 @@ def test_promote_refuses_what_it_cannot_make_a_default(client, db_session, test_
     draft = _draft(client, test_project)
     url = f"{_reports(test_project)}/{draft['id']}/promote"
     _patch(client, test_project, draft["id"], client_name="Mine")
-    assert client.post(url, json={"values": {}}).status_code == 422
-    assert client.post(url, json={"values": {"client_name": "   "}}).status_code == 422
-    assert client.post(url, json={"values": {"distribution": None}}).status_code == 422
-    assert client.post(url, json={"values": {"classification": "x" * 101}}).status_code == 422
+    assert client.post(url, json=_promotion({})).status_code == 422
+    assert client.post(url, json=_promotion({"client_name": "   "})).status_code == 422
+    assert client.post(url, json=_promotion({"distribution": None})).status_code == 422
+    assert client.post(url, json=_promotion({"classification": "x" * 101})).status_code == 422
     # Review 2026-10-14, H3: an empty team cannot be the project's — with none
     # saved, drafts list the project's analysts and admins.
-    nobody = client.post(url, json={"values": {"testers": []}})
+    nobody = client.post(url, json=_promotion({"testers": []}))
     assert nobody.status_code == 422 and "cannot be empty" in nobody.text
     # Nothing changed: the draft still overrides, the project keeps its value.
     db_session.expire_all()
@@ -656,11 +663,36 @@ def test_promote_refuses_what_it_cannot_make_a_default(client, db_session, test_
     assert client.get(f"{_reports(test_project)}/profile").json()["client_name"] == "Example Corp"
     # An empty list may become the default.
     _patch(client, test_project, draft["id"], client_name="Mine", distribution=[])
-    assert client.post(url, json={"values": {"distribution": []}}).status_code == 200
+    assert client.post(url, json=_promotion({"distribution": []})).status_code == 200
     # An issued report: no.
     assert client.post(f"{_reports(test_project)}/{draft['id']}/issue").status_code == 200
-    assert client.post(url, json={"values": {"client_name": "Mine"}}).status_code == 409
+    assert client.post(url, json=_promotion({"client_name": "Mine"})).status_code == 409
     assert client.get(f"{_reports(test_project)}/profile").json()["client_name"] == "Example Corp"
+
+
+def test_a_stale_page_cannot_push_up_a_value_someone_replaced(client, db_session, test_project, test_user):
+    """Second review 2026-10-14, H1: "Update project defaults…" trusted the
+    page's values and then deleted the draft's override — a page holding an
+    older copy undid another person's saved override and spread the old value
+    to every draft that follows the project.  The page now says what it saw;
+    a draft that prints something else is a 409 and nothing changes."""
+    _lead(db_session, test_project, test_user)
+    _profile(client, test_project, client_name="Project Corp")
+    draft = _draft(client, test_project)
+    url = f"{_reports(test_project)}/{draft['id']}/promote"
+    _patch(client, test_project, draft["id"], client_name="A's")           # what A's page read
+    _patch(client, test_project, draft["id"], client_name="B's")           # B saves meanwhile
+    stale = client.post(url, json=_promotion({"client_name": "A's"}))
+    assert stale.status_code == 409 and "client name" in stale.text
+    db_session.expire_all()
+    assert db_session.get(Report, draft["id"]).settings == {"client_name": "B's"}
+    assert client.get(f"{_reports(test_project)}/profile").json()["client_name"] == "Project Corp"
+    # A pending edit of a followed detail says what it was edited from.
+    edited = client.post(url, json=_promotion({"classification": "New"}, expected={"classification": None}))
+    assert edited.status_code == 200, edited.text
+    assert client.get(f"{_reports(test_project)}/profile").json()["classification"] == "New"
+    # `expected` must name exactly the details pushed up.
+    assert client.post(url, json=_promotion({"client_name": "B's"}, expected={})).status_code == 422
 
 
 def test_promote_is_an_analysts(client, db_session, test_project):
@@ -671,7 +703,7 @@ def test_promote_is_an_analysts(client, db_session, test_project):
     db_session.commit()
     with _signed_in_as() as use:
         use(auditor)
-        assert client.post(url, json={"values": {"client_name": "Mine"}}).status_code == 403
+        assert client.post(url, json=_promotion({"client_name": "Mine"})).status_code == 403
     assert client.get(f"{_reports(test_project)}/profile").json()["client_name"] is None
 
 

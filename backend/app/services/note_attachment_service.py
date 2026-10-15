@@ -54,16 +54,24 @@ def _attachments_root() -> Path:
     return Path(settings.UPLOAD_DIR) / "note_attachments"
 
 
-def attachment_file(att: "models.NoteAttachment") -> Optional[Path]:
-    """An attachment's stored file, kept inside the attachments folder; None
-    when its path leaves the folder or the file is not there."""
+def attachment_path(att: "models.NoteAttachment") -> Optional[Path]:
+    """Where an attachment's file is stored — the ONE path rule (inside the
+    attachments folder; None when the stored path leaves it).  The serve
+    routes, issuing a report, a draft's preview and its freshness all read
+    an image through it (second review 2026-10-14, F5: four copies)."""
     base = _attachments_root().resolve()
     try:
         target = (base / att.storage_path).resolve()
         target.relative_to(base)
     except (ValueError, OSError):
         return None
-    return target if target.is_file() else None
+    return target
+
+
+def attachment_file(att: "models.NoteAttachment") -> Optional[Path]:
+    """:func:`attachment_path` when the file is there; None otherwise."""
+    target = attachment_path(att)
+    return target if target is not None and target.is_file() else None
 
 
 UNREADABLE_UPLOADS_FIX = "docker compose exec backend chown -R appuser:appgroup /app/uploads"

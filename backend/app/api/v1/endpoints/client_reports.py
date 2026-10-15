@@ -605,11 +605,11 @@ def update_report(
             if field in data:
                 data[field] = report_images.normalise_references(data[field])
         own = {key: value for key, value in report_defaults.overrides(report.settings).items() if key not in data}
-        own.update(report_defaults.overrides(data))
         # Changed back to what it follows: it follows again — for the details
-        # sent in this save only (`drop_followed`).
+        # sent in this save only (`drop_followed` is given only those).
         follows, _ = ClientReportService(db).followed_details_with_sources(project.id, report.kind)
-        report.settings = report_defaults.drop_followed(own, follows, data.keys())
+        own.update(report_defaults.drop_followed(report_defaults.overrides(data), follows))
+        report.settings = own
     db.commit()
     db.expire_all()
     return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True,
@@ -661,6 +661,24 @@ def promote_report_details(
         raise HTTPException(
             status_code=422,
             detail="An addendum's summary of changes is its own: it cannot become the project's executive summary.",
+        )
+    # Under the draft's lock: does it still print what the page showed?
+    expected = body.expected.model_dump(exclude_unset=True)
+    if set(expected) != set(data):
+        raise HTTPException(
+            status_code=422, detail="Send 'expected' for exactly the details in 'values'.",
+        )
+    saved = report_defaults.overrides(report.settings)
+    follows, _ = ClientReportService(db).followed_details_with_sources(project.id, report.kind)
+    changed = [
+        key for key in data
+        if not report_defaults.same(key, saved[key] if key in saved else follows.get(key), expected[key])
+    ]
+    if changed:
+        labels = ", ".join(key.replace("_", " ") for key in changed)
+        raise HTTPException(
+            status_code=409,
+            detail=f"This draft changed since you opened it ({labels}): reload it, then update the defaults.",
         )
     _write_profile(db, project.id, data, current_user.id)
     report.settings = {

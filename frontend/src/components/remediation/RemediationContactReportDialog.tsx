@@ -109,7 +109,10 @@ export const RemediationContactReportDialog: React.FC<{
   const saving = downloading.isPending;
 
   const who = contactName ? `${contactName} (${contactEmail})` : contactEmail;
-  const locked = job != null && (waiting || starting);
+  // Held while a document is being asked for or prepared — the FIRST one
+  // included, which has no job yet (second review 2026-10-14, nitpick: the
+  // choices could be changed while it was being asked for).
+  const locked = starting || (job != null && waiting);
   const where = !across ? ' in this project' : project ? ` in ${project.name}` : ' in one project';
   const missing = job?.ready ? job.without_recommendation ?? 0 : 0;
   // Finished without a file to download: the render failed (the worker says

@@ -14,10 +14,12 @@ from sqlalchemy import DateTime, Integer, String, and_, case, cast, func, insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import aliased, joinedload
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.orm import aliased, joinedload, selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.db import models
-from app.db.models_findings import Finding, FindingHost, FindingHostStatus
+from app.db.models_findings import Finding, FindingHost, FindingHostStatus, FindingStatus
 from app.db.models_project import Project
 from app.db.models_remediation import FindingHostRemediation as Remediation
 from app.db.models_remediation import RemediationDaily, RemediationEvent, TRACKED_FIELDS
@@ -26,7 +28,7 @@ from app.schemas.remediation_schemas import APPLY_MAX_TARGETS, NOTE_MAX_CHARS, A
 from app.services import remediation_policy as deadlines
 from app.services.client_report_service import INCLUDED_STATUSES, told_by_report
 from app.services.notification_service import display_name
-from app.services.scope_targets_service import _ip_order_by
+from app.services.scope_targets_service import ip_order_by
 
 _STATUS = func.coalesce(Remediation.status, "open")
 #: A contact's record that is still work: anything not reported fixed
@@ -41,7 +43,7 @@ _STILL_WORK = _STATUS != "closed"
 def _order(db, group: str, state=None, due=None) -> list:
     """Rows of one host, finding or contact together; addresses in address
     order (10.0.0.2 before 10.0.0.10), not as text."""
-    by_address = _ip_order_by(db)
+    by_address = ip_order_by(db)
     by_finding = [Finding.title, Finding.id]
     if group == "due":
         # What needs someone first: overdue (longest overdue on top), due
@@ -358,22 +360,16 @@ def state_counts_by_project(db, project_ids: Sequence[int], policy: deadlines.Po
                             today: date) -> dict[int, dict[str, int]]:
     """Each project's rows by state — the Remediation page's own chips (the
     same rows, the same definition), for a cross-project reader.  Every id is
-    present."""
-    out = {pid: {name: 0 for name in deadlines.STATES} for pid in project_ids}
-    if not out:
-        return out
-    state_of = deadlines.state_expr(db, policy, today)
-    for pid, value, n in (_rows(db, list(out)).with_entities(Finding.project_id, state_of, func.count())
-                          .group_by(Finding.project_id, state_of)):
-        out[pid][value] = n
-    return out
+    present.  The ``states`` of :func:`overview_counts_by_project` — one
+    grouping of the rows, not two (second review 2026-10-14, F5)."""
+    return {pid: row["states"] for pid, row in overview_counts_by_project(db, project_ids, policy, today).items()}
 
 
 def overview_counts_by_project(db, project_ids: Sequence[int], policy: deadlines.Policy,
                                today: date) -> dict[int, dict]:
     """The deadlines page's projects table in ONE grouped statement over the
     list's own rows (review 2026-10-14, R14: it was two scans of them): per
-    project, ``states`` (``state_expr``, as ``state_counts_by_project``),
+    project, ``states`` (``state_expr``; ``state_counts_by_project`` is these),
     ``total`` (every row) and the rows by defect state (``remediated``,
     ``deferred``, ``open`` — ``defect_expr``).  Each opens the list:
     ``?project=``, ``&state=``, ``&defect=``.  Every id is present."""
@@ -636,8 +632,13 @@ def _resolve_targets(db, project_id: int, rows) -> list[list[FindingHost]]:
         resolved.append(targets)
     if problems:
         raise HTTPException(422, {"message": "Nothing was changed.", "problems": problems[:50]})
-    loaded = {fh.id: fh for fh in db.query(FindingHost).options(joinedload(FindingHost.finding))
-              .filter(FindingHost.id.in_(seen))}
+    # The host and the name too: a retest request's history line and its
+    # notification read both (`_endpoint_label`), one SELECT each per row
+    # otherwise — about 1,000 for a bulk "Reported fixed" of 500 rows (second
+    # review 2026-10-14, F4).  Two statements, whatever the rows.
+    loaded = {fh.id: fh for fh in db.query(FindingHost).options(
+        joinedload(FindingHost.finding), selectinload(FindingHost.host), selectinload(FindingHost.name),
+    ).filter(FindingHost.id.in_(seen))}
     return [[loaded[fh_id] for fh_id in targets] for targets in resolved]
 
 
@@ -865,11 +866,21 @@ def apply(db, project_id: int, body, who) -> dict:
     return {"dry_run": body.dry_run, "overwrite": body.overwrite, "summary": summary, "rows": report}
 
 
+def _no_defect(fh: FindingHost) -> bool:
+    """``remediation_policy.concluded_no_defect`` for a loaded row (its
+    ``finding`` loaded): the endpoint or its finding judged a false positive."""
+    return (fh.host_status == FindingHostStatus.FALSE_POSITIVE.value
+            or fh.finding.status == FindingStatus.FALSE_POSITIVE.value)
+
+
 def _asks_for_retest(fh: FindingHost, changes) -> bool:
     """A record that BECOMES reported fixed on an endpoint still present asks
     for its retest (owner, 2026-10-14).  An endpoint already remediated,
-    false positive or awaiting a retest is left as it is."""
-    return (fh.host_status == FindingHostStatus.OPEN.value
+    awaiting a retest, or that the team concluded is no defect — the
+    endpoint or its whole finding judged a false positive (second review
+    2026-10-14, H4: a false-positive finding's hosts were sent for retest and
+    people told) — is left as it is."""
+    return (fh.host_status == FindingHostStatus.OPEN.value and not _no_defect(fh)
             and any(field == "status" and new == "closed" for field, _, new in changes))
 
 
@@ -883,8 +894,22 @@ def _lock_for_write(db, finding_host_ids: Sequence[int]) -> list[Remediation]:
     ids = sorted(set(finding_host_ids))
     if not ids:
         return []
-    db.query(FindingHost.id).filter(FindingHost.id.in_(ids)).order_by(FindingHost.id) \
-        .with_for_update().all()
+    # The rows themselves, re-read under the lock (``populate_existing``): a
+    # caller that loaded them before (``apply``'s targets) then plans from
+    # their state NOW — a retest result committed in between was planned over
+    # and written back to ``retest`` (second review 2026-10-14, nitpick).
+    # Only the state columns are read, and put on the rows already in the
+    # session as their committed values: the relationships a caller loaded
+    # with them (host, name, finding) stay loaded — a re-read of the whole
+    # entity reset them, one SELECT per row again.
+    state = (FindingHost.host_status, FindingHost.retest_requested_at, FindingHost.remediated_at)
+    mapper = sa_inspect(FindingHost)
+    for row in (db.query(FindingHost.id, *state).filter(FindingHost.id.in_(ids))
+                .order_by(FindingHost.id).with_for_update()):
+        loaded = db.identity_map.get(mapper.identity_key_from_primary_key((row.id,)))
+        if loaded is not None:
+            for column in state:
+                set_committed_value(loaded, column.key, getattr(row, column.key))
     return (db.query(Remediation).filter(Remediation.finding_host_id.in_(ids))
             .order_by(Remediation.finding_host_id).with_for_update().populate_existing().all())
 

@@ -588,6 +588,7 @@ def admin_reset_two_factor(
     user.totp_secret_encrypted = None
     user.totp_enabled = False
     user.totp_confirmed_at = None
+    user.totp_last_step = None   # the next secret starts with no accepted step
     db.query(UserRecoveryCode).filter(UserRecoveryCode.user_id == user.id).delete()
     # A reset is the recovery step for an account whose second factor is lost
     # or no longer trusted, so agent sessions opened before it end with it.

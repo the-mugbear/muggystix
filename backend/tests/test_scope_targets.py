@@ -245,6 +245,19 @@ def test_the_scope_export_lists_addresses_in_address_order(client, db_session, t
     assert body.split() == ["10.99.1.2", "10.99.1.10", "10.99.1.100"]
 
 
+def test_the_scan_and_out_of_scope_exports_list_addresses_in_address_order(client, db_session, test_project, scope):
+    """Second review 2026-10-14, F2: R16 reached the scope export only; the
+    scan export and the out-of-scope list still sorted the text."""
+    scan = _seed_hosts(db_session, test_project, scope, ["10.99.1.10", "10.99.1.2", "10.99.1.100"], ports=(22,))
+    base = f"/api/v1/projects/{test_project.id}/export"
+    assert client.get(f"{base}/scan/{scan.id}?format_type=txt").text.split() == [
+        "10.99.1.2", "10.99.1.10", "10.99.1.100"]
+    for ip in ("172.16.0.10", "172.16.0.9"):          # in no subnet of the scope
+        db_session.add(models.Host(ip_address=ip, state="up", project_id=test_project.id))
+    db_session.commit()
+    assert client.get(f"{base}/out-of-scope?format_type=txt").text.split() == ["172.16.0.9", "172.16.0.10"]
+
+
 def _brief(port, service, tunnel=None, method=None, ip="192.168.7.245"):
     from app.services.scope_targets_service import ScopeHostBrief, ScopePortBrief
     return ScopeHostBrief(

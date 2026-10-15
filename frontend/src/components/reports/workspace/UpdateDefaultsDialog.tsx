@@ -29,7 +29,7 @@ import {
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../../ui/dialog';
 import {
-  DETAIL_LABELS, type DetailContext, type DetailKey, current, sourceCaption, withPending,
+  DETAIL_LABELS, type DetailContext, type DetailKey, baseline, current, sourceCaption, withPending,
 } from './detailModel';
 
 /** A value in a line: a text shortened, a list by its names, nothing said. */
@@ -72,8 +72,14 @@ const UpdateDefaultsDialog: React.FC<{
   const followersError = queryErrorText(followers.error, 'Could not count the drafts that follow them.');
 
   const promoting = useMutation({
+    // With each value, what the draft printed when this page read it (its
+    // saved override, or what it followed): the server refuses the push-up
+    // when someone has saved another value since (second review 2026-10-14,
+    // H1 — a stale page reverted their override and spread the old value).
     mutationFn: () => promoteClientReportDetails(
-      projectId, report.id, Object.fromEntries(chosen.map((k) => [k, settings[k]])) as EngagementOverrides,
+      projectId, report.id,
+      Object.fromEntries(chosen.map((k) => [k, settings[k]])) as EngagementOverrides,
+      Object.fromEntries(chosen.map((k) => [k, baseline(ctx, k) ?? null])) as EngagementOverrides,
     ),
     onSuccess: (updated) => {
       onPromoted(updated, chosen);

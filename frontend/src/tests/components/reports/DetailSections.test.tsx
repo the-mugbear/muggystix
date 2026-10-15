@@ -9,7 +9,7 @@
  * - nothing in one section touches another.
  */
 import React, { useMemo } from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -36,6 +36,23 @@ const Harness: React.FC<{ saved?: EngagementOverrides; canEdit?: boolean }> = ({
   return <MemoryRouter><DetailSections edits={edits} canEdit={canEdit} idPrefix="report" members={[]} /></MemoryRouter>;
 };
 const section = (id: string) => within(screen.getByTestId(`report-section-${id}`));
+
+// The project's defaults (/reports/defaults): no follow status.
+const DefaultsHarness: React.FC<{ saved: EngagementOverrides }> = ({ saved }) => {
+  const base = useMemo(() => ({ saved, followed: null, sources: null, ownOnly: [] }), [saved]);
+  const edits = useDetailEdits(base);
+  return <MemoryRouter><DetailSections edits={edits} canEdit idPrefix="report" members={[]} /></MemoryRouter>;
+};
+
+// Owner, 2026-10-15 (second review Q3): on the defaults an empty team is
+// explained, not refused — drafts then list the project's analysts and admins.
+it('an empty team on the project’s defaults says who drafts will list', () => {
+  render(<DefaultsHarness saved={{ testers: [] }} />);
+  const line = 'With no team here, drafts list the project’s analysts and admins.';
+  expect(screen.getByTestId('report-team-read')).toHaveTextContent(line);
+  fireEvent.click(screen.getByRole('button', { name: 'Edit Team & distribution' }));
+  expect(screen.getByTestId('report-team-project-team')).toHaveTextContent(line);
+});
 
 describe('Report details — sections', () => {
   it('read as text, with one status line per section and the source of a value not the project’s', () => {
@@ -140,5 +157,28 @@ describe('Report details — sections', () => {
     render(<Harness canEdit={false} saved={{ classification: 'Restricted' }} />);
     expect(screen.queryByRole('button', { name: /Edit/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Use the project’s/ })).toBeNull();
+  });
+});
+
+// Second review 2026-10-14 (nitpicks): the pending-edit state's snapshots.
+describe('useDetailEdits', () => {
+  it('Cancel after a push-up does not bring the promoted value back', () => {
+    render(<Harness />);
+    act(() => latest!.edit('engagement'));
+    act(() => latest!.set('client_name', 'Pushed up'));
+    act(() => latest!.done('engagement'));
+    act(() => latest!.edit('engagement'));              // snapshot holds the pending edit
+    act(() => latest!.forget(['client_name']));        // promoted: no longer pending
+    act(() => latest!.cancel('engagement'));
+    expect(latest!.ctx.pending).toEqual({});
+  });
+
+  it('opening an open section again keeps what Cancel returns to', () => {
+    render(<Harness />);
+    act(() => latest!.edit('engagement'));
+    act(() => latest!.set('client_name', 'Typed'));
+    act(() => latest!.edit('engagement'));              // a checklist line focusing its field
+    act(() => latest!.cancel('engagement'));
+    expect(latest!.ctx.pending).toEqual({});
   });
 });

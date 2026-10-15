@@ -1488,7 +1488,7 @@ class AssistFindingsPage(AgentPage):
 )
 def list_assist_findings(
     request: Request,
-    status: Optional[str] = Query(None, description="open / confirmed / false_positive / accepted_risk / remediated / retest, or a group: active (still being worked) / resolved (every terminal status); 'all' (or omit) for every status."),
+    status: Optional[str] = Query(None, description="open / confirmed / false_positive / accepted_risk / remediated, or a group: active (still being worked) / resolved (every terminal status); 'all' (or omit) for every status."),
     severity: Optional[str] = Query(None, description="critical / high / medium / low / info; 'all' (or omit) for every severity."),
     source: Optional[str] = Query(None, description="note / scanner / execution / manual; 'all' (or omit) for every source."),
     host_id: Optional[int] = Query(None, description="Only findings affecting this host."),
@@ -3289,7 +3289,7 @@ def download_assist_attachment(
     Scoped to the session's project, and path-checked against the attachments
     root so a crafted ``storage_path`` cannot escape it.
     """
-    from app.services.note_attachment_service import _attachments_root
+    from app.services.note_attachment_service import attachment_path
 
     att = (
         db.query(models.NoteAttachment)
@@ -3301,11 +3301,8 @@ def download_assist_attachment(
     )
     if att is None:
         raise HTTPException(status_code=404, detail="Attachment not found in this project")
-    base = _attachments_root()
-    try:
-        target = (base / att.storage_path).resolve()
-        target.relative_to(base.resolve())
-    except (ValueError, OSError):
+    target = attachment_path(att)
+    if target is None:
         raise HTTPException(status_code=404, detail="Attachment path invalid")
     require_readable_file(target, "Attachment")
     return FileResponse(path=str(target), media_type=att.content_type, filename=att.filename)

@@ -26,7 +26,7 @@ What is counted (PORTFOLIO.md, "Metrics and counting rules"):
   leaves this row not yet judged.  ``tests/test_engagement_metrics.py`` pins
   the SQL to ``_vuln_coverage`` so the two cannot drift.
 * **Finding states** — the same findings (same filters) by where they stand:
-  *under investigation* (open / retest), *confirmed*, *closed* (accepted risk
+  *under investigation* (open), *confirmed*, *closed* (accepted risk
   / remediated), so the three add up to the findings total.  False positives
   are not results and are counted apart (``findings_false_positive``: a
   finding dismissed by its own status or on every endpoint).

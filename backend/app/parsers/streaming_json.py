@@ -60,7 +60,7 @@ from typing import Iterable, Iterator, List, Optional, Sequence, Union
 
 import ijson
 
-from app.parsers.cut_short import EndTracking, TruncatedFile, reject_line, settle_cut
+from app.parsers.cut_short import EndTracking, reject_line, settle_cut
 
 logger = logging.getLogger(__name__)
 
@@ -156,19 +156,11 @@ def _records_before_the_cut(
         # No known array key: the object itself is the one record, and a cut
         # object is no record.
         prefix = _detect_array_prefix(head, array_keys) or ""
-    records: List[dict] = []
-    try:
-        # ``floats``: this file is below the streaming threshold, so a
-        # complete one would have been read by ``json.loads`` — the records
-        # before the cut carry the same number types.
-        for record in _document_items(file_path, prefix, tool_label, floats=True):
-            records.append(record)
-    except _EndsEarly as cut:
-        settle_cut(cut.read, label=tool_label, cause=cut.__cause__)
-        return records
-    except ValueError:
-        return None
-    return None  # the stream reader accepts what json.loads refused: leave it to the line reader
+    # ``floats``: this file is below the streaming threshold, so a complete
+    # one would have been read by ``json.loads`` — the records before the cut
+    # carry the same number types.  ``only_when_cut``: when the stream reader
+    # accepts what json.loads refused, the line reader decides.
+    return document_before_the_cut(file_path, prefix, tool_label, floats=True, only_when_cut=True)
 
 
 class _EndsEarly(Exception):
@@ -246,19 +238,26 @@ def iter_document(
         settle_cut(cut.read, label=tool_label, unit=unit, cause=cut.__cause__)
 
 
-def document_before_the_cut(source: Union[str, bytes], prefix: str, tool_label: str, **read) -> Optional[list]:
-    """For a parser's content that ``json.loads`` refused: the document's
-    complete items (``iter_document``, with ``read``'s options) when it ENDS
-    EARLY and the import keeps them — ``TruncatedFile`` when it does not —
-    and None when it is invalid for any other reason (the caller's own path
-    decides).  The ONE copy of that question for a parser with its own loader
-    (RDAP and NetExec each had theirs — review 2026-10-14, R5)."""
+def document_before_the_cut(
+    source: Union[str, bytes], prefix: str, tool_label: str, *, only_when_cut: bool = False, **read,
+) -> Optional[list]:
+    """For content ``json.loads`` refused: the document's complete items
+    (``_document_items``, with ``read``'s options) when it ENDS EARLY and the
+    import keeps them — ``TruncatedFile`` when it does not — and None when it
+    is invalid for any other reason (the caller's own path decides).
+    ``only_when_cut``: None too when the stream reader reads it whole.  The
+    ONE copy of that question (RDAP, NetExec and this module's small-file
+    path each had theirs — review 2026-10-14, R5; second review, F5)."""
+    items: list = []
     try:
-        return list(iter_document(source, prefix, tool_label, **read))
-    except TruncatedFile:
-        raise
+        for item in _document_items(source, prefix, tool_label, **read):
+            items.append(item)
+    except _EndsEarly as cut:
+        settle_cut(cut.read, label=tool_label, cause=cut.__cause__)
+        return items
     except ValueError:
         return None
+    return None if only_when_cut else items
 
 
 def ends_early(text: str) -> bool:

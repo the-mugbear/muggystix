@@ -313,13 +313,20 @@ else
         # mode 700): this account can neither look inside it nor move it (a
         # folder changes parent only with write access to it).  Unreadable
         # used to read as EMPTY below — "nothing to move" — and the upgrade
-        # went on without the data.  Its owner is said as it is: it is not
-        # always the containers' (review 2026-10-14, nitpick).
-        owner="$(stat -c '%U, UID %u' "$src" 2>/dev/null || echo 'another account')"
-        fail "$rel/ belongs to $owner, not to $(id -un): it cannot be read or moved from here.
+        # went on without the data.  The folder named is the one that failed
+        # — the old one, or a new one the containers already made — with its
+        # real owner (second review 2026-10-14, H7: it named the old folder
+        # whichever failed, "belongs to charles, not to charles").
+        if [[ -r "$src" && -w "$src" && -x "$src" ]]; then bad="$dst"; else bad="$src"; fi
+        owner="$(stat -c '%U, UID %u' "$bad" 2>/dev/null || echo 'another account')"
+        # `mv -T` treats the target as the folder itself: it replaces an EMPTY
+        # one and refuses a non-empty one.  A plain `mv` into an existing
+        # folder moved the old data INSIDE it (uploads/uploads/), and the
+        # next run found "nothing to carry".
+        fail "$bad/ belongs to $owner, not to $(id -un): it cannot be read or moved from here.
    Move it yourself — this one command, not the whole script, needs root — then run this again:
-     sudo mv '$src' '$dst'
-   (if '$dst' already exists and is empty, remove it first:  sudo rmdir '$dst')"
+     sudo mv -T '$src' '$dst'
+   (If it says the target is not empty, '$dst' already holds data: look at it before you remove anything.)"
     elif [[ -d "$dst" ]] && [[ -n "$(ls -A "$dst" 2>/dev/null)" ]]; then
         if [[ -n "$(ls -A "$src" 2>/dev/null)" ]]; then
             fail "$rel/ exists and is non-empty in BOTH folders.  Refusing to merge blindly.

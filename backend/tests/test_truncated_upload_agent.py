@@ -287,8 +287,10 @@ def test_an_agreed_request_imports_what_the_file_holds_and_is_recorded(
     job = job_row(db_session, job_id)
     assert job.partial is True
     assert "it ends after 3 complete hosts" in job.parser_warnings
-    # Kept as asked: no "re-upload" after the decision (review 2026-10-14).
-    assert "Hosts after the cut are MISSING, not down" in job.parser_warnings
+    # Kept as asked: said ONCE, and no "re-upload" after the decision
+    # (review 2026-10-14 and its second pass).
+    assert job.parser_warnings.count("it ends after 3 complete hosts") == 1
+    assert "anything the tool wrote after that point is not in the file" in job.parser_warnings
     assert "Re-upload" not in job.parser_warnings
     assert host_ips(db_session, pid) == ["10.88.0.1", "10.88.0.2", "10.88.0.3"]
     (scan,) = scans_of(db_session, pid)

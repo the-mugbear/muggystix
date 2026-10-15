@@ -164,20 +164,24 @@ def _comparable(key: str, value: Any) -> Any:
     return [tuple(e.get(f) if f == "user_id" else _clean(e.get(f)) for f in fields) for e in _entries(value)]
 
 
-def drop_followed(own: Mapping[str, Any], follows: Mapping[str, Any], edited: Optional[Any]) -> Dict[str, Any]:
-    """``own`` (a report's overrides) without the EDITED keys whose value is
-    now exactly what the report would follow — "changed back to the
-    project's" follows again (the report workspace, owner 2026-10-14).
+def same(key: str, a: Any, b: Any) -> bool:
+    """Two values of one detail are the same once compared as the page and
+    the server compare them (trimmed text, a list by its rows)."""
+    return _comparable(key, a) == _comparable(key, b)
 
-    Only keys in ``edited`` are compared: an override the author did not
-    touch is kept even when it happens to equal the project's value now, or
-    a later change of the project's value would silently reach it.  An
-    override to an empty list (`[]`, "this report lists nobody") is always
-    kept: it is chosen on purpose."""
-    keys = set(edited or ())
-    out = dict(own)
-    for key in keys & set(own):
-        value = own[key]
+
+def drop_followed(sent: Mapping[str, Any], follows: Mapping[str, Any]) -> Dict[str, Any]:
+    """The overrides a save SENT, without those whose value is exactly what
+    the report would follow — "changed back to the project's" follows again
+    (the report workspace, owner 2026-10-14).
+
+    Pass only what was sent: an override the author did not touch is kept
+    even when it happens to equal the project's value now, or a later change
+    of the project's value would silently reach it.  An override to an empty
+    list (`[]`, "this report lists nobody") is always kept: it is chosen on
+    purpose."""
+    out = dict(sent)
+    for key, value in sent.items():
         if key in LIST_KEYS and not _entries(value):
             continue
         if _comparable(key, value) == _comparable(key, follows.get(key)):
@@ -187,8 +191,8 @@ def drop_followed(own: Mapping[str, Any], follows: Mapping[str, Any], edited: Op
 
 def apply_overrides(follows: Mapping[str, Any], settings: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     """The order itself: a report's overrides over what it follows (the
-    answer of :func:`followed`).  :func:`resolve` and the page's read (which
-    shows both) call it; nothing else merges the two."""
+    first answer of :func:`followed_with_sources`).  :func:`resolve` and the
+    page's read (which shows both) call it; nothing else merges the two."""
     return {**follows, **overrides(settings)}
 
 

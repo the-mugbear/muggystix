@@ -808,12 +808,16 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             const running = job != null && isRunning(job);
             return (
               <div key={fmt} className="flex min-w-0 items-center gap-xs">
-                <Button variant="outline" size="sm" onClick={() => void preview(fmt)}
-                  disabled={!!running || !report.can_edit || saving || !!assetsBlock}
-                  title={assetsBlock}>
-                  {running && <Loader2 className="size-4 animate-spin" aria-hidden />}
-                  {running ? `Rendering ${FORMAT_LABEL[fmt]}…` : `${dirty ? 'Save & preview' : 'Preview'} ${FORMAT_LABEL[fmt]}`}
-                </Button>
+                {/* A write (it renders a job): hidden for whoever may not
+                    edit the draft, never disabled (second review 2026-10-14). */}
+                {report.can_edit && (
+                  <Button variant="outline" size="sm" onClick={() => void preview(fmt)}
+                    disabled={!!running || saving || !!assetsBlock}
+                    title={assetsBlock}>
+                    {running && <Loader2 className="size-4 animate-spin" aria-hidden />}
+                    {running ? `Rendering ${FORMAT_LABEL[fmt]}…` : `${dirty ? 'Save & preview' : 'Preview'} ${FORMAT_LABEL[fmt]}`}
+                  </Button>
+                )}
                 {job?.status === 'completed' && fmt === 'html' && (
                   <>
                     <OpenPreviewButton key={`open-${job.id}`} size="sm" projectId={projectId} jobId={job.id}

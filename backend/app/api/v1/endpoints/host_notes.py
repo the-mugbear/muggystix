@@ -15,7 +15,7 @@ from app.core.security import check_permissions
 logger = logging.getLogger(__name__)
 
 from app.services.note_attachment_service import (
-    _attachments_root, require_readable_file, store_image_attachment,
+    attachment_path, require_readable_file, store_image_attachment,
 )
 from app.db.session import get_db
 from app.db import models
@@ -569,11 +569,8 @@ def get_note_attachment(
     project: Project = Depends(get_current_project),
 ):
     att = _resolve_attachment(db, attachment_id, project)
-    base = _attachments_root()
-    try:
-        target = (base / att.storage_path).resolve()
-        target.relative_to(base.resolve())
-    except (ValueError, OSError):
+    target = attachment_path(att)
+    if target is None:
         raise HTTPException(status_code=404, detail="Attachment path invalid")
     require_readable_file(target, "Attachment")
     return FileResponse(path=str(target), media_type=att.content_type, filename=att.filename)
@@ -617,19 +614,16 @@ def delete_note_attachment(
         # project's report defaults and its drafts.
         report_images.refuse_if_report_text_places(db, att)
 
-    storage_path = att.storage_path
+    target = attachment_path(att)
     db.delete(att)
     db.commit()
     # The file goes only AFTER the row's delete has committed (N4): unlinking
     # first left a row pointing at nothing whenever the commit failed.  A file
     # that outlives its row is the lesser fault — nothing serves it.
-    base = _attachments_root()
     try:
-        target = (base / storage_path).resolve()
-        target.relative_to(base.resolve())
-        if target.exists():
+        if target is not None and target.exists():
             target.unlink()
-    except (ValueError, OSError):
+    except OSError:
         pass  # best-effort file removal; the row delete is the source of truth
     return Response(status_code=204)
 

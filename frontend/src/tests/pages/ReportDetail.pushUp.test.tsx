@@ -143,7 +143,9 @@ describe('Update project defaults…', () => {
     const dialog = within(await screen.findByRole('dialog'));
     expect(dialog.getByTestId('promote-testers')).toHaveTextContent('The project’s team cannot be empty');
     fireEvent.click(dialog.getByRole('button', { name: 'Update 1 default' }));
-    await waitFor(() => expect(mocked.promoteClientReportDetails).toHaveBeenCalledWith(1, 5, { client_name: 'Mine' }));
+    await waitFor(() => expect(mocked.promoteClientReportDetails).toHaveBeenCalledWith(
+      1, 5, { client_name: 'Mine' }, { client_name: 'Mine' },
+    ));
   });
 
   it('lists each detail of its own with the project’s value → this report’s, and the drafts that follow it', async () => {
@@ -187,8 +189,12 @@ describe('Update project defaults…', () => {
     // Keep Classification as this report's own; push up Client and the Summary.
     fireEvent.click(within(within(dialog).getByTestId('promote-classification')).getByRole('checkbox'));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Update 2 defaults' }));
+    // With each value, what the page saw the draft print before the edit —
+    // the server refuses the push-up if that changed (second review, H1).
     await waitFor(() => expect(mocked.promoteClientReportDetails).toHaveBeenCalledWith(1, 5, {
       executive_summary: 'Ours.', client_name: 'Renamed Corp',
+    }, {
+      executive_summary: 'The project’s summary.', client_name: 'Example Corp',
     }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(mocked.patchReportProfile).not.toHaveBeenCalled();

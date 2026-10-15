@@ -2,7 +2,7 @@
 
 **What goes in.**  Findings whose status is ``confirmed``, ``accepted_risk``
 (labelled "Risk accepted") or ``remediated`` (labelled "Remediated during the
-assessment").  ``open`` / ``retest`` findings are still under investigation:
+assessment").  ``open`` findings are still under investigation:
 they stay out, and the report page says how many.  Within a finding, endpoints
 judged ``false_positive`` are dropped (a finding whose every endpoint is a
 false positive drops out entirely); remediated endpoints stay, labelled.
@@ -514,19 +514,11 @@ def freeze_report_images(db: Session, report: Report, dataset: dict) -> int:
             NoteAttachment.id.in_(list(wanted)), NoteAttachment.project_id == report.project_id,
         )
     }
-    base = (Path(settings.UPLOAD_DIR) / "note_attachments").resolve()
     sources: Dict[int, Path] = {}
     missing = []
     for att_id, (img, finding) in wanted.items():
         att = attachments.get(att_id)
-        source = None
-        if att is not None:
-            try:
-                candidate = (base / att.storage_path).resolve()
-                candidate.relative_to(base)
-                source = candidate if candidate.is_file() else None
-            except (ValueError, OSError):
-                source = None
+        source = attachment_file(att) if att is not None else None
         if source is None:
             missing.append(f"{finding.get('ref')} \"{str(img.get('caption') or '')[:60]}\" (image {att_id})")
         else:

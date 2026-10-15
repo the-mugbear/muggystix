@@ -328,3 +328,23 @@ def test_only_a_files_last_line_can_be_a_cut_line():
     assert is_cut_last_line('{"a": "unfin\n') is False
     assert is_cut_last_line('{"a": "unfin\r\n') is False
     assert is_cut_last_line("@@@ garbage") is False
+
+
+def test_bloodhound_records_before_a_cut_carry_floats_as_a_whole_file_does(tmp_path):
+    """Second review 2026-10-14 (the first pass's nitpick had no test): a
+    small cut file's records came back with ``Decimal`` numbers, where the
+    same records in a whole file read by ``json.load`` carry floats."""
+    from decimal import Decimal
+
+    from app.parsers.bloodhound_parser import BloodHoundParser
+
+    path = tmp_path / "computers.json"
+    path.write_text('{"data": [{"Properties": {"name": "PC1", "score": 1.5}}, {"Properties": {"name": "PC')
+    token = begin_read(keep_truncated=True)
+    try:
+        entries = list(BloodHoundParser._load_entries(str(path)))
+    finally:
+        end_read(token)
+    assert entries == [{"Properties": {"name": "PC1", "score": 1.5}}]
+    score = entries[0]["Properties"]["score"]
+    assert isinstance(score, float) and not isinstance(score, Decimal)

@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, case, desc, distinct, exists, false, func, not_, or_
+from sqlalchemy import and_, case, desc, distinct, false, func, not_, or_
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -1083,13 +1083,13 @@ FINDING_NEEDS = ("decide", "write", "retest")
 
 
 def marked_for_retest_condition():
-    """The ONE definition of "a host awaits a retest" on Operations: one of
-    the finding's endpoints is ``retest`` — a correlated EXISTS.  A retest is
-    per host since 2.501.0 (owner, 2026-10-14); the finding-level status
-    that also counted here is retired."""
+    """"A host of the finding awaits a retest", as Operations' ``decide`` /
+    ``need=retest`` reads it — ``finding_needs.has_endpoint_in``, the one
+    definition the Findings list's ``host_state=retest`` uses too.  A retest
+    is per host since 2.501.0 (owner, 2026-10-14)."""
     from app.db.models_findings import FindingHostStatus
-    return exists().where(FindingHost.finding_id == Finding.id,
-                          FindingHost.host_status == FindingHostStatus.RETEST.value)
+    from app.services.finding_needs import has_endpoint_in
+    return has_endpoint_in(FindingHostStatus.RETEST.value)
 
 
 def compute_my_findings(

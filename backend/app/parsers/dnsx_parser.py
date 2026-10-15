@@ -54,6 +54,7 @@ from app.db.models_vulnerability import VulnerabilitySource
 from app.services.misconfig_checks import record_misconfig
 from app.parsers.parser_utils import (
     ProgressBeat,
+    ProjectHostsByAddress,
     ScanHostObservations,
     correlate_scan,
     dns_import_summary,
@@ -271,6 +272,11 @@ class DnsxParser:
         # ``host_scan_history.hostname_changed``.
         self._created_host_ids: set[int] = set()
         self._row_created: set[int] = set()
+        self._row_created_addresses: List[str] = []
+        # The project's hosts by address, read once (`ProjectHostsByAddress`,
+        # shared with the DNS CSV; second review 2026-10-14, F3 — a query per
+        # answer).
+        self._hosts: Optional[ProjectHostsByAddress] = None
         # Tracked for the parser-warning summary.
         self._resolvers_seen: Counter[str] = Counter()
         self._status_codes_seen: Counter[str] = Counter()
@@ -280,6 +286,11 @@ class DnsxParser:
         # IngestionJob row so the recon detail page can show "this
         # upload skipped N records" + warnings.
         self.last_parse_stats: Dict[str, Any] = {}
+
+    def _hosts_by_address(self) -> ProjectHostsByAddress:
+        if self._hosts is None:
+            self._hosts = ProjectHostsByAddress(self.db, self._project_id)
+        return self._hosts
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -348,6 +359,7 @@ class DnsxParser:
             journal: List[tuple] = []
             transfers_before = len(self._zone_transfers)
             self._row_created = set()
+            self._row_created_addresses = []
 
             def forget_the_row(journal=journal, transfers_before=transfers_before) -> None:
                 del self._zone_transfers[transfers_before:]
@@ -358,6 +370,8 @@ class DnsxParser:
                 # forget them too so an identical answer in a LATER row still
                 # persists instead of being deduped away.
                 self._name_cache.forget(journal)
+                # The hosts it created are gone: out of the address map.
+                self._hosts_by_address().forget(self._row_created_addresses)
 
             # The one record isolation (it was written out here by hand —
             # review 2026-10-14, R5): a record that rolls back leaves no note
@@ -566,11 +580,7 @@ class DnsxParser:
         if endpoint is None:
             return False
         address, port = endpoint
-        host = (
-            self.db.query(models.Host)
-            .filter(models.Host.project_id == self._project_id, models.Host.ip_address == address)
-            .first()
-        )
+        host = self._hosts_by_address().get(address)
         if host is None:
             return False
         # The scan now has an observation on this host: say the scan saw it,
@@ -746,14 +756,7 @@ class DnsxParser:
         the import's hosts were counted and listed nowhere.  No state: a DNS
         answer does not say the host is up.
         """
-        existing = (
-            self.db.query(models.Host)
-            .filter(
-                models.Host.ip_address == ip_address,
-                models.Host.project_id == self._project_id,
-            )
-            .first()
-        )
+        existing = self._hosts_by_address().get(ip_address)
         if existing:
             renamed = apply_hostname_candidate(existing, hostname, source)
             self._observed.note(
@@ -773,3 +776,7 @@ class DnsxParser:
             ip_address, scan_id, host_data, project_id=self._project_id,
         )
         self._row_created.add(created.id)
+        # In the address map at once: a later answer of this record may name
+        # it (forgotten again if the record rolls back).
+        self._hosts_by_address().add(created)
+        self._row_created_addresses.append(ip_address)

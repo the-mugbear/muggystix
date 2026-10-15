@@ -86,9 +86,11 @@ def test_a_cut_file_kept_as_asked_is_not_told_to_re_upload(db_session, tmp_path,
     the file holds, the warning still said "Re-upload a complete scan
     file"."""
     parser, _ = _parse(db_session, tmp_path, TRUNCATED_XML, "kept.xml", test_project.id, keep_truncated=True)
+    # Nmap says only what it means; the count is the dispatcher's, once
+    # (second review 2026-10-14 — it was said twice, with two counts).
     warnings = parser.last_parse_stats["warnings"]
-    assert "Re-upload" not in warnings
-    assert "imported, as asked" in warnings and "MISSING, not down" in warnings
+    assert "Re-upload" not in warnings and "host(s)" not in warnings
+    assert "MISSING from this import, not down" in warnings
 
 
 # A COMPLETE nmap run (closed, with its <runstats>) of three hosts.  The second

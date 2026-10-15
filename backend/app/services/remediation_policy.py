@@ -251,13 +251,28 @@ def flag_exprs(db: Session, today: date) -> dict:
 VERIFICATIONS = ("reported_fixed_not_retested", "remediated_record_open")
 
 
+def concluded_no_defect():
+    """The team concluded there is nothing to fix here: the ENDPOINT, or the
+    whole finding, was judged a false positive (a finding's judgement moves
+    no endpoint).  The ONE reading, for ``defect_expr`` and
+    ``verification_expr`` (second review 2026-10-14, H4: the gap still counted
+    a finding judged false positive as "Reported fixed, not retested").  Read
+    over ``_rows``, which joins ``Finding``.  Python twin for a loaded row:
+    ``remediation_service._no_defect``."""
+    return or_(
+        FindingHost.host_status == FindingHostStatus.FALSE_POSITIVE.value,
+        Finding.status == FindingStatus.FALSE_POSITIVE.value,
+    )
+
+
 def verification_expr():
     """The ONE definition of that gap; NULL where the two agree or have
     nothing to say to each other.
 
-    * ``reported_fixed_not_retested`` — the record is ``closed`` and the
-      endpoint is neither ``remediated`` nor a false positive: the contact says
-      fixed, the team has not concluded so.
+    * ``reported_fixed_not_retested`` — the record is ``closed``, the
+      endpoint is not ``remediated`` and the team has not concluded there is
+      nothing to fix (``concluded_no_defect``): the contact says fixed, the
+      team has not concluded so.
     * ``remediated_record_open`` — the endpoint is ``remediated`` and a
       record EXISTS that is ``open`` or ``deferred``: the team concluded
       fixed, the record still reads as work.  An endpoint nobody ever tracked
@@ -267,8 +282,7 @@ def verification_expr():
     endpoint = FindingHost.host_status
     remediated = FindingHostStatus.REMEDIATED.value
     return case(
-        (and_(status == "closed",
-              endpoint.notin_((remediated, FindingHostStatus.FALSE_POSITIVE.value))),
+        (and_(status == "closed", endpoint != remediated, ~concluded_no_defect()),
          "reported_fixed_not_retested"),
         (and_(endpoint == remediated, Remediation.id.isnot(None), status != "closed"),
          "remediated_record_open"),
@@ -295,11 +309,9 @@ def defect_expr():
     * ``open`` — everything else, "Reported fixed" included: the contact's
       claim is not the retest.
     """
-    endpoint = FindingHost.host_status
     return case(
-        (Finding.status == FindingStatus.FALSE_POSITIVE.value, None),
-        (endpoint == FindingHostStatus.REMEDIATED.value, "remediated"),
-        (endpoint == FindingHostStatus.FALSE_POSITIVE.value, None),
+        (concluded_no_defect(), None),
+        (FindingHost.host_status == FindingHostStatus.REMEDIATED.value, "remediated"),
         (func.coalesce(Remediation.status, "open") == "deferred", "deferred"),
         else_="open",
     )

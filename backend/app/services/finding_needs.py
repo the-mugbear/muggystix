@@ -94,12 +94,24 @@ class FindingNeeds:
     pending_proposals: int = 0
 
 
-def _endpoints_to_retest():
-    """How many of the finding's endpoints await a retest (a scalar
-    subquery correlated to ``Finding``)."""
+def has_endpoint_in(state: str):
+    """``Finding`` has at least one endpoint in this state — a correlated
+    EXISTS.  The ONE reading of "a host of the finding awaits a retest"
+    (``has_endpoint_in("retest")``): the Findings list's ``host_state=``,
+    Operations' retest condition and its need, and the project-wide count all
+    use it (second review 2026-10-14, F1: it was written four times)."""
+    from app.db.models_findings import FindingHost
+    return exists().where(FindingHost.finding_id == Finding.id, FindingHost.host_status == state)
+
+
+def _hosts_to_retest():
+    """How many of the finding's HOSTS await a retest — distinct hosts, so a
+    host under two names is one (a scalar subquery correlated to
+    ``Finding``; second review 2026-10-14, F1: it counted endpoint rows and
+    said "hosts")."""
     from app.db.models_findings import FindingHost, FindingHostStatus
     return (
-        select(func.count(FindingHost.id))
+        select(func.count(func.distinct(FindingHost.host_id)))
         .where(FindingHost.finding_id == Finding.id, FindingHost.host_status == FindingHostStatus.RETEST.value)
         .correlate(Finding)
         .scalar_subquery()
@@ -138,8 +150,8 @@ def needs_of(
             Finding.id, Finding.status, reportable.label("reportable"),
             *[blank[k].label(f"blank_{k}") for k in REQUIRED_TEXT],
             case((reportable, uncaptioned), else_=0).label("uncaptioned"),
-            # Operations only: how many of its endpoints await a retest.
-            (_endpoints_to_retest() if with_status else literal(0)).label("endpoints_to_retest"),
+            # Operations only: how many of its hosts await a retest.
+            (_hosts_to_retest() if with_status else literal(0)).label("hosts_to_retest"),
         )
         .filter(Finding.id.in_(ids))
         .all()
@@ -149,8 +161,8 @@ def needs_of(
     out: Dict[int, FindingNeeds] = {}
     for row in rows:
         needs: List[FindingNeed] = []
-        if with_status and int(row.endpoints_to_retest or 0):
-            n = int(row.endpoints_to_retest)
+        if with_status and int(row.hosts_to_retest or 0):
+            n = int(row.hosts_to_retest)
             needs.append(FindingNeed(kind="retest", text=f"{n} host{'' if n == 1 else 's'} awaiting a retest",
                                      count=n))
         if with_status and row.status in UNDER_INVESTIGATION:

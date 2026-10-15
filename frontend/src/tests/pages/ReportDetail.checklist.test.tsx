@@ -367,6 +367,41 @@ describe('A link out of the draft', () => {
   });
 });
 
+// Second review 2026-10-14 (nitpick): a preview is a write; for whoever may
+// not edit the draft its buttons were disabled, not hidden.
+it('whoever may not edit the draft is offered no Preview', async () => {
+  mocked.getClientReport.mockResolvedValue(report({ can_edit: false }));
+  renderDetail(ISSUE);
+  await screen.findByText(/Rendered from the live findings/);
+  expect(screen.queryByRole('button', { name: /^(Save & )?[Pp]review (HTML|Word)/ })).toBeNull();
+});
+
+// Second review 2026-10-14, H6: "Draft with AI…" → Configure called
+// navigate() and left the pending edits behind with no word.
+describe('Configure from "Draft with AI…"', () => {
+  it('asks first when there are unsaved changes', async () => {
+    mocked.listLLMProviders.mockResolvedValue([]);
+    render(
+      <MemoryRouter initialEntries={['/reports/5']}>
+        <Routes>
+          <Route path="/reports/:reportId" element={<ReportDetail />} />
+          <Route path="/llm-settings" element={<p>The providers page</p>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.change(await screen.findByLabelText('Title'), { target: { value: 'Renamed' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Edit (Executive summary|Summary)/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Draft with AI/ }));
+    const configure = await screen.findByRole('link', { name: /Configure/ });
+    confirmMock.mockResolvedValueOnce(false);
+    fireEvent.click(configure);
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({
+      body: 'This draft has unsaved changes. Leave anyway?',
+    })));
+    expect(screen.queryByText('The providers page')).toBeNull();
+  });
+});
+
 describe('The template', () => {
   it('is chosen on Details beside the title, and saved with Save draft like any other edit', async () => {
     mocked.updateClientReport.mockResolvedValue(report({ template: 'brief' }));

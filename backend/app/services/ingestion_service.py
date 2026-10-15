@@ -775,9 +775,19 @@ def _keep_files_of_scans_not_deleted(session, *args) -> None:
     session.info.pop(_FILES_OF_DELETED_SCANS, None)
 
 
+def _keep_files_after_outer_rollback(session, previous_transaction) -> None:
+    """``after_soft_rollback`` fires for a SAVEPOINT's rollback too: a record
+    that rolls back inside a delete must not forget the files the delete
+    will remove when the whole transaction commits (second review
+    2026-10-14, nitpick — no caller does that today; guarded, not assumed)."""
+    if getattr(previous_transaction, "nested", False):
+        return
+    _keep_files_of_scans_not_deleted(session)
+
+
 event.listen(Session, "after_commit", _remove_files_of_deleted_scans)
 event.listen(Session, "after_rollback", _keep_files_of_scans_not_deleted)
-event.listen(Session, "after_soft_rollback", _keep_files_of_scans_not_deleted)
+event.listen(Session, "after_soft_rollback", _keep_files_after_outer_rollback)
 
 
 def delete_partial_scan(

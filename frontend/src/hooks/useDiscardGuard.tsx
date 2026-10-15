@@ -48,10 +48,12 @@ export function useDiscardGuard(
  * Put the answer on the page's container as `onClickCapture`: a plain click
  * on a link inside it to another page of the app is held, `confirmLeave`
  * asked, and the link followed only if it says yes.  One guard for every
- * link the page holds or will hold, never a handler per link.  A link to the
- * same page (a tab, a hash), a new tab or window, a download and another
- * site are left alone; so is a dialog's content, which is portaled outside
- * the container.
+ * link the page holds or will hold, never a handler per link — a dialog's
+ * included: React events reach the container through a portal, so a link in
+ * a dialog the page renders is guarded too (which is why a way out of the
+ * page is a `<Link>`, never a bare `navigate()`).  A link to the same page
+ * (a tab, a hash), a new tab or window, a download and another site are left
+ * alone.
  */
 export function useLinkGuard(confirmLeave: () => Promise<boolean>): (e: React.MouseEvent) => void {
   const navigate = useNavigate();

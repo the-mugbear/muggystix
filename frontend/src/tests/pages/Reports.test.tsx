@@ -247,6 +247,24 @@ describe('Reports list', () => {
       expect(navigateSpy).toHaveBeenCalledWith('/reports/31');
     });
 
+    // Second review 2026-10-14 (nitpick): a failed read of the project's
+    // default sent the first template in its place, silently.
+    it('when the project’s default cannot be read, sends no template and says so', async () => {
+      mocked.getReportProfile.mockRejectedValue(new Error('down'));
+      mocked.listReportTemplates.mockResolvedValue([
+        { name: 'brief', title: 'Executive brief', description: '', formats: ['html'], kind: 'client' },
+        { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html'], kind: 'client' },
+      ]);
+      mocked.listClientReports.mockResolvedValue(list([issued7]));
+      mocked.createClientReport.mockResolvedValue(report({ id: 32 }));
+      renderList();
+      fireEvent.click(await screen.findByRole('button', { name: /^New report/ }));
+      const dialog = await screen.findByRole('dialog');
+      expect(await within(dialog).findByTestId('new-report-default-unknown')).toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Start the draft' }));
+      await waitFor(() => expect(mocked.createClientReport).toHaveBeenCalledWith(1, { kind: 'full' }));
+    });
+
     it('names the one draft in progress, and continues it instead', async () => {
       mocked.listClientReports.mockResolvedValue(list([
         report({ id: 23, title: 'Latest draft', updated_at: '2026-10-13T08:00:00Z' }),

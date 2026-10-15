@@ -283,20 +283,46 @@ def test_a_dns_csv_import_reads_the_hosts_once_not_per_row(db_session, test_proj
     rows = "".join(f"A,name{n}.corp.example,10.70.0.{1 + n % 3}\n" for n in range(30))
     text = ("record_type,name,address\n" + rows
             + "PTR,made.corp.example,10.70.0.77\nA,made.corp.example,10.70.0.77\n")
-    lookups = []
+    db_session.expire_all()                 # nothing of the hosts is in the session already
+    lookups = _host_reads(db_session, lambda: _csv_import(db_session, pid, tmp_path, text))
+    # At most the dedup service's own lookup for the host it creates — never
+    # one per row (second review, F3: a known host still cost a read by id
+    # per row once the session had let it go).
+    assert len(lookups) <= 1, lookups
+    scan = db_session.query(models.Scan).filter_by(project_id=pid, filename="dns.csv").one()
+    assert set(_history(db_session, scan.id)) == {"10.70.0.1", "10.70.0.2", "10.70.0.3", "10.70.0.77"}
+
+
+def _host_reads(db, run) -> list:
+    """The reads of ONE host a run makes — by address or by id: what a
+    per-row lookup looks like (the once-per-import reads are not counted)."""
+    from sqlalchemy import event
+
+    reads = []
 
     def listener(conn, cursor, statement, params, context, executemany):
-        if "FROM hosts_v2" in statement and "hosts_v2.ip_address =" in statement:
-            lookups.append(statement)
+        one = "WHERE hosts_v2.ip_address =" in statement or "WHERE hosts_v2.id =" in statement
+        if statement.lstrip().upper().startswith("SELECT") and "FROM hosts_v2" in statement and one:
+            reads.append(statement)
 
-    event.listen(db_session.bind, "before_cursor_execute", listener)
+    event.listen(db.bind, "before_cursor_execute", listener)
     try:
-        scan, _ = _csv_import(db_session, pid, tmp_path, text)
+        run()
     finally:
-        event.remove(db_session.bind, "before_cursor_execute", listener)
-    assert len(lookups) <= 1, lookups       # the dedup service's own lookup for the host it creates
-    addressed = _history(db_session, scan.id)
-    assert set(addressed) == {"10.70.0.1", "10.70.0.2", "10.70.0.3", "10.70.0.77"}
+        event.remove(db.bind, "before_cursor_execute", listener)
+    return reads
+
+
+def test_a_dnsx_import_reads_the_hosts_once_not_per_answer(db_session, test_project, tmp_path):
+    """Second review 2026-10-14, F3: dnsx asked for each answer's host by
+    address — a query per answer; it shares the DNS CSV's per-import map."""
+    pid = test_project.id
+    _nmap_hosts(db_session, pid, KNOWN)
+    rows = [{"host": f"name{n}.corp.example", "a": [f"10.70.0.{1 + n % 3}"], "resolver": ["10.70.0.53:53"],
+             "status_code": "NOERROR"} for n in range(30)]
+    db_session.expire_all()
+    lookups = _host_reads(db_session, lambda: _dnsx_import(db_session, pid, tmp_path, rows=rows))
+    assert lookups == [], lookups
 
 
 def test_a_dns_csv_import_records_the_hosts_its_ptr_rows_addressed(client, db_session, test_project, tmp_path):

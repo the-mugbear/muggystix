@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { copyToClipboard } from '../utils/clipboard';
 import { downloadTextFile } from '../utils/download';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
   Bot,
   Copy,
@@ -83,7 +83,6 @@ const wasCancelled = (err: unknown): boolean => {
  * text (copy / download .md).
  */
 const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ reportId, open, onClose, onUse, useLabel }) => {
-  const navigate = useNavigate();
   const toast = useToast();
   const projectId = useProjectId();
 
@@ -215,15 +214,14 @@ const AiDraftReportDialog: React.FC<AiDraftReportDialogProps> = ({ reportId, ope
                   No LLM providers configured. Add one in <strong>LLM Providers</strong> to draft a
                   report in-app.
                 </span>
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    onClose();
-                    navigate('/llm-settings');
-                  }}
-                >
-                  <ExternalLink className="size-3.5" aria-hidden />
-                  Configure
+                {/* A link, not navigate(): the page's link guard then asks before
+                    unsaved edits are left behind (React events reach the page's
+                    container through the portal; second review 2026-10-14, H6). */}
+                <Button size="sm" asChild>
+                  <Link to="/llm-settings" onClick={onClose}>
+                    <ExternalLink className="size-3.5" aria-hidden />
+                    Configure
+                  </Link>
                 </Button>
               </AlertDescription>
             </Alert>

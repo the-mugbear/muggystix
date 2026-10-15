@@ -716,6 +716,21 @@ def _statements(run, containing):
     return [s for s in seen if containing in s]
 
 
+def test_a_bulk_reported_fixed_reads_the_hosts_once_however_many_rows(client, db_session, test_project, on):
+    """Second review 2026-10-14, F4: each row's retest request read its host
+    and name one at a time (history line, notification) — ~1,000 SELECTs for
+    500 rows.  The rows' hosts are loaded with them: the count does not grow
+    with the rows."""
+    def run(n):
+        _, ids = _rows(db_session, test_project, n)
+        rows = [{"finding_host_id": i, "status": "closed"} for i in ids]
+        db_session.expire_all()
+        reads = _statements(lambda: send(client, test_project, rows), "FROM hosts_v2")
+        return len(reads)
+
+    assert run(3) == run(12)
+
+
 def _severity(client, project, finding, severity):
     response = client.patch(f"/api/v1/projects/{project.id}/findings/{finding.id}", json={"severity": severity})
     assert response.status_code == 200, response.text

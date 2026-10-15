@@ -3,7 +3,8 @@
 The report workspace (owner, 2026-10-14) says when a preview is out of date:
 the worker records the fingerprint of the inputs a draft's preview rendered
 (``client_report_render.inputs_fingerprint`` — the dataset without today's
-date, the template's fingerprint, the bytes of every image it names) and the
+date, the template's fingerprint, which file every image it names is — its
+bytes until 2.503.0) and the
 page compares it with the value as it would be now.
 
 **Upgrade.**  Adds the nullable column.  A preview rendered before it has

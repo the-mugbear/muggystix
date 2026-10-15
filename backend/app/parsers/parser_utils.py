@@ -493,6 +493,47 @@ class HostObservation(NamedTuple):
     renamed: bool = False
 
 
+class ProjectHostsByAddress:
+    """The project's hosts by address, read ONCE per import — one statement
+    of the four columns a DNS answer needs (``id``, the address, the display
+    name and its source: what ``apply_hostname_candidate`` reads and writes)
+    — and held, so a lookup never goes back to the database.  Shared by the
+    DNS CSV and dnsx parsers (second review 2026-10-14, F3: one query per
+    row or answer, inside the import lock; 70,000 hosts are a few MB here).
+
+    A host the import CREATES is ``add``-ed as it is made (a later answer of
+    the same record may name it — a zone's own A record for its name server)
+    and ``forget``-ed when the record that made it rolls back: that host does
+    not exist."""
+
+    def __init__(self, db: Session, project_id: int) -> None:
+        self._db = db
+        self._project_id = project_id
+        self._hosts: Optional[Dict[str, models.Host]] = None
+
+    def get(self, address: str) -> Optional[models.Host]:
+        if self._hosts is None:
+            from sqlalchemy.orm import load_only
+
+            self._hosts = {
+                host.ip_address: host for host in
+                self._db.query(models.Host)
+                .options(load_only(models.Host.id, models.Host.ip_address, models.Host.hostname,
+                                   models.Host.hostname_source))
+                .filter(models.Host.project_id == self._project_id)
+            }
+        return self._hosts.get(address)
+
+    def add(self, host: Optional[models.Host]) -> None:
+        if host is not None and self._hosts is not None:
+            self._hosts[host.ip_address] = host
+
+    def forget(self, addresses: Iterable[str]) -> None:
+        if self._hosts is not None:
+            for address in addresses:
+                self._hosts.pop(address, None)
+
+
 class ScanHostObservations:
     """Accumulates per-host observations over one file parse for
     ``record_hosts_in_scan`` (v2.332.1).
@@ -575,6 +616,10 @@ class ScanHostObservations:
         then considered written."""
         rows = [self._rows[host_id] for host_id in sorted(self._unwritten) if host_id in self._rows]
         self._unwritten = set()
+        # No checkpoint spans a write (a heartbeat is outside every record's
+        # savepoint): the undo log starts again here, so it is never longer
+        # than what one beat noted (second review 2026-10-14, nitpick).
+        self._undo.clear()
         return rows
 
     def __len__(self) -> int:

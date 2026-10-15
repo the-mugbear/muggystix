@@ -384,7 +384,7 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
         # systemic analysis is adopted (scoped subnets exist).
         "heatmap": systemic.get("family_matrix") if systemic.get("adopted") else None,
         "headline": {
-            # Active CURATED findings (status in open/confirmed/retest) — not a
+            # Active CURATED findings (status in open/confirmed) — not a
             # claim that each is "confirmed" (that's one specific status).
             "active_exposure": {
                 "active_findings": active,

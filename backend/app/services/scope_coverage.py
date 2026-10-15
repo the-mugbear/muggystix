@@ -104,7 +104,10 @@ def out_of_scope_hosts(
 
     total = q.with_entities(func.count(models.Host.id)).scalar() or 0
 
-    q = q.order_by(models.Host.ip_address.asc())
+    # Address order, as every other address list (it sorted the text —
+    # second review 2026-10-14, F2); ends with the id, so pages are stable.
+    from app.services.scope_targets_service import ip_order_by
+    q = q.order_by(*ip_order_by(db))
     if skip:
         q = q.offset(skip)
     if limit is not None:

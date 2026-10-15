@@ -546,6 +546,10 @@ def test_renamed_in_scan_without_a_scan_is_refused_on_every_hosts_route(client, 
         # An unusable scan id is the 422 it always was.
         bad = client.get(f"/api/v1/projects/{pid}{path}", params={"scan_ids": "x", "renamed_in_scan": "true"})
         assert bad.status_code == 422, path
+    # Its twin was dropped, answering with every host (second review
+    # 2026-10-14, nitpick).
+    first_seen = client.get(f"/api/v1/projects/{pid}/hosts/", params={"first_seen_in_scan": "true"})
+    assert first_seen.status_code == 422 and "first_seen_in_scan needs scan_ids" in first_seen.text
     # false / absent is "not asked".
     assert _hosts(client, pid, renamed_in_scan="false")["total"] == 45
     # A scan of another project, or one that does not exist, matches nothing.

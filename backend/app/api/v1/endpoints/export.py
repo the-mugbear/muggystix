@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import Response, PlainTextResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import text as sql_text
+from sqlalchemy import select
 from app.db.session import get_db
 from app.services.csv_utils import safe_csv_row
 from app.services import scope_coverage
@@ -71,7 +71,7 @@ def export_scope_hosts(
     """
     from app.db import models as m
     from app.services.default_scope import project_scope
-    from app.services.scope_targets_service import _ip_order_by, in_scope_condition
+    from app.services.scope_targets_service import in_scope_condition, ip_order_by
 
     scope = project_scope(db, project.id)
     # The scope has no name; the file is named for what it is.
@@ -94,7 +94,7 @@ def export_scope_hosts(
     rows = (
         db.query(m.Host.ip_address, m.Host.hostname, m.Host.state)
         .filter(m.Host.project_id == project.id, in_scope_condition(scope.id))
-        .order_by(*_ip_order_by(db))
+        .order_by(*ip_order_by(db))
         .all()
     ) if scope else []
 
@@ -162,13 +162,22 @@ def export_scan_hosts(
     if not scan:
         raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
 
-    rows = db.execute(sql_text("""
-        SELECT DISTINCT h.ip_address, h.hostname, h.state
-        FROM hosts_v2 h
-        JOIN host_scan_history hsh ON hsh.host_id = h.id
-        WHERE hsh.scan_id = :scan_id AND h.project_id = :project_id
-        ORDER BY h.ip_address
-    """), {"scan_id": scan_id, "project_id": project.id}).fetchall()
+    # The hosts the scan has history for, in address order (it sorted the
+    # text: 10.0.0.10 before 10.0.0.2 — second review 2026-10-14, F2).
+    from app.services.scope_targets_service import ip_order_by
+
+    seen_by_scan = (
+        select(m.HostScanHistory.id)
+        .where(m.HostScanHistory.host_id == m.Host.id, m.HostScanHistory.scan_id == scan_id)
+        .correlate(m.Host)
+        .exists()
+    )
+    rows = (
+        db.query(m.Host.ip_address, m.Host.hostname, m.Host.state)
+        .filter(m.Host.project_id == project.id, seen_by_scan)
+        .order_by(*ip_order_by(db))
+        .all()
+    )
 
     # The scan's own file name leads the download's; whatever it holds — any
     # script, a comma — the header helper sends it as RFC 6266 says.
@@ -185,7 +194,8 @@ def export_scan_hosts(
         import csv, io
         buf = io.StringIO()
         writer = csv.writer(buf)
-        # v2.91.4 — see /scope/{id}/hosts CSV branch above for context.
+        # v2.91.4 — every cell through safe_csv_row, as the scope export's
+        # CSV branch explains.
         writer.writerow(["ip_address", "hostname", "state"])
         for r in rows:
             safe_csv_row(writer, [r.ip_address, r.hostname or "", r.state or ""])
@@ -243,7 +253,8 @@ def export_out_of_scope_hosts(
         import csv, io
         buf = io.StringIO()
         writer = csv.writer(buf)
-        # v2.91.4 — see /scope/{id}/hosts CSV branch above for context.
+        # v2.91.4 — every cell through safe_csv_row, as the scope export's
+        # CSV branch explains.
         writer.writerow(["ip_address", "hostname", "state"])
         for r in rows:
             safe_csv_row(writer, [r.ip_address, r.hostname or "", r.state or ""])

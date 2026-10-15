@@ -475,6 +475,10 @@ def add_finding_hosts(
             host_status=ep.host_status.value if ep.host_status else None,
             actor_id=current_user.id,
         )
+    # An Undo that puts a host back into Retest pending asks for its retest
+    # again (stamped now): told like any other move into it (second review
+    # 2026-10-14, nitpick — every writer of that move announces it).
+    svc.announce_retests(current_user.id)
     db.commit()
     return _serialize(_load(db, project, finding_id), viewer)
 

@@ -723,7 +723,9 @@ ensure_ssl_certs() {
 check_ssl_status() {
     print_header "Security Status"
 
-    PG_SSL=$($DC exec -T db psql -U nmapuser -d networkMapper -tAc "SHOW ssl;" 2>/dev/null || echo "unknown")
+    # The container's own user and database, as configured — not the
+    # defaults written in here (second review 2026-10-14, nitpick).
+    PG_SSL=$($DC exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SHOW ssl;"' 2>/dev/null || echo "unknown")
     if [[ "$PG_SSL" == "on" ]]; then
         print_success "PostgreSQL SSL: ENABLED"
     elif [[ "$PG_SSL" == "off" ]]; then

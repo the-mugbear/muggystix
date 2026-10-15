@@ -837,7 +837,11 @@ def test_the_upgrade_does_not_read_an_unreadable_uploads_folder_as_empty():
     text = (SCRIPTS / "upgrade-instance.sh").read_text(encoding="utf-8")
     guard = text.index('! [[ -r "$src" && -w "$src" && -x "$src" ]]')
     assert guard < text.index('[[ -n "$(ls -A "$dst" 2>/dev/null)" ]]')
-    assert "sudo mv '$src' '$dst'" in text
+    # Second review 2026-10-14, H7: `mv -T` (a plain `mv` into a folder the
+    # containers already made nested uploads/uploads/), and the folder named
+    # is the one that failed, with its own owner.
+    assert "sudo mv -T '$src' '$dst'" in text and "sudo mv '$src'" not in text
+    assert 'bad="$dst"; else bad="$src"' in text and "stat -c '%U, UID %u' \"$bad\"" in text
 
 
 def test_low_disk_in_a_piped_deploy_is_a_stated_cancel(project):

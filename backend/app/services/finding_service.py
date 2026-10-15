@@ -196,7 +196,8 @@ class FindingService:
         project members"): ONE notification per finding per action, never one
         per host.  Every writer that can move an endpoint into ``retest``
         calls it once its moves are made (the single and bulk endpoint
-        writes, ``remediation_service.apply``).  The caller commits."""
+        writes, the Undo of a removal, ``remediation_service.apply``).  The
+        caller commits."""
         pending, self._retests_requested = self._retests_requested, {}
         if not pending:
             return
@@ -918,6 +919,7 @@ class FindingService:
             finding, row,
             FindingHostStatus.REMEDIATED.value if fixed else FindingHostStatus.OPEN.value, actor_id,
             f"retest: {'fixed' if fixed else 'still present'} (evidence record {record.id})",
+            retest_result=True,
         )
         self.db.flush()
         return record
@@ -944,6 +946,7 @@ class FindingService:
     def _move_endpoint(
         self, finding: Finding, row: FindingHost, host_status: str,
         actor_id: Optional[int], note: Optional[str], *, history: bool = True,
+        retest_result: bool = False,
     ) -> bool:
         """THE one write of ``finding_hosts.host_status`` on an existing row:
         it refuses a value that is not an endpoint state (422) and writes the
@@ -951,21 +954,30 @@ class FindingService:
         written).  Does not flush.
 
         ``history=False`` is for the one caller whose own line already says
-        it: the false-positive dismissal that CREATED the finding."""
+        it: the false-positive dismissal that CREATED the finding.
+        ``retest_result``: the move is a recorded retest's (``record_retest``),
+        which closes the request whatever it found."""
         self._validate_endpoint_status(host_status)
         if row.host_status == host_status:
             return False
         old = row.host_status
         retest, remediated = FindingHostStatus.RETEST.value, FindingHostStatus.REMEDIATED.value
+        false_positive = FindingHostStatus.FALSE_POSITIVE.value
         # A retest is closed with its result (owner, 2026-10-14: "anyone
-        # should be allowed to attempt to close it with evidence"): Retest
-        # pending → Remediated needs a result showing it fixed, recorded on
-        # THIS endpoint since the retest was asked for.  Every way in —
-        # the picker, the bulk bar, an accepted proposal — comes through here.
-        if old == retest and host_status == remediated and not self.retest_result_recorded(row):
+        # should be allowed to attempt to close it with evidence"): while a
+        # retest stands — the endpoint is Retest pending, or was moved back to
+        # Still present by hand after one was asked for — Remediated needs a
+        # result showing it fixed, recorded on THIS endpoint since the retest
+        # was asked for.  Every way in (the picker, the bulk bar, an accepted
+        # proposal) comes through here; Retest pending → Still present →
+        # Remediated walked round it (second review 2026-10-14, H2; owner Q1:
+        # the request stands until a recorded result or a false-positive
+        # judgement closes it).
+        requested = old == retest or row.retest_requested_at is not None
+        if requested and host_status == remediated and not self.retest_result_recorded(row):
             raise HTTPException(
                 status_code=409,
-                detail=(f"{self._endpoint_label(row)} is awaiting a retest: record the retest's result "
+                detail=(f"A retest was asked for on {self._endpoint_label(row)}: record the retest's result "
                         "(it shows the issue fixed) to mark it remediated."),
             )
         row.host_status = host_status
@@ -974,8 +986,14 @@ class FindingService:
         # remediate.  Gone with the conclusion.
         row.remediated_at = now if host_status == remediated else None
         # When the retest was asked for: what a result must postdate — on the
-        # DATABASE's clock, as the evidence's ``created_at`` is.
-        row.retest_requested_at = func.now() if host_status == retest else None
+        # DATABASE's clock, as the evidence's ``created_at`` is.  Kept on a
+        # hand move to Still present; cleared by the result that closes it
+        # (``retest_result``, or Remediated, which the guard above admits only
+        # with one) and by a false-positive judgement.
+        if host_status == retest:
+            row.retest_requested_at = func.now()
+        elif retest_result or host_status in (remediated, false_positive):
+            row.retest_requested_at = None
         if host_status == retest:
             self._retests_requested.setdefault(finding.id, (finding, []))[1].append(row)
         if history:
@@ -1205,7 +1223,8 @@ class FindingService:
             # At least one host in this state — ``retest`` is the project's
             # retest list (2.501.0).  A correlated EXISTS.
             FindingService._validate_endpoint_status(host_state)
-            q = q.filter(Finding.hosts.any(FindingHost.host_status == host_state))
+            from app.services.finding_needs import has_endpoint_in
+            q = q.filter(has_endpoint_in(host_state))
         return q
 
     def list_findings(

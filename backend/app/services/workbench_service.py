@@ -105,11 +105,15 @@ class RetestsPending(BaseModel):
 
 
 def compute_retests_pending(db: Session, project: Project) -> RetestsPending:
-    """One statement over the project's endpoints in ``retest``."""
+    """One statement over the project's endpoints in ``retest``: the findings
+    with one (the total of ``/findings?host_state=retest``) and the distinct
+    HOSTS awaiting one — a host under two names, or on three findings, is one
+    host (second review 2026-10-14, F1: it counted endpoint rows and the lead
+    said "hosts")."""
     from app.db.models_findings import Finding, FindingHost, FindingHostStatus
 
     findings, hosts = (
-        db.query(func.count(func.distinct(FindingHost.finding_id)), func.count(FindingHost.id))
+        db.query(func.count(func.distinct(FindingHost.finding_id)), func.count(func.distinct(FindingHost.host_id)))
         .join(Finding, Finding.id == FindingHost.finding_id)
         .filter(Finding.project_id == project.id, FindingHost.host_status == FindingHostStatus.RETEST.value)
         .one()
