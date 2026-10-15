@@ -1,5 +1,7 @@
 # Report templates
 
+> How a report is produced, what each part of a template controls, and how far a team can change its reports before BlueStick itself must change: in the app, **Reference → Changing report templates** (`/reference/report-templates`). This file is the full reference behind it — every manifest key, data field and helper.
+
 Each folder here is one client report template. BlueStick lists every valid folder on the **Reports** page. Each project picks a default template, and each draft can switch to another at any time.
 
 | Folder | For | Formats |

@@ -123,6 +123,7 @@ const AgentsGuide = lazy(() => import('./pages/userguide/AgentsGuide'));
 const AdminGuide = lazy(() => import('./pages/userguide/AdminGuide'));
 const SbomReference = lazy(() => import('./pages/SbomReference'));
 const ToolCoverage = lazy(() => import('./pages/ToolCoverage'));
+const ReportTemplateGuide = lazy(() => import('./pages/ReportTemplateGuide'));
 const McpReference = lazy(() => import('./pages/McpReference'));
 const AgentSessionDetail = lazy(() => import('./pages/AgentSessionDetail'));
 const Feedback = lazy(() => import('./pages/Feedback'));
@@ -725,6 +726,14 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <ToolCoverage />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/reference/report-templates"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <ReportTemplateGuide />
                           </ProtectedRoute>
                         }
                       />

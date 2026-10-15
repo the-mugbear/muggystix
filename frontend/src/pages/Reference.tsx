@@ -11,7 +11,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import {
-  BookOpen, Bot, Download, ExternalLink, FileCode, FileSearch, FileText, KeyRound, Package, Plug, Terminal,
+  BookOpen, Bot, Download, ExternalLink, FileCode, FileCog, FileSearch, FileText, KeyRound, Package, Plug, Terminal,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -39,6 +39,10 @@ const GROUPS: Array<{ title: string; description: string; entries: Entry[] }> = 
       {
         kind: 'page', path: '/reference/mcp', Icon: Plug, title: 'MCP for AI Assist',
         description: 'Connect an AI assistant as native tools — setup per client, the tool catalogue, what a session may do.',
+      },
+      {
+        kind: 'page', path: '/reference/report-templates', Icon: FileCog, title: 'Changing report templates',
+        description: 'How a client report is made, what each part of a template controls, and how far a team can go before BlueStick itself must change.',
       },
       {
         kind: 'download', href: '/api/v1/agents-guide', filename: 'bluestick-agent-guide.md', label: 'the agent guide', Icon: Bot,
