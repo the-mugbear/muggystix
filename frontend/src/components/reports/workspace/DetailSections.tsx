@@ -34,8 +34,8 @@ import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
 import { Textarea } from '../../ui/textarea';
 import {
-  DETAIL_LABELS, DETAIL_SECTIONS, type DetailKey, type DetailSection, current, customised, isListKey,
-  sectionStatus, sourceCaption,
+  DETAIL_LABELS, DETAIL_SECTIONS, type DetailKey, type DetailSection, current, customised, edited, isListKey,
+  sectionStatus, shown, sourceCaption,
 } from './detailModel';
 import { DetailRows, DistributionEditor, TeamEditor } from './DetailEditors';
 import type { DetailEdits } from './useDetailEdits';
@@ -127,9 +127,12 @@ const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> =
 
   const field = (key: DetailKey) => {
     const id = `${idPrefix}-${FIELD_SUFFIX[key]}`;
+    // The editor holds the value as typed; the read view, the warnings and
+    // the marks judge what a save stores (third review 2026-10-15, H6/H7).
     const value = current(ctx, key);
+    const stored = shown(ctx, key);
     const own = customised(ctx, key);
-    const caption = ctx.followed && !own && !(key in ctx.pending) ? sourceCaption(ctx.sources?.[key]) : null;
+    const caption = ctx.followed && !own && !edited(ctx, key) ? sourceCaption(ctx.sources?.[key]) : null;
     // A section of one field says "Customised for this report" in its status
     // line already: the field keeps only its action (walkthrough 2026-10-14 —
     // the Executive summary said it twice).
@@ -153,17 +156,17 @@ const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> =
     // "nobody" there — with none saved, every draft lists the project's
     // analysts and admins.  Said, not refused (owner, 2026-10-15, second
     // review Q3).
-    const defaultsTeamEmpty = !ctx.followed && key === 'testers' && Array.isArray(value) && value.length === 0;
+    const defaultsTeamEmpty = !ctx.followed && key === 'testers' && Array.isArray(stored) && stored.length === 0;
     const projectTeamLine = 'With no team here, drafts list the project’s analysts and admins.';
 
     if (!open) {
       // Read view: the value as the report's details read.
       let body: React.ReactNode;
       if (isListKey(key)) {
-        body = <DetailRows rows={(value as Array<ReportTester | ReportRecipient> | undefined) ?? []}
+        body = <DetailRows rows={(stored as Array<ReportTester | ReportRecipient> | undefined) ?? []}
           empty={defaultsTeamEmpty ? projectTeamLine : 'Nobody listed'} />;
       } else {
-        const text = typeof value === 'string' ? value.trim() : '';
+        const text = typeof stored === 'string' ? stored.trim() : '';
         body = !text
           ? <p className="text-body italic text-muted-foreground">{key === 'disclaimer' ? 'None written: the template’s own disclaimer is printed' : 'Not written'}</p>
           : MARKDOWN.includes(key)
@@ -207,7 +210,7 @@ const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> =
           placeholder={EXAMPLE[key]} onChange={(e) => set(e.target.value)} disabled={busy} />
       );
     }
-    const listEmptied = isListKey(key) && Array.isArray(value) && value.length === 0 && own;
+    const listEmptied = isListKey(key) && Array.isArray(stored) && stored.length === 0 && own;
     return (
       <div key={key} className="min-w-0 space-y-xxs">
         {isListKey(key)

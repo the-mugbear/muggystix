@@ -61,7 +61,8 @@ def _finding(db, project, endpoints, *, status="confirmed", severity="medium"):
                            state="up")
         db.add(host)
         db.flush()
-        link = FindingHost(finding_id=finding.id, host_id=host.id, host_status=host_status)
+        link = FindingHost(finding_id=finding.id, host_id=host.id, host_status=host_status,
+                           retest_requested_at=datetime.now(timezone.utc) if host_status == "retest" else None)
         db.add(link)
         links.append(link)
     db.commit()

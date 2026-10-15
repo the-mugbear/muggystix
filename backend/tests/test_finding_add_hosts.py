@@ -76,7 +76,8 @@ def test_a_host_already_attached_is_skipped(client, db_session, test_project, fi
     name = models.DNSName(project_id=test_project.id, fqdn="www.example.com")
     db_session.add(name)
     db_session.flush()
-    db_session.add(FindingHost(finding_id=finding["id"], host_id=new.id, name_id=name.id, host_status="retest"))
+    db_session.add(FindingHost(finding_id=finding["id"], host_id=new.id, name_id=name.id, host_status="retest",
+                               retest_requested_at=datetime.now(timezone.utc)))
     db_session.commit()
 
     before = len(db_session.query(FindingStatusHistory).filter_by(finding_id=finding["id"]).all())

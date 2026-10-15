@@ -348,3 +348,25 @@ def test_bloodhound_records_before_a_cut_carry_floats_as_a_whole_file_does(tmp_p
     assert entries == [{"Properties": {"name": "PC1", "score": 1.5}}]
     score = entries[0]["Properties"]["score"]
     assert isinstance(score, float) and not isinstance(score, Decimal)
+
+
+def test_a_cut_json_file_holding_a_byte_that_is_not_utf8_is_still_cut_short(tmp_path):
+    """Third review 2026-10-15, H4: the reader drops a byte that is not UTF-8
+    (Perl / Ruby tools write Latin-1 titles), but the cut test read the file
+    again, raw, and failed AT that byte — "invalid", 0 records, never offered
+    "Import what the file holds", though 49 records were complete."""
+    from app.parsers.streaming_json import iter_json_records
+
+    records = [{"host": f"10.0.0.{n}", "title": "caf\xe9" if n == 7 else "ok"} for n in range(50)]
+    whole = json.dumps(records, ensure_ascii=False).encode("latin-1")
+    path = tmp_path / "nikto.json"
+    path.write_bytes(whole[:-30])
+    with pytest.raises(TruncatedFile) as cut:
+        list(iter_json_records(str(path), tool_label="Nikto"))
+    assert cut.value.records_read == 49
+    token = begin_read(keep_truncated=True)
+    try:
+        kept = list(iter_json_records(str(path), tool_label="Nikto"))
+    finally:
+        end_read(token)
+    assert len(kept) == 49 and kept[7]["title"] == "caf"           # the bad byte dropped, as the reader does

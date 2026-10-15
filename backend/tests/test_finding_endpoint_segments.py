@@ -253,8 +253,8 @@ def test_a_list_rows_preview_carries_no_segment(client, db_session, test_project
     assert row["hosts"] == [{
         "id": row["hosts"][0]["id"], "host_id": row["hosts"][0]["host_id"], "ip_address": "10.1.5.9",
         "hostname": None, "name_id": None, "fqdn": None, "host_status": "open", "segment": None,
-        # Single-finding answers only, like the segment (2.504.1).
-        "retest_requested_at": None,
+        # Single-finding answers only, like the segment (2.504.1, 2.505.0).
+        "retest_requested_at": None, "retest_stands": False,
     }]
     # The list asks nothing about subnets.
     assert not [s for s in statements if "host_subnet_mappings" in s or "subnets" in s], "\n".join(statements)

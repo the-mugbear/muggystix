@@ -2940,6 +2940,10 @@ class AssistFindingHost(BaseModel):
     name_id: Optional[int] = None
     fqdn: Optional[str] = None
     host_status: str
+    #: A retest stands on this endpoint — the page's one rule
+    #: (``finding_needs.retest_stands``): Retest pending, or Still present
+    #: with the request kept, on a finding not judged a false positive.
+    retest_stands: bool = False
 
 
 class AssistFindingDetail(BaseModel):
@@ -3081,13 +3085,17 @@ def get_assist_finding(
             name_id=r.name_id,
             fqdn=r.fqdn,
             host_status=r.host_status,
+            retest_stands=bool(r.retest_stands),
         )
         for r in (
             db.query(
                 FindingHost.id.label("finding_host_id"),
                 FindingHost.host_id, FindingHost.name_id, FindingHost.host_status,
                 models.Host.ip_address, models.Host.hostname, models.DNSName.fqdn,
+                # The page's one rule (third review 2026-10-15, R1).
+                finding_needs.retest_stands().label("retest_stands"),
             )
+            .join(Finding, Finding.id == FindingHost.finding_id)
             .join(models.Host, FindingHost.host_id == models.Host.id)
             .outerjoin(models.DNSName, FindingHost.name_id == models.DNSName.id)
             .filter(FindingHost.finding_id == finding.id)

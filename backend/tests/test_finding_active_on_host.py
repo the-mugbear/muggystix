@@ -12,6 +12,8 @@ already used the right rule.  Pins:
 * a remediated endpoint is treated the same way;
 * the rule is one definition, shared with the report code.
 """
+from sqlalchemy import func
+
 from app.db import models
 from app.db.models_findings import (
     Finding, FindingHost, FindingHostStatus, INACTIVE_ENDPOINT_STATES,
@@ -40,7 +42,8 @@ def _seed(db, project, dismissed_state):
     db.flush()
     db.add_all([
         FindingHost(finding_id=finding.id, host_id=live.id, host_status=FindingHostStatus.OPEN.value),
-        FindingHost(finding_id=finding.id, host_id=dismissed.id, host_status=dismissed_state),
+        FindingHost(finding_id=finding.id, host_id=dismissed.id, host_status=dismissed_state,
+                    retest_requested_at=func.now() if dismissed_state == FindingHostStatus.RETEST.value else None),
     ])
     db.commit()
     SubnetCorrelationService(db).correlate_all_hosts_to_subnets(project_id=pid)

@@ -83,7 +83,8 @@ def _finding(db_session, project, title, severity="high", status="confirmed", ho
             host, host_status = h
         else:
             host, host_status = h, "open"
-        db_session.add(FindingHost(finding_id=f.id, host_id=host.id, host_status=host_status))
+        db_session.add(FindingHost(finding_id=f.id, host_id=host.id, host_status=host_status,
+                                   retest_requested_at=datetime.now(timezone.utc) if host_status == "retest" else None))
     db_session.commit()
     return f
 

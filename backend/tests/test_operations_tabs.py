@@ -141,7 +141,10 @@ def test_findings_to_retest_are_the_list_the_call_out_opens(client, db_session, 
             host = models.Host(project_id=pid, ip_address=f"10.77.{n // 250}.{n % 250 + 1}", state="up")
             db_session.add(host)
             db_session.flush()
-            db_session.add(FindingHost(finding_id=f.id, host_id=host.id, host_status=state))
+            # A host Retest pending carries its request, as every move into it
+            # stamps one (``ck_finding_hosts_retest_requested``).
+            db_session.add(FindingHost(finding_id=f.id, host_id=host.id, host_status=state,
+                                       retest_requested_at=datetime.now(timezone.utc) if state == "retest" else None))
         return f
 
     for i in range(26):                                   # more than a page

@@ -351,10 +351,13 @@ const FindingDetail: React.FC = () => {
     onError: (err) => toast.error(formatApiError(err, 'Failed to delete the finding.')),
   });
 
-  // Undo of a removal: the row goes back with its name and its own state.
+  // Undo of a removal: the row goes back with its name, its own state and
+  // the retest that stood on it (third review 2026-10-15, H1: without it the
+  // restored row's Remediated skipped the retest guard).
   const restoreEndpoint = useMutation({
     mutationFn: (v: { row: FindingHostInfo; label: string }) => addFindingHosts(projectId, id, [], [
-      { host_id: v.row.host_id, name_id: v.row.name_id ?? null, host_status: v.row.host_status },
+      { host_id: v.row.host_id, name_id: v.row.name_id ?? null, host_status: v.row.host_status,
+        retest_requested_at: v.row.retest_requested_at ?? null },
     ]),
     onMutate: () => findingAsSent(queryClient, projectId, id),
     onSuccess: (reverted, v, sent) => {

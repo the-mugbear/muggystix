@@ -75,6 +75,19 @@ describe('Report details — sections', () => {
     expect(section('summary').getAllByText(/Customised for this report/)).toHaveLength(1);
   });
 
+  // Third review 2026-10-15, H7: the page said "Not written", held Issue as
+  // unsaved, and the save printed the project's value again.
+  it('clearing a followed field and pressing Done shows the project’s value, with nothing unsaved', () => {
+    render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Client & engagement' }));
+    fireEvent.change(screen.getByLabelText('Client'), { target: { value: '' } });
+    expect(screen.getByLabelText('Client')).toHaveValue('');                    // the editor holds what was typed
+    fireEvent.click(section('engagement').getByRole('button', { name: 'Done' }));
+    expect(section('engagement').getByText('Example Corp')).toBeInTheDocument();
+    expect(section('engagement').queryByText('Not written')).toBeNull();
+    expect(latest?.dirty).toBe(false);
+  });
+
   it('opening a section and cancelling leaves nothing pending', () => {
     render(<Harness />);
     fireEvent.click(screen.getByRole('button', { name: 'Edit Client & engagement' }));

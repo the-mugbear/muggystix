@@ -17,7 +17,7 @@ import { useCallback, useMemo, useState } from 'react';
 
 import {
   DETAIL_SECTIONS, type DetailContext, type DetailKey, type DetailSection, type DetailValue, type Pending,
-  withEdit,
+  edited, withEdit,
 } from './detailModel';
 
 type SectionId = DetailSection['id'];
@@ -64,8 +64,10 @@ export function useDetailEdits(base: Omit<DetailContext, 'pending'>): DetailEdit
     setPending((p) => withEdit({ ...base, pending: p }, key, value));
   }, [base]);
 
+  // Judged on what a save would store (third review 2026-10-15, H6/H7): a
+  // blank row or a cleared followed text holds nothing unsaved.
   const dirtySections = DETAIL_SECTIONS
-    .filter((s) => s.keys.some((k) => k in pending))
+    .filter((s) => s.keys.some((k) => edited(ctx, k)))
     .map((s) => s.id);
 
   return {

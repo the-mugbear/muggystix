@@ -969,6 +969,18 @@ class ClientReportService:
                 .filter(Annotation.id.in_(ids[start:start + _ID_CHUNK])).all()
             )
         for entry in by_finding.values():
+            # A note's images stand together, where its first image stood:
+            # in upload order an image of note B came between two of note A,
+            # and A's second image printed under B's text (third review
+            # 2026-10-15, H3).  An image with no note keeps its place.
+            first: Dict[int, int] = {}
+            for index, item in enumerate(entry["evidence"]):
+                if item.get("note_id") is not None:
+                    first.setdefault(item["note_id"], index)
+            entry["evidence"] = [item for _, item in sorted(
+                enumerate(entry["evidence"]),
+                key=lambda pair: (first.get(pair[1].get("note_id"), pair[0]), pair[0]),
+            )]
             said = set()
             for item in entry["evidence"]:
                 note_id = item.pop("note_id", None)

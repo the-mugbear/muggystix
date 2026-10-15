@@ -44,6 +44,10 @@ class FindingHostInfo(BaseModel):
     # or a false-positive judgement closes it (owner, 2026-10-15). Single-
     # finding responses only, like ``segment``.
     retest_requested_at: Optional[datetime] = None
+    # A retest STANDS on this endpoint — ``finding_needs.retest_stands_on``,
+    # the one rule the guard and every retest list use (third review
+    # 2026-10-15, R1/R6: the page re-derived it).  Single-finding responses.
+    retest_stands: bool = False
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -304,6 +308,10 @@ class FindingEndpointRef(BaseModel):
     name_id: Optional[int] = None
     # An endpoint state or nothing: anything else is a 422.
     host_status: Optional[FindingHostStatus] = None
+    # The retest that stood on the removed row (its ``retest_requested_at``),
+    # put back by an Undo so the retest guard still holds (third review
+    # 2026-10-15, H1).  Read only for a row the call re-attaches.
+    retest_requested_at: Optional[datetime] = None
 
 
 class FindingHostsRequest(BaseModel):

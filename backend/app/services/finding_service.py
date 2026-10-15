@@ -829,9 +829,13 @@ class FindingService:
         which host moved.
         """
         self._validate_endpoint_status(host_status)
+        # Locked and read fresh, as ``record_retest`` reads it: a move decided
+        # on a row a concurrent retest result had just changed left it
+        # Still present with a stale fixed date (third review 2026-10-15, S1).
         row = (
             self.db.query(FindingHost)
             .filter(FindingHost.finding_id == finding.id, FindingHost.id == finding_host_id)
+            .with_for_update().populate_existing()
             .first()
         )
         if row is None:
@@ -860,7 +864,10 @@ class FindingService:
             self.db.query(FindingHost)
             .options(selectinload(FindingHost.host), selectinload(FindingHost.name))
             .filter(FindingHost.finding_id == finding.id, FindingHost.id.in_(wanted))
+            # Locked in id order (one order for every multi-row writer) and
+            # read fresh (third review 2026-10-15, S1).
             .order_by(FindingHost.id)
+            .with_for_update(of=FindingHost).populate_existing()
             .all()
         )
         missing = sorted(set(wanted) - {r.id for r in rows})
@@ -925,7 +932,8 @@ class FindingService:
         )
         if row is None:
             raise HTTPException(status_code=404, detail="Endpoint is not attached to this finding")
-        if row.host_status != FindingHostStatus.RETEST.value and row.retest_requested_at is None:
+        from app.services.finding_needs import retest_stands_on
+        if not retest_stands_on(row, finding):
             raise HTTPException(status_code=409, detail=(
                 f"{self._endpoint_label(row)} is not awaiting a retest; mark it Retest pending first, "
                 "or set its state directly."))
@@ -999,9 +1007,11 @@ class FindingService:
         # proposal) comes through here; Retest pending → Still present →
         # Remediated walked round it (second review 2026-10-14, H2; owner Q1:
         # the request stands until a recorded result or a false-positive
-        # judgement closes it).
-        requested = old == retest or row.retest_requested_at is not None
-        if requested and host_status == remediated and not self.retest_result_recorded(row):
+        # judgement closes it).  "A retest stands" is ONE rule,
+        # ``finding_needs.retest_stands_on`` — the lists count the same
+        # endpoints (third review 2026-10-15, R1).
+        from app.services.finding_needs import retest_stands_on
+        if host_status == remediated and retest_stands_on(row, finding) and not self.retest_result_recorded(row):
             raise HTTPException(
                 status_code=409,
                 detail=(f"A retest was asked for on {self._endpoint_label(row)}: record the retest's result "
@@ -1126,7 +1136,12 @@ class FindingService:
         self._before_endpoints_removed(
             finding, actor_id=actor_id, is_project_admin=is_project_admin, finding_host_id=finding_host_id,
         )
-        snapshot = {"host_id": row.host_id, "name_id": row.name_id, "host_status": row.host_status}
+        # With the retest request it carried: an Undo that dropped it made the
+        # restored row's Remediated free (third review 2026-10-15, H1).
+        snapshot = {
+            "host_id": row.host_id, "name_id": row.name_id, "host_status": row.host_status,
+            "retest_requested_at": row.retest_requested_at,
+        }
         self._record_endpoint_removed(finding, row, actor_id)
         self.db.delete(row)
         self.db.flush()
@@ -1135,6 +1150,7 @@ class FindingService:
     def restore_endpoint(
         self, *, finding: Finding, host_id: int, name_id: Optional[int] = None,
         host_status: Optional[str] = None, actor_id: Optional[int] = None,
+        retest_requested_at: Optional[datetime] = None,
     ) -> Finding:
         """v2.325.0 — (re)attach one endpoint with its name and status intact.
         ``name_id`` must belong to the finding's project; a name from another
@@ -1143,7 +1159,13 @@ class FindingService:
         The state is set through :meth:`_move_endpoint` — on a row this call
         attached and on one that was already there alike — so a value that is
         not an endpoint state is refused before anything is written and every
-        change of state has its history line."""
+        change of state has its history line.
+
+        ``retest_requested_at`` (what the removal answered): the retest that
+        stood on the row goes back on it BEFORE the state is set, so the
+        guard holds — a restore straight to Remediated is refused like any
+        other move while it stands (third review 2026-10-15, H1).  A move
+        into ``retest`` stamps its own request."""
         if host_status:
             self._validate_endpoint_status(host_status)
         if name_id is not None:
@@ -1173,6 +1195,8 @@ class FindingService:
         if row is not None:
             if not was_attached:
                 self._endpoint_line(finding, actor_id, f"Restored endpoint {self._endpoint_label(row)}")
+                if retest_requested_at is not None:
+                    row.retest_requested_at = retest_requested_at
             if host_status:
                 self._move_endpoint(finding, row, host_status, actor_id, "restored")
         self.db.flush()
@@ -1248,10 +1272,15 @@ class FindingService:
             q = q.filter(finding_needs.need_condition(needs))
         if host_state:
             # At least one host in this state — ``retest`` is the project's
-            # retest list (2.501.0).  A correlated EXISTS.
+            # retest list: every host a retest STANDS on (third review
+            # 2026-10-15, R1 — Still present with a kept request included).
+            # A correlated EXISTS.
             FindingService._validate_endpoint_status(host_state)
-            from app.services.finding_needs import has_endpoint_in
-            q = q.filter(has_endpoint_in(host_state))
+            from app.services.finding_needs import has_endpoint_in, has_retest_standing
+            q = q.filter(
+                has_retest_standing() if host_state == FindingHostStatus.RETEST.value
+                else has_endpoint_in(host_state)
+            )
         return q
 
     def list_findings(

@@ -33,7 +33,7 @@ import {
 import { type OnProposalDecided, useProposalDecision } from '../../hooks/useProposalDecision';
 import { ProposalDecisionControls, ProposalReasons, ProposalSource } from '../proposals/ProposalItem';
 import { useToast } from '../../contexts/ToastContext';
-import { formatApiError } from '../../utils/apiErrors';
+import { asAxiosError, formatApiError } from '../../utils/apiErrors';
 import { cn } from '../../utils/cn';
 import {
   ENDPOINT_BULK_MAX, ENDPOINT_CAP, ENDPOINT_GROUPS_OPEN_MAX, ENDPOINT_MOUNT_MAX, ENDPOINT_STATES,
@@ -90,10 +90,10 @@ const NO_PROPOSALS = new Map<number, Proposal[]>();
 const NO_OVERRIDES = new Map<string, boolean>();
 
 const endpointName = (h: FindingHostInfo) => `${h.fqdn ? `${h.fqdn} on ` : ''}${h.ip_address || h.host_id}`;
-/** A retest stands on this host: Retest pending, or Still present after a
- *  hand move kept the request (owner, 2026-10-15) — the server's rule
- *  (`_move_endpoint`, `record_retest`). */
-const awaitsRetest = (h: FindingHostInfo) => h.host_status === 'retest' || !!h.retest_requested_at;
+/** A retest stands on this host — the server says so (`retest_stands`,
+ *  `finding_needs.retest_stands_on`, the rule every retest list counts by);
+ *  the page keeps no copy of the rule (third review 2026-10-15, R1/R6). */
+const awaitsRetest = (h: FindingHostInfo) => !!h.retest_stands;
 
 /** A sticky cell needs an opaque fill, and draws its own rule: a collapsed
  *  table border does not travel with a stuck cell. */
@@ -306,11 +306,6 @@ const FindingEndpoints: React.FC<Props> = ({
 
   const setOne = async (row: FindingHostInfo, hostStatus: FindingHostStatus) => {
     if (row.host_status === hostStatus || saving.has(row.id)) return;
-    // Remediated, while a retest stands, is the retest's RESULT: recorded.
-    if (awaitsRetest(row) && hostStatus === 'remediated') {
-      setRetesting(row);
-      return;
-    }
     // Busy from the click, not from the send: a queued row stays locked until
     // ITS request is back.
     setSaving((prev) => new Set(prev).add(row.id));
@@ -328,7 +323,15 @@ const FindingEndpoints: React.FC<Props> = ({
           return next;
         });
       } catch (err) {
-        toast.error(formatApiError(err, 'Failed to update the endpoint state.'));
+        // Remediated while a retest stands needs the retest's result: the
+        // SERVER decides (a fixing result an agent already recorded is
+        // enough), and its refusal opens the dialog that records one (third
+        // review 2026-10-15, R6 — the page refused by a rule of its own).
+        if (hostStatus === 'remediated' && row.retest_stands && asAxiosError(err).response?.status === 409) {
+          setRetesting(row);
+        } else {
+          toast.error(formatApiError(err, 'Failed to update the endpoint state.'));
+        }
       } finally {
         setSaving((prev) => {
           const next = new Set(prev);

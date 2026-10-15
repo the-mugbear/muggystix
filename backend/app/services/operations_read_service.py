@@ -1083,13 +1083,12 @@ FINDING_NEEDS = ("decide", "write", "retest")
 
 
 def marked_for_retest_condition():
-    """"A host of the finding awaits a retest", as Operations' ``decide`` /
-    ``need=retest`` reads it — ``finding_needs.has_endpoint_in``, the one
-    definition the Findings list's ``host_state=retest`` uses too.  A retest
-    is per host since 2.501.0 (owner, 2026-10-14)."""
-    from app.db.models_findings import FindingHostStatus
-    from app.services.finding_needs import has_endpoint_in
-    return has_endpoint_in(FindingHostStatus.RETEST.value)
+    """"A retest stands on a host of the finding", as Operations' ``decide``
+    / ``need=retest`` reads it — ``finding_needs.has_retest_standing``, the
+    one definition the Findings list's ``host_state=retest`` uses too (third
+    review 2026-10-15, R1)."""
+    from app.services.finding_needs import has_retest_standing
+    return has_retest_standing()
 
 
 def compute_my_findings(

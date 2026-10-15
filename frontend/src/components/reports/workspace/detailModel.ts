@@ -92,7 +92,10 @@ export interface DetailContext {
 export const baseline = (c: DetailContext, key: DetailKey): DetailValue | null | undefined =>
   (savedOverride(c.saved, key) || !c.followed || c.ownOnly.includes(key)) ? c.saved[key] : c.followed[key];
 
-/** The value a detail has now, pending edits included — what the page shows. */
+/** The value a detail has now AS TYPED, pending edits included — what an
+ *  open editor holds (a blank recipient row being filled in, a field just
+ *  cleared).  The read view and everything that judges the edit use
+ *  {@link shown} / {@link edited}. */
 export const current = (c: DetailContext, key: DetailKey): DetailValue | null | undefined => {
   if (key in c.pending) {
     const p = c.pending[key];
@@ -101,19 +104,61 @@ export const current = (c: DetailContext, key: DetailKey): DetailValue | null | 
   return baseline(c, key);
 };
 
+/** A value as a save would store it: a list without its nameless rows
+ *  (names trimmed), a text trimmed (blank = none). */
+export const cleaned = (key: DetailKey, v: unknown): DetailValue | null => {
+  if (!isListKey(key)) return trimmed(v) as DetailValue | null;
+  return (Array.isArray(v) ? v : [])
+    .filter((r: { name?: string | null }) => (r.name ?? '').trim())
+    .map((r: { name: string }) => ({ ...r, name: r.name.trim() })) as DetailValue;
+};
+
+const followable = (c: DetailContext, key: DetailKey) => !!c.followed && !c.ownOnly.includes(key);
+
+/** The override a detail carries as saved; undefined = none (it follows the
+ *  project, or on the defaults page holds nothing). */
+const savedState = (c: DetailContext, key: DetailKey) => (savedOverride(c.saved, key) ? c.saved[key] : undefined);
+
+/** The override a pending edit makes once saved, judged on what a save
+ *  stores (third review 2026-10-15, H6/H7: the page judged the raw value —
+ *  a blank recipient row made the draft's distribution its own empty list,
+ *  and clearing a followed text said "Not written" then printed the
+ *  project's value).  undefined = none: `null` ("use the project's"), a
+ *  blank text (it follows, or clears a default), or a value equal to what
+ *  the draft follows — except an empty list chosen as such ("nobody", which
+ *  the server always keeps; review 2026-10-14, R9). */
+const pendingState = (c: DetailContext, key: DetailKey) => {
+  const p = c.pending[key];
+  if (p === null || p === undefined) return undefined;
+  const value = cleaned(key, p);
+  if (value === null) return undefined;
+  if (!followable(c, key)) return value;
+  const nobodyChosen = isListKey(key) && Array.isArray(p) && p.length === 0;
+  return !nobodyChosen && sameValue(key, value, c.followed![key]) ? undefined : value;
+};
+
+/** Is the detail EDITED — would a save change what is stored?  An edit that
+ *  stores what is already stored (a blank row, a cleared followed text, a
+ *  value typed back) is none: nothing is sent, nothing is held unsaved. */
+export const edited = (c: DetailContext, key: DetailKey): boolean => {
+  if (!(key in c.pending)) return false;
+  const now = pendingState(c, key);
+  const before = savedState(c, key);
+  if (now === undefined || before === undefined) return now !== before;
+  return !sameValue(key, now, before);
+};
+
+/** The value a detail shows when read (and prints once saved). */
+export const shown = (c: DetailContext, key: DetailKey): DetailValue | null | undefined => {
+  if (!edited(c, key)) return baseline(c, key);
+  const now = pendingState(c, key);
+  return now !== undefined ? now : (c.followed && !c.ownOnly.includes(key) ? c.followed[key] : null);
+};
+
 /** Is the detail this report's own (customised) — with pending edits? */
 export const customised = (c: DetailContext, key: DetailKey): boolean => {
-  if (!c.followed || c.ownOnly.includes(key)) return false;
-  if (key in c.pending) {
-    const p = c.pending[key];
-    // An edit equal to the project's value follows it once saved (the
-    // server's "changed back" rule): it is not shown as customised — except
-    // an empty list, which the server always keeps ("nobody", chosen on
-    // purpose; review 2026-10-14, R9: the page said "uses the project's"
-    // until it was saved).
-    if (isListKey(key) && Array.isArray(p) && p.length === 0) return true;
-    return p !== null && p !== undefined && hasValue(key, p) && !sameValue(key, p, c.followed[key]);
-  }
+  if (!followable(c, key)) return false;
+  if (key in c.pending) return pendingState(c, key) !== undefined;
   return savedOverride(c.saved, key);
 };
 
@@ -135,20 +180,15 @@ export const withEdit = (c: DetailContext, key: DetailKey, value: DetailValue | 
   return next;
 };
 
-/** The complete override map with the pending edits applied — the values
+/** The complete override map with the EDITED details applied — the values
  *  the page shows as this report's own. */
 export const withPending = (c: DetailContext): EngagementOverrides => {
   const settings: EngagementOverrides = { ...c.saved };
   for (const key of Object.keys(c.pending) as DetailKey[]) {
-    const p = c.pending[key];
-    if (p === null || p === undefined || (!isListKey(key) && trimmed(p) === null)) {
-      delete settings[key];
-    } else if (isListKey(key)) {
-      (settings as Record<string, unknown>)[key] = (p as Array<{ name: string }>)
-        .filter((r) => r.name.trim()).map((r) => ({ ...r, name: r.name.trim() }));
-    } else {
-      (settings as Record<string, unknown>)[key] = p;
-    }
+    if (!edited(c, key)) continue;
+    const now = pendingState(c, key);
+    if (now === undefined) delete settings[key];
+    else (settings as Record<string, unknown>)[key] = now;
   }
   return settings;
 };
@@ -160,7 +200,7 @@ export const withPending = (c: DetailContext): EngagementOverrides => {
 export const toSave = (c: DetailContext): EngagementOverrides => {
   const all = withPending(c);
   return Object.fromEntries(
-    (Object.keys(c.pending) as DetailKey[]).map((k) => [k, all[k] ?? null]),
+    (Object.keys(c.pending) as DetailKey[]).filter((k) => edited(c, k)).map((k) => [k, all[k] ?? null]),
   ) as EngagementOverrides;
 };
 

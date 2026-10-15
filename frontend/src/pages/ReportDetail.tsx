@@ -50,6 +50,7 @@ import { reportTemplatesQuery } from '../components/reports/reportQueries';
 import { useJobPolls } from '../hooks/useJobPoll';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRoster } from '../hooks/useProjectMembers';
+import { useProjectRole } from '../hooks/useProjectRole';
 import { useReportTextImages } from '../hooks/useReportTextImages';
 import { pollEvery, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
@@ -199,6 +200,10 @@ const FRESHNESS_TEXT: Record<Freshness, string> = {
 
 const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const toast = useToast();
+  // Revise is the analyst's, Render again the project admin's (the routes'
+  // floors): write controls are hidden, not refused (third review
+  // 2026-10-15, H5 — an auditor pressed Revise and got a 403).
+  const { canWrite, isProjectAdmin } = useProjectRole();
   const navigate = useNavigate();
   const [confirmDialog, confirm] = useConfirm();
   const { user } = useAuth();
@@ -908,9 +913,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         {report.render_status === 'failed' && (
           <div className="space-y-xxs">
             <p className="whitespace-pre-wrap break-words font-mono text-caption text-destructive">{report.render_error}</p>
-            <Button size="sm" variant="outline" onClick={() => rerendering.mutate()} disabled={busy !== null}>
-              <RefreshCw className="size-4" aria-hidden /> Render again
-            </Button>
+            {isProjectAdmin && (
+              <Button size="sm" variant="outline" onClick={() => rerendering.mutate()} disabled={busy !== null}>
+                <RefreshCw className="size-4" aria-hidden /> Render again
+              </Button>
+            )}
           </div>
         )}
         <dl className="grid gap-x-lg gap-y-xxs text-caption sm:grid-cols-[10rem_minmax(0,1fr)]">
@@ -926,7 +933,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             </React.Fragment>
           ))}
         </dl>
-        {report.status === 'issued' && (
+        {report.status === 'issued' && canWrite && (
           <Button variant="outline" size="sm" onClick={() => revising.mutate()} disabled={busy !== null}>
             {busy === 'revise' && <Loader2 className="size-4 animate-spin" aria-hidden />} Revise
           </Button>

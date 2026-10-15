@@ -107,6 +107,7 @@ def _serialize(
                 fqdn=fh.name.fqdn if fh.name else None,
                 host_status=fh.host_status,
                 retest_requested_at=fh.retest_requested_at,
+                retest_stands=finding_needs.retest_stands_on(fh, finding),
                 segment=segments.get(fh.host_id),
             )
             for fh in finding.hosts
@@ -478,7 +479,7 @@ def add_finding_hosts(
         svc.restore_endpoint(
             finding=finding, host_id=ep.host_id, name_id=ep.name_id,
             host_status=ep.host_status.value if ep.host_status else None,
-            actor_id=current_user.id,
+            actor_id=current_user.id, retest_requested_at=ep.retest_requested_at,
         )
     # An Undo that puts a host back into Retest pending asks for its retest
     # again (stamped now): told like any other move into it (second review

@@ -14,7 +14,7 @@ preview of at most five endpoints, from two grouped statements for the page;
 from contextlib import contextmanager
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, func
 
 from app.db import models
 from app.db.models_findings import Finding, FindingHost, FindingVulnerability
@@ -176,7 +176,8 @@ def test_a_host_filter_puts_that_hosts_endpoints_first_in_the_preview(client, db
     name = models.DNSName(project_id=test_project.id, fqdn="vhost.example.com")
     db_session.add(name)
     db_session.flush()
-    named = FindingHost(finding_id=fid, host_id=last.host_id, name_id=name.id, host_status="retest")
+    named = FindingHost(finding_id=fid, host_id=last.host_id, name_id=name.id, host_status="retest",
+                        retest_requested_at=func.now())
     db_session.add(named)
     db_session.commit()
     ordered = [r.id for r in rows]

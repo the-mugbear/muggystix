@@ -137,14 +137,18 @@ def _load_records_eager(
         # records").  Invalid for another reason: the line reader, as before.
         head = raw[:_PEEK_BYTES].encode("utf-8", errors="ignore")
         if not _looks_like_jsonl(head):
-            kept = _records_before_the_cut(file_path, head, array_keys, tool_label)
+            # The text as it was READ (bad bytes dropped), not the file again:
+            # one non-UTF-8 byte (Perl / Ruby tools' output) failed the cut
+            # reader there, so a cut file was "invalid", 0 records, never
+            # offered (third review 2026-10-15, H4).
+            kept = _records_before_the_cut(raw.encode("utf-8"), head, array_keys, tool_label)
             if kept is not None:
                 return kept
     return list(_iter_jsonl_lines(json_lines(text), tool_label))
 
 
 def _records_before_the_cut(
-    file_path: str, head: bytes, array_keys: Sequence[str], tool_label: str,
+    content: bytes, head: bytes, array_keys: Sequence[str], tool_label: str,
 ) -> Optional[List[dict]]:
     """For a small document ``json.loads`` refused: its complete records when
     the file ends early and the import keeps them; ``TruncatedFile`` when it
@@ -160,7 +164,7 @@ def _records_before_the_cut(
     # one would have been read by ``json.loads`` — the records before the cut
     # carry the same number types.  ``only_when_cut``: when the stream reader
     # accepts what json.loads refused, the line reader decides.
-    return document_before_the_cut(file_path, prefix, tool_label, floats=True, only_when_cut=True)
+    return document_before_the_cut(content, prefix, tool_label, floats=True, only_when_cut=True)
 
 
 class _EndsEarly(Exception):

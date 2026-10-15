@@ -48,6 +48,10 @@ export interface FindingHostInfo {
    *  on Still present after a hand move kept the request (owner, 2026-10-15).
    *  Single-finding responses only. */
   retest_requested_at?: string | null;
+  /** A retest STANDS on this endpoint — the server's one rule (a request
+   *  recorded, the finding not judged a false positive), the one every retest
+   *  list counts by.  Single-finding responses only (2.505.0). */
+  retest_stands?: boolean;
 }
 
 /** `false_positive` (v5.238.0): the issue does not apply to THIS endpoint —
@@ -347,6 +351,9 @@ export interface FindingEndpointRef {
   host_id: number;
   name_id?: number | null;
   host_status?: string | null;
+  /** An Undo puts back the retest that stood on the removed row, so the
+   *  retest guard still holds (third review 2026-10-15, H1). */
+  retest_requested_at?: string | null;
 }
 
 export const addFindingHosts = async (

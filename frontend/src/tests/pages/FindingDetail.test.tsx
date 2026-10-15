@@ -1144,7 +1144,8 @@ describe('FindingDetail — the jump bar', () => {
 describe('FindingDetail — removing an endpoint from its row menu', () => {
   it('removes after confirmation and offers Undo, which puts the same row back', async () => {
     const user = userEvent.setup();
-    const row = { id: 31, host_id: 5, ip_address: '10.0.0.5', hostname: null, name_id: 9, fqdn: 'a.example.com', host_status: 'retest' };
+    const row = { id: 31, host_id: 5, ip_address: '10.0.0.5', hostname: null, name_id: 9, fqdn: 'a.example.com', host_status: 'retest',
+      retest_requested_at: '2026-10-15T01:00:00Z', retest_stands: true };
     const other = { id: 32, host_id: 6, ip_address: '10.0.0.6', hostname: null, name_id: null, fqdn: null, host_status: 'open' };
     const before = finding({ status: 'confirmed', host_count: 2, hosts: [row, other] });
     mocked.getFinding.mockResolvedValue(before);
@@ -1164,7 +1165,10 @@ describe('FindingDetail — removing an endpoint from its row menu', () => {
     expect(message).toBe('Removed a.example.com (10.0.0.5) from the finding.');
     expect(options.action.label).toBe('Undo');
     await act(async () => { options.action.onClick(); });
-    expect(mocked.addFindingHosts).toHaveBeenCalledWith(1, 7, [], [{ host_id: 5, name_id: 9, host_status: 'retest' }]);
+    // With the retest that stood on it (third review 2026-10-15, H1).
+    expect(mocked.addFindingHosts).toHaveBeenCalledWith(1, 7, [], [{
+      host_id: 5, name_id: 9, host_status: 'retest', retest_requested_at: '2026-10-15T01:00:00Z',
+    }]);
     await waitFor(() => expect(document.querySelector('[data-endpoint-row="31"]')).not.toBeNull());
   });
 });

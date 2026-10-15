@@ -224,7 +224,8 @@ def test_finding_states_add_up_to_the_findings_and_false_positives_stand_apart(d
         f = Finding(project_id=pid, title=f"f{i}", severity="high", status=status, source="manual")
         db_session.add(f)
         db_session.flush()
-        db_session.add(FindingHost(finding_id=f.id, host_id=h.id, host_status=host_status))
+        db_session.add(FindingHost(finding_id=f.id, host_id=h.id, host_status=host_status,
+                                   retest_requested_at=datetime.now(timezone.utc) if host_status == "retest" else None))
     db_session.flush()
 
     e = project_engagement(db_session, [pid])[pid]

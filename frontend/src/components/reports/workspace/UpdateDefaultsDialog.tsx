@@ -29,7 +29,7 @@ import {
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../../ui/dialog';
 import {
-  DETAIL_LABELS, type DetailContext, type DetailKey, baseline, current, sourceCaption, withPending,
+  DETAIL_LABELS, type DetailContext, type DetailKey, baseline, shown, sourceCaption, withPending,
 } from './detailModel';
 
 /** A value in a line: a text shortened, a list by its names, nothing said. */
@@ -132,7 +132,7 @@ const UpdateDefaultsDialog: React.FC<{
                       The project’s now: {valueWords(before)}{source ? ` (${source.toLowerCase()})` : ''}
                     </span>
                     <span className="block break-words text-caption [overflow-wrap:anywhere]">
-                      This report’s: {valueWords(current(ctx, key))}
+                      This report’s: {valueWords(shown(ctx, key))}
                     </span>
                     <span className="block text-caption text-muted-foreground">
                       {cannot(key) ? 'The project’s team cannot be empty: with none saved, drafts list the project’s analysts and admins. It stays this report’s own.'

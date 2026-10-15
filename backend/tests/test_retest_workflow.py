@@ -294,6 +294,101 @@ def test_the_project_retest_list_is_the_operations_count_on_both_doors(client, d
     assert work["retests_pending"] == {"findings": 3, "hosts": 3}
 
 
+def test_a_retest_stands_by_one_rule_on_every_list_and_on_the_guard(
+    client, db_session, test_project, agent_headers,
+):
+    """Third review 2026-10-15, R1: the guard read "Retest pending OR a
+    request kept", every list and count "Retest pending" only — a request
+    kept after a hand move to Still present was on no list, and a finding
+    judged a false positive kept its hosts on the retest list.  One rule now
+    (``finding_needs.retest_stands``): a request recorded, the finding not
+    judged a false positive."""
+    kept, fk = _finding_on(client, db_session, test_project, ["10.9.4.1"])
+    judged, fj = _finding_on(client, db_session, test_project, ["10.9.4.2"])
+    one, two = fk["10.9.4.1"], fj["10.9.4.2"]
+    _move(client, test_project, kept["id"], one, "retest")
+    _move(client, test_project, kept["id"], one, "open")                       # the request is kept
+    _move(client, test_project, judged["id"], two, "retest")
+    r = client.post(f"{_p(test_project)}/findings/{judged['id']}/status", json={"status": "false_positive"})
+    assert r.status_code == 200, r.text
+
+    def listed():
+        page = client.get(f"{_p(test_project)}/findings", params={"host_state": "retest"}).json()
+        agents = client.get("/api/v1/agent/assist/findings", headers=agent_headers,
+                            params={"host_state": "retest"}).json()
+        work = client.get(f"{_p(test_project)}/workbench", params={"include_investigate": "false",
+                                                                    "include_rows": "false"}).json()
+        ids = sorted(f["id"] for f in page["items"])
+        assert work["retests_pending"]["findings"] == page["total"] == agents["total"] == len(ids)
+        return ids
+
+    assert listed() == [kept["id"]]                       # the kept request is listed; the judged one is not
+    rows = {h["id"]: h for h in client.get(f"{_p(test_project)}/findings/{kept['id']}").json()["hosts"]}
+    assert rows[one]["host_status"] == "open" and rows[one]["retest_stands"] is True
+    rows = {h["id"]: h for h in client.get(f"{_p(test_project)}/findings/{judged['id']}").json()["hosts"]}
+    assert rows[two]["host_status"] == "retest" and rows[two]["retest_stands"] is False
+    # The agents' finding read says the same, by the same rule.
+    for fid, row, stands in ((kept["id"], one, True), (judged["id"], two, False)):
+        read = client.get(f"/api/v1/agent/assist/findings/{fid}", headers=agent_headers).json()
+        assert {h["finding_host_id"]: h["retest_stands"] for h in read["hosts"]}[row] is stands
+    # The guard reads the same rule: no defect is concluded on a finding
+    # judged a false positive, so nothing holds its host.
+    assert _move(client, test_project, judged["id"], two, "remediated").status_code == 200
+    assert _move(client, test_project, kept["id"], one, "remediated").status_code == 409
+
+
+def test_an_undo_of_a_removal_puts_the_retest_back_and_the_guard_holds(client, db_session, test_project):
+    """Third review 2026-10-15, H1: the removal's snapshot dropped the
+    request, so remove → Undo → Remediated was accepted with no result."""
+    finding, fh = _finding_on(client, db_session, test_project, ["10.9.5.1", "10.9.5.2"])
+    one = fh["10.9.5.1"]
+    _move(client, test_project, finding["id"], one, "retest")
+    _move(client, test_project, finding["id"], one, "open")                    # the request is kept
+    row = {h["id"]: h for h in client.get(f"{_p(test_project)}/findings/{finding['id']}").json()["hosts"]}[one]
+    assert row["retest_requested_at"]
+    r = client.delete(f"{_p(test_project)}/findings/{finding['id']}/endpoints/{one}")
+    assert r.status_code == 200, r.text
+    # The Undo sends back what the page held of the row.
+    r = client.post(f"{_p(test_project)}/findings/{finding['id']}/hosts", json={"host_ids": [], "endpoints": [{
+        "host_id": row["host_id"], "name_id": None, "host_status": "open",
+        "retest_requested_at": row["retest_requested_at"],
+    }]})
+    assert r.status_code == 200, r.text
+    restored = next(h for h in r.json()["hosts"] if h["host_id"] == row["host_id"])
+    assert restored["retest_stands"] is True
+    assert _move(client, test_project, finding["id"], restored["id"], "remediated").status_code == 409
+    # Restoring straight to Remediated is the same move, held the same way.
+    assert client.delete(f"{_p(test_project)}/findings/{finding['id']}/endpoints/{restored['id']}").status_code == 200
+    r = client.post(f"{_p(test_project)}/findings/{finding['id']}/hosts", json={"host_ids": [], "endpoints": [{
+        "host_id": row["host_id"], "host_status": "remediated", "retest_requested_at": row["retest_requested_at"],
+    }]})
+    assert r.status_code == 409, r.text
+
+
+def test_the_endpoint_writers_lock_the_rows_they_move(client, db_session, test_project):
+    """Third review 2026-10-15, S1: the picker's and the bulk bar's moves read
+    the row unlocked (``record_retest`` locks it), so a move decided on a row
+    a concurrent retest result had just changed left it stale."""
+    from sqlalchemy import event
+
+    finding, fh = _finding_on(client, db_session, test_project, ["10.9.6.1", "10.9.6.2"])
+    seen = []
+
+    def watch(conn, cursor, statement, params, context, executemany):
+        if "FROM finding_hosts" in statement and statement.lstrip().upper().startswith("SELECT"):
+            seen.append(statement)
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", watch)
+    try:
+        assert _move(client, test_project, finding["id"], fh["10.9.6.1"], "retest").status_code == 200
+        assert client.patch(f"{_p(test_project)}/findings/{finding['id']}/endpoints", json={
+            "finding_host_ids": list(fh.values()), "host_status": "open"}).status_code == 200
+    finally:
+        event.remove(bind, "before_cursor_execute", watch)
+    assert sum("FOR UPDATE" in s for s in seen) >= 2, seen
+
+
 # --- "Reported fixed" asks for the retest ------------------------------------
 
 @pytest.fixture

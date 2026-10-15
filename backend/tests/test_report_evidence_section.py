@@ -239,10 +239,13 @@ def test_a_note_is_named_on_the_first_of_its_unplaced_images_only(client, db_ses
 
     dataset, summary = _dataset(db_session, client, test_project)
     item = dataset["findings"][0]
+    # A note's images stand together, under its text (third review
+    # 2026-10-15, H3: in upload order a2 and a3 printed after b1, under the
+    # second note's text — and the client read them as its).
     assert [(e["attachment_id"], e["note"]) for e in item["evidence"]] == [
         (a1, "Taken from the jump host, **before** the exploit."),       # as written, trimmed
-        (b1, "A second note."),
         (a2, None), (a3, None),                                          # their note was printed before a1
+        (b1, "A second note."),
     ]
     # Each has its own place in the data, in block order — what md(e, "note") reads.
     assert [e["_path"] for e in item["evidence"]] == [f"findings.0.evidence.{n}" for n in range(4)]

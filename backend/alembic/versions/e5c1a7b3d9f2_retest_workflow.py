@@ -9,7 +9,9 @@ was asked for, so the day it was asked for is stored.
 **Upgrade** (one transaction):
 
 1. ADDS ``finding_hosts.retest_requested_at`` (nullable).  An endpoint already
-   in ``retest`` keeps NULL: any retest result recorded on it counts.
+   in ``retest`` is stamped with the epoch (``LEGACY_REQUEST``): a request
+   whose day is not known, so any retest result recorded on it counts (third
+   review 2026-10-15, H2: NULL let it skip the guard).
 2. Every finding whose status is ``retest`` becomes ``open`` (still under
    investigation, as ``retest`` was), with a history line saying why; its
    endpoints that were ``open`` ("Still present") become ``retest``, stamped
@@ -26,8 +28,10 @@ was asked for, so the day it was asked for is stored.
    while remediation tracking is ON and for a finding not judged a false
    positive — a record crosses into an endpoint's state only as ``apply``
    would let it (second review 2026-10-14, H3: it ran with tracking off).
+5. ADDS ``ck_finding_hosts_retest_requested``: an endpoint in ``retest``
+   carries its request (third review 2026-10-15, R1/H2).
 
-**Downgrade.**  Drops the column.  The findings moved off ``retest`` are NOT
+**Downgrade.**  Drops the constraint and the column.  The findings moved off ``retest`` are NOT
 put back (which were is only in their history lines), and the back-filled
 dates stay.
 
@@ -54,9 +58,21 @@ _ASKS_FOR_RETEST = (
     "AND f.status <> 'false_positive'"
 )
 
+#: The request of an endpoint that was in ``retest`` before this revision:
+#: its day is not known, so the epoch — every result recorded on it is later.
+LEGACY_REQUEST = "'1970-01-01T00:00:00Z'::timestamptz"
+
 
 def upgrade():
     op.add_column("finding_hosts", sa.Column("retest_requested_at", sa.DateTime(timezone=True), nullable=True))
+    # Step 1's endpoints already in ``retest``: a request with no known day.
+    # NULL let them leave by Still present and come back Remediated with no
+    # result (third review 2026-10-15, H2), and a retest stands only where a
+    # request is recorded (R1).  The epoch, not ``-infinity`` (psycopg cannot
+    # load it): any retest result recorded on them still counts.
+    op.execute(sa.text(
+        f"UPDATE finding_hosts SET retest_requested_at = {LEGACY_REQUEST} WHERE host_status = 'retest'"
+    ))
 
     op.execute(sa.text("""
         INSERT INTO finding_status_history (finding_id, from_status, to_status, changed_by_id, summary, created_at)
@@ -107,7 +123,13 @@ def upgrade():
         WHERE r.finding_host_id = fh.id AND f.id = fh.finding_id
           AND r.status = 'closed' AND fh.host_status = 'open' AND {_ASKS}
     """.format(_ASKS=_ASKS_FOR_RETEST)))
+    # 5. Every endpoint in ``retest`` now carries its request, and always will.
+    op.create_check_constraint(
+        "ck_finding_hosts_retest_requested", "finding_hosts",
+        "host_status <> 'retest' OR retest_requested_at IS NOT NULL",
+    )
 
 
 def downgrade():
+    op.drop_constraint("ck_finding_hosts_retest_requested", "finding_hosts", type_="check")
     op.drop_column("finding_hosts", "retest_requested_at")

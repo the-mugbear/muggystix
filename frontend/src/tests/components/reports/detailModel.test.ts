@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  type DetailContext, current, customised, sectionStatus, toSave, withEdit, withPending, DETAIL_SECTIONS,
+  type DetailContext, current, customised, edited, sectionStatus, shown, toSave, withEdit, withPending, DETAIL_SECTIONS,
 } from '../../../components/reports/workspace/detailModel';
 import type { EngagementSettings } from '../../../services/api';
 
@@ -20,6 +20,41 @@ const ctx = (over: Partial<DetailContext> = {}): DetailContext => ({
   saved: {}, followed, sources: { author_name: 'installation' }, pending: {}, ownOnly: [], ...over,
 });
 const engagement = DETAIL_SECTIONS.find((s) => s.id === 'engagement')!;
+
+// Third review 2026-10-15, H6/H7: the edit was judged by its raw value, not
+// by what a save stores.
+describe('an edit is judged by what a save stores', () => {
+  it('a blank recipient row on an empty followed list is no edit: not customised, not sent, not unsaved', () => {
+    const c0 = ctx({ followed: { ...followed, distribution: [] } });
+    const c = { ...c0, pending: withEdit(c0, 'distribution', [{ name: '', email: null }]) };
+    expect(current(c, 'distribution')).toEqual([{ name: '', email: null }]);   // the editor keeps the row
+    expect(customised(c, 'distribution')).toBe(false);
+    expect(edited(c, 'distribution')).toBe(false);
+    expect(toSave(c)).toEqual({});
+    expect(shown(c, 'distribution')).toEqual([]);
+  });
+
+  it('a blank row beside a named one sends the named one only', () => {
+    const c = { ...ctx(), pending: withEdit(ctx(), 'distribution', [{ name: ' CEO ', email: null }, { name: '', email: null }]) };
+    expect(toSave(c)).toEqual({ distribution: [{ name: 'CEO', email: null }] });
+  });
+
+  it('clearing a followed text is no edit, and the read view shows what it follows', () => {
+    const c = { ...ctx(), pending: withEdit(ctx(), 'client_name', '') };
+    expect(current(c, 'client_name')).toBe('');                                // the field is empty while edited
+    expect(edited(c, 'client_name')).toBe(false);
+    expect(toSave(c)).toEqual({});
+    expect(shown(c, 'client_name')).toBe('Example Corp');
+  });
+
+  it('clearing a text the draft overrides follows the project again', () => {
+    const c0 = ctx({ saved: { client_name: 'Mine' } });
+    const c = { ...c0, pending: withEdit(c0, 'client_name', '  ') };
+    expect(edited(c, 'client_name')).toBe(true);
+    expect(toSave(c)).toEqual({ client_name: null });
+    expect(shown(c, 'client_name')).toBe('Example Corp');
+  });
+});
 
 describe('what a field becomes', () => {
   it('an untouched field keeps its saved state, an override included', () => {

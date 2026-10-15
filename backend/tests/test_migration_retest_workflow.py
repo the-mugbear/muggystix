@@ -57,7 +57,8 @@ def scratch():
 
 SEED = """
 INSERT INTO projects (id, name, slug, status) VALUES (1, 'Retests', 'retests', 'active');
-INSERT INTO hosts_v2 (id, ip_address, project_id) VALUES (1, '10.2.0.1', 1), (2, '10.2.0.2', 1), (3, '10.2.0.3', 1);
+INSERT INTO hosts_v2 (id, ip_address, project_id) VALUES (1, '10.2.0.1', 1), (2, '10.2.0.2', 1), (3, '10.2.0.3', 1),
+    (4, '10.2.0.4', 1);
 INSERT INTO findings (id, project_id, title, severity, status, source) VALUES
     (1, 1, 'Weak TLS', 'high', 'retest', 'manual'),
     (2, 1, 'SMB signing', 'medium', 'confirmed', 'manual'),
@@ -65,6 +66,7 @@ INSERT INTO findings (id, project_id, title, severity, status, source) VALUES
 INSERT INTO finding_hosts (id, finding_id, host_id, host_status) VALUES
     (11, 1, 1, 'open'),            -- still present on a retest finding: now awaits a retest
     (12, 1, 2, 'remediated'),      -- left alone
+    (13, 1, 4, 'retest'),          -- already Retest pending: a request with no known day (the epoch)
     (21, 2, 1, 'open'),
     (22, 2, 2, 'open'),
     (23, 2, 3, 'open'),
@@ -102,7 +104,8 @@ EXPECTED = {
     # 21–23 carry a "Reported fixed" record on a host still present: the claim
     # asks for the retest, made before the upgrade or not — with tracking ON;
     # 31's finding was judged a false positive: never.
-    "endpoints": {11: "retest", 12: "remediated", 21: "retest", 22: "retest", 23: "retest", 31: "open"},
+    "endpoints": {11: "retest", 12: "remediated", 13: "retest", 21: "retest", 22: "retest", 23: "retest",
+                  31: "open"},
     "dates": {21: "2026-09-03", 22: None, 23: "2026-08-01", 31: "2026-08-02"},
 }
 
@@ -126,7 +129,8 @@ def test_with_tracking_off_a_record_asks_for_no_retest(scratch, policy):
     _alembic(url, "upgrade", REVISION)
     with eng.connect() as conn:
         state = _state(conn)
-        assert state["endpoints"] == {11: "retest", 12: "remediated", 21: "open", 22: "open", 23: "open", 31: "open"}
+        assert state["endpoints"] == {11: "retest", 12: "remediated", 13: "retest", 21: "open", 22: "open",
+                                      23: "open", 31: "open"}
         # 2026-09-03 23:30 UTC is the 4th in Berlin; UTC with no policy row.
         dated = "2026-09-04" if policy is not None else "2026-09-03"
         assert state["dates"] == {**EXPECTED["dates"], 21: dated}
@@ -149,7 +153,13 @@ def test_the_finding_level_retest_moves_onto_its_hosts_and_reported_fixed_is_dat
         assert _state(conn) == EXPECTED
         stamped = dict(conn.execute(text(
             "SELECT id, retest_requested_at IS NOT NULL FROM finding_hosts ORDER BY id")).all())
-        assert stamped == {11: True, 12: False, 21: True, 22: True, 23: True, 31: False}
+        assert stamped == {11: True, 12: False, 13: True, 21: True, 22: True, 23: True, 31: False}
+        # Third review 2026-10-15, H2: an endpoint already in ``retest`` has a
+        # request (it left by Still present and came back Remediated freely
+        # with NULL) — the epoch, so any result recorded on it counts.
+        assert str(conn.execute(text(
+            "SELECT retest_requested_at AT TIME ZONE 'UTC' FROM finding_hosts WHERE id = 13")).scalar()) \
+            == "1970-01-01 00:00:00"
         assert conn.execute(text("SELECT count(*) FROM finding_status_history WHERE finding_id = 3")).scalar() == 0
         line = conn.execute(text(
             "SELECT from_status, to_status, summary FROM finding_status_history WHERE finding_id = 1")).one()
@@ -163,7 +173,7 @@ def test_the_finding_level_retest_moves_onto_its_hosts_and_reported_fixed_is_dat
     _alembic(url, "downgrade", BEFORE)
     with eng.connect() as conn:
         assert "retest_requested_at" not in _columns(conn)
-        assert conn.execute(text("SELECT count(*) FROM finding_hosts")).scalar() == 6
+        assert conn.execute(text("SELECT count(*) FROM finding_hosts")).scalar() == 7
 
     _alembic(url, "upgrade", REVISION)
     with eng.connect() as conn:

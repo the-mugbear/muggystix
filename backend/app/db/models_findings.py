@@ -22,7 +22,7 @@ are the canonical value sets, enforced in application code.
 import enum
 
 from sqlalchemy import (
-    Column, DateTime, Float, ForeignKey, Integer, String, Text,
+    CheckConstraint, Column, DateTime, Float, ForeignKey, Integer, String, Text,
     UniqueConstraint, Index, text,
 )
 from sqlalchemy.orm import relationship
@@ -208,10 +208,13 @@ class FindingHost(Base):
     # ``remediated``.  Back-filled from the history line of each move; NULL on
     # a remediated endpoint whose move left no such line.
     remediated_at = Column(DateTime(timezone=True), nullable=True)
-    # When this endpoint was put into ``retest`` (stamped and cleared ONLY by
-    # ``FindingService._move_endpoint``): a retest is closed by a result
-    # recorded since then.  NULL on one already in retest before 2.501.0 —
-    # any result recorded on it counts.
+    # When the retest that stands on this endpoint was asked for (stamped and
+    # cleared ONLY by ``FindingService._move_endpoint``, restored by an Undo):
+    # a retest is closed by a result recorded since then.  Set on every
+    # endpoint in ``retest`` (``ck_finding_hosts_retest_requested``; one
+    # already in retest before 2.501.0 has the epoch — any result counts) and
+    # kept on a hand move to Still present.  ``finding_needs.retest_stands``
+    # is what reads it.
     retest_requested_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -227,6 +230,13 @@ class FindingHost(Base):
         UniqueConstraint(
             "finding_id", "host_id", "name_id",
             name="uq_finding_host_name", postgresql_nulls_not_distinct=True,
+        ),
+        # A host Retest pending always carries its request: "a retest stands"
+        # reads the request alone (third review 2026-10-15, R1/H2 — a row in
+        # retest with none skipped the guard and was on no list).
+        CheckConstraint(
+            "host_status <> 'retest' OR retest_requested_at IS NOT NULL",
+            name="ck_finding_hosts_retest_requested",
         ),
     )
 

@@ -96,23 +96,59 @@ class FindingNeeds:
 
 def has_endpoint_in(state: str):
     """``Finding`` has at least one endpoint in this state — a correlated
-    EXISTS.  The ONE reading of "a host of the finding awaits a retest"
-    (``has_endpoint_in("retest")``): the Findings list's ``host_state=``,
-    Operations' retest condition and its need, and the project-wide count all
-    use it (second review 2026-10-14, F1: it was written four times)."""
+    EXISTS (the Findings list's ``host_state=`` for every state but
+    ``retest``, which is :func:`has_retest_standing`)."""
     from app.db.models_findings import FindingHost
     return exists().where(FindingHost.finding_id == Finding.id, FindingHost.host_status == state)
 
 
+# --- "a retest stands" — ONE definition ---------------------------------------
+# Third review 2026-10-15, R1 (owner: "Proceed with all"): the guard read
+# "Retest pending OR a request kept", every list and count read "Retest
+# pending" only — so a request kept after a hand move to Still present was on
+# no list, and a finding judged false positive kept its hosts on the retest
+# list.  A retest STANDS on an endpoint while its request is recorded
+# (``retest_requested_at`` — stamped on every move into ``retest``, kept on a
+# hand move to Still present, cleared by a recorded result, Remediated or a
+# false-positive judgement) and the FINDING is not judged a false positive
+# (no defect is concluded there: ``remediation_policy.concluded_no_defect``).
+# ``host_status = 'retest'`` is what the row SHOWS, not what is counted.
+
+def retest_stands():
+    """The SQL condition on a ``FindingHost`` row (with its ``Finding`` in
+    the statement or correlated): a retest stands on it."""
+    from app.db.models_findings import FindingHost, FindingStatus
+    return and_(
+        FindingHost.retest_requested_at.isnot(None),
+        Finding.status != FindingStatus.FALSE_POSITIVE.value,
+    )
+
+
+def retest_stands_on(row, finding: Finding) -> bool:
+    """:func:`retest_stands` for one loaded row — the guard of
+    ``FindingService._move_endpoint`` and ``record_retest``, and the
+    ``retest_stands`` each endpoint of a single finding carries.  Change both
+    together (``test_retest_workflow.py`` pins them to each other)."""
+    from app.db.models_findings import FindingStatus
+    return row.retest_requested_at is not None and finding.status != FindingStatus.FALSE_POSITIVE.value
+
+
+def has_retest_standing():
+    """``Finding`` has an endpoint a retest stands on — a correlated EXISTS:
+    the Findings list's ``host_state=retest``, Operations' ``decide`` /
+    ``need=retest`` and the agents' lists."""
+    from app.db.models_findings import FindingHost
+    return exists().where(FindingHost.finding_id == Finding.id, retest_stands())
+
+
 def _hosts_to_retest():
-    """How many of the finding's HOSTS await a retest — distinct hosts, so a
-    host under two names is one (a scalar subquery correlated to
-    ``Finding``; second review 2026-10-14, F1: it counted endpoint rows and
-    said "hosts")."""
-    from app.db.models_findings import FindingHost, FindingHostStatus
+    """How many of the finding's HOSTS a retest stands on — distinct hosts,
+    so a host under two names is one (a scalar subquery correlated to
+    ``Finding``)."""
+    from app.db.models_findings import FindingHost
     return (
         select(func.count(func.distinct(FindingHost.host_id)))
-        .where(FindingHost.finding_id == Finding.id, FindingHost.host_status == FindingHostStatus.RETEST.value)
+        .where(FindingHost.finding_id == Finding.id, retest_stands())
         .correlate(Finding)
         .scalar_subquery()
     )

@@ -40,10 +40,11 @@ vi.mock('../../services/api', () => ({
 vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, vi.fn()] }));
 const toastMock = { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() };
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
-vi.mock('../../contexts/AuthContext', () => ({
-  useAuth: () => ({ user: { id: 99, username: 'admin', full_name: 'Administrator', role: 'admin' } }),
-}));
-vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1, name: 'P' } }) }));
+const signedIn = { id: 99, username: 'admin', full_name: 'Administrator', role: 'admin' };
+vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: signedIn }) }));
+// The project role is the test's to set (third review 2026-10-15, H5).
+const project: { id: number; name: string; my_role?: string } = { id: 1, name: 'P' };
+vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: project }) }));
 
 import * as api from '../../services/api';
 import Reports from '../../pages/Reports';
@@ -88,6 +89,8 @@ const renderDetail = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  delete project.my_role;
+  signedIn.role = 'admin';
   resetProjectMembersCache();
   mocked.listReportTemplates.mockResolvedValue([{ name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx'] }]);
   mocked.getReportProfile.mockResolvedValue({ ...settings, template: 'pentest' });
@@ -288,6 +291,27 @@ describe('An issued report’s files', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Download acme-report-3.docx' }));
     await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Saved acme-report-3.docx to your downloads.'));
     expect(screen.getByRole('button', { name: 'Download acme-report-3.docx' })).toHaveAttribute('data-downloaded');
+  });
+
+  // Third review 2026-10-15, H5: an auditor pressed Revise (analyst) and an
+  // analyst Render again (project admin) — both a 403.  Hidden by role.
+  it.each([
+    ['auditor', false, false], ['analyst', true, false], ['admin', true, true],
+  ])('as %s: Revise %s, Render again %s', async (role, revise, rerender) => {
+    signedIn.role = 'member';
+    project.my_role = role;
+    mocked.getClientReport.mockResolvedValue(report({
+      id: 7, status: 'issued', number: 3, files: [file('html')], render_status: 'failed', render_error: 'boom',
+      can_edit: false, can_issue: false,
+    }));
+    render(
+      <MemoryRouter initialEntries={['/reports/7?section=issue']}>
+        <Routes><Route path="/reports/:reportId" element={<ReportDetail />} /></Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('boom')).toBeInTheDocument();
+    expect(!!screen.queryByRole('button', { name: /Revise/ })).toBe(revise);
+    expect(!!screen.queryByRole('button', { name: /Render again/ })).toBe(rerender);
   });
 
   it('the scope file: downloading, then saved under its name', async () => {

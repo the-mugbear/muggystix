@@ -148,8 +148,16 @@ beforeEach(() => {
 // it with evidence" — a pending retest is closed with its result, never by
 // the state picker alone.
 describe('FindingEndpoints — a host awaiting a retest', () => {
+  // The server says where a retest stands (`retest_stands`, third review
+  // 2026-10-15, R1/R6); the page keeps no rule of its own.
+  const pending = (id: number) => ({ ...endpoint(id, 'retest'), retest_stands: true });
+  const refused = () => Object.assign(new Error('409'), {
+    isAxiosError: true,
+    response: { status: 409, data: { detail: 'A retest was asked for on 10.0.0.1: record the retest’s result.' } },
+  });
+
   it('offers "Record retest…" on that row only, and records what it showed', async () => {
-    const start = finding([endpoint(1, 'retest'), endpoint(2)]);
+    const start = finding([pending(1), endpoint(2)]);
     recordEndpointRetest.mockResolvedValue(withState(start, { 1: 'remediated' }));
     render(<Harness initial={start} />);
     expect(screen.queryByRole('button', { name: 'Record the retest of 10.0.0.2' })).toBeNull();
@@ -171,11 +179,13 @@ describe('FindingEndpoints — a host awaiting a retest', () => {
     expect(setFindingEndpointStatus).not.toHaveBeenCalled();
   });
 
-  it('choosing Remediated in the picker asks for the retest instead of setting it', async () => {
-    render(<Harness initial={finding([endpoint(1, 'retest')])} />);
+  it('Remediated in the picker is sent; the server’s refusal opens the retest dialog', async () => {
+    setFindingEndpointStatus.mockRejectedValueOnce(refused());
+    render(<Harness initial={finding([pending(1)])} />);
     fireEvent.change(stateOf(1), { target: { value: 'remediated' } });
     expect(await screen.findByRole('dialog')).toHaveTextContent('Record the retest');
-    expect(setFindingEndpointStatus).not.toHaveBeenCalled();
+    expect(setFindingEndpointStatus).toHaveBeenCalledWith(1, 7, 1, 'remediated');
+    expect(toast.error).not.toHaveBeenCalled();
     // …while Still present, from a pending retest, is set as before.
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
     setFindingEndpointStatus.mockResolvedValue(finding([endpoint(1, 'open')]));
@@ -183,19 +193,33 @@ describe('FindingEndpoints — a host awaiting a retest', () => {
     await waitFor(() => expect(setFindingEndpointStatus).toHaveBeenCalledWith(1, 7, 1, 'open'));
   });
 
+  // Third review 2026-10-15, R6: the page refused Remediated by its own rule,
+  // stricter than the server's — a fixing result an agent already recorded
+  // since the request is enough there.
+  it('Remediated the server accepts (a result already recorded) is set, with no dialog', async () => {
+    setFindingEndpointStatus.mockResolvedValue(finding([endpoint(1, 'remediated')]));
+    render(<Harness initial={finding([pending(1)])} />);
+    fireEvent.change(stateOf(1), { target: { value: 'remediated' } });
+    await waitFor(() => expect(stateOf(1).value).toBe('remediated'));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   // Walkthrough 2026-10-15: a hand move to Still present keeps the request
   // (owner Q1), but the row said nothing of it and offered no way to record
   // the retest — Remediated was refused for a result nobody could record.
   it('a Still present host whose retest still stands says so and records it the same way', async () => {
-    const asked = { ...endpoint(1, 'open'), retest_requested_at: '2026-10-15T01:00:00Z' };
-    render(<Harness initial={finding([asked, endpoint(2)])} />);
+    const asked = { ...endpoint(1, 'open'), retest_requested_at: '2026-10-15T01:00:00Z', retest_stands: true };
+    // A request on a finding judged a false positive stands nowhere: the
+    // server says so and the row says nothing (R1).
+    const judged = { ...endpoint(2, 'open'), retest_requested_at: '2026-10-15T01:00:00Z', retest_stands: false };
+    setFindingEndpointStatus.mockRejectedValueOnce(refused());
+    render(<Harness initial={finding([asked, judged])} />);
     expect(screen.getByTestId('endpoint-1-retest-asked')).toHaveTextContent('Retest still asked for');
     expect(screen.queryByTestId('endpoint-2-retest-asked')).toBeNull();
     expect(screen.getByRole('button', { name: 'Record the retest of 10.0.0.1' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Record the retest of 10.0.0.2' })).toBeNull();
     fireEvent.change(stateOf(1), { target: { value: 'remediated' } });
     expect(await screen.findByRole('dialog')).toHaveTextContent('Record the retest');
-    expect(setFindingEndpointStatus).not.toHaveBeenCalled();
   });
 });
 
