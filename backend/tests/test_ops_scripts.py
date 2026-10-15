@@ -819,6 +819,27 @@ def test_the_one_check_names_each_finding_by_kind(tmp_path):
     ]
 
 
+def test_the_containers_uid_is_said_with_the_name_this_host_gives_it():
+    """Diagnostics bundle 7 (2026-10-15): after `chown 999:999 uploads`, `ls -l`
+    showed "dnsmasq systemd-journal" and the owner read as a mistake.  The
+    check says what the host calls the number, and that it is expected — with
+    a name when the host has one, as a number when it has none."""
+    def note(uid: int) -> str:
+        script = f'source "{SCRIPTS / "permissions-lib.sh"}"\nCONTAINER_UID={uid}\nperm_container_uid_note\n'
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    named = note(0)                                   # every host names UID 0
+    assert 'shows UID 0 as "root" on this host' in named and "expected" in named
+    unnamed = note(54321)                             # no account has this number
+    assert "as a number on this host" in unnamed and "expected" in unnamed
+    lib = (SCRIPTS / "permissions-lib.sh").read_text(encoding="utf-8")
+    assert "After the fix, $(perm_container_uid_note)." in lib
+    upgrade = (SCRIPTS / "upgrade-instance.sh").read_text(encoding="utf-8")
+    assert "the containers' user (UID 999 — this host calls that number" in upgrade
+
+
 def test_the_bundle_reports_ownership_by_class_and_the_findings_by_kind():
     """permissions.txt must hold no account name and no path of the host: it
     prints `perm_owner_class` and PERM_KIND, never the owner's name or the

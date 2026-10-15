@@ -77,10 +77,10 @@ def _get_fernet() -> Fernet:
     if not dedicated and fallback:
         logger.warning(
             "CREDENTIAL_ENCRYPTION_KEY is not set; falling back to SECRET_KEY "
-            "for credential encryption. This is deprecated as of v2.9.7 and "
-            "will be removed in a future release. Set CREDENTIAL_ENCRYPTION_KEY "
-            "to a dedicated 32+ byte secret so rotating the JWT signing key "
-            "does not invalidate every stored integration credential."
+            "for credential encryption. To decouple them, set "
+            "CREDENTIAL_ENCRYPTION_KEY to the SAME value SECRET_KEY has now "
+            "(a different value makes every stored credential unreadable); "
+            "after that, the JWT signing key can be rotated alone."
         )
 
     secret = source.encode("utf-8")

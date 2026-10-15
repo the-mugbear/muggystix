@@ -25,6 +25,20 @@ CONTAINER_UID=999
 
 perm_owner() { stat -c '%u' "$1" 2>/dev/null || echo -1; }
 perm_owner_name() { stat -c '%U' "$1" 2>/dev/null || echo '?'; }
+# What `ls -l` shows for the containers' user on THIS host.  UID 999 is
+# whatever account the host gave that number (often dnsmasq, and GID 999
+# systemd-journal): the containers do not use that account, they share the
+# number.  Said wherever the number is named, so a correct owner does not
+# read as a mistake (diagnostics bundle 7, 2026-10-15).
+perm_container_uid_note() {
+    local name
+    name="$(getent passwd "$CONTAINER_UID" 2>/dev/null | cut -d: -f1)"
+    if [[ -n "$name" ]]; then
+        echo "\`ls -l\` shows UID $CONTAINER_UID as \"$name\" on this host: that is only this host's name for the number the containers run as, and it is expected"
+    else
+        echo "\`ls -l\` shows UID $CONTAINER_UID as a number on this host: the containers run as that number, and it is expected"
+    fi
+}
 perm_mode() { stat -c '%a' "$1" 2>/dev/null || echo '?'; }
 # True when the group or anyone else has any access to it.
 perm_open_to_others() {
@@ -96,7 +110,7 @@ audit_permissions() {
         if [[ "$owner" != "$CONTAINER_UID" && "$owner" != "$uid" ]]; then
             auto=""; [[ "$uid" -eq 0 ]] && auto="chown-uploads"
             perm_note uploads_other_owner \
-                "uploads/ belongs to $(perm_owner_name uploads). It is the containers' (UID $CONTAINER_UID): they take it over at start where Docker lets them, and until then this script cannot create its folders in it." \
+                "uploads/ belongs to $(perm_owner_name uploads). It is the containers' (UID $CONTAINER_UID): they take it over at start where Docker lets them, and until then this script cannot create its folders in it. After the fix, $(perm_container_uid_note)." \
                 "sudo chown -R $CONTAINER_UID:$CONTAINER_UID \"$root/uploads\"" "$auto"
         fi
     fi

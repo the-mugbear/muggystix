@@ -38,6 +38,37 @@ class TestEncryption:
         assert decrypt_secret("not-a-valid-fernet-token") is None
 
 
+def test_the_advice_to_set_the_key_keeps_stored_credentials(monkeypatch):
+    """Diagnostics bundle 7 (2026-10-15): the boot warning said to set "a
+    dedicated" CREDENTIAL_ENCRYPTION_KEY.  Only one key is tried on read, so
+    on an installation with stored credentials a NEW value makes them all
+    unreadable.  What the warning says now is pinned to what is true: the
+    current SECRET_KEY's value keeps them; another value does not."""
+    from app import startup
+    from app.services import llm_provider_service as svc
+
+    def with_keys(dedicated, secret):
+        monkeypatch.setattr(svc.settings, "CREDENTIAL_ENCRYPTION_KEY", dedicated, raising=False)
+        monkeypatch.setattr(svc.settings, "SECRET_KEY", secret)
+        monkeypatch.setattr(svc, "_FERNET_CACHE", None)
+
+    with_keys("", "the-current-secret-key-value-0123456789")       # the fallback, as deployed
+    stored = encrypt_secret("sk-stored-credential")
+    with_keys("the-current-secret-key-value-0123456789", "a-rotated-signing-key")   # as advised, then rotated
+    assert decrypt_secret(stored) == "sk-stored-credential"
+    with_keys("a-brand-new-dedicated-key-0123456789", "the-current-secret-key-value-0123456789")
+    assert decrypt_secret(stored) is None                          # what "a dedicated key" did
+
+    # The app's loggers do not propagate to pytest's capture: read the call.
+    said = []
+    monkeypatch.setattr(startup.logger, "warning", lambda message, *args: said.append(message % args if args else message))
+    monkeypatch.setenv("SECRET_KEY", "the-current-secret-key-value-0123456789")
+    monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY", raising=False)
+    startup.check_credential_encryption_key()
+    assert len(said) == 1 and "SAME value SECRET_KEY has now" in said[0] and "unreadable" in said[0]
+    assert "dedicated" not in said[0]
+
+
 class TestProviderCrud:
     def test_create_and_get(self, db_session, test_user):
         svc = LLMProviderService(db_session)

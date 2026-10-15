@@ -34,6 +34,14 @@ def check_credential_encryption_key() -> None:
     silently invalidates every stored LLM + scanner credential (``decrypt_secret``
     returns ``None`` and operators must re-enter keys). The old behaviour only
     surfaced this on the first encrypt/decrypt, which may never happen at boot.
+
+    The remedy it states is the SAFE one: the key the credentials are
+    encrypted with is derived from whichever value is in use, with no second
+    key tried on read, so a NEW value would make every stored credential
+    unreadable.  Setting it to the current SECRET_KEY changes nothing today
+    and lets SECRET_KEY be rotated alone later (diagnostics bundle 7,
+    2026-10-15: the old wording said "a dedicated" key, which, followed
+    literally on an installation with stored credentials, loses them).
     """
     dedicated = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "")
     secret = os.getenv("SECRET_KEY", "")
@@ -42,9 +50,10 @@ def check_credential_encryption_key() -> None:
             "=" * 60
             + "\nCREDENTIAL_ENCRYPTION_KEY is not set — credential encryption is "
             "falling back to SECRET_KEY.\nRotating SECRET_KEY will invalidate "
-            "every stored LLM provider and scanner integration credential.\nSet a "
-            "dedicated CREDENTIAL_ENCRYPTION_KEY (32+ bytes) in .env to decouple "
-            "them.\n" + "=" * 60
+            "every stored LLM provider and scanner integration credential.\n"
+            "To decouple them, set CREDENTIAL_ENCRYPTION_KEY in .env to the SAME value "
+            "SECRET_KEY has now — a different value makes every stored credential "
+            "unreadable. After that, SECRET_KEY can be rotated alone.\n" + "=" * 60
         )
 
 

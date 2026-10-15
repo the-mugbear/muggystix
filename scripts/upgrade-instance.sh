@@ -319,6 +319,12 @@ else
         # whichever failed, "belongs to charles, not to charles").
         if [[ -r "$src" && -w "$src" && -x "$src" ]]; then bad="$dst"; else bad="$src"; fi
         owner="$(stat -c '%U, UID %u' "$bad" 2>/dev/null || echo 'another account')"
+        # UID 999 is the containers' user, whatever name the host gives that
+        # number (often dnsmasq): say so, or a correct owner reads as a fault
+        # (diagnostics bundle 7, 2026-10-15).
+        if [[ "$(stat -c '%u' "$bad" 2>/dev/null)" == "999" ]]; then
+            owner="the containers' user (UID 999 — this host calls that number $(stat -c '%U' "$bad" 2>/dev/null), which is expected)"
+        fi
         # `mv -T` treats the target as the folder itself: it replaces an EMPTY
         # one and refuses a non-empty one.  A plain `mv` into an existing
         # folder moved the old data INSIDE it (uploads/uploads/), and the
