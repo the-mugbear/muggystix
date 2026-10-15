@@ -370,8 +370,12 @@ def reauth_password(
         db.execute(
             select(func.pg_advisory_xact_lock(func.hashtextextended(literal(f"reauth:{user.id}"), 0)))
         )
+    # Per ACCOUNT only: the caller is signed in, so there is no spray across
+    # accounts to stop, and counting the address too let 20 failures behind
+    # one NAT lock everyone there out of change-password and 2FA (review
+    # 2026-10-14, nitpick).  The address is still recorded on the audit row.
     if login_throttle_exceeded(
-        db, username=user.username, ip_address=ip_address,
+        db, username=user.username, ip_address=None,
         actions=REAUTH_FAILED_ACTIONS, per_username=REAUTH_THROTTLE_FAILURES,
     ):
         log_audit_event(

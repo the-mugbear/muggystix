@@ -107,7 +107,11 @@ export const customised = (c: DetailContext, key: DetailKey): boolean => {
   if (key in c.pending) {
     const p = c.pending[key];
     // An edit equal to the project's value follows it once saved (the
-    // server's "changed back" rule): it is not shown as customised.
+    // server's "changed back" rule): it is not shown as customised — except
+    // an empty list, which the server always keeps ("nobody", chosen on
+    // purpose; review 2026-10-14, R9: the page said "uses the project's"
+    // until it was saved).
+    if (isListKey(key) && Array.isArray(p) && p.length === 0) return true;
     return p !== null && p !== undefined && hasValue(key, p) && !sameValue(key, p, c.followed[key]);
   }
   return savedOverride(c.saved, key);

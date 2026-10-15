@@ -692,6 +692,35 @@ def test_a_rolled_back_record_is_not_left_marked_as_unwritten(db_session, test_p
     assert observed.take_unwritten() == [] and len(observed) == 0
 
 
+def test_a_rolled_back_record_restores_the_notes_exactly_without_copying_them(db_session, test_project):
+    """Review 2026-10-14, R4: a checkpoint copied every note so far, once per
+    record — quadratic for the DNS parsers.  It is a position in an undo log
+    now; restoring walks back to it: changed notes as they were, a host
+    first noted by the record gone, the unwritten set as it was."""
+    pid = test_project.id
+    hosts = [models.Host(ip_address=f"10.64.2.{n}", state="up", project_id=pid) for n in (1, 2, 3)]
+    db_session.add_all(hosts)
+    db_session.flush()
+    a, b, c = hosts
+    observed = ScanHostObservations()
+    observed.note(a, created=False, state=None, hostname="a.example.test")
+    observed.note(b, created=False, state="up")
+    observed.take_unwritten()                          # a heartbeat: both written
+    observed.note(a, created=False, state="up")        # unwritten again
+    before = (sorted(observed, key=lambda o: o.host_id), sorted(observed._unwritten))
+
+    saved = observed.checkpoint()
+    assert isinstance(saved, int)
+    observed.note(a, created=False, state="down", renamed=True)
+    observed.note(b, created=False, state="down")
+    observed.note(c, created=True, state="up")
+    observed.note(c, created=False, state="down")
+    observed.restore(saved)
+
+    assert (sorted(observed, key=lambda o: o.host_id), sorted(observed._unwritten)) == before
+    assert [o.host_id for o in observed.take_unwritten()] == [a.id]
+
+
 # ---------------------------------------------------------------------------
 # M4 — the files of a deleted partial scan
 # ---------------------------------------------------------------------------

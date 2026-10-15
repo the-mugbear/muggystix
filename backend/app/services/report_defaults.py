@@ -102,21 +102,29 @@ FROM_INSTALLATION = "installation"
 FROM_PROJECT_TEAM = "project_team"
 
 
-def followed(db: Session, profile: Optional[ReportProfile], team: Team, kind: Optional[str] = None) -> Dict[str, Any]:
-    """What a report of this project prints for a detail it does NOT
-    override: the project's report default, else (author, disclaimer) the
-    installation's, else (team) the project's analysts and admins.  ``team``
-    is asked only when the project's defaults name nobody.  An addendum
-    (``kind``) follows nothing for ``OWN_IN_ADDENDUM``."""
-    return followed_with_sources(db, profile, team, kind)[0]
+def follows(kind: Optional[str], settings: Optional[Mapping[str, Any]]) -> set:
+    """The details a report of this ``kind`` with these ``settings`` takes
+    from the project: every one it does not override, an addendum's summary
+    excepted (``OWN_IN_ADDENDUM``).  The one reading of "follows key X"
+    (review 2026-10-14, R8: the followers count wrote its own)."""
+    own = overrides(settings)
+    skip = OWN_IN_ADDENDUM if kind == "addendum" else ()
+    return {key for key in DETAIL_KEYS if key not in own and key not in skip}
 
 
 def followed_with_sources(
     db: Session, profile: Optional[ReportProfile], team: Team, kind: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Optional[str]]]:
-    """:func:`followed`, and for each key the level its value came from
-    (``FROM_PROJECT``, ``FROM_INSTALLATION``, ``FROM_PROJECT_TEAM``, or None
-    when no level holds one) — what the page says beside a followed detail."""
+    """What a report of this project prints for a detail it does NOT
+    override: the project's report default, else (author, disclaimer) the
+    installation's, else (team) the project's analysts and admins.  ``team``
+    is asked only when the project's defaults name nobody.  An addendum
+    (``kind``) follows nothing for ``OWN_IN_ADDENDUM``.  With it, for each key
+    the level its value came from (``FROM_PROJECT``, ``FROM_INSTALLATION``,
+    ``FROM_PROJECT_TEAM``, or None when no level holds one) — what the page
+    says beside a followed detail.  The ONE merge of the levels (review
+    2026-10-14, R8: a values-only twin and the profile page's own team
+    fallback are gone)."""
     out: Dict[str, Any] = {}
     sources: Dict[str, Optional[str]] = {}
     own = OWN_IN_ADDENDUM if kind == "addendum" else ()
@@ -143,7 +151,8 @@ def resolve(
     with these ``settings``: its override where it has one, else what it
     follows."""
     own = overrides(settings)
-    return apply_overrides(followed(db, profile, (lambda: []) if "testers" in own else team, kind), own)
+    team_asked = (lambda: []) if "testers" in own else team
+    return apply_overrides(followed_with_sources(db, profile, team_asked, kind)[0], own)
 
 
 def _comparable(key: str, value: Any) -> Any:

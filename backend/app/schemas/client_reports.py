@@ -29,7 +29,10 @@ class EngagementSettings(BaseModel):
     client_name: Optional[str] = Field(None, max_length=255)
     classification: Optional[str] = Field(None, max_length=100)
     engagement_type: Optional[str] = Field(None, max_length=100)
-    testers: List[Tester] = Field(default_factory=list, max_length=50)
+    # No cap here: a project with no saved team prints every analyst and
+    # admin, and more than 50 of them made every read of a draft a 500 (review
+    # 2026-10-14, nitpick).  What a person SENDS is capped (`EngagementOverrides`).
+    testers: List[Tester] = Field(default_factory=list)
     distribution: List[Recipient] = Field(default_factory=list, max_length=100)
     system_description: Optional[str] = Field(None, max_length=32768)
     # v2.382.0 — the template's other target lists ("if applicable"; Markdown).
@@ -67,13 +70,9 @@ class EngagementOverrides(EngagementSettings):
     distribution: Optional[List[Recipient]] = Field(None, max_length=100)
 
 
-class ReportProfileBody(EngagementSettings):
-    template: Optional[str] = Field(None, max_length=100)
-
-
 class ReportProfilePatch(EngagementOverrides):
     """`PATCH /client-reports/profile`: only the keys SENT change (read with
-    `exclude_unset`), with PUT's validation — so a page that edits one detail
+    `exclude_unset`) — so a page that edits one detail
     never sends, and so never overwrites, the rest someone else may have
     changed meanwhile.  A text sent blank or null clears that default; a list
     sent null is an empty list."""
@@ -91,7 +90,8 @@ class ReportPromote(BaseModel):
     values: EngagementOverrides
 
 
-class ReportProfileOut(ReportProfileBody):
+class ReportProfileOut(EngagementSettings):
+    template: Optional[str] = Field(None, max_length=100)
     updated_at: Optional[datetime] = None
     # v2.382.0 — no team is saved, so `testers` is the project's analysts and
     # admins: what a new draft will list.

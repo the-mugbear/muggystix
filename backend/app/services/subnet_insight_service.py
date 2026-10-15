@@ -107,6 +107,15 @@ def _zero_sev() -> Dict[str, int]:
     return {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
 
 
+def _prefixlen(cidr: str) -> int:
+    """A subnet's prefix length — the "most specific subnet" rule's measure;
+    0 for a value that does not parse."""
+    try:
+        return ipaddress.ip_network(cidr, strict=False).prefixlen
+    except ValueError:
+        return 0
+
+
 def _load_subnet_meta(db: Session, project_id: int) -> Dict[int, Dict[str, Any]]:
     """Per-subnet metadata for a project's scopes, keyed by subnet id.
 
@@ -125,10 +134,7 @@ def _load_subnet_meta(db: Session, project_id: int) -> Dict[int, Dict[str, Any]]
     )
     meta: Dict[int, Dict[str, Any]] = {}
     for sid, cidr, desc, site, site_id in subnet_rows:
-        try:
-            prefixlen = ipaddress.ip_network(cidr, strict=False).prefixlen
-        except ValueError:
-            prefixlen = 0
+        prefixlen = _prefixlen(cidr)
         metrics = SubnetCalculator.calculate_subnet_metrics(cidr)
         meta[sid] = {
             "cidr": cidr,
@@ -178,11 +184,7 @@ def resolve_host_locations(
         mappings = []
         for host_id, sid, cidr, site, site_id in rows:
             if sid not in subnet_meta:
-                try:
-                    prefixlen = ipaddress.ip_network(cidr, strict=False).prefixlen
-                except ValueError:
-                    prefixlen = 0
-                subnet_meta[sid] = {"cidr": cidr, "site": site, "site_id": site_id, "prefixlen": prefixlen}
+                subnet_meta[sid] = {"cidr": cidr, "site": site, "site_id": site_id, "prefixlen": _prefixlen(cidr)}
             mappings.append((host_id, sid))
     else:
         if subnet_meta is None:

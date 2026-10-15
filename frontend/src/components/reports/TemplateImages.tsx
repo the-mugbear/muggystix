@@ -21,13 +21,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   fetchReportTemplateAssetPreview, removeReportTemplateAsset, uploadReportTemplateAsset,
 } from '../../services/api';
-import type { ClientReportFormat, ReportTemplate, ReportTemplateAsset } from '../../services/api';
+import type { ReportTemplate, ReportTemplateAsset } from '../../services/api';
+import { formatLabel } from '../../utils/reportTemplates';
 import { useProjectId } from '../../hooks/useProjectId';
 import { useBlobUrl } from '../../lib/objectUrls';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 
-const FORMAT_LABEL: Record<ClientReportFormat, string> = { html: 'HTML', docx: 'Word', qmd: 'QMD source' };
 
 /** The declared, required images whose file is not installed. */
 export const missingRequiredAssets = (template: ReportTemplate | undefined): ReportTemplateAsset[] =>
@@ -38,7 +38,7 @@ export const missingRequiredAssets = (template: ReportTemplate | undefined): Rep
 const optionalNotInstalled = (template: ReportTemplate | undefined): ReportTemplateAsset[] =>
   (template?.assets ?? []).filter((a) => !a.present && !a.required && !a.replaces);
 
-/** The count beside a "Template files" heading. Only a required file is
+/** The count beside a template's files on Report templates. Only a required file is
  *  "missing" (it blocks rendering); an optional one is "not installed" — an
  *  optional logo read as a problem when both were counted as missing. A
  *  replacement that falls back to the shipped file is not counted at all. */
@@ -53,7 +53,7 @@ export const assetCountLabel = (template: ReportTemplate | undefined): string | 
 export const missingAssetsReason = (template: ReportTemplate | undefined): string | undefined => {
   const missing = missingRequiredAssets(template);
   if (!missing.length || !template) return undefined;
-  return `The template needs ${missing.map((a) => a.label).join(', ')} — see Template files`;
+  return `The template needs ${missing.map((a) => a.label).join(', ')} — see Report templates`;
 };
 
 const KIND = {
@@ -256,7 +256,7 @@ export const TemplateFilesLine: React.FC<{ template: ReportTemplate | undefined 
       {absent.length === 0
         ? `All ${assets.length} template file${assets.length === 1 ? '' : 's'} installed.`
         : absent.map((a) => `${a.label}: ${a.replaces ? 'not installed, the shipped file is used' : 'not installed (optional, left out)'}`).join(' · ')}
-      {' '}The Reports page lists them under Template files.
+      {' '}Report templates (Reports › Templates) lists them.
     </p>
   );
 };
@@ -309,7 +309,7 @@ const TemplateImages: React.FC<TemplateImagesProps> = ({
               {a.note && <p className="break-words text-caption text-muted-foreground">{a.note}</p>}
               {a.formats.length > 0 && (
                 <p className="text-caption text-muted-foreground">
-                  Used in {a.formats.map((f) => FORMAT_LABEL[f] ?? f).join(', ')}
+                  Used in {a.formats.map(formatLabel).join(', ')}
                 </p>
               )}
               <p className="break-words text-caption text-foreground" data-testid={`asset-guidance-${a.id}`}>

@@ -67,7 +67,9 @@ def _put(client, **values):
 
 
 def _profile(client, project, **body):
-    r = client.put(f"{_reports(project)}/profile", json=body)
+    """The project's defaults: the keys given change (`PATCH /profile`, the
+    one write since `PUT` went — review 2026-10-14, R1)."""
+    r = client.patch(f"{_reports(project)}/profile", json=body)
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -235,7 +237,7 @@ def test_a_report_uses_the_nearest_value_that_is_written(client, db_session, tes
     _patch(client, test_project, draft["id"], author_name="   ", disclaimer="")
     engagement, _ = _engagement(db_session, draft["id"])
     assert (engagement["author_name"], engagement["disclaimer"]) == ("Project Team", "The project's terms.")
-    _profile(client, test_project)
+    _profile(client, test_project, author_name=None, disclaimer=None)
     engagement, _ = _engagement(db_session, draft["id"])
     assert (engagement["author_name"], engagement["disclaimer"]) == ("Installation Ltd", "The installation's terms.")
     _put(client, author_name=None, disclaimer=None)
@@ -270,6 +272,7 @@ def test_a_new_draft_overrides_nothing_and_follows_every_project_default(client,
     _profile(
         client, test_project, client_name="Renamed Corp", classification="Public",
         author_name="Renamed Team", disclaimer="New terms.", distribution=[], testers=[],
+        engagement_type=None, system_description=None,
     )
     engagement, summary = _engagement(db_session, draft["id"])
     assert (engagement["client_name"], engagement["classification"]) == ("Renamed Corp", "Public")
@@ -369,7 +372,7 @@ def test_the_one_resolver_is_what_the_builder_uses(db_session, test_project):
         return team
 
     assert report_defaults.installation(db_session) == {"author_name": "Installation Ltd", "disclaimer": None}
-    follows = report_defaults.followed(db_session, profile, project_team)
+    follows, _ = report_defaults.followed_with_sources(db_session, profile, project_team)
     assert follows == {
         "executive_summary": None,
         "client_name": "Example Corp", "classification": None, "engagement_type": None, "testers": team,
@@ -377,7 +380,7 @@ def test_the_one_resolver_is_what_the_builder_uses(db_session, test_project):
         "thick_clients": None, "other_targets": None,
         "author_name": "Installation Ltd", "disclaimer": "The project's terms.",
     }
-    assert report_defaults.followed(db_session, None, lambda: [])["author_name"] == "Installation Ltd"
+    assert report_defaults.followed_with_sources(db_session, None, lambda: [])[0]["author_name"] == "Installation Ltd"
     asked.clear()
     resolved = report_defaults.resolve(
         db_session, profile, {"author_name": " Mine ", "disclaimer": None, "testers": [], "client_name": ""},
@@ -444,7 +447,7 @@ def test_an_issued_report_keeps_what_it_printed(client, db_session, test_project
     after = client.get(f"{_reports(test_project)}/{draft['id']}").json()
     assert after["effective"]["author_name"] == "Installation Ltd"
     assert after["effective"]["client_name"] == "Example Corp"
-    _profile(client, test_project)
+    _profile(client, test_project, author_name=None, client_name=None)
     # A revision starts from what was issued, held as overrides — not from today's default.
     revision = client.post(f"{_reports(test_project)}/{draft['id']}/revise")
     assert revision.status_code == 201, revision.text

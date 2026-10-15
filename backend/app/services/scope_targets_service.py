@@ -84,6 +84,19 @@ def scope_host_ids(scope_id: int):
     )
 
 
+def in_scope_condition(scope_id: int):
+    """``Host`` is in the scope — a correlated EXISTS over its subnet
+    mappings (the invariant: a host predicate over a child table is never
+    ``IN (subquery)``; review 2026-10-14, R16)."""
+    return (
+        select(models.HostSubnetMapping.host_id)
+        .join(models.Subnet, models.Subnet.id == models.HostSubnetMapping.subnet_id)
+        .where(models.HostSubnetMapping.host_id == models.Host.id, models.Subnet.scope_id == scope_id)
+        .correlate(models.Host)
+        .exists()
+    )
+
+
 def _ip_order_by(db: Session) -> List[Any]:
     """Natural IP ordering on Postgres (via inet), lexical elsewhere.
 
@@ -107,7 +120,7 @@ def _scope_hosts_query(db: Session, scope_id: int):
     """IP-ordered ``Host`` query for every host in a scope."""
     return (
         db.query(models.Host)
-        .filter(models.Host.id.in_(scope_host_ids(scope_id)))
+        .filter(in_scope_condition(scope_id))
         .order_by(*_ip_order_by(db))
     )
 

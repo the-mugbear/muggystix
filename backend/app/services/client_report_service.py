@@ -41,6 +41,7 @@ or superseded report would re-list findings the client already has.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import os
 import re
 import shutil
@@ -64,8 +65,8 @@ from app.db.models_reports import (
     RenderStatus, Report, ReportImage, ReportKind, ReportProfile, ReportStatus,
 )
 from app.db.models_vulnerability import Vulnerability
-from app.services.note_attachment_service import store_image_bytes
-from app.services.report_text import REPORT_TEXT_FIELDS, internal_references
+from app.services.note_attachment_service import attachment_file, store_image_bytes
+from app.services.report_text import REPORT_TEXT_FIELDS, STRIP_WHITESPACE, internal_references
 from app.services import (
     proposal_service, quarto_render, report_defaults, report_images, report_scope, report_template_service,
 )
@@ -153,10 +154,9 @@ def reportable_finding_condition():
 def blank_required_text() -> Dict[str, Any]:
     """SQL twin of :func:`missing_required_text`, per section: for each
     ``REQUIRED_TEXT`` field, the condition "it is NULL or whitespace only"
-    (``str.strip()``'s whitespace)."""
-    whitespace = " \t\n\r\x0b\x0c"
+    (``str.strip()``'s whitespace, ``report_text.STRIP_WHITESPACE``)."""
     return {
-        k: func.btrim(func.coalesce(getattr(Finding, k), ""), whitespace) == ""
+        k: func.btrim(func.coalesce(getattr(Finding, k), ""), STRIP_WHITESPACE) == ""
         for k in REQUIRED_TEXT
     }
 
@@ -227,6 +227,28 @@ def _date(value) -> Optional[str]:
 def _sort_key(f: Finding):
     sev = SEVERITY_ORDER.index(f.severity) if f.severity in SEVERITY_ORDER else len(SEVERITY_ORDER)
     return (sev, -(f.cvss_score if f.cvss_score is not None else -1.0), (f.title or "").lower(), f.id)
+
+
+def _file_sha256(att) -> Optional[str]:
+    """The SHA-256 of an attachment's stored file, or None when it cannot be read."""
+    path = attachment_file(att)
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest() if path is not None else None
+    except OSError:
+        return None
+
+
+def _endpoint_order(fh: FindingHost):
+    """A finding's systems in address order (10.0.0.2 before 10.0.0.10; an
+    address that does not parse after), then by name, then by row."""
+    address = fh.host.ip_address if fh.host is not None else ""
+    try:
+        parsed = ipaddress.ip_address(address)
+        by_address = (0, parsed.version, int(parsed), "")
+    except ValueError:
+        by_address = (1, 0, 0, address)
+    name = fh.name.fqdn if getattr(fh, "name", None) is not None else ""
+    return (by_address, name or "", fh.id or 0)
 
 
 def endpoint_key(fh: FindingHost) -> str:
@@ -701,16 +723,13 @@ class ClientReportService:
             self.db, self.get_profile(project_id), settings, lambda: self.project_team(project_id), kind,
         )
 
-    def followed_details(self, project_id: int, kind: Optional[str] = None) -> Dict[str, Any]:
-        """What each detail a draft does not override prints, as the project
-        stands now (``report_defaults.followed``)."""
-        return self.followed_details_with_sources(project_id, kind)[0]
-
     def followed_details_with_sources(
         self, project_id: int, kind: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Optional[str]]]:
-        """:meth:`followed_details`, and where each value comes from
-        (``report_defaults.followed_with_sources``)."""
+        """What each detail a draft does not override prints, as the project
+        stands now, and where each value comes from — the one binder of
+        ``report_defaults.followed_with_sources`` to this project's defaults
+        and team."""
         return report_defaults.followed_with_sources(
             self.db, self.get_profile(project_id), lambda: self.project_team(project_id), kind,
         )
@@ -784,7 +803,9 @@ class ClientReportService:
             if not ids:
                 continue
             if live is None:
-                live = {att.id for att in report_images.project_report_images(self.db, issued.project_id)}
+                live_images = report_images.project_report_images(self.db, issued.project_id)
+                live = {att.id for att in live_images}
+                restored_before = {att.filename: att for att in live_images}
             new_ids: Dict[int, int] = {}
             for old in ids:
                 copy = frozen.get(old)
@@ -805,11 +826,19 @@ class ClientReportService:
                 except ValueError:
                     caption = None
                 ext = report_images.REPORT_IMAGE_TYPES.get(copy.content_type, "png")
+                filename = f"image-{old}-from-report-{issued.number}.{ext}"
+                # Restored once already (a second revision, or a draft
+                # discarded after the first): that image again, never a copy
+                # of it (review 2026-10-14, nitpick).
+                earlier = restored_before.get(filename)
+                if earlier is not None and _file_sha256(earlier) == copy.sha256:
+                    new_ids[old] = earlier.id
+                    continue
                 att = store_image_bytes(
                     self.db, note_id=None, project_id=issued.project_id, uploaded_by_id=user_id,
-                    data=data, content_type=copy.content_type,
-                    filename=f"image-{old}-from-report-{issued.number}.{ext}", caption=caption,
+                    data=data, content_type=copy.content_type, filename=filename, caption=caption,
                 )
+                restored_before[filename] = att
                 live.add(att.id)
                 new_ids[old] = att.id
             carried[field] = report_images.rewrite_reference_ids(text, new_ids)
@@ -840,7 +869,14 @@ class ClientReportService:
         )
         out = []
         for f in findings:
-            live = [fh for fh in f.hosts if fh.host_status != FindingHostStatus.FALSE_POSITIVE.value]
+            # In address order: ``Finding.hosts`` has no order of its own, so an
+            # unrelated endpoint write could reorder the affected systems — a
+            # preview then read as out of date, and an issued table's order
+            # was chance (review 2026-10-14, suspected).
+            live = sorted(
+                (fh for fh in f.hosts if fh.host_status != FindingHostStatus.FALSE_POSITIVE.value),
+                key=_endpoint_order,
+            )
             # Every endpoint judged a false positive: nothing is left to report.
             if f.hosts and not live:
                 continue

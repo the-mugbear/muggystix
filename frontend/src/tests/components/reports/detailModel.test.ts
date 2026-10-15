@@ -69,6 +69,12 @@ describe('what a field becomes', () => {
     expect(toSave(c).testers).toEqual([{ user_id: null, name: 'Bo', role: null, email: null }]);
   });
 
+  it('an empty list is customised even where the project lists nobody too — the server keeps it (R9)', () => {
+    let c = ctx({ followed: { ...ctx().followed!, distribution: [] } });
+    c = { ...c, pending: { distribution: [] } };
+    expect(customised(c, 'distribution')).toBe(true);
+  });
+
   it('an addendum\'s summary is its own: never customised, never followed', () => {
     const c = ctx({ ownOnly: ['executive_summary'], saved: {} });
     expect(current(c, 'executive_summary')).toBeUndefined();

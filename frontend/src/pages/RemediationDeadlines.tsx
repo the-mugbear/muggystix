@@ -218,16 +218,25 @@ const RemediationDeadlines: React.FC = () => {
                     {projects.items.length > 1 && (
                       <TableRow className="hover:bg-transparent hover:shadow-none">
                         <TableCell className="align-middle font-medium">All</TableCell>
+                        {/* Every count opens its list (review 2026-10-14, R14): the
+                            list of every project above, archived ones included, as
+                            the row adds them up. */}
                         <TableCell className="text-right align-middle font-medium tabular-nums">
-                          {projects.defect_totals?.total.toLocaleString() ?? '—'}
+                          {countButton(projects.defect_totals?.total,
+                            `All projects: show every finding on a host (${(projects.defect_totals?.total ?? 0).toLocaleString()})`,
+                            () => openList({}), 'font-medium text-foreground')}
                         </TableCell>
                         {COLUMNS.map((c) => (
                           <TableCell key={c.state} className="text-right align-middle font-medium tabular-nums">
-                            {projects.totals[c.state].toLocaleString()}
+                            {countButton(projects.totals[c.state],
+                              `All projects: show ${c.label.toLowerCase()} (${projects.totals[c.state].toLocaleString()})`,
+                              () => openList({ state: c.state }), c.tone ? `font-medium ${c.tone}` : 'font-medium text-foreground')}
                           </TableCell>
                         ))}
                         <TableCell className="text-right align-middle font-medium tabular-nums">
-                          {projects.defect_totals?.remediated.toLocaleString() ?? '—'}
+                          {countButton(projects.defect_totals?.remediated,
+                            `All projects: show remediated (${(projects.defect_totals?.remediated ?? 0).toLocaleString()})`,
+                            () => openList({ defect: ['remediated'] }), 'font-medium text-foreground')}
                         </TableCell>
                       </TableRow>
                     )}

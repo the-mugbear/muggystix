@@ -24,6 +24,13 @@ REPORT_TEXT_FIELDS = (
 # Longest accepted value per field — a report section, not an evidence dump.
 REPORT_TEXT_MAX = 32768
 
+#: Every character ``str.strip()`` removes — the ONE meaning of "blank" for a
+#: report section or a caption, in Python (``.strip()``) and in SQL
+#: (``btrim`` with this set).  The SQL side trimmed ASCII only, so a caption
+#: of a no-break space was "uncaptioned" to the report and not to the
+#: Findings filter (review 2026-10-14, R6).
+STRIP_WHITESPACE = "".join(chr(c) for c in range(0x3001) if chr(c).isspace())
+
 
 # A BlueStick record named by its number ("Finding #277", "evidence record
 # 57", "host test #12"), or the product itself.  The report's reader has never

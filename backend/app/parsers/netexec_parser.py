@@ -20,9 +20,8 @@ from app.services.confidence_service import (
 )
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.db.models_vulnerability import VulnerabilitySource
-from app.parsers.cut_short import TruncatedFile
 from app.parsers.parser_utils import announce_scan, correlate_scan, read_tool_text
-from app.parsers.streaming_json import iter_document
+from app.parsers.streaming_json import document_before_the_cut
 from app.services import smb_signing as smb_signing_states
 from app.services.misconfig_checks import record_misconfig
 from app.services.line_shapes import ShapeTally, nxc_line_shape
@@ -522,17 +521,8 @@ class NetexecParser:
         invalid for any other reason."""
         if not content.lstrip().startswith('{'):
             return None
-        members: Dict[str, Any] = {}
-        try:
-            for key, value in iter_document(
-                content.encode('utf-8'), '', 'NetExec JSON', pairs=True, floats=True,
-            ):
-                members[key] = value
-        except TruncatedFile:
-            raise
-        except ValueError:
-            return None
-        return members
+        pairs = document_before_the_cut(content.encode('utf-8'), '', 'NetExec JSON', pairs=True, floats=True)
+        return dict(pairs) if pairs is not None else None
 
     def _parse_console_output(self, content: str, scan_id: int):
         """Parse console output from netexec"""

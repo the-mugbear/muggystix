@@ -263,9 +263,6 @@ export interface ClientReport {
   superseded_by: ReportRef | null;
   /** The details this report overrides — only those keys. */
   settings: EngagementOverrides;
-  /** The summary it prints (`effective.executive_summary`); a single read
-   *  only — null on list rows. */
-  executive_summary: string | null;
   template_fingerprint: string | null;
   quarto_version: string | null;
   render_status: 'pending' | 'done' | 'failed' | null;
@@ -399,14 +396,9 @@ export const getProjectReportTeam = async (projectId: number, signal?: AbortSign
 export const getReportProfile = async (projectId: number, signal?: AbortSignal): Promise<ReportProfile> =>
   (await api.get<ReportProfile>(`${base(projectId)}/profile`, { signal })).data;
 
-export const saveReportProfile = async (
-  projectId: number, body: Omit<ReportProfile, 'updated_at' | 'inherited'>,
-): Promise<ReportProfile> =>
-  (await api.put<ReportProfile>(`${base(projectId)}/profile`, body)).data;
-
-/** Change only the project's report defaults SENT (a draft's "Set for the
- *  project"): the rest stay as stored, so a stale read of the profile never
- *  overwrites someone else's change to another detail. */
+/** Change only the project's report defaults SENT (`/reports/defaults`; the
+ *  one write of them): the rest stay as stored, so a stale read of the
+ *  profile never overwrites someone else's change to another detail. */
 export const patchReportProfile = async (
   projectId: number, body: EngagementOverrides & { template?: string | null },
 ): Promise<ReportProfile> =>

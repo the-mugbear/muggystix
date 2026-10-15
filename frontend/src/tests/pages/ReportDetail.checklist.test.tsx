@@ -34,7 +34,6 @@ vi.mock('../../services/api', () => ({
   removeReportTemplateAsset: vi.fn(),
   fetchReportTemplateAssetPreview: vi.fn(() => Promise.reject(new Error('no preview in tests'))),
   getReportProfile: vi.fn(),
-  saveReportProfile: vi.fn(),
   listReportTextImages: vi.fn(() => Promise.resolve([])),
   uploadReportTextImage: vi.fn(),
   downloadClientReportFile: vi.fn(),
@@ -169,6 +168,18 @@ describe('The draft’s checklist', () => {
     ]);
     renderDetail(REVIEW);
     await waitFor(() => expect(screen.getByTestId('review-blockers')).toHaveTextContent('The template needs Logo'));
+  });
+
+  it('the header’s Preview asks for the template’s own format — Word for a Word-only template', async () => {
+    mocked.listReportTemplates.mockResolvedValue([
+      { name: 'pentest', title: 'Penetration test report', description: '', formats: ['docx'] },
+    ]);
+    mocked.previewClientReport.mockResolvedValue({ id: 1, status: 'queued', format: 'docx' });
+    renderDetail();
+    await screen.findByTestId('report-readiness');
+    await waitFor(() => expect(mocked.listReportTemplates).toHaveBeenCalled());
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+    await waitFor(() => expect(mocked.previewClientReport).toHaveBeenCalledWith(1, 5, 'docx'));
   });
 
   it('the readiness line opens Review from anywhere', async () => {

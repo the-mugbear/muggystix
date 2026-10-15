@@ -844,3 +844,28 @@ def test_the_draft_route_names_its_report(client, db_session, test_project, test
     db_session.add(foreign)
     db_session.commit()
     assert client.post(url, json={"report_id": foreign.id}).status_code == 404
+
+
+def test_the_drafter_is_told_only_the_figures_the_report_prints(db_session, test_user, monkeypatch):
+    """Review 2026-10-14 (nitpick): the summary drafter listed every ticked
+    image's caption — one the template prints nowhere included, so a summary
+    could point the reader at a figure the report does not hold."""
+    from app.services.client_report_service import ClientReportService
+    from app.services.report_draft_service import ReportDraftService
+
+    dataset = {
+        "project": {"name": "P"}, "report": {"title": "R", "kind": "full"}, "counts": {"high": 1, "total": 1},
+        "findings": [{
+            "ref": "F-01", "title": "T", "severity": "high", "status": "confirmed", "change": None,
+            "affected_count": 1, "affected": [{"address": "10.0.0.1"}],
+            "description": "d", "impact": None, "recommendation": None,
+            "images": [
+                {"caption": "Printed", "printed": True},
+                {"caption": "Not printed", "printed": False},
+                {"caption": "Not measured", "printed": None},
+            ],
+        }],
+    }
+    monkeypatch.setattr(ClientReportService, "content", lambda self, report: (dataset, {}))
+    context = ReportDraftService(db_session, test_user).build_context(object())
+    assert context["findings"][0]["evidence_figures"] == ["Printed", "Not measured"]

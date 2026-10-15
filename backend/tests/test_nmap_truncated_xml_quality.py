@@ -81,6 +81,16 @@ def test_truncated_xml_fails_as_cut_short_until_asked_to_keep(db_session, tmp_pa
     )
 
 
+def test_a_cut_file_kept_as_asked_is_not_told_to_re_upload(db_session, tmp_path, test_project):
+    """Review 2026-10-14 (nitpick): once the operator chose to import what
+    the file holds, the warning still said "Re-upload a complete scan
+    file"."""
+    parser, _ = _parse(db_session, tmp_path, TRUNCATED_XML, "kept.xml", test_project.id, keep_truncated=True)
+    warnings = parser.last_parse_stats["warnings"]
+    assert "Re-upload" not in warnings
+    assert "imported, as asked" in warnings and "MISSING, not down" in warnings
+
+
 # A COMPLETE nmap run (closed, with its <runstats>) of three hosts.  The second
 # host's banner holds a control character, which nmap writes as a character
 # reference — ``&#x1b;`` — and XML 1.0 does not allow: the reader stops there.

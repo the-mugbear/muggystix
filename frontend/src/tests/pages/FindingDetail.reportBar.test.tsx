@@ -4,6 +4,8 @@
  * this finding stands among those still missing text, Previous / Next through
  * them, and the way back — built from the report's own summary.
  */
+import React from 'react';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -52,6 +54,7 @@ vi.mock('../../contexts/ProjectContext', () => ({
 import * as api from '../../services/api';
 import FindingDetail from '../../pages/FindingDetail';
 import { resetProjectMembersCache } from '../../hooks/useProjectMembers';
+import { createQueryClient } from '../../lib/query';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -171,5 +174,27 @@ describe('The report draft bar on a finding', () => {
     fireEvent.click(within(bar).getByRole('link', { name: /^Next/ }));
     await waitFor(() => expect(confirmMock).toHaveBeenCalled());
     expect(navigateSpy).not.toHaveBeenCalled();
+  });
+
+  // Review 2026-10-14, R2: the whole report is built for its summary, and
+  // it was read again on every finding stepped to.
+  it('stepping to the next finding does not build the report again', async () => {
+    const client = createQueryClient();
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const first = render(
+      <MemoryRouter initialEntries={['/findings/7?edit=report-text&report=24']}>
+        <Routes><Route path="/findings/:findingId" element={<FindingDetail />} /></Routes>
+      </MemoryRouter>, { wrapper });
+    await screen.findByText('finding 2 of 3 findings still missing text');
+    first.unmount();
+    mocked.getFinding.mockResolvedValue(finding({ id: 8, title: 'Default credentials' }));
+    render(
+      <MemoryRouter initialEntries={['/findings/8?edit=report-text&report=24']}>
+        <Routes><Route path="/findings/:findingId" element={<FindingDetail />} /></Routes>
+      </MemoryRouter>, { wrapper });
+    expect(await screen.findByText('finding 3 of 3 findings still missing text')).toBeInTheDocument();
+    expect(mocked.getClientReport).toHaveBeenCalledTimes(1);
   });
 });

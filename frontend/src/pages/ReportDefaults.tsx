@@ -13,7 +13,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 
 import {
-  getReportProfile, listReportTemplates, patchReportProfile, type EngagementOverrides, type ReportProfile,
+  patchReportProfile, type EngagementOverrides, type ReportProfile,
   type ReportTemplate,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
@@ -21,6 +21,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDiscardGuard, useLinkGuard } from '../hooks/useDiscardGuard';
 import { useProjectId } from '../hooks/useProjectId';
+import { reportProfileQuery, reportTemplatesQuery } from '../components/reports/reportQueries';
 import { useProjectRoster } from '../hooks/useProjectMembers';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useReportTextImages } from '../hooks/useReportTextImages';
@@ -58,10 +59,10 @@ const ReportDefaults: React.FC = () => {
   const currentUser = user ? { id: user.id, name: user.full_name || user.username } : null;
 
   const profileQuery = useQuery({
-    queryKey: ['getReportProfile', projectId], queryFn: ({ signal }) => getReportProfile(projectId, signal),
+    ...reportProfileQuery(projectId),
   });
   const templatesQuery = useQuery({
-    queryKey: ['listReportTemplates', projectId], queryFn: ({ signal }) => listReportTemplates(projectId, signal),
+    ...reportTemplatesQuery(projectId),
   });
   const profile = profileQuery.data ?? null;
   const templates = templatesQuery.data ?? NO_TEMPLATES;

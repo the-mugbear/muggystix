@@ -446,11 +446,10 @@ def overview_projects(projects: List[Project] = Depends(administered_projects),
                       policy: remediation_policy.Policy = Depends(enabled), db: Session = Depends(get_db)):
     today = policy.today()
     ids = [p.id for p in projects]
-    counts = remediation.state_counts_by_project(db, ids, policy, today)
-    defects = remediation.defect_counts_by_project(db, ids)
+    counts = remediation.overview_counts_by_project(db, ids, policy, today)
     items = [{"project_id": p.id, "name": p.name, "archived": p.status == "archived",
-              "states": counts[p.id], "total": defects[p.id]["total"],
-              "remediated": defects[p.id]["remediated"]} for p in projects]
+              "states": counts[p.id]["states"], "total": counts[p.id]["total"],
+              "remediated": counts[p.id]["remediated"]} for p in projects]
     totals = {name: sum(row["states"][name] for row in items) for name in remediation_policy.STATES}
     defect_totals = {"total": sum(row["total"] for row in items),
                      "remediated": sum(row["remediated"] for row in items)}

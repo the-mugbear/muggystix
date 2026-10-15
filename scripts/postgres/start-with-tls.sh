@@ -36,7 +36,11 @@ tls_off() {
     say "PostgreSQL is starting WITHOUT TLS: $why"
     say "Connections from the application stay on the compose network, unencrypted."
     say "Fix the certificate in ssl/certs and restart the database to turn it on."
-    exec docker-entrypoint.sh "$@"
+    # Said on the command line too, which outranks postgresql.auto.conf: the
+    # old ensure-ssl.sh step wrote `ssl = on` there on some databases, and
+    # this message was then untrue — or the server refused to start for want
+    # of the files it named (review 2026-10-14, suspected).
+    exec docker-entrypoint.sh "$@" -c ssl=off
 }
 
 # Only the server itself gets the settings: `docker compose run db psql …`

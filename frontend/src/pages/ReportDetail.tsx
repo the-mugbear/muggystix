@@ -26,8 +26,6 @@ import { ArrowLeft, Loader2, RefreshCw, Sparkles, Stamp, Trash2 } from 'lucide-r
 import {
   ClientReport,
   ClientReportFormat,
-  ReportFileFormat,
-  EngagementSettings,
   ReportJob,
   ReportSummary,
   ReportTemplate,
@@ -38,7 +36,6 @@ import {
   getClientReportInputs,
   getReportJob,
   issueClientReport,
-  listReportTemplates,
   previewClientReport,
   rerenderClientReport,
   reviseClientReport,
@@ -48,6 +45,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDiscardGuard, useLinkGuard } from '../hooks/useDiscardGuard';
+import { useOpeningKey } from '../hooks/useOpeningKey';
+import { reportTemplatesQuery } from '../components/reports/reportQueries';
 import { useJobPolls } from '../hooks/useJobPoll';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRoster } from '../hooks/useProjectMembers';
@@ -57,7 +56,7 @@ import { formatApiError } from '../utils/apiErrors';
 import { NEED_SECTION } from '../utils/findingNeeds';
 import { formatTimestamp } from '../utils/relativeTime';
 import { REPORT_FIELD_LABELS } from '../utils/reportImages';
-import { isClientTemplate } from '../utils/reportTemplates';
+import { REPORT_FORMAT_LABEL, isClientTemplate } from '../utils/reportTemplates';
 import { safeFallback, stickyFlushBelowChrome } from '../utils/uiStyles';
 import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
@@ -85,12 +84,9 @@ import { Label } from '../components/ui/label';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
-import { FileButtons, RENDER_POLL_MS, isRendering, reportKindLabel } from './Reports';
+import { FileButtons, RENDER_POLL_MS, isRendering, reportKindLabel } from '../components/reports/issuedReport';
 
-// `pdf` labels a file of a report issued before PDF was removed (5.293.0).
-const FORMAT_LABEL: Record<ReportFileFormat, string> = {
-  html: 'HTML', docx: 'Word', qmd: 'QMD source (.zip)', pdf: 'PDF',
-};
+const FORMAT_LABEL = REPORT_FORMAT_LABEL;
 const when = (iso: string | null) => formatTimestamp(iso);
 
 /** "N test results are printed as how findings were confirmed; M were recorded
@@ -179,19 +175,6 @@ export const evidenceImagesLine = (s: ReportSummary): string => {
   return parts.join(' · ');
 };
 
-/** A detail's value in a sentence: a text quoted (shortened past 200
- *  characters), a list by its names. */
-export const describeDetail = (v: EngagementSettings[DetailKey] | null | undefined): string => {
-  if (Array.isArray(v)) {
-    if (!v.length) return 'an empty list';
-    const names = v.map((r) => r.name);
-    const shown = names.slice(0, 5).join(', ') + (names.length > 5 ? ` and ${names.length - 5} more` : '');
-    return `a list of ${v.length} (${shown})`;
-  }
-  const text = (v ?? '').trim();
-  return `“${text.length > 200 ? `${text.slice(0, 200)}…` : text}”`;
-};
-
 export type WorkspaceSection = 'details' | 'review' | 'issue';
 const SECTIONS: Array<{ id: WorkspaceSection; label: string }> = [
   { id: 'details', label: 'Details' },
@@ -225,6 +208,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const roster = useProjectRoster();
   const [aiOpen, setAiOpen] = useState(false);
   const [promoteOpen, setPromoteOpen] = useState(false);
+  // Each opening starts with every detail ticked (review 2026-10-14, R13: an
+  // untick survived Cancel).
+  const promoteKey = useOpeningKey(promoteOpen);
 
   const projectId = useProjectId();
   const reportKey = ['getClientReport', projectId, id];
@@ -239,7 +225,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const putReport = (next: ClientReport) => queryClient.setQueryData(reportKey, next);
 
   const templatesQuery = useQuery({
-    queryKey: ['listReportTemplates', projectId], queryFn: ({ signal }) => listReportTemplates(projectId, signal),
+    ...reportTemplatesQuery(projectId),
   });
   const templates: ReportTemplate[] = templatesQuery.data ?? NO_TEMPLATES;
 
@@ -351,8 +337,16 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     enabled: isDraft && section === 'issue' && readyPreviews !== '',
     refetchOnWindowFocus: true,
   });
+  // A preview that finishes asks again — but not the FIRST one, whose
+  // finishing turns the query on (and so reads it once already; review
+  // 2026-10-14, R2: it was read twice).
+  const previousReady = useRef(readyPreviews);
   useEffect(() => {
-    if (readyPreviews) void queryClient.invalidateQueries({ queryKey: ['getClientReportInputs', projectId, reportId] });
+    const before = previousReady.current;
+    previousReady.current = readyPreviews;
+    if (readyPreviews && before && readyPreviews !== before) {
+      void queryClient.invalidateQueries({ queryKey: ['getClientReportInputs', projectId, reportId] });
+    }
   }, [readyPreviews, queryClient, projectId, reportId]);
   /** A finished preview against the inputs now; never "current" unless both
    *  fingerprints are known and equal. */
@@ -577,7 +571,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const warnings = (s.pending_proposals?.length ?? 0) + (s.uncaptioned_images?.length ?? 0)
     + (s.internal_references?.length ?? 0) + (s.unresolved_images?.length ?? 0);
   const ready = !toFix;
-  // What refuses the issue — the server refuses these too.
+  // What refuses the issue — the server refuses these too.  The ONE list:
+  // Review lists it and the Issue button is held by it (review 2026-10-14,
+  // R10: the button had its own copy of the conditions).
   const blockers = [
     ...(dirty ? ['Unsaved changes: save the draft first.'] : []),
     ...(assetsBlock ? [`${assetsBlock}.`] : []),
@@ -876,8 +872,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         <div className="flex flex-wrap items-center gap-xs">
           {report.can_issue && (
             <Button variant={ready ? 'default' : 'outline'} onClick={() => void issue()}
-              disabled={busy !== null || dirty || !!s.error || !!assetsBlock}
-              title={dirty ? 'Save your changes first' : (assetsBlock ?? undefined)}>
+              disabled={busy !== null || blockers.length > 0}
+              title={blockers[0]}>
               {busy === 'issue' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Stamp className="size-4" aria-hidden />}
               Issue report
             </Button>
@@ -978,7 +974,10 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                 {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save draft
               </Button>
               <Button size="sm" disabled={saving || anyRunning || !!assetsBlock} title={assetsBlock}
-                onClick={() => void preview('html')}>
+                // The template's own format: HTML when it renders it, else its
+                // first (a Word-only template only failed here — review
+                // 2026-10-14, suspected).
+                onClick={() => void preview(formats.includes('html') ? 'html' : formats[0])}>
                 {dirty ? 'Save & preview' : 'Preview'}
               </Button>
             </div>
@@ -1008,7 +1007,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             useLabel="Use as the summary"
             // The draft's own summary from then on (pending until Save draft).
             onUse={(text) => { edits.edit('summary'); edits.set('executive_summary', text); }} />
-          <UpdateDefaultsDialog open={promoteOpen} onClose={() => setPromoteOpen(false)}
+          <UpdateDefaultsDialog key={promoteKey} open={promoteOpen} onClose={() => setPromoteOpen(false)}
             report={report} ctx={edits.ctx} keys={customisedKeys}
             onPromoted={(updated, keys) => { putReport(updated); edits.forget(keys); }} />
         </>

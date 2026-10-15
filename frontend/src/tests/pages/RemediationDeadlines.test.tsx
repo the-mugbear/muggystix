@@ -348,6 +348,20 @@ describe('defects on the deadlines page (owner, 2026-10-14)', () => {
     expect(screen.getByRole('button', { name: 'What Remediated counts' })).toBeInTheDocument();
   });
 
+  // Review 2026-10-14, R14: the "All" row's numbers opened nothing.
+  it('the All row’s counts open every project’s rows', async () => {
+    show();
+    const projects = await screen.findByRole('table', { name: 'Remediation deadlines by project' });
+    const all = within(projects).getAllByRole('row').find((r) => r.textContent?.startsWith('All'))!;
+    const remediated = within(all).getByRole('button', { name: /^All projects: show remediated/ });
+    fireEvent.click(remediated);
+    await waitFor(() => {
+      const query = listRemediationOverview.mock.lastCall?.[0];
+      expect(query.defect).toEqual(['remediated']);
+      expect(query.project_id).toBeUndefined();
+    });
+  });
+
   it('the metrics cover every active project until one is chosen, and a cell opens its rows', async () => {
     show();
     const table = await screen.findByRole('table', { name: 'Defect metrics' });

@@ -19,10 +19,7 @@ import {
   ClientReportKind,
   ClientReportList,
   createClientReport,
-  downloadClientReportFile,
-  getReportProfile,
   listClientReports,
-  listReportTemplates,
   updateClientReport,
 } from '../services/api';
 import { formatDate, formatTimestamp } from '../utils/relativeTime';
@@ -30,12 +27,13 @@ import TimeAgo from '../components/TimeAgo';
 import { Input } from '../components/ui/input';
 import { useToast } from '../contexts/ToastContext';
 import { useProjectId } from '../hooks/useProjectId';
+import { reportProfileQuery, reportTemplatesQuery } from '../components/reports/reportQueries';
+import { FileButtons, RENDER_POLL_MS, isRendering, reportKindLabel } from '../components/reports/issuedReport';
 import { pollEvery, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { isClientTemplate } from '../utils/reportTemplates';
 import PostureSection from '../components/posture/PostureSection';
 import PostureLead from '../components/posture/PostureLead';
-import DownloadButton from '../components/DownloadButton';
 import { DETAIL_LABELS, type DetailKey, savedOverride } from '../components/reports/workspace/detailModel';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -50,6 +48,7 @@ import {
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../components/ui/dialog';
 import { safeFallback } from '../utils/uiStyles';
+import { useOpeningKey } from '../hooks/useOpeningKey';
 
 const day = (iso: string | null) => formatDate(iso);
 
@@ -67,11 +66,11 @@ export const draftMeta = (r: Pick<ClientReport, 'created_at' | 'settings'>, othe
 const useOtherTemplate = (enabled: boolean): ((r: Pick<ClientReport, 'template'>) => string | null) => {
   const projectId = useProjectId();
   const profile = useQuery({
-    queryKey: ['getReportProfile', projectId], queryFn: ({ signal }) => getReportProfile(projectId, signal),
+    ...reportProfileQuery(projectId),
     enabled,
   });
   const templatesQuery = useQuery({
-    queryKey: ['listReportTemplates', projectId], queryFn: ({ signal }) => listReportTemplates(projectId, signal),
+    ...reportTemplatesQuery(projectId),
     enabled,
   });
   const defaultTemplate = profile.data?.template ?? null;
@@ -144,44 +143,6 @@ export const issuedState = (r: Pick<ClientReport, 'id' | 'status'>, latestId: nu
   return <span className="text-muted-foreground">—</span>;
 };
 
-/** How often a page showing an issued report whose files are still rendering
- *  reads it again — the report's page and the list alike. */
-export const RENDER_POLL_MS = 3000;
-export const isRendering = (r: ClientReport | undefined): boolean =>
-  r != null && r.status !== 'draft' && r.render_status === 'pending';
-
-export const reportKindLabel = (r: Pick<ClientReport, 'kind' | 'baseline' | 'revision_of'>): string => {
-  const parts = [r.kind === 'addendum' ? `Addendum to #${r.baseline?.number ?? '?'}` : 'Full report'];
-  if (r.revision_of) parts.push(`revises #${r.revision_of.number ?? '?'}`);
-  return parts.join(' · ');
-};
-
-/** An issued report's files, each its own download (`DownloadButton`). */
-export const FileButtons: React.FC<{ report: ClientReport }> = ({ report }) => {
-  const projectId = useProjectId();
-  if (report.render_status === 'pending') {
-    return (
-      <span className="inline-flex items-center gap-xxs text-caption text-muted-foreground">
-        <Loader2 className="size-3.5 animate-spin" aria-hidden /> Rendering files…
-      </span>
-    );
-  }
-  if (report.render_status === 'failed') {
-    return <span className="text-caption text-destructive">Rendering failed</span>;
-  }
-  if (report.files.length === 0) return <span className="text-caption text-muted-foreground">No files</span>;
-  return (
-    <span className="inline-flex flex-wrap gap-xxs">
-      {report.files.map((f) => (
-        <DownloadButton key={f.format} compact variant="outline" size="sm" className="h-7 px-xs text-caption"
-          label={f.format.toUpperCase()} name={`Download ${f.filename}`} filename={f.filename}
-          errorText="Could not download the file."
-          saveFn={() => downloadClientReportFile(projectId, report.id, f)} />
-      ))}
-    </span>
-  );
-};
-
 /** The drafts a new report of `kind` might continue instead, the most
  *  recently updated first: a full report's drafts (revisions among them), or
  *  the drafts of an addendum to `baselineId`. */
@@ -219,6 +180,9 @@ const Reports: React.FC = () => {
   const latest = issued.find((r) => r.id === data?.latest_issued_id) ?? null;
   const otherTemplate = useOtherTemplate(drafts.length > 0);
   const [creatingKind, setCreatingKind] = useState<ClientReportKind | null>(null);
+  // Every opening of New report starts clean (review 2026-10-14, R13: a
+  // title typed before a create was there again the next time).
+  const newReportKey = useOpeningKey(creatingKind);
 
   const starting = useMutation({
     mutationFn: (body: { kind: ClientReportKind; title?: string; template?: string }) => createClientReport(projectId, body),
@@ -354,6 +318,7 @@ const Reports: React.FC = () => {
       )}
 
       <NewReportDialog
+        key={newReportKey}
         kind={creatingKind}
         latest={latest}
         drafts={creatingKind ? continuableDrafts(drafts, creatingKind, latest?.id ?? null) : []}
@@ -391,11 +356,11 @@ const NewReportDialog: React.FC<{
   const projectId = useProjectId();
   const open = kind !== null;
   const profile = useQuery({
-    queryKey: ['getReportProfile', projectId], queryFn: ({ signal }) => getReportProfile(projectId, signal),
+    ...reportProfileQuery(projectId),
     enabled: open,
   });
   const templatesQuery = useQuery({
-    queryKey: ['listReportTemplates', projectId], queryFn: ({ signal }) => listReportTemplates(projectId, signal),
+    ...reportTemplatesQuery(projectId),
     enabled: open,
   });
   const [title, setTitle] = useState('');
@@ -403,7 +368,10 @@ const NewReportDialog: React.FC<{
   const templates = (templatesQuery.data ?? []).filter(isClientTemplate);
   const chosen = template ?? profile.data?.template ?? templates[0]?.name ?? '';
   const addendum = kind === 'addendum';
-  const close = () => { setTitle(''); setTemplate(null); onClose(); };
+  // Until the project's default is known, "the template chosen" is not: the
+  // first template would be sent in its place (review 2026-10-14, R13).
+  const settling = open && (profile.isPending || templatesQuery.isPending);
+  const close = () => onClose();
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o && !busy) close(); }}>
       <DialogContent className="max-w-lg">
@@ -451,7 +419,7 @@ const NewReportDialog: React.FC<{
         </DialogBody>
         <DialogFooter>
           <Button variant="ghost" onClick={close} disabled={busy}>Cancel</Button>
-          <Button disabled={busy || !kind}
+          <Button disabled={busy || !kind || settling}
             onClick={() => kind && onCreate({ kind, ...(title.trim() ? { title: title.trim() } : {}), ...(chosen ? { template: chosen } : {}) })}>
             {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
             {addendum ? 'Start the addendum' : 'Start the draft'}

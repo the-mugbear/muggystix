@@ -57,6 +57,7 @@ from app.db.models_reports import RenderStatus, Report, ReportFile, ReportImage,
 from app.services import quarto_render
 from app.services import report_template_service as templates
 from app.services.client_report_service import ClientReportService, frozen_template_dir
+from app.services.note_attachment_service import attachment_file
 
 logger = logging.getLogger(__name__)
 
@@ -80,18 +81,11 @@ def file_slug(text: Optional[str], fallback: str = "report") -> str:
 def live_evidence_resolver(db: Session, project_id: int):
     """The live attachments: a DRAFT's images, and those of a document that
     is never frozen (a contact's remediation list)."""
-    base = (Path(settings.UPLOAD_DIR) / "note_attachments").resolve()
-
     def resolve(item: dict) -> Optional[Path]:
         att = db.get(NoteAttachment, item.get("attachment_id"))
         if att is None or att.project_id != project_id:
             return None
-        try:
-            target = (base / att.storage_path).resolve()
-            target.relative_to(base)
-        except (ValueError, OSError):
-            return None
-        return target if target.is_file() else None
+        return attachment_file(att)
 
     return resolve
 
@@ -115,7 +109,7 @@ def inputs_fingerprint(db: Session, report: Report, dataset: dict) -> str:
     """One SHA-256 over what a draft's render reads: the dataset (keys
     sorted) without today's date — the one field that changes by itself on
     a draft — the template's ``fingerprint`` (its files, its base's, its
-    uploads) and the bytes of every image the dataset names.
+    uploads) and which file every image the dataset names is.
 
     "The inputs changed", not "what prints changed": a template may ignore
     a field that changed.  The worker records it for each preview it renders
@@ -132,11 +126,17 @@ def inputs_fingerprint(db: Session, report: Report, dataset: dict) -> str:
         # A template that cannot be read is an input too: the preview of it
         # failed, and whatever it rendered before is not what would render now.
         digest.update(b"template\0missing:" + (report.template or "").encode("utf-8"))
+    # An image by WHICH FILE it is, not its bytes: an attachment's file is
+    # written once under a new uuid name by one writer and never rewritten,
+    # so its path names its content.  Reading every image's bytes on each
+    # check cost seconds with thousands of screenshots, and a file deleted
+    # between the existence check and the read was a 500 (review 2026-10-14,
+    # R2).
     resolve = live_evidence_resolver(db, report.project_id)
     for att_id in sorted(_attachment_ids(dataset, set())):
         path = resolve({"attachment_id": att_id})
         digest.update(f"image:{att_id}\0".encode("ascii"))
-        digest.update(hashlib.sha256(path.read_bytes()).digest() if path is not None else b"missing")
+        digest.update(str(path).encode("utf-8") if path is not None and path.is_file() else b"missing")
     return digest.hexdigest()
 
 

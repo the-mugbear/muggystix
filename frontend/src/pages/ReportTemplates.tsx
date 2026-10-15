@@ -7,24 +7,25 @@
  * here.  The PROJECT's choice of default template is a report default, on
  * /reports/defaults — the two permissions stay apart.
  */
-import React from 'react';
+import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 
 import {
-  getReportProfile, listReportTemplateProblems, listReportTemplates, type ReportTemplate, type ReportTemplateProblem,
+  listReportTemplateProblems, type ReportTemplate, type ReportTemplateProblem,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useProjectId } from '../hooks/useProjectId';
+import { reportProfileQuery, reportTemplatesQuery } from '../components/reports/reportQueries';
 import { queryErrorText } from '../lib/query';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import TemplateImages, { assetCountLabel, missingRequiredAssets } from '../components/reports/TemplateImages';
 import { DetailSkeleton } from '../components/PageSkeleton';
+import { formatLabel } from '../utils/reportTemplates';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 
-const FORMAT_LABEL: Record<string, string> = { html: 'HTML', docx: 'Word', qmd: 'QMD source' };
 const NO_TEMPLATES: ReportTemplate[] = [];
 const NO_PROBLEMS: ReportTemplateProblem[] = [];
 
@@ -32,11 +33,14 @@ const ReportTemplates: React.FC = () => {
   const projectId = useProjectId();
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
+  // Templates opened on this visit (by the reader, or because something
+  // missing blocked a report).
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   const templatesQuery = useQuery({
-    queryKey: ['listReportTemplates', projectId], queryFn: ({ signal }) => listReportTemplates(projectId, signal),
+    ...reportTemplatesQuery(projectId),
   });
   const profileQuery = useQuery({
-    queryKey: ['getReportProfile', projectId], queryFn: ({ signal }) => getReportProfile(projectId, signal),
+    ...reportProfileQuery(projectId),
   });
   // Only an administrator can put a folder on the server, so only they are
   // told which ones could not be offered.
@@ -76,13 +80,25 @@ const ReportTemplates: React.FC = () => {
             {ordered.map((t) => {
               const count = assetCountLabel(t);
               return (
-                // Open when something missing blocks a report.
-                <details key={t.name} open={missingRequiredAssets(t).length > 0} className="group py-sm first:pt-0">
+                // Open when something missing blocks a report — and it stays
+                // open once open (the upload that fixed it collapsed it:
+                // review 2026-10-14, nitpick); the reader's own toggles are kept.
+                <details key={t.name} open={opened.has(t.name) || missingRequiredAssets(t).length > 0}
+                  onToggle={(e) => {
+                    const isOpen = e.currentTarget.open;
+                    setOpened((prev) => {
+                      if (prev.has(t.name) === isOpen) return prev;
+                      const next = new Set(prev);
+                      if (isOpen) next.add(t.name); else next.delete(t.name);
+                      return next;
+                    });
+                  }}
+                  className="group py-sm first:pt-0">
                   <summary className="flex min-w-0 cursor-pointer flex-wrap items-baseline gap-x-xs gap-y-xxs">
                     <span className="break-words font-medium">{t.title}</span>
                     {t.name === defaultName && <Badge variant="info">Project default</Badge>}
                     <span className="text-caption text-muted-foreground">
-                      {t.formats.map((f) => FORMAT_LABEL[f] ?? f).join(', ')}
+                      {t.formats.map(formatLabel).join(', ')}
                       {count && <> · {count}</>}
                     </span>
                   </summary>

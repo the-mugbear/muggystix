@@ -60,7 +60,7 @@ from typing import Iterable, Iterator, List, Optional, Sequence, Union
 
 import ijson
 
-from app.parsers.cut_short import EndTracking, reject_line, settle_cut
+from app.parsers.cut_short import EndTracking, TruncatedFile, reject_line, settle_cut
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +244,21 @@ def iter_document(
         )
     except _EndsEarly as cut:
         settle_cut(cut.read, label=tool_label, unit=unit, cause=cut.__cause__)
+
+
+def document_before_the_cut(source: Union[str, bytes], prefix: str, tool_label: str, **read) -> Optional[list]:
+    """For a parser's content that ``json.loads`` refused: the document's
+    complete items (``iter_document``, with ``read``'s options) when it ENDS
+    EARLY and the import keeps them — ``TruncatedFile`` when it does not —
+    and None when it is invalid for any other reason (the caller's own path
+    decides).  The ONE copy of that question for a parser with its own loader
+    (RDAP and NetExec each had theirs — review 2026-10-14, R5)."""
+    try:
+        return list(iter_document(source, prefix, tool_label, **read))
+    except TruncatedFile:
+        raise
+    except ValueError:
+        return None
 
 
 def ends_early(text: str) -> bool:

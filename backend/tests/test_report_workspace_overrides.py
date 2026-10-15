@@ -25,7 +25,7 @@ def _patch(client, project, rid, **body):
 def test_a_stale_save_never_reverts_an_override_it_did_not_send(client, test_project):
     """H1: A and B have the draft open; B overrides Classification and saves;
     A, who never reloaded, edits Client and saves — B's override stays."""
-    client.put(f"{_base(test_project)}/profile", json={"classification": "Project", "template": "pentest"})
+    client.patch(f"{_base(test_project)}/profile", json={"classification": "Project", "template": "pentest"})
     draft = _create(client, test_project)
     _patch(client, test_project, draft["id"], settings={"classification": "B's"})            # B
     after = _patch(client, test_project, draft["id"], settings={"client_name": "A's"})      # A
@@ -44,7 +44,7 @@ def test_a_detail_sent_null_or_blank_follows_the_project_again(client, test_proj
 
 
 def test_an_override_the_author_did_not_touch_survives_the_project_catching_up(client, test_project):
-    client.put(f"{_base(test_project)}/profile", json={"classification": "A", "template": "pentest"})
+    client.patch(f"{_base(test_project)}/profile", json={"classification": "A", "template": "pentest"})
     draft = _create(client, test_project)
     _patch(client, test_project, draft["id"], settings={"classification": "B"})
     # The project changes to B: the draft's own B equals it now.
@@ -58,7 +58,7 @@ def test_an_override_the_author_did_not_touch_survives_the_project_catching_up(c
 
 
 def test_a_detail_sent_back_to_the_projects_follows_again(client, test_project):
-    client.put(f"{_base(test_project)}/profile", json={
+    client.patch(f"{_base(test_project)}/profile", json={
         "client_name": "Example Corp", "distribution": [{"name": "CISO", "email": "ciso@example.com"}],
         "template": "pentest"})
     draft = _create(client, test_project)
@@ -69,14 +69,14 @@ def test_a_detail_sent_back_to_the_projects_follows_again(client, test_project):
 
 
 def test_an_empty_list_override_is_kept_even_when_the_project_lists_nobody_too(client, test_project):
-    client.put(f"{_base(test_project)}/profile", json={"distribution": [], "template": "pentest"})
+    client.patch(f"{_base(test_project)}/profile", json={"distribution": [], "template": "pentest"})
     draft = _create(client, test_project)
     saved = _patch(client, test_project, draft["id"], settings={"distribution": []})
     assert saved["settings"] == {"distribution": []}
 
 
 def test_followers_count_the_other_drafts_that_follow_each_detail(client, test_project):
-    client.put(f"{_base(test_project)}/profile", json={"executive_summary": "S.", "template": "pentest"})
+    client.patch(f"{_base(test_project)}/profile", json={"executive_summary": "S.", "template": "pentest"})
     me = _create(client, test_project)
     follows = _create(client, test_project)
     overrides = _create(client, test_project)

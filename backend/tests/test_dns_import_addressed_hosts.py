@@ -272,6 +272,33 @@ CSV = (
 )
 
 
+def test_a_dns_csv_import_reads_the_hosts_once_not_per_row(db_session, test_project, tmp_path):
+    """Review 2026-10-14, R15: each PTR / A / AAAA row asked for its host by
+    address — a query per row.  The project's hosts are read once; a host a
+    PTR row creates is found by the rows after it."""
+    from sqlalchemy import event
+
+    pid = test_project.id
+    _nmap_hosts(db_session, pid, KNOWN)
+    rows = "".join(f"A,name{n}.corp.example,10.70.0.{1 + n % 3}\n" for n in range(30))
+    text = ("record_type,name,address\n" + rows
+            + "PTR,made.corp.example,10.70.0.77\nA,made.corp.example,10.70.0.77\n")
+    lookups = []
+
+    def listener(conn, cursor, statement, params, context, executemany):
+        if "FROM hosts_v2" in statement and "hosts_v2.ip_address =" in statement:
+            lookups.append(statement)
+
+    event.listen(db_session.bind, "before_cursor_execute", listener)
+    try:
+        scan, _ = _csv_import(db_session, pid, tmp_path, text)
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", listener)
+    assert len(lookups) <= 1, lookups       # the dedup service's own lookup for the host it creates
+    addressed = _history(db_session, scan.id)
+    assert set(addressed) == {"10.70.0.1", "10.70.0.2", "10.70.0.3", "10.70.0.77"}
+
+
 def test_a_dns_csv_import_records_the_hosts_its_ptr_rows_addressed(client, db_session, test_project, tmp_path):
     pid = test_project.id
     _nmap_hosts(db_session, pid, KNOWN)

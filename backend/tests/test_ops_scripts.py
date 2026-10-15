@@ -771,6 +771,9 @@ def test_the_uploads_tree_and_the_database_key_are_set_up_by_the_containers():
     tls = (SCRIPTS / "postgres" / "start-with-tls.sh").read_text(encoding="utf-8")
     # On only for a pair PostgreSQL accepts; otherwise the database still starts.
     assert "ssl=on" in tls and "starting WITHOUT TLS" in tls and 'exec docker-entrypoint.sh "$@"' in tls
+    # …and "without TLS" is said to the server too, over an `ssl = on` an old
+    # step left in postgresql.auto.conf (review 2026-10-14, suspected).
+    assert 'exec docker-entrypoint.sh "$@" -c ssl=off' in tls
     assert "ensure-ssl" not in (SCRIPTS / "deploy.sh").read_text(encoding="utf-8")
     compose = root / "docker-compose.yml"
     if compose.is_file():

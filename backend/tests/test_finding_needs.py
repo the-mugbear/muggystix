@@ -85,12 +85,14 @@ def _seed(db, project, user):
     text = _finding(db, project, "Impact not written", impact="  \n")
     expected[text.id] = {"missing_text": 1}
 
-    # Its own comments: two ticked without a caption (one holds only spaces);
+    # Its own comments: two ticked without a caption (one holds only spaces —
+    # a no-break space among them, which the SQL side once kept as a caption
+    # while the report printed the file's name; review 2026-10-14, R6);
     # the captioned, the un-ticked and the unprintable ones are not counted.
     own = _finding(db, project, "Images on comments")
     note = _comment(db, user, finding_id=own.id)
     _image(db, project, note, "a.png")
-    _image(db, project, note, "b.jpg", caption="   ", ctype="image/jpeg")
+    _image(db, project, note, "b.jpg", caption="    ", ctype="image/jpeg")
     _image(db, project, note, "c.png", caption="A caption")
     _image(db, project, note, "d.png", ticked=False)
     _image(db, project, note, "e.webp", ctype="image/webp")

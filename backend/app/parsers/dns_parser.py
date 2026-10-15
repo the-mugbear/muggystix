@@ -45,6 +45,20 @@ class DNSParser:
         # .record_addressed_hosts).  A host this import creates gets its row
         # from the dedup service.
         self._observed = ScanHostObservations()
+        # The project's hosts by address, read once per parse (review
+        # 2026-10-14, R15: a query per PTR / A / AAAA row); a host this
+        # import creates is added once its row's savepoint is released.
+        self._host_ids: Optional[Dict[str, int]] = None
+
+    def _known_host(self, ip_address: str) -> Optional[models.Host]:
+        """The project's host at this address, or None."""
+        if self._host_ids is None:
+            self._host_ids = dict(
+                self.db.query(models.Host.ip_address, models.Host.id)
+                .filter(models.Host.project_id == self._project_id)
+            )
+        host_id = self._host_ids.get(ip_address)
+        return self.db.get(models.Host, host_id) if host_id is not None else None
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         """Parse DNS records CSV file and create/update host records with DNS names"""
@@ -170,10 +184,7 @@ class DNSParser:
                         # without the filter, ``.first()`` returns an
                         # arbitrary cross-project row).
                         if record_type == 'PTR':
-                            existing_host = self.db.query(models.Host).filter(
-                                models.Host.ip_address == ip_address,
-                                models.Host.project_id == self._project_id,
-                            ).first()
+                            existing_host = self._known_host(ip_address)
 
                             if existing_host:
                                 # PTR outranks scanner/forward names but never an
@@ -202,10 +213,7 @@ class DNSParser:
                             # notes it for the same answer (owner decision
                             # 2026-10-11).  Only the note: this row applies
                             # no display name and creates no host.
-                            addressed_host = self.db.query(models.Host).filter(
-                                models.Host.ip_address == ip_address,
-                                models.Host.project_id == self._project_id,
-                            ).first()
+                            addressed_host = self._known_host(ip_address)
                             if addressed_host:
                                 self._observed.note(
                                     addressed_host, created=False, state=None, hostname=dns_name,
@@ -214,6 +222,8 @@ class DNSParser:
                     dns_records_processed += 1
                     if row_created_id is not None:
                         created_host_ids.add(row_created_id)
+                        if self._host_ids is not None:
+                            self._host_ids[ip_address] = row_created_id
 
                 except Exception as e:
                     logger.warning(f"Error processing DNS record row {i}: {str(e)}")

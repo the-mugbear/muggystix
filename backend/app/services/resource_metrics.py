@@ -131,7 +131,9 @@ def database_snapshot(db: Session) -> Optional[dict]:
     try:
         size, used, most = db.execute(text(
             "SELECT pg_database_size(current_database()), "
-            "(SELECT count(*) FROM pg_stat_activity), "
+            # Client connections only: the server's own background processes
+            # (checkpointer, WAL writer…) are not what max_connections limits.
+            "(SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'), "
             "current_setting('max_connections')::int"
         )).one()
     except Exception:

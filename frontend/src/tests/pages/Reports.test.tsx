@@ -40,7 +40,6 @@ vi.mock('../../services/api', () => ({
   removeReportTemplateAsset: vi.fn(),
   fetchReportTemplateAssetPreview: vi.fn(() => Promise.reject(new Error('no preview in tests'))),
   getReportProfile: vi.fn(),
-  saveReportProfile: vi.fn(),
   // The project's own report images (the System description's): none here.
   listReportTextImages: vi.fn(() => Promise.resolve([])),
   uploadReportTextImage: vi.fn(),
@@ -875,6 +874,25 @@ describe('Template images', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove upload' }));
     await waitFor(() => expect(mocked.removeReportTemplateAsset).toHaveBeenCalledWith(1, 'pentest', 'logo'));
     expect(await screen.findByText('Not installed · optional')).toBeInTheDocument();
+  });
+
+  it('a template opened for a missing required file stays open once it is uploaded (review 2026-10-14)', async () => {
+    withAssets([logo({ required: true })]);
+    const uploaded = logo({
+      required: true, present: true, source: 'uploaded',
+      upload: { width: 500, height: 500, size: 4096, uploaded_by: 'admin', original_filename: 'logo.png' },
+    });
+    const done = { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html'], assets: [uploaded] };
+    mocked.uploadReportTemplateAsset.mockResolvedValue({ template: done, warnings: [] });
+    await templatesPage();
+    const details = screen.getByTestId('asset-guidance-logo').closest('details')!;
+    expect(details).toHaveAttribute('open');
+    mocked.listReportTemplates.mockResolvedValue([done]);
+    fireEvent.change(screen.getByLabelText('Upload Company logo'), {
+      target: { files: [new File(['png'], 'logo.png', { type: 'image/png' })] },
+    });
+    expect(await screen.findByText('Uploaded')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('asset-guidance-logo').closest('details')).toHaveAttribute('open'));
   });
 
   it('shows the server’s reason when it refuses an upload', async () => {

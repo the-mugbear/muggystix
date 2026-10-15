@@ -279,7 +279,7 @@ def test_the_list_says_where_the_projects_text_places_each_image(client, db_sess
     loose = _image(client, test_project, name="loose.png")
 
     # A tolerated spelling is stored in the one form, on both saves.
-    r = client.put(f"{_reports(test_project)}/profile", json={
+    r = client.patch(f"{_reports(test_project)}/profile", json={
         "system_description": f"The network.\n\n![Diagram](< evidence:{a} >)",
     })
     assert r.status_code == 200, r.text
@@ -310,7 +310,7 @@ def test_the_list_says_where_the_projects_text_places_each_image(client, db_sess
 
 def test_a_placed_image_stays_until_the_text_lets_go_of_it(client, db_session, test_project, storage):
     att = _image(client, test_project)
-    client.put(f"{_reports(test_project)}/profile", json={"system_description": f"![](evidence:{att})"})
+    client.patch(f"{_reports(test_project)}/profile", json={"system_description": f"![](evidence:{att})"})
     following = _draft(client, test_project)
     draft = _draft(client, test_project, system_description=f"Ours: ![](evidence:{att})")
     path = storage / "note_attachments" / db_session.get(NoteAttachment, att).storage_path
@@ -330,7 +330,7 @@ def test_a_placed_image_stays_until_the_text_lets_go_of_it(client, db_session, t
     assert client.patch(_attachment(test_project, att), json={"caption": "As built", "include_in_report": True}).status_code == 200
 
     # The defaults let go: the draft still holds it.
-    client.put(f"{_reports(test_project)}/profile", json={"system_description": "No picture."})
+    client.patch(f"{_reports(test_project)}/profile", json={"system_description": "No picture."})
     r = client.delete(_attachment(test_project, att))
     assert r.status_code == 409 and "report defaults" not in r.json()["detail"]
     assert f"draft #{draft['id']}" in r.json()["detail"]
@@ -538,6 +538,25 @@ def test_a_correction_restores_a_diagram_deleted_after_the_issue(client, db_sess
     dataset, _, _ = _build(db_session, new["id"])
     assert list(dataset["engagement"]["placed"]["system_description"]) == [str(restored_id)]
     assert dataset["engagement"]["placed"]["system_description"][str(restored_id)]["caption"] == "As issued"
+
+
+def test_a_second_correction_reuses_the_restored_diagram(client, db_session, test_project, storage):
+    """Review 2026-10-14 (nitpick): each revision restored the deleted
+    diagram again — a draft discarded and started anew, or a second
+    correction, left one copy per attempt in the images panel."""
+    diagram = _image(client, test_project, caption="As issued")
+    draft = _draft(client, test_project, system_description=f"![](evidence:{diagram})")
+    assert _issue(client, test_project, draft["id"]).status_code == 200
+    assert client.delete(_attachment(test_project, diagram)).status_code == 204
+
+    first = client.post(f"{_reports(test_project)}/{draft['id']}/revise")
+    assert first.status_code in (200, 201), first.text
+    assert client.delete(f"{_reports(test_project)}/{first.json()['id']}").status_code == 204
+    second = client.post(f"{_reports(test_project)}/{draft['id']}/revise")
+    assert second.status_code in (200, 201), second.text
+    restored = list(_listed(client, test_project))
+    assert len(restored) == 1
+    assert second.json()["settings"]["system_description"] == f"![](evidence:{restored[0]})"
 
 
 @pytest.mark.parametrize("start", ["revise", "addendum"])

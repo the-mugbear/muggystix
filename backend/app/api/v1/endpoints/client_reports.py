@@ -28,7 +28,7 @@ from app.db.models_reports import Report, ReportKind, ReportProfile, ReportStatu
 from app.db.session import get_db
 from app.schemas.client_reports import (
     PreviewRequest, ReportCreate, ReportInputsOut, ReportListOut, ReportOut,
-    ReportProfileBody, ReportProfileOut, ReportProfilePatch, ReportPromote,
+    ReportProfileOut, ReportProfilePatch, ReportPromote,
     ReportTemplateAssetChangeOut, ReportTemplateOut,
     ReportTemplateProblemOut, ReportTextImageOut, ReportUpdate, Tester,
 )
@@ -322,10 +322,12 @@ def _profile_out(db: Session, project_id: int, profile: Optional[ReportProfile])
     """The project's report defaults — what a draft follows — with the
     project's analysts and admins as the team when none is saved, flagged as
     such."""
-    team = list(profile.testers or []) if profile is not None else []
-    from_project = not team
-    if from_project:
-        team = ClientReportService(db).project_team(project_id)
+    # The team as a draft follows it — the one merge decides the fallback to
+    # the project's analysts and admins (review 2026-10-14, R8).
+    followed, sources = report_defaults.followed_with_sources(
+        db, profile, lambda: ClientReportService(db).project_team(project_id))
+    team = followed["testers"]
+    from_project = sources["testers"] != report_defaults.FROM_PROJECT
     inherited = report_defaults.installation(db)
     if profile is None:
         return ReportProfileOut(
@@ -362,26 +364,6 @@ def get_project_team(
     return [Tester(**t) for t in ClientReportService(db).project_team(project.id)]
 
 
-@router.put(
-    "/profile", response_model=ReportProfileOut,
-    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
-)
-def put_report_profile(
-    body: ReportProfileBody,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    current_user: User = Depends(get_current_user),
-):
-    """The project's engagement details: what every draft prints for a
-    detail it does not override — so a change here reaches every such draft
-    at once.  Issued reports never change.  Every key is written (a key left
-    out is cleared); the page's one-detail writes use PATCH."""
-    profile = _write_profile(db, project.id, body.model_dump(), current_user.id)
-    db.commit()
-    db.refresh(profile)
-    return _profile_out(db, project.id, profile)
-
-
 @router.patch(
     "/profile", response_model=ReportProfileOut,
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
@@ -392,9 +374,12 @@ def patch_report_profile(
     project: Project = Depends(get_current_project),
     current_user: User = Depends(get_current_user),
 ):
-    """Change only the project's defaults SENT ("Set for the project" on a
-    draft's detail): the rest stay as stored, so a page that read the profile
-    a while ago cannot overwrite someone else's change to another detail."""
+    """The project's engagement details — what every draft prints for a
+    detail it does not override, so a change here reaches every such draft
+    at once (issued reports never change).  The ONE write of them from a
+    page (`/reports/defaults`): only the keys SENT change, so a page that
+    read the profile a while ago cannot overwrite someone else's change to
+    another detail.  (The whole-profile `PUT` went — review 2026-10-14, R1.)"""
     data = body.model_dump(exclude_unset=True)
     if not data:
         raise HTTPException(status_code=422, detail="Send at least one report default to change.")
@@ -407,7 +392,7 @@ def patch_report_profile(
 def _write_profile(db: Session, project_id: int, data: dict, user_id: int) -> ReportProfile:
     """Write ``data``'s keys (already validated by the body's schema) into the
     project's report defaults, creating the row — the ONE writer of
-    ``report_profiles`` for PUT, PATCH and a draft's promote.  A list sent
+    ``report_profiles`` for PATCH and a draft's promote.  A list sent
     null is empty; the system description's image references are
     normalised; a template is checked to be a client template."""
     if data.get("template"):
@@ -623,7 +608,7 @@ def update_report(
         own.update(report_defaults.overrides(data))
         # Changed back to what it follows: it follows again — for the details
         # sent in this save only (`drop_followed`).
-        follows = ClientReportService(db).followed_details(project.id, report.kind)
+        follows, _ = ClientReportService(db).followed_details_with_sources(project.id, report.kind)
         report.settings = report_defaults.drop_followed(own, follows, data.keys())
     db.commit()
     db.expire_all()
@@ -707,10 +692,7 @@ def report_detail_followers(
         .all()
     )
     for kind, settings in others:
-        own = report_defaults.overrides(settings)
-        for key in report_defaults.DETAIL_KEYS:
-            if key in own or (kind == ReportKind.ADDENDUM and key in report_defaults.OWN_IN_ADDENDUM):
-                continue
+        for key in report_defaults.follows(kind, settings):
             counts[key] += 1
     return counts
 

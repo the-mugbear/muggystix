@@ -54,6 +54,18 @@ def _attachments_root() -> Path:
     return Path(settings.UPLOAD_DIR) / "note_attachments"
 
 
+def attachment_file(att: "models.NoteAttachment") -> Optional[Path]:
+    """An attachment's stored file, kept inside the attachments folder; None
+    when its path leaves the folder or the file is not there."""
+    base = _attachments_root().resolve()
+    try:
+        target = (base / att.storage_path).resolve()
+        target.relative_to(base)
+    except (ValueError, OSError):
+        return None
+    return target if target.is_file() else None
+
+
 UNREADABLE_UPLOADS_FIX = "docker compose exec backend chown -R appuser:appgroup /app/uploads"
 
 
@@ -118,11 +130,7 @@ def store_image_attachment(
     every report can print.
     """
     declared = (file.content_type or "").lower()
-    if note_id is None and declared == "image/webp":
-        raise HTTPException(status_code=400, detail="Only PNG, JPEG or GIF images can be printed in a report.")
-    if declared not in _ATTACHMENT_TYPES:
-        raise HTTPException(status_code=400, detail="Only PNG, JPEG, GIF, or WebP images are allowed.")
-    # Read with a hard cap (one extra byte detects an over-limit file without
+    # The type is checked once, by store_image_bytes.  Read with a hard cap (one extra byte detects an over-limit file without
     # materialising the whole thing).
     data = file.file.read(_ATTACHMENT_MAX_BYTES + 1)
     return store_image_bytes(

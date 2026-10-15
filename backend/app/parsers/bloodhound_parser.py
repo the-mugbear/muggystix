@@ -134,13 +134,16 @@ class BloodHoundParser:
                 # when the import keeps them); anything else is invalid.
                 if _detect_bloodhound_prefix(file_path) is None:
                     raise ValueError(f"Invalid BloodHound JSON: {exc}") from exc
-                return list(BloodHoundParser._stream_entries(file_path))
+                # ``floats``: the objects a whole small file gives json.load
+                # carry floats, so the ones before a cut do too (it gave
+                # Decimal — review 2026-10-14, nitpick).
+                return list(BloodHoundParser._stream_entries(file_path, floats=True))
         if isinstance(payload, list):
             return payload
         return payload.get("data") or payload.get("computers") or []
 
     @staticmethod
-    def _stream_entries(file_path: str) -> Iterator[dict]:
+    def _stream_entries(file_path: str, floats: bool = False) -> Iterator[dict]:
         """Stream entries via ijson without loading the whole file into memory.
 
         Detects the top-level structure (array | {data: [...]} | {computers: [...]})
@@ -157,7 +160,7 @@ class BloodHoundParser:
         # The shared reader's rule: a document that ends early is settled in
         # the one place (``TruncatedFile``, or the objects end at the cut when
         # the import keeps them); invalid content is a ``ValueError``.
-        yield from iter_document(file_path, prefix, "BloodHound JSON")
+        yield from iter_document(file_path, prefix, "BloodHound JSON", floats=floats)
 
 
 _PREFIX_PATTERNS = (

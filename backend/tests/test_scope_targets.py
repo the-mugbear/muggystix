@@ -237,6 +237,14 @@ def test_a_person_downloads_the_same_web_targets_an_agent_does(client, db_sessio
     assert client.get(f"{url}/{theirs.id}?format_type=web").status_code == 404
 
 
+def test_the_scope_export_lists_addresses_in_address_order(client, db_session, test_project, scope):
+    """Review 2026-10-14, R16: it sorted the text — 10.99.1.10 before
+    10.99.1.2."""
+    _seed_hosts(db_session, test_project, scope, ["10.99.1.10", "10.99.1.2", "10.99.1.100"], ports=(22,))
+    body = client.get(f"/api/v1/projects/{test_project.id}/export/scope?format_type=txt").text
+    assert body.split() == ["10.99.1.2", "10.99.1.10", "10.99.1.100"]
+
+
 def _brief(port, service, tunnel=None, method=None, ip="192.168.7.245"):
     from app.services.scope_targets_service import ScopeHostBrief, ScopePortBrief
     return ScopeHostBrief(

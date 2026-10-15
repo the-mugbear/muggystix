@@ -47,9 +47,16 @@ interface Props {
 
 const ReportDraftBar: React.FC<Props> = ({ reportId, findingId, onNavigate }) => {
   const projectId = useProjectId();
+  // The whole report is built for its summary, and the bar mounts again on
+  // every finding stepped to: kept for a minute between steps and read again
+  // only when stale or when a write changed it — a report-text save and a
+  // proposal decision invalidate `getClientReport` (review 2026-10-14, R2:
+  // it was rebuilt per step).
   const query = useQuery({
     queryKey: ['getClientReport', projectId, reportId],
     queryFn: ({ signal }) => getClientReport(projectId, reportId, signal),
+    staleTime: 60_000,
+    gcTime: 60_000,
   });
   const report = query.data;
   const list = report?.summary?.missing_text ?? [];

@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from app.db.models import Annotation, NoteAttachment
 from app.db.models_findings import Finding
 from app.schemas.findings import FindingNeed
+from app.services.report_text import STRIP_WHITESPACE
 
 #: The kinds, in the order a row says them.
 NEED_KINDS = ("missing_text", "uncaptioned_images", "proposals")
@@ -38,8 +39,6 @@ NEED_KINDS = ("missing_text", "uncaptioned_images", "proposals")
 ANY_NEED = "any"
 NEED_FILTERS = (ANY_NEED, *NEED_KINDS)
 
-# ``str.strip()``'s ASCII whitespace, as ``blank_required_text`` spells it.
-_WHITESPACE = " \t\n\r\x0b\x0c"
 
 
 def _uncaptioned_image_of_finding():
@@ -54,7 +53,7 @@ def _uncaptioned_image_of_finding():
         NoteAttachment.annotation_id == Annotation.id,
         NoteAttachment.include_in_report.is_(True),
         NoteAttachment.content_type.in_(tuple(REPORT_IMAGE_TYPES)),
-        func.btrim(func.coalesce(NoteAttachment.caption, ""), _WHITESPACE) == "",
+        func.btrim(func.coalesce(NoteAttachment.caption, ""), STRIP_WHITESPACE) == "",
         or_(
             Annotation.finding_id == Finding.id,
             Annotation.id == Finding.evidence_annotation_id,

@@ -166,6 +166,32 @@ def test_roles_auditors_read_analysts_draft_admins_issue(client, db_session, tes
     assert client.post(f"{_base(test_project)}/{report['id']}/issue").status_code == 409
 
 
+def test_a_project_with_more_than_fifty_analysts_can_read_its_drafts(client, db_session, test_project):
+    """Review 2026-10-14 (nitpick): with no team saved a draft lists every
+    analyst and admin, and the read's model capped the team at 50 — every
+    read of a draft (and the profile) was a 500."""
+    for n in range(55):
+        _member(db_session, test_project, 9000 + n, f"analyst{n}", ProjectRole.ANALYST)
+    report = _create(client, test_project)
+    r = client.get(f"{_base(test_project)}/{report['id']}")
+    assert r.status_code == 200, r.text[:300]
+    assert len(r.json()["effective"]["testers"]) >= 55
+    assert client.get(f"{_base(test_project)}/profile").status_code == 200
+
+
+def test_a_findings_systems_are_listed_in_address_order(client, db_session, test_project):
+    """Review 2026-10-14 (suspected): ``Finding.hosts`` has no order, so an
+    unrelated endpoint write could reorder the affected systems."""
+    hosts = [_host(db_session, test_project, ip) for ip in ("10.41.0.10", "10.41.0.2", "10.41.0.100")]
+    _finding(db_session, test_project, "Weak TLS", hosts=hosts)
+    report = _create(client, test_project)
+    db_session.expire_all()
+    from app.services.client_report_service import ClientReportService
+
+    dataset, _, _ = ClientReportService(db_session).build(db_session.get(Report, report["id"]))
+    assert [e["address"] for e in dataset["findings"][0]["affected"]] == ["10.41.0.2", "10.41.0.10", "10.41.0.100"]
+
+
 def test_issuing_freezes_the_report(client, db_session, test_project):
     host = _host(db_session, test_project, "10.41.0.1")
     f = _finding(db_session, test_project, "Weak TLS", hosts=[host], description="Before")
@@ -187,7 +213,7 @@ def test_issuing_freezes_the_report(client, db_session, test_project):
 
 
 def test_a_new_draft_follows_the_profile(client, test_project):
-    r = client.put(f"{_base(test_project)}/profile", json={
+    r = client.patch(f"{_base(test_project)}/profile", json={
         "client_name": "Example Corp", "classification": "Confidential",
         "testers": [{"name": "Ana", "role": "Lead"}], "distribution": [{"name": "CISO", "email": "ciso@example.com"}],
         "template": "pentest",
@@ -199,12 +225,12 @@ def test_a_new_draft_follows_the_profile(client, test_project):
     assert report["effective"]["testers"][0]["name"] == "Ana"
     # Changing the profile afterwards reaches the draft (owner, 2026-10-14) —
     # unless the draft overrides that detail.
-    client.put(f"{_base(test_project)}/profile", json={"client_name": "Renamed"})
+    client.patch(f"{_base(test_project)}/profile", json={"client_name": "Renamed"})
     assert client.get(f"{_base(test_project)}/{report['id']}").json()["effective"]["client_name"] == "Renamed"
     client.patch(f"{_base(test_project)}/{report['id']}", json={"settings": {"client_name": "Ours"}})
-    client.put(f"{_base(test_project)}/profile", json={"client_name": "Renamed again"})
+    client.patch(f"{_base(test_project)}/profile", json={"client_name": "Renamed again"})
     assert client.get(f"{_base(test_project)}/{report['id']}").json()["effective"]["client_name"] == "Ours"
-    assert client.put(f"{_base(test_project)}/profile", json={"template": "../etc"}).status_code == 422
+    assert client.patch(f"{_base(test_project)}/profile", json={"template": "../etc"}).status_code == 422
 
 
 _ISSUED_DETAILS = {
@@ -231,7 +257,7 @@ def test_an_addendum_starts_from_its_baseline_details_not_the_defaults(client, t
     engagement type, team, distribution and targets all empty (the profile's,
     which nobody had filled) although #1 had them.  It carries the baseline's
     details as issued; its summary of changes is new text and starts empty."""
-    client.put(f"{_base(test_project)}/profile", json={"client_name": "Profile default", "template": "pentest"})
+    client.patch(f"{_base(test_project)}/profile", json={"client_name": "Profile default", "template": "pentest"})
     _issued_with_details(client, test_project)
 
     add = _create(client, test_project, kind="addendum")
@@ -250,13 +276,13 @@ def test_an_addendum_starts_from_its_baseline_details_not_the_defaults(client, t
 
 
 def test_an_addendum_follows_the_project_only_where_its_baseline_printed_nothing(client, test_project):
-    client.put(f"{_base(test_project)}/profile", json={"classification": "Internal", "template": "pentest"})
+    client.patch(f"{_base(test_project)}/profile", json={"classification": "Internal", "template": "pentest"})
     report = _create(client, test_project)
     client.patch(f"{_base(test_project)}/{report['id']}", json={"settings": {
         **_ISSUED_DETAILS, "classification": None, "engagement_type": None,
     }})
     _issue(client, test_project, report["id"])
-    client.put(f"{_base(test_project)}/profile", json={
+    client.patch(f"{_base(test_project)}/profile", json={
         "classification": "Public", "engagement_type": "Web", "template": "pentest",
     })
     add = _create(client, test_project, kind="addendum")
@@ -609,7 +635,7 @@ def test_a_new_draft_lists_the_projects_analysts_and_admins_as_the_team(client, 
     assert profile["testers_from_project"] is True and len(profile["testers"]) == 3
     assert [t["name"] for t in client.get(f"{_base(test_project)}/team").json()] == ["Adm", "Ana", "Ben"]
     # A saved team wins — on the draft made before it too.
-    client.put(f"{_base(test_project)}/profile", json={"testers": [{"name": "Contractor"}]})
+    client.patch(f"{_base(test_project)}/profile", json={"testers": [{"name": "Contractor"}]})
     assert [t["name"] for t in _create(client, test_project)["effective"]["testers"]] == ["Contractor"]
     again = client.get(f"{_base(test_project)}/{report['id']}").json()
     assert [t["name"] for t in again["effective"]["testers"]] == ["Contractor"]
@@ -737,7 +763,7 @@ def test_the_executive_summary_is_the_projects_unless_a_report_overrides_it(clie
     copied by hand between drafts and issued reports.  It is a detail like the
     others: the project's report defaults hold it, a full report prints it
     unless it overrides it, and an override can be pushed up."""
-    client.put(f"{_base(test_project)}/profile", json={"executive_summary": "Project summary.", "template": "pentest"})
+    client.patch(f"{_base(test_project)}/profile", json={"executive_summary": "Project summary.", "template": "pentest"})
     draft = _create(client, test_project)
     assert "executive_summary" not in draft["settings"]
     assert draft["executive_summary"] == draft["effective"]["executive_summary"] == "Project summary."
@@ -764,7 +790,7 @@ def test_the_executive_summary_is_the_projects_unless_a_report_overrides_it(clie
 def test_an_addendum_writes_its_own_summary_of_changes(client, test_project):
     """An addendum's summary is of what changed since its baseline: it never
     follows the project's executive summary, and it cannot become it."""
-    client.put(f"{_base(test_project)}/profile", json={"executive_summary": "Project summary.", "template": "pentest"})
+    client.patch(f"{_base(test_project)}/profile", json={"executive_summary": "Project summary.", "template": "pentest"})
     _issued_with_details(client, test_project)
     add = _create(client, test_project, kind="addendum")
     assert add["executive_summary"] is None and add["followed"]["executive_summary"] is None

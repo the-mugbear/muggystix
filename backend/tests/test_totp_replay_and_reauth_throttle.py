@@ -161,6 +161,24 @@ def test_the_three_reauth_routes_share_one_budget(client, db_session, test_user)
     assert db_session.get(User, test_user.id).totp_enabled is True
 
 
+def test_other_accounts_failures_at_the_same_address_do_not_lock_this_one(client, db_session, test_user):
+    """Review 2026-10-14 (nitpick): the re-authentication limit is per
+    ACCOUNT, but it also counted every account's failures from the caller's
+    address — 20 of them behind one NAT locked everyone there out of
+    change-password and 2FA."""
+    from datetime import datetime, timezone
+
+    for n in range(30):
+        db_session.add(AuditLog(
+            action="password_reauth_failed", user_id=None, success=False,
+            details={"username": f"someone-{n}", "purpose": "2fa_disable"},
+            ip_address="testclient", timestamp=datetime.now(timezone.utc),
+        ))
+    db_session.commit()
+    done = client.post("/api/v1/auth/2fa/disable", json={"password": TEST_USER_PASSWORD})
+    assert done.status_code == 200, done.text
+
+
 def test_a_few_wrong_passwords_do_not_lock_the_owner_out(client, test_user):
     """Control: under the limit the right password still works, so the 429
     above is the limit and not a broken route."""

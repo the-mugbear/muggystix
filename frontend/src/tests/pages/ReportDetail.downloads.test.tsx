@@ -26,7 +26,6 @@ vi.mock('../../services/api', () => ({
   removeReportTemplateAsset: vi.fn(),
   fetchReportTemplateAssetPreview: vi.fn(() => Promise.reject(new Error('no preview in tests'))),
   getReportProfile: vi.fn(),
-  saveReportProfile: vi.fn(),
   listReportTextImages: vi.fn(() => Promise.resolve([])),
   downloadClientReportFile: vi.fn(),
   downloadClientReportScope: vi.fn(),

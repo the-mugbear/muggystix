@@ -30,9 +30,9 @@ from typing import Any, Dict, Iterable, List, Optional
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.parsers.cut_short import TruncatedFile, settle_cut
+from app.parsers.cut_short import settle_cut
 from app.parsers.parser_utils import announce_scan, beat_while_reading
-from app.parsers.streaming_json import is_cut_last_line, iter_document, json_lines
+from app.parsers.streaming_json import document_before_the_cut, is_cut_last_line, json_lines
 from app.db.models_attribution import (
     AttributionSource,
     NetworkAttribution,
@@ -299,14 +299,9 @@ class RdapParser:
         except json.JSONDecodeError:
             pass
         prefix = "item" if text.startswith("[") else ""
-        try:
-            return list(iter_document(
-                content.encode("utf-8"), prefix, "RDAP JSON", dicts_only=False, floats=True,
-            ))
-        except TruncatedFile:
-            raise
-        except ValueError:
-            return None
+        return document_before_the_cut(
+            content.encode("utf-8"), prefix, "RDAP JSON", dicts_only=False, floats=True,
+        )
 
     def _ingest(self, record: Dict[str, Any], project_id: int, scan_id: int) -> bool:
         # The script wraps each response as {"query": ..., "rdap": {...}}; a raw

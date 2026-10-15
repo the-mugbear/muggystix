@@ -116,7 +116,7 @@ def test_the_contact_template_is_installed_and_is_not_a_client_report_template(c
               client.get(f"/api/v1/projects/{test_project.id}/client-reports/templates").json()}
     assert listed["contact-report"] == "contact" and listed["pentest"] == "client"
     # A project cannot make it its default client-report template either.
-    profile = client.put(f"/api/v1/projects/{test_project.id}/client-reports/profile",
+    profile = client.patch(f"/api/v1/projects/{test_project.id}/client-reports/profile",
                          json={"template": "contact-report"})
     assert profile.status_code == 422
     refused = client.post(f"/api/v1/projects/{test_project.id}/client-reports",
@@ -346,6 +346,20 @@ def test_a_contact_says_where_they_still_have_work_and_a_reminder_what_it_leaves
     # Jane has one open finding, on track: her reminder names no project, and says one has work.
     jane = client.get(f"{base(test_project)}/follow-up", params={"contact_email": "jane@testdomain.com"}).json()
     assert (jane["project_ids"], jane["other_projects"]) == ([], 1)
+
+    # Review 2026-10-14 (nitpick): a project holding only a DEFERRED row is
+    # work by both reads — the contacts list counted it, the reminder did not.
+    r = client.post(f"{base(test_project)}/apply", json={"overwrite": True, "rows": [{
+        "finding_id": world["smb"], "host_id": world["a"], "contact_email": "kim@testdomain.com",
+        "status": "deferred", "deferred_review_on": (TODAY + timedelta(days=30)).isoformat(),
+        "notes": [{"body": "Waiting for the vendor's patch."}],
+    }]})
+    assert r.status_code == 200, r.text
+    (kim,) = [c for c in client.get(f"{base(test_project)}/contacts").json()["items"]
+              if c["contact_email"] == "kim@testdomain.com"]
+    assert kim["work_project_ids"] == [test_project.id]
+    reminder = client.get(f"{base(test_project)}/follow-up", params={"contact_email": "kim@testdomain.com"}).json()
+    assert (reminder["project_ids"], reminder["other_projects"]) == ([], 1)
 
 
 @needs_templates

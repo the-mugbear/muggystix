@@ -344,3 +344,32 @@ def test_the_upgrade_merges_what_is_lossless_refuses_the_rest_and_comes_back(scr
         ]
         assert _agent_fk_rule(conn) == "n"
         assert set(NEW_INDEXES) <= set(_indexes(conn))
+
+
+_DIAGNOSTIC_SCRIPTS = ("migration-failure-report.sh", "collect-logs.sh")
+
+
+def _scripts_dir():
+    here = Path(__file__).resolve()
+    for candidate in (here.parents[1] / "scripts", here.parents[2] / "scripts"):
+        if all((candidate / name).is_file() for name in _DIAGNOSTIC_SCRIPTS):
+            return candidate
+    return None
+
+
+@pytest.mark.skipif(_scripts_dir() is None, reason="scripts/ is not mounted here")
+def test_the_diagnostics_count_every_clash_the_upgrade_refuses():
+    """Review 2026-10-14, R7: the upgrade also refuses copies of one CIDR with
+    different ``site_id``s, and the two diagnostics' pre-checks did not count
+    it — a bundle said "0 refused" for an upgrade that then refused.  Every
+    aggregate the revision refuses on is in each script's query."""
+    revision = next((Path(__file__).resolve().parents[1] / "alembic" / "versions").glob("a4f8c2e6b0d1_*.py"))
+    refused_on = {"count(DISTINCT site_id)", "count(DISTINCT {_NON_EMPTY_SITE})",
+                  "count(DISTINCT {_NON_EMPTY_DESCRIPTION})"}
+    assert all(part in revision.read_text() for part in refused_on)
+    for name in _DIAGNOSTIC_SCRIPTS:
+        text = (_scripts_dir() / name).read_text()
+        for part in ("count(DISTINCT site_id) AS site_ids", "count(DISTINCT nullif(btrim(site), '')) AS sites",
+                     "count(DISTINCT nullif(btrim(description), '')) AS descriptions",
+                     "descriptions > 1 OR sites > 1 OR site_ids > 1"):
+            assert part in text, (name, part)

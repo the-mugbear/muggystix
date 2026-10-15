@@ -117,7 +117,10 @@ const DefectMetricsSection: React.FC<{
       {unmeasured > 0 && overall && (
         <p className="mt-xs text-caption text-muted-foreground">
           Not in the MTTR figures: {overall.not_assigned.toLocaleString()} not assigned
-          {overall.not_measured > 0 && `, ${overall.not_measured.toLocaleString()} with no recorded day`}.
+          {/* Both kinds the server leaves out: no day recorded for the fix or
+              deferral, or one BEFORE the assigned date (review 2026-10-14). */}
+          {overall.not_measured > 0
+            && `, ${overall.not_measured.toLocaleString()} with no recorded day or one before the assigned date`}.
         </p>
       )}
     </div>

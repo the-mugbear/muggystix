@@ -20,6 +20,9 @@ import { useProjectId } from './useProjectId';
  *  images.  One list, for a single decision and for "all shown". */
 export const PROPOSAL_DECISION_READS = [
   'listProposals', 'getProposalSummary', 'getFinding', 'getFindingHistory', 'getFindingImages',
+  // An accepted draft fills a section a draft report counts as missing (the
+  // report draft bar on the finding page reads it).
+  'getClientReport',
 ] as const;
 
 export interface ProposalDecision {

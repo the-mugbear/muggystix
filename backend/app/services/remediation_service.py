@@ -29,6 +29,13 @@ from app.services.notification_service import display_name
 from app.services.scope_targets_service import _ip_order_by
 
 _STATUS = func.coalesce(Remediation.status, "open")
+#: A contact's record that is still work: anything not reported fixed
+#: (deferred included).  The ONE reading for "where the contact has work"
+#: (`contacts`' `work_project_ids`) and "projects the reminder names none of"
+#: (`follow_up`'s `other_projects`) — the second read `open` only, so a
+#: project holding only deferred rows was counted by one and not the other
+#: (review 2026-10-14, nitpick).
+_STILL_WORK = _STATUS != "closed"
 
 
 def _order(db, group: str, state=None, due=None) -> list:
@@ -362,21 +369,29 @@ def state_counts_by_project(db, project_ids: Sequence[int], policy: deadlines.Po
     return out
 
 
-def defect_counts_by_project(db, project_ids: Sequence[int]) -> dict[int, dict[str, int]]:
-    """Each project's rows (``total``: the list's own rows, every state) and
-    its rows by defect state (``remediated``, ``deferred``, ``open`` —
-    ``remediation_policy.defect_expr``), in one grouped statement.  Each
-    opens the list: ``?project=`` and ``?project=&defect=<state>``.  Every
-    id is present."""
-    out = {pid: {"total": 0, **{name: 0 for name in deadlines.DEFECTS}} for pid in project_ids}
+def overview_counts_by_project(db, project_ids: Sequence[int], policy: deadlines.Policy,
+                               today: date) -> dict[int, dict]:
+    """The deadlines page's projects table in ONE grouped statement over the
+    list's own rows (review 2026-10-14, R14: it was two scans of them): per
+    project, ``states`` (``state_expr``, as ``state_counts_by_project``),
+    ``total`` (every row) and the rows by defect state (``remediated``,
+    ``deferred``, ``open`` — ``defect_expr``).  Each opens the list:
+    ``?project=``, ``&state=``, ``&defect=``.  Every id is present."""
+    out = {pid: {"states": {name: 0 for name in deadlines.STATES}, "total": 0,
+                 **{name: 0 for name in deadlines.DEFECTS}} for pid in project_ids}
     if not out:
         return out
+    state_of = deadlines.state_expr(db, policy, today)
     defect = deadlines.defect_expr()
-    for pid, value, n in (_rows(db, list(out)).with_entities(Finding.project_id, defect, func.count())
-                          .group_by(Finding.project_id, defect)):
-        out[pid]["total"] += n
-        if value in out[pid]:
-            out[pid][value] = n
+    for pid, state, value, n in (
+        _rows(db, list(out)).with_entities(Finding.project_id, state_of, defect, func.count())
+        .group_by(Finding.project_id, state_of, defect)
+    ):
+        row = out[pid]
+        row["states"][state] += n
+        row["total"] += n
+        if value in row:
+            row[value] += n
     return out
 
 
@@ -1156,7 +1171,7 @@ def contacts(db, project_ids: Iterable[int], *, limit: int = 200,
         for email, project_id in (
             db.query(Remediation.contact_email, Remediation.project_id)
             .filter(Remediation.project_id.in_(tuple(project_ids)), Remediation.contact_email.in_(emails),
-                    _STATUS != "closed")
+                    _STILL_WORK)
             .distinct().order_by(Remediation.project_id)
         ):
             work.setdefault(email, []).append(project_id)
@@ -1307,7 +1322,7 @@ def follow_up(db, project_ids: Sequence[int], contact_email: str, *, upcoming_da
     if not_listed <= 0:
         elsewhere = (db.query(Remediation.project_id)
                      .filter(Remediation.project_id.in_(tuple(project_ids)), Remediation.contact_email == email,
-                             _STATUS == "open", Remediation.project_id.notin_(tuple(listed_in) or (0,)))
+                             _STILL_WORK, Remediation.project_id.notin_(tuple(listed_in) or (0,)))
                      .distinct().count())
     return {"contact_email": email, "contact_name": name, "as_of": today.isoformat(),
             "overdue": overdue, "due_soon": due_soon, "other_projects": elsewhere,

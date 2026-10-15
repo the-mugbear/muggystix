@@ -61,6 +61,7 @@ from app.parsers.parser_utils import (
     ScanClock,
     parse_rfc3339,
     record_addressed_hosts,
+    record_savepoint,
 )
 from app.parsers.streaming_json import iter_json_records
 from app.services.dns_name_service import (
@@ -347,21 +348,8 @@ class DnsxParser:
             journal: List[tuple] = []
             transfers_before = len(self._zone_transfers)
             self._row_created = set()
-            sp = self.db.begin_nested()
-            # A record that rolls back leaves no note of the hosts it
-            # addressed (the same checkpoint record_savepoint takes).
-            noted_before = self._observed.checkpoint()
-            try:
-                row_records = self._persist_row_answers(
-                    journal, row, host, ttl, resolver, scan.id, observed_at,
-                )
-                sp.commit()
-                records_written += row_records
-                self._created_host_ids |= self._row_created
-            except Exception as exc:  # noqa: BLE001 — isolate one bad record
-                sp.rollback()
-                self._observed.restore(noted_before)
-                skipped_records += 1
+
+            def forget_the_row(journal=journal, transfers_before=transfers_before) -> None:
                 del self._zone_transfers[transfers_before:]
                 # The dedup service's history caches point at rows the
                 # savepoint just discarded.
@@ -370,6 +358,19 @@ class DnsxParser:
                 # forget them too so an identical answer in a LATER row still
                 # persists instead of being deduped away.
                 self._name_cache.forget(journal)
+
+            # The one record isolation (it was written out here by hand —
+            # review 2026-10-14, R5): a record that rolls back leaves no note
+            # of the hosts it addressed, and the per-file caches forget it.
+            try:
+                with record_savepoint(self.db, self._observed, forget_the_row):
+                    row_records = self._persist_row_answers(
+                        journal, row, host, ttl, resolver, scan.id, observed_at,
+                    )
+                records_written += row_records
+                self._created_host_ids |= self._row_created
+            except Exception as exc:  # noqa: BLE001 — isolate one bad record
+                skipped_records += 1
                 logger.warning("dnsx: skipping malformed record host=%r: %s", host, exc)
 
         record_addressed_hosts(self.db, scan.id, self._observed)

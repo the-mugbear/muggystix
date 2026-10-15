@@ -117,6 +117,20 @@ describe('Update project defaults…', () => {
     expect(screen.getByRole('button', { name: 'Update project defaults…' })).toBeInTheDocument();
   });
 
+  it('an untick does not survive Cancel (review 2026-10-14, R13)', async () => {
+    mocked.getClientReport.mockResolvedValue(report({ settings: { client_name: 'Mine', classification: 'Ours' } }));
+    renderDetail();
+    fireEvent.click(await screen.findByRole('button', { name: 'Update project defaults…' }));
+    let dialog = within(await screen.findByRole('dialog'));
+    fireEvent.click(within(dialog.getByTestId('promote-classification')).getByRole('checkbox'));
+    expect(dialog.getByRole('button', { name: 'Update 1 default' })).toBeInTheDocument();
+    fireEvent.click(dialog.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'Update project defaults…' }));
+    dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByRole('button', { name: 'Update 2 defaults' })).toBeInTheDocument();
+  });
+
   it('an empty team cannot be pushed up: it is said, and never sent (review 2026-10-14, H3)', async () => {
     const team = [{ user_id: 3, name: 'Ana', role: null, email: null }];
     mocked.getClientReport.mockResolvedValue(report({

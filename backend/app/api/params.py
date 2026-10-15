@@ -15,6 +15,8 @@ from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from fastapi import Query
 
+from app.services.finding_needs import NEED_FILTERS
+
 
 #: ``need=`` on "findings that need me" — the Operations tab's list
 #: (``GET /projects/{id}/workbench/findings``) and the agents' read of it
@@ -43,7 +45,8 @@ FindingNeedParam = Annotated[
 #: together); both routes take this declaration, so a word neither
 #: understands is a 422 on both doors.
 FindingNeedsParam = Annotated[
-    Optional[Literal["any", "missing_text", "uncaptioned_images", "proposals"]],
+    # Built from the one tuple, never typed again (review 2026-10-14, R6).
+    Optional[Literal[NEED_FILTERS]],
     Query(
         description=(
             "Only findings that still need this before the report goes out: missing_text "

@@ -7,7 +7,7 @@ second review).
   The same draft with nothing changed answers the same value.
 * It changes with what a render reads from outside the draft too: a
   finding's text, a project default the draft follows, the template's files,
-  the bytes of an image the dataset names.
+  the file of an image the dataset names (which file, never its bytes).
 * Today's date is not an input: a preview rendered yesterday of an unchanged
   draft is current.
 """
@@ -64,7 +64,7 @@ def test_the_worker_records_what_the_preview_rendered_and_the_page_reads_the_sam
 def test_what_a_render_reads_from_outside_the_draft_changes_it(
         client, db_session, test_project, template_dir):
     finding = _seed(db_session, test_project)
-    client.put(f"{_base(test_project)}/profile", json={"classification": "Confidential", "template": "pentest"})
+    client.patch(f"{_base(test_project)}/profile", json={"classification": "Confidential", "template": "pentest"})
     draft = _create(client, test_project)
     first = _now(client, test_project, draft["id"])
 
@@ -81,12 +81,17 @@ def test_what_a_render_reads_from_outside_the_draft_changes_it(
     assert _now(client, test_project, draft["id"]) != after_default
 
 
-def test_todays_date_is_not_an_input_and_an_images_bytes_are(db_session, test_project, monkeypatch, tmp_path):
+def test_todays_date_is_not_an_input_and_an_images_file_is(db_session, test_project, monkeypatch, tmp_path):
+    """An image is an input by WHICH FILE it is (an attachment's file is
+    written once under a new name and never rewritten), never by reading its
+    bytes on every check (review 2026-10-14, R2); a file gone is an input
+    too."""
     report = Report(project_id=test_project.id, kind="full", title="Draft", template="pentest")
     image = tmp_path / "shot.png"
     image.write_bytes(b"one")
+    files = {7: image}
     monkeypatch.setattr(client_report_render, "live_evidence_resolver",
-                        lambda db, project_id: lambda item: image if item["attachment_id"] == 7 else None)
+                        lambda db, project_id: lambda item: files.get(item["attachment_id"]))
     dataset = {"report": {"date": "2026-10-13", "title": "Draft"},
                "findings": [{"images": [{"attachment_id": 7, "caption": "A share"}]}]}
     yesterday = client_report_render.inputs_fingerprint(db_session, report, dataset)
@@ -94,8 +99,24 @@ def test_todays_date_is_not_an_input_and_an_images_bytes_are(db_session, test_pr
         db_session, report, {**dataset, "report": {"date": "2026-10-14", "title": "Draft"}})
     assert today == yesterday
 
-    image.write_bytes(b"two")
-    assert client_report_render.inputs_fingerprint(db_session, report, dataset) != yesterday
+    # The image's file is another one now (a replaced upload is a new file).
+    other = tmp_path / "other.png"
+    other.write_bytes(b"two")
+    files[7] = other
+    replaced = client_report_render.inputs_fingerprint(db_session, report, dataset)
+    assert replaced != yesterday
+    other.unlink()
+    assert client_report_render.inputs_fingerprint(db_session, report, dataset) not in (yesterday, replaced)
+    # The bytes are never read.
+    files[7] = image
+    real_read = Path.read_bytes
+
+    def read_bytes(self):
+        assert self != image, "an image's bytes were read"
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    assert client_report_render.inputs_fingerprint(db_session, report, dataset) == yesterday
 
 
 def test_an_issued_report_has_no_inputs_to_compare(client, db_session, test_project, template_dir):

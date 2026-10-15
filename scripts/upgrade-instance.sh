@@ -309,11 +309,14 @@ else
     if [[ ! -d "$src" ]]; then
         warn "No $rel/ in the old folder — nothing to carry (deploy.sh will create an empty one)."
     elif ! [[ -r "$src" && -w "$src" && -x "$src" ]] || { [[ -d "$dst" ]] && ! [[ -r "$dst" && -x "$dst" ]]; }; then
-        # The folder is the containers' (UID 999, mode 700): this account can
-        # neither look inside it nor move it (a folder changes parent only
-        # with write access to it).  Unreadable used to read as EMPTY below —
-        # "nothing to move" — and the upgrade went on without the data.
-        fail "$rel/ is the containers' (UID 999), not $(id -un)'s: it cannot be read or moved from here.
+        # The folder is another account's (usually the containers', UID 999,
+        # mode 700): this account can neither look inside it nor move it (a
+        # folder changes parent only with write access to it).  Unreadable
+        # used to read as EMPTY below — "nothing to move" — and the upgrade
+        # went on without the data.  Its owner is said as it is: it is not
+        # always the containers' (review 2026-10-14, nitpick).
+        owner="$(stat -c '%U, UID %u' "$src" 2>/dev/null || echo 'another account')"
+        fail "$rel/ belongs to $owner, not to $(id -un): it cannot be read or moved from here.
    Move it yourself — this one command, not the whole script, needs root — then run this again:
      sudo mv '$src' '$dst'
    (if '$dst' already exists and is empty, remove it first:  sudo rmdir '$dst')"

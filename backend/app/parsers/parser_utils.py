@@ -517,6 +517,12 @@ class ScanHostObservations:
     def __init__(self) -> None:
         self._rows: Dict[int, HostObservation] = {}
         self._unwritten: set[int] = set()
+        # What each change replaced, in order — (host id, the row before or
+        # None, whether it was already unwritten) — so a rolled-back record
+        # is undone by walking back to its checkpoint.  A checkpoint used to
+        # copy every note so far, once per record: quadratic for the DNS
+        # parsers, which take one per row (review 2026-10-14, R4).
+        self._undo: List[Tuple[int, Optional[HostObservation], bool]] = []
 
     def note(
         self,
@@ -540,22 +546,29 @@ class ScanHostObservations:
             hostname=hostname or (prev.hostname if prev else None) or host.hostname,
             renamed=bool(renamed) or (prev.renamed if prev else False),
         )
-        self._rows[host.id] = merged
         if merged != prev:
+            self._undo.append((host.id, prev, host.id in self._unwritten))
+            self._rows[host.id] = merged
             self._unwritten.add(host.id)
 
-    def checkpoint(self) -> Tuple[Dict[int, HostObservation], set[int]]:
-        """The notes so far, to ``restore`` if the record being written is
-        rolled back (v2.419.0): a note on a host created inside the rolled-back
-        savepoint would reach record_hosts_in_scan with an id that no longer
-        exists.  Rows are immutable, so a shallow copy suffices.  Opaque to
-        the caller: hand it back to ``restore`` unchanged."""
-        return dict(self._rows), set(self._unwritten)
+    def checkpoint(self) -> int:
+        """Where the notes stand, to ``restore`` if the record being written
+        is rolled back (v2.419.0): a note on a host created inside the
+        rolled-back savepoint would reach record_hosts_in_scan with an id that
+        no longer exists.  O(1); opaque to the caller: hand it back to
+        ``restore`` unchanged.  A checkpoint spans one record — never a
+        ``take_unwritten`` (a heartbeat is outside the record's savepoint)."""
+        return len(self._undo)
 
-    def restore(self, checkpoint: Tuple[Dict[int, HostObservation], set[int]]) -> None:
-        rows, unwritten = checkpoint
-        self._rows = dict(rows)
-        self._unwritten = set(unwritten)
+    def restore(self, checkpoint: int) -> None:
+        while len(self._undo) > checkpoint:
+            host_id, prev, was_unwritten = self._undo.pop()
+            if prev is None:
+                self._rows.pop(host_id, None)
+            else:
+                self._rows[host_id] = prev
+            if not was_unwritten:
+                self._unwritten.discard(host_id)
 
     def take_unwritten(self) -> List[HostObservation]:
         """The observations noted or changed since the last call, which are

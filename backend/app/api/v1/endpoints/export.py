@@ -71,7 +71,7 @@ def export_scope_hosts(
     """
     from app.db import models as m
     from app.services.default_scope import project_scope
-    from app.services.scope_targets_service import scope_host_ids
+    from app.services.scope_targets_service import _ip_order_by, in_scope_condition
 
     scope = project_scope(db, project.id)
     # The scope has no name; the file is named for what it is.
@@ -89,10 +89,12 @@ def export_scope_hosts(
             headers=attachment(f"{safe_name}_web-targets.txt"),
         )
 
+    # Address order (10.0.0.2 before 10.0.0.10), as the Scope page's own
+    # lists — it sorted the text (review 2026-10-14, R16).
     rows = (
         db.query(m.Host.ip_address, m.Host.hostname, m.Host.state)
-        .filter(m.Host.project_id == project.id, m.Host.id.in_(scope_host_ids(scope.id)))
-        .order_by(m.Host.ip_address)
+        .filter(m.Host.project_id == project.id, in_scope_condition(scope.id))
+        .order_by(*_ip_order_by(db))
         .all()
     ) if scope else []
 

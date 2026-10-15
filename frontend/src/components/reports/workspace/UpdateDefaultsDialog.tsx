@@ -79,7 +79,6 @@ const UpdateDefaultsDialog: React.FC<{
       onPromoted(updated, chosen);
       void invalidateReads(queryClient, 'getReportProfile', 'listClientReports', 'getClientReportFollowers');
       toast.success(`${chosen.length === 1 ? DETAIL_LABELS[chosen[0]] + ' is' : `${chosen.length} details are`} now the project’s default, and this draft follows ${chosen.length === 1 ? 'it' : 'them'} again.`);
-      setUnticked(new Set());
       onClose();
     },
     // Nothing changed: every edit stays as it was.

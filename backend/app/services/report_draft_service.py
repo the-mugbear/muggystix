@@ -144,8 +144,13 @@ class ReportDraftService:
                     field: (item.get(field) or "")[:_MAX_SECTION_CHARS] or None
                     for field in ("description", "impact", "recommendation")
                 },
+                # Only figures the report PRINTS: a summary that cites a figure
+                # the template leaves out points the reader at nothing (review
+                # 2026-10-14, nitpick).  `printed` is None when it could not be
+                # measured — then the image counts, as before.
                 "evidence_figures": [
-                    img["caption"] for img in item["images"] if img.get("caption")
+                    img["caption"] for img in item["images"]
+                    if img.get("caption") and img.get("printed") is not False
                 ][:_MAX_CAPTIONS_PER_FINDING],
             })
 

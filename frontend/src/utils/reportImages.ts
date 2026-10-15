@@ -167,7 +167,6 @@ export const captionAsAlt = (caption: string | null | undefined, max = 120): str
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
 };
 
-/** The Markdown that places image `id`. */
 /** What the server accepts for an image of the report's own text
  *  (`store_image_attachment`): the upload button and a paste both ask
  *  `reportImageProblem` before sending. */
