@@ -81,7 +81,7 @@ const overview = (items: RemediationRow[], extra: Partial<RemediationPage> = {})
 });
 const ROGER = {
   contact_email: 'roger@example.com', contact_name: 'Roger Smith', total: 9, open: 9, overdue: 4, due_soon: 2,
-  on_track: 3, deferred: 0, closed: 0, last_follow_up_on: null, projects: 2,
+  on_track: 3, deferred: 0, closed: 0, last_follow_up_on: null, projects: 2, work_project_ids: [] as number[],
 };
 const MESSAGE = 'Hello Roger Smith,\n9 findings across 2 projects.\n\nAlpha\n- Finding 1 on 10.0.0.1\n\nOld engagement\n- Finding 2 on 10.0.0.2';
 const followUp = (over: Record<string, unknown> = {}) => ({
@@ -105,10 +105,11 @@ beforeEach(() => {
   getRemediationPolicy.mockResolvedValue(POLICY);
   listRemediationProjects.mockResolvedValue({
     items: [
-      { project_id: 4, name: 'Alpha', archived: false, states: states({ overdue: 2, not_assigned: 5 }) },
-      { project_id: 9, name: 'Old engagement', archived: true, states: states({ overdue: 1, closed: 3 }) },
+      { project_id: 4, name: 'Alpha', archived: false, states: states({ overdue: 2, not_assigned: 5 }), total: 7, remediated: 0 },
+      { project_id: 9, name: 'Old engagement', archived: true, states: states({ overdue: 1, closed: 3 }), total: 4, remediated: 0 },
     ],
-    totals: states({ overdue: 3, not_assigned: 5, closed: 3 }), as_of: '2026-11-10', policy: POLICY,
+    totals: states({ overdue: 3, not_assigned: 5, closed: 3 }), defect_totals: { total: 11, remediated: 0 },
+    as_of: '2026-11-10', policy: POLICY,
   });
   listRemediationOverview.mockResolvedValue(overview([row(1, 4, 'Alpha'), row(2, 9, 'Old engagement')]));
   listRemediationContacts.mockResolvedValue([ROGER]);
@@ -171,15 +172,15 @@ describe('H — one contact, several projects', () => {
     expect(recordRemediationFollowUpOverview).not.toHaveBeenCalled();
   });
 
-  it('a server without the cross-project route is asked one project at a time, as before', async () => {
+  // Third review 2026-10-15, R5: the fallback for a server without the route
+  // (one project at a time, not all-or-nothing) is gone — backend and
+  // frontend ship together.  A 405 is an error like any other.
+  it('a refused cross-project request is said; nothing is recorded project by project', async () => {
     recordRemediationFollowUpOverview.mockRejectedValue({ response: { status: 405 } });
-    recordRemediationFollowUp.mockResolvedValue({ recorded: 2, already_recorded: 0, followed_up_on: '2026-11-10', finding_host_ids: [] });
     const dialog = await open();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Record follow-up' }));
-    await waitFor(() => expect(recordRemediationFollowUp).toHaveBeenCalledTimes(2));
-    expect(recordRemediationFollowUp.mock.calls.map((call) => call[0])).toEqual([4, 9]);
-    expect(recordRemediationFollowUp.mock.calls.map((call) => call[2])).toEqual(['overview', 'overview']);
-    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Follow-up recorded on 4 findings on hosts.'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(recordRemediationFollowUp).not.toHaveBeenCalled();
   });
 
   it('a refusal is said, and nothing is recorded project by project behind it', async () => {
@@ -196,7 +197,7 @@ describe('H — one contact, several projects', () => {
       'Follow up covers every project. A contact’s list as a document is one project’s: Document asks which.',
     )).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Follow up' })).toBeInTheDocument();
-    // The contacts read did not say where this contact has work (an older server): nothing to offer.
+    // No project where the contact still has work: nothing to offer.
     expect(screen.queryByRole('button', { name: 'Document' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Contacts' })).toBeInTheDocument();
   });
@@ -259,11 +260,12 @@ describe('H — one contact, several projects', () => {
   it('the Projects section counts the rows it lists, not the projects folded under it', async () => {
     listRemediationProjects.mockResolvedValue({
       items: [
-        { project_id: 4, name: 'Alpha', archived: false, states: states({ overdue: 2, not_assigned: 5 }) },
-        { project_id: 5, name: 'Idle one', archived: false, states: states({ not_assigned: 3 }) },
-        { project_id: 6, name: 'Idle two', archived: false, states: states() },
+        { project_id: 4, name: 'Alpha', archived: false, states: states({ overdue: 2, not_assigned: 5 }), total: 7, remediated: 0 },
+        { project_id: 5, name: 'Idle one', archived: false, states: states({ not_assigned: 3 }), total: 3, remediated: 0 },
+        { project_id: 6, name: 'Idle two', archived: false, states: states(), total: 0, remediated: 0 },
       ],
-      totals: states({ overdue: 2, not_assigned: 8 }), as_of: '2026-11-10', policy: POLICY,
+      totals: states({ overdue: 2, not_assigned: 8 }), defect_totals: { total: 10, remediated: 0 },
+      as_of: '2026-11-10', policy: POLICY,
     });
     show();
     const heading = await screen.findByRole('heading', { name: /^Projects/ });

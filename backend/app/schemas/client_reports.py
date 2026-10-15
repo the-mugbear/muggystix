@@ -93,9 +93,15 @@ class ReportPromote(BaseModel):
     followed); a draft that no longer prints that — someone saved another
     value meanwhile — is a 409 and nothing changes (second review
     2026-10-14, H1: a stale page's push-up reverted another person's
-    override and spread the old value to every following draft)."""
+    override and spread the old value to every following draft).
+
+    `expected_project` — for each key, the PROJECT's value the page showed
+    ("The project's now"); checked under the profile's lock, a project value
+    set since then is a 409 and nothing changes (third review 2026-10-15,
+    R9).  A key left out is not checked."""
     values: EngagementOverrides
     expected: EngagementOverrides
+    expected_project: EngagementOverrides = Field(default_factory=EngagementOverrides)
 
 
 class ReportProfileOut(EngagementSettings):

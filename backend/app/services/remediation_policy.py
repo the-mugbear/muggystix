@@ -122,6 +122,7 @@ def save(db: Session, body, user_id: Optional[int]) -> tuple[Policy, Policy]:
         for severity, days in body.days.items():
             setattr(row, f"days_{severity}", days)
     if "time_zone" in sent and body.time_zone is not None:
+        _refuse_a_zone_the_database_lacks(db, body.time_zone)
         row.time_zone = body.time_zone
     row.updated_by_id = user_id
     db.flush()
@@ -315,6 +316,27 @@ def defect_expr():
         (func.coalesce(Remediation.status, "open") == "deferred", "deferred"),
         else_="open",
     )
+
+
+def _refuse_a_zone_the_database_lacks(db: Session, name: str) -> None:
+    """The days are taken in SQL too (:func:`_local_day`): a zone Python's
+    tz database knows and Postgres's does not made every remediation read a
+    500 (third review 2026-10-15, N15).  Asked of the database, in a
+    savepoint, before it is stored — a 422 naming it."""
+    if not _is_postgres(db):
+        return
+    from fastapi import HTTPException
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    try:
+        with db.begin_nested():
+            db.execute(text("SELECT now() AT TIME ZONE :zone"), {"zone": name})
+    except DBAPIError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The database does not know the time zone {name!r}; choose another (such as UTC).",
+        )
 
 
 def _local_day(db: Session, policy: Policy, moment):

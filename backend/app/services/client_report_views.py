@@ -40,7 +40,7 @@ def _ref(report: Optional[Report]) -> Optional[ReportRef]:
 
 
 def _details(
-    db: Session, report: Report, is_draft: bool,
+    service: ClientReportService, report: Report, is_draft: bool,
 ) -> Tuple[EngagementSettings, Optional[EngagementSettings], Optional[Dict[str, Optional[str]]]]:
     """``(effective, followed, followed_from)`` — see ``ReportOut``.  A draft:
     its overrides over what it follows, as the project stands
@@ -52,7 +52,7 @@ def _details(
         return EngagementSettings.model_validate(
             {key: frozen.get(key) for key in report_defaults.DETAIL_KEYS if frozen.get(key) is not None},
         ), None, None
-    followed, sources = ClientReportService(db).followed_details_with_sources(report.project_id, report.kind)
+    followed, sources = service.followed_details_with_sources(report.project_id, report.kind)
     effective = report_defaults.apply_overrides(followed, report.settings)
     return EngagementSettings.model_validate(effective), EngagementSettings.model_validate(followed), sources
 
@@ -78,11 +78,15 @@ def serialize_report(
             .order_by(Report.number.desc())
             .first()
         )
-    summary = ClientReportService(db).summary(report) if with_summary else None
+    # One service for the summary and the details: the project's defaults are
+    # read once for both (third review 2026-10-15, R7) — a read, so nothing
+    # writes them while it lives.
+    service = ClientReportService(db, remember_defaults=True)
+    summary = service.summary(report) if with_summary else None
     is_draft = report.status == ReportStatus.DRAFT
     # Only where the page shows the details (one report): a list row does not
     # pay for the reads.
-    effective, followed, followed_from = _details(db, report, is_draft) if with_summary else (None, None, None)
+    effective, followed, followed_from = _details(service, report, is_draft) if with_summary else (None, None, None)
     return ReportOut(
         id=report.id, project_id=report.project_id, kind=report.kind, status=report.status,
         title=report.title, number=report.number, template=report.template,

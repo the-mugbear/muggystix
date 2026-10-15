@@ -54,6 +54,10 @@ if [[ "$(id -u)" != "0" ]]; then
     reason="this container does not start as root, so the key cannot be handed to the postgres user"
 elif [[ ! -f "$CERT_SOURCE" || ! -f "$KEY_SOURCE" ]]; then
     reason="ssl/certs/networkmapper.crt and .key are not both files"
+elif [[ ! -r "$CERT_SOURCE" || ! -r "$KEY_SOURCE" ]]; then
+    # Said as what it is, not as "not a private key" (third review
+    # 2026-10-15, N8): a root-squashed or SELinux-labelled mount.
+    reason="ssl/certs/networkmapper.crt or .key cannot be read inside the container"
 elif ! cert_pub="$(openssl x509 -in "$CERT_SOURCE" -noout -pubkey 2>/dev/null)" || [[ -z "$cert_pub" ]]; then
     reason="ssl/certs/networkmapper.crt is not a certificate"
 elif ! key_pub="$(openssl pkey -in "$KEY_SOURCE" -pubout 2>/dev/null)" || [[ -z "$key_pub" ]]; then
@@ -65,9 +69,13 @@ if [[ -n "$reason" ]]; then
     tls_off "$reason" "$@"
 fi
 
-install -d -o postgres -g postgres -m 700 "$TLS_DIR"
-install -o postgres -g postgres -m 644 "$CERT_SOURCE" "$TLS_DIR/server.crt"
-install -o postgres -g postgres -m 600 "$KEY_SOURCE" "$TLS_DIR/server.key"
+# A copy that fails (a full disk, a read-only volume) starts the database
+# without TLS, like every other refusal here — under `set -e` it stopped the
+# database, against this script's own rule (third review 2026-10-15, N8).
+install -d -o postgres -g postgres -m 700 "$TLS_DIR" \
+    && install -o postgres -g postgres -m 644 "$CERT_SOURCE" "$TLS_DIR/server.crt" \
+    && install -o postgres -g postgres -m 600 "$KEY_SOURCE" "$TLS_DIR/server.key" \
+    || tls_off "the certificate could not be copied for the postgres user" "$@"
 say "TLS is on (certificate: ssl/certs/networkmapper.crt)."
 
 exec docker-entrypoint.sh "$@" \

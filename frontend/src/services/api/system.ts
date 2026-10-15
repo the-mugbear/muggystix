@@ -33,19 +33,20 @@ export interface QueueMetrics {
   generated_at: string;
   /** `failed` counts undismissed jobs; `failed_by_project` says where they are
    *  (the list that shows them — Ingestion Results — is per project). */
-  ingestion: QueueSnapshot & { failed_by_project?: FailedJobsInProject[] };
+  ingestion: QueueSnapshot & { failed_by_project: FailedJobsInProject[] };
   report: QueueSnapshot;
   /** v5.302.0 — free space on the uploads filesystem (on one host, the disk
    *  Postgres and Docker share); null when it could not be read. */
-  disk?: DiskSnapshot | null;
+  disk: DiskSnapshot | null;
   /** v5.389.0 — what the host and each process are using.  Each is null /
-   *  empty where the server could not read it (and absent from an older one). */
-  host?: HostSnapshot | null;
+   *  empty where the server could not read it.  (Required: backend and
+   *  frontend ship together — third review 2026-10-15, R5.) */
+  host: HostSnapshot | null;
   /** The API process's own memory against its container's limit. */
-  backend_memory?: ProcessMemory | null;
+  backend_memory: ProcessMemory | null;
   /** Each worker's last report: only where the kernel keeps a peak. */
-  workers?: WorkerMemory[];
-  database?: DatabaseSnapshot | null;
+  workers: WorkerMemory[];
+  database: DatabaseSnapshot | null;
 }
 
 export interface HostSnapshot {
@@ -63,11 +64,20 @@ export interface HostSnapshot {
 
 export interface ProcessMemory {
   current_bytes: number;
-  /** The most it has used since it started; null where the kernel keeps none. */
+  /** The processes' own memory (file cache left out); null where the kernel
+   *  does not say (2.505.0). */
+  own_bytes: number | null;
+  /** The most it has used since it started, file cache included —
+   *  information; null where the kernel keeps none. */
   peak_bytes: number | null;
   /** Null: the container has no limit. */
   limit_bytes: number | null;
-  /** Its peak (else its current use) reached 90% of its limit. */
+  /** Processes the kernel killed at the limit since the container started
+   *  (2.505.0). */
+  oom_kills: number;
+  /** Its OWN memory (else its current use) reached 90% of its limit — not
+   *  the peak, which counts cache the kernel frees by itself (third review
+   *  2026-10-15, S2). */
   near_limit: boolean;
 }
 

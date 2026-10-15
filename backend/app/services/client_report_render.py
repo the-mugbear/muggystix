@@ -126,6 +126,13 @@ def inputs_fingerprint(db: Session, report: Report, dataset: dict) -> str:
         # A template that cannot be read is an input too: the preview of it
         # failed, and whatever it rendered before is not what would render now.
         digest.update(b"template\0missing:" + (report.template or "").encode("utf-8"))
+    # The filter that fills and numbers every written field: an upgrade that
+    # changes it changes what a preview prints (third review 2026-10-15, N9 —
+    # a preview made before such an upgrade still read "current").
+    try:
+        digest.update(b"filter\0" + hashlib.sha256(quarto_render.FIELDS_FILTER.read_bytes()).digest())
+    except OSError:
+        digest.update(b"filter\0missing")
     # An image by WHICH FILE it is, not its bytes: an attachment's file is
     # written once under a new uuid name by one writer and never rewritten,
     # so its path names its content.  Reading every image's bytes on each

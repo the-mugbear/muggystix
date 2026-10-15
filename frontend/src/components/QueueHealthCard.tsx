@@ -193,21 +193,38 @@ export const assessHost = (host: HostSnapshot): Verdict[] => {
 
 const memoryLine = (m: ProcessMemory): string => {
   const limit = m.limit_bytes != null ? ` of a ${gb(m.limit_bytes)} limit` : ' (no limit set)';
-  return m.peak_bytes != null
-    ? `peaked at ${gb(m.peak_bytes)}${limit}, ${gb(m.current_bytes)} now`
-    : `${gb(m.current_bytes)}${limit}`;
+  const using = `${gb(m.own_bytes ?? m.current_bytes)}${limit}`;
+  return m.peak_bytes != null ? `${using} (peaked at ${gb(m.peak_bytes)} since start, file cache included)` : using;
 };
 
+const killedAction = (limitSetting: string) =>
+  `A job it was running then looked stalled and was started again. Raise ${limitSetting} in .env and deploy, `
+  + 'or split a very large file.';
+
 /** A process against ITS OWN limit: the kernel kills it there however much
- *  the host has free, so this is judged by the peak. */
-export const assessProcessMemory = (m: ProcessMemory, label: string, limitSetting: string): Verdict => (m.near_limit
-  ? {
-    tone: 'bad',
-    headline: `${label} memory near its limit — ${memoryLine(m)}`,
-    action: `It is killed when it reaches the limit, whatever the host has free; a job it was running then `
-      + `looks stalled and is started again. Raise ${limitSetting} in .env and deploy, or split a very large file.`,
+ *  the host has free.  Judged by its own memory now and by the kills the
+ *  kernel counted — never by the peak, which counts file cache the kernel
+ *  frees by itself (third review 2026-10-15, S2: one large import left it
+ *  red until a restart). */
+export const assessProcessMemory = (m: ProcessMemory, label: string, limitSetting: string): Verdict => {
+  if (m.near_limit) {
+    return {
+      tone: 'bad',
+      headline: `${label} memory near its limit — ${memoryLine(m)}`,
+      action: `It is killed when it reaches the limit, whatever the host has free; a job it was running then `
+        + `looks stalled and is started again. Raise ${limitSetting} in .env and deploy, or split a very large file.`,
+    };
   }
-  : { tone: 'ok', headline: `${label} memory — ${memoryLine(m)}` });
+  if (m.oom_kills > 0) {
+    return {
+      tone: 'warn',
+      headline: `${label} was killed at its memory limit ${m.oom_kills === 1 ? 'once' : `${m.oom_kills} times`} since it `
+        + `started — ${memoryLine(m)} now`,
+      action: killedAction(limitSetting),
+    };
+  }
+  return { tone: 'ok', headline: `${label} memory — ${memoryLine(m)}` };
+};
 
 export const assessWorker = (w: WorkerMemory): Verdict => {
   const known = WORKER_LABEL[w.name] ?? { label: w.name, limit: 'its memory limit' };
@@ -358,7 +375,7 @@ export const QueueHealthCard: React.FC = () => {
             {metrics.backend_memory && (
               <VerdictRow verdict={assessProcessMemory(metrics.backend_memory, 'API', 'BACKEND_MEM_LIMIT')} />
             )}
-            {(metrics.workers ?? []).map((w) => <VerdictRow key={w.name} verdict={assessWorker(w)} />)}
+            {metrics.workers.map((w) => <VerdictRow key={w.name} verdict={assessWorker(w)} />)}
             {metrics.database && <VerdictRow verdict={assessDatabase(metrics.database)} />}
             <p className="text-caption text-muted-foreground">
               Checked {new Date(metrics.generated_at).toLocaleTimeString()}

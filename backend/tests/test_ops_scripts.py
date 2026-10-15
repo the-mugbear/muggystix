@@ -774,6 +774,10 @@ def test_the_uploads_tree_and_the_database_key_are_set_up_by_the_containers():
     # …and "without TLS" is said to the server too, over an `ssl = on` an old
     # step left in postgresql.auto.conf (review 2026-10-14, suspected).
     assert 'exec docker-entrypoint.sh "$@" -c ssl=off' in tls
+    # Third review 2026-10-15, N8: an unreadable pair is said as such, and a
+    # copy that fails under `set -e` no longer stops the database.
+    assert '! -r "$CERT_SOURCE"' in tls
+    assert '|| tls_off "the certificate could not be copied for the postgres user" "$@"' in tls
     assert "ensure-ssl" not in (SCRIPTS / "deploy.sh").read_text(encoding="utf-8")
     compose = root / "docker-compose.yml"
     if compose.is_file():
@@ -840,8 +844,15 @@ def test_the_upgrade_does_not_read_an_unreadable_uploads_folder_as_empty():
     # Second review 2026-10-14, H7: `mv -T` (a plain `mv` into a folder the
     # containers already made nested uploads/uploads/), and the folder named
     # is the one that failed, with its own owner.
-    assert "sudo mv -T '$src' '$dst'" in text and "sudo mv '$src'" not in text
+    assert "sudo $verb '$src' '$dst'" in text and "sudo mv '$src'" not in text
+    assert 'if [[ $COPY_UPLOADS -eq 1 ]]; then verb="cp -aT"; else verb="mv -T"; fi' in text
     assert 'bad="$dst"; else bad="$src"' in text and "stat -c '%U, UID %u' \"$bad\"" in text
+    # Third review 2026-10-15, R4: since 2.495.2 uploads/ is the containers',
+    # so the ordinary upgrade moves it through the database image on the
+    # folder both trees share; the sudo line is the fallback, and with
+    # --copy-uploads it copies (a move destroyed the copy asked for).
+    assert 'docker run --rm --entrypoint sh -v "$parent:/trees" "$image"' in text
+    assert '[[ $moved -eq 1 ]] || fail' in text
 
 
 def test_low_disk_in_a_piped_deploy_is_a_stated_cancel(project):

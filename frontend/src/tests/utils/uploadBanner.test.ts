@@ -15,7 +15,8 @@ const entry = (jobId: number, extra: Partial<BannerEntry> = {}): BannerEntry => 
   key: `k${jobId}`, filename: `f${jobId}.xml`, jobId, ...extra,
 });
 const job = (id: number, status: string, extra: Partial<IngestionJob> = {}): IngestionJob => ({
-  id, status, filename: `f${id}.xml`, original_filename: `f${id}.xml`, created_at: '2026-10-09T10:00:00Z', ...extra,
+  id, status, filename: `f${id}.xml`, original_filename: `f${id}.xml`, created_at: '2026-10-09T10:00:00Z',
+  file_retained: true, ...extra,
 });
 const scan = (id: number) => ({ id, filename: `s${id}.xml` }) as Scan;
 const followed = (jobs: IngestionJob[], gone: number[] = []): FollowedJobs => ({ jobs, gone });

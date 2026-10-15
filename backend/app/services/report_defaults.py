@@ -114,6 +114,7 @@ def follows(kind: Optional[str], settings: Optional[Mapping[str, Any]]) -> set:
 
 def followed_with_sources(
     db: Session, profile: Optional[ReportProfile], team: Team, kind: Optional[str] = None,
+    base: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Optional[str]]]:
     """What a report of this project prints for a detail it does NOT
     override: the project's report default, else (author, disclaimer) the
@@ -124,7 +125,8 @@ def followed_with_sources(
     ``FROM_PROJECT_TEAM``, or None when no level holds one) — what the page
     says beside a followed detail.  The ONE merge of the levels (review
     2026-10-14, R8: a values-only twin and the profile page's own team
-    fallback are gone)."""
+    fallback are gone).  ``base``: the installation's defaults when the
+    caller has read them already (third review 2026-10-15, R7)."""
     out: Dict[str, Any] = {}
     sources: Dict[str, Optional[str]] = {}
     own = OWN_IN_ADDENDUM if kind == "addendum" else ()
@@ -135,7 +137,8 @@ def followed_with_sources(
     if not out["testers"]:
         out["testers"] = _entries(team())
         sources["testers"] = FROM_PROJECT_TEAM if out["testers"] else None
-    base = installation(db)
+    if base is None:
+        base = installation(db)
     for key in INSTALLATION_KEYS:
         if not out[key] and base[key]:
             out[key] = base[key]

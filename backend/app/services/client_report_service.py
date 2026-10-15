@@ -40,6 +40,7 @@ or superseded report would re-list findings the client already has.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import ipaddress
 import os
@@ -634,8 +635,14 @@ def finding_image_attachments(
 
 
 class ClientReportService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, *, remember_defaults: bool = False):
         self.db = db
+        # What a draft follows, per (project, kind) — remembered only when the
+        # caller says nothing writes the defaults while it lives (a read's
+        # serialiser: third review 2026-10-15, R7).  Off by default, so a
+        # service that writes a profile and reads again never sees the old one.
+        self._remember_defaults = remember_defaults
+        self._followed: Dict[Tuple[int, Optional[str]], Tuple[Dict[str, Any], Dict[str, Optional[str]]]] = {}
 
     # ------------------------------------------------------------------
     # Profile → a new draft's settings
@@ -709,11 +716,11 @@ class ClientReportService:
     def resolved_details(self, project_id: int, settings: Optional[Dict[str, Any]],
                          kind: Optional[str] = None) -> Dict[str, Any]:
         """Every engagement detail in force for a report (of this ``kind``) of
-        this project with these ``settings`` (its overrides) —
-        ``report_defaults.resolve`` with this project's defaults and team."""
-        return report_defaults.resolve(
-            self.db, self.get_profile(project_id), settings, lambda: self.project_team(project_id), kind,
-        )
+        this project with these ``settings`` (its overrides): what it follows
+        (:meth:`followed_details_with_sources`, read once per service) with
+        its overrides applied — ``report_defaults.resolve``'s order."""
+        followed, _ = self.followed_details_with_sources(project_id, kind)
+        return report_defaults.apply_overrides(followed, report_defaults.overrides(settings))
 
     def followed_details_with_sources(
         self, project_id: int, kind: Optional[str] = None,
@@ -721,10 +728,17 @@ class ClientReportService:
         """What each detail a draft does not override prints, as the project
         stands now, and where each value comes from — the one binder of
         ``report_defaults.followed_with_sources`` to this project's defaults
-        and team."""
-        return report_defaults.followed_with_sources(
-            self.db, self.get_profile(project_id), lambda: self.project_team(project_id), kind,
-        )
+        and team.  With ``remember_defaults`` read ONCE per service (third
+        review 2026-10-15, R7: one draft read worked the defaults out two or
+        three times — the page's details and the summary's build each did);
+        copies are handed out, so a caller cannot change what is remembered."""
+        key = (project_id, kind)
+        if key not in self._followed or not self._remember_defaults:
+            self._followed[key] = report_defaults.followed_with_sources(
+                self.db, self.get_profile(project_id), lambda: self.project_team(project_id), kind,
+            )
+        followed, sources = self._followed[key]
+        return copy.deepcopy(followed), dict(sources)
 
     @staticmethod
     def issued_details(report: Report) -> Dict[str, Any]:
@@ -982,10 +996,17 @@ class ClientReportService:
                 key=lambda pair: (first.get(pair[1].get("note_id"), pair[0]), pair[0]),
             )]
             said = set()
+            groups: Dict[int, int] = {}
             for item in entry["evidence"]:
                 note_id = item.pop("note_id", None)
                 body = (bodies.get(note_id) or "").strip()
                 item["note"] = body if body and note_id not in said else None
+                # Which note's images stand together (1, 2, … per finding;
+                # never the note's id): a render that drops the image carrying
+                # the text hands it to the next of the group (third review
+                # 2026-10-15, N10).
+                if note_id is not None and body:
+                    item["note_group"] = groups.setdefault(note_id, len(groups) + 1)
                 said.add(note_id)
 
     @staticmethod

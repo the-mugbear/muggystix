@@ -695,6 +695,60 @@ def test_a_stale_page_cannot_push_up_a_value_someone_replaced(client, db_session
     assert client.post(url, json=_promotion({"client_name": "B's"}, expected={})).status_code == 422
 
 
+def test_one_draft_read_works_the_defaults_out_once(client, db_session, test_project, test_user):
+    """Third review 2026-10-15, R7: one draft read resolved the project's
+    defaults two or three times (the page's details, then the summary's
+    build), and the profile answer read the installation's twice."""
+    from sqlalchemy import event
+
+    _lead(db_session, test_project, test_user)
+    _profile(client, test_project, client_name="Project Corp")
+    draft = _draft(client, test_project)
+    seen = []
+
+    def watch(conn, cursor, statement, params, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            seen.append(statement)
+
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", watch)
+    try:
+        assert client.get(f"{_reports(test_project)}/{draft['id']}").status_code == 200
+        reads = list(seen)
+        seen.clear()
+        assert client.get(f"{_reports(test_project)}/profile").status_code == 200
+    finally:
+        event.remove(bind, "before_cursor_execute", watch)
+    assert sum("FROM report_profiles" in s for s in reads) == 1, reads
+    assert sum("FROM report_defaults" in s for s in reads) == 1
+    assert sum("FROM report_defaults" in s for s in seen) == 1
+
+
+def test_a_push_up_does_not_replace_a_project_value_set_since_the_page_read_it(
+    client, db_session, test_project, test_user,
+):
+    """Third review 2026-10-15, R9: `expected` covered what the draft prints,
+    not the project's value — one set on the defaults page while the dialog
+    was open was silently replaced.  The page says the project's value it
+    showed; under the profile's lock a different one is a 409."""
+    _lead(db_session, test_project, test_user)
+    _profile(client, test_project, classification="Internal")
+    draft = _draft(client, test_project)
+    _patch(client, test_project, draft["id"], classification="Confidential")
+    url = f"{_reports(test_project)}/{draft['id']}/promote"
+    body = {**_promotion({"classification": "Confidential"}), "expected_project": {"classification": "Internal"}}
+    _profile(client, test_project, classification="Restricted")                 # Y, on the defaults page
+    refused = client.post(url, json=body)
+    assert refused.status_code == 409 and "classification" in refused.text
+    assert client.get(f"{_reports(test_project)}/profile").json()["classification"] == "Restricted"
+    db_session.expire_all()
+    assert db_session.get(Report, draft["id"]).settings == {"classification": "Confidential"}
+    # Read again, it goes through.
+    body["expected_project"] = {"classification": "Restricted"}
+    assert client.post(url, json=body).status_code == 200
+    assert client.get(f"{_reports(test_project)}/profile").json()["classification"] == "Confidential"
+
+
 def test_promote_is_an_analysts(client, db_session, test_project):
     draft = _draft(client, test_project)
     url = f"{_reports(test_project)}/{draft['id']}/promote"

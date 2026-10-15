@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers.cut_short import settle_cut
 from app.parsers.parser_utils import announce_scan, beat_while_reading
-from app.parsers.streaming_json import document_before_the_cut, is_cut_last_line, json_lines
+from app.parsers.streaming_json import cut_document_records, is_cut_last_line, json_lines
 from app.db.models_attribution import (
     AttributionSource,
     NetworkAttribution,
@@ -288,19 +288,11 @@ class RdapParser:
         ends early: its complete responses when the import keeps them,
         ``TruncatedFile`` when it does not (always, for a single response cut
         short: half a response is no response).  ``None`` for NDJSON — whose
-        first line is a whole object — and for content that is invalid."""
-        text = content.lstrip()
-        if not text.startswith(("[", "{")):
-            return None
-        first_line = text.split("\n", 1)[0].strip()
-        try:
-            if isinstance(json.loads(first_line), dict):
-                return None  # one object per line
-        except json.JSONDecodeError:
-            pass
-        prefix = "item" if text.startswith("[") else ""
-        return document_before_the_cut(
-            content.encode("utf-8"), prefix, "RDAP JSON", dicts_only=False, floats=True,
+        first line is a whole object — and for content that is invalid.
+        ``streaming_json.cut_document_records``: the one line test and prefix
+        choice (third review 2026-10-15, R8)."""
+        return cut_document_records(
+            content.encode("utf-8"), (), "RDAP JSON", dicts_only=False, floats=True,
         )
 
     def _ingest(self, record: Dict[str, Any], project_id: int, scan_id: int) -> bool:

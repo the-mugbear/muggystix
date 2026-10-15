@@ -938,8 +938,28 @@ class IngestionJobSchema(BaseModel):
     # "format_error", or "truncated_file" — the file was cut short and holds
     # complete records, which POST …/retry {keep_truncated: true} imports.
     failure_kind: Optional[str] = None
+    # Whether the job's file is still kept — the ROW's answer
+    # (``staged_import_service.file_retained``, the one reading; no disk
+    # access).  The Scans queue offered "Import what the file holds" after
+    # the retention sweep had removed it, which then answered 409 (third
+    # review 2026-10-15, N6).
+    file_retained: bool = False
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _file_retained_from_the_row(cls, data):
+        if isinstance(data, dict) or not hasattr(data, "file_removed_at"):
+            return data
+        from app.services.staged_import_service import file_retained
+
+        # A value the row does not hold falls to the field's default, as it
+        # did when the schema read the row itself.
+        values = {name: getattr(data, name) for name in cls.model_fields
+                  if getattr(data, name, None) is not None}
+        values["file_retained"] = file_retained(data)
+        return values
 
 
 class ReportJobSchema(BaseModel):

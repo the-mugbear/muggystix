@@ -135,36 +135,18 @@ def _load_records_eager(
         # streaming threshold it used to fall to the line reader, which kept
         # whichever lines happened to decode, or failed with "no parseable
         # records").  Invalid for another reason: the line reader, as before.
-        head = raw[:_PEEK_BYTES].encode("utf-8", errors="ignore")
-        if not _looks_like_jsonl(head):
-            # The text as it was READ (bad bytes dropped), not the file again:
-            # one non-UTF-8 byte (Perl / Ruby tools' output) failed the cut
-            # reader there, so a cut file was "invalid", 0 records, never
-            # offered (third review 2026-10-15, H4).
-            kept = _records_before_the_cut(raw.encode("utf-8"), head, array_keys, tool_label)
-            if kept is not None:
-                return kept
+        # Over the text as it was READ (bad bytes dropped), not the file
+        # again: one non-UTF-8 byte (Perl / Ruby tools' output) failed the cut
+        # reader there, so a cut file was "invalid", 0 records, never offered
+        # (third review 2026-10-15, H4).  ``floats``: this file is below the
+        # streaming threshold, so a complete one would have been read by
+        # ``json.loads`` — the records before the cut carry the same number
+        # types.  ``only_when_cut``: when the stream reader accepts what
+        # json.loads refused, the line reader decides.
+        kept = cut_document_records(raw.encode("utf-8"), array_keys, tool_label, floats=True, only_when_cut=True)
+        if kept is not None:
+            return kept
     return list(_iter_jsonl_lines(json_lines(text), tool_label))
-
-
-def _records_before_the_cut(
-    content: bytes, head: bytes, array_keys: Sequence[str], tool_label: str,
-) -> Optional[List[dict]]:
-    """For a small document ``json.loads`` refused: its complete records when
-    the file ends early and the import keeps them; ``TruncatedFile`` when it
-    ends early and the import does not; ``None`` when the document is invalid
-    for any other reason."""
-    if head.lstrip().startswith(b"["):
-        prefix = "item"
-    else:
-        # No known array key: the object itself is the one record, and a cut
-        # object is no record.
-        prefix = _detect_array_prefix(head, array_keys) or ""
-    # ``floats``: this file is below the streaming threshold, so a complete
-    # one would have been read by ``json.loads`` — the records before the cut
-    # carry the same number types.  ``only_when_cut``: when the stream reader
-    # accepts what json.loads refused, the line reader decides.
-    return document_before_the_cut(content, prefix, tool_label, floats=True, only_when_cut=True)
 
 
 class _EndsEarly(Exception):
@@ -264,12 +246,11 @@ def document_before_the_cut(
     return None if only_when_cut else items
 
 
-def ends_early(text: str) -> bool:
-    """True when ``text`` is the beginning of a JSON value that stops before
-    its end — the reader accepts every byte and then wants more."""
-    if not text.strip():
-        return False
-    handle = EndTracking(io.BytesIO(text.encode("utf-8", errors="ignore")))
+def _wants_more(raw) -> bool:
+    """The ONE "does this input end before its JSON value does?" loop
+    (third review 2026-10-15, R8: it was written twice): the reader accepts
+    every byte and then wants more."""
+    handle = EndTracking(raw)
     try:
         for _event in ijson.basic_parse(handle):
             pass
@@ -278,17 +259,36 @@ def ends_early(text: str) -> bool:
     return False
 
 
+def ends_early(text: str) -> bool:
+    """True when ``text`` is the beginning of a JSON value that stops before
+    its end."""
+    if not text.strip():
+        return False
+    return _wants_more(io.BytesIO(text.encode("utf-8", errors="ignore")))
+
+
 def file_ends_early(file_path: str) -> bool:
     """True when the file is the beginning of ONE JSON document that stops
-    before its end (the same test as ``ends_early``, streamed)."""
+    before its end (``ends_early``, streamed)."""
     with open(file_path, "rb") as raw:
-        handle = EndTracking(raw)
-        try:
-            for _event in ijson.basic_parse(handle):
-                pass
-        except ijson.JSONError:
-            return handle.ended
-    return False
+        return _wants_more(raw)
+
+
+def cut_document_records(
+    content: bytes, array_keys: Sequence[str], tool_label: str, **read,
+) -> Optional[list]:
+    """For content ``json.loads`` refused: ``document_before_the_cut`` with
+    the prefix chosen the one way — a top-level array's items, a known array
+    key's, else the object itself as the one record — and None for JSON lines
+    (the first line a whole object) or content that is no JSON document.
+    The small-file reader here and RDAP's both use it (third review
+    2026-10-15, R8: RDAP re-implemented the line test, splitting at ``\\n``
+    only)."""
+    head = content[:_PEEK_BYTES].lstrip()
+    if not head.startswith((b"[", b"{")) or _looks_like_jsonl(head):
+        return None
+    prefix = "item" if head.startswith(b"[") else (_detect_array_prefix(head, array_keys) or "")
+    return document_before_the_cut(content, prefix, tool_label, **read)
 
 
 def json_lines(text: str) -> List[str]:

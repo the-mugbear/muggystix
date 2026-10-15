@@ -169,6 +169,15 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
   // is THEN, at the paste's place (or its end, if that text is now shorter).
   const latest = useRef(value);
   latest.current = value;
+  // A paste whose upload finishes after the field is gone (Cancel closes the
+  // section and unmounts it) writes nothing: it put the cancelled text back
+  // as a pending edit (third review 2026-10-15, N1).  The image stays in the
+  // project's images, as the field's note says.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const [pasting, setPasting] = useState(0);
   const [pasteError, setPasteError] = useState<string | null>(null);
   const upload = images?.upload;
@@ -186,10 +195,13 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
         try {
           ids.push(await upload(file));
         } catch (err) {
-          setPasteError(err instanceof ReportImageProblem
-            ? err.message : formatApiError(err, 'Could not upload the pasted image.'));
+          if (mounted.current) {
+            setPasteError(err instanceof ReportImageProblem
+              ? err.message : formatApiError(err, 'Could not upload the pasted image.'));
+          }
         }
       }
+      if (!mounted.current) return;
       setPasting((n) => n - files.length);
       if (ids.length === 0) return;
       const current = latest.current;

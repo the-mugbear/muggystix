@@ -35,26 +35,39 @@ def fake_host(tmp_path, monkeypatch):
     return cgroup, proc, uploads
 
 
-def _cgroup(cgroup, current, peak, limit):
+def _cgroup(cgroup, current, peak, limit, own=None, oom_kills=None):
     (cgroup / "memory.current").write_text(f"{current}\n")
     if peak is not None:
         (cgroup / "memory.peak").write_text(f"{peak}\n")
     (cgroup / "memory.max").write_text(f"{limit}\n")
+    if own is not None:
+        (cgroup / "memory.stat").write_text(f"anon {own}\nfile {max(current - own, 0)}\nkernel 4096\n")
+    if oom_kills is not None:
+        (cgroup / "memory.events").write_text(f"low 0\nhigh 0\nmax 3\noom 1\noom_kill {oom_kills}\n")
 
 
-def test_a_process_is_near_its_limit_by_its_peak_not_by_what_it_uses_now(fake_host):
+def test_a_process_is_near_its_limit_by_its_own_memory_not_its_peak(fake_host):
+    """Third review 2026-10-15, S2: the peak counts file cache the kernel
+    frees by itself — after one large import the warning stayed red until a
+    restart.  Judged on the processes' own memory (``anon``); the peak and
+    the kills at the limit are said beside it."""
     cgroup, _, _ = fake_host
-    _cgroup(cgroup, current=1 * GB, peak=int(3.7 * GB), limit=4 * GB)
+    # A large import read 3.7 GB of file: cache, not the process's.
+    _cgroup(cgroup, current=int(3.6 * GB), peak=int(3.7 * GB), limit=4 * GB, own=1 * GB, oom_kills=0)
     assert rm.process_memory() == {
-        "current_bytes": 1 * GB, "peak_bytes": int(3.7 * GB), "limit_bytes": 4 * GB, "near_limit": True,
+        "current_bytes": int(3.6 * GB), "own_bytes": 1 * GB, "peak_bytes": int(3.7 * GB),
+        "limit_bytes": 4 * GB, "oom_kills": 0, "near_limit": False,
     }
-    _cgroup(cgroup, current=1 * GB, peak=2 * GB, limit=4 * GB)
-    assert rm.process_memory()["near_limit"] is False
+    _cgroup(cgroup, current=int(3.8 * GB), peak=int(3.9 * GB), limit=4 * GB, own=int(3.7 * GB), oom_kills=2)
+    memory = rm.process_memory()
+    assert memory["near_limit"] is True and memory["oom_kills"] == 2
+    # No memory.stat: the current use is judged.
+    (cgroup / "memory.stat").unlink()
+    _cgroup(cgroup, current=int(3.7 * GB), peak=int(3.7 * GB), limit=4 * GB)
+    assert rm.process_memory()["near_limit"] is True and rm.process_memory()["own_bytes"] is None
     # No limit ("max"): nothing to be near.
-    _cgroup(cgroup, current=1 * GB, peak=2 * GB, limit="max")
-    assert rm.process_memory() == {
-        "current_bytes": 1 * GB, "peak_bytes": 2 * GB, "limit_bytes": None, "near_limit": False,
-    }
+    _cgroup(cgroup, current=1 * GB, peak=2 * GB, limit="max", own=1 * GB)
+    assert rm.process_memory()["limit_bytes"] is None and rm.process_memory()["near_limit"] is False
 
 
 def test_no_cgroup_is_no_answer_and_no_peak_is_no_worker_report(fake_host):
@@ -71,7 +84,7 @@ def test_no_cgroup_is_no_answer_and_no_peak_is_no_worker_report(fake_host):
 
 def test_a_worker_report_is_written_whole_read_back_and_goes_stale(fake_host, monkeypatch):
     cgroup, _, uploads = fake_host
-    _cgroup(cgroup, current=1 * GB, peak=int(3.9 * GB), limit=4 * GB)
+    _cgroup(cgroup, current=1 * GB, peak=int(3.9 * GB), limit=4 * GB, own=int(3.7 * GB), oom_kills=1)
     rm.write_worker_report("ingestion_jobs")
 
     folder = uploads / rm.REPORTS_DIR
@@ -79,7 +92,7 @@ def test_a_worker_report_is_written_whole_read_back_and_goes_stale(fake_host, mo
     (report,) = rm.worker_reports()
     assert report["name"] == "ingestion_jobs" and report["stale"] is False
     assert (report["current_bytes"], report["peak_bytes"], report["limit_bytes"]) == (1 * GB, int(3.9 * GB), 4 * GB)
-    assert report["near_limit"] is True
+    assert report["near_limit"] is True and report["own_bytes"] == int(3.7 * GB) and report["oom_kills"] == 1
 
     # The worker was killed: its last report is still there, and is said to be old.
     data = json.loads((folder / "ingestion_jobs.json").read_text())

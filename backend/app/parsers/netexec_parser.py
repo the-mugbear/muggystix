@@ -701,7 +701,7 @@ class NetexecParser:
             host.hostname = host_data['hostname']
             # The scan filled the display name outside find_or_create_host:
             # its history row says so (nothing when this scan created the host).
-            self.dedup_service.note_hostname_changed(host.id, scan_id)
+            self.dedup_service.note_hostname_changed(host.id, scan_id, host.hostname)
         # `_store_netexec_result` is keyed (scan, host, protocol, port,
         # username), so a repeated line is still one row.
         self._store_netexec_result(host.id, scan_id, host_data, raw_line)

@@ -80,6 +80,10 @@ const UpdateDefaultsDialog: React.FC<{
       projectId, report.id,
       Object.fromEntries(chosen.map((k) => [k, settings[k]])) as EngagementOverrides,
       Object.fromEntries(chosen.map((k) => [k, baseline(ctx, k) ?? null])) as EngagementOverrides,
+      // And the project's value it showed ("The project's now"): one set on
+      // the defaults page since is not silently replaced (third review
+      // 2026-10-15, R9).
+      Object.fromEntries(chosen.map((k) => [k, ctx.followed?.[k] ?? null])) as EngagementOverrides,
     ),
     onSuccess: (updated) => {
       onPromoted(updated, chosen);

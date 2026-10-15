@@ -343,6 +343,25 @@ describe('Remediation', () => {
     await waitFor(() => expect(listRemediation.mock.calls.length).toBeGreaterThan(1));
   });
 
+  // Third review 2026-10-15, N5: retyping a row's address to another known
+  // contact kept the row's old contact name (it was never "brought").
+  it('retyping the row’s address to another known contact brings that contact’s name', async () => {
+    listRemediationContacts.mockResolvedValue([
+      { contact_email: 'roger@example.com', contact_name: 'Roger Smith', total: 1, open: 1, overdue: 0, due_soon: 0,
+        on_track: 1, deferred: 0, closed: 0, last_follow_up_on: null, projects: 1, work_project_ids: [1] },
+      { contact_email: 'jane@example.com', contact_name: 'Jane Doe', total: 1, open: 1, overdue: 0, due_soon: 0,
+        on_track: 1, deferred: 0, closed: 0, last_follow_up_on: null, projects: 1, work_project_ids: [1] },
+    ]);
+    show();
+    const table = await screen.findByRole('table', { name: /remediation/i });
+    fireEvent.click(within(table).getAllByRole('button', { name: 'Edit' })[0]);
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByLabelText('Contact name')).toHaveValue('Roger Smith');
+    await waitFor(() => expect(listRemediationContacts).toHaveBeenCalled());
+    fireEvent.change(within(dialog).getByLabelText('Contact email'), { target: { value: 'jane@example.com' } });
+    await waitFor(() => expect(within(dialog).getByLabelText('Contact name')).toHaveValue('Jane Doe'));
+  });
+
   it('a bulk edit touches only the selected rows and leaves fields they differ on alone', async () => {
     show();
     const table = await screen.findByRole('table', { name: /remediation/i });

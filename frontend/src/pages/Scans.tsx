@@ -1454,7 +1454,11 @@ export default function Scans() {
                                   Retry: offer what Ingestion results offers. */}
                               {canWrite && isCutShort(job) && (
                                 <div className="mb-sm">
-                                  <KeepTruncatedImport jobId={job.id} filename={job.original_filename} fileRetained />
+                                  {/* Only while the file is kept: past the
+                                      retention sweep the action was a 409
+                                      (third review 2026-10-15, N6). */}
+                                  <KeepTruncatedImport jobId={job.id} filename={job.original_filename}
+                                    fileRetained={job.file_retained} />
                                 </div>
                               )}
                               <p className="mb-xxs text-metadata font-semibold text-destructive">

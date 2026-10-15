@@ -350,6 +350,24 @@ def test_bloodhound_records_before_a_cut_carry_floats_as_a_whole_file_does(tmp_p
     assert isinstance(score, float) and not isinstance(score, Decimal)
 
 
+def test_one_reading_of_a_cut_document_for_every_reader():
+    """Third review 2026-10-15, R8: the end-of-input loop was written twice
+    and RDAP had its own JSON-lines test and prefix choice (splitting at
+    ``\\n`` only).  ``cut_document_records`` is the one."""
+    from app.parsers.streaming_json import cut_document_records, ends_early
+
+    lines = b'{"a": 1}\r{"a": 2}\r{"a": 3'                   # JSON lines ended with \r only
+    assert cut_document_records(lines, (), "X") is None       # lines: the line reader's
+    assert cut_document_records(b"not json", (), "X") is None
+    token = begin_read(keep_truncated=True)
+    try:
+        assert cut_document_records(b'[{"a": 1}, {"a": 2}, {"a"', (), "X") == [{"a": 1}, {"a": 2}]
+        assert cut_document_records(b'{"hosts": [{"a": 1}, {"a"', ("hosts",), "X") == [{"a": 1}]
+    finally:
+        end_read(token)
+    assert ends_early('{"a": [1, 2') and not ends_early('{"a": 1}') and not ends_early("  ")
+
+
 def test_a_cut_json_file_holding_a_byte_that_is_not_utf8_is_still_cut_short(tmp_path):
     """Third review 2026-10-15, H4: the reader drops a byte that is not UTF-8
     (Perl / Ruby tools write Latin-1 titles), but the cut test read the file

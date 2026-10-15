@@ -435,3 +435,25 @@ def test_a_dropped_image_does_not_leave_the_next_one_reading_its_note(tmp_path):
     ]}]}
     quarto_render._place_evidence(old, work, lambda item: None if item["attachment_id"] == 5 else shot)
     assert old["findings"][0]["evidence"] == [{"attachment_id": 6, "file": "evidence/6.png", "caption": "Kept"}]
+
+
+def test_a_dropped_image_hands_its_notes_text_to_the_next_image_of_that_note(tmp_path):
+    """Third review 2026-10-15, N10: the image carrying a note's text was
+    dropped (its file missing) and the text went with it, though the note's
+    next image still printed."""
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(PNG)
+
+    def entry(att_id, note, group):
+        return {"attachment_id": att_id, "file": f"evidence/{att_id}.png", "caption": f"Shot {att_id}",
+                "placed_in": [], "note": note, **({"note_group": group} if group else {})}
+
+    dataset = {"findings": [{"placed": {}, "evidence": [
+        entry(5, "Note A.", 1), entry(6, None, 1), entry(7, "Note B.", 2), entry(8, None, None),
+    ], "images": []}]}
+    work = tmp_path / "work"
+    work.mkdir()
+    quarto_render._place_evidence(dataset, work, lambda item: None if item["attachment_id"] == 5 else shot)
+    assert [(e["attachment_id"], e["note"]) for e in dataset["findings"][0]["evidence"]] == [
+        (6, "Note A."), (7, "Note B."), (8, None),
+    ]

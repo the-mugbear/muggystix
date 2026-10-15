@@ -144,8 +144,10 @@ describe('The draft’s checklist', () => {
     const strip = screen.getByTestId('report-measures');
     expect(within(strip).queryByText(/Missing report text/)).toBeNull();
     expect(within(strip).getByText('Findings in the report')).toBeInTheDocument();
-    // The readiness line on the action bar (5 details + 12 findings to fix; 4 warning groups).
-    expect(screen.getByTestId('report-readiness')).toHaveTextContent('17 to fix · 4 warnings');
+    // The readiness line on the action bar counts what the groups count
+    // (third review 2026-10-15, R3: it said "4 warnings" — list lengths —
+    // over groups adding to 9): 5 + 12 to fix; 1 + 4 + 1 + 3 warnings.
+    expect(screen.getByTestId('report-readiness')).toHaveTextContent('17 to fix · 9 warnings');
     expect(screen.getByRole('tab', { name: /Review/ })).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -298,6 +300,18 @@ describe('The draft’s checklist', () => {
     expect(screen.queryByText('Before issuing')).toBeNull();
     // What an issued report printed of the notes is still said.
     expect(screen.getByText('Notes printed in this report')).toBeInTheDocument();
+  });
+
+  // Third review 2026-10-15, R3: notes the client will read were a checklist
+  // group but no warning, so the draft also said "Nothing left to fix".
+  it('a draft whose only gap is notes the client will read lists them and is not "clear"', async () => {
+    mocked.getClientReport.mockResolvedValue(report({ summary: {
+      counts: fullSummary.counts, missing_text: [], evidence_note_findings: fullSummary.evidence_note_findings,
+    } }));
+    renderDetail(REVIEW);
+    expect(await screen.findByTestId('report-checklist')).toBeInTheDocument();
+    expect(screen.queryByTestId('review-clear')).toBeNull();
+    expect(screen.getByTestId('report-readiness')).toHaveTextContent('Nothing to fix · 3 warnings');
   });
 
   it('a draft with nothing left has no checklist, and says so', async () => {

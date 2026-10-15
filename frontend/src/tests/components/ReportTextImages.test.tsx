@@ -341,3 +341,22 @@ describe('ReportTextImages — a pasted screenshot, in the project images panel'
     expect(api.uploadReportTextImage).not.toHaveBeenCalled();
   });
 });
+
+// Third review 2026-10-15, N1: Save was not held while a pasted image
+// uploaded — its reference was not in the text yet.  The hook says so.
+describe('useReportTextImages — an upload in flight', () => {
+  it('is `uploading` from the start of an upload until it settles', async () => {
+    api.listReportTextImages.mockResolvedValue([]);
+    let finish!: (v: unknown) => void;
+    api.uploadReportTextImage.mockImplementation(() => new Promise((res) => { finish = res; }));
+    let state!: ReturnType<typeof useReportTextImages>;
+    const Probe: React.FC = () => { state = useReportTextImages(); return <span data-testid="up">{String(state.uploading)}</span>; };
+    render(<Probe />);
+    expect(screen.getByTestId('up')).toHaveTextContent('false');
+    let done!: Promise<number>;
+    React.act(() => { done = state.markdown.upload!(png()); });
+    await waitFor(() => expect(screen.getByTestId('up')).toHaveTextContent('true'));
+    await React.act(async () => { finish(image(91)); await done; });
+    expect(screen.getByTestId('up')).toHaveTextContent('false');
+  });
+});

@@ -153,6 +153,13 @@ describe('notificationHref', () => {
       .toBe('/findings/355?endpoint=779#endpoints');
   });
 
+  // Third review 2026-10-15, N13: one notification per person for an action
+  // over several findings — it opens the project's retest list.
+  it('a notification about retests on several findings opens the retest list', () => {
+    expect(href({ type: 'retest', source_type: 'finding_retests', source_id: null }))
+      .toBe('/findings?host_state=retest&status=all');
+  });
+
   it('a finding on the proposal notification still wins over the session', () => {
     expect(href({ type: 'proposal', source_type: 'agent_session_new', source_id: 88, finding_id: 7 }))
       .toBe('/findings/7#proposals');

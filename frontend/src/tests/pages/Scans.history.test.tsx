@@ -375,6 +375,22 @@ describe('Scans — layout', () => {
     expect(queue).not.toHaveTextContent(/format may not be supported/);
   });
 
+  // Third review 2026-10-15, N6: "Import what the file holds" was offered on
+  // the queue row whatever the job said — past the retention sweep it was a
+  // 409.  Only while the row says the file is kept.
+  it.each([[true, 1], [false, 0]])('a cut-short row with the file kept=%s offers the import %i time(s)', async (kept, n) => {
+    api.getRecentIngestionJobs.mockResolvedValue([{
+      id: 90, status: 'failed', original_filename: 'cut.json', created_at: '2026-09-19T10:00:00Z',
+      failure_kind: 'truncated_file', error_message: 'The file ends early: 49 complete records.', file_retained: kept,
+    }]);
+    renderPage();
+    const queue = await screen.findByTestId('ingestion-queue');
+    const show = within(queue).queryByRole('button', { name: /show 1 recent job/i });
+    if (show) fireEvent.click(show);
+    fireEvent.click(await within(queue).findByRole('button', { name: 'Show full error message' }));
+    expect(within(queue).queryAllByRole('button', { name: 'Import what cut.json holds' })).toHaveLength(n);
+  });
+
   // v5.271.0 — a closed review of 26 files: the queue read the 25 most recent
   // jobs, so the oldest file had no Review and no Discard, and the only
   // visible action on the strip was "Discard 25 staged".

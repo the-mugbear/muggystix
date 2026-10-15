@@ -54,3 +54,19 @@ def test_library_json_errors_keep_the_template():
 def test_empty_or_unraised_value_error_keeps_the_template(err):
     msg = _generate_user_message(err, "parsing_error", None, "x.txt")
     assert msg.startswith("Failed to parse the file 'x.txt'")
+
+
+def test_the_traceback_is_the_errors_own_wherever_it_is_logged(db_session, test_project):
+    """Third review 2026-10-15, N12: logged outside an ``except`` (the
+    cut-short path), ``format_exc()`` stored "NoneType: None"."""
+    from app.services.parse_error_service import log_parse_error
+
+    try:
+        raise ValueError("cut here")
+    except ValueError as exc:
+        caught = exc
+    row = log_parse_error(db_session, "f.json", error=caught, project_id=test_project.id)       # outside the except
+    trace = row.error_details["traceback"]
+    assert "NoneType: None" not in trace and "ValueError: cut here" in trace and "raise ValueError" in trace
+    never = log_parse_error(db_session, "g.json", error=ValueError("never raised"), project_id=test_project.id)
+    assert "traceback" not in never.error_details

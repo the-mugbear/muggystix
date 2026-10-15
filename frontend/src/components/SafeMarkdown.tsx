@@ -25,7 +25,7 @@
  * italic / strikethrough / links / autolinks / bare web URLs / hard breaks.
  * Anything else stays text.
  */
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
 
 import type { EvidenceImages } from '../utils/evidenceImages';
 import {
@@ -717,10 +717,18 @@ interface Props {
   mentions?: readonly string[];
 }
 
-const SafeMarkdown: React.FC<Props> = ({ text, className, evidence, lineBreaks, mentions }) => (
-  <div className={`min-w-0 space-y-xs break-words ${className ?? ''}`.trim()}>
-    {renderBlocks(parseBlocks(text), 'md', { evidence, lineBreaks, mentions })}
-  </div>
-);
+// The text is parsed once per text, and the component re-renders only when
+// a prop changes: a keystroke in another field re-parsed up to 64 KB of
+// summary (third review 2026-10-15, N3).  Rendering is unchanged.
+const SafeMarkdownView: React.FC<Props> = ({ text, className, evidence, lineBreaks, mentions }) => {
+  const blocks = useMemo(() => parseBlocks(text), [text]);
+  return (
+    <div className={`min-w-0 space-y-xs break-words ${className ?? ''}`.trim()}>
+      {renderBlocks(blocks, 'md', { evidence, lineBreaks, mentions })}
+    </div>
+  );
+};
+
+const SafeMarkdown = React.memo(SafeMarkdownView);
 
 export default SafeMarkdown;

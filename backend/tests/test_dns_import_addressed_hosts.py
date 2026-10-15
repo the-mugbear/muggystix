@@ -285,10 +285,11 @@ def test_a_dns_csv_import_reads_the_hosts_once_not_per_row(db_session, test_proj
             + "PTR,made.corp.example,10.70.0.77\nA,made.corp.example,10.70.0.77\n")
     db_session.expire_all()                 # nothing of the hosts is in the session already
     lookups = _host_reads(db_session, lambda: _csv_import(db_session, pid, tmp_path, text))
-    # At most the dedup service's own lookup for the host it creates — never
-    # one per row (second review, F3: a known host still cost a read by id
-    # per row once the session had let it go).
-    assert len(lookups) <= 1, lookups
+    # At most one read by id per DISTINCT host (third review 2026-10-15, R2:
+    # the map holds ids, a host is loaded when an answer names it) and the
+    # dedup service's own lookup for the host it creates — never one per row
+    # (30 rows over 3 hosts here).
+    assert len(lookups) <= 3 + 1, lookups
     scan = db_session.query(models.Scan).filter_by(project_id=pid, filename="dns.csv").one()
     assert set(_history(db_session, scan.id)) == {"10.70.0.1", "10.70.0.2", "10.70.0.3", "10.70.0.77"}
 
@@ -322,7 +323,21 @@ def test_a_dnsx_import_reads_the_hosts_once_not_per_answer(db_session, test_proj
              "status_code": "NOERROR"} for n in range(30)]
     db_session.expire_all()
     lookups = _host_reads(db_session, lambda: _dnsx_import(db_session, pid, tmp_path, rows=rows))
-    assert lookups == [], lookups
+    assert len(lookups) <= 3, lookups                     # per distinct host at most, never per answer (R2)
+
+
+def test_the_address_map_holds_ids_not_host_objects(db_session, test_project):
+    """Third review 2026-10-15, R2: 70,000 held hosts were 123 MB, and every
+    heartbeat commit expired them all.  The map holds address → id."""
+    from app.parsers.parser_utils import ProjectHostsByAddress
+
+    pid = test_project.id
+    _nmap_hosts(db_session, pid, KNOWN)
+    hosts = ProjectHostsByAddress(db_session, pid)
+    found = hosts.get("10.70.0.1")
+    assert isinstance(found, models.Host) and found.ip_address == "10.70.0.1"
+    assert hosts.get("10.70.9.9") is None
+    assert hosts._ids and all(isinstance(v, int) for v in hosts._ids.values())
 
 
 def test_a_dns_csv_import_records_the_hosts_its_ptr_rows_addressed(client, db_session, test_project, tmp_path):

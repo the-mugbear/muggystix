@@ -78,7 +78,10 @@ export const RemediationEditDialog: React.FC<{
   // The name the address last brought with it: it follows the address (a
   // misspelt address must not keep the known contact's name — seen in the
   // browser), while a name somebody typed stays.
-  const broughtName = useRef('');
+  // Starts as the row's own contact's name: retyping the row's address to
+  // another known contact then brings that contact's name, where the old one
+  // stayed (third review 2026-10-15, N5).
+  const broughtName = useRef(opened.contact_name);
   const setContact = (value: string) => {
     const known = contacts.find((c) => c.contact_email === value.trim().toLowerCase())?.contact_name ?? '';
     const follows = !draft.contact_name || draft.contact_name === broughtName.current;

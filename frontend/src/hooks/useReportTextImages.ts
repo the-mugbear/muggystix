@@ -14,7 +14,7 @@
  * writes its reference where it was pasted): the same route as "Upload
  * image", with no caption — the list under the field then asks for one.
  */
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { listReportTextImages, uploadReportTextImage } from '../services/api';
@@ -40,6 +40,9 @@ export interface ReportTextImagesState {
   retry: (id: number) => void;
   /** For `MarkdownField`: the picker's list and the preview's resolver. */
   markdown: MarkdownImages;
+  /** A pasted image is uploading: the page holds Save until its reference
+   *  is in the text (third review 2026-10-15, N1). */
+  uploading: boolean;
 }
 
 const NO_IMAGES: ReportTextImage[] = [];
@@ -92,16 +95,22 @@ export function useReportTextImages({ enabled = true }: { enabled?: boolean } = 
     mutationFn: (file: File) => uploadReportTextImage(projectId, file),
     onSuccess: () => { void invalidateReads(queryClient, 'listReportTextImages'); },
   });
+  const [inFlight, setInFlight] = useState(0);
   const upload = useCallback(async (file: File) => {
     const problem = reportImageProblem(file);
     if (problem) throw new ReportImageProblem(problem);
-    return (await store(file)).id;
+    setInFlight((n) => n + 1);
+    try {
+      return (await store(file)).id;
+    } finally {
+      setInFlight((n) => n - 1);
+    }
   }, [store]);
 
   const markdown = useMemo<MarkdownImages>(
     () => ({ placeable: images, urls, resolver, upload }), [images, urls, resolver, upload]);
 
   return {
-    images, listStatus, error, reload, urls, ensure, failed, retry, markdown,
+    images, listStatus, error, reload, urls, ensure, failed, retry, markdown, uploading: inFlight > 0,
   };
 }

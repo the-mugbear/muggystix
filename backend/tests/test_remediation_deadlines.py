@@ -125,6 +125,22 @@ def test_an_installation_that_did_not_opt_in_has_no_remediation_at_all(client, d
     assert remediation_alerts.sweep(db_session) == 0
 
 
+def test_a_time_zone_the_database_does_not_know_is_refused_before_it_is_stored(client, db_session, test_project):
+    """Third review 2026-10-15, N15: the days are also taken in SQL, so a zone
+    Python's tz database knows and Postgres's does not made every remediation
+    read a 500.  The database is asked before the zone is stored."""
+    from fastapi import HTTPException
+
+    from app.services.remediation_policy import _refuse_a_zone_the_database_lacks
+
+    _refuse_a_zone_the_database_lacks(db_session, "Europe/Paris")          # known: nothing said
+    with pytest.raises(HTTPException) as refused:
+        _refuse_a_zone_the_database_lacks(db_session, "Nowhere/Atlantis")
+    assert refused.value.status_code == 422 and "Nowhere/Atlantis" in refused.value.detail
+    # The failed question left the transaction usable.
+    assert client.put(POLICY_URL, json={"time_zone": "Europe/Paris"}).json()["time_zone"] == "Europe/Paris"
+
+
 def test_turning_it_on_is_the_global_admins_and_is_audited(client, db_session, test_project):
     r = client.put(POLICY_URL, json={"enabled": True, "days": {"high": 45, "low": None}, "due_soon_days": 10})
     assert r.status_code == 200, r.text

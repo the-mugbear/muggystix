@@ -732,14 +732,15 @@ class HostDeduplicationService:
         )
         return updated_host
 
-    def note_hostname_changed(self, host_id: int, scan_id: int) -> None:
+    def note_hostname_changed(self, host_id: int, scan_id: int, hostname: Optional[str] = None) -> None:
         """A parser changed the display name of a host it already brought
         through ``find_or_create_host`` in THIS scan, outside that call
         (NetExec fills an empty name from a later line of the same host).
-        Marks the scan's history row through its one writer here — which
-        changes nothing else on the row when given no host data, and marks
-        nothing when the scan created the host."""
-        self._record_host_scan_history(host_id, scan_id, {}, renamed=True)
+        Marks the scan's history row through its one writer here — and,
+        given the new ``hostname``, records it as the name at this scan (third
+        review 2026-10-15, N14: the row kept the earlier one).  Marks nothing
+        when the scan created the host."""
+        self._record_host_scan_history(host_id, scan_id, {"hostname": hostname} if hostname else {}, renamed=True)
 
     def _update_existing_host(self, host: Host, scan_id: int, host_data: Dict[str, Any]) -> Host:
         """

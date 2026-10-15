@@ -14,11 +14,16 @@ shares, and the backend reads the reports (:func:`worker_reports`).
 
 Two rules the page depends on:
 
-* **The peak, not a sample.**  Parsing a large file can rise and fall between
-  two heartbeats; a sampled figure would show a comfortable number for a
-  worker killed seconds later.  A report carries the kernel's own high-water
-  mark (``memory.peak``); on a kernel without one a worker reports nothing
-  rather than a number that cannot catch the case it exists for.
+* **The kernel's own record, not only a sample.**  Parsing a large file can
+  rise and fall between two heartbeats; a sampled figure would show a
+  comfortable number for a worker killed seconds later.  A report carries
+  the kernel's count of processes killed at the limit (``memory.events``
+  ``oom_kill``) and its high-water mark (``memory.peak``, shown "since
+  start"); on a kernel without a peak a worker reports nothing.  "Near the
+  limit" is judged on the processes' OWN memory (``memory.stat`` ``anon``)
+  — the peak counts file cache the kernel frees by itself, and one large
+  import left the warning red until a restart (third review 2026-10-15,
+  S2).
 * **Nothing here can fail its caller.**  Every reader returns None and every
   writer swallows its error: a heartbeat must be written whether or not the
   memory could be read, and a metrics page must load on a host that exposes
@@ -30,7 +35,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -69,11 +74,34 @@ def _read_int(path: Path) -> Optional[int]:
     return int(value) if value.isdigit() else None       # "max" = no limit
 
 
+def _read_keyed(path: Path) -> Dict[str, int]:
+    """A cgroup ``key value`` file (``memory.stat``, ``memory.events``);
+    empty when it cannot be read."""
+    out: Dict[str, int] = {}
+    try:
+        for line in path.read_text().splitlines():
+            key, _, value = line.partition(" ")
+            if value.strip().isdigit():
+                out[key] = int(value.strip())
+    except OSError:
+        return {}
+    return out
+
+
 def process_memory(*, require_peak: bool = False) -> Optional[dict]:
     """This container's memory from its cgroup (v2): ``current_bytes``,
-    ``peak_bytes``, ``limit_bytes`` (None = no limit) and ``near_limit`` —
-    the peak, else the current use, at 90% of the limit or more.  None when
-    the cgroup cannot be read, or — with ``require_peak`` — has no peak."""
+    ``own_bytes`` (``memory.stat`` ``anon`` — the processes' own memory,
+    which the kernel cannot give back; None where it cannot be read),
+    ``peak_bytes`` (the high-water mark since the container started, file
+    cache included — information, not a judgement), ``limit_bytes`` (None =
+    no limit), ``oom_kills`` (``memory.events``: processes killed at the
+    limit since start) and ``near_limit`` — its OWN memory, else its current
+    use, at 90% of the limit or more.
+
+    Not the peak (third review 2026-10-15, S2): it counts file cache the
+    kernel frees by itself, so one large import left the warning red until a
+    restart.  None when the cgroup cannot be read, or — with
+    ``require_peak`` — has no peak."""
     current = _read_int(CGROUP / "memory.current")
     if current is None:
         return None
@@ -81,12 +109,15 @@ def process_memory(*, require_peak: bool = False) -> Optional[dict]:
     if peak is None and require_peak:
         return None
     limit = _read_int(CGROUP / "memory.max")
-    worst = peak if peak is not None else current
+    own = _read_keyed(CGROUP / "memory.stat").get("anon")
+    judged = own if own is not None else current
     return {
         "current_bytes": current,
+        "own_bytes": own,
         "peak_bytes": peak,
         "limit_bytes": limit,
-        "near_limit": bool(limit) and worst >= limit * MEMORY_NEAR_LIMIT_FRACTION,
+        "oom_kills": _read_keyed(CGROUP / "memory.events").get("oom_kill", 0),
+        "near_limit": bool(limit) and judged >= limit * MEMORY_NEAR_LIMIT_FRACTION,
     }
 
 
@@ -194,8 +225,10 @@ def worker_reports() -> List[dict]:
                 "age_seconds": round(age, 1),
                 "stale": age > REPORT_STALE_SECONDS,
                 "current_bytes": int(memory["current_bytes"]),
+                "own_bytes": int(memory["own_bytes"]) if memory.get("own_bytes") is not None else None,
                 "peak_bytes": int(memory["peak_bytes"]),
                 "limit_bytes": int(memory["limit_bytes"]) if memory.get("limit_bytes") else None,
+                "oom_kills": int(memory.get("oom_kills") or 0),
                 "near_limit": bool(memory.get("near_limit")),
             })
         except (OSError, ValueError, KeyError, TypeError):

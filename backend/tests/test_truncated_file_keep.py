@@ -761,3 +761,20 @@ async def test_an_upload_cannot_carry_the_instruction(db_session, test_project, 
         options={"project_id": test_project.id, KEEP_TRUNCATED_OPTION: True},
     )
     assert KEEP_TRUNCATED_OPTION not in job.options
+
+
+def test_a_job_says_whether_its_file_is_still_kept():
+    """Third review 2026-10-15, N6: the Scans queue offered "Import what the
+    file holds" with no way to know the file was gone (a 409 then).  The job
+    read carries the row's answer, ``staged_import_service.file_retained``."""
+    from app.schemas.schemas import IngestionJobSchema
+
+    def job(**over):
+        return models.IngestionJob(**{
+            "id": 1, "filename": "f", "original_filename": "f.json", "status": "failed",
+            "created_at": datetime.now(timezone.utc), "storage_path": "/uploads/x", **over,
+        })
+
+    assert IngestionJobSchema.model_validate(job()).file_retained is True
+    assert IngestionJobSchema.model_validate(job(file_removed_at=datetime.now(timezone.utc))).file_retained is False
+    assert IngestionJobSchema.model_validate(job(storage_path=None)).file_retained is False

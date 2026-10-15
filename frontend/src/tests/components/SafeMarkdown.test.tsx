@@ -331,3 +331,20 @@ describe('SafeMarkdown — the finding’s own images (evidence:<id>)', () => {
     expect(c.textContent).toBe('See [image 57: The relayed session] and [image 9].');
   });
 });
+
+// Third review 2026-10-15, N3: a keystroke anywhere on the page re-rendered
+// (and re-parsed) every SafeMarkdown on it.  Same props: nothing is redone.
+describe('SafeMarkdown — rendering only when its props change', () => {
+  it('a parent re-render with the same text and resolver does not render it again', () => {
+    const lookup = vi.fn(() => ({ caption: 'Diagram', src: 'blob:d' }));
+    const evidence: EvidenceResolver = { lookup, ensure: vi.fn() };
+    const Parent: React.FC<{ tick: number }> = ({ tick }) => (
+      <div data-tick={tick}><SafeMarkdown text="![](evidence:57)" evidence={evidence} /></div>
+    );
+    const { rerender } = render(<Parent tick={1} />);
+    const calls = lookup.mock.calls.length;
+    expect(calls).toBeGreaterThan(0);
+    rerender(<Parent tick={2} />);
+    expect(lookup.mock.calls.length).toBe(calls);
+  });
+});

@@ -108,16 +108,12 @@ export const RemediationFollowUpDialog: React.FC<{
       let recorded = 0;
       try {
         if (across && projectId == null) {
-          // Every project at once, all or nothing.  A server without that route
-          // (404 / 405) is asked one project at a time, as before.
-          try {
-            const result = await recordRemediationFollowUpOverview(body);
-            return { recorded: result.recorded, projects: result.projects };
-          } catch (err) {
-            const status = (err as { response?: { status?: number } })?.response?.status;
-            if (status !== 404 && status !== 405) throw err;
-            for (const id of prepared.project_ids) recorded += (await recordRemediationFollowUp(id, body, 'overview')).recorded;
-          }
+          // Every project at once, all or nothing.  (The per-project loop for
+          // a server without this route went: backend and frontend ship
+          // together, and the loop gave up the all-or-nothing — third review
+          // 2026-10-15, R5.)
+          const result = await recordRemediationFollowUpOverview(body);
+          return { recorded: result.recorded, projects: result.projects };
         } else if (across) {
           // One chosen project, through the mount that serves archived ones.
           for (const id of prepared.project_ids) recorded += (await recordRemediationFollowUp(id, body, 'overview')).recorded;

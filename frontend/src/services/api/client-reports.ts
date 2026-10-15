@@ -412,8 +412,11 @@ export const patchReportProfile = async (
  *  changes.  Answers the draft. */
 export const promoteClientReportDetails = async (
   projectId: number, id: number, values: EngagementOverrides, expected: EngagementOverrides,
+  expectedProject: EngagementOverrides,
 ): Promise<ClientReport> =>
-  (await api.post<ClientReport>(`${base(projectId)}/${id}/promote`, { values, expected })).data;
+  (await api.post<ClientReport>(`${base(projectId)}/${id}/promote`, {
+    values, expected, expected_project: expectedProject,
+  })).data;
 
 /** Per detail, how many OTHER drafts of the project follow the project's
  *  value — what "Update project defaults…" says each push-up reaches.  An

@@ -211,19 +211,17 @@ class FindingService:
     def announce_retests(self, actor_id: Optional[int]) -> None:
         """Tell who must know that hosts now await a retest (owner,
         2026-10-14: the finding's owner; "When there's no owner notify all
-        project members"): ONE notification per finding per action, never one
-        per host.  Every writer that can move an endpoint into ``retest``
-        calls it once its moves are made (the single and bulk endpoint
-        writes, the Undo of a removal, ``remediation_service.apply``).  The
-        caller commits."""
+        project members"): ONE notification per recipient per action, never
+        one per host or per finding (third review 2026-10-15, N13).  Every
+        writer that can move an endpoint into ``retest`` calls it once its
+        moves are made (the single and bulk endpoint writes, the Undo of a
+        removal, ``remediation_service.apply``).  The caller commits."""
         pending, self._retests_requested = self._retests_requested, {}
         if not pending:
             return
         from app.services.notification_service import NotificationService
 
-        notifier = NotificationService(self.db)
-        for finding, rows in pending.values():
-            notifier.notify_retest_requested(finding, rows, actor_id)
+        NotificationService(self.db).notify_retests_requested(list(pending.values()), actor_id)
 
     # ------------------------------------------------------------------
     # Create / promote

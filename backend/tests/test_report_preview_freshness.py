@@ -78,7 +78,20 @@ def test_what_a_render_reads_from_outside_the_draft_changes_it(
     assert after_default != after_finding
 
     (template_dir / "report.qmd").write_text("---\ntitle: y\n---\n")
-    assert _now(client, test_project, draft["id"]) != after_default
+    after_template = _now(client, test_project, draft["id"])
+    assert after_template != after_default
+
+    # Third review 2026-10-15, N9: the fields filter, which an upgrade may
+    # change, is an input too.
+    from app.services import quarto_render
+
+    lua = template_dir / "quarto_fields.lua"
+    lua.write_text("-- a filter as an upgrade shipped it\n")
+    quarto_render_filter, quarto_render.FIELDS_FILTER = quarto_render.FIELDS_FILTER, lua
+    try:
+        assert _now(client, test_project, draft["id"]) != after_template
+    finally:
+        quarto_render.FIELDS_FILTER = quarto_render_filter
 
 
 def test_todays_date_is_not_an_input_and_an_images_file_is(db_session, test_project, monkeypatch, tmp_path):

@@ -233,6 +233,36 @@ def test_the_owner_is_told_once_per_finding_and_with_no_owner_every_member(clien
     assert asker not in told
 
 
+def test_one_action_over_several_findings_tells_each_person_once(client, db_session, test_project):
+    """Third review 2026-10-15, N13: a bulk "Reported fixed" over 100
+    unowned findings sent every member 100 notifications.  One action tells
+    each person once: about the one finding, or about how many."""
+    from app.db.models_findings import Finding
+    from app.services.finding_service import FindingService
+
+    ana = _member(db_session, test_project, 9201, "ana2")
+    ben = _member(db_session, test_project, 9202, "ben2")
+    unowned = [_finding_on(client, db_session, test_project, [f"10.9.7.{n}"]) for n in (1, 2, 3)]
+    owned, fo = _finding_on(client, db_session, test_project, ["10.9.7.9"], owner_id=ana.id)
+    svc = FindingService(db_session)
+    for finding, fh in unowned + [(owned, fo)]:
+        row = db_session.get(FindingHost, next(iter(fh.values())))
+        svc._move_endpoint(db_session.get(Finding, finding["id"]), row, "retest", None, "reported fixed")
+    db_session.flush()
+    svc.announce_retests(None)
+    db_session.commit()
+    told = db_session.query(Notification).filter(Notification.type == "retest").all()
+    by_user = {}
+    for n in told:
+        by_user.setdefault(n.user_id, []).append(n)
+    assert len(by_user[ana.id]) == 1 and len(by_user[ben.id]) == 1
+    # Ana: the three unowned findings and her own — one notification, the list.
+    assert by_user[ana.id][0].source_type == "finding_retests" and by_user[ana.id][0].finding_id is None
+    assert "4 findings" in by_user[ana.id][0].title
+    # Ben: the three unowned ones.
+    assert "3 hosts across 3 findings" in by_user[ben.id][0].body
+
+
 def test_an_owner_who_asks_tells_nobody_and_an_owner_who_left_is_replaced_by_the_project(
         client, db_session, test_project):
     """The walkthrough's bug: the owner was the global admin who asked — no

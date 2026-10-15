@@ -360,7 +360,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   // the projects where the contact still has work (a project the page was
   // not told about keeps its number for a name).
   const reportProjects = (c: RemediationContact): Array<{ project_id: number; name: string }> => (
-    projectId != null ? [projectId] : c.work_project_ids ?? []
+    projectId != null ? [projectId] : c.work_project_ids
   ).map((id) => ({ project_id: id, name: projects?.find((p) => p.project_id === id)?.name ?? `Project ${id}` }));
   const canReport = (c: RemediationContact) => canWrite && c.open > 0 && (!across || reportProjects(c).length > 0);
 

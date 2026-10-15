@@ -891,7 +891,19 @@ def _place_evidence(dataset: dict, work: Path, resolve: Callable[[dict], Optiona
 
         for key in ("images", "evidence"):
             if isinstance(finding.get(key), list) or (key == "evidence" and finding is not engagement):
-                finding[key] = [item for item in finding.get(key) or [] if have(item)]
+                kept, orphaned = [], {}
+                for item in finding.get(key) or []:
+                    if have(item):
+                        group = item.get("note_group") if isinstance(item, dict) else None
+                        if group in orphaned and not item.get("note"):
+                            item["note"] = orphaned.pop(group)
+                        kept.append(item)
+                    elif key == "evidence" and isinstance(item, dict) and item.get("note") and item.get("note_group"):
+                        # The image carrying its note's text is gone: the next
+                        # image of that note prints the text (third review
+                        # 2026-10-15, N10 — the text went with the image).
+                        orphaned[item["note_group"]] = item["note"]
+                finding[key] = kept
         # A trailing image names its own place in the data (`md(e, "note")`
         # reads the note printed before it): say where it is NOW, after the
         # entries whose file is missing were dropped.

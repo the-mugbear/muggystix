@@ -35,10 +35,14 @@ def log_parse_error(
     error_details = {}
     
     if error:
-        error_details = {
-            "exception_type": type(error).__name__,
-            "traceback": traceback.format_exc(),
-        }
+        error_details = {"exception_type": type(error).__name__}
+        # The error's OWN traceback, wherever this is called from: format_exc()
+        # outside an `except` stored "NoneType: None" on every cut-short row
+        # (third review 2026-10-15, N12).  None when it was never raised.
+        if error.__traceback__ is not None:
+            error_details["traceback"] = "".join(
+                traceback.format_exception(type(error), error, error.__traceback__)
+            )
         
         # Add line number context if available
         if hasattr(error, 'lineno'):

@@ -102,11 +102,43 @@ interface Props {
   canEdit: boolean;
 }
 
+/** What the checklist counts — each group's figure as its heading says it,
+ *  what is TO FIX (printed as a TODO) and the WARNINGS (everything else).
+ *  The ONE count: the groups, the Review tab's badge, the action bar's
+ *  "N warnings" and "Nothing left to fix" all read it (third review
+ *  2026-10-15, R3: the bar summed list lengths, the groups summed images and
+ *  notes, and "Notes the client will read" was in one and not the other). */
+export interface ChecklistCounts {
+  details: number;
+  missingText: number;
+  unresolvedImages: number;
+  proposals: number;
+  uncaptionedImages: number;
+  references: number;
+  notes: number;
+  toFix: number;
+  warnings: number;
+}
+export const checklistCounts = (s: ReportSummary): ChecklistCounts => {
+  const details = missingDetailEntries(s).length;
+  const missingText = s.missing_text?.length ?? 0;
+  const unresolvedImages = (s.unresolved_images ?? []).reduce((n, u) => n + u.ids.length, 0);
+  const proposals = s.pending_proposals?.length ?? 0;
+  const uncaptionedImages = (s.uncaptioned_images ?? []).reduce((n, m) => n + m.count, 0);
+  const references = s.internal_references?.length ?? 0;
+  const notes = (s.evidence_note_findings ?? []).reduce((n, m) => n + m.notes.length, 0);
+  return {
+    details, missingText, unresolvedImages, proposals, uncaptionedImages, references, notes,
+    toFix: details + missingText,
+    warnings: unresolvedImages + proposals + uncaptionedImages + references + notes,
+  };
+};
+
 /** Whether a summary leaves anything for the checklist. */
-export const hasChecklist = (s: ReportSummary): boolean =>
-  !!(s.missing_details?.length || s.missing_text?.length || s.pending_proposals?.length
-    || s.uncaptioned_images?.length || s.internal_references?.length || s.evidence_note_findings?.length
-    || s.unresolved_images?.length);
+export const hasChecklist = (s: ReportSummary): boolean => {
+  const c = checklistCounts(s);
+  return c.toFix + c.warnings > 0;
+};
 
 /** The report details that may place an image, by their key. */
 const DETAIL_OF_FIELD: Record<string, string> = { system_description: 'System description' };
@@ -120,8 +152,7 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
   const references = s.internal_references ?? [];
   const notes = s.evidence_note_findings ?? [];
   const unresolved = s.unresolved_images ?? [];
-  const images = uncaptioned.reduce((n, m) => n + m.count, 0);
-  const noteCount = notes.reduce((n, m) => n + m.notes.length, 0);
+  const counts = checklistCounts(s);
 
   const detailItem = ({ key, label }: { key: string; label: string }) => {
     if (!canEdit) {
@@ -169,14 +200,14 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
           : 'What this draft still lacks; whoever writes it fixes these before it is issued. Empty details and findings without text print as a highlighted TODO.'}>
         <div className="space-y-md">
           {details.length > 0 && (
-            <Group id="details" title="Report details to fill" count={details.length} todo
+            <Group id="details" title="Report details to fill" count={counts.details} todo
               note={canEdit ? 'Written on Details: each line opens its section there.' : 'On Details.'}
               items={details.map(detailItem)} />
           )}
           {unresolved.length > 0 && (
             // Review 2026-10-14, H2: an image deleted after a report printed
             // it, with no copy to restore — the report prints nothing there.
-            <Group id="unresolved-images" title="Images the report cannot print" count={unresolved.reduce((n, u) => n + u.ids.length, 0)}
+            <Group id="unresolved-images" title="Images the report cannot print" count={counts.unresolvedImages}
               note="The text places an image the project no longer has; nothing prints there. Upload it again and place it, or take the reference out."
               items={unresolved.map((u) => {
                 const label = DETAIL_OF_FIELD[u.field] ?? u.field;
@@ -195,7 +226,7 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
               })} />
           )}
           {missingText.length > 0 && (
-            <Group id="missing-text" title="Findings missing report text" count={missingText.length} todo
+            <Group id="missing-text" title="Findings missing report text" count={counts.missingText} todo
               note={canEdit ? 'Open one to write or draft it; its page steps on to the next.' : 'Each opens its finding.'}
               items={missingText.map((m) => (
                 <li key={m.id} className={ROW}>
@@ -211,7 +242,7 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
               ))} />
           )}
           {proposals.length > 0 && (
-            <Group id="proposals" title="Findings with proposals to decide" count={proposals.length}
+            <Group id="proposals" title="Findings with proposals to decide" count={counts.proposals}
               note="Changes an agent or an AI draft proposed. The report prints the findings as they stand."
               items={proposals.map((m) => (
                 <li key={m.id} className={ROW}>
@@ -222,7 +253,7 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
               ))} />
           )}
           {uncaptioned.length > 0 && (
-            <Group id="uncaptioned" title="Images without a caption" count={images}
+            <Group id="uncaptioned" title="Images without a caption" count={counts.uncaptionedImages}
               note="Each prints under its file’s name. A caption is written on the image, in the finding’s comments."
               items={uncaptioned.map((m) => (
                 <li key={m.id} className={ROW}>
@@ -235,7 +266,7 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
               ))} />
           )}
           {references.length > 0 && (
-            <Group id="references" title="Text the reader cannot follow" count={references.length}
+            <Group id="references" title="Text the reader cannot follow" count={counts.references}
               note="These sections name a BlueStick record, which the report’s reader has never seen: name a finding by its title and a system by its address."
               items={references.map((m) => (
                 <li key={m.id} className={ROW}>
@@ -248,7 +279,7 @@ const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAd
               ))} />
           )}
           {notes.length > 0 && (
-            <Group id="notes" title="Notes the client will read" count={noteCount}
+            <Group id="notes" title="Notes the client will read" count={counts.notes}
               note="Each is printed word for word under Evidence, before the image attached to it. To keep one out, place its image in a written section or untick “In report”."
               listTestId="report-evidence-notes" listClassName="space-y-xs"
               items={notes.map((m) => (

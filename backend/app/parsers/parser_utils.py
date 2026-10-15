@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
 
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -494,12 +495,17 @@ class HostObservation(NamedTuple):
 
 
 class ProjectHostsByAddress:
-    """The project's hosts by address, read ONCE per import — one statement
-    of the four columns a DNS answer needs (``id``, the address, the display
-    name and its source: what ``apply_hostname_candidate`` reads and writes)
-    — and held, so a lookup never goes back to the database.  Shared by the
-    DNS CSV and dnsx parsers (second review 2026-10-14, F3: one query per
-    row or answer, inside the import lock; 70,000 hosts are a few MB here).
+    """The project's hosts by address — the address → id map read ONCE per
+    import (one statement of two columns), and a host loaded by its primary
+    key only when an answer names it.  Shared by the DNS CSV and dnsx parsers
+    (second review 2026-10-14, F3: one address query per row or answer,
+    inside the import lock).
+
+    Ids, not host objects (third review 2026-10-15, R2): 70,000 held ORM
+    hosts were 123 MB, and every heartbeat commit expired all of them
+    (~110 ms each — about 22 s per 100,000 DNS records).  The address map is
+    about 10 MB, a host the session already holds costs no query, and the
+    session holds only the hosts the import touched.
 
     A host the import CREATES is ``add``-ed as it is made (a later answer of
     the same record may name it — a zone's own A record for its name server)
@@ -509,29 +515,43 @@ class ProjectHostsByAddress:
     def __init__(self, db: Session, project_id: int) -> None:
         self._db = db
         self._project_id = project_id
-        self._hosts: Optional[Dict[str, models.Host]] = None
+        self._ids: Optional[Dict[str, int]] = None
+        # The hosts loaded since the last commit, held so the session (whose
+        # identity map is weak) does not read one again for each answer that
+        # names it.  A commit expires them all; the first expired one found
+        # lets the window go, so this never grows to the project.
+        self._loaded: Dict[int, models.Host] = {}
 
     def get(self, address: str) -> Optional[models.Host]:
-        if self._hosts is None:
-            from sqlalchemy.orm import load_only
-
-            self._hosts = {
-                host.ip_address: host for host in
-                self._db.query(models.Host)
-                .options(load_only(models.Host.id, models.Host.ip_address, models.Host.hostname,
-                                   models.Host.hostname_source))
+        if self._ids is None:
+            self._ids = dict(
+                self._db.query(models.Host.ip_address, models.Host.id)
                 .filter(models.Host.project_id == self._project_id)
-            }
-        return self._hosts.get(address)
+            )
+        host_id = self._ids.get(address)
+        if host_id is None:
+            return None
+        host = self._loaded.get(host_id)
+        if host is not None and sa_inspect(host).expired:
+            self._loaded.clear()
+            host = None
+        if host is None:
+            host = self._db.get(models.Host, host_id)
+            if host is not None:
+                self._loaded[host_id] = host
+        return host
 
     def add(self, host: Optional[models.Host]) -> None:
-        if host is not None and self._hosts is not None:
-            self._hosts[host.ip_address] = host
+        if host is not None and self._ids is not None:
+            self._ids[host.ip_address] = host.id
+            self._loaded[host.id] = host
 
     def forget(self, addresses: Iterable[str]) -> None:
-        if self._hosts is not None:
+        if self._ids is not None:
             for address in addresses:
-                self._hosts.pop(address, None)
+                host_id = self._ids.pop(address, None)
+                if host_id is not None:
+                    self._loaded.pop(host_id, None)
 
 
 class ScanHostObservations:

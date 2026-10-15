@@ -115,12 +115,16 @@ const DefectMetricsSection: React.FC<{
         </TableBody>
       </Table>
       {unmeasured > 0 && overall && (
-        <p className="mt-xs text-caption text-muted-foreground">
-          Not in the MTTR figures: {overall.not_assigned.toLocaleString()} not assigned
-          {/* Both kinds the server leaves out: no day recorded for the fix or
-              deferral, or one BEFORE the assigned date (review 2026-10-14). */}
-          {overall.not_measured > 0
-            && `, ${overall.not_measured.toLocaleString()} with no recorded day or one before the assigned date`}.
+        <p className="mt-xs text-caption text-muted-foreground" data-testid="defect-metrics-unmeasured">
+          {/* Only the parts that are not zero (third review 2026-10-15, N7:
+              it printed "0 not assigned").  Both kinds the server leaves out:
+              no day recorded for the fix or deferral, or one BEFORE the
+              assigned date (review 2026-10-14). */}
+          Not in the MTTR figures: {[
+            overall.not_assigned > 0 && `${overall.not_assigned.toLocaleString()} not assigned`,
+            overall.not_measured > 0
+              && `${overall.not_measured.toLocaleString()} with no recorded day or one before the assigned date`,
+          ].filter(Boolean).join(', ')}.
         </p>
       )}
     </div>

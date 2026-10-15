@@ -28,10 +28,13 @@ const snapshot = (over: Partial<Record<string, number | null>> = {}) => ({
   ...over,
 });
 
+// Every block the server always sends (third review 2026-10-15, R5: no
+// longer optional "for an older server").
 const metrics = (ingestion = snapshot(), report = snapshot()) => ({
   generated_at: '2026-08-07T12:00:00Z',
-  ingestion,
+  ingestion: { failed_by_project: [], ...ingestion },
   report,
+  disk: null, host: null, backend_memory: null, workers: [], database: null,
 });
 
 describe('QueueHealthCard', () => {
@@ -48,7 +51,8 @@ describe('QueueHealthCard', () => {
   });
 
   // v5.389.0 — the host and each process.  A worker is killed at ITS limit
-  // whatever the host has free, so it is judged by its peak.
+  // whatever the host has free; it is judged by its OWN memory and the kills
+  // the kernel counted, the peak said beside it (third review 2026-10-15, S2).
   it('says what the host, the API, each worker and the database are using', async () => {
     const GB = 1024 ** 3;
     mocked.getQueueMetrics.mockResolvedValue({
@@ -57,10 +61,14 @@ describe('QueueHealthCard', () => {
         memory_total_bytes: 64 * GB, memory_available_bytes: 55 * GB, memory_low: false,
         load_1: 1.5, load_5: 0.75, load_15: 0.5, cpu_count: 32, load_high: false,
       },
-      backend_memory: { current_bytes: 0.9 * GB, peak_bytes: 1.2 * GB, limit_bytes: 2 * GB, near_limit: false },
+      backend_memory: {
+        current_bytes: 0.9 * GB, own_bytes: 0.6 * GB, peak_bytes: 1.2 * GB, limit_bytes: 2 * GB, oom_kills: 0, near_limit: false,
+      },
       workers: [
-        { name: 'ingestion_jobs', current_bytes: 1 * GB, peak_bytes: 3.9 * GB, limit_bytes: 4 * GB, near_limit: true, age_seconds: 3, stale: false },
-        { name: 'report_jobs', current_bytes: 0.2 * GB, peak_bytes: 0.4 * GB, limit_bytes: 2 * GB, near_limit: false, age_seconds: 400, stale: true },
+        { name: 'ingestion_jobs', current_bytes: 3.8 * GB, own_bytes: 3.7 * GB, peak_bytes: 3.9 * GB, limit_bytes: 4 * GB,
+          oom_kills: 0, near_limit: true, age_seconds: 3, stale: false },
+        { name: 'report_jobs', current_bytes: 0.2 * GB, own_bytes: null, peak_bytes: 0.4 * GB, limit_bytes: 2 * GB,
+          oom_kills: 0, near_limit: false, age_seconds: 400, stale: true },
       ],
       database: { size_bytes: 1.7 * GB, connections: 14, max_connections: 120, connections_high: false },
     });
@@ -68,13 +76,33 @@ describe('QueueHealthCard', () => {
 
     expect(await screen.findByText('Host memory — 55 GB available of 64 GB')).toBeInTheDocument();
     expect(screen.getByText('Host load — 1.50 · 0.75 · 0.50 (1, 5, 15 min) on 32 CPUs')).toBeInTheDocument();
-    expect(screen.getByText('API memory — peaked at 1.2 GB of a 2.0 GB limit, 0.9 GB now')).toBeInTheDocument();
+    expect(screen.getByText('API memory — 0.6 GB of a 2.0 GB limit (peaked at 1.2 GB since start, file cache included)')).toBeInTheDocument();
     // Plenty of host memory, and the worker is still about to be killed.
-    expect(screen.getByText('Ingestion worker memory near its limit — peaked at 3.9 GB of a 4.0 GB limit, 1.0 GB now')).toBeInTheDocument();
+    expect(screen.getByText('Ingestion worker memory near its limit — 3.7 GB of a 4.0 GB limit (peaked at 3.9 GB since start, file cache included)')).toBeInTheDocument();
     expect(screen.getByText(/Raise WORKER_MEM_LIMIT in \.env/)).toBeInTheDocument();
     // A worker that stopped reporting is said to be silent, never shown as calm.
     expect(screen.getByText(/^Report worker is not reporting — last heard 7m ago/)).toBeInTheDocument();
     expect(screen.getByText('Database — 1.7 GB, 14 of 120 connections in use')).toBeInTheDocument();
+  });
+
+  // Third review 2026-10-15, S2: after one large import the peak (file cache
+  // included) kept the warning red until a restart.  A process using little
+  // of its own is calm; one the kernel killed at its limit says so.
+  it('a high peak is not "near the limit"; a kill at the limit is said', async () => {
+    const GB = 1024 ** 3;
+    mocked.getQueueMetrics.mockResolvedValue({
+      ...metrics(),
+      backend_memory: {
+        current_bytes: 3.6 * GB, own_bytes: 0.5 * GB, peak_bytes: 3.9 * GB, limit_bytes: 4 * GB, oom_kills: 0, near_limit: false,
+      },
+      workers: [
+        { name: 'ingestion_jobs', current_bytes: 1 * GB, own_bytes: 0.8 * GB, peak_bytes: 4 * GB, limit_bytes: 4 * GB,
+          oom_kills: 2, near_limit: false, age_seconds: 3, stale: false },
+      ],
+    });
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
+    expect(await screen.findByText(/^API memory — 0\.5 GB of a 4\.0 GB limit/)).toBeInTheDocument();
+    expect(screen.getByText(/^Ingestion worker was killed at its memory limit 2 times since it started/)).toBeInTheDocument();
   });
 
   it('warns about low host memory, high load and connections nearly used up — and says nothing for what was not read', async () => {

@@ -11,7 +11,7 @@ files on the report worker.  A draft's preview is an ordinary report job
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
@@ -324,11 +324,13 @@ def _profile_out(db: Session, project_id: int, profile: Optional[ReportProfile])
     such."""
     # The team as a draft follows it — the one merge decides the fallback to
     # the project's analysts and admins (review 2026-10-14, R8).
+    # The installation's defaults read once, for the merge and the answer
+    # (third review 2026-10-15, R7).
+    inherited = report_defaults.installation(db)
     followed, sources = report_defaults.followed_with_sources(
-        db, profile, lambda: ClientReportService(db).project_team(project_id))
+        db, profile, lambda: ClientReportService(db).project_team(project_id), base=inherited)
     team = followed["testers"]
     from_project = sources["testers"] != report_defaults.FROM_PROJECT
-    inherited = report_defaults.installation(db)
     if profile is None:
         return ReportProfileOut(
             template=templates.default_template_name(), testers=team, testers_from_project=True,
@@ -389,12 +391,16 @@ def patch_report_profile(
     return _profile_out(db, project.id, profile)
 
 
-def _write_profile(db: Session, project_id: int, data: dict, user_id: int) -> ReportProfile:
+def _write_profile(
+    db: Session, project_id: int, data: dict, user_id: int,
+    check: Optional[Callable[[ReportProfile], None]] = None,
+) -> ReportProfile:
     """Write ``data``'s keys (already validated by the body's schema) into the
     project's report defaults, creating the row — the ONE writer of
     ``report_profiles`` for PATCH and a draft's promote.  A list sent
     null is empty; the system description's image references are
-    normalised; a template is checked to be a client template."""
+    normalised; a template is checked to be a client template.  ``check``
+    runs on the LOCKED row before anything is written (and may refuse)."""
     if data.get("template"):
         _template_or_422(data["template"], client=True)
     # Create the row if there is none, THEN lock it: `FOR UPDATE` on a row
@@ -409,6 +415,8 @@ def _write_profile(db: Session, project_id: int, data: dict, user_id: int) -> Re
         db.query(ReportProfile).filter(ReportProfile.project_id == project_id)
         .with_for_update().populate_existing().one()
     )
+    if check is not None:
+        check(profile)
     for key, value in data.items():
         if key in report_defaults.LIST_KEYS:
             value = list(value or [])
@@ -680,7 +688,27 @@ def promote_report_details(
             status_code=409,
             detail=f"This draft changed since you opened it ({labels}): reload it, then update the defaults.",
         )
-    _write_profile(db, project.id, data, current_user.id)
+    # Under the PROFILE's lock: is the project's value still the one the page
+    # showed?  A value someone set on the defaults page while the dialog was
+    # open was silently replaced (third review 2026-10-15, R9).
+    expected_project = body.expected_project.model_dump(exclude_unset=True)
+
+    def project_unchanged(profile: ReportProfile) -> None:
+        now, _ = report_defaults.followed_with_sources(
+            db, profile, lambda: ClientReportService(db).project_team(project.id), report.kind,
+        )
+        moved = [
+            key for key in data
+            if key in expected_project and not report_defaults.same(key, now.get(key), expected_project[key])
+        ]
+        if moved:
+            labels = ", ".join(key.replace("_", " ") for key in moved)
+            raise HTTPException(
+                status_code=409,
+                detail=f"The project's defaults changed since you opened this ({labels}): reload, then update them.",
+            )
+
+    _write_profile(db, project.id, data, current_user.id, check=project_unchanged)
     report.settings = {
         key: value for key, value in report_defaults.overrides(report.settings).items() if key not in data
     }

@@ -145,6 +145,8 @@ describe('Update project defaults…', () => {
     fireEvent.click(dialog.getByRole('button', { name: 'Update 1 default' }));
     await waitFor(() => expect(mocked.promoteClientReportDetails).toHaveBeenCalledWith(
       1, 5, { client_name: 'Mine' }, { client_name: 'Mine' },
+      // …and the project's value it showed (third review 2026-10-15, R9).
+      { client_name: 'Example Corp' },
     ));
   });
 
@@ -195,6 +197,9 @@ describe('Update project defaults…', () => {
       executive_summary: 'Ours.', client_name: 'Renamed Corp',
     }, {
       executive_summary: 'The project’s summary.', client_name: 'Example Corp',
+    }, {
+      // The project's values it showed, checked under the profile's lock (R9).
+      executive_summary: 'The project’s summary.', client_name: 'Example Corp',
     }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(mocked.patchReportProfile).not.toHaveBeenCalled();
@@ -222,6 +227,22 @@ describe('Update project defaults…', () => {
     await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(1, 5, {
       template: 'brief', settings: {},
     }));
+  });
+
+  // Third review 2026-10-15, N2: a save refused because the report changed
+  // (409 — issued meanwhile) only toasted; the page kept offering the save.
+  it('a save refused with 409 reads the report again; edits stay pending', async () => {
+    mocked.getClientReport.mockResolvedValue(report());
+    mocked.updateClientReport.mockRejectedValue(Object.assign(new Error('409'), {
+      isAxiosError: true, response: { status: 409, data: { detail: 'This report is issued.' } },
+    }));
+    renderDetail();
+    await editClient('Renamed Corp');
+    const reads = mocked.getClientReport.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Save draft' }));
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalled());
+    await waitFor(() => expect(mocked.getClientReport.mock.calls.length).toBeGreaterThan(reads));
+    expect(screen.getByTestId('report-save-status')).toHaveTextContent('Unsaved changes — Client & engagement');
   });
 
   it('a failed push-up changes nothing: the edits stay pending', async () => {
@@ -267,6 +288,9 @@ describe('Who sees it', () => {
     expect(screen.queryByRole('button', { name: /Use the project’s/ })).toBeNull();
     expect(screen.queryByTestId('report-action-bar')).not.toBeNull();       // status, no save
     expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull();
+    // The report's images are read for them too, so a placed diagram shows
+    // as itself, not as a text marker (third review 2026-10-15, N4).
+    await waitFor(() => expect(mocked.listReportTextImages).toHaveBeenCalled());
   });
 
   it('an addendum’s summary of changes is its own: never offered as a project default', async () => {

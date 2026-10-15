@@ -52,8 +52,8 @@ import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRoster } from '../hooks/useProjectMembers';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useReportTextImages } from '../hooks/useReportTextImages';
-import { pollEvery, queryErrorText } from '../lib/query';
-import { formatApiError } from '../utils/apiErrors';
+import { invalidateReads, pollEvery, queryErrorText } from '../lib/query';
+import { asAxiosError, formatApiError } from '../utils/apiErrors';
 import { NEED_SECTION } from '../utils/findingNeeds';
 import { formatTimestamp } from '../utils/relativeTime';
 import { REPORT_FIELD_LABELS } from '../utils/reportImages';
@@ -71,7 +71,7 @@ import { useDetailEdits } from '../components/reports/workspace/useDetailEdits';
 import TemplateImages, {
   TemplateFilesLine, assetCountLabel, missingAssetsReason, missingRequiredAssets,
 } from '../components/reports/TemplateImages';
-import ReportChecklist from '../components/reports/ReportChecklist';
+import ReportChecklist, { checklistCounts } from '../components/reports/ReportChecklist';
 import OpenPreviewButton from '../components/reports/OpenPreviewButton';
 import { REPORT_CHECKLIST_ANCHOR } from '../components/findings/ReportDraftBar';
 import AiDraftReportDialog from '../components/AiDraftReportDialog';
@@ -297,8 +297,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const guardLinks = useLinkGuard(confirmLeave);
 
   // The project's report images: the system description's picker, paste and
-  // preview; managed in the project images panel.
-  const reportImages = useReportTextImages({ enabled: editable });
+  // preview; managed in the project images panel.  Read for ANY draft: a
+  // reader who may not edit still sees the diagram, not a text marker (third
+  // review 2026-10-15, N4; the list is every member's).  An issued report
+  // prints its own frozen copies.
+  const reportImages = useReportTextImages({ enabled: isDraft });
 
   // ---- previews -----------------------------------------------------------
   const [started, setStarted] = useState<Partial<Record<ClientReportFormat, ReportJob>>>({});
@@ -381,10 +384,20 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renderStatus]);
 
+  // A 409 says the report is not as this page read it (issued meanwhile, a
+  // template file gone…): it is read again, as the push-up does (third
+  // review 2026-10-15, N2 — the page kept offering what was refused).
+  const failed = (err: unknown, fallback: string) => {
+    toast.error(formatApiError(err, fallback));
+    if (asAxiosError(err).response?.status === 409) {
+      void invalidateReads(queryClient, 'getClientReport', 'listClientReports', 'getClientReportInputs');
+    }
+  };
+
   const startPreview = useMutation({
     mutationFn: (fmt: ClientReportFormat) => previewClientReport(projectId, reportId, fmt),
     onSuccess: (job, fmt) => setStarted((prev) => ({ ...prev, [fmt]: job })),
-    onError: (err) => toast.error(formatApiError(err, 'Could not start the preview.')),
+    onError: (err) => failed(err, 'Could not start the preview.'),
   });
 
   // ---- save draft ---------------------------------------------------------
@@ -405,7 +418,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       toast.success('Draft saved.');
     },
     // A failed save keeps every edit, and previews nothing.
-    onError: (err) => toast.error(formatApiError(err, 'Could not save the draft.')),
+    onError: (err) => failed(err, 'Could not save the draft.'),
   });
   const saving = saveDraft.isPending;
   const save = async (): Promise<boolean> => {
@@ -433,7 +446,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       void queryClient.invalidateQueries({ queryKey: ['listClientReports', projectId] });
       toast.success(`Issued as report #${issued.number}. Rendering its files…`);
     },
-    onError: (err) => toast.error(formatApiError(err, 'Could not issue the report.')),
+    onError: (err) => failed(err, 'Could not issue the report.'),
   });
   const issue = async () => {
     if (!report) return;
@@ -570,11 +583,8 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const tpl = templates.find((t) => t.name === (template ?? report.template));
   const formats: ClientReportFormat[] = tpl?.formats ?? ['html', 'docx'];
   const assetsBlock = missingAssetsReason(tpl);
-  const missingText = s.missing_text ?? [];
-  const missingDetails = s.missing_details ?? [];
-  const toFix = missingText.length + missingDetails.length;
-  const warnings = (s.pending_proposals?.length ?? 0) + (s.uncaptioned_images?.length ?? 0)
-    + (s.internal_references?.length ?? 0) + (s.unresolved_images?.length ?? 0);
+  // The checklist's own counts (third review 2026-10-15, R3).
+  const { toFix, warnings } = checklistCounts(s);
   const ready = !toFix;
   // What refuses the issue — the server refuses these too.  The ONE list:
   // Review lists it and the Issue button is held by it (review 2026-10-14,
@@ -668,7 +678,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             <Sparkles className="size-4" aria-hidden /> Draft with AI…
           </Button>
         ) : undefined}
-        images={editable ? reportImages.markdown : undefined}
+        images={isDraft ? reportImages.markdown : undefined}
         scopeAction={editable ? <ProjectImagesPanel state={reportImages} idPrefix="report" /> : undefined}
         members={roster.members} membersStatus={roster.status} onRetryMembers={roster.retry}
         currentUser={currentUser} />
@@ -981,10 +991,15 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           {editable && (
             <div className="flex flex-wrap gap-xs">
               <Button variant="ghost" size="sm" disabled={!dirty || saving} onClick={() => void confirmDiscardAll()}>Discard changes</Button>
-              <Button variant="outline" size="sm" disabled={!dirty || saving} onClick={() => void save()}>
+              {/* Held while a pasted image uploads: its reference is not in
+                  the text yet (third review 2026-10-15, N1). */}
+              <Button variant="outline" size="sm" disabled={!dirty || saving || reportImages.uploading}
+                title={reportImages.uploading ? 'Waiting for the pasted image to upload' : undefined}
+                onClick={() => void save()}>
                 {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save draft
               </Button>
-              <Button size="sm" disabled={saving || anyRunning || !!assetsBlock} title={assetsBlock}
+              <Button size="sm" disabled={saving || anyRunning || !!assetsBlock || reportImages.uploading}
+                title={reportImages.uploading ? 'Waiting for the pasted image to upload' : assetsBlock}
                 // The template's own format: HTML when it renders it, else its
                 // first (a Word-only template only failed here — review
                 // 2026-10-14, suspected).

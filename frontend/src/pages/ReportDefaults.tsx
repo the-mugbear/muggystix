@@ -75,7 +75,9 @@ const ReportDefaults: React.FC = () => {
   const [template, setTemplate] = useState<string | null>(null);
   const templateChanged = template !== null && template !== profile?.template;
   const dirty = edits.dirty || templateChanged;
-  const images = useReportTextImages({ enabled: canWrite });
+  // Read for every reader: one who may not edit sees the diagram, not a text
+  // marker (third review 2026-10-15, N4).
+  const images = useReportTextImages();
 
   const { confirmLeave, confirmEl } = useDiscardGuard(() => dirty, 'The report defaults have unsaved changes. Leave anyway?');
   const guardLinks = useLinkGuard(confirmLeave);
@@ -165,7 +167,9 @@ const ReportDefaults: React.FC = () => {
               }}>
               Discard changes
             </Button>
-            <Button size="sm" disabled={!dirty || busy} onClick={() => saving.mutate()}>
+            <Button size="sm" disabled={!dirty || busy || images.uploading}
+              title={images.uploading ? 'Waiting for the pasted image to upload' : undefined}
+              onClick={() => saving.mutate()}>
               {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Save defaults
             </Button>
           </div>
@@ -199,7 +203,7 @@ const ReportDefaults: React.FC = () => {
           addendum never follows it): named as on the draft. */}
       <DetailSections edits={edits} canEdit={canWrite} idPrefix="defaults" busy={busy} notes={notes}
         summaryLabel="Executive summary"
-        images={canWrite ? images.markdown : undefined}
+        images={images.markdown}
         scopeAction={canWrite ? <ProjectImagesPanel state={images} idPrefix="defaults" /> : undefined}
         members={roster.members} membersStatus={roster.status} onRetryMembers={roster.retry}
         currentUser={currentUser} />

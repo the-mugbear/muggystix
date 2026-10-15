@@ -151,6 +151,22 @@ describe('MarkdownField — a pasted screenshot', () => {
     expect(onValue).not.toHaveBeenCalled();
   });
 
+  // Third review 2026-10-15, N1: Cancel closes the section (the field
+  // unmounts); an upload finishing after it wrote the cancelled text back as
+  // a pending edit.
+  it('an upload that finishes after the field is gone writes nothing', async () => {
+    let finish!: (id: number) => void;
+    const upload = vi.fn().mockImplementation(() => new Promise<number>((res) => { finish = res; }));
+    const onValue = vi.fn();
+    const { unmount } = render(<Field initial="Text." images={images({ upload })} onValue={onValue} />);
+    paste(screen.getByRole('textbox'), [png()]);
+    expect(await screen.findByRole('status')).toHaveTextContent('Uploading the pasted image…');
+    unmount();
+    finish(91);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onValue).not.toHaveBeenCalled();
+  });
+
   it('leaves a paste alone where the images cannot take one (a finding’s), and text pastes always', () => {
     const onValue = vi.fn();
     render(<Field initial="Text." images={images()} onValue={onValue} />);

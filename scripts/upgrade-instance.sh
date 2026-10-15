@@ -322,10 +322,39 @@ else
         # `mv -T` treats the target as the folder itself: it replaces an EMPTY
         # one and refuses a non-empty one.  A plain `mv` into an existing
         # folder moved the old data INSIDE it (uploads/uploads/), and the
-        # next run found "nothing to carry".
-        fail "$bad/ belongs to $owner, not to $(id -un): it cannot be read or moved from here.
+        # next run found "nothing to carry".  `cp -aT` (the target as the
+        # folder itself, like `mv -T`) when the old folder keeps its copy
+        # (--copy-uploads): the move would destroy the copy asked for (third
+        # review 2026-10-15, R4).
+        if [[ $COPY_UPLOADS -eq 1 ]]; then verb="cp -aT"; else verb="mv -T"; fi
+        # Since 2.495.2 uploads/ is the containers' (UID 999, mode 700), so
+        # this branch is the ordinary upgrade, not a slip: do the move as a
+        # container does, through the database image on the folder both trees
+        # share — as backup and restore reach uploads/ (third review
+        # 2026-10-15, R4: it asked for sudo on every upgrade).  Different
+        # parents, or no image to run: the one command to run by hand.
+        moved=0
+        if [[ "$(dirname "$OLD")" == "$(dirname "$PROJECT_ROOT")" ]] && command -v docker >/dev/null 2>&1; then
+            parent="$(dirname "$OLD")"
+            image=""
+            while IFS= read -r ref; do
+                if [[ "$ref" == *postgres* ]] && docker image inspect "$ref" >/dev/null 2>&1; then image="$ref"; break; fi
+            done < <(docker compose -f "$PROJECT_ROOT/docker-compose.yml" --project-directory "$PROJECT_ROOT" \
+                         config --images db 2>/dev/null)
+            if [[ -n "$image" ]]; then
+                info "$rel/ is the containers' ($owner): moving it with the database image ($image)…"
+                if docker run --rm --entrypoint sh -v "$parent:/trees" "$image" -c \
+                    "$verb '/trees/$(basename "$OLD")/$rel' '/trees/$(basename "$PROJECT_ROOT")/$rel'"; then
+                    moved=1
+                    ok "$rel/ $([[ $COPY_UPLOADS -eq 1 ]] && echo copied || echo moved) through a container"
+                else
+                    warn "The container could not $([[ $COPY_UPLOADS -eq 1 ]] && echo copy || echo move) $rel/ (is '$dst' already holding data?)."
+                fi
+            fi
+        fi
+        [[ $moved -eq 1 ]] || fail "$bad/ belongs to $owner, not to $(id -un): it cannot be read or moved from here.
    Move it yourself — this one command, not the whole script, needs root — then run this again:
-     sudo mv -T '$src' '$dst'
+     sudo $verb '$src' '$dst'
    (If it says the target is not empty, '$dst' already holds data: look at it before you remove anything.)"
     elif [[ -d "$dst" ]] && [[ -n "$(ls -A "$dst" 2>/dev/null)" ]]; then
         if [[ -n "$(ls -A "$src" 2>/dev/null)" ]]; then

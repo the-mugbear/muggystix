@@ -41,11 +41,11 @@ const COLUMNS: Array<{ state: RemediationState; label: string; tone?: string }> 
   { state: 'closed', label: REPORTED_FIXED },
 ];
 
-/** A count that opens its rows; a zero is plain, one not known a dash (a
- *  server that predates it). */
-const countButton = (value: number | undefined, label: string, onClick: () => void, tone: string) => (
-  value == null ? <span className="text-muted-foreground">—</span>
-    : value === 0 ? <span className="text-muted-foreground">0</span> : (
+/** A count that opens its rows; a zero is plain.  (No dash for "a server
+ *  that predates it": backend and frontend ship together — third review
+ *  2026-10-15, R5.) */
+const countButton = (value: number, label: string, onClick: () => void, tone: string) => (
+  value === 0 ? <span className="text-muted-foreground">0</span> : (
     <button type="button" onClick={onClick} aria-label={label} title={label}
       className={`rounded hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${tone}`}>
       {value.toLocaleString()}
@@ -191,7 +191,7 @@ const RemediationDeadlines: React.FC = () => {
                           {p.archived && <span className="block text-caption text-muted-foreground">Archived</span>}
                         </TableCell>
                         <TableCell className="text-right align-middle tabular-nums">
-                          {countButton(p.total, `${p.name}: show every finding on a host (${(p.total ?? 0).toLocaleString()})`,
+                          {countButton(p.total, `${p.name}: show every finding on a host (${p.total.toLocaleString()})`,
                             () => openList({ project: p.project_id }), 'font-medium text-foreground')}
                         </TableCell>
                         {COLUMNS.map((c) => {
@@ -210,7 +210,7 @@ const RemediationDeadlines: React.FC = () => {
                           );
                         })}
                         <TableCell className="text-right align-middle tabular-nums">
-                          {countButton(p.remediated, `${p.name}: show remediated (${(p.remediated ?? 0).toLocaleString()})`,
+                          {countButton(p.remediated, `${p.name}: show remediated (${p.remediated.toLocaleString()})`,
                             () => openList({ project: p.project_id, defect: ['remediated'] }), 'text-foreground')}
                         </TableCell>
                       </TableRow>
@@ -222,8 +222,8 @@ const RemediationDeadlines: React.FC = () => {
                             list of every project above, archived ones included, as
                             the row adds them up. */}
                         <TableCell className="text-right align-middle font-medium tabular-nums">
-                          {countButton(projects.defect_totals?.total,
-                            `All projects: show every finding on a host (${(projects.defect_totals?.total ?? 0).toLocaleString()})`,
+                          {countButton(projects.defect_totals.total,
+                            `All projects: show every finding on a host (${projects.defect_totals.total.toLocaleString()})`,
                             () => openList({}), 'font-medium text-foreground')}
                         </TableCell>
                         {COLUMNS.map((c) => (
@@ -234,8 +234,8 @@ const RemediationDeadlines: React.FC = () => {
                           </TableCell>
                         ))}
                         <TableCell className="text-right align-middle font-medium tabular-nums">
-                          {countButton(projects.defect_totals?.remediated,
-                            `All projects: show remediated (${(projects.defect_totals?.remediated ?? 0).toLocaleString()})`,
+                          {countButton(projects.defect_totals.remediated,
+                            `All projects: show remediated (${projects.defect_totals.remediated.toLocaleString()})`,
                             () => openList({ defect: ['remediated'] }), 'font-medium text-foreground')}
                         </TableCell>
                       </TableRow>

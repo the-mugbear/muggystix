@@ -213,16 +213,18 @@ export interface RemediationProjectRow {
   name: string;
   archived: boolean;
   states: Record<RemediationState, number>;
-  /** Every row of the project's list (`?project=`); absent from an older server. */
-  total?: number;
+  /** Every row of the project's list (`?project=`). */
+  total: number;
   /** Rows whose ENDPOINT was concluded remediated by the retest
-   *  (`?project=&defect=remediated`); absent from an older server. */
-  remediated?: number;
+   *  (`?project=&defect=remediated`). */
+  remediated: number;
 }
+// Required, not optional "for an older server" (third review 2026-10-15,
+// R5): backend and frontend ship together, and tsc then proves every reader.
 export interface RemediationProjects {
   items: RemediationProjectRow[];
   totals: Record<RemediationState, number>;
-  defect_totals?: { total: number; remediated: number };
+  defect_totals: { total: number; remediated: number };
   as_of: string;
   policy: RemediationPolicy;
 }
@@ -281,7 +283,7 @@ export interface RemediationContact {
   projects: number;
   /** The projects (of those asked about) where the contact still has work —
    *  anything not reported fixed: where a document can be prepared. */
-  work_project_ids?: number[];
+  work_project_ids: number[];
 }
 /** Without `scope`: the project `projectId`'s own contacts.  With `'all'`:
  *  every project the caller administers, narrowed to `projectId` when it is
@@ -386,7 +388,7 @@ export interface RemediationFollowUp {
   project_ids: number[];
   /** Projects (of those asked about) where the contact has open findings and
    *  the reminder lists none of them; null when the list is cut short. */
-  other_projects?: number | null;
+  other_projects: number | null;
   text: string;
 }
 /** `upcomingDays` (0–365): also remind of on-track rows due within that many days. */

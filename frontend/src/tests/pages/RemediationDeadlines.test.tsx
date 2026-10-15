@@ -348,6 +348,17 @@ describe('defects on the deadlines page (owner, 2026-10-14)', () => {
     expect(screen.getByRole('button', { name: 'What Remediated counts' })).toBeInTheDocument();
   });
 
+  // Third review 2026-10-15, N7: it printed "0 not assigned".
+  it('the MTTR note names only the parts that are not zero', async () => {
+    getRemediationDefectMetrics.mockResolvedValue({
+      ...METRICS, rows: [metricRow('overall', 'Overall', null, { defects: 5, not_assigned: 0, not_measured: 3 })],
+    });
+    show();
+    const note = await screen.findByTestId('defect-metrics-unmeasured');
+    expect(note).toHaveTextContent('Not in the MTTR figures: 3 with no recorded day or one before the assigned date.');
+    expect(note).not.toHaveTextContent('not assigned');
+  });
+
   // Review 2026-10-14, R14: the "All" row's numbers opened nothing.
   it('the All row’s counts open every project’s rows', async () => {
     show();

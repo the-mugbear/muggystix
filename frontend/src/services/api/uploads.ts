@@ -68,6 +68,9 @@ export interface IngestionJob {
    *  (see `utils/truncatedImport`).  Null when the job did not fail, or
    *  failed without a parse error (a cancel). */
   failure_kind?: string | null;
+  /** The job's file is still kept (2.505.0; the row's answer): "Import what
+   *  the file holds" needs it (third review 2026-10-15, N6). */
+  file_retained: boolean;
 }
 
 

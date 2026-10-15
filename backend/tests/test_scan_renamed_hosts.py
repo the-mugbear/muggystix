@@ -351,6 +351,14 @@ def test_each_writer_of_a_display_name_records_the_hosts_it_named(
     assert row["renamed_hosts"] == listed["total"] == len(named)
     assert sorted(item["ip_address"] for item in listed["items"]) == sorted(named)
     assert (row["new_hosts"], row["updated_hosts"]) == (0, len(case.addresses))
+    # The name the import gave is the scan's name for the host (third review
+    # 2026-10-15, N14: NetExec's history row kept the earlier one).
+    at_scan = dict(
+        db_session.query(models.Host.ip_address, models.HostScanHistory.hostname_at_scan)
+        .join(models.HostScanHistory, models.HostScanHistory.host_id == models.Host.id)
+        .filter(models.HostScanHistory.scan_id == scan_id)
+    )
+    assert {address: at_scan[address] for address in named} == named
 
     # Into an empty project the same file CREATES the hosts, names included:
     # added, never renamed.
