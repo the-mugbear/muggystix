@@ -1148,10 +1148,14 @@ ONE name wherever a person reads it; the stored values do not change.
   retested** and **Remediated, record still open**. The server derives them
   (`verification`); a page never works one out.
 - **A pending retest is closed with its result, by anyone who may change the
-  state** ("Record retest…" on the host's row; the picker's "Remediated" opens
-  the same dialog): what was run and what it showed are kept as evidence, and
-  the host takes its state from it. Every member sees the pending retests —
-  Operations' lead line and the Findings list's "Hosts" filter.
+  state** ("Record retest…" on the host's row; the picker's "Remediated" is
+  sent, and when the server refuses it for want of a result, it opens the same
+  dialog): what was run and what it showed are kept as evidence, and the host
+  takes its state from it. A host set back to Still present before its retest
+  was recorded says "Retest still asked for" and keeps "Record retest…". Which
+  hosts a retest stands on is the server's (`retest_stands`); the page keeps
+  no rule of its own. Every member sees the pending retests — Operations' lead
+  line and the Findings list's "Hosts" filter, both counting those hosts.
 - In a row the relation is a short line in the cell that already holds the
   state (the Deadline cell), with the definition on `title`; it is not a column,
   which would be empty on most rows. The counts are buttons that set
