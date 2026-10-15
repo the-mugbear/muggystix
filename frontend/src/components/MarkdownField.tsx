@@ -52,11 +52,12 @@ interface Props {
   disabled?: boolean;
   /**
    * A finding's report section: the finding's images ticked "In report" —
-   * or the report's System description: the project's own report images
-   * (`useReportTextImages`; the resolver's `source` chooses the words).
+   * or the report's Executive summary / System description (`IMAGE_DETAILS`):
+   * the project's own report images (`useReportTextImages`; the resolver's
+   * `source` chooses the words).
    * Adds "Insert image" (it writes an empty reference, `![](evidence:<id>)`, on a line of
    * its own) and shows placed images in the preview.  Left out — the
-   * executive summary, any other text — the field takes no images.
+   * disclaimer, any other text — the field takes no images.
    */
   images?: MarkdownImages;
 }
@@ -72,10 +73,10 @@ const IMAGE_WORDS: Record<ImageSource, { none: string; title: string; picker: st
     guide: 'only this finding’s own, ticked “In report”',
   },
   report: {
-    none: 'No image to insert: paste a screenshot into the text, or upload one below.',
+    none: 'No image to insert: paste a screenshot into the text, or upload one under “Project images…”.',
     title: 'Insert one of the report’s own images',
-    picker: 'Images uploaded for the report’s own text, below. An image placed in the text prints there with its caption.',
-    guide: 'only the ones uploaded for the report’s own text, below, or pasted into it (Ctrl/Cmd+V)',
+    picker: 'The project’s images (“Project images…”). An image placed in the text prints there with its caption.',
+    guide: 'only the project’s images (“Project images…”), or one pasted into the text (Ctrl/Cmd+V)',
   },
 };
 
