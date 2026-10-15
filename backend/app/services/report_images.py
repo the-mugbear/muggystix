@@ -507,8 +507,23 @@ def project_report_images(db: Session, project_id: int) -> List[NoteAttachment]:
     )
 
 
-#: The written report details that may place one of those images.
-ENGAGEMENT_IMAGE_FIELDS = ("system_description",)
+#: The written report details that may place one of those images.  The
+#: executive summary since 2.507.0 (owner, 2026-10-15: "Users may want to
+#: reference images in Executive summary as well") — it is printed from the
+#: TOP of the data (``md("executive_summary")``), and the filter takes a
+#: top-level field's images from ``engagement.placed`` (``quarto_fields.lua``,
+#: ``field_images``).
+ENGAGEMENT_IMAGE_FIELDS = ("executive_summary", "system_description")
+
+#: The report details printed from the top of the data, not ``engagement``:
+#: the data path a template prints each by (``md(...)``'s key).
+TOP_LEVEL_DETAILS = frozenset({"executive_summary"})
+
+
+def engagement_text_key(field: str) -> str:
+    """The data path ``md()`` prints a report detail by — what the fill
+    records, so what a report prints is measured by it."""
+    return field if field in TOP_LEVEL_DETAILS else f"engagement.{field}"
 
 
 def engagement_placement(

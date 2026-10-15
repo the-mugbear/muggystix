@@ -68,6 +68,10 @@ export const focusDetailField = (idPrefix: string, key: DetailKey): boolean => {
 const MARKDOWN: ReadonlyArray<DetailKey> = [
   'executive_summary', 'system_description', 'applications', 'thick_clients', 'other_targets', 'disclaimer',
 ];
+/** The details that may place one of the report's own images — the server's
+ *  `report_images.ENGAGEMENT_IMAGE_FIELDS` (the executive summary since
+ *  5.402.0; owner, 2026-10-15).  Change both together. */
+export const IMAGE_DETAILS: ReadonlyArray<DetailKey> = ['executive_summary', 'system_description'];
 const MAX: Partial<Record<DetailKey, number>> = {
   executive_summary: 65536, client_name: 255, author_name: 255, classification: 100, engagement_type: 100,
 };
@@ -170,7 +174,7 @@ const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> =
         body = !text
           ? <p className="text-body italic text-muted-foreground">{key === 'disclaimer' ? 'None written: the template’s own disclaimer is printed' : 'Not written'}</p>
           : MARKDOWN.includes(key)
-            ? <div className="max-w-4xl text-body"><SafeMarkdown text={text} evidence={key === 'system_description' ? resolver : undefined} /></div>
+            ? <div className="max-w-4xl text-body"><SafeMarkdown text={text} evidence={IMAGE_DETAILS.includes(key) ? resolver : undefined} /></div>
             : <p className="whitespace-pre-wrap text-body font-medium [overflow-wrap:anywhere]">{text}</p>;
       }
       return (
@@ -197,7 +201,7 @@ const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> =
       control = (
         <MarkdownField id={id} label={label(key)} rows={key === 'disclaimer' ? 4 : 7} maxLength={MAX[key] ?? 32768}
           value={(value as string | null | undefined) ?? ''} onChange={set} disabled={busy}
-          images={key === 'system_description' ? images : undefined} />
+          images={IMAGE_DETAILS.includes(key) ? images : undefined} />
       );
     } else if (MARKDOWN.includes(key)) {
       control = (
@@ -217,7 +221,7 @@ const SectionBlock: React.FC<DetailSectionsProps & { section: DetailSection }> =
           ? <span id={id} className={DETAIL_NAME}>{label(key)}</span>
           : <Label htmlFor={id} className={DETAIL_NAME}>{label(key)}</Label>}
         {HELP[key] && <p className="text-caption text-muted-foreground">{HELP[key]}</p>}
-        {key === 'system_description' && images?.upload && (
+        {IMAGE_DETAILS.includes(key) && images?.upload && (
           // A paste crosses the draft's Save (second review): said before it.
           <p className="text-caption text-muted-foreground" data-testid={`${id}-paste-note`}>
             A pasted screenshot is added to the project’s images at once. Cancel takes it out of this text, not out

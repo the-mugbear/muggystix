@@ -141,7 +141,9 @@ export const hasChecklist = (s: ReportSummary): boolean => {
 };
 
 /** The report details that may place an image, by their key. */
-const DETAIL_OF_FIELD: Record<string, string> = { system_description: 'System description' };
+const DETAIL_OF_FIELD: Record<string, string> = {
+  executive_summary: 'Executive summary', system_description: 'System description',
+};
 
 const ReportChecklist: React.FC<Props> = ({ reportId, summary: s, onDetail, isAdmin, canEdit }) => {
   if (!hasChecklist(s)) return null;

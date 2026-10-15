@@ -135,7 +135,9 @@ describe('Report details — sections', () => {
     expect(section('disclaimer').getByText('None written: the template’s own disclaimer is printed')).toBeInTheDocument();
   });
 
-  it('only the system description takes images', () => {
+  // Owner, 2026-10-15 (5.402.0): the executive summary takes the report's own
+  // images too; the disclaimer still does not.
+  it('the executive summary and the system description take images; the disclaimer does not', () => {
     const images = { placeable: [], urls: {}, resolver: { lookup: () => null, ensure: vi.fn() } };
     const WithImages: React.FC = () => {
       const base = useMemo(() => ({ saved: {}, followed, sources: null, ownOnly: [] }), []);
@@ -146,8 +148,10 @@ describe('Report details — sections', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit Scope & targets' }));
     fireEvent.click(screen.getByRole('button', { name: 'Edit Summary' }));
     fireEvent.click(screen.getByRole('button', { name: 'Edit Disclaimer' }));
-    expect(screen.getAllByRole('button', { name: 'Insert image' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Insert image' })).toHaveLength(2);
     expect(within(screen.getByTestId('report-section-scope')).getByRole('button', { name: 'Insert image' })).toBeInTheDocument();
+    expect(within(screen.getByTestId('report-section-summary')).getByRole('button', { name: 'Insert image' })).toBeInTheDocument();
+    expect(within(screen.getByTestId('report-section-disclaimer')).queryByRole('button', { name: 'Insert image' })).toBeNull();
     // No upload offered: no paste, so nothing said about one.
     expect(screen.queryByTestId('report-system-paste-note')).toBeNull();
   });

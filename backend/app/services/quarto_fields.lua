@@ -187,11 +187,17 @@ local function caption_of(file)
 end
 
 -- The images one written field may show: attachment id (string) →
--- { file, caption }, from `<item path>.placed.<field>` in data.json.
+-- { file, caption }, from `<item path>.placed.<field>` in data.json.  A
+-- TOP-LEVEL field (the executive summary, printed by md("executive_summary"))
+-- is one of the report's own details: its images are the report's,
+-- `engagement.placed.<field>` (2.507.0 — it took none before).
 local function field_images(key)
   local parent, field = key:match("^(.*)%.([%a_]+)$")
   local out = {}
-  if parent == nil then return out end
+  if parent == nil then
+    if not key:match("^[%a_]+$") then return out end
+    parent, field = "engagement", key
+  end
   local map = resolve_any(parent .. ".placed." .. field)
   if type(map) ~= "table" then return out end
   for id, item in pairs(map) do

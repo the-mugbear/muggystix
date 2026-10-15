@@ -1,6 +1,7 @@
 /**
- * The images of the project's own report text — what the System description
- * may place — under that field: each with its caption (what the report prints
+ * The images of the project's own report text — what the Executive summary
+ * and the System description may place (`IMAGE_DETAILS`) — under the System
+ * description: each with its caption (what the report prints
  * under it), where the project's saved text places it, and Delete; plus
  * "Upload image".
  *
@@ -210,8 +211,9 @@ const ReportTextImages: React.FC<Props> = ({ state, disabled = false, idPrefix, 
       {confirmEl}
       <p className="text-caption text-muted-foreground">
         <span className="font-medium text-foreground">Images</span> — they belong to the project, so its report
-        defaults and every draft can place the same ones; an image no text places is not printed. A screenshot
-        pasted into the System description is uploaded here and placed where it was pasted.
+        defaults and every draft can place the same ones, in the Executive summary or the System description; an
+        image no text places is not printed. A screenshot pasted into either is uploaded here and placed where it
+        was pasted.
       </p>
       {listStatus === 'loading' && <p className="text-caption text-muted-foreground">Loading the images…</p>}
       {error && (

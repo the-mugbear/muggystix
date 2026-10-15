@@ -2226,6 +2226,33 @@ def test_the_sample_report_links_findings_by_section_and_prints_the_evidence_in_
 
 @needs_template
 @needs_quarto
+def test_an_image_placed_in_the_executive_summary_prints_there(tmp_path):
+    """Owner, 2026-10-15 (2.507.0): the summary — printed from the TOP of the
+    data — shows the report's own images, from `engagement.placed`; one its
+    map does not list prints as its alt text, as anywhere else."""
+    data = json.loads((TEMPLATE / "sample-data.json").read_text())
+    for f in data["findings"]:
+        f["images"], f["placed"], f["evidence"], f["confirmations"] = [], {}, [], []
+    chart = _img(5, "Findings by severity", ["executive_summary"])
+    diagram = _img(9, "The assessed network", ["system_description"])
+    data["executive_summary"] = "What we found.\n\n![](evidence:5)\n\n![SUMMARY-NOT-LISTED](evidence:9)"
+    data["engagement"]["system_description"] = "The estate.\n\n![](evidence:9)"
+    data["engagement"]["images"] = [chart, diagram]
+    data["engagement"]["placed"] = {"executive_summary": _placed(chart), "system_description": _placed(diagram)}
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(_png(40, 20))
+    files = quarto_render.render(
+        TEMPLATE, "report.qmd", data, ["html"], tmp_path / "out", resolve_evidence=lambda item: shot, timeout=240,
+    )
+    html = files["html"].read_text(encoding="utf-8")
+    summary = html[html.index(" Executive summary</h1>"):html.index(" System description</h1>")]
+    assert _figcaptions(summary) == ["Figure 1: Findings by severity"] and "SUMMARY-NOT-LISTED" in summary
+    system = html[html.index(" System description</h1>"):html.index(" Findings</h1>")]
+    assert _figcaptions(system) == ["Figure 2: The assessed network"]
+
+
+@needs_template
+@needs_quarto
 def test_a_finding_with_every_image_placed_has_no_evidence_section_and_a_written_disclaimer_prints(tmp_path):
     data = json.loads((TEMPLATE / "sample-data.json").read_text())
     for f in data["findings"]:

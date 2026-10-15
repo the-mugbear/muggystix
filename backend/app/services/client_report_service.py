@@ -1412,14 +1412,18 @@ class ClientReportService:
         # project's default, else the installation's (author, disclaimer) or
         # the project's analysts and admins (team).
         settings = self.resolved_details(report.project_id, report.settings, report.kind)
+        # The report's own images, where its written details place them — the
+        # summary included (2.507.0), so this is worked out BEFORE the summary
+        # moves to the top of the data; its placements stay under
+        # `engagement.placed`, where the filter looks for a top-level field's.
+        images, placed = report_images.engagement_placement(
+            report_images.project_report_images(self.db, report.project_id), settings,
+        )
         # The templates read the summary at the top level of the data.
         summary_text = settings.pop("executive_summary", None)
         # The team is linked to accounts; the distribution list is names typed in.
         settings["testers"], no_full_name = self._with_full_names(settings["testers"])
-        # The report's own images, where its written details place them.
-        settings["images"], settings["placed"] = report_images.engagement_placement(
-            report_images.project_report_images(self.db, report.project_id), settings,
-        )
+        settings["images"], settings["placed"] = images, placed
 
         revision_of = report.revision_of
         draft = issued_at is None and report.status == ReportStatus.DRAFT
@@ -1560,7 +1564,10 @@ class ClientReportService:
             # the project no longer has it (review 2026-10-14, H2: deleted
             # after an earlier report printed it, and no copy to restore).
             # Printed as nothing, so said here — a warning, never a block.
-            "unresolved_images": unresolved_engagement_images(dataset["engagement"]),
+            # The summary is at the top of the data, not in `engagement`.
+            "unresolved_images": unresolved_engagement_images(
+                {**dataset["engagement"], "executive_summary": dataset.get("executive_summary")},
+            ),
             # Images this report prints with the file's name for a caption,
             # because nobody wrote one — a warning, never a block.  The rule
             # the Findings list's "report image without a caption" applies
@@ -1672,7 +1679,9 @@ class ClientReportService:
         # images, the written detail that places them.
         engagement = dataset.get("engagement") or {}
         for img in engagement.get("images") or []:
-            img["printed_in"] = [f for f in img.get("placed_in") or [] if texts.get(f"engagement.{f}")]
+            img["printed_in"] = [
+                f for f in img.get("placed_in") or [] if texts.get(report_images.engagement_text_key(f))
+            ]
             img["printed"] = bool(img["printed_in"])
         return out
 

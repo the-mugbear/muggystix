@@ -1,6 +1,7 @@
 /**
- * The project's own report images — the ones the report's System description
- * may place — as one load for a form: the editor's "Insert image" picker, the
+ * The project's own report images — the ones the report's Executive summary
+ * and System description may place — as one load for a form: the editor's
+ * "Insert image" picker, the
  * preview and the manager under the field (`ReportTextImages`) read this.
  *
  * They belong to the PROJECT, so its report defaults and every draft see the

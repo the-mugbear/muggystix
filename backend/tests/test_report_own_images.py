@@ -63,12 +63,12 @@ FINDINGS = (
 
 @pytest.fixture(autouse=True)
 def storage(tmp_path, monkeypatch):
-    """Three templates: ``pentest`` prints the system description with its
-    images (as the shipped one does), ``plain`` prints it WITHOUT them and
-    ``nosys`` does not print it at all."""
+    """Three templates: ``pentest`` prints the executive summary and the
+    system description with their images (as the shipped one does), ``plain``
+    prints the description WITHOUT them and ``nosys`` does not print it at all."""
     root = tmp_path / "report-templates"
     for name, front in (
-        ("pentest", '<< md("engagement.system_description") >>\n'),
+        ("pentest", '<< md("executive_summary") >>\n<< md("engagement.system_description") >>\n'),
         ("plain", '<< md("engagement.system_description", images=False) >>\n'),
         ("nosys", ""),
     ):
@@ -421,6 +421,41 @@ def test_a_findings_image_and_the_reports_image_never_cross(client, db_session, 
     assert client.get(f"{_base(test_project)}/findings/{finding.id}/images").json()["items"][0]["placed_in"] == [
         "description",
     ]
+
+
+def test_the_executive_summary_places_the_reports_images_too(client, db_session, test_project, storage):
+    """Owner, 2026-10-15 (2.507.0): "Users may want to reference images in
+    Executive summary as well."  The summary is printed from the top of the
+    data; its placements sit with the report's own, under `engagement`, and
+    every rule the system description's follow holds: measured as printed,
+    held against deletion while placed, copied at issue, named when gone."""
+    chart = _image(client, test_project, name="chart.png", caption="Findings by severity")
+    gone = 987654
+    draft = _draft(client, test_project, executive_summary=f"What we found.\n\n![](evidence:{chart}) ![](evidence:{gone})")
+
+    dataset, _, summary = _build(db_session, draft["id"])
+    engagement = dataset["engagement"]
+    assert dataset["executive_summary"].startswith("What we found.")
+    assert "executive_summary" not in engagement                     # still printed from the top
+    assert list(engagement["placed"]["executive_summary"]) == [str(chart)]
+    (image,) = engagement["images"]
+    assert (image["attachment_id"], image["placed_in"]) == (chart, ["executive_summary"])
+    assert image["printed"] is True and image["printed_in"] == ["executive_summary"]   # pentest prints it
+    assert summary["unresolved_images"] == [{"field": "executive_summary", "ids": [gone]}]
+
+    # Held while the draft's summary places it, as the description's are.
+    assert client.delete(_attachment(test_project, chart)).status_code == 409
+    assert _listed(client, test_project)[chart]["placed_in"] == [f"report {draft['id']}"]
+
+    # Issued: copied into the report's own storage and frozen with the rest.
+    client.patch(f"{_reports(test_project)}/{draft['id']}",
+                 json={"settings": {"executive_summary": f"What we found.\n\n![](evidence:{chart})"}})
+    assert _issue(client, test_project, draft["id"]).status_code == 200
+    db_session.expire_all()
+    rows = {r.attachment_id for r in db_session.query(ReportImage).filter_by(report_id=draft["id"])}
+    assert chart in rows
+    frozen = db_session.get(Report, draft["id"]).snapshot["dataset"]["engagement"]
+    assert list(frozen["placed"]["executive_summary"]) == [str(chart)]
 
 
 @pytest.mark.parametrize("template,printed", [("pentest", True), ("plain", False), ("nosys", False)])
