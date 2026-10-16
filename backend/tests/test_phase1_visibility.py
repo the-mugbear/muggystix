@@ -265,3 +265,30 @@ def test_agent_activity_summary_empty_window(client, db_session, test_project):
     assert body["total_calls"] == 0
     assert "by_workflow" not in body
     assert body["busiest_sessions"] == []
+
+
+def test_scan_compare_counts_past_the_cap_and_lists_the_first_by_address(db_session, test_project):
+    """External review 2026-10-16, A5: counts are SQL (exact past the cap) and
+    each list is the FIRST ``row_cap`` by address, then port — it was an
+    unordered ``list(set)[:cap]`` over every row loaded into Python."""
+    from app.services.scan_diff_service import compute_scan_diff
+
+    pid = test_project.id
+    scan_a = _mk_scan(db_session, pid, "a.xml")
+    scan_b = _mk_scan(db_session, pid, "b.xml")
+    # Twelve hosts new in B, inserted out of address order (.12 … .1).
+    for i in range(12, 0, -1):
+        h = _mk_host(db_session, pid, f"10.9.9.{i}")
+        _seen_host(db_session, h, scan_b, "up")
+        for port in (443, 22):
+            _seen_port(db_session, _mk_port(db_session, h, port), scan_b, "open")
+    db_session.commit()
+
+    diff = compute_scan_diff(db_session, pid, scan_a.id, scan_b.id, row_cap=5)
+    assert (diff.counts.new_hosts, diff.counts.newly_open_ports) == (12, 24)
+    # By address as an address: .1 .2 .3 .4 .5 — never .10 before .2.
+    assert [r.ip_address for r in diff.new_hosts] == [f"10.9.9.{i}" for i in range(1, 6)]
+    assert [(r.ip_address, r.port_number) for r in diff.newly_open_ports] == [
+        ("10.9.9.1", 22), ("10.9.9.1", 443), ("10.9.9.2", 22), ("10.9.9.2", 443), ("10.9.9.3", 22),
+    ]
+    assert all(r.state_a is None and r.state_b == "open" for r in diff.newly_open_ports)

@@ -5,13 +5,20 @@ answer).
 
 Reconstructed from HostScanHistory / PortScanHistory (per-scan observations),
 so it works across the dedup boundary.
+
+2.510.1 (external review 2026-10-16, A5): every count is SQL and every list a
+LIMITed, address-ordered sample — the two scans' host maps and every changed
+port id were loaded into Python only to count them and keep ``row_cap``
+(unordered: ``list(set)[:cap]``).  The comparisons are correlated
+``EXISTS`` / ``NOT EXISTS``, never ``NOT IN (subquery)``.
 """
 from datetime import datetime
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, case, cast, distinct, exists, func
+from sqlalchemy.dialects.postgresql import INET
+from sqlalchemy.orm import Session, aliased
 
 from app.db import models
 
@@ -78,7 +85,8 @@ class ScanDiffResponse(BaseModel):
     scan_a: ScanDiffSide
     scan_b: ScanDiffSide
     counts: ScanDiffCounts
-    # Lists below are capped at row_cap; `counts` carries exact totals.
+    # Lists below are capped at row_cap (the first by address); `counts`
+    # carries exact totals.
     row_cap: int
     new_hosts: List[ScanDiffHostRow] = Field(default_factory=list)
     dropped_hosts: List[ScanDiffHostRow] = Field(default_factory=list)
@@ -122,6 +130,15 @@ def _scan_side_stats(db: Session, scan: models.Scan) -> ScanDiffSide:
     )
 
 
+def _address_order(db: Session):
+    """Hosts by address as an address (``10.0.0.2`` before ``10.0.0.10``) —
+    as the Hosts list orders them; text order on a database that has no
+    ``inet``."""
+    if db.get_bind().dialect.name == "postgresql":
+        return cast(models.Host.ip_address, INET)
+    return models.Host.ip_address
+
+
 def compute_scan_diff(
     db: Session, project_id: int, a: int, b: int, row_cap: int = _SCAN_DIFF_ROW_CAP,
 ) -> ScanDiffResponse:
@@ -131,8 +148,9 @@ def compute_scan_diff(
     Reconstructed from HostScanHistory / PortScanHistory (per-scan
     observations), so it works across the dedup boundary — a host that
     persists across scans is a single Host row, but each scan's view of
-    it is preserved in history.  Result lists are capped at ``row_cap``;
-    the ``counts`` block carries exact totals.
+    it is preserved in history.  Each list is the first ``row_cap`` by
+    address (then port); the ``counts`` block carries exact totals.  Every
+    count and list is one SQL statement; nothing scan-sized is loaded.
     """
     scans = {
         s.id: s
@@ -147,182 +165,141 @@ def compute_scan_diff(
         raise ScanNotInProject([x for x in (a, b) if x not in scans])
 
     cap = row_cap
+    Host = models.Host
+    HSH = models.HostScanHistory
+    PSH = models.PortScanHistory
+    address = _address_order(db)
 
-    # --- Host-level diff (presence + state) ---
-    a_host_states = dict(
-        db.query(models.HostScanHistory.host_id, models.HostScanHistory.state_at_scan)
-        .filter(models.HostScanHistory.scan_id == a)
-        .all()
-    )
-    b_host_states = dict(
-        db.query(models.HostScanHistory.host_id, models.HostScanHistory.state_at_scan)
-        .filter(models.HostScanHistory.scan_id == b)
-        .all()
-    )
-    a_host_ids, b_host_ids = set(a_host_states), set(b_host_states)
-    new_host_ids = b_host_ids - a_host_ids
-    dropped_host_ids = a_host_ids - b_host_ids
-    changed_host_ids = {
-        hid
-        for hid in (a_host_ids & b_host_ids)
-        if (a_host_states.get(hid) or "") != (b_host_states.get(hid) or "")
-    }
+    # --- Hosts: a row of one scan, and whether the other scan saw the host ---
+    def host_seen(scan_id: int, host_col):
+        other = aliased(HSH)
+        return exists().where(other.scan_id == scan_id, other.host_id == host_col)
 
-    # --- Port-level diff (openness transitions) ---
-    # Query only the *changed* port ids via NOT IN subqueries rather than
-    # loading both scans' full (port_id, state) maps into Python.  Two
-    # broad scans can each observe 100k+ ports; materialising both just to
-    # set-diff them was the memory hot spot.  ``port_id NOT IN (open-in-X)``
-    # captures both "missing in X" and "present-but-not-open in X", matching
-    # the prior dict logic.  (NOT IN subquery is portable to the SQLite test
-    # backend, unlike FULL OUTER JOIN.)
-    a_open_ports_subq = (
-        db.query(models.PortScanHistory.port_id)
-        .filter(
-            models.PortScanHistory.scan_id == a,
-            models.PortScanHistory.state_at_scan == "open",
+    def host_presence(present_in: int, absent_in: int):
+        row = aliased(HSH)
+        condition = and_(row.scan_id == present_in, ~host_seen(absent_in, row.host_id))
+        count = (
+            db.query(func.count(distinct(row.host_id))).select_from(row).filter(condition).scalar()
+        ) or 0
+        sample = (
+            db.query(Host.id, Host.ip_address, Host.hostname)
+            .join(row, row.host_id == Host.id)
+            .filter(condition)
+            .group_by(Host.id, Host.ip_address, Host.hostname)
+            .order_by(address, Host.id)
+            .limit(cap)
+            .all()
         )
+        return int(count), [ScanDiffHostRow(host_id=h, ip_address=ip, hostname=name) for h, ip, name in sample]
+
+    new_count, new_rows = host_presence(b, a)
+    dropped_count, dropped_rows = host_presence(a, b)
+
+    # State changes: a host both scans saw, with a different state.  A
+    # missing state reads as "" (as before).
+    ha, hb = aliased(HSH), aliased(HSH)
+    changed = and_(
+        ha.scan_id == a, hb.scan_id == b, hb.host_id == ha.host_id,
+        func.coalesce(ha.state_at_scan, "") != func.coalesce(hb.state_at_scan, ""),
     )
-    b_open_ports_subq = (
-        db.query(models.PortScanHistory.port_id)
-        .filter(
-            models.PortScanHistory.scan_id == b,
-            models.PortScanHistory.state_at_scan == "open",
-        )
-    )
-    newly_open_ids = [
-        pid for (pid,) in (
-            db.query(models.PortScanHistory.port_id)
-            .filter(
-                models.PortScanHistory.scan_id == b,
-                models.PortScanHistory.state_at_scan == "open",
-                ~models.PortScanHistory.port_id.in_(a_open_ports_subq),
-            )
+    changed_count = (
+        db.query(func.count(distinct(ha.host_id))).select_from(ha).join(hb, hb.host_id == ha.host_id)
+        .filter(changed).scalar()
+    ) or 0
+    changed_rows = [
+        ScanDiffHostStateChange(host_id=h, ip_address=ip, hostname=name, state_a=sa, state_b=sb)
+        for h, ip, name, sa, sb in (
+            db.query(Host.id, Host.ip_address, Host.hostname,
+                     func.max(ha.state_at_scan), func.max(hb.state_at_scan))
+            .select_from(ha)
+            .join(hb, hb.host_id == ha.host_id)
+            .join(Host, Host.id == ha.host_id)
+            .filter(changed)
+            .group_by(Host.id, Host.ip_address, Host.hostname)
+            .order_by(address, Host.id)
+            .limit(cap)
             .all()
         )
     ]
+
+    # --- Ports: openness transitions ---
+    def port_seen(scan_id: int, port_col, open_only: bool):
+        other = aliased(PSH)
+        conds = [other.scan_id == scan_id, other.port_id == port_col]
+        if open_only:
+            conds.append(other.state_at_scan == "open")
+        return exists().where(*conds)
+
+    def port_change(scan_id: int, *extra):
+        """(count, the first ``cap`` port ids by address and port) of the
+        ports open in ``scan_id`` meeting ``extra``."""
+        row = aliased(PSH)
+        condition = and_(row.scan_id == scan_id, row.state_at_scan == "open", *[e(row) for e in extra])
+        count = (
+            db.query(func.count(distinct(row.port_id))).select_from(row).filter(condition).scalar()
+        ) or 0
+        ids = [
+            pid for (pid,) in (
+                db.query(models.Port.id)
+                .select_from(row)
+                .join(models.Port, models.Port.id == row.port_id)
+                .join(Host, Host.id == models.Port.host_id)
+                .filter(condition)
+                .group_by(models.Port.id, Host.ip_address, Host.id, models.Port.port_number, models.Port.protocol)
+                .order_by(address, Host.id, models.Port.port_number, models.Port.protocol, models.Port.id)
+                .limit(cap)
+                .all()
+            )
+        ]
+        return int(count), ids
+
+    # Open in B, not open in A (absent from A, or present there not open).
+    newly_open_count, newly_open_ids = port_change(b, lambda r: ~port_seen(a, r.port_id, open_only=True))
     # v2.332.0 — "open in A, not open in B" is two different facts and only
-    # one of them is remediation evidence.  Closed: B has an observation for
-    # the port and it is not open.  Not observed: B has no row for the port —
-    # B never tested it (different port range, tool or target list), so
-    # nothing can be said about it.  Both were previously one "closed" list.
-    b_any_ports_subq = (
-        db.query(models.PortScanHistory.port_id)
-        .filter(models.PortScanHistory.scan_id == b)
+    # one of them is remediation evidence.  Closed: B observed the port and
+    # it is not open.  Not observed: B has no row for it — nothing can be said.
+    closed_count, closed_ids = port_change(
+        a,
+        lambda r: port_seen(b, r.port_id, open_only=False),
+        lambda r: ~port_seen(b, r.port_id, open_only=True),
     )
-    closed_ids = [
-        pid for (pid,) in (
-            db.query(models.PortScanHistory.port_id)
-            .filter(
-                models.PortScanHistory.scan_id == a,
-                models.PortScanHistory.state_at_scan == "open",
-                models.PortScanHistory.port_id.in_(b_any_ports_subq),
-                ~models.PortScanHistory.port_id.in_(b_open_ports_subq),
-            )
-            .all()
-        )
-    ]
-    not_observed_ids = [
-        pid for (pid,) in (
-            db.query(models.PortScanHistory.port_id)
-            .filter(
-                models.PortScanHistory.scan_id == a,
-                models.PortScanHistory.state_at_scan == "open",
-                ~models.PortScanHistory.port_id.in_(b_any_ports_subq),
-            )
-            .all()
-        )
-    ]
+    not_observed_count, not_observed_ids = port_change(a, lambda r: ~port_seen(b, r.port_id, open_only=False))
 
     counts = ScanDiffCounts(
-        new_hosts=len(new_host_ids),
-        dropped_hosts=len(dropped_host_ids),
-        host_state_changes=len(changed_host_ids),
-        newly_open_ports=len(newly_open_ids),
-        closed_ports=len(closed_ids),
-        not_observed_ports=len(not_observed_ids),
+        new_hosts=new_count,
+        dropped_hosts=dropped_count,
+        host_state_changes=changed_count,
+        newly_open_ports=newly_open_count,
+        closed_ports=closed_count,
+        not_observed_ports=not_observed_count,
     )
 
-    # Resolve host metadata only for the rows we'll actually return.
-    host_ids_needed = set(
-        list(new_host_ids)[:cap] + list(dropped_host_ids)[:cap] + list(changed_host_ids)[:cap]
-    )
-    host_meta = (
-        {h.id: h for h in db.query(models.Host).filter(models.Host.id.in_(host_ids_needed))}
-        if host_ids_needed
-        else {}
-    )
-
-    def host_rows(ids) -> List[ScanDiffHostRow]:
-        rows = []
-        for hid in list(ids)[:cap]:
-            h = host_meta.get(hid)
-            if h is not None:
-                rows.append(ScanDiffHostRow(host_id=hid, ip_address=h.ip_address, hostname=h.hostname))
-        return rows
-
-    host_state_change_rows = []
-    for hid in list(changed_host_ids)[:cap]:
-        h = host_meta.get(hid)
-        if h is not None:
-            host_state_change_rows.append(ScanDiffHostStateChange(
-                host_id=hid,
-                ip_address=h.ip_address,
-                hostname=h.hostname,
-                state_a=a_host_states.get(hid),
-                state_b=b_host_states.get(hid),
-            ))
-
-    # Resolve port metadata (Port -> Host) only for capped port rows.
-    port_ids_needed = (
-        set(newly_open_ids[:cap]) | set(closed_ids[:cap]) | set(not_observed_ids[:cap])
-    )
+    # Port metadata and each scan's state, for the sampled rows only.
+    port_ids_needed = set(newly_open_ids) | set(closed_ids) | set(not_observed_ids)
     port_meta: Dict[int, tuple] = {}
+    a_port_states: Dict[int, str] = {}
+    b_port_states: Dict[int, str] = {}
     if port_ids_needed:
         for pid, pnum, proto, svc, hid, ip in (
             db.query(
-                models.Port.id,
-                models.Port.port_number,
-                models.Port.protocol,
-                models.Port.service_name,
-                models.Host.id,
-                models.Host.ip_address,
+                models.Port.id, models.Port.port_number, models.Port.protocol, models.Port.service_name,
+                Host.id, Host.ip_address,
             )
-            .join(models.Host, models.Port.host_id == models.Host.id)
+            .join(Host, models.Port.host_id == Host.id)
             .filter(models.Port.id.in_(port_ids_needed))
             .all()
         ):
             port_meta[pid] = (pnum, proto, svc, hid, ip)
-
-    # Per-port state in each scan, ONLY for the capped rows we return.
-    # The openness diff above uses NOT-IN subqueries (no full state maps),
-    # so these were never built — port_rows referenced undefined
-    # a_port_states/b_port_states and raised NameError.  Bounded lookup
-    # restores accurate state_a/state_b (e.g. a newly-open port shows its
-    # prior non-open state in scan A) without materialising every port.
-    a_port_states: Dict[int, str] = {}
-    b_port_states: Dict[int, str] = {}
-    if port_ids_needed:
-        a_port_states = dict(
-            db.query(models.PortScanHistory.port_id, models.PortScanHistory.state_at_scan)
-            .filter(
-                models.PortScanHistory.scan_id == a,
-                models.PortScanHistory.port_id.in_(port_ids_needed),
+        for states, scan_id in ((a_port_states, a), (b_port_states, b)):
+            states.update(
+                db.query(PSH.port_id, PSH.state_at_scan)
+                .filter(PSH.scan_id == scan_id, PSH.port_id.in_(port_ids_needed))
+                .all()
             )
-            .all()
-        )
-        b_port_states = dict(
-            db.query(models.PortScanHistory.port_id, models.PortScanHistory.state_at_scan)
-            .filter(
-                models.PortScanHistory.scan_id == b,
-                models.PortScanHistory.port_id.in_(port_ids_needed),
-            )
-            .all()
-        )
 
     def port_rows(ids) -> List[ScanDiffPortChange]:
         rows = []
-        for pid in ids[:cap]:
+        for pid in ids:
             meta = port_meta.get(pid)
             if meta is None:
                 continue
@@ -343,9 +320,9 @@ def compute_scan_diff(
         scan_b=_scan_side_stats(db, scan_b),
         counts=counts,
         row_cap=cap,
-        new_hosts=host_rows(new_host_ids),
-        dropped_hosts=host_rows(dropped_host_ids),
-        host_state_changes=host_state_change_rows,
+        new_hosts=new_rows,
+        dropped_hosts=dropped_rows,
+        host_state_changes=changed_rows,
         newly_open_ports=port_rows(newly_open_ids),
         closed_ports=port_rows(closed_ids),
         not_observed_ports=port_rows(not_observed_ids),
