@@ -199,14 +199,17 @@ const sections: GuideSection[] = [
           not yet judged. A <strong>finding</strong> is an issue the team has taken up: made by
           promoting a scanner observation or a test result that showed the issue, or written by
           hand — <em>Add finding</em> in a host&rsquo;s Findings section, for an issue no scanner row
-          or test result on that host stands for. The <strong>Findings</strong> page (Findings hub) lists findings; its{' '}
-          <strong>Scanner observations</strong> view lists the raw rows grouped by issue across
-          hosts, 50 to a page, and promotes several at once. With one ticked, <em>Mark false
-          positive</em> dismisses it as the host page does — on every host carrying it, or only on
-          the hosts left ticked under it — with an optional reason. <em>Details</em> on a row shows what
-          the scanner wrote about it — its description and remediation, and which scanner&rsquo;s
-          words they are — above the hosts carrying it; what a scanner printed for one particular
-          host is on that host&rsquo;s page.
+          or test result on that host stands for. The <strong>Findings</strong> page (Findings hub) lists findings.{' '}
+          <strong>Inventory → Scanner observations</strong> lists every scanner observation, grouped
+          by issue across hosts, 50 to a page — <em>Only not yet judged</em> keeps those with a host
+          no finding covers yet — and promotes several at once. <em>Open</em> on a row opens its
+          inspector beside the list: what the scanner wrote about it (description, remediation,
+          CVSS, plugin and references, and which scanner&rsquo;s words they are), every host
+          carrying it, and on each host <em>Output</em> — what the scanner printed there. Untick
+          the hosts you have not verified, then <em>Promote</em> records the finding on the ticked
+          ones; <em>Mark false positive</em> dismisses it as the host page does — on every host
+          carrying it, or only on the hosts left ticked — with an optional reason. <em>Previous</em>{' '}
+          and <em>Next</em> walk the list, and the inspector&rsquo;s address can be shared.
         </Para>
         <UnorderedList>
           <li><strong>Status</strong> — a finding is <em>under investigation</em> (Open), <em>Confirmed</em>, or <em>closed</em> (False positive, Accepted risk, Remediated). Closing one asks for a reason — you can save without one —, kept on the finding's history and carried into the report.</li>

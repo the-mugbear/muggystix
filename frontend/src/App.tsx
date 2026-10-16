@@ -97,6 +97,7 @@ const Scans = lazy(() => import('./pages/ScansHub'));
 const ScanDetail = lazy(() => import('./pages/ScanDetail'));
 const ScanDiff = lazy(() => import('./pages/ScanDiff'));
 const Hosts = lazy(() => import('./pages/Hosts'));
+const ScannerObservationsPage = lazy(() => import('./pages/ScannerObservationsPage'));
 const Activity = lazy(() => import('./pages/Collaboration'));
 const Proposals = lazy(() => import('./pages/Proposals'));
 const HostDetail = lazy(() => import('./pages/HostDetail'));
@@ -341,6 +342,16 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <Hosts />
+                          </ProtectedRoute>
+                        }
+                      />
+                      {/* 5.404.0 — Inventory; it was the Findings page's
+                          second view (`/findings?view=observations` redirects). */}
+                      <Route
+                        path="/observations"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <ScannerObservationsPage />
                           </ProtectedRoute>
                         }
                       />

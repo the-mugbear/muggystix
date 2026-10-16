@@ -166,6 +166,7 @@ The assist surface is meant to answer whatever an analyst asks about a project.
 | "Which hosts did this scan see, and did it log in to them?" | `assist_list_scan_hosts` (`credentialed`: true / false / null = the scan did not say) |
 | "Which ports did that nmap scan actually probe?" | `assist_list_scans` (`scan_info`) |
 | "Which issues are widespread but not yet findings?" | `assist_list_scanner_observations` → `assist_list_observation_hosts` |
+| "What does the scanner say about this issue?" | `assist_get_scanner_observation` — description, remediation, CVSS, CVE, plugin, references (the Scanner observations inspector); per host, `assist_get_host_vulnerabilities` |
 | "What did we report to the client?" | `assist_list_client_reports` → `assist_get_client_report` (the operator needs `auditor`) — an issued report is its frozen text, a draft what it would say now |
 
 **The workbench.** `assist_get_workbench` is the operator's own Operations page:

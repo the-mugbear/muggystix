@@ -30,7 +30,7 @@ Every tool is text in the model's context on every session. One session does
 every kind of work, so `tools/list` returns the whole catalogue: a tool added
 for assist is context spent by a session that only uploads scans too.
 
-The catalogue is 72 tools, 38 of them `assist_*` (35 reads and 3 writes);
+The catalogue is 73 tools, 39 of them `assist_*` (36 reads and 3 writes);
 `GET /api/v1/references/mcp-tools` is the live list. Their descriptions come to
 about 5,500 words, and that number is watched: a description says what the tool
 returns and the one or two things an agent gets wrong without being told, and
@@ -178,7 +178,7 @@ when `tier` is passed.
 | One host in detail | `assist_get_host` |
 | Scanner observations on a host | `assist_get_host_vulnerabilities` — raw scanner rows, not findings; each row carries `finding_id`, `finding_status`, `finding_on_this_host` and `finding_endpoint_status` (the inspector's rule for "is this judged on this host"); `cve` / `plugin_id` / `search` narrow to one issue's rows |
 | Findings across the project | `assist_list_findings` — `total` and `severity_counts` over the filter; each row's `hosts` is a sample of at most 10 addresses (`hosts_truncated`), and its `needs` says what it still needs before the report goes out (required report text missing, a report image without a caption, proposals to decide); `needs=missing_text\|uncaptioned_images\|proposals\|any` lists only those |
-| Scanner issues not yet judged, across the project | `assist_list_scanner_observations` → `assist_list_observation_hosts` |
+| Scanner issues not yet judged, across the project | `assist_list_scanner_observations` → `assist_list_observation_hosts`; what the scanner wrote about one: `assist_get_scanner_observation` |
 | What the team said | `assist_get_host_notes`, `assist_list_recent_notes` |
 | What the team tested, and what it showed | `host_tests_list` (`host_id=` — the tests proposed for the host, with status and evidence counts) and `list_evidence` (`host_id=` or `host_test_id=` — what was run and what came back) |
 | Who was told about a finding on a host, and where the fix stands | the `remediation_*` tools, where the installation has turned remediation tracking on ([MCP.md](MCP.md) §2); 404 where it has not |

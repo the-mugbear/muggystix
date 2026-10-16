@@ -118,7 +118,8 @@ describe('navigation manifest', () => {
   it('the IA the UX review settled on (v5.294.0)', () => {
     const tabs = (id: string) => HUBS.find((h) => h.id === id)!.children.map((c) => c.label);
     // 5.380.0 — Ingestion Results is the Scans page's second view, not a tab.
-    expect(tabs('inventory')).toEqual(['Hosts', 'Names', 'Scans', 'Scope']);
+    // 5.404.0 — Scanner observations moved here from the Findings page.
+    expect(tabs('inventory')).toEqual(['Hosts', 'Names', 'Scanner observations', 'Scans', 'Scope']);
     // 5.335.0 — Remediation: who was told about each finding on each host and
     // where the fix stands (the owner's request, 2026-10-07), after the report.
     expect(tabs('findings')).toEqual(['Findings', 'Reports', 'Remediation']);

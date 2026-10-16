@@ -702,7 +702,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
             ),
         },
     },
-    # v2.428.0 — the Findings hub's scanner-observations view and the Reports
+    # v2.428.0 — the Scanner observations page (Inventory since 2.508.0) and the Reports
     # page (agent_assist_reporting.py), and images inline.
     "assist_list_scanner_observations": {
         "description": (
@@ -737,6 +737,17 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "method": "GET",
         "path": "/api/v1/agent/assist/scanner-observations/hosts",
         "defaults": {"limit": 100},
+    },
+    "assist_get_scanner_observation": {
+        "description": (
+            "What a scanner wrote about one issue (issue_key from "
+            "assist_list_scanner_observations) — the Scanner observations "
+            "inspector's details: description and remediation as `source` "
+            "reports them, CVSS, CVE, plugin id and name, references. What a "
+            "scanner printed for one host is assist_get_host_vulnerabilities."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/scanner-observations/detail",
     },
     "assist_list_client_reports": {
         "description": (

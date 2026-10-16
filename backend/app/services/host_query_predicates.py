@@ -364,8 +364,8 @@ def webpath_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
 
 def issue_predicate(values: Sequence[str]) -> ColumnElement:
     """Host carries a scanner observation of exactly this issue
-    (``Vulnerability.issue_key`` — the key the Findings page's scanner
-    observations group by).  Exact, not a substring: it is the "all N hosts"
+    (``Vulnerability.issue_key`` — the key the Scanner observations page
+    groups by).  Exact, not a substring: it is the "all N hosts"
     link of an issue whose host list is too long to show there."""
     keys = [v for v in values if v]
     if not keys:

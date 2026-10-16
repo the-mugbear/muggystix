@@ -140,7 +140,7 @@ api_router.include_router(
     agent_proposals.router, prefix="/agent", tags=["agent-proposals"],
     dependencies=_agent_operator_access,
 )
-# v2.428.0 — the Findings hub's scanner-observations view and the Reports
+# v2.428.0 — the Scanner observations page (Inventory since 2.508.0) and the Reports
 # page, for agents (wrapping the same services as those pages).
 api_router.include_router(
     agent_assist_reporting.router, prefix="/agent", tags=["agent-assist"],

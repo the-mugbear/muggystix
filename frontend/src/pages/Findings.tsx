@@ -6,7 +6,7 @@
  * filterable by status, severity, source and owner.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { findingDetailHref } from '../utils/findingsReturn';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
@@ -74,11 +74,9 @@ import {
 } from '../components/ui/table';
 import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
-import { ViewTabs } from '../components/ui/view-tabs';
 
-const FINDINGS_VIEWS = [['findings', 'Findings'], ['observations', 'Scanner observations']] as const;
-import ScannerObservations from '../components/findings/ScannerObservations';
 import ProposedFindingsLine from '../components/findings/ProposedFindingsLine';
+import { OBSERVATIONS_TO_JUDGE_PATH, observationsPathFromFindingsView } from '../utils/observationsPath';
 import {
   HOST_STATE_FILTER_LABEL, SOURCE_LABEL, SOURCE_OPTIONS, STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates,
   matchesStatusFilter,
@@ -125,18 +123,18 @@ const ownerFilterOf = (raw: string | null, myId: number | null | undefined): Own
 };
 
 /**
- * v5.272.0 — two views of one page: the findings (the judged record) and the
- * scanner observations still waiting for a judgment, grouped by issue across
- * hosts so a common one can be promoted on many hosts at once.  The view is a
- * URL param so a link can land on either.
+ * The project's findings — the judged record reports are built from.
+ *
+ * 5.404.0 — the scanner observations it used to hold as a second view are an
+ * Inventory page of their own (`/observations`, with an inspector); an old
+ * `?view=observations` link lands there, narrowed to what is not yet judged
+ * (what that view listed).
  */
 const Findings: React.FC = () => {
-  const { canWrite } = useProjectRole();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const view = searchParams.get('view') === 'observations' ? 'observations' : 'findings';
-  const setView = (next: 'findings' | 'observations') => {
-    setSearchParams(next === 'observations' ? { view: 'observations' } : {}, { replace: true });
-  };
+  const [searchParams] = useSearchParams();
+  if (searchParams.get('view') === 'observations') {
+    return <Navigate to={observationsPathFromFindingsView(searchParams)} replace />;
+  }
   return (
     <div className="p-md md:p-lg">
       <div className="mb-md">
@@ -144,17 +142,13 @@ const Findings: React.FC = () => {
         {/* v5.267.0 — one line; the vocabulary (v5.225.0, the three
             populations named the same way everywhere) sits on the (i). */}
         <p className="flex flex-wrap items-center gap-xxs text-metadata text-muted-foreground">
-          {/* Scanner observations are what has NOT been triaged yet: the
-              findings line does not describe that view. */}
-          {view === 'observations'
-            ? 'What the scanners reported that nobody has judged yet — promote one to make it a finding.'
-            : 'The issues triaged in this project — the record reports are built from.'}
+          The issues triaged in this project — the record reports are built from.
           <InfoTip
             label="What the statuses mean"
             text={
               <>
-                Scanner observations are what the scanners reported, not yet judged; promote one to make it a
-                finding. Open is under investigation; Confirmed is validated; False positive, Accepted risk and
+                Scanner observations are what the scanners reported, not yet judged (Inventory → Scanner
+                observations); promote one to make it a finding. Open is under investigation; Confirmed is validated; False positive, Accepted risk and
                 Remediated are closed. A finding&apos;s status is the issue&apos;s; each affected host keeps its own
                 state on the finding page — still present, awaiting a retest, remediated or false positive — and
                 the Hosts filter lists the findings with a host in one of them.
@@ -162,10 +156,9 @@ const Findings: React.FC = () => {
             }
           />
         </p>
-        <ViewTabs label="Findings view" value={view} options={FINDINGS_VIEWS} onChange={setView} className="mt-sm" />
-        {view === 'findings' && <ProposedFindingsLine />}
+        <ProposedFindingsLine />
       </div>
-      {view === 'observations' ? <ScannerObservations canManage={canWrite} /> : <FindingsList />}
+      <FindingsList />
     </div>
   );
 };
@@ -816,13 +809,9 @@ const FindingsList: React.FC = () => {
                           Include closed ones
                         </button>
                         {' · '}
-                        <button
-                          type="button"
-                          className="text-primary hover:underline"
-                          onClick={() => setSearchParams({ view: 'observations' }, { replace: true })}
-                        >
+                        <Link to={OBSERVATIONS_TO_JUDGE_PATH} className="text-primary hover:underline">
                           Promote from scanner observations
-                        </button>
+                        </Link>
                       </>
                     ) : hasActiveFilters
                       ? 'No findings match these filters. Clear them to see all.'

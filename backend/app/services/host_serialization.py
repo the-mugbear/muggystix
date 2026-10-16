@@ -487,6 +487,26 @@ def issue_coverage_map(db, project_id: int, vulns, host_id: Optional[int] = None
     return {"by_key": by_key, "endpoints": endpoints}
 
 
+def parse_references(raw_refs: Optional[str]) -> List[str]:
+    """A scanner row's ``references`` as a list (v2.45.6).
+
+    The column is Text holding a JSON array of URLs / identifiers.
+    Defensive: a plain string, malformed JSON or NULL never breaks a read —
+    text that is not JSON is one reference.  The host page's rows and the
+    Scanner observations inspector both read it here."""
+    if not raw_refs:
+        return []
+    try:
+        parsed = json.loads(raw_refs)
+    except (ValueError, TypeError):
+        return [str(raw_refs).strip()]
+    if isinstance(parsed, list):
+        return [str(r).strip() for r in parsed if str(r).strip()]
+    if isinstance(parsed, str) and parsed.strip():
+        return [parsed.strip()]
+    return []
+
+
 def serialize_vulnerability(vuln: Vulnerability, coverage: Optional[dict] = None) -> dict:
     """Translate one Vulnerability row into the response dict.
 
@@ -498,22 +518,7 @@ def serialize_vulnerability(vuln: Vulnerability, coverage: Optional[dict] = None
     severity = enum_value(vuln.severity) if vuln.severity else None
     source = enum_value(getattr(vuln, "source", None)) or None
 
-    # v2.45.6 — `references` is stored as a Text column holding a JSON
-    # array of URLs/identifiers.  Parse it to a real list for the API.
-    # Defensive: tolerate a plain string, malformed JSON, or NULL — a
-    # bad references blob must never break the whole host detail load.
-    references: List[str] = []
-    raw_refs = getattr(vuln, "references", None)
-    if raw_refs:
-        try:
-            parsed = json.loads(raw_refs)
-            if isinstance(parsed, list):
-                references = [str(r).strip() for r in parsed if str(r).strip()]
-            elif isinstance(parsed, str) and parsed.strip():
-                references = [parsed.strip()]
-        except (ValueError, TypeError):
-            # Not JSON — treat the raw text as a single reference.
-            references = [str(raw_refs).strip()]
+    references = parse_references(getattr(vuln, "references", None))
 
     port_number = None
     protocol = None

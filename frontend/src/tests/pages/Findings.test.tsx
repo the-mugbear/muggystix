@@ -767,7 +767,9 @@ describe('Findings — empty states', () => {
     expect(await screen.findByText(/No active findings/)).toBeInTheDocument();
     expect(screen.queryByText(/match these filters/)).toBeNull();
     expect(screen.getByRole('button', { name: 'Include closed ones' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Promote from scanner observations' })).toBeInTheDocument();
+    // 5.404.0 — the observations are an Inventory page: what still waits.
+    expect(screen.getByRole('link', { name: 'Promote from scanner observations' }))
+      .toHaveAttribute('href', '/observations?obs_pending=1');
   });
 
   it('blames the filters only when the analyst set one', async () => {
@@ -778,5 +780,30 @@ describe('Findings — empty states', () => {
   it('with every filter cleared, explains how findings are made', async () => {
     renderFindings('/findings?status=all');
     expect(await screen.findByText(/Promote a scanner observation/)).toBeInTheDocument();
+  });
+});
+
+// 5.404.0 — Scanner observations left this page for Inventory.  An old
+// `?view=observations` link lands on the new page with the view's filters,
+// narrowed to what is not yet judged (what the view listed).
+describe('Findings — the old Scanner observations view', () => {
+  it('redirects to the Inventory page, keeping its filters', async () => {
+    mocked.listFindings.mockClear();
+    const Where: React.FC = () => {
+      const [params] = useSearchParams();
+      return <p data-testid="observations-page">{params.toString()}</p>;
+    };
+    render(
+      <TooltipProvider>
+        <MemoryRouter initialEntries={['/findings?view=observations&obs_severity=high']}>
+          <Routes>
+            <Route path="/findings" element={<Findings />} />
+            <Route path="/observations" element={<Where />} />
+          </Routes>
+        </MemoryRouter>
+      </TooltipProvider>,
+    );
+    expect(await screen.findByTestId('observations-page')).toHaveTextContent('obs_severity=high&obs_pending=1');
+    expect(api.listFindings).not.toHaveBeenCalled();
   });
 });

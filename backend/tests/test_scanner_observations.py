@@ -293,15 +293,21 @@ def test_what_an_observation_says_can_be_read_without_opening_a_host(client, db_
           cve_id="CVE-2017-5638")
     _vuln(db_session, hosts[1], scan.id, "Apache Struts RCE", severity=VulnerabilitySeverity.HIGH,
           cve_id="CVE-2017-5638", source="openvas", description="The Jakarta parser mishandles Content-Type.",
-          solution="Upgrade Struts.", cvss_score=9.8, cvss_vector="CVSS:3.1/AV:N/AC:L")
+          solution="Upgrade Struts.", cvss_score=9.8, cvss_vector="CVSS:3.1/AV:N/AC:L",
+          plugin_id="1.3.6.1.4.1.25623.1.0.140180", source_plugin_name="Apache Struts2 Jakarta RCE",
+          references='["https://cwe.mitre.org/data/definitions/20.html", "CVE-2017-5638"]')
     key = next(r["issue_key"] for r in client.get(_url(test_project)).json()["items"] if r["cve_id"] == "CVE-2017-5638")
 
     body = client.get(_url(test_project, "/detail"), params={"issue_key": key})
     assert body.status_code == 200, body.text
+    # v2.508.0 — the inspector: the same row's identifiers and references.
     assert body.json() == {
         "issue_key": key, "title": "Apache Struts RCE", "source": "openvas",
         "description": "The Jakarta parser mishandles Content-Type.", "solution": "Upgrade Struts.",
         "cvss_score": 9.8, "cvss_vector": "CVSS:3.1/AV:N/AC:L",
+        "cve_id": "CVE-2017-5638", "plugin_id": "1.3.6.1.4.1.25623.1.0.140180",
+        "plugin_name": "Apache Struts2 Jakarta RCE",
+        "references": ["https://cwe.mitre.org/data/definitions/20.html", "CVE-2017-5638"],
     }
 
     # Nothing written by any scanner: the row is named, the texts are null.
@@ -369,3 +375,52 @@ def test_another_projects_observation_has_no_detail_here(client, db_session, tes
     theirs = _vuln(db_session, host, None, "Only in the other project", description="secret")
     assert theirs.issue_key
     assert client.get(_url(test_project, "/detail"), params={"issue_key": theirs.issue_key}).status_code == 404
+
+
+def test_what_a_scanner_printed_for_one_host_is_read_from_the_inspector(client, db_session, test_project, estate):
+    """2026-10-16, the Scanner observations inspector: opening a host shows
+    that host's rows of the issue as the host page serializes them — port,
+    scanner and what it printed THERE — so a reader judges the issue host by
+    host without leaving the list.  Another host's, or another issue's, rows
+    are not in it."""
+    hosts, scan = estate["hosts"], estate["scan"]
+    port = models.Port(host_id=hosts[0].id, port_number=445, protocol="tcp", state="open", service_name="microsoft-ds")
+    db_session.add(port)
+    db_session.commit()
+    smb = _vuln(db_session, hosts[0], scan.id, "SMB Signing not required", port_id=port.id,
+                plugin_output="Message signing required: false")
+    key = smb.issue_key
+    rows = client.get(_url(test_project, "/host-output"), params={"issue_key": key, "host_id": hosts[0].id})
+    assert rows.status_code == 200, rows.text
+    body = rows.json()
+    # The fixture's host-level row and the port row, most severe first, host-level first.
+    assert [(r["port_number"], r["protocol"], r["plugin_output"]) for r in body] == [
+        (None, None, None), (445, "tcp", "Message signing required: false"),
+    ]
+    assert {r["issue_key"] for r in body} == {key}
+    # A host that carries another issue only, and another project's host: nothing.
+    tls_only = client.get(_url(test_project, "/host-output"), params={"issue_key": "cve:CVE-2023-38408", "host_id": hosts[2].id})
+    assert tls_only.json() == []
+    other = Project(name="Other", slug="other-obs-output")
+    db_session.add(other)
+    db_session.commit()
+    theirs = _host(db_session, other.id, "10.201.0.1")
+    _vuln(db_session, theirs, None, "SMB Signing not required", plugin_output="theirs")
+    assert client.get(_url(test_project, "/host-output"), params={"issue_key": key, "host_id": theirs.id}).json() == []
+
+
+def test_the_agents_read_the_inspectors_detail_from_the_same_service(client, db_session, test_project, estate):
+    """Agent parity (v2.508.0): what the inspector shows about an issue is an
+    agent read too — the page's own ``issue_detail``, field for field."""
+    r = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={})
+    assert r.status_code == 201, r.text
+    key = {"X-API-Key": r.json()["api_key"]}
+    issue = next(i for i in client.get(_url(test_project)).json()["items"] if i["cve_id"] == "CVE-2023-38408")
+    page = client.get(_url(test_project, "/detail"), params={"issue_key": issue["issue_key"]}).json()
+    agent = client.get("/api/v1/agent/assist/scanner-observations/detail", headers=key,
+                       params={"issue_key": issue["issue_key"]})
+    assert agent.status_code == 200, agent.text
+    assert agent.json() == page
+    missing = client.get("/api/v1/agent/assist/scanner-observations/detail", headers=key,
+                         params={"issue_key": "title:no such issue"})
+    assert missing.status_code == 404

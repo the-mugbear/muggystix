@@ -269,7 +269,7 @@
             "Vulnerability.title",
             "Host.smb_signing"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB row · Filter: vuln:, has:smb_unsigned · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › SMB row · Filter: vuln:, has:smb_unsigned · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Not required or disabled becomes the scanner observation \"SMB signing not required\" on port 445 (the same issue NetExec reports), and sets the host's SMB signing field. Keyword match over both scripts' text."
         },
         {
@@ -279,7 +279,7 @@
           "stored_as": [
             "Vulnerability.title"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Scanner observation \"VNC server does not require authentication\" (high) on the port."
         },
         {
@@ -289,7 +289,7 @@
           "stored_as": [
             "Vulnerability.title"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Scanner observation \"Anonymous FTP login allowed\" (medium) on the port."
         },
         {
@@ -299,7 +299,7 @@
           "stored_as": [
             "Vulnerability.title"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Scanner observation \"SMBv1 enabled\" (medium) on port 445."
         },
         {
@@ -316,7 +316,7 @@
             "WebInterface.source",
             "Script.output"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Ports TLS column · Filter: vuln:, has:cert_issue, certorg: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › Ports TLS column · Filter: vuln:, has:cert_issue, certorg: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "On http* services: the web interface's certificate fields (has:cert_issue, certorg:). On ANY TLS service, an expired certificate (judged at the scan's time) is also the scanner observation \"TLS certificate expired\". Self-signed is not flagged outside web ports: RDP's default certificate is self-signed. Subject CN, SANs, key and signature algorithm are not promoted."
         },
         {
@@ -327,7 +327,7 @@
             "Vulnerability.title",
             "WebInterface.tls_weak_protocol"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Ports TLS column · Filter: vuln:, has:weak_tls · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › Ports TLS column · Filter: vuln:, has:weak_tls · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "On ANY TLS service, SSLv2 / SSLv3 / TLS 1.0 / 1.1 offered is the scanner observation \"Deprecated TLS/SSL protocol offered\"; on http* services it also sets the web interface's weak-TLS flag (has:weak_tls)."
         },
         {
@@ -352,7 +352,7 @@
             "Vulnerability.references",
             "Vulnerability.plugin_output"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Scanner observations detail · Filter: vuln:, cve: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › Scanner observations detail · Filter: vuln:, cve: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Each VULNERABLE / LIKELY VULNERABLE / VULNERABLE (DoS) / VULNERABLE (Exploitable) result is a scanner observation titled as nmap titles it; severity from the text report's Risk factor, else the CVSS score; Exploitable sets has:exploit. NOT VULNERABLE and UNKNOWN are skipped. Host-rule smb-* results sit on the SMB port."
         },
         {
@@ -365,7 +365,7 @@
             "Vulnerability.cvss_score",
             "Vulnerability.exploitable"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Scanner observations detail · Filter: vuln:, cve:, has:exploit, exploitport: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › Scanner observations detail · Filter: vuln:, cve:, has:exploit, exploitport: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Each CVE entry is a scanner observation \"<CVE> in <product> <version>\", severity from its CVSS score, marked as a version match, not a test. Exploit-database entries (not CVEs) are skipped."
         },
         {
@@ -1091,7 +1091,7 @@
             "Vulnerability.scan_id",
             "Vulnerability.last_seen_scan_id"
           ],
-          "shown": "Host inspector; Host inspector › Scanner observations; Findings › Scanner observations view · Filter: vuln: · Also: Patterns insight: vuln monoculture key; JSON / Markdown export",
+          "shown": "Host inspector; Host inspector › Scanner observations; Inventory › Scanner observations · Filter: vuln: · Also: Patterns insight: vuln monoculture key; JSON / Markdown export",
           "note": "Deduplicated on (host, port, pluginID); a repeat updates last_seen/last_seen_scan_id. Items without pluginID are skipped. v2.415.0: ten plugins that are misconfiguration checks (SMB signing 57608, SMB null session 26920, SMBv1 96982, anonymous FTP 10079, VNC unauthenticated 26925, TLS 1.0/1.1 and SSL 2/3 104743/157288/20007, certificate expiry 15901, HSTS 142960) take the catalog title and check (kind misconfiguration), grouping with nmap's and NetExec's reports; severity and write-up stay Nessus's."
         },
         {
@@ -1101,7 +1101,7 @@
           "stored_as": [
             "Vulnerability.severity"
           ],
-          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Findings › Scanner observations view · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
+          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Inventory › Scanner observations · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
           "note": "0 info, 1 low, 2 medium, 3 high, 4 critical. Not updated when the same plugin is seen again."
         },
         {
@@ -1111,7 +1111,7 @@
           "stored_as": [
             "Vulnerability.severity"
           ],
-          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Findings › Scanner observations view · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
+          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Inventory › Scanner observations · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
           "note": "Written as INFO observations by default. When skip_informational is on (upload form field, else Project.skip_informational_findings, else NESSUS_SKIP_INFORMATIONAL_DEFAULT) no row is written, only the port is upserted, and the skipped count appears in the import message."
         },
         {
@@ -1169,7 +1169,7 @@
             "Vulnerability.cve_id",
             "Vulnerability.references"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Scanner observations detail 'References' list; CVE count badge · Filter: cve: · Also: HTML host dossier report; vulnerabilities.csv",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › Scanner observations detail 'References' list; CVE count badge · Filter: cve: · Also: HTML host dossier report; vulnerabilities.csv",
           "note": "First CVE becomes cve_id; every CVE is also written as a cve.mitre.org URL in the references JSON. Neither is refreshed on re-upload of an existing row."
         },
         {
@@ -1344,7 +1344,7 @@
             "Vulnerability.scan_id",
             "Vulnerability.last_seen_scan_id"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Scanner observations detail · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › Scanner observations detail · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Deduplicated on (host, source, NVT OID, port), title otherwise; a repeat refreshes severity, title, score and text."
         },
         {
@@ -1355,7 +1355,7 @@
             "Vulnerability.severity",
             "Vulnerability.cvss_score"
           ],
-          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Findings › Scanner observations view · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
+          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Inventory › Scanner observations · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
           "note": ">=9 critical, >=7 high, >=4 medium, >0 low, otherwise info. The result's severity number (which may already reflect an override) is stored as cvss_score. Threat text is used only when no number parses."
         },
         {
@@ -1365,7 +1365,7 @@
           "stored_as": [
             "Vulnerability.severity"
           ],
-          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Findings › Scanner observations view · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
+          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Inventory › Scanner observations · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
           "note": "Not filtered: stored as INFO observations. The Nessus skip-informational switch does not apply to OpenVAS."
         },
         {
@@ -1375,7 +1375,7 @@
           "stored_as": [
             "Vulnerability.severity"
           ],
-          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Findings › Scanner observations view · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
+          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Inventory › Scanner observations · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
           "note": "A negative severity maps to INFO, so results Greenbone marked false positive are stored as ordinary informational observations."
         },
         {
@@ -1386,7 +1386,7 @@
             "Vulnerability.cve_id",
             "Vulnerability.references"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Scanner observations detail 'References' list; CVE count badge · Filter: cve: · Also: HTML host dossier report; vulnerabilities.csv",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › Scanner observations detail 'References' list; CVE count badge · Filter: cve: · Also: HTML host dossier report; vulnerabilities.csv",
           "note": "First CVE (N/A/none ignored) becomes cve_id; further CVE refs go into references as one 'Also: CVE-…, CVE-…' string."
         },
         {
@@ -1529,7 +1529,7 @@
             "Vulnerability.title",
             "Vulnerability.plugin_id"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Each match is a scanner observation; the matcher name is part of the title, so one template's matchers stay separate. http-missing-security-headers matchers for HSTS, CSP, X-Content-Type-Options and X-Frame-Options take the catalog titles shared with Nikto and testssl. The ftp-anonymous-login, deprecated-tls and expired-ssl templates take their catalog checks too."
         },
         {
@@ -1539,7 +1539,7 @@
           "stored_as": [
             "Vulnerability.severity"
           ],
-          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Findings › Scanner observations view · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
+          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Inventory › Scanner observations · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
           "note": "Nuclei's own severity (info … critical)."
         },
         {
@@ -1563,7 +1563,7 @@
             "Vulnerability.cvss_score",
             "Vulnerability.references"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Scanner observations detail · Filter: cve: · Also: HTML host dossier report; vulnerabilities.csv",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › Scanner observations detail · Filter: cve: · Also: HTML host dossier report; vulnerabilities.csv",
           "note": "The first CVE is the observation's CVE; further ones go to its references."
         },
         {
@@ -1680,7 +1680,7 @@
             "Vulnerability.description",
             "Vulnerability.source"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Scanner observations detail · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › Scanner observations detail · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "One scanner observation per message, source NIKTO. Title is prefixed with the tested path (`/robots.txt: ...`) when the message does not already start with one (JSON `url`, CSV uri); title clipped to 500, source_plugin_name to 200 chars. Text `See: <url>` is split off the title into the description."
         },
         {
@@ -1691,7 +1691,7 @@
             "Vulnerability.title",
             "Vulnerability.plugin_output"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Scanner observations detail 'Scanner output on this host' · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › Scanner observations detail 'Scanner output on this host' · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "HSTS, CSP, X-Content-Type-Options (both Nikto reports, one row) and X-Powered-By / X-AspNet-Version take the catalog titles shared with Nuclei and testssl (low). Other headers (Referrer-Policy, Permissions-Policy…) keep Nikto's title."
         },
         {
@@ -1750,7 +1750,7 @@
           "stored_as": [
             "Vulnerability.severity"
           ],
-          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Findings › Scanner observations view · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
+          "shown": "Host inspector › Scanner observations; Hosts list › Attention; Inventory › Scanner observations · Filter: has:critical/high/medium/low, vulnsince: · Also: Overview posture label/priority; Segments per-subnet severity counts",
           "note": "Nikto does not rate its findings: every native JSON, native CSV and text finding is stored LOW (map_text_severity('low')). Only a non-native JSON/CSV carrying a `severity` value is mapped (critical/high/medium/low/info or a numeric score)."
         },
         {
@@ -1760,7 +1760,7 @@
           "stored_as": [
             "Vulnerability.cve_id"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view · Filter: cve: · Also: HTML host dossier report; vulnerabilities.csv",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations · Filter: cve: · Also: HTML host dossier report; vulnerabilities.csv",
           "note": "Only when a `cve` key exists; native Nikto JSON/CSV/text never have one, and CVE ids mentioned inside a message are not extracted."
         },
         {
@@ -1936,7 +1936,7 @@
             "Vulnerability.source",
             "Vulnerability.source_plugin_name"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Hosts list › Attention · Filter: vuln:, has:critical/high/medium/low, vulnsince: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Hosts list › Attention · Filter: vuln:, has:critical/high/medium/low, vulnsince: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "One scanner observation per rated check id, source TESTSSL: plugin_id = testssl id, title from a fixed name table (else `TLS check: <id>`, e.g. `TLS check: cert_revocation`), description = testssl's `finding` text, severity mapped 1:1. A check reported OK (e.g. heartbleed 'not vulnerable') is not an observation. Offered SSLv2/SSLv3/TLS 1.0/1.1 become one \"Deprecated TLS/SSL protocol offered\", missing HSTS \"HTTP Strict-Transport-Security header missing\" and an expired certificate \"TLS certificate expired\" — the catalog titles nmap, Nikto and Nuclei share."
         },
         {
@@ -1956,7 +1956,7 @@
           "stored_as": [
             "Vulnerability.cve_id"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view · Filter: cve: · Also: HTML host dossier report; vulnerabilities.csv",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations · Filter: cve: · Also: HTML host dossier report; vulnerabilities.csv",
           "note": "Only the first CVE id is kept on a rated observation; additional CVEs on the same check are dropped (still in raw)."
         },
         {
@@ -3120,7 +3120,7 @@
             "Vulnerability.title",
             "Vulnerability.plugin_output"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view · Filter: vuln:, check:dns_zone_transfer_allowed · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations · Filter: vuln:, check:dns_zone_transfer_allowed · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Scanner observation \"DNS zone transfer allowed\" (medium, source dnsx) on the NAME SERVER's host, with the zone and the record count as its output ('Zone corp.example: transfer allowed by 10.0.0.53:53 (9 records)'). On the server's port from the resolver string (53/tcp) when the host has that port recorded, else on the host. Recorded only when the server's address is already a host of the project — known before, or discovered by this import (usually the zone's own A record for the server); a resolver is never made a host (see gaps). One observation per server; a second zone from the same server refreshes it."
         },
         {
@@ -3487,7 +3487,7 @@
             "Vulnerability.title",
             "Host.smb_signing"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB row · Filter: vuln:, has:smb_unsigned · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › SMB row · Filter: vuln:, has:smb_unsigned · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "(signing:False) becomes the scanner observation \"SMB signing not required\" on port 445, and sets the host's SMB signing field."
         },
         {
@@ -3498,7 +3498,7 @@
             "Vulnerability.title",
             "NetexecResult.smbv1"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB / AD enumeration · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › SMB / AD enumeration · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Scanner observation \"SMBv1 enabled\" (medium) on port 445, the same issue nmap's smb-protocols reports."
         },
         {
@@ -3509,7 +3509,7 @@
             "Vulnerability.title",
             "NetexecResult.raw_output"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB / AD enumeration › the tool's line · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › SMB / AD enumeration › the tool's line · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Scanner observation \"SMB null or guest session allowed\" on port 445 (one row with a guest / null login on the same host)."
         },
         {
@@ -3543,7 +3543,7 @@
             "Vulnerability.title",
             "NetexecResult.username"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB / AD enumeration · Filter: vuln:, has:weak_auth · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › SMB / AD enumeration · Filter: vuln:, has:weak_auth · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Scanner observation \"SMB null or guest session allowed\" on port 445; also has:weak_auth."
         },
         {
@@ -3554,7 +3554,7 @@
             "Vulnerability.title",
             "NetexecResult.username"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB / AD enumeration · Filter: vuln:, has:weak_auth · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › SMB / AD enumeration · Filter: vuln:, has:weak_auth · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Scanner observation \"Anonymous FTP login allowed\" on port 21; also has:weak_auth."
         },
         {
@@ -3608,7 +3608,7 @@
             "Vulnerability.title",
             "NetexecResult.shares"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB / AD enumeration › shares · Filter: vuln:, check:nfs_export_any_host · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › SMB / AD enumeration › shares · Filter: vuln:, check:nfs_export_any_host · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "v2.430.0 — scanner observation \"NFS export open to any host\" (medium), naming the exports. On 2049/tcp when the host has it recorded open, else on the mount daemon's port nxc reached (v2.430.1 — it was always the latter, a port the host's scanned list usually lacked)."
         },
         {
@@ -3619,7 +3619,7 @@
             "Vulnerability.title",
             "NetexecResult.raw_output"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB / AD enumeration › the tool's line · Filter: vuln:, check:nfs_root_escape · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › SMB / AD enumeration › the tool's line · Filter: vuln:, check:nfs_root_escape · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "v2.430.0 — scanner observation \"NFS export allows escape to the root filesystem\" (high), on 2049/tcp when the host has it recorded open, else on the mount daemon's port nxc reached. `root escape:False` and `None` (no NFSv3 to try) are not findings; the NFS versions stay in the line."
         },
         {
@@ -3650,7 +3650,7 @@
             "Vulnerability.title",
             "NetexecResult.raw_output"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB / AD enumeration › the tool's line · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › SMB / AD enumeration › the tool's line · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "Scanner observation \"VNC server does not require authentication\" (high) on the port."
         },
         {
@@ -3762,7 +3762,7 @@
             "NetexecResult.auth_success",
             "NetexecResult.username"
           ],
-          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB / AD enumeration · Filter: vuln:, has:weak_auth · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "shown": "Host inspector › Scanner observations; Inventory › Scanner observations; Host inspector › SMB / AD enumeration · Filter: vuln:, has:weak_auth · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "NULL and guest sessions become the scanner observation \"SMB null or guest session allowed\" (source smbmap); also has:weak_auth."
         },
         {

@@ -4,10 +4,11 @@ An agent could list findings and read one, but not the two views beside them
 that answer "what did the scanners find that nobody has judged yet?" and
 "what did we tell the client?":
 
-* ``GET /assist/scanner-observations`` (+ ``/hosts``) — the Findings page's
-  *Scanner observations* view: each issue once across the project with its
-  host count and how many of those a finding already covers.  Read-only;
-  promotion stays a person's call.
+* ``GET /assist/scanner-observations`` (+ ``/hosts``, ``/detail``) — the
+  *Scanner observations* page (Inventory since 5.404.0; it was the Findings
+  page's second view): each issue once across the project with its host count
+  and how many of those a finding already covers, and what its inspector says
+  about one.  Read-only; promotion stays a person's call.
 * ``GET /assist/client-reports`` (+ ``/{id}``, ``/{id}/files/{fmt}``) — the
   Reports page: drafts and issued reports, what each one says, and its files.
 
@@ -31,7 +32,7 @@ from sqlalchemy.orm import Session, defer, selectinload
 from app.api.deps import agent_read_floor, check_agent_rate_limit
 from app.api.v1.endpoints.agent_schemas import AgentPage, agent_page
 from app.api.v1.endpoints.client_reports import report_file_response, report_scope_response
-from app.api.v1.endpoints.scanner_observations import IssueHostOut, IssuePageOut, IssueRowOut
+from app.api.v1.endpoints.scanner_observations import IssueDetailOut, IssueHostOut, IssuePageOut, IssueRowOut
 from app.db.models_agent import Agent
 from app.db.models_project import ProjectRole
 from app.db.models_reports import Report, ReportStatus
@@ -60,7 +61,8 @@ def _operator_role(request: Request) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Scanner observations — the Findings page's "Scanner observations" view
+# Scanner observations — the Inventory page "Scanner observations" (until
+# 5.404.0 a view of the Findings page) and its inspector's detail
 # ---------------------------------------------------------------------------
 
 class AssistIssuePage(IssuePageOut, AgentPage):
@@ -129,6 +131,30 @@ def list_assist_scanner_observation_hosts(
     ]
     total = observations.issue_host_total(db, request.state.agent_project_id, issue_key)
     return AssistIssueHostPage(**agent_page(items, total=total, limit=limit, offset=offset))
+
+
+@router.get(
+    "/assist/scanner-observations/detail",
+    response_model=IssueDetailOut,
+    summary="What a scanner wrote about one issue: description, remediation, CVSS, references",
+    responses={404: {"description": "No scanner observation in this project is that issue"}},
+)
+def get_assist_scanner_observation_detail(
+    request: Request,
+    issue_key: str = Query(
+        ..., min_length=1, max_length=600,
+        description="The issue's `issue_key`, as a row of /assist/scanner-observations gives it.",
+    ),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """The Scanner observations inspector's details (v2.508.0), from the page's
+    own ``issue_detail``. What a scanner printed for ONE host is that host's
+    (``/assist/hosts/{id}/vulnerabilities``)."""
+    detail = observations.issue_detail(db, request.state.agent_project_id, issue_key)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="No scanner observation in this project is that issue")
+    return IssueDetailOut(**vars(detail))
 
 
 # ---------------------------------------------------------------------------

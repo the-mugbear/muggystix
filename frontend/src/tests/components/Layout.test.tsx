@@ -163,9 +163,9 @@ describe('Layout shell', () => {
     renderAt('/hosts');
     const strip = screen.getByRole('navigation', { name: 'Inventory sections' });
     // Ingestion Results is the Scans page's "Import results" view (5.380.0),
-    // not a tab of its own.
+    // not a tab of its own; Scanner observations is (5.404.0).
     expect(within(strip).getAllByRole('link').map((a) => a.textContent)).toEqual(
-      ['Hosts', 'Names', 'Scans', 'Scope'],
+      ['Hosts', 'Names', 'Scanner observations', 'Scans', 'Scope'],
     );
   });
 
@@ -177,7 +177,7 @@ describe('Layout shell', () => {
       const { unmount } = renderAt('/hosts');
       const strip = screen.getByRole('navigation', { name: 'Inventory sections' });
       expect(within(strip).getAllByRole('link').map((a) => a.textContent), my_role).toEqual(
-        ['Hosts', 'Names', 'Scans', 'Scope'],
+        ['Hosts', 'Names', 'Scanner observations', 'Scans', 'Scope'],
       );
       unmount();
     }

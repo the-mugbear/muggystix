@@ -4,7 +4,7 @@
  * argument.
  */
 import { api, projectPath } from './client';
-import type { Annotation, NoteAttachment } from './hosts';
+import type { Annotation, HostVulnerability, NoteAttachment } from './hosts';
 import type { Proposal } from './proposals';
 
 export type FindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -633,7 +633,23 @@ export interface ObservationIssueDetail {
   solution: string | null;
   cvss_score: number | null;
   cvss_vector: string | null;
+  /** 5.404.0 (backend 2.508.0) — the same row's identifiers and references. */
+  cve_id?: string | null;
+  plugin_id?: string | null;
+  plugin_name?: string | null;
+  references?: string[];
 }
+
+/** One issue's scanner rows on one host, as the host page serializes them:
+ *  port, scanner, and what it printed there (`plugin_output`). */
+export const getObservationHostOutput = async (
+  projectId: number, issueKey: string, hostId: number, signal?: AbortSignal,
+): Promise<HostVulnerability[]> => {
+  const response = await api.get(`${projectPath(projectId)}/scanner-observations/host-output`, {
+    params: { issue_key: issueKey, host_id: hostId }, signal,
+  });
+  return response.data;
+};
 
 export const getObservationIssueDetail = async (
   projectId: number, issueKey: string, signal?: AbortSignal,

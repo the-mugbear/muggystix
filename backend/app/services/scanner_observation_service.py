@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Sequence
 from sqlalchemy import String, and_, case, cast, distinct, false, func, literal, or_
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.dialects.postgresql import array_agg as pg_array_agg
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import Host, Port
 from app.db.models_findings import Finding, FindingHost, FindingSource, FindingStatus
@@ -33,6 +33,7 @@ from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.services.engagement_metrics_service import join_judged, observation_judged_on_host
 from app.services.finding_service import FindingService
 from app.services.host_query_common import escape_like
+from app.services.host_serialization import parse_references, serialize_vulnerability
 from app.services.misconfig_checks import KIND_INFORMATIONAL, KIND_MISCONFIGURATION, KIND_VULNERABILITY
 
 # Most issues one promotion call may name, and most hosts one issue may list.
@@ -338,8 +339,8 @@ def issue_hosts(
     db: Session, project_id: int, issue_key: str, limit: Optional[int] = None, offset: int = 0,
 ) -> List[IssueHost]:
     """The hosts carrying the issue (``limit`` of them by address from
-    ``offset``, or all), with whether a finding covers it there.  The Findings
-    view asks for one more than it shows, so it knows when the list is cut — an
+    ``offset``, or all), with whether a finding covers it there.  The page's
+    inspector asks for one more than it shows, so it knows when the list is cut — an
     issue on 10k hosts rendered 10k rows (review 2026-09-23 R11)."""
     judged = func.max(case((observation_judged_on_host(), 1), else_=0))
     query = (
@@ -414,6 +415,11 @@ class IssueDetail:
     solution: Optional[str] = None
     cvss_score: Optional[float] = None
     cvss_vector: Optional[str] = None
+    # v2.508.0 — the inspector: the same row's identifiers and references.
+    cve_id: Optional[str] = None
+    plugin_id: Optional[str] = None
+    plugin_name: Optional[str] = None
+    references: List[str] = field(default_factory=list)
 
 
 def issue_detail(db: Session, project_id: int, issue_key: str) -> Optional[IssueDetail]:
@@ -440,7 +446,28 @@ def issue_detail(db: Session, project_id: int, issue_key: str) -> Optional[Issue
         solution=(row.solution or "").strip() or None,
         cvss_score=row.cvss_score,
         cvss_vector=row.cvss_vector or None,
+        cve_id=row.cve_id or None,
+        plugin_id=row.plugin_id or None,
+        plugin_name=(row.source_plugin_name or "").strip() or None,
+        references=parse_references(row.references),
     )
+
+
+def issue_host_rows(db: Session, project_id: int, issue_key: str, host_id: int) -> List[dict]:
+    """The scanner rows of one issue on one host, as the host page serializes
+    them (``serialize_vulnerability``: port, scanner, what it printed for this
+    host — ``plugin_output`` — and when it was seen), most severe first, then
+    by port.  What a scanner printed differs per host, so the inspector reads
+    it when a host is opened; an empty list when the host carries no such
+    row (or is not this project's)."""
+    rows = (
+        _project_rows(db, project_id, Vulnerability)
+        .options(joinedload(Vulnerability.port))
+        .filter(_key_is(issue_key), Vulnerability.host_id == host_id)
+        .order_by(_rank().desc(), Vulnerability.port_id.asc().nullsfirst(), Vulnerability.id.asc())
+        .all()
+    )
+    return [serialize_vulnerability(v) for v in rows]
 
 
 @dataclass

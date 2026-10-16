@@ -20,6 +20,7 @@ from app.core.security import log_audit_event
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
+from app.schemas.schemas import HostVulnerability
 from app.services import scanner_observation_service as svc
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -69,6 +70,11 @@ class IssueDetailOut(BaseModel):
     solution: Optional[str] = None
     cvss_score: Optional[float] = None
     cvss_vector: Optional[str] = None
+    # v2.508.0 — the same row's identifiers and its references (URLs, advisories).
+    cve_id: Optional[str] = None
+    plugin_id: Optional[str] = None
+    plugin_name: Optional[str] = None
+    references: List[str] = Field(default_factory=list)
 
 
 class PromoteItemIn(BaseModel):
@@ -143,6 +149,22 @@ def get_scanner_observation_detail(
     if detail is None:
         raise HTTPException(status_code=404, detail="No scanner observation in this project is that issue")
     return IssueDetailOut(**vars(detail))
+
+
+@router.get(
+    "/scanner-observations/host-output",
+    response_model=List[HostVulnerability],
+    summary="One issue's scanner rows on one host: port, scanner and what it printed there",
+)
+def get_scanner_observation_host_output(
+    issue_key: str = Query(..., min_length=1, max_length=600),
+    host_id: int = Query(..., gt=0),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """The inspector's host row, opened (v2.508.0): the rows as the host
+    page serializes them. Empty when the host carries no such row."""
+    return svc.issue_host_rows(db, project.id, issue_key, host_id)
 
 
 class DismissIn(BaseModel):

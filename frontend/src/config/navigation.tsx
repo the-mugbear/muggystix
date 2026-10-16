@@ -27,6 +27,7 @@ import {
   Plug,
   ScrollText,
   Settings as SettingsIcon,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   UserCog,
@@ -207,6 +208,13 @@ export const NAV_PAGES: NavPage[] = [
   {
     id: 'names', path: '/names', label: 'Names', requiredRole: 'viewer', hub: 'inventory',
     palette: { Icon: Globe, keywords: ['name', 'fqdn', 'dns', 'domain', 'hostname', 'vhost'], order: 3.5 },
+  },
+  {
+    // 5.404.0 — what the scanners reported, one row per issue, with an
+    // inspector; it was the Findings page's second view.  The page's word is
+    // "scanner observations" (the vocabulary); people search "vulnerability".
+    id: 'observations', path: '/observations', label: 'Scanner observations', requiredRole: 'viewer', hub: 'inventory',
+    palette: { Icon: ShieldAlert, keywords: ['vulnerability', 'vulnerabilities', 'vuln', 'cve', 'plugin', 'nessus', 'observation', 'issue'], order: 3.7 },
   },
   {
     id: 'scans', path: '/scans', label: 'Scans', requiredRole: 'viewer', hub: 'inventory',

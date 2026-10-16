@@ -254,7 +254,7 @@ Anything else gets cut.  A card whose first impression is a row of pastel chips 
 - Long filenames, command lines, and exported text should use scrollable containers, not unconstrained width growth.
 - Two primitives:
   - `<Dialog>` from `src/components/ui/dialog.tsx` — modal, backdrop, center-screen.  Default for confirmations + form modals.
-  - `<SideSheet>` from `src/components/ui/side-sheet.tsx` — `modal={false}` right-edge slide-over.  Default for master-detail surfaces (Hosts → HostInspector) where the list behind should stay scrollable.
+  - `<SideSheet>` from `src/components/ui/side-sheet.tsx` — `modal={false}` right-edge slide-over.  Default for master-detail surfaces (Hosts → HostInspector; Scanner observations → ObservationInspector, 5.404.0) where the list behind should stay scrollable. The open record is in the address when the list's other state is (`?issue=`, a history entry: Back closes it), and the panel's body is keyed by it.
 
 ## State Rules
 
