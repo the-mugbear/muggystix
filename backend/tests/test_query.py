@@ -313,3 +313,108 @@ def test_agents_run_queries_and_read_saved_ones_through_the_same_service(client,
     client.post(_url(test_project, "/queries/saved"), json={"name": "Team", "query": q, "shared": True})
     listed = client.get("/api/v1/agent/assist/saved-queries", headers=key).json()
     assert [s["name"] for s in listed] == ["Team"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 (v2.510.0): findings, endpoints, web, names; links; CSV export
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def more(db_session, test_project, estate):
+    """Two findings: SMB signing (medium, open, owned by the admin) on the six
+    even hosts — one of them retest —, and an unowned critical on host 1.
+    Two web interfaces, one self-signed and tied to no host; two names."""
+    from app.db.models import DNSName, WebInterface
+    from app.db.models_findings import Finding, FindingHost
+
+    admin = db_session.query(User).filter(User.username == "test-admin").first() or db_session.query(User).first()
+    smb = Finding(project_id=test_project.id, title="SMB signing not required", severity="medium", status="open",
+                  source="scanner", owner_id=admin.id, cvss_score=5.3)
+    rce = Finding(project_id=test_project.id, title='OpenSSH "regreSSHion"', severity="critical",
+                  status="confirmed", source="manual")
+    db_session.add_all([smb, rce])
+    db_session.flush()
+    for h in estate[1::2]:
+        db_session.add(FindingHost(finding_id=smb.id, host_id=h.id,
+                                   host_status="retest" if h is estate[1] else "open",
+                                   retest_requested_at=datetime.now(timezone.utc) if h is estate[1] else None))
+    db_session.add(FindingHost(finding_id=rce.id, host_id=estate[0].id, host_status="open"))
+    scan = db_session.query(models.Scan).filter(models.Scan.project_id == test_project.id).first()
+    db_session.add_all([
+        WebInterface(project_id=test_project.id, host_id=estate[0].id, scan_id=scan.id, source="httpx",
+                     url="https://10.30.0.1/", protocol="https", port=443, status_code=200,
+                     title="=HYPERLINK(\"x\")", server_header="nginx", cert_self_signed=False),
+        WebInterface(project_id=test_project.id, host_id=None, scan_id=scan.id, source="httpx",
+                     url="https://vhost.example/", protocol="https", port=443, status_code=401,
+                     title="Login", server_header="nginx", cert_self_signed=True),
+        DNSName(project_id=test_project.id, fqdn="a.example.com", kind="fqdn"),
+        DNSName(project_id=test_project.id, fqdn="*.example.com", kind="wildcard"),
+    ])
+    db_session.commit()
+    return {"smb": smb, "rce": rce}
+
+
+def test_findings_take_search_terms_through_their_endpoints_hosts(client, test_project, more):
+    q = lambda text: _run(client, test_project, text).json()  # noqa: E731
+    body = q("findings")
+    assert body["total"] == 2
+    # Most severe first; the finding's page is each row's link.
+    assert [r[1] for r in body["rows"]] == ["critical", "medium"]
+    assert body["links"] == [f"/findings/{more['rce'].id}", f"/findings/{more['smb'].id}"]
+    assert q("findings port:445")["total"] == 1                    # an endpoint's host has 445 open
+    assert q('findings | where status="confirmed"')["total"] == 1   # stored as text, compared by value
+    assert q('findings | where isnull(owner)')["rows"][0][4] is None
+    by_status = q("findings | stats count by severity, status")
+    _drill_totals_match(client, test_project, by_status, "count")
+
+
+def test_endpoints_are_a_finding_on_one_host(client, test_project, more):
+    q = lambda text: _run(client, test_project, text).json()  # noqa: E731
+    assert q("endpoints")["total"] == 7
+    retest = q('endpoints | where state="retest" | table ip, finding, retest_requested_at')
+    assert retest["total"] == 1 and retest["rows"][0][0] == "10.30.0.2"
+    assert retest["links"][0].startswith(f"/findings/{more['smb'].id}?endpoint=")
+    grouped = q("endpoints | stats dc(host) as hosts by title, state")
+    _drill_totals_match(client, test_project, grouped, "hosts")
+
+
+def test_web_lists_hostless_interfaces_and_names_refuse_search_terms(client, test_project, more):
+    q = lambda text: _run(client, test_project, text).json()  # noqa: E731
+    web = q("web | sort ip")
+    assert web["total"] == 2 and None in web["links"]
+    assert q("web | where cert_self_signed=true")["total"] == 1
+    assert q("web has:critical")["total"] == 1                     # the host-less row matches no host term
+    assert q('names | where kind="wildcard"')["total"] == 1
+    refused = _run(client, test_project, "names has:web")
+    assert refused.status_code == 400 and "names has no host" in refused.json()["detail"]
+    assert "links" in q("names") and q("names")["links"] is None
+
+
+def test_the_csv_export_is_the_answer_for_auditors_and_up(client, db_session, test_project, more):
+    r = client.get(_url(test_project, "/query/export.csv"), params={"q": "web | table url, title | sort url"})
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("text/csv")
+    assert "filename=query-web.csv" in r.headers["content-disposition"]
+    assert r.headers["x-total-count"] == "2"
+    lines = r.text.strip().splitlines()
+    assert lines[0] == "url,title"
+    # A title a spreadsheet would run as a formula is text.
+    assert lines[1] == "https://10.30.0.1/,\"'=HYPERLINK(\"\"x\"\")\""
+    grouped = client.get(_url(test_project, "/query/export.csv"),
+                         params={"q": "observations | stats values(severity) as sev by source"}).text
+    assert "critical; medium" in grouped
+    viewer = _member(db_session, test_project, 481, "q-viewer", ProjectRole.VIEWER)
+    as_admin = app.dependency_overrides.get(get_current_user)
+    try:
+        app.dependency_overrides[get_current_user] = lambda: viewer
+        assert client.get(_url(test_project, "/query/export.csv"), params={"q": "hosts"}).status_code == 403
+        assert _run(client, test_project, "hosts").status_code == 200   # reading stays every member's
+    finally:
+        app.dependency_overrides[get_current_user] = as_admin
+
+
+def test_the_export_lists_past_the_pages_cap(client, test_project, estate, monkeypatch):
+    monkeypatch.setattr(query_service, "ROW_CAP", 5)
+    assert len(_run(client, test_project, "ports").json()["rows"]) == 5
+    r = client.get(_url(test_project, "/query/export.csv"), params={"q": "ports"})
+    assert len(r.text.strip().splitlines()) == 1 + 19

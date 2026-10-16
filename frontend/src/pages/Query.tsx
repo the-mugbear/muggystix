@@ -19,12 +19,16 @@ import { BookOpen, Loader2, Play, Save, Share2 } from 'lucide-react';
 import {
   createSavedQuery,
   deleteSavedQuery,
+  downloadQueryCsv,
   getQuerySchema,
   listSavedQueries,
   runQuery,
   updateSavedQuery,
 } from '../services/api';
 import type { QueryAnswer, SavedQuery } from '../services/api';
+import DownloadButton from '../components/DownloadButton';
+import QueryChart, { chartMeasures } from '../components/query/QueryChart';
+import { ViewTabs } from '../components/ui/view-tabs';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -40,6 +44,7 @@ import { Textarea } from '../components/ui/textarea';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useProjectId } from '../hooks/useProjectId';
+import { useProjectRole } from '../hooks/useProjectRole';
 import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { formatTimestamp } from '../utils/relativeTime';
@@ -131,22 +136,49 @@ const QueryError: React.FC<{ q: string; error: unknown }> = ({ q, error }) => {
   );
 };
 
-const Answer: React.FC<{ answer: QueryAnswer }> = ({ answer }) => {
+const ANSWER_VIEWS = [['table', 'Table'], ['chart', 'Chart']] as const;
+type AnswerView = 'table' | 'chart';
+
+const Answer: React.FC<{ answer: QueryAnswer; view: AnswerView; onView: (v: AnswerView) => void }> = ({ answer, view, onView }) => {
+  const projectId = useProjectId();
+  const { canExport } = useProjectRole();
+  // A chart only for a stats answer with ONE group column and a number.
+  const measures = chartMeasures(answer);
   const shown = answer.rows.length;
   const noun = answer.kind === 'stats' ? (answer.total === 1 ? 'group' : 'groups') : (answer.total === 1 ? 'row' : 'rows');
   const drill = answer.kind === 'stats' && answer.drilldowns;
+  // A listing row's own page (the host, the finding, the endpoint).
+  const links = answer.kind === 'rows' && answer.links ? answer.links : null;
   if (answer.total === 0) {
     return <p className="text-metadata text-muted-foreground">Nothing matches this query.</p>;
   }
   return (
     <div className="flex min-w-0 flex-col gap-xs">
-      <p className="text-caption text-muted-foreground" data-testid="query-count">
-        {shown < answer.total
-          ? `The first ${shown.toLocaleString()} of ${answer.total.toLocaleString()} ${noun}`
-          : `${answer.total.toLocaleString()} ${noun}`}
-        {answer.capped ? ` — a query shows at most ${answer.limit.toLocaleString()}` : ''}
-        {' · '}{answer.dataset}
-      </p>
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-sm">
+        <p className="text-caption text-muted-foreground" data-testid="query-count">
+          {shown < answer.total
+            ? `The first ${shown.toLocaleString()} of ${answer.total.toLocaleString()} ${noun}`
+            : `${answer.total.toLocaleString()} ${noun}`}
+          {answer.capped ? ` — a query shows at most ${answer.limit.toLocaleString()}` : ''}
+          {' · '}{answer.dataset}
+        </p>
+        {/* Every export is an auditor's (style guide §40); the file holds
+            up to 50,000 rows of a listing, past the page's 500. */}
+        <div className="flex flex-wrap items-center gap-sm">
+          {measures && <ViewTabs label="Answer view" value={view} options={ANSWER_VIEWS} onChange={onView} />}
+          {canExport && (
+            <DownloadButton
+              key={answer.query}
+              size="sm"
+              variant="outline"
+              label="Download CSV"
+              errorText="Could not download the CSV."
+              saveFn={() => downloadQueryCsv(projectId, answer.query, answer.dataset)}
+            />
+          )}
+        </div>
+      </div>
+      {measures && view === 'chart' ? <QueryChart answer={answer} measures={measures} /> : (
       <div className="overflow-x-auto">
         <Table className="min-w-[40rem]" style={{ tableLayout: 'fixed' }} data-testid="query-answer">
           <TableHeader>
@@ -154,7 +186,7 @@ const Answer: React.FC<{ answer: QueryAnswer }> = ({ answer }) => {
               {answer.columns.map((c) => (
                 <TableHead key={c.name} className="truncate" title={c.name}>{c.name}</TableHead>
               ))}
-              {drill && <TableHead className="w-28"><span className="sr-only">Rows</span></TableHead>}
+              {(drill || links) && <TableHead className="w-28"><span className="sr-only">{drill ? 'Rows' : 'Page'}</span></TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -182,11 +214,19 @@ const Answer: React.FC<{ answer: QueryAnswer }> = ({ answer }) => {
                     )}
                   </TableCell>
                 )}
+                {links && (
+                  <TableCell>
+                    {links[i] && (
+                      <Link to={links[i] as string} className="text-caption text-primary hover:underline">Open</Link>
+                    )}
+                  </TableCell>
+                )}
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </div>
+      )}
     </div>
   );
 };
@@ -428,7 +468,15 @@ const Query: React.FC = () => {
   const projectId = useProjectId();
   const [params, setParams] = useSearchParams();
   const q = (params.get('q') ?? '').trim();
-  const run = (text: string) => setParams(text ? { q: text } : {});
+  // Table or chart — list state a reader returns to, so it is in the address
+  // too, and a new query keeps it.
+  const view: AnswerView = params.get('view') === 'chart' ? 'chart' : 'table';
+  const run = (text: string) => setParams(text ? { q: text, ...(view === 'chart' ? { view } : {}) } : {});
+  const setView = (next: AnswerView) => setParams((prev) => {
+    const out = new URLSearchParams(prev);
+    if (next === 'chart') out.set('view', 'chart'); else out.delete('view');
+    return out;
+  }, { replace: true });
   const answer = useQuery({
     queryKey: ['runQuery', projectId, q],
     queryFn: ({ signal }) => runQuery(projectId, q, signal),
@@ -480,7 +528,7 @@ const Query: React.FC = () => {
         ) : answer.isError ? (
           <QueryError q={q} error={answer.error} />
         ) : answer.data ? (
-          <Answer answer={answer.data} />
+          <Answer answer={answer.data} view={view} onView={setView} />
         ) : (
           <p role="status" className="flex items-center gap-xs text-metadata text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden /> Running…

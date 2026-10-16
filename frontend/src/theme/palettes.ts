@@ -55,6 +55,14 @@ export interface ColorTokens {
    * and low (teal) were near-identical.
    */
   severity?: { critical: string; high: string; medium: string; low: string };
+  /**
+   * A single-series chart's mark (5.406.0, the Query page's bar chart).
+   * Default: `info`.  A dark theme's `info` is a light text accent (OKLCH L
+   * 0.78–0.80), above the band a mark must sit in on a dark surface (0.48–
+   * 0.67), so each dark theme names a step of the same hue that passes the
+   * dataviz validator against its own `backgroundPaper`.
+   */
+  chartMark?: string;
 }
 
 // Default font families.  Themes can override; phosphor uses
@@ -114,6 +122,7 @@ export const palettes: Record<AppThemeName, ColorTokens> = {
     warning: '#FFBE5C',
     error: '#FF6F7D',
     info: '#69C0FF',
+    chartMark: '#2F8FDA',
     divider: 'rgba(138, 164, 255, 0.14)',
     hover: 'rgba(138, 164, 255, 0.08)',
     selected: 'rgba(138, 164, 255, 0.16)',
@@ -137,6 +146,7 @@ export const palettes: Record<AppThemeName, ColorTokens> = {
     warning: '#FFB347',
     error: '#FF5F56',
     info: '#35D0FF',
+    chartMark: '#16A0CC',
     divider: 'rgba(124, 255, 122, 0.14)',
     hover: 'rgba(124, 255, 122, 0.08)',
     selected: 'rgba(124, 255, 122, 0.16)',
@@ -161,6 +171,7 @@ export const palettes: Record<AppThemeName, ColorTokens> = {
     warning: '#FFD166',
     error: '#FF6B57',
     info: '#FF8E53',
+    chartMark: '#D6602A',
     divider: 'rgba(255, 122, 24, 0.16)',
     hover: 'rgba(255, 122, 24, 0.10)',
     selected: 'rgba(255, 122, 24, 0.16)',
@@ -185,6 +196,7 @@ export const palettes: Record<AppThemeName, ColorTokens> = {
     warning: '#FFD38A',
     error: '#FF7A90',
     info: '#7BE7FF',
+    chartMark: '#1CA5BF',
     divider: 'rgba(123, 231, 255, 0.16)',
     hover: 'rgba(123, 231, 255, 0.08)',
     selected: 'rgba(123, 231, 255, 0.16)',

@@ -7,8 +7,12 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const role = vi.hoisted(() => ({ canExport: true }));
+vi.mock('../../hooks/useProjectRole', () => ({ useProjectRole: () => role }));
+
 const api = vi.hoisted(() => ({
   runQuery: vi.fn(),
+  downloadQueryCsv: vi.fn(),
   getQuerySchema: vi.fn(),
   listSavedQueries: vi.fn(),
   createSavedQuery: vi.fn(),
@@ -54,6 +58,7 @@ const renderAt = (url: string) => render(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  role.canExport = true;
   api.listSavedQueries.mockResolvedValue([]);
 });
 
@@ -149,5 +154,52 @@ describe('Query page', () => {
     renderAt('/query');
     expect(await screen.findByText(/down|Could not load the saved queries/)).toBeInTheDocument();
     expect(screen.queryByText(/None yet/)).not.toBeInTheDocument();
+  });
+});
+
+describe('Query page — Phase 2 (5.406.0)', () => {
+  it('each listing row opens its own page', async () => {
+    api.runQuery.mockResolvedValue({ ...ROWS, total: 2, rows: [['10.0.0.1', null], ['10.0.0.9', null]], links: ['/findings/7', null] });
+    renderAt('/query?q=findings');
+    const table = await screen.findByTestId('query-answer');
+    const links = within(table).getAllByRole('link', { name: 'Open' });
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveAttribute('href', '/findings/7');
+  });
+
+  it('downloads the answer as CSV — an auditor and up only', async () => {
+    api.runQuery.mockResolvedValue(STATS);
+    api.downloadQueryCsv.mockResolvedValue('query-ports.csv');
+    const view = renderAt(`/query?q=${encodeURIComponent(STATS.query)}`);
+    fireEvent.click(await screen.findByRole('button', { name: /Download CSV/ }));
+    await waitFor(() => expect(api.downloadQueryCsv).toHaveBeenCalledWith(9, STATS.query, 'ports'));
+    view.unmount();
+    role.canExport = false;
+    renderAt(`/query?q=${encodeURIComponent(STATS.query)}`);
+    await screen.findByTestId('query-answer');
+    expect(screen.queryByRole('button', { name: /Download CSV/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('Query page — the chart (5.406.0)', () => {
+  it('offers a chart for one group column and a number, and keeps the view in the address', async () => {
+    api.runQuery.mockResolvedValue({ ...STATS, by: ['service'] });
+    renderAt(`/query?q=${encodeURIComponent(STATS.query)}`);
+    await screen.findByTestId('query-answer');
+    fireEvent.click(screen.getByRole('tab', { name: 'Chart' }));
+    expect(await screen.findByTestId('query-chart')).toHaveTextContent('hosts by service');
+    expect(screen.getByRole('img', { name: 'Bar chart of hosts by service' })).toBeInTheDocument();
+    expect(screen.queryByTestId('query-answer')).not.toBeInTheDocument();
+  });
+
+  it('offers no chart for a listing, or for two group columns', async () => {
+    api.runQuery.mockResolvedValue({
+      ...STATS, by: ['service', 'port'],
+      columns: [{ name: 'service', type: 'text' }, { name: 'port', type: 'int' }, { name: 'count', type: 'int' }],
+      rows: [['ssh', 22, 3]], drilldowns: ['ports | where service="ssh" AND port=22'],
+    });
+    renderAt('/query?q=ports%20%7C%20stats%20count%20by%20service%2C%20port&view=chart');
+    expect(await screen.findByTestId('query-answer')).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Chart' })).not.toBeInTheDocument();
   });
 });

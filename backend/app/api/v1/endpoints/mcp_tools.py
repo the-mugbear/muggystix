@@ -742,9 +742,10 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     "assist_query": {
         "description": (
             "Run a Query-page query, Splunk SPL style: `<dataset> [Hosts-language terms] | where … | stats … "
-            "by … | sort -x | head N`. Datasets: hosts, ports, observations. Search terms are the Hosts "
-            "query language and always describe the row's HOST (on ports, `port:445` = the host has 445 "
-            "open); `where` compares the dataset's columns (`where port=445 AND state=\"open\"`, = is "
+            "by … | sort -x | head N`. Datasets: hosts, ports, observations, findings, endpoints (a "
+            "finding on one host), web, names. Search terms are the Hosts query language and always "
+            "describe the row's HOST (on ports, `port:445` = the host has 445 open; on findings, one of "
+            "its endpoints' hosts; names take none); `where` compares the dataset's columns (`where port=445 AND state=\"open\"`, = is "
             "exact). stats: count, dc(col), min, max, avg, sum, values; top [limit=N] col. Each stats / "
             "top row carries a `drilldowns` query listing exactly that group. `total` is the whole answer "
             "(rows matched or groups); at most 500 rows / 1000 groups come back. "

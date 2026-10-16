@@ -250,6 +250,8 @@ function buildVarMap(t: ColorTokens): Record<string, string> {
     '--warning-foreground': foregroundComponentsFor(t.warning),
     '--info': toHslComponents(t.info),
     '--info-foreground': foregroundComponentsFor(t.info),
+    // 5.406.0 — a single-series chart's mark (palettes.ts `chartMark`).
+    '--chart-mark': toHslComponents(t.chartMark ?? t.info),
 
     // 5.304.0 — severity has its own tokens: the semantic colours by default,
     // a theme's `severity` ramp where those cannot carry the order (Magma).

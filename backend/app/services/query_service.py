@@ -34,6 +34,8 @@ from app.services.query_language import (
 ROW_CAP = 500
 GROUP_CAP = 1000
 VALUES_CAP = 20
+# The CSV export's listing cap (groups stay at GROUP_CAP).
+EXPORT_ROW_CAP = 50_000
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +98,8 @@ def _coerce(col: QueryColumn, value: object, pos: int) -> object:
             return _parse_time(value)
         if col.type == "enum":
             try:
-                return col.enum(str(value).lower())
+                member = col.enum(str(value).lower())
+                return member.value if col.enum_as_text else member
             except ValueError:
                 raise ValueError("one of " + ", ".join(f'"{m.value}"' for m in col.enum))
     except ValueError as exc:
@@ -177,12 +180,20 @@ def _filtered(db: Session, project_id: int, user: User, ds: Dataset, pipe: Pipel
     query = ds.base(db, project_id)
     ctx = dsl.BuildCtx(db=db, current_user=user, project_id=project_id)
     for text, offset in pipe.searches:
+        if ds.host_filter == "none":
+            raise QueryError(
+                f"{ds.name} has no host, so it takes no search terms — compare its columns with | where",
+                position=offset,
+            )
         try:
             node = dsl.parse_query(text)
         except dsl.DSLError as exc:
             # The Hosts language's own error, placed in the whole query.
             raise QueryError(exc.message, position=None if exc.position is None else offset + exc.position)
-        query = query.filter(dsl.evaluate(node, ctx))
+        predicate = dsl.evaluate(node, ctx)
+        # A row joined to its host takes the predicate as it is; a row with
+        # several hosts (a finding) matches when one of them does.
+        query = query.filter(ds.host_filter(predicate) if callable(ds.host_filter) else predicate)
     for cond in pipe.wheres:
         query = query.filter(_condition(ds, cond))
     return query
@@ -192,9 +203,10 @@ def _sort_key(col: QueryColumn):
     return col.sort_expr if col.sort_expr is not None else col.expr
 
 
-def _rows(query, ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
+def _rows(query, ds: Dataset, pipe: Pipeline, row_cap: int) -> Dict[str, Any]:
     names = pipe.fields or ds.default_fields
     cols = [_column(ds, n, 0) for n in names]
+    links = ds.link_exprs if ds.link else []
     order = []
     sorts = pipe.sorts or [(s.lstrip("-"), s.startswith("-"), 0) for s in ds.default_sort]
     for name, desc, pos in sorts:
@@ -202,22 +214,26 @@ def _rows(query, ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
         order.append(key.desc().nullslast() if desc else key.asc().nullslast())
     # The row's own id last: a listing is stable from one run to the next.
     order.append(ds.base_id.asc())
-    limit = min(pipe.head or ROW_CAP, ROW_CAP)
+    limit = min(pipe.head or row_cap, row_cap)
     result = (
-        query.with_entities(*[c.expr for c in cols], func.count().over().label("_total"))
+        query.with_entities(*[c.expr for c in cols], *links, func.count().over().label("_total"))
         .order_by(*order)
         .limit(limit)
         .all()
     )
     total = int(result[0]._total) if result else 0
+    width = len(cols)
     return {
         "kind": "rows",
         "columns": [{"name": c.name, "type": c.type} for c in cols],
-        "rows": [[_plain(v, c) for v, c in zip(r[:-1], cols)] for r in result],
+        "rows": [[_plain(v, c) for v, c in zip(r[:width], cols)] for r in result],
         "total": total,
         "limit": limit,
-        "capped": (pipe.head or 0) > ROW_CAP,
+        "capped": (pipe.head or 0) > row_cap,
         "drilldowns": None,
+        # Each row's page (the host, the finding, the endpoint) — the dataset's.
+        "links": [ds.link(tuple(r[width:width + len(links)])) for r in result] if links else None,
+        "by": None,
     }
 
 
@@ -329,6 +345,9 @@ def _grouped(query, ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
         "limit": limit,
         "capped": (pipe.head or 0) > GROUP_CAP,
         "drilldowns": drilldowns,
+        "links": None,
+        # The answer's group columns (the first ones): what a chart's categories are.
+        "by": [c.name for c in by],
     }
 
 
@@ -336,16 +355,35 @@ def _grouped(query, ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
 # Public
 # ---------------------------------------------------------------------------
 
-def run(db: Session, project_id: int, user: User, text: str) -> Dict[str, Any]:
-    """The answer to one query, in one statement."""
+def run(db: Session, project_id: int, user: User, text: str, *, row_cap: Optional[int] = None) -> Dict[str, Any]:
+    """The answer to one query, in one statement.  ``row_cap`` is the most
+    rows a listing returns (default ``ROW_CAP``; the CSV export's is larger)."""
+    row_cap = ROW_CAP if row_cap is None else row_cap
     pipe = parse(text)
     ds = _dataset(pipe)
     if pipe.fields:
         for name in pipe.fields:
             _column(ds, name, pipe.dataset_pos)
     query = _filtered(db, project_id, user, ds, pipe)
-    answer = _grouped(query, ds, pipe) if pipe.aggregate is not None else _rows(query, ds, pipe)
+    answer = _grouped(query, ds, pipe) if pipe.aggregate is not None else _rows(query, ds, pipe, row_cap)
     return {"query": text, "dataset": ds.name, **answer}
+
+
+def to_csv(answer: Dict[str, Any]) -> str:
+    """An answer as CSV: the columns, then the rows (a list joined by "; "),
+    every cell through the codebase's one formula guard (``csv_utils``) — a
+    scanner's title is external text."""
+    import csv
+    import io
+
+    from app.services.csv_utils import safe_csv_row
+
+    out = io.StringIO()
+    writer = csv.writer(out)
+    safe_csv_row(writer, [c["name"] for c in answer["columns"]])
+    for row in answer["rows"]:
+        safe_csv_row(writer, ["; ".join(str(v) for v in value) if isinstance(value, list) else value for value in row])
+    return out.getvalue()
 
 
 def schema() -> Dict[str, Any]:

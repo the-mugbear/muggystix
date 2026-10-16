@@ -15,12 +15,14 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Response
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_project, get_current_user
+from app.api.deps import get_current_project, get_current_user, require_project_role
+from app.api.downloads import attachment
 from app.db.models_auth import User
-from app.db.models_project import Project
+from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
 from app.services import query_service
 from app.services import saved_query_service as saved
@@ -47,6 +49,10 @@ class QueryAnswer(BaseModel):
     drilldowns: Optional[List[Optional[str]]] = Field(
         None, description="stats / top: for each row, the query listing exactly that group's rows",
     )
+    links: Optional[List[Optional[str]]] = Field(
+        None, description="A listing: for each row, its page (the host, the finding, the endpoint)",
+    )
+    by: Optional[List[str]] = Field(None, description="stats / top: the group columns (the answer's first columns)")
 
 
 @router.get("/query", response_model=QueryAnswer, summary="Run a query (SPL-style)")
@@ -57,6 +63,28 @@ def run_query(
     user: User = Depends(get_current_user),
 ):
     return query_service.run(db, project.id, user, q)
+
+
+@router.get(
+    "/query/export.csv",
+    summary="A query's answer as CSV (auditor and above, as every export)",
+    dependencies=[Depends(require_project_role(ProjectRole.AUDITOR))],
+    response_class=PlainTextResponse,
+)
+def export_query_csv(
+    q: str = QUERY_TEXT,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    user: User = Depends(get_current_user),
+):
+    """The page's answer, with a listing cap of ``EXPORT_ROW_CAP`` rows (groups
+    stay at the page's cap).  The file's first line is the column names."""
+    answer = query_service.run(db, project.id, user, q, row_cap=query_service.EXPORT_ROW_CAP)
+    return PlainTextResponse(
+        query_service.to_csv(answer), media_type="text/csv; charset=utf-8",
+        headers={**attachment(f"query-{answer['dataset']}.csv"),
+                 "X-Total-Count": str(answer["total"]), "X-Row-Count": str(len(answer["rows"]))},
+    )
 
 
 @router.get("/query/schema", summary="What a query can name: datasets, columns, commands, caps")

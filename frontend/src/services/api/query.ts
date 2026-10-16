@@ -3,6 +3,7 @@
  * ports and scanner observations, and saved / shared queries.
  * Backend: app/api/v1/endpoints/queries.py.
  */
+import { saveBlob } from '../../utils/download';
 import { api, projectPath } from './client';
 
 export interface QueryColumn {
@@ -26,10 +27,23 @@ export interface QueryAnswer {
   capped: boolean;
   /** stats / top: per row, the query listing exactly that group's rows. */
   drilldowns: (string | null)[] | null;
+  /** A listing: per row, its page (the host, the finding, the endpoint). */
+  links?: (string | null)[] | null;
+  /** stats / top: the group columns — the answer's first columns. */
+  by?: string[] | null;
 }
 
 export const runQuery = async (projectId: number, q: string, signal?: AbortSignal): Promise<QueryAnswer> =>
   (await api.get<QueryAnswer>(`${projectPath(projectId)}/query`, { params: { q }, signal })).data;
+
+/** The answer as CSV (auditor and above; a listing up to 50,000 rows) — saved
+ *  as `query-<dataset>.csv`; answers the file name. */
+export const downloadQueryCsv = async (projectId: number, q: string, dataset: string): Promise<string> => {
+  const response = await api.get(`${projectPath(projectId)}/query/export.csv`, { params: { q }, responseType: 'blob' });
+  const filename = `query-${dataset}.csv`;
+  saveBlob(new Blob([response.data], { type: 'text/csv' }), filename);
+  return filename;
+};
 
 export interface QuerySchemaColumn {
   name: string;
