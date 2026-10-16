@@ -293,6 +293,10 @@ class ReportJobService:
         renewer.start()
 
         db = _session_module.SessionLocal()
+        # The directory THIS attempt created, until its row names it (external
+        # review 2026-10-16, A1: a failure after the file was written left it
+        # where no cleanup could find it).
+        job_dir: Optional[Path] = None
         try:
             job = db.get(ReportJob, job_id)
             if not job:
@@ -316,7 +320,7 @@ class ReportJobService:
                         db.commit()
                         return
                     data, media_type, filename = rendered
-                    job_dir, artifact = self._new_artifact(filename)
+                    job_dir, artifact = self._new_artifact(filename, job_id)
                     artifact.write_bytes(data)
                 elif job.format == INVENTORY_JSON_FORMAT:
                     # Run as the requesting user so "assigned to me" / follow filters
@@ -331,7 +335,7 @@ class ReportJobService:
                     # memory ~one chunk.
                     media_type = "application/json"
                     filename = f"hosts_{report_type}_{ts}.json"
-                    job_dir, artifact = self._new_artifact(filename)
+                    job_dir, artifact = self._new_artifact(filename, job_id)
                     try:
                         with open(artifact, "wb") as out:
                             gen.write_json_report(job.filters or {}, report_type, out)
@@ -400,6 +404,8 @@ class ReportJobService:
                     )
                 else:
                     self._notify_finished(db, job_id)
+                if job_dir is not None:
+                    self._discard_unpublished(db, job_id, job_dir)
         finally:
             stop.set()
             renewer.join(timeout=5)
@@ -423,9 +429,11 @@ class ReportJobService:
             logger.warning("Report job %s: completion notification failed", job_id, exc_info=True)
             db.rollback()
 
-    def _new_artifact(self, filename: str) -> Tuple[Path, Path]:
-        """A fresh private job directory and the artifact path inside it."""
-        job_dir = self._storage_root / uuid.uuid4().hex
+    def _new_artifact(self, filename: str, job_id: int) -> Tuple[Path, Path]:
+        """A fresh private job directory and the artifact path inside it.
+        Named ``<job id>-<uuid>`` (2.510.1) so the orphan sweep can tell a
+        directory a job is still writing from one nothing will claim."""
+        job_dir = self._storage_root / f"{job_id}-{uuid.uuid4().hex}"
         job_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(job_dir, 0o700)
         return job_dir, job_dir / filename
@@ -480,8 +488,60 @@ class ReportJobService:
             report.render_status = RenderStatus.FAILED
             report.render_error = error
 
+    def _discard_unpublished(self, db, job_id: int, job_dir: Path) -> None:
+        """Remove an attempt's directory after it failed — unless the job's
+        row names it, read again now: a commit whose answer was lost may have
+        published it after all, and then it is the job's file, removed by
+        ``cleanup_expired`` when it expires (external review 2026-10-16, A1)."""
+        try:
+            db.expire_all()
+            path = db.query(ReportJob.result_path).filter(ReportJob.id == job_id).scalar()
+        except Exception:
+            # The row cannot be read: keep the file; the orphan sweep decides later.
+            logger.warning("Report job %s: could not read its row; artifact %s kept for the sweep", job_id, job_dir)
+            return
+        if path and Path(path).parent == job_dir:
+            return
+        shutil.rmtree(job_dir, ignore_errors=True)
+
+    def reconcile_orphan_artifacts(self, db, now: datetime) -> int:
+        """Remove artifact directories nothing will ever claim — what a worker
+        killed between writing a file and publishing it leaves behind
+        (external review 2026-10-16, A1).  A directory is kept while it is
+        younger than the grace period, while any job row names a file in it,
+        or while the job it is named after (``<job id>-…``) is still
+        processing.  Nothing outside the artifact root is ever touched."""
+        root = self._storage_root
+        if not root.exists():
+            return 0
+        grace = max(3 * settings.REPORT_JOB_TIMEOUT_SECONDS, 3600)
+        referenced = {
+            Path(p).parent for (p,) in db.query(ReportJob.result_path).filter(ReportJob.result_path.isnot(None))
+        }
+        processing = {
+            jid for (jid,) in db.query(ReportJob.id).filter(ReportJob.status == "processing")
+        }
+        removed = 0
+        for job_dir in root.iterdir():
+            try:
+                if not job_dir.is_dir() or job_dir in referenced:
+                    continue
+                if now.timestamp() - job_dir.stat().st_mtime < grace:
+                    continue
+                prefix = job_dir.name.split("-", 1)[0]
+                if prefix.isdigit() and int(prefix) in processing:
+                    continue
+                shutil.rmtree(job_dir, ignore_errors=True)
+                removed += 1
+            except OSError:
+                logger.debug("orphan sweep: could not examine %s", job_dir, exc_info=True)
+        if removed:
+            logger.info("Report artifacts: removed %d directories no job references", removed)
+        return removed
+
     def cleanup_expired(self) -> int:
-        """Delete artifacts (and their job rows) past ``expires_at``."""
+        """Delete artifacts (and their job rows) past ``expires_at``, then any
+        artifact directory no job will ever claim (``reconcile_orphan_artifacts``)."""
         now = datetime.now(timezone.utc)
         db = _session_module.SessionLocal()
         removed = 0
@@ -496,6 +556,7 @@ class ReportJobService:
                 db.delete(job)
                 removed += 1
             db.commit()
+            self.reconcile_orphan_artifacts(db, now)
         except Exception:
             db.rollback()
             logger.exception("Report cleanup failed")

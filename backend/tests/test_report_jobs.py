@@ -12,6 +12,7 @@ says so".  The client report's renders run on the same queue and are covered
 in test_client_report_render.py.
 """
 import json
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -396,3 +397,98 @@ def test_failure_notifies_the_requester(db_session, test_project, test_user, mon
     assert rows[0].type == "report_failed"
     assert rows[0].user_id == test_user.id
     assert "render exploded" in rows[0].body
+
+
+# ---------------------------------------------------------------------------
+# External review 2026-10-16, A1: a file written but never published
+# ---------------------------------------------------------------------------
+
+def test_a_failure_after_the_file_was_written_leaves_no_file(db_session, test_project, test_user, monkeypatch):
+    """The render succeeded, the file is on disk, and publishing it failed:
+    the job is failed and its directory goes with the attempt — before, the
+    file stayed where no cleanup could find it (no ``result_path``, no
+    ``expires_at``)."""
+    from app.services import report_job_service as module
+
+    _make_host(db_session, test_project.id)
+    db_session.commit()
+    service = ReportJobService()
+    job = service.create_job(
+        db_session, project_id=test_project.id, requested_by_id=test_user.id,
+        format="json", report_type="comprehensive", filters={},
+    )
+
+    def _publish_fails(*a, **k):
+        raise RuntimeError("publication failed")
+
+    monkeypatch.setattr(module._transitions, "complete", _publish_fails)
+    before = set(service._storage_root.iterdir()) if service._storage_root.exists() else set()
+    assert service.poll_and_run_one() is True
+    failed = db_session.get(ReportJob, job.id)
+    db_session.refresh(failed)
+    assert failed.status == "failed" and "publication failed" in (failed.last_error or "")
+    assert (failed.result_path, failed.expires_at) == (None, None)
+    assert set(service._storage_root.iterdir()) == before
+
+
+def test_a_directory_the_row_names_is_kept(db_session, test_project):
+    """A commit whose answer was lost may have published the file: the row,
+    read again, decides."""
+    service = ReportJobService()
+    job_dir = service._storage_root / "999999-published"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    (job_dir / "x.json").write_text("{}")
+    job = ReportJob(project_id=test_project.id, format="json", report_type="comprehensive", filters={},
+                    status="completed", result_path=str(job_dir / "x.json"))
+    db_session.add(job)
+    db_session.commit()
+    service._discard_unpublished(db_session, job.id, job_dir)
+    assert job_dir.exists()
+    other = service._storage_root / "999998-not-published"
+    other.mkdir(parents=True, exist_ok=True)
+    service._discard_unpublished(db_session, job.id, other)
+    assert not other.exists()
+    shutil.rmtree(job_dir)
+
+
+def test_the_sweep_removes_only_old_directories_no_job_claims(db_session, test_project):
+    import os
+    service = ReportJobService()
+    root = service._storage_root
+    root.mkdir(parents=True, exist_ok=True)
+    long_ago = datetime.now(timezone.utc).timestamp() - 10 * 3600
+
+    def make(name, old=True):
+        d = root / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "f.json").write_text("{}")
+        if old:
+            os.utime(d, (long_ago, long_ago))
+        return d
+
+    processing = ReportJob(project_id=test_project.id, format="json", report_type="comprehensive",
+                           filters={}, status="processing")
+    db_session.add(processing)
+    db_session.flush()
+    referenced = make("sweep-referenced")
+    db_session.add(ReportJob(project_id=test_project.id, format="json", report_type="comprehensive", filters={},
+                             status="completed", result_path=str(referenced / "f.json")))
+    db_session.commit()
+    orphan = make("12345678-orphan")
+    legacy_orphan = make("0123456789abcdef")
+    young = make("sweep-young", old=False)
+    in_flight = make(f"{processing.id}-still-writing")
+
+    assert service.reconcile_orphan_artifacts(db_session, datetime.now(timezone.utc)) == 2
+    assert not orphan.exists() and not legacy_orphan.exists()
+    assert referenced.exists() and young.exists() and in_flight.exists()
+    for d in (referenced, young, in_flight):
+        shutil.rmtree(d)
+
+
+def test_cleanup_runs_the_sweep(db_session, test_project, monkeypatch):
+    service = ReportJobService()
+    calls = []
+    monkeypatch.setattr(service, "reconcile_orphan_artifacts", lambda db, now: calls.append(now) or 0)
+    service.cleanup_expired()
+    assert len(calls) == 1
