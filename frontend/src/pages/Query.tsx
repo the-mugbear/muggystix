@@ -11,7 +11,7 @@
  * so a new address refills it.  Every stats / top row opens exactly its rows
  * (the server's `drilldowns`).
  */
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { BookOpen, Loader2, Play, Save, Share2 } from 'lucide-react';
@@ -47,6 +47,8 @@ import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
+import { cn } from '../utils/cn';
+import { applyCompletion, completeQuery } from '../utils/queryCompletion';
 import { formatTimestamp } from '../utils/relativeTime';
 
 export const QUERY_PATH = '/query';
@@ -78,27 +80,103 @@ const Editor: React.FC<{
   onRun: (text: string) => void;
   onSave: (text: string) => void;
 }> = ({ initial, running, onRun, onSave }) => {
+  const projectId = useProjectId();
   const [draft, setDraft] = useState(initial);
   const text = draft.trim();
+  // Completion (5.406.0): the word at the caret, from the server's schema.
+  const schema = useQuery({
+    queryKey: ['getQuerySchema', projectId],
+    queryFn: ({ signal }) => getQuerySchema(projectId, signal),
+  });
+  const box = useRef<HTMLTextAreaElement>(null);
+  const [caret, setCaret] = useState<number | null>(null);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const pendingCaret = useRef<number | null>(null);
+  const completion = open && caret !== null ? completeQuery(draft, caret, schema.data ?? null) : null;
+  const activeIndex = completion ? Math.min(active, completion.items.length - 1) : 0;
+  useEffect(() => {
+    if (pendingCaret.current === null || !box.current) return;
+    box.current.setSelectionRange(pendingCaret.current, pendingCaret.current);
+    pendingCaret.current = null;
+  }, [draft]);
+  const accept = (index: number) => {
+    if (!completion) return;
+    const next = applyCompletion(draft, completion, completion.items[index]);
+    pendingCaret.current = next.caret;
+    setDraft(next.text);
+    setCaret(next.caret);
+    setActive(0);
+  };
+  const track = (el: HTMLTextAreaElement) => setCaret(el.selectionStart === el.selectionEnd ? el.selectionStart : null);
   return (
     <div className="flex min-w-0 flex-col gap-xs">
       <Label htmlFor="query-text" className="sr-only">Query</Label>
-      <Textarea
-        id="query-text"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && text) {
-            e.preventDefault();
-            onRun(text);
-          }
-        }}
-        rows={3}
-        maxLength={4000}
-        spellCheck={false}
-        placeholder={EXAMPLE}
-        className="font-mono text-metadata"
-      />
+      <div className="relative min-w-0">
+        <Textarea
+          ref={box}
+          id="query-text"
+          value={draft}
+          role="combobox"
+          aria-expanded={!!completion}
+          aria-controls="query-completion"
+          aria-autocomplete="list"
+          aria-activedescendant={completion ? `query-completion-${activeIndex}` : undefined}
+          onChange={(e) => { setDraft(e.target.value); track(e.target); setOpen(true); setActive(0); }}
+          onSelect={(e) => track(e.currentTarget)}
+          onBlur={() => setOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault();
+              if (text) onRun(text);
+              return;
+            }
+            if (!completion) return;
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              const n = completion.items.length;
+              setActive((activeIndex + (e.key === 'ArrowDown' ? 1 : n - 1)) % n);
+            } else if (e.key === 'Tab' || e.key === 'Enter') {
+              e.preventDefault();
+              accept(activeIndex);
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              setOpen(false);
+            }
+          }}
+          rows={3}
+          maxLength={4000}
+          spellCheck={false}
+          placeholder={EXAMPLE}
+          className="font-mono text-metadata"
+        />
+        {completion && (
+          <ul
+            id="query-completion"
+            role="listbox"
+            aria-label="Suggestions"
+            className="absolute left-0 top-full z-20 mt-xxs max-h-64 w-80 max-w-full overflow-y-auto rounded-control border border-border bg-popover py-xxs shadow-md"
+          >
+            {completion.items.map((item, i) => (
+              <li
+                key={item.label}
+                id={`query-completion-${i}`}
+                role="option"
+                aria-selected={i === activeIndex}
+                // Keep the textarea's focus: a click must not blur it first.
+                onMouseDown={(e) => { e.preventDefault(); accept(i); }}
+                className={cn(
+                  'flex min-w-0 cursor-pointer items-baseline gap-sm px-sm py-xxs text-metadata',
+                  i === activeIndex ? 'bg-accent text-foreground' : 'text-foreground',
+                )}
+              >
+                <span className="shrink-0 font-mono">{item.label}</span>
+                {item.detail && <span className="min-w-0 truncate text-caption text-muted-foreground">{item.detail}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       <div className="flex flex-wrap items-center gap-xs">
         <Button size="sm" onClick={() => onRun(text)} disabled={!text || running}>
           {running ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Play className="size-4" aria-hidden />}
@@ -107,7 +185,7 @@ const Editor: React.FC<{
         <Button size="sm" variant="outline" onClick={() => onSave(text)} disabled={!text}>
           <Save className="size-4" aria-hidden /> Save…
         </Button>
-        <span className="text-caption text-muted-foreground">Ctrl + Enter runs it.</span>
+        <span className="text-caption text-muted-foreground">Ctrl + Enter runs it; Tab takes a suggestion.</span>
       </div>
     </div>
   );

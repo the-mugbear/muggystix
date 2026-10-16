@@ -60,6 +60,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   role.canExport = true;
   api.listSavedQueries.mockResolvedValue([]);
+  api.getQuerySchema.mockResolvedValue({
+    datasets: [{ name: 'ports', description: 'ports', default_fields: [], examples: [],
+      columns: [{ name: 'service', type: 'text', description: '' }] }],
+    commands: [], caps: { rows: 500, groups: 1000, values: 20 },
+  });
 });
 
 describe('Query page', () => {
@@ -201,5 +206,26 @@ describe('Query page — the chart (5.406.0)', () => {
     renderAt('/query?q=ports%20%7C%20stats%20count%20by%20service%2C%20port&view=chart');
     expect(await screen.findByTestId('query-answer')).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Chart' })).not.toBeInTheDocument();
+  });
+});
+
+describe('Query page — suggestions in the editor (5.406.0)', () => {
+  it('suggests what may be typed at the caret; Tab takes it, Escape closes the list', async () => {
+    renderAt('/query');
+    const box = screen.getByLabelText('Query') as HTMLTextAreaElement;
+    await waitFor(() => expect(api.getQuerySchema).toHaveBeenCalled());
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: 'ports | wh', selectionStart: 10, selectionEnd: 10 } });
+    const list = await screen.findByRole('listbox', { name: 'Suggestions' });
+    expect(within(list).getByRole('option', { name: /where/ })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(box, { key: 'Tab' });
+    await waitFor(() => expect(box).toHaveValue('ports | where '));
+    fireEvent.change(box, { target: { value: 'ports | where se', selectionStart: 16, selectionEnd: 16 } });
+    expect(await screen.findByRole('option', { name: /service/ })).toBeInTheDocument();
+    fireEvent.keyDown(box, { key: 'Escape' });
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    // Ctrl + Enter still runs it.
+    fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true });
+    await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent('ports | where se'));
   });
 });
