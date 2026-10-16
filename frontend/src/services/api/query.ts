@@ -4,6 +4,7 @@
  * Backend: app/api/v1/endpoints/queries.py.
  */
 import { saveBlob } from '../../utils/download';
+import { exportNote } from '../../utils/queryExport';
 import { api, projectPath } from './client';
 
 export interface QueryColumn {
@@ -31,18 +32,23 @@ export interface QueryAnswer {
   links?: (string | null)[] | null;
   /** stats / top: the group columns — the answer's first columns. */
   by?: string[] | null;
+  /** [row, column] of each values() list cut at the cap: the cell holds the first 20. */
+  truncated_values?: [number, string][];
 }
 
 export const runQuery = async (projectId: number, q: string, signal?: AbortSignal): Promise<QueryAnswer> =>
   (await api.get<QueryAnswer>(`${projectPath(projectId)}/query`, { params: { q }, signal })).data;
 
 /** The answer as CSV (auditor and above; a listing up to 50,000 rows) — saved
- *  as `query-<dataset>.csv`; answers the file name. */
-export const downloadQueryCsv = async (projectId: number, q: string, dataset: string): Promise<string> => {
+ *  as `query-<dataset>.csv`; answers the file name and, when it is not the
+ *  whole answer, a note saying how much it holds. */
+export const downloadQueryCsv = async (
+  projectId: number, q: string, dataset: string,
+): Promise<{ filename: string; note?: string }> => {
   const response = await api.get(`${projectPath(projectId)}/query/export.csv`, { params: { q }, responseType: 'blob' });
   const filename = `query-${dataset}.csv`;
   saveBlob(new Blob([response.data], { type: 'text/csv' }), filename);
-  return filename;
+  return { filename, note: exportNote(response.headers ?? {}) };
 };
 
 export interface QuerySchemaColumn {

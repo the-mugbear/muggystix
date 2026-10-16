@@ -418,3 +418,61 @@ def test_the_export_lists_past_the_pages_cap(client, test_project, estate, monke
     assert len(_run(client, test_project, "ports").json()["rows"]) == 5
     r = client.get(_url(test_project, "/query/export.csv"), params={"q": "ports"})
     assert len(r.text.strip().splitlines()) == 1 + 19
+
+
+# ---------------------------------------------------------------------------
+# External review 2026-10-16 (2.510.1): A3 values() bounded and said cut;
+# A4 one definition of a valid query for saving and running
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text, message", [
+    ("hosts | where bogus=1", "Unknown column 'bogus'"),
+    ("hosts | fields ip, nope", "Unknown column 'nope'"),
+    ("hosts | stats avg(hostname)", "avg() takes a number column"),
+    ('observations | where severity > "low"', "takes = or != only"),
+    ("hosts | stats count by ip | sort -nope", "takes a column of the answer"),
+    ('hosts | where first_seen > "yesterday"', "compares with a date"),
+    ("names has:web", "names has no host"),
+])
+def test_saving_refuses_what_running_refuses(client, test_project, estate, text, message):
+    """A4: `hosts | where bogus=1` saved (201) and then failed to run (400).
+    Saving now builds the same plan running does — without the database."""
+    run = _run(client, test_project, text)
+    assert run.status_code == 400 and message in run.json()["detail"]
+    saved = client.post(_url(test_project, "/queries/saved"), json={"name": f"bad {text}", "query": text})
+    assert saved.status_code == 400 and saved.json()["detail"] == run.json()["detail"]
+    assert saved.json()["position"] == run.json()["position"]
+
+
+def test_the_check_reads_no_database():
+    # Terms that need the database to EVALUATE (has:eol) are only parsed.
+    query_service.check("hosts has:eol | where os_family=\"windows\" | stats count by state")
+
+
+def test_a_cut_values_list_says_so(client, db_session, test_project, estate):
+    """A3: 25 distinct names came back as 20 with nothing saying the list was
+    cut; now at most 21 leave the database and the answer names the cell."""
+    for i, h in enumerate(estate):
+        h.hostname = f"n{i:02d}.lab"
+    for i in range(13):
+        db_session.add(Host(project_id=test_project.id, ip_address=f"10.31.0.{i + 1}", state="up",
+                            hostname=f"z{i:02d}.lab"))
+    db_session.commit()
+    body = _run(client, test_project, "hosts | stats values(hostname) as names, values(os_family) as fams").json()
+    (row,) = body["rows"]
+    assert len(row[0]) == query_service.VALUES_CAP and row[0][0] == "n00.lab"   # ordered, first 20
+    assert body["truncated_values"] == [[0, "names"]]                          # fams (2 values) is whole
+    csv_text = client.get(_url(test_project, "/query/export.csv"),
+                          params={"q": "hosts | stats values(hostname) as names"}).text
+    assert csv_text.strip().splitlines()[1].endswith("; …\"") or csv_text.strip().splitlines()[1].endswith("; …")
+    small = _run(client, test_project, "hosts | stats values(os_family) as fams").json()
+    assert small["truncated_values"] == []
+
+
+def test_the_export_says_what_the_file_holds_against_the_answer(client, test_project, estate):
+    """U1: the page says "the first N of M" from these headers."""
+    r = client.get(_url(test_project, "/query/export.csv"), params={"q": "ports | head 3"})
+    assert (r.headers["x-total-count"], r.headers["x-row-count"], r.headers["x-answer-kind"]) == ("19", "3", "rows")
+    assert r.headers["x-cap"] == str(query_service.EXPORT_ROW_CAP)
+    g = client.get(_url(test_project, "/query/export.csv"), params={"q": "ports | stats count by port"})
+    assert (g.headers["x-answer-kind"], g.headers["x-cap"]) == ("stats", str(query_service.GROUP_CAP))

@@ -28,9 +28,17 @@ import { Button, type ButtonProps } from './ui/button';
 
 const DOWNLOADED_TITLE = 'Downloaded during this visit';
 
+/** A saved file's name, and what it holds when that is not everything. */
+export interface SavedFile {
+  filename: string;
+  note?: string;
+}
+
 interface Props extends Pick<ButtonProps, 'variant' | 'size' | 'className' | 'disabled'> {
-  /** Fetches and saves the file.  May answer the name it was saved under. */
-  saveFn: () => Promise<string | void>;
+  /** Fetches and saves the file.  May answer the name it was saved under —
+   *  or that name and a note on what the file holds ("the first 50,000 of
+   *  80,000 rows"), said in the toast and beside the mark. */
+  saveFn: () => Promise<string | SavedFile | void>;
   /** The button's words. */
   label: string;
   /** Its accessible name, when the words alone do not say which file ("HTML"). */
@@ -54,11 +62,16 @@ const DownloadButton: React.FC<Props> = ({
   // Kept apart from the mutation's own status: a later attempt that fails
   // does not take back that the file was saved once.
   const [downloaded, setDownloaded] = useState(false);
+  // What the last saved file holds, when it is not the whole answer.
+  const [note, setNote] = useState<string | null>(null);
   const save = useMutation({
     mutationFn: saveFn,
     onSuccess: (saved) => {
       setDownloaded(true);
-      toast.success(savedMessage(typeof saved === 'string' && saved ? saved : filename));
+      const file = typeof saved === 'object' && saved ? saved : null;
+      const name = file ? file.filename : typeof saved === 'string' && saved ? saved : filename;
+      setNote(file?.note ?? null);
+      toast.success(file?.note ? `${savedMessage(name)} ${file.note}` : savedMessage(name));
     },
     onError: (err) => toast.error(formatApiError(err, errorText)),
   });
@@ -86,6 +99,7 @@ const DownloadButton: React.FC<Props> = ({
         <span className="inline-flex shrink-0 items-center gap-xxs text-caption text-muted-foreground"
           title={DOWNLOADED_TITLE}>
           <Check className="size-3.5 text-success" aria-hidden /> Downloaded
+          {note && <span className="text-warning" data-testid="download-note"> — {note}</span>}
         </span>
       )}
     </span>

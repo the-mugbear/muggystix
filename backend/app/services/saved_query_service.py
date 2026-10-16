@@ -18,26 +18,16 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import SavedQuery
 from app.db.models_auth import User
+from app.services import query_service
 from app.services.finding_actions import finding_actor
-from app.services.query_datasets import DATASETS
-from app.services.query_language import QueryError, parse
 
 
 def check_query(text: str) -> None:
-    """The query reads: grammar, dataset, and every column named — a 400
-    (``QueryError``) otherwise.  Search terms are parsed by the Hosts language."""
-    from app.services import host_query_dsl as dsl
-
-    pipe = parse(text)
-    ds = DATASETS.get(pipe.dataset)
-    if ds is None:
-        raise QueryError(f"Unknown dataset '{pipe.dataset}'. Datasets: {', '.join(DATASETS)}",
-                         position=pipe.dataset_pos)
-    for terms, offset in pipe.searches:
-        try:
-            dsl.parse_query(terms)
-        except dsl.DSLError as exc:
-            raise QueryError(exc.message, position=None if exc.position is None else offset + exc.position)
+    """The query is one ``run`` would accept — ``query_service.check``, the
+    same plan ``run`` builds, without reading the database (external review
+    2026-10-16, A4: this used to check the grammar and the dataset only, so
+    `hosts | where bogus=1` saved and then failed to run)."""
+    query_service.check(text)
 
 
 def _visible(db: Session, project_id: int, user: User):

@@ -248,3 +248,27 @@ describe('Query page — the builder (5.406.0)', () => {
     await waitFor(() => expect(screen.getByLabelText('Query')).toHaveValue('ports has:web | head 20'));
   });
 });
+
+describe('Query page — external review 2026-10-16', () => {
+  it('a values() list the server cut says so in its cell', async () => {
+    api.runQuery.mockResolvedValue({
+      ...STATS, columns: [{ name: 'service', type: 'text' }, { name: 'names', type: 'list' }],
+      rows: [['ssh', ['a', 'b']], ['http', ['c']]], truncated_values: [[0, 'names']], by: ['service'],
+    });
+    renderAt(`/query?q=${encodeURIComponent(STATS.query)}`);
+    const table = await screen.findByTestId('query-answer');
+    expect(within(table).getByText('a, b … (the first 2)')).toBeInTheDocument();
+    expect(within(table).getByText('c')).toBeInTheDocument();
+  });
+
+  it('a downloaded CSV that is not the whole answer says how much it holds', async () => {
+    api.runQuery.mockResolvedValue(STATS);
+    api.downloadQueryCsv.mockResolvedValue({ filename: 'query-ports.csv', note: 'It holds the first 3 of 19 rows — as the query’s head asked.' });
+    renderAt(`/query?q=${encodeURIComponent(STATS.query)}`);
+    fireEvent.click(await screen.findByRole('button', { name: /Download CSV/ }));
+    expect(await screen.findByTestId('download-note')).toHaveTextContent('It holds the first 3 of 19 rows');
+    expect(toastMock.success).toHaveBeenCalledWith(
+      'Saved query-ports.csv to your downloads. It holds the first 3 of 19 rows — as the query’s head asked.',
+    );
+  });
+});

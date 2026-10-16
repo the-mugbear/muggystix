@@ -17,11 +17,14 @@ Read-only; the statement timeout is ``get_db``'s.
 from __future__ import annotations
 
 import enum
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import Float, String, and_, cast, distinct, func, or_
+from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy.dialects.postgresql import array_agg as pg_array_agg
 from sqlalchemy.orm import Session
 
 from app.db.models_auth import User
@@ -176,9 +179,9 @@ def _condition(ds: Dataset, cond: Cond):
 # The rows
 # ---------------------------------------------------------------------------
 
-def _filtered(db: Session, project_id: int, user: User, ds: Dataset, pipe: Pipeline):
-    query = ds.base(db, project_id)
-    ctx = dsl.BuildCtx(db=db, current_user=user, project_id=project_id)
+def _search_nodes(ds: Dataset, pipe: Pipeline) -> list:
+    """The search terms, parsed by the Hosts language (no database)."""
+    nodes = []
     for text, offset in pipe.searches:
         if ds.host_filter == "none":
             raise QueryError(
@@ -186,16 +189,26 @@ def _filtered(db: Session, project_id: int, user: User, ds: Dataset, pipe: Pipel
                 position=offset,
             )
         try:
-            node = dsl.parse_query(text)
+            nodes.append(dsl.parse_query(text))
         except dsl.DSLError as exc:
             # The Hosts language's own error, placed in the whole query.
             raise QueryError(exc.message, position=None if exc.position is None else offset + exc.position)
+    return nodes
+
+
+def _filtered(db: Session, project_id: int, user: User, ds: Dataset, plan: "_Plan"):
+    """The dataset's rows of one project, with the plan's search terms (which
+    may read the database to resolve — `has:eol`, `assigned:me`) and its
+    `where` conditions applied."""
+    query = ds.base(db, project_id)
+    ctx = dsl.BuildCtx(db=db, current_user=user, project_id=project_id)
+    for node in plan.search_nodes:
         predicate = dsl.evaluate(node, ctx)
         # A row joined to its host takes the predicate as it is; a row with
         # several hosts (a finding) matches when one of them does.
         query = query.filter(ds.host_filter(predicate) if callable(ds.host_filter) else predicate)
-    for cond in pipe.wheres:
-        query = query.filter(_condition(ds, cond))
+    for condition in plan.conditions:
+        query = query.filter(condition)
     return query
 
 
@@ -203,9 +216,31 @@ def _sort_key(col: QueryColumn):
     return col.sort_expr if col.sort_expr is not None else col.expr
 
 
-def _rows(query, ds: Dataset, pipe: Pipeline, row_cap: int) -> Dict[str, Any]:
+@dataclass
+class _Plan:
+    """Everything a query needs that does not need the database (2.510.1,
+    external review A4): every name and type is checked here, so saving a
+    query (``check``) and running one (``run``) refuse exactly the same
+    things.  ``run`` only adds what needs the database — evaluating the
+    search terms, and the statement."""
+    search_nodes: list
+    conditions: list
+    # rows | stats
+    kind: str
+    selected: list
+    out_cols: List[Dict[str, str]]
+    order: list
+    limit: int
+    capped: bool
+    # A listing's link expressions; a grouping's columns and value columns.
+    links: list = field(default_factory=list)
+    by: List[QueryColumn] = field(default_factory=list)
+    value_cols: List[Optional[QueryColumn]] = field(default_factory=list)
+
+
+def _plan_rows(ds: Dataset, pipe: Pipeline, row_cap: int) -> Dict[str, Any]:
     names = pipe.fields or ds.default_fields
-    cols = [_column(ds, n, 0) for n in names]
+    cols = [_column(ds, n, pipe.dataset_pos) for n in names]
     links = ds.link_exprs if ds.link else []
     order = []
     sorts = pipe.sorts or [(s.lstrip("-"), s.startswith("-"), 0) for s in ds.default_sort]
@@ -214,26 +249,39 @@ def _rows(query, ds: Dataset, pipe: Pipeline, row_cap: int) -> Dict[str, Any]:
         order.append(key.desc().nullslast() if desc else key.asc().nullslast())
     # The row's own id last: a listing is stable from one run to the next.
     order.append(ds.base_id.asc())
-    limit = min(pipe.head or row_cap, row_cap)
+    return dict(
+        kind="rows",
+        selected=[c.expr for c in cols],
+        out_cols=[{"name": c.name, "type": c.type} for c in cols],
+        order=order,
+        limit=min(pipe.head or row_cap, row_cap),
+        capped=(pipe.head or 0) > row_cap,
+        links=links,
+        value_cols=cols,
+    )
+
+
+def _run_rows(query, ds: Dataset, plan: _Plan) -> Dict[str, Any]:
     result = (
-        query.with_entities(*[c.expr for c in cols], *links, func.count().over().label("_total"))
-        .order_by(*order)
-        .limit(limit)
+        query.with_entities(*plan.selected, *plan.links, func.count().over().label("_total"))
+        .order_by(*plan.order)
+        .limit(plan.limit)
         .all()
     )
     total = int(result[0]._total) if result else 0
-    width = len(cols)
+    width = len(plan.selected)
     return {
         "kind": "rows",
-        "columns": [{"name": c.name, "type": c.type} for c in cols],
-        "rows": [[_plain(v, c) for v, c in zip(r[:width], cols)] for r in result],
+        "columns": plan.out_cols,
+        "rows": [[_plain(v, c) for v, c in zip(r[:width], plan.value_cols)] for r in result],
         "total": total,
-        "limit": limit,
-        "capped": (pipe.head or 0) > row_cap,
+        "limit": plan.limit,
+        "capped": plan.capped,
         "drilldowns": None,
         # Each row's page (the host, the finding, the endpoint) — the dataset's.
-        "links": [ds.link(tuple(r[width:width + len(links)])) for r in result] if links else None,
+        "links": [ds.link(tuple(r[width:width + len(plan.links)])) for r in result] if plan.links else None,
         "by": None,
+        "truncated_values": [],
     }
 
 
@@ -261,7 +309,11 @@ def _aggregate_expr(ds: Dataset, agg) -> tuple:
             raise QueryError(f"{agg.func}() does not take '{col.name}' ({col.type})", position=agg.pos)
         return (func.min(col.expr) if agg.func == "min" else func.max(col.expr)), col.type, col
     if agg.func == "values":
-        return func.array_agg(distinct(cast(col.expr, String))), "list", col
+        # The ordered distinct values, nulls last, and only VALUES_CAP + 1 of
+        # them leave the database (external review 2026-10-16, A3): the one
+        # past the cap says the list was cut.
+        text = cast(col.expr, String)
+        return pg_array_agg(aggregate_order_by(distinct(text), text.asc().nullslast()))[1:VALUES_CAP + 1], "list", col
     raise QueryError(f"Unknown function '{agg.func}'", position=agg.pos)  # pragma: no cover
 
 
@@ -275,7 +327,7 @@ def _drilldown(pipe: Pipeline, by: List[QueryColumn], key: List[Any]) -> str:
     return f"{pipe.before_aggregate} | where {' AND '.join(terms)}"
 
 
-def _grouped(query, ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
+def _plan_grouped(ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
     agg = pipe.aggregate
     if isinstance(agg, Top):
         by = [_column(ds, n, agg.pos) for n in agg.columns]
@@ -316,19 +368,30 @@ def _grouped(query, ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
         key = named[name]
         order.append(key.desc().nullslast() if desc else key.asc().nullslast())
     order += default_order
-    statement = query.with_entities(*selected, func.count().over().label("_groups"))
+    return dict(
+        kind="stats", selected=selected, out_cols=out_cols, order=order, limit=limit,
+        capped=(pipe.head or 0) > GROUP_CAP, by=by, value_cols=value_cols,
+    )
+
+
+def _run_grouped(query, pipe: Pipeline, plan: _Plan) -> Dict[str, Any]:
+    by = plan.by
+    statement = query.with_entities(*plan.selected, func.count().over().label("_groups"))
     if by:
         statement = statement.group_by(*[c.expr for c in by])
-    result = statement.order_by(*order).limit(limit).all()
+    result = statement.order_by(*plan.order).limit(plan.limit).all()
 
-    rows, drilldowns = [], []
-    for r in result:
+    rows, drilldowns, truncated = [], [], []
+    for i, r in enumerate(result):
         key = list(r[:len(by)])
         values = list(r[len(by):-1])
         out = [_plain(v, c) for v, c in zip(key, by)]
-        for v, col, spec in zip(values, value_cols, out_cols[len(by):]):
+        for v, col, spec in zip(values, plan.value_cols, plan.out_cols[len(by):]):
             if spec["type"] == "list":
-                items = sorted({_plain(x, col) for x in (v or []) if x is not None}, key=str)
+                items = [_plain(x, col) for x in (v or []) if x is not None]
+                if len(items) > VALUES_CAP:
+                    # Said, never silent: this cell holds the first VALUES_CAP.
+                    truncated.append([i, spec["name"]])
                 out.append(items[:VALUES_CAP])
             elif spec["type"] == "float" and v is not None:
                 out.append(round(float(v), 2))
@@ -339,15 +402,17 @@ def _grouped(query, ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
     total = int(result[0]._groups) if result else 0
     return {
         "kind": "stats",
-        "columns": out_cols,
+        "columns": plan.out_cols,
         "rows": rows,
         "total": total,
-        "limit": limit,
-        "capped": (pipe.head or 0) > GROUP_CAP,
+        "limit": plan.limit,
+        "capped": plan.capped,
         "drilldowns": drilldowns,
         "links": None,
         # The answer's group columns (the first ones): what a chart's categories are.
         "by": [c.name for c in by],
+        # [row, column] of each values() list cut at VALUES_CAP.
+        "truncated_values": truncated,
     }
 
 
@@ -355,17 +420,30 @@ def _grouped(query, ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
 # Public
 # ---------------------------------------------------------------------------
 
+def _plan(text: str, row_cap: int) -> tuple:
+    """(pipeline, dataset, plan) — the query read and checked, no database."""
+    pipe = parse(text)
+    ds = _dataset(pipe)
+    search_nodes = _search_nodes(ds, pipe)
+    conditions = [_condition(ds, cond) for cond in pipe.wheres]
+    shape = _plan_grouped(ds, pipe) if pipe.aggregate is not None else _plan_rows(ds, pipe, row_cap)
+    return pipe, ds, _Plan(search_nodes=search_nodes, conditions=conditions, **shape)
+
+
+def check(text: str) -> None:
+    """Refuse (``QueryError``, a 400 with a position) whatever ``run`` would
+    refuse before reading the database: grammar, dataset, every column,
+    value, aggregate and sort name.  What saving a query calls — one
+    definition of a valid query (external review 2026-10-16, A4)."""
+    _plan(text, ROW_CAP)
+
+
 def run(db: Session, project_id: int, user: User, text: str, *, row_cap: Optional[int] = None) -> Dict[str, Any]:
     """The answer to one query, in one statement.  ``row_cap`` is the most
     rows a listing returns (default ``ROW_CAP``; the CSV export's is larger)."""
-    row_cap = ROW_CAP if row_cap is None else row_cap
-    pipe = parse(text)
-    ds = _dataset(pipe)
-    if pipe.fields:
-        for name in pipe.fields:
-            _column(ds, name, pipe.dataset_pos)
-    query = _filtered(db, project_id, user, ds, pipe)
-    answer = _grouped(query, ds, pipe) if pipe.aggregate is not None else _rows(query, ds, pipe, row_cap)
+    pipe, ds, plan = _plan(text, ROW_CAP if row_cap is None else row_cap)
+    query = _filtered(db, project_id, user, ds, plan)
+    answer = _run_grouped(query, pipe, plan) if plan.kind == "stats" else _run_rows(query, ds, plan)
     return {"query": text, "dataset": ds.name, **answer}
 
 
@@ -378,11 +456,19 @@ def to_csv(answer: Dict[str, Any]) -> str:
 
     from app.services.csv_utils import safe_csv_row
 
+    names = [c["name"] for c in answer["columns"]]
+    cut = {(i, name) for i, name in answer.get("truncated_values") or []}
     out = io.StringIO()
     writer = csv.writer(out)
-    safe_csv_row(writer, [c["name"] for c in answer["columns"]])
-    for row in answer["rows"]:
-        safe_csv_row(writer, ["; ".join(str(v) for v in value) if isinstance(value, list) else value for value in row])
+    safe_csv_row(writer, names)
+    for i, row in enumerate(answer["rows"]):
+        cells = []
+        for name, value in zip(names, row):
+            if isinstance(value, list):
+                # A cut values() list says so in the file too.
+                value = "; ".join(str(v) for v in value) + ("; …" if (i, name) in cut else "")
+            cells.append(value)
+        safe_csv_row(writer, cells)
     return out.getvalue()
 
 

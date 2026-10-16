@@ -53,6 +53,10 @@ class QueryAnswer(BaseModel):
         None, description="A listing: for each row, its page (the host, the finding, the endpoint)",
     )
     by: Optional[List[str]] = Field(None, description="stats / top: the group columns (the answer's first columns)")
+    truncated_values: List[List[Any]] = Field(
+        default_factory=list,
+        description="[row, column] of each values() list cut at the cap (20): the cell holds the first 20",
+    )
 
 
 @router.get("/query", response_model=QueryAnswer, summary="Run a query (SPL-style)")
@@ -82,8 +86,12 @@ def export_query_csv(
     answer = query_service.run(db, project.id, user, q, row_cap=query_service.EXPORT_ROW_CAP)
     return PlainTextResponse(
         query_service.to_csv(answer), media_type="text/csv; charset=utf-8",
+        # What the file holds against the whole answer (the page says "the
+        # first N of M" — external review 2026-10-16, U1).
         headers={**attachment(f"query-{answer['dataset']}.csv"),
-                 "X-Total-Count": str(answer["total"]), "X-Row-Count": str(len(answer["rows"]))},
+                 "X-Total-Count": str(answer["total"]), "X-Row-Count": str(len(answer["rows"])),
+                 "X-Answer-Kind": answer["kind"],
+                 "X-Cap": str(query_service.GROUP_CAP if answer["kind"] == "stats" else query_service.EXPORT_ROW_CAP)},
     )
 
 

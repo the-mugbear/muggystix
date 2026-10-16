@@ -233,6 +233,8 @@ const Answer: React.FC<{ answer: QueryAnswer; view: AnswerView; onView: (v: Answ
   const drill = answer.kind === 'stats' && answer.drilldowns;
   // A listing row's own page (the host, the finding, the endpoint).
   const links = answer.kind === 'rows' && answer.links ? answer.links : null;
+  // values() lists the server cut at its cap — said in the cell, never silent.
+  const cut = new Set((answer.truncated_values ?? []).map(([row, col]) => `${row}\u0000${col}`));
   if (answer.total === 0) {
     return <p className="text-metadata text-muted-foreground">Nothing matches this query.</p>;
   }
@@ -278,7 +280,8 @@ const Answer: React.FC<{ answer: QueryAnswer; view: AnswerView; onView: (v: Answ
               // Rows have no id; the answer is replaced whole, never edited in place.
               <TableRow key={i}>
                 {answer.columns.map((c, j) => {
-                  const text = cellText(row[j], c.type);
+                  const text = cellText(row[j], c.type)
+                    + (cut.has(`${i}\u0000${c.name}`) ? ` … (the first ${(row[j] as unknown[]).length})` : '');
                   return (
                     <TableCell
                       key={c.name}
