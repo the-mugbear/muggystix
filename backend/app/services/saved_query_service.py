@@ -1,0 +1,123 @@
+"""Saved and shared Query-page queries (v2.509.0).
+
+The owner, 2026-10-16: saved and shared searches, as the teams know them from
+Splunk.  A saved query is one project's: its creator's alone, or — ``shared``
+— every member's to see and run.  Only the creator, or a project admin,
+changes or deletes it; a shared query whose creator's account was deleted is
+then a project admin's.  Saving checks the query reads (grammar and names),
+never runs it.
+"""
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from fastapi import HTTPException
+from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, joinedload
+
+from app.db.models import SavedQuery
+from app.db.models_auth import User
+from app.services.finding_actions import finding_actor
+from app.services.query_datasets import DATASETS
+from app.services.query_language import QueryError, parse
+
+
+def check_query(text: str) -> None:
+    """The query reads: grammar, dataset, and every column named — a 400
+    (``QueryError``) otherwise.  Search terms are parsed by the Hosts language."""
+    from app.services import host_query_dsl as dsl
+
+    pipe = parse(text)
+    ds = DATASETS.get(pipe.dataset)
+    if ds is None:
+        raise QueryError(f"Unknown dataset '{pipe.dataset}'. Datasets: {', '.join(DATASETS)}",
+                         position=pipe.dataset_pos)
+    for terms, offset in pipe.searches:
+        try:
+            dsl.parse_query(terms)
+        except dsl.DSLError as exc:
+            raise QueryError(exc.message, position=None if exc.position is None else offset + exc.position)
+
+
+def _visible(db: Session, project_id: int, user: User):
+    return (
+        db.query(SavedQuery)
+        .options(joinedload(SavedQuery.created_by))
+        .filter(SavedQuery.project_id == project_id,
+                or_(SavedQuery.shared.is_(True), SavedQuery.created_by_id == user.id))
+    )
+
+
+def serialize(row: SavedQuery, user: User, is_project_admin: bool) -> Dict[str, Any]:
+    mine = row.created_by_id == user.id
+    return {
+        "id": row.id,
+        "name": row.name,
+        "description": row.description,
+        "query": row.query,
+        "shared": bool(row.shared),
+        "created_by": (row.created_by.full_name or row.created_by.username) if row.created_by else None,
+        "mine": mine,
+        "can_modify": mine or is_project_admin,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def list_visible(db: Session, project_id: int, user: User) -> List[Dict[str, Any]]:
+    """Mine, then the team's shared ones, each by name."""
+    admin = finding_actor(db, project_id, user).is_project_admin
+    rows = _visible(db, project_id, user).all()
+    rows.sort(key=lambda r: (r.created_by_id != user.id, r.name.lower(), r.id))
+    return [serialize(r, user, admin) for r in rows]
+
+
+def _get_for_change(db: Session, project_id: int, user: User, query_id: int) -> SavedQuery:
+    row = _visible(db, project_id, user).filter(SavedQuery.id == query_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Saved query not found")
+    if row.created_by_id != user.id and not finding_actor(db, project_id, user).is_project_admin:
+        raise HTTPException(status_code=403, detail="Only its creator or a project admin can change this query")
+    return row
+
+
+def _commit_name(db: Session) -> None:
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="You already have a saved query with that name")
+
+
+def create(db: Session, project_id: int, user: User, *, name: str, query: str,
+           description: Optional[str], shared: bool) -> Dict[str, Any]:
+    check_query(query)
+    row = SavedQuery(project_id=project_id, created_by_id=user.id, name=name.strip(),
+                     description=(description or "").strip() or None, query=query.strip(), shared=shared)
+    db.add(row)
+    _commit_name(db)
+    db.refresh(row)
+    return serialize(row, user, finding_actor(db, project_id, user).is_project_admin)
+
+
+def update(db: Session, project_id: int, user: User, query_id: int, changes: Dict[str, Any]) -> Dict[str, Any]:
+    row = _get_for_change(db, project_id, user, query_id)
+    if "query" in changes and changes["query"] is not None:
+        check_query(changes["query"])
+        row.query = changes["query"].strip()
+    if changes.get("name") is not None:
+        row.name = changes["name"].strip()
+    if "description" in changes:
+        row.description = (changes["description"] or "").strip() or None
+    if changes.get("shared") is not None:
+        row.shared = bool(changes["shared"])
+    _commit_name(db)
+    db.refresh(row)
+    return serialize(row, user, finding_actor(db, project_id, user).is_project_admin)
+
+
+def delete(db: Session, project_id: int, user: User, query_id: int) -> None:
+    row = _get_for_change(db, project_id, user, query_id)
+    db.delete(row)
+    db.commit()

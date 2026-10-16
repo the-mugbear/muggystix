@@ -1,6 +1,6 @@
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ServerCog, SearchCode, ShieldAlert, Gauge, MessagesSquare } from 'lucide-react';
+import { ServerCog, SearchCode, ShieldAlert, Gauge, MessagesSquare, TerminalSquare } from 'lucide-react';
 import {
   Table,
   TableBody,
@@ -226,6 +226,32 @@ const sections: GuideSection[] = [
           filter on scanner observations, so you can pivot from a host to what was reported on it
           and back.
         </Para>
+      </div>
+    ),
+  },
+  {
+    id: 'query',
+    title: 'Query',
+    Icon: TerminalSquare,
+    summary: 'Splunk-style questions over hosts, ports and scanner observations — counts, groups, saved queries.',
+    content: (
+      <div>
+        <Para>
+          <strong>Inventory → Query</strong> answers questions the lists do not — how many hosts run each
+          service, which critical observations are the most widespread — in the pipe syntax Splunk users
+          know: a dataset, search terms, then commands.
+        </Para>
+        <Para>
+          <Mono>ports | where state=&quot;open&quot; | stats dc(host) as hosts by service, port | sort -hosts | head 20</Mono>
+        </Para>
+        <UnorderedList>
+          <li><strong>Datasets</strong> — <Mono>hosts</Mono>, <Mono>ports</Mono>, <Mono>observations</Mono>: what one row is. The page&rsquo;s <em>Reference</em> lists each one&rsquo;s columns, with examples you can run.</li>
+          <li><strong>Search terms</strong> — right after the dataset (or <Mono>| search …</Mono>) are the Hosts query language, and always describe the row&rsquo;s <em>host</em>: on <Mono>ports</Mono>, <Mono>port:445</Mono> keeps every port of a host that has 445 open.</li>
+          <li><strong>where</strong> — compares the dataset&rsquo;s own columns: <Mono>| where port=445 AND state=&quot;open&quot;</Mono>. <Mono>=</Mono> is exact (case too); <Mono>like(col, &quot;%ssh%&quot;)</Mono> is not. Also <Mono>!=</Mono>, <Mono>&lt;</Mono>, <Mono>&gt;</Mono>, <Mono>IN (…)</Mono>, <Mono>isnull(col)</Mono>, <Mono>NOT</Mono>.</li>
+          <li><strong>stats and top</strong> — <Mono>count</Mono>, <Mono>dc(col)</Mono> (distinct), <Mono>min</Mono>, <Mono>max</Mono>, <Mono>avg</Mono>, <Mono>sum</Mono>, <Mono>values</Mono>, <Mono>by</Mono> up to five columns; <Mono>top limit=10 col</Mono> adds a percent. <em>Open rows</em> on any row lists exactly the rows that group counted.</li>
+          <li><strong>Shaping</strong> — <Mono>sort -col</Mono>, <Mono>head N</Mono>, <Mono>fields</Mono> / <Mono>table</Mono> for a listing&rsquo;s columns. At most 500 rows or 1,000 groups come back, and the page says how many there were.</li>
+          <li><strong>Saved queries</strong> — <em>Save…</em> keeps a query under a name, for you or shared with the project. Everyone sees the shared ones; only their author or a project admin changes them. The query is in the page&rsquo;s address, so a link to it works too.</li>
+        </UnorderedList>
       </div>
     ),
   },

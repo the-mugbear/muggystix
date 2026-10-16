@@ -30,6 +30,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sparkles,
+  TerminalSquare,
   UserCog,
 } from 'lucide-react';
 import {
@@ -215,6 +216,13 @@ export const NAV_PAGES: NavPage[] = [
     // "scanner observations" (the vocabulary); people search "vulnerability".
     id: 'observations', path: '/observations', label: 'Scanner observations', requiredRole: 'viewer', hub: 'inventory',
     palette: { Icon: ShieldAlert, keywords: ['vulnerability', 'vulnerabilities', 'vuln', 'cve', 'plugin', 'nessus', 'observation', 'issue'], order: 3.7 },
+  },
+  {
+    // 5.405.0 — SPL-style queries over hosts, ports and scanner observations,
+    // with saved / shared queries (the owner, 2026-10-16: "teams are used to
+    // Splunk").
+    id: 'query', path: '/query', label: 'Query', requiredRole: 'viewer', hub: 'inventory',
+    palette: { Icon: TerminalSquare, keywords: ['query', 'splunk', 'spl', 'search', 'stats', 'group by', 'count', 'saved search'], order: 3.8 },
   },
   {
     id: 'scans', path: '/scans', label: 'Scans', requiredRole: 'viewer', hub: 'inventory',

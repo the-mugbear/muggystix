@@ -1300,6 +1300,35 @@ class HostFilterView(Base):
     )
 
 
+class SavedQuery(Base):
+    """A Query-page pipeline saved under a name (v2.509.0; the owner,
+    2026-10-16: saved and shared searches, as the teams know them from Splunk).
+
+    One project's.  ``shared`` = every member of the project sees it and can
+    run it; otherwise only its creator.  Only the creator — or a project
+    admin — renames, changes or deletes it.  A shared query outlives its
+    creator's account (``created_by_id`` SET NULL); a project admin then owns
+    the edits."""
+    __tablename__ = "saved_queries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    name = Column(String(120), nullable=False)
+    description = Column(Text, nullable=True)
+    query = Column(Text, nullable=False)
+    shared = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    created_by = relationship("User")
+
+    __table_args__ = (
+        # One name per person per project (a deleted creator's NULL never collides).
+        UniqueConstraint("project_id", "created_by_id", "name", name="uq_saved_query_name"),
+    )
+
+
 class HostQueryHistory(Base):
     """A recently-run Hosts-page boolean query (``q=``), per user/project.
 

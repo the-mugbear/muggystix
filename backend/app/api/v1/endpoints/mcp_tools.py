@@ -738,6 +738,33 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/assist/scanner-observations/hosts",
         "defaults": {"limit": 100},
     },
+    # v2.509.0 — the Query page.
+    "assist_query": {
+        "description": (
+            "Run a Query-page query, Splunk SPL style: `<dataset> [Hosts-language terms] | where … | stats … "
+            "by … | sort -x | head N`. Datasets: hosts, ports, observations. Search terms are the Hosts "
+            "query language and always describe the row's HOST (on ports, `port:445` = the host has 445 "
+            "open); `where` compares the dataset's columns (`where port=445 AND state=\"open\"`, = is "
+            "exact). stats: count, dc(col), min, max, avg, sum, values; top [limit=N] col. Each stats / "
+            "top row carries a `drilldowns` query listing exactly that group. `total` is the whole answer "
+            "(rows matched or groups); at most 500 rows / 1000 groups come back. "
+            "assist_query_schema lists the columns."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/query",
+    },
+    "assist_query_schema": {
+        "description": "What assist_query can name: each dataset's columns and their types, the commands, "
+                       "functions, examples and caps.",
+        "method": "GET",
+        "path": "/api/v1/agent/assist/query/schema",
+    },
+    "assist_list_saved_queries": {
+        "description": "The operator's saved Query-page queries and the team's shared ones (name, "
+                       "description, query, shared, created_by) — run one with assist_query.",
+        "method": "GET",
+        "path": "/api/v1/agent/assist/saved-queries",
+    },
     "assist_get_scanner_observation": {
         "description": (
             "What a scanner wrote about one issue (issue_key from "

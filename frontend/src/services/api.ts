@@ -64,6 +64,7 @@ export * from './api/portfolio';
 export * from './api/posture';
 export * from './api/projects';
 export * from './api/proposals';
+export * from './api/query';
 export * from './api/references';
 export * from './api/remediation';
 export * from './api/report-writing-guidance';

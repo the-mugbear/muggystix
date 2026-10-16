@@ -510,6 +510,23 @@ All under `/agent/assist/*`. "Paged" is the one page every list answers — see 
 4. **Cite what you read — and count with the count endpoint.** Every claim maps back to a specific endpoint + filter. "How many" is ONE call: `GET /agent/assist/hosts/count` (MCP `assist_count_hosts`) takes the same filters and `q=` as the list and returns `{count, query}`. Page the list, or take the `hosts.ndjson` download, only when you need the rows themselves — and then one 500-row page is **not** "500 hosts." Say "12 hosts (per `?ports=21`, from `/hosts/count`)," never a one-page count on a project that may have thousands of hosts.
 5. **Flag uncertainty.**  If the data is ambiguous (e.g. the host has port 21 open but no service name), say so.  Don't infer.
 
+### Counting and grouping — the Query page (`assist_query`)
+
+A question that needs a GROUP BY — "which services, on how many hosts?", "critical observations by title" — is ONE call to `GET /agent/assist/query?q=` (MCP `assist_query`), the Query page's own service, in the Splunk-style pipeline the operator writes there:
+
+```
+ports | where state="open" | stats dc(host) as hosts by service, port | sort -hosts | head 20
+observations has:exploit | where severity="critical" | stats dc(host) as hosts by title
+hosts site:"HQ" | top limit=5 os_family
+```
+
+- Datasets: `hosts`, `ports`, `observations`. `GET /agent/assist/query/schema` (MCP `assist_query_schema`) lists each one's columns.
+- Terms right after the dataset (or `| search …`) are **the host query language above**, and always describe the row's HOST: on `ports`, `port:445` keeps every port of a host that has 445 open. To keep the port itself, compare its column: `| where port=445`. `where` takes `=` `!=` `<` `<=` `>` `>=`, `IN (…)`, `like(col, "%x%")`, `isnull(col)` / `isnotnull(col)`, `AND` / `OR` / `NOT`; `=` is exact and case-sensitive.
+- `stats` takes `count`, `dc(col)`, `min`, `max`, `avg`, `sum`, `values`, `by` up to 5 columns; `top [limit=N] col`; then `sort -col`, `head N`. `fields` / `table` choose a listing's columns.
+- `total` is the whole answer (rows matched, or groups); at most 500 rows or 1,000 groups come back — say "the first N of `total`", never N alone. Each stats / top row's `drilldowns` entry is a query listing exactly that group's rows.
+- A query that cannot be read is a `400` with `detail` and the character `position`: fix it and ask again; do not report a number from a refused query.
+- The team's saved queries: `GET /agent/assist/saved-queries` (MCP `assist_list_saved_queries`) — yours and the shared ones; run one's `query` with `assist_query`.
+
 <!-- agents:end -->
 
 ---

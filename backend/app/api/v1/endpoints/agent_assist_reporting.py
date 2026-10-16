@@ -32,12 +32,16 @@ from sqlalchemy.orm import Session, defer, selectinload
 from app.api.deps import agent_read_floor, check_agent_rate_limit
 from app.api.v1.endpoints.agent_schemas import AgentPage, agent_page
 from app.api.v1.endpoints.client_reports import report_file_response, report_scope_response
+from app.api.v1.endpoints.agent_common import load_operator
+from app.api.v1.endpoints.queries import QueryAnswer, SavedQueryOut
 from app.api.v1.endpoints.scanner_observations import IssueDetailOut, IssueHostOut, IssuePageOut, IssueRowOut
 from app.db.models_agent import Agent
 from app.db.models_project import ProjectRole
 from app.db.models_reports import Report, ReportStatus
 from app.db.session import get_db
 from app.schemas.client_reports import ReportFileOut, ReportOut
+from app.services import query_service
+from app.services import saved_query_service as saved_queries
 from app.services import scanner_observation_service as observations
 from app.services.client_report_service import ClientReportService
 # The Reports page's own serializer and loader: the agent sees the report the
@@ -155,6 +159,45 @@ def get_assist_scanner_observation_detail(
     if detail is None:
         raise HTTPException(status_code=404, detail="No scanner observation in this project is that issue")
     return IssueDetailOut(**vars(detail))
+
+
+# ---------------------------------------------------------------------------
+# The Query page (v2.509.0) — SPL-style queries and the saved ones
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/assist/query",
+    response_model=QueryAnswer,
+    summary="Run a Query-page query (SPL-style) over hosts, ports or scanner observations",
+)
+def run_assist_query(
+    request: Request,
+    q: str = Query(..., min_length=1, max_length=4000, description="The query: a dataset, then | commands."),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """The page's own ``query_service.run``, as the session's operator (the
+    Hosts language's ``follow:mine`` / ``assigned:me`` are theirs).  A query
+    that cannot be read is a 400 with its ``position``, as on the page."""
+    return query_service.run(db, request.state.agent_project_id, load_operator(db, request), q)
+
+
+@router.get("/assist/query/schema", summary="What a query can name: datasets, columns, commands, caps")
+def assist_query_schema(agent: Agent = Depends(check_agent_rate_limit)):
+    return query_service.schema()
+
+
+@router.get(
+    "/assist/saved-queries",
+    response_model=List[SavedQueryOut],
+    summary="The operator's saved queries and the team's shared ones",
+)
+def list_assist_saved_queries(
+    request: Request,
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    return saved_queries.list_visible(db, request.state.agent_project_id, load_operator(db, request))
 
 
 # ---------------------------------------------------------------------------

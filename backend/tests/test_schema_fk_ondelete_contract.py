@@ -161,6 +161,9 @@ EXPECTED_ONDELETE = {
     ('host_confidence', 'scan_id'): 'CASCADE',
     ('host_filter_views', 'project_id'): 'CASCADE',
     ('host_filter_views', 'user_id'): 'CASCADE',
+    # v2.509.0 — a shared query outlives its creator's account.
+    ('saved_queries', 'project_id'): 'CASCADE',
+    ('saved_queries', 'created_by_id'): 'SET NULL',
     ('host_follows', 'assigned_by_id'): 'SET NULL',
     ('host_follows', 'host_id'): 'CASCADE',
     ('host_follows', 'user_id'): 'CASCADE',

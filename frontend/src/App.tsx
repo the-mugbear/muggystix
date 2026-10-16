@@ -98,6 +98,7 @@ const ScanDetail = lazy(() => import('./pages/ScanDetail'));
 const ScanDiff = lazy(() => import('./pages/ScanDiff'));
 const Hosts = lazy(() => import('./pages/Hosts'));
 const ScannerObservationsPage = lazy(() => import('./pages/ScannerObservationsPage'));
+const QueryPage = lazy(() => import('./pages/Query'));
 const Activity = lazy(() => import('./pages/Collaboration'));
 const Proposals = lazy(() => import('./pages/Proposals'));
 const HostDetail = lazy(() => import('./pages/HostDetail'));
@@ -352,6 +353,15 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <ScannerObservationsPage />
+                          </ProtectedRoute>
+                        }
+                      />
+                      {/* 5.405.0 — SPL-style queries and saved queries. */}
+                      <Route
+                        path="/query"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <QueryPage />
                           </ProtectedRoute>
                         }
                       />
