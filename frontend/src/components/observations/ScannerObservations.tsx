@@ -106,13 +106,15 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const setSort = (v: string) => setParam('obs_sort', v, 'severity');
 
   // The inspector's issue is the address's: a link opens it, Back closes it.
+  // Opening from the list is a history entry; Previous / Next REPLACE it, so
+  // Back closes the inspector instead of walking back through every issue.
   const openKey = params.get('issue');
-  const openIssue = useCallback((key: string) => {
+  const openIssue = useCallback((key: string, replace = false) => {
     setParams((prev) => {
       const next = new URLSearchParams(prev);
       next.set('issue', key);
       return next;
-    });
+    }, { replace });
   }, [setParams]);
   const closeIssue = useCallback(() => {
     setParams((prev) => {
@@ -162,17 +164,17 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
     if (pendingEdge.current === null || list.rows === null || list.rows.length === 0) return;
     const edge = pendingEdge.current;
     pendingEdge.current = null;
-    openIssue(edge === 'first' ? list.rows[0].issue_key : list.rows[list.rows.length - 1].issue_key);
+    openIssue(edge === 'first' ? list.rows[0].issue_key : list.rows[list.rows.length - 1].issue_key, true);
   }, [list.rows, openIssue]);
   const step = (delta: 1 | -1) => {
     if (openIndex < 0) {
       // Not on this page any more: Next starts from the top of what is shown.
-      if (delta === 1 && issues.length > 0) openIssue(issues[0].issue_key);
+      if (delta === 1 && issues.length > 0) openIssue(issues[0].issue_key, true);
       return;
     }
     const target = openIndex + delta;
     if (target >= 0 && target < issues.length) {
-      openIssue(issues[target].issue_key);
+      openIssue(issues[target].issue_key, true);
       return;
     }
     pendingEdge.current = delta === 1 ? 'first' : 'last';

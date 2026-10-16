@@ -148,6 +148,26 @@ describe('ScannerObservations — the search box follows the address (real route
       expect(screen.getByTestId('observations-bulk-slot')).toHaveTextContent('1 observation selected');
     });
 
+    // Chrome check 2026-10-16: each Next was a history entry, so Back walked
+    // back through every issue instead of closing the inspector.
+    it('stepping replaces the entry: Back after Next closes the inspector', async () => {
+      const router = await open('/observations');
+      fireEvent.click(screen.getByRole('button', { name: /^Open Issue 3:/ }));
+      await pass(20);
+      expect(router.state.historyAction).toBe('PUSH');
+      fireEvent.click(screen.getByRole('button', { name: 'Next observation' }));
+      await pass(20);
+      fireEvent.click(screen.getByRole('button', { name: 'Next observation' }));
+      await pass(20);
+      expect(router.state.historyAction).toBe('REPLACE');
+      expect(new URLSearchParams(router.state.location.search).get('issue')).toBe('title:issue 5');
+
+      await act(async () => { await router.navigate(-1); });
+      await pass(20);
+      expect(router.state.location.search).toBe('');
+      expect(screen.queryByTestId('observation-inspector')).not.toBeInTheDocument();
+    });
+
     it('the inspector steps past the page edge: the next page opens on its first issue', async () => {
       const router = await open(`/observations?issue=${encodeURIComponent('title:issue 49')}`);
       expect(screen.getByText('50 of 120')).toBeInTheDocument();
