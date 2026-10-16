@@ -441,9 +441,12 @@ const Query: React.FC = () => {
       <div className="min-w-0">
         <h1 className="text-page-title font-semibold">Query</h1>
         <p className="flex flex-wrap items-center gap-xxs text-metadata text-muted-foreground">
-          Ask hosts, ports and scanner observations Splunk-style: a dataset, search terms, then
-          <code className="font-mono">| where</code>, <code className="font-mono">| stats … by</code>,
-          <code className="font-mono">| sort</code>, <code className="font-mono">| head</code>.
+          {/* One flex item: the row's gap would otherwise space every snippet and comma apart. */}
+          <span>
+            Ask hosts, ports and scanner observations Splunk-style: a dataset, search terms, then{' '}
+            <code className="font-mono">| where</code>, <code className="font-mono">| stats … by</code>,{' '}
+            <code className="font-mono">| sort</code>, <code className="font-mono">| head</code>.
+          </span>
           <InfoTip
             label="How a query reads"
             text={(
