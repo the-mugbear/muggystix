@@ -293,4 +293,17 @@ describe('Query page — second review 2026-10-16', () => {
     await waitFor(() => expect(api.runQuery).toHaveBeenCalledTimes(2));
     expect(api.getQuerySchema).toHaveBeenCalledTimes(1);
   });
+
+  it('an empty answer says the server\'s reason when it has one (Q4)', async () => {
+    const hint = '`=` is exact and case-sensitive. Ignoring case, 12 rows would match — like(service, "SSH") compares ignoring case';
+    api.runQuery.mockResolvedValue({ ...ROWS, query: 'ports | where service="SSH"', rows: [], total: 0, hint });
+    renderAt('/query?q=ports%20%7C%20where%20service%3D%22SSH%22');
+    expect(await screen.findByTestId('query-empty')).toHaveTextContent(`Nothing matches this query. ${hint}.`);
+  });
+
+  it('an empty answer without a hint says only that', async () => {
+    api.runQuery.mockResolvedValue({ ...ROWS, rows: [], total: 0, hint: null });
+    renderAt('/query?q=hosts');
+    expect(await screen.findByTestId('query-empty')).toHaveTextContent(/^Nothing matches this query\.$/);
+  });
 });

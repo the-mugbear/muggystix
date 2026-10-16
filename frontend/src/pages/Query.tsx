@@ -234,7 +234,11 @@ const Answer: React.FC<{ answer: QueryAnswer; view: AnswerView; onView: (v: Answ
   // values() lists the server cut at its cap — said in the cell, never silent.
   const cut = new Set((answer.truncated_values ?? []).map(([row, col]) => `${row}\u0000${col}`));
   if (answer.total === 0) {
-    return <p className="text-metadata text-muted-foreground">Nothing matches this query.</p>;
+    return (
+      <p className="break-words text-metadata text-muted-foreground" data-testid="query-empty">
+        Nothing matches this query.{answer.hint ? ` ${answer.hint}.` : ''}
+      </p>
+    );
   }
   return (
     <div className="flex min-w-0 flex-col gap-xs">
@@ -601,8 +605,10 @@ const Query: React.FC = () => {
               <>
                 Search terms right after the dataset are the Hosts query language (port:, has:, cve:, site:…) and
                 always describe the row&apos;s host — on ports, port:445 means the host has 445 open. | where compares
-                the dataset&apos;s own columns, and = is exact: where port=445 is the row&apos;s port. Every row of a
-                stats or top answer opens exactly its rows.
+                the dataset&apos;s own columns, and = is exact and case-sensitive (like() is not): where port=445 is
+                the row&apos;s port. After stats or top, | where and | fields work on the answer, as in Splunk:
+                … | stats count by title | where count &gt; 5. Every row of a stats or top answer opens exactly
+                its rows.
               </>
             )}
           />

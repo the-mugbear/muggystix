@@ -57,6 +57,11 @@ class QueryAnswer(BaseModel):
         default_factory=list,
         description="[row, column] of each values() list cut at the cap (20): the cell holds the first 20",
     )
+    hint: Optional[str] = Field(
+        None,
+        description="An empty answer whose `where` compares text with `=`: that `=` is exact and "
+                    "case-sensitive, and how many rows would match ignoring case",
+    )
 
 
 @router.get("/query", response_model=QueryAnswer, summary="Run a query (SPL-style)")

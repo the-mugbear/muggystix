@@ -34,6 +34,9 @@ export interface QueryAnswer {
   by?: string[] | null;
   /** [row, column] of each values() list cut at the cap: the cell holds the first 20. */
   truncated_values?: [number, string][];
+  /** An empty answer whose `where` compares text with `=`: that `=` is exact,
+   *  and how many rows would match ignoring case. */
+  hint?: string | null;
 }
 
 export const runQuery = async (projectId: number, q: string, signal?: AbortSignal): Promise<QueryAnswer> =>

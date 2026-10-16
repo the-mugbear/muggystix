@@ -11,6 +11,9 @@ The owner, 2026-10-16: teams are used to Splunk, so the shape is SPL's::
 * ``| where`` compares the dataset's declared COLUMNS (SPL's ``where``).
 * ``| stats`` / ``| top`` aggregate; ``| sort``, ``| head`` / ``| limit``,
   ``| fields`` / ``| table`` shape the answer.
+* After ``stats`` / ``top`` a command works on the ANSWER, as in SPL:
+  ``| where`` compares its columns (the aggregates by their names — SQL's
+  HAVING) and ``| fields`` picks its columns.
 
 This module is the grammar only: text → :class:`Pipeline`.  Names are checked
 against the dataset by ``query_service``.  Every error is a
@@ -127,6 +130,12 @@ class Pipeline:
     sorts: List[Tuple[str, bool, int]] = field(default_factory=list)   # (column, descending, pos)
     head: Optional[int] = None
     head_pos: int = 0
+    # After `stats` / `top` (SPL's reading: the command works on the answer's
+    # table): `where` keeps groups (SQL's HAVING), `fields` / `table` picks
+    # the answer's columns.  Owner, 2026-10-16 (second review Q3).
+    having: List[Cond] = field(default_factory=list)
+    answer_fields: Optional[List[str]] = None
+    answer_fields_pos: List[int] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -511,21 +520,33 @@ def parse(text: str) -> Pipeline:
             pipe.searches.append((body, body_at))
             continue
         r = _Reader(_tokens(body, body_at))
+        if command in ("where", "fields", "table") and stage > 1:
+            # After head it would act on the first N only — not what it reads as.
+            raise QueryError(f"`{command}` comes before head", position=cpos)
         if command == "where":
-            if stage > 0:
-                raise QueryError("`where` comes before stats, top, sort and head", position=cpos)
-            pipe.wheres.append(_Where(r).parse())
+            if pipe.aggregate is not None:
+                pipe.having.append(_Where(r).parse())
+            elif stage > 0:
+                raise QueryError("`where` comes before sort and head", position=cpos)
+            else:
+                pipe.wheres.append(_Where(r).parse())
         elif command in ("fields", "table"):
-            if stage > 0:
-                raise QueryError(f"`{command}` comes before stats, top, sort and head", position=cpos)
-            pipe.fields, pipe.fields_pos = _columns(r, command)
+            if pipe.aggregate is not None:
+                if pipe.answer_fields is not None:
+                    raise QueryError("One `fields` / `table` after `stats` or `top`", position=cpos)
+                pipe.answer_fields, pipe.answer_fields_pos = _columns(r, command)
+            elif stage > 0:
+                raise QueryError(f"`{command}` comes before sort and head", position=cpos)
+            else:
+                pipe.fields, pipe.fields_pos = _columns(r, command)
             r.end(command)
         elif command in ("stats", "top"):
             if stage > 0:
                 raise QueryError("One `stats` or `top` per query, before sort and head", position=cpos)
             if pipe.fields is not None:
-                raise QueryError(f"`fields` / `table` and `{command}` cannot be combined: the aggregate "
-                                 "chooses the columns", position=cpos)
+                raise QueryError(f"`fields` / `table` before `{command}` has nothing to choose: the aggregate "
+                                 f"makes the columns — put it after `{command}` to pick the answer's",
+                                 position=cpos)
             pipe.before_aggregate = text[:at - 1].rstrip()
             pipe.aggregate = _stats(r, cpos) if command == "stats" else _top(r, cpos)
             stage = 1

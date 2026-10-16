@@ -86,10 +86,12 @@ def estate(db_session, test_project):
     ("hosts | stats dc", "`dc` needs a column"),
     ("hosts | where ip", "Expected a comparison"),
     ('hosts | where ip = "10.0.0.1', "not closed"),
-    ("hosts | stats count | where ip=\"x\"", "`where` comes before"),
+    ("hosts | stats count | head 3 | where count > 1", "`where` comes before head"),
+    ("hosts | sort ip | where os=\"x\"", "`where` comes before sort"),
+    ("hosts | stats count | fields count | table count", "One `fields`"),
     ("hosts | stats count | stats count", "One `stats` or `top`"),
     ("hosts | head 0", "at least 1"),
-    ("hosts | fields ip | stats count", "cannot be combined"),
+    ("hosts | fields ip | stats count", "put it after `stats`"),
     ("hosts | stats count, count", "names two columns"),
 ])
 def test_the_grammar_says_what_is_wrong(text, message):
@@ -547,3 +549,75 @@ def test_a_saved_query_name_cannot_be_blank(client, test_project, estate):
 def test_an_observation_row_opens_its_inspector(client, test_project, estate):
     body = _run(client, test_project, 'observations | where cve="CVE-2024-6387" | head 1').json()
     assert body["links"][0] == "/observations?issue=cve%3ACVE-2024-6387"
+
+
+# ---------------------------------------------------------------------------
+# Owner, 2026-10-16 (review Q3, Q4): a command after stats / top works on the
+# answer, as in SPL; `=` stays exact and an empty answer says so
+# ---------------------------------------------------------------------------
+
+def test_where_after_stats_keeps_groups_and_each_still_opens_its_rows(client, test_project, estate):
+    q = "ports | stats count, dc(host) as hosts by service | where hosts > 1"
+    body = _run(client, test_project, q).json()
+    assert body["rows"] == [["microsoft-ds", 6, 6], ["ssh", 12, 12]]
+    assert body["total"] == 2  # the groups kept, not the 3 made
+    _drill_totals_match(client, test_project, body, "count")
+    both = _run(client, test_project, q + ' | where count >= 6 AND service != "ssh"').json()
+    assert [r[0] for r in both["rows"]] == ["microsoft-ds"]
+    worst = _run(client, test_project, "observations | stats max(cvss) as worst by title | where worst >= 8").json()
+    assert [r[0] for r in worst["rows"]] == ["OpenSSH RCE"]
+    # Sort and where after the aggregate, in either order.
+    a = _run(client, test_project, "ports | stats count by service | sort -count | where count > 1").json()
+    b = _run(client, test_project, "ports | stats count by service | where count > 1 | sort -count").json()
+    assert a["rows"] == b["rows"] == [["ssh", 12], ["microsoft-ds", 6]]
+
+
+def test_top_keeps_its_percent_of_every_row_after_a_where(client, test_project, estate):
+    """SPL's top computes the percent before the where: the kept groups do
+    not become 100%."""
+    body = _run(client, test_project, "ports | top service | where count > 1").json()
+    assert body["rows"] == [["ssh", 12, round(12 * 100 / 19, 2)], ["microsoft-ds", 6, round(6 * 100 / 19, 2)]]
+    assert body["total"] == 2
+    over_half = _run(client, test_project, "ports | top service | where percent > 50").json()
+    assert [r[0] for r in over_half["rows"]] == ["ssh"]
+
+
+def test_fields_after_stats_picks_the_answers_columns(client, test_project, estate):
+    body = _run(client, test_project, "ports | stats count, dc(host) as hosts by service | fields hosts, service").json()
+    assert [c["name"] for c in body["columns"]] == ["hosts", "service"]
+    assert body["rows"][0] == [6, "microsoft-ds"] and body["by"] == ["service"]
+    # A group column left out still opens its exact list.
+    bare = _run(client, test_project, "ports | stats dc(host) as hosts by service | table hosts").json()
+    assert bare["by"] == [] and bare["drilldowns"][0] == 'ports | where service="microsoft-ds"'
+    _drill_totals_match(client, test_project, bare, "hosts")
+
+
+@pytest.mark.parametrize("text, message", [
+    ("ports | stats count by service | where port > 1", "compares the answer's columns: service, count"),
+    ("ports | stats values(port) as ports by service | where ports = 1", "is a values() list"),
+    ("ports | top service | where hosts > 1", "compares the answer's columns: service, count, percent"),
+    ("ports | stats count by service | fields hosts", "`fields` after `stats` takes a column of the answer"),
+])
+def test_a_where_or_fields_after_stats_names_the_answers_columns(client, test_project, estate, text, message):
+    r = _run(client, test_project, text)
+    assert r.status_code == 400 and message in r.json()["detail"], r.json()
+    # Saving refuses it the same way (one plan).
+    saved = client.post(_url(test_project, "/queries/saved"), json={"name": "x", "query": text})
+    assert saved.status_code == 400 and message in saved.json()["detail"]
+
+
+def test_an_empty_answer_says_equals_is_exact(client, test_project, estate):
+    body = _run(client, test_project, 'ports | where service="SSH"').json()
+    assert body["total"] == 0
+    assert body["hint"] == ('`=` is exact and case-sensitive. Ignoring case, 12 rows would match — '
+                            'like(service, "SSH") compares ignoring case')
+    # …and the hint's own suggestion finds them.
+    assert _run(client, test_project, 'ports | where like(service, "SSH")').json()["total"] == 12
+    none = _run(client, test_project, 'ports | where service IN ("nothing", "else")').json()
+    assert none["hint"] == ('`=` is exact and case-sensitive. like(service, "%nothing%") matches part of a value, '
+                            'ignoring case')
+    # Only an empty answer, and only for text compared with `=`.
+    assert _run(client, test_project, 'ports | where service="ssh"').json()["hint"] is None
+    assert _run(client, test_project, "ports | where port=1").json()["hint"] is None
+    # The query's own `=` stays exact: a group's drill-down is its exact list.
+    assert _run(client, test_project, 'ports | stats count by service | where service="SSH"').json()["total"] == 0

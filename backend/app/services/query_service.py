@@ -18,10 +18,10 @@ from __future__ import annotations
 
 import enum
 import ipaddress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy import Float, String, and_, cast, distinct, func, literal, or_
 from sqlalchemy.dialects.postgresql import INET, aggregate_order_by
@@ -155,27 +155,35 @@ _OPS = {
 }
 
 
-def _condition(ds: Dataset, cond: Cond):
+def _condition(lookup: Callable[[str, int], QueryColumn], cond: Cond, fold: bool = False):
+    """One condition of a `where`.  ``lookup`` names the columns it may
+    compare: the dataset's (before an aggregate) or the answer's (after one —
+    the aggregates by their names, compared in HAVING).  ``fold`` reads `=`,
+    `!=` and `IN` on text ignoring case — only to count what an empty answer
+    WOULD have held (`_case_hint`); a query's own `=` is exact."""
     if isinstance(cond, BoolOp):
-        parts = [_condition(ds, c) for c in cond.children]
+        parts = [_condition(lookup, c, fold) for c in cond.children]
         return and_(*parts) if cond.op == "and" else or_(*parts)
     if isinstance(cond, NotCond):
         # As the Hosts language reads NOT: what is not known does not match,
         # so its negation holds (`NOT service="ssh"` keeps ports with none).
-        return dsl.negate(_condition(ds, cond.child))
+        return dsl.negate(_condition(lookup, cond.child, fold))
     if isinstance(cond, IsNull):
-        col = _column(ds, cond.column, cond.pos)
+        col = lookup(cond.column, cond.pos)
         return col.expr.isnot(None) if cond.negated else col.expr.is_(None)
     if isinstance(cond, Like):
-        col = _column(ds, cond.column, cond.pos)
+        col = lookup(cond.column, cond.pos)
         if col.type != "text":
             raise QueryError(f"like() takes a text column; '{col.name}' is {col.type}", position=cond.pos)
         return col.expr.ilike(cond.pattern)
     if isinstance(cond, InList):
-        col = _column(ds, cond.column, cond.pos)
-        return col.expr.in_([_coerce(col, v, cond.pos) for v in cond.values])
+        col = lookup(cond.column, cond.pos)
+        values = [_coerce(col, v, cond.pos) for v in cond.values]
+        if fold and col.type == "text":
+            return func.lower(col.expr).in_([v.lower() for v in values])
+        return col.expr.in_(values)
     if isinstance(cond, Compare):
-        col = _column(ds, cond.column, cond.pos)
+        col = lookup(cond.column, cond.pos)
         if col.type in ("bool", "enum") and cond.op not in ("=", "!="):
             raise QueryError(f"'{col.name}' takes = or != only", position=cond.pos)
         value = _coerce(col, cond.value, cond.pos)
@@ -189,8 +197,22 @@ def _condition(ds: Dataset, cond: Cond):
                     "for a range use subnet: in the search terms", position=cond.pos,
                 )
             return _OPS[cond.op](cast(col.expr, INET), cast(literal(value), INET))
+        if fold and col.type == "text" and cond.op in ("=", "!="):
+            return _OPS[cond.op](func.lower(col.expr), value.lower())
         return _OPS[cond.op](col.expr, value)
     raise QueryError("Unreadable condition")  # pragma: no cover
+
+
+def _exact_text(lookup: Callable[[str, int], QueryColumn], cond: Cond) -> Optional[tuple]:
+    """The first `col = "text"` (or `col IN (…)`) of a condition: (column
+    name, value) — what an empty answer's hint names."""
+    if isinstance(cond, BoolOp):
+        return next((hit for c in cond.children if (hit := _exact_text(lookup, c))), None)
+    if isinstance(cond, Compare) and cond.op == "=" and lookup(cond.column, cond.pos).type == "text":
+        return cond.column, str(cond.value)
+    if isinstance(cond, InList) and lookup(cond.column, cond.pos).type == "text":
+        return cond.column, str(cond.values[0])
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +279,10 @@ class _Plan:
     links: list = field(default_factory=list)
     by: List[QueryColumn] = field(default_factory=list)
     value_cols: List[Optional[QueryColumn]] = field(default_factory=list)
+    # After the aggregate: `where` (HAVING) and `fields` (the answer's
+    # columns kept, by index).
+    having: list = field(default_factory=list)
+    keep: Optional[List[int]] = None
 
 
 def _plan_rows(ds: Dataset, pipe: Pipeline, row_cap: int) -> Dict[str, Any]:
@@ -349,20 +375,36 @@ def _drilldown(pipe: Pipeline, by: List[QueryColumn], key: List[Any]) -> str:
     return f"{pipe.before_aggregate} | where {' AND '.join(terms)}"
 
 
-def _plan_grouped(ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
+def _answer_column(name: str, expr, type_: str, source: Optional[QueryColumn]) -> QueryColumn:
+    """An aggregate as a column a `where` after the aggregate compares.  A
+    min / max is its source column's kind (an address stays an address)."""
+    if source is not None and source.type == type_:
+        return replace(source, name=name, expr=expr, sort_expr=None)
+    return QueryColumn(name, expr, type_, "")
+
+
+def _plan_grouped(ds: Dataset, pipe: Pipeline, top_total=None) -> Dict[str, Any]:
+    """``top_total``: what `top`'s percent divides by when a `where` follows
+    it — the rows before grouping (a scalar subquery ``run`` passes).  Without
+    one the percent is a window over the groups, which HAVING would shrink."""
     agg = pipe.aggregate
     if isinstance(agg, Top):
         by = [_column(ds, n, p) for n, p in zip(agg.columns, agg.columns_pos or [agg.pos] * len(agg.columns))]
         count = func.count()
-        selected = [c.expr for c in by] + [
-            count,
-            (count * 100.0 / func.sum(count).over()).label("percent"),
-        ]
+        if top_total is None:
+            # `check` and a `top` with no `where` after it: no subquery needed
+            # (literal 1 only lets `check` read the condition's names).
+            top_total = literal(1) if pipe.having else func.sum(count).over()
+        percent = count * 100.0 / top_total
+        selected = [c.expr for c in by] + [count, percent.label("percent")]
         out_cols = [{"name": c.name, "type": c.type} for c in by] + [
             {"name": "count", "type": "int"}, {"name": "percent", "type": "float"},
         ]
         named = {c.name: _sort_key(c) for c in by}
         named["count"] = count
+        answer = {c.name: c for c in by}
+        answer["count"] = QueryColumn("count", count, "int", "")
+        answer["percent"] = QueryColumn("percent", percent, "float", "")
         default_order = [count.desc()] + [_sort_key(c).asc().nullslast() for c in by]
         limit = min(agg.limit, pipe.head or agg.limit, GROUP_CAP)
         value_cols: List[Optional[QueryColumn]] = [None, None]
@@ -375,9 +417,39 @@ def _plan_grouped(ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
         ]
         named = {c.name: _sort_key(c) for c in by}
         named.update({a.alias: expr for a, (expr, _, _) in zip(agg.aggregates, aggs)})
+        answer = {c.name: c for c in by}
+        answer.update({a.alias: _answer_column(a.alias, expr, t, col)
+                       for a, (expr, t, col) in zip(agg.aggregates, aggs)})
         default_order = [_sort_key(c).asc().nullslast() for c in by]
         limit = min(pipe.head or GROUP_CAP, GROUP_CAP)
         value_cols = [col for _, _, col in aggs]
+
+    command = "top" if isinstance(agg, Top) else "stats"
+
+    def answer_column(name: str, pos: int) -> QueryColumn:
+        col = answer.get(name)
+        if col is None:
+            raise QueryError(
+                f"`where` after `{command}` compares the answer's columns: {', '.join(answer)}", position=pos,
+            )
+        if col.type == "list":
+            raise QueryError(f"'{name}' is a values() list — `where` compares one value", position=pos)
+        return col
+
+    # `where` after the aggregate keeps groups (HAVING); the groups' total
+    # (the window in `_run_grouped`) is counted after it.
+    having = [_condition(answer_column, cond) for cond in pipe.having]
+
+    keep: Optional[List[int]] = None
+    if pipe.answer_fields is not None:
+        names = [c["name"] for c in out_cols]
+        keep = []
+        for name, pos in zip(pipe.answer_fields, pipe.answer_fields_pos):
+            if name not in names:
+                raise QueryError(
+                    f"`fields` after `{command}` takes a column of the answer: {', '.join(names)}", position=pos,
+                )
+            keep.append(names.index(name))
 
     order = []
     for name, desc, pos in pipe.sorts:
@@ -392,8 +464,23 @@ def _plan_grouped(ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
     order += default_order
     return dict(
         kind="stats", selected=selected, out_cols=out_cols, order=order, limit=limit,
-        capped=(pipe.head or 0) > GROUP_CAP, by=by, value_cols=value_cols,
+        capped=(pipe.head or 0) > GROUP_CAP, by=by, value_cols=value_cols, having=having, keep=keep,
     )
+
+
+def _project(answer: Dict[str, Any], keep: List[int]) -> Dict[str, Any]:
+    """`fields` after the aggregate: the answer's columns it names, in its
+    order.  The drill-downs are the rows' own (made from every group column),
+    so a group column left out still opens its exact list."""
+    columns = [answer["columns"][i] for i in keep]
+    names = {c["name"] for c in columns}
+    return {
+        **answer,
+        "columns": columns,
+        "rows": [[row[i] for i in keep] for row in answer["rows"]],
+        "by": [b for b in answer["by"] if b in names],
+        "truncated_values": [cell for cell in answer["truncated_values"] if cell[1] in names],
+    }
 
 
 def _run_grouped(query, pipe: Pipeline, plan: _Plan) -> Dict[str, Any]:
@@ -401,6 +488,8 @@ def _run_grouped(query, pipe: Pipeline, plan: _Plan) -> Dict[str, Any]:
     statement = query.with_entities(*plan.selected, func.count().over().label("_groups"))
     if by:
         statement = statement.group_by(*[c.expr for c in by])
+    if plan.having:
+        statement = statement.having(and_(*plan.having))
     result = statement.order_by(*plan.order).limit(plan.limit).all()
 
     rows, drilldowns, truncated = [], [], []
@@ -422,7 +511,7 @@ def _run_grouped(query, pipe: Pipeline, plan: _Plan) -> Dict[str, Any]:
         rows.append(out)
         drilldowns.append(_drilldown(pipe, by, key) if by else pipe.before_aggregate)
     total = int(result[0]._groups) if result else 0
-    return {
+    answer = {
         "kind": "stats",
         "columns": plan.out_cols,
         "rows": rows,
@@ -436,6 +525,30 @@ def _run_grouped(query, pipe: Pipeline, plan: _Plan) -> Dict[str, Any]:
         # [row, column] of each values() list cut at VALUES_CAP.
         "truncated_values": truncated,
     }
+    return _project(answer, plan.keep) if plan.keep is not None else answer
+
+
+def _case_hint(db: Session, project_id: int, user: User, ds: Dataset, pipe: Pipeline, plan: _Plan) -> Optional[str]:
+    """Why an empty answer may be empty: `=` on text is exact and
+    case-sensitive (SPL's `where` too).  Counts what the same `where` would
+    match ignoring case — said, never done: the query's `=` stays exact, so
+    a group's drill-down stays its exact list (owner, 2026-10-16, review Q4)."""
+    lookup = lambda name, pos: _column(ds, name, pos)  # noqa: E731
+    hit = next((h for cond in pipe.wheres if (h := _exact_text(lookup, cond))), None)
+    if hit is None:
+        return None
+    column, value = hit
+    folded = [_condition(lookup, cond, fold=True) for cond in pipe.wheres]
+    matches = (
+        _filtered(db, project_id, user, ds, replace(plan, conditions=folded))
+        .with_entities(func.count()).order_by(None).scalar()
+    ) or 0
+    if matches:
+        return (f"`=` is exact and case-sensitive. Ignoring case, {matches:,} "
+                f"{'row' if matches == 1 else 'rows'} would match — like({column}, {_quote(value)}) "
+                "compares ignoring case")
+    return (f"`=` is exact and case-sensitive. like({column}, {_quote('%' + value + '%')}) "
+            "matches part of a value, ignoring case")
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +560,7 @@ def _plan(text: str, row_cap: int) -> tuple:
     pipe = parse(text)
     ds = _dataset(pipe)
     search_nodes = _search_nodes(ds, pipe)
-    conditions = [_condition(ds, cond) for cond in pipe.wheres]
+    conditions = [_condition(lambda name, pos: _column(ds, name, pos), cond) for cond in pipe.wheres]
     shape = _plan_grouped(ds, pipe) if pipe.aggregate is not None else _plan_rows(ds, pipe, row_cap)
     return pipe, ds, _Plan(search_nodes=search_nodes, conditions=conditions, **shape)
 
@@ -465,8 +578,14 @@ def run(db: Session, project_id: int, user: User, text: str, *, row_cap: Optiona
     rows a listing returns (default ``ROW_CAP``; the CSV export's is larger)."""
     pipe, ds, plan = _plan(text, ROW_CAP if row_cap is None else row_cap)
     query = _filtered(db, project_id, user, ds, plan)
+    if isinstance(pipe.aggregate, Top) and pipe.having:
+        # `top … | where …`: the percent stays of every row, as SPL's top
+        # computes it before the where (the window would be of the kept groups).
+        rows_total = query.with_entities(func.count()).order_by(None).statement.correlate(None).scalar_subquery()
+        plan = replace(plan, **_plan_grouped(ds, pipe, top_total=rows_total))
     answer = _run_grouped(query, pipe, plan) if plan.kind == "stats" else _run_rows(query, ds, plan)
-    return {"query": text, "dataset": ds.name, **answer}
+    hint = _case_hint(db, project_id, user, ds, pipe, plan) if answer["total"] == 0 else None
+    return {"query": text, "dataset": ds.name, **answer, "hint": hint}
 
 
 def to_csv(answer: Dict[str, Any]) -> str:
@@ -515,14 +634,17 @@ def schema() -> Dict[str, Any]:
              "description": "The Hosts query language (port:, has:, cve:, site:…) — always about the row's host."},
             {"name": "where", "syntax": 'where <column> = "value" AND …',
              "description": "Compare the dataset's columns: = != < <= > >=, IN (…), like(col, \"%pat%\"), "
-                            "isnull(col), isnotnull(col), AND / OR / NOT, parentheses. = is exact."},
+                            "isnull(col), isnotnull(col), AND / OR / NOT, parentheses. = is exact and "
+                            "case-sensitive; like() ignores case. After stats or top it compares the "
+                            "answer's columns: … | stats count by title | where count > 5."},
             {"name": "stats", "syntax": "stats count, dc(col) as name … by col, …",
              "description": "count, dc (distinct count), min, max, avg, sum, values."},
             {"name": "top", "syntax": "top [limit=N] col, …", "description": "Count and percent, most first."},
             {"name": "sort", "syntax": "sort -col, +col",
              "description": "-col sorts descending, +col (or col) ascending."},
             {"name": "head", "syntax": "head N", "description": "The first N (also: limit N)."},
-            {"name": "fields", "syntax": "fields col, … (or table)", "description": "The columns of a listing."},
+            {"name": "fields", "syntax": "fields col, … (or table)",
+             "description": "The columns of a listing — or, after stats or top, the answer's columns to keep."},
         ],
         "caps": {"rows": ROW_CAP, "groups": GROUP_CAP, "values": VALUES_CAP},
     }
