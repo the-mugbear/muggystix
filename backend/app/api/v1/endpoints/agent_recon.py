@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -290,7 +291,10 @@ async def upload_scanner_output(
     from app.services.ingestion_service import DuplicateUploadError, ingestion_service
     from app.services.scan_batch_service import get_or_create_session_batch
 
-    session = load_agent_session(db, request)
+    # Database work runs in the thread pool, never on the event loop
+    # (external review 2026-10-16, A2): a slow query or lock wait here stalled
+    # every other request on this process.
+    session = await run_in_threadpool(load_agent_session, db, request)
 
     # Ingestion is a project-level pipeline: parsed hosts land at the project
     # and are correlated to the scope's subnets downstream (HostSubnetMapping).
@@ -302,10 +306,8 @@ async def upload_scanner_output(
     # v2.341.0 — the same precedence rule as the operator upload (form field >
     # project choice > deployment default), from the one helper that owns it.
     from app.db.models_project import Project as _Project, resolve_skip_informational
-    opts["skip_informational"] = resolve_skip_informational(
-        db.query(_Project).filter(_Project.id == agent.project_id).first(),
-        skip_informational,
-    )
+    project_row = await run_in_threadpool(lambda: db.query(_Project).filter(_Project.id == agent.project_id).first())
+    opts["skip_informational"] = resolve_skip_informational(project_row, skip_informational)
     if tool_name:
         opts["tool_name_hint"] = tool_name
     if command_run:
@@ -322,11 +324,12 @@ async def upload_scanner_output(
     if batch and batch.strip():
         from sqlalchemy.exc import OperationalError
         try:
-            scan_batch = get_or_create_session_batch(
+            scan_batch = await run_in_threadpool(
+                get_or_create_session_batch,
                 db, project_id=agent.project_id, agent_session_id=session.id, label=batch,
             )
         except OperationalError:
-            db.rollback()
+            await run_in_threadpool(db.rollback)
             raise HTTPException(
                 status_code=503,
                 detail="The upload batch is busy; retry this file in a few seconds.",
@@ -346,13 +349,15 @@ async def upload_scanner_output(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    db.commit()
-    db.refresh(job)
+    def _finish():
+        db.commit()
+        db.refresh(job)
+        # Kick the worker so the job starts as soon as possible on this
+        # request's session (parallel chunk uploads hit the
+        # two-connections-per-request pool deadlock otherwise).
+        ingestion_service.enqueue_job(job.id, db=db)
 
-    # Kick the worker so the job starts as soon as possible on this request's
-    # session (parallel chunk uploads hit the two-connections-per-request pool
-    # deadlock otherwise).
-    ingestion_service.enqueue_job(job.id, db=db)
+    await run_in_threadpool(_finish)
 
     return ReconUploadResponse(
         job_id=job.id,

@@ -25,6 +25,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tupl
 from uuid import uuid4
 
 from fastapi import UploadFile
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import event, text
 from sqlalchemy.orm import Session
 
@@ -1098,51 +1099,21 @@ class IngestionService:
             safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', raw_name)[:120] or "upload"
             destination = job_dir / safe_name
             file_size, content_sha256 = await self._write_upload(upload, destination)
-            # CR5-C2 — owner-only on the scan file too (umask leaves it 0644 by
-            # default); belt-and-suspenders with the 0700 job dir above.
-            os.chmod(destination, 0o600)
-
-            # Magic-byte sanity check.  The extension tells us which parser
-            # will run; the content should actually look like that format.
-            # This is a cheap first line of defense against uploaded binaries
-            # disguised as .xml/.json/.nessus that could crash the parser or
-            # get mis-routed.  We only peek at the first 1 KB.  A reject raises
-            # ValueError, caught below to clean up the job dir.
-            self._validate_content_matches_extension(destination, raw_name)
-
-            opts = dict(options or {})
-            # Only queue_job sets it, for one attempt, on a person's answer.
-            opts.pop(KEEP_TRUNCATED_OPTION, None)
-            if allow_duplicate:
-                # Remembered so a later start of this job (staged → queued, or
-                # a retry) does not re-refuse what the operator already chose.
-                opts["allow_duplicate"] = True
-            if not allow_duplicate:
-                duplicate = self._find_duplicate(db, opts.get("project_id"), content_sha256)
-                if duplicate is not None:
-                    raise duplicate
-            job = IngestionJob(
-                filename=destination.name,
-                original_filename=upload.filename,
-                storage_path=str(destination),
-                status="staged" if stage else "queued",
-                file_size=file_size,
-                options=opts,
-                submitted_by_id=submitted_by_id,
-                project_id=opts.get("project_id"),
-                # Stamp the agent attribution in the SAME transaction that
-                # makes the row visible as ``queued`` — the worker polls
-                # independently of the pg_notify hint, so a later "set the FK,
-                # commit again" would leave an unattributed window.
-                agent_session_id=opts.get("agent_session_id"),
-                batch_id=batch_id,
-                content_sha256=content_sha256,
+            # Everything after the file is on disk is blocking work — the
+            # content check, the duplicate lookup (which can WAIT on its
+            # advisory lock), the insert and the commit — so it runs in the
+            # thread pool, one call, with this request's session (external
+            # review 2026-10-16, A2: it ran on the event loop, so a slow
+            # registration stalled every other request on the process).
+            # No write is held across an await: the call commits or raises.
+            job = await run_in_threadpool(
+                self._register_job, db, upload=upload, destination=destination, raw_name=raw_name,
+                file_size=file_size, content_sha256=content_sha256, options=options,
+                submitted_by_id=submitted_by_id, batch_id=batch_id,
+                allow_duplicate=allow_duplicate, stage=stage,
             )
-            db.add(job)
-            db.commit()
-            db.refresh(job)
         except Exception:
-            db.rollback()
+            await run_in_threadpool(db.rollback)
             shutil.rmtree(job_dir, ignore_errors=True)
             raise
         # Log the sanitized filename, not the raw one — prevents log
@@ -1150,6 +1121,59 @@ class IngestionService:
         logger.info(
             "Queued ingestion job %s for %s (%d bytes)", job.id, safe_name, file_size
         )
+        return job
+
+    def _register_job(
+        self, db: Session, *, upload: UploadFile, destination: Path, raw_name: str,
+        file_size: int, content_sha256: str, options: Optional[Dict[str, object]],
+        submitted_by_id: Optional[int], batch_id: Optional[int], allow_duplicate: bool, stage: bool,
+    ) -> IngestionJob:
+        """The upload's job row, committed — ``create_job``'s blocking half,
+        run in the thread pool.  Raises (the caller rolls back and removes the
+        file) on a reject, a duplicate or a database failure."""
+        # CR5-C2 — owner-only on the scan file too (umask leaves it 0644 by
+        # default); belt-and-suspenders with the 0700 job dir above.
+        os.chmod(destination, 0o600)
+
+        # Magic-byte sanity check.  The extension tells us which parser
+        # will run; the content should actually look like that format.
+        # This is a cheap first line of defense against uploaded binaries
+        # disguised as .xml/.json/.nessus that could crash the parser or
+        # get mis-routed.  We only peek at the first 1 KB.  A reject raises
+        # ValueError, caught by the caller to clean up the job dir.
+        self._validate_content_matches_extension(destination, raw_name)
+
+        opts = dict(options or {})
+        # Only queue_job sets it, for one attempt, on a person's answer.
+        opts.pop(KEEP_TRUNCATED_OPTION, None)
+        if allow_duplicate:
+            # Remembered so a later start of this job (staged → queued, or
+            # a retry) does not re-refuse what the operator already chose.
+            opts["allow_duplicate"] = True
+        if not allow_duplicate:
+            duplicate = self._find_duplicate(db, opts.get("project_id"), content_sha256)
+            if duplicate is not None:
+                raise duplicate
+        job = IngestionJob(
+            filename=destination.name,
+            original_filename=upload.filename,
+            storage_path=str(destination),
+            status="staged" if stage else "queued",
+            file_size=file_size,
+            options=opts,
+            submitted_by_id=submitted_by_id,
+            project_id=opts.get("project_id"),
+            # Stamp the agent attribution in the SAME transaction that
+            # makes the row visible as ``queued`` — the worker polls
+            # independently of the pg_notify hint, so a later "set the FK,
+            # commit again" would leave an unattributed window.
+            agent_session_id=opts.get("agent_session_id"),
+            batch_id=batch_id,
+            content_sha256=content_sha256,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
         return job
 
     @staticmethod

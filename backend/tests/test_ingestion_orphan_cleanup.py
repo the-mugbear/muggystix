@@ -46,3 +46,43 @@ async def test_commit_failure_removes_job_dir(db_session, test_project, monkeypa
                              options={"project_id": test_project.id})
     # The written file + its dir are cleaned up — no untracked upload.
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_registration_runs_off_the_event_loop(db_session, test_project, monkeypatch, tmp_path):
+    """External review 2026-10-16, A2: the duplicate lookup (an advisory-lock
+    wait), the insert and the commit ran on the event loop, so a slow
+    registration stalled every other request on the API process.  They run
+    in the thread pool now — where there is no running loop."""
+    import asyncio
+
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "INGESTION_STORAGE_DIR", str(tmp_path))
+    from app.services.ingestion_service import IngestionService
+
+    seen = {}
+    real_find = IngestionService._find_duplicate
+    real_commit = db_session.commit
+
+    def on_loop() -> bool:
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+
+    def find(db, project_id, content_sha256, exclude_job_id=None):
+        seen["find_on_loop"] = on_loop()
+        return real_find(db, project_id, content_sha256, exclude_job_id)
+
+    def commit():
+        seen.setdefault("commit_on_loop", on_loop())
+        return real_commit()
+
+    monkeypatch.setattr(IngestionService, "_find_duplicate", staticmethod(find))
+    monkeypatch.setattr(db_session, "commit", commit)
+    svc = IngestionService()
+    job = await svc.create_job(db=db_session, upload=UploadFile(filename="scan.xml", file=io.BytesIO(_VALID_XML)),
+                               submitted_by_id=None, options={"project_id": test_project.id})
+    assert job.id and job.status == "queued"
+    assert seen == {"find_on_loop": False, "commit_on_loop": False}

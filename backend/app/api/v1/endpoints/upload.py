@@ -2,6 +2,7 @@ import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Query
+from fastapi.concurrency import run_in_threadpool
 from pathlib import Path
 from pydantic import BaseModel, Field
 from sqlalchemy import desc
@@ -129,8 +130,10 @@ async def upload_scan_file(
     }
 
     if batch_id is not None:
-        in_project = (
-            db.query(ScanBatch.id)
+        # Database work runs in the thread pool, never on the event loop
+        # (external review 2026-10-16, A2).
+        in_project = await run_in_threadpool(
+            lambda: db.query(ScanBatch.id)
             .filter(ScanBatch.id == batch_id, ScanBatch.project_id == project.id)
             .first()
         )
@@ -174,7 +177,7 @@ async def upload_scan_file(
     )
 
     if not stage:
-        ingestion_service.enqueue_job(job.id, db=db)
+        await run_in_threadpool(ingestion_service.enqueue_job, job.id, db=db)
 
     return response
 
