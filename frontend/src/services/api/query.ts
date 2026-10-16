@@ -46,7 +46,9 @@ export const downloadQueryCsv = async (
   projectId: number, q: string, dataset: string,
 ): Promise<{ filename: string; note?: string }> => {
   const response = await api.get(`${projectPath(projectId)}/query/export.csv`, { params: { q }, responseType: 'blob' });
-  const filename = `query-${dataset}.csv`;
+  // Five exports of one dataset are five files (second review, Q12).
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
+  const filename = `query-${dataset}-${stamp}.csv`;
   saveBlob(new Blob([response.data], { type: 'text/csv' }), filename);
   return { filename, note: exportNote(response.headers ?? {}) };
 };

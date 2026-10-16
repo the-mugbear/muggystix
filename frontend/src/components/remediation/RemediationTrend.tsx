@@ -21,7 +21,7 @@ import { useProjectId } from '../../hooks/useProjectId';
 import { queryErrorText } from '../../lib/query';
 import { formatDate } from '../../utils/relativeTime';
 import PlotFigure from '../charts/PlotFigure';
-import { useWidth } from '../oversight/GrowthCharts';
+import { useWidth } from '../charts/useWidth';
 
 const ACCENT = 'hsl(var(--info))';
 const INK = 'hsl(var(--foreground))';

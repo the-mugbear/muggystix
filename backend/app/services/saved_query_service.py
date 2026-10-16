@@ -80,10 +80,19 @@ def _commit_name(db: Session) -> None:
         raise HTTPException(status_code=409, detail="You already have a saved query with that name")
 
 
+def _name(name: str) -> str:
+    """The name as stored: trimmed, and never blank (second review, I7 —
+    the request's own check counted the spaces)."""
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="A saved query needs a name")
+    return name
+
+
 def create(db: Session, project_id: int, user: User, *, name: str, query: str,
            description: Optional[str], shared: bool) -> Dict[str, Any]:
     check_query(query)
-    row = SavedQuery(project_id=project_id, created_by_id=user.id, name=name.strip(),
+    row = SavedQuery(project_id=project_id, created_by_id=user.id, name=_name(name),
                      description=(description or "").strip() or None, query=query.strip(), shared=shared)
     db.add(row)
     _commit_name(db)
@@ -97,7 +106,7 @@ def update(db: Session, project_id: int, user: User, query_id: int, changes: Dic
         check_query(changes["query"])
         row.query = changes["query"].strip()
     if changes.get("name") is not None:
-        row.name = changes["name"].strip()
+        row.name = _name(changes["name"])
     if "description" in changes:
         row.description = (changes["description"] or "").strip() or None
     if changes.get("shared") is not None:

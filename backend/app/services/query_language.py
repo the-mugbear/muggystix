@@ -100,6 +100,7 @@ class Stats:
     aggregates: List[Aggregate]
     by: List[str]
     pos: int
+    by_pos: List[int] = field(default_factory=list)
 
 
 @dataclass
@@ -107,6 +108,7 @@ class Top:
     columns: List[str]
     limit: int
     pos: int
+    columns_pos: List[int] = field(default_factory=list)
 
 
 @dataclass
@@ -117,6 +119,7 @@ class Pipeline:
     searches: List[Tuple[str, int]] = field(default_factory=list)
     wheres: List[Cond] = field(default_factory=list)
     fields: Optional[List[str]] = None
+    fields_pos: List[int] = field(default_factory=list)
     aggregate: Optional[Union[Stats, Top]] = None
     # The query up to (not including) the `| stats` / `| top` — the base a
     # group's drill-down adds its `| where` to.
@@ -349,13 +352,24 @@ class _Where:
 # The other commands
 # ---------------------------------------------------------------------------
 
-def _columns(r: _Reader, command: str) -> List[str]:
-    cols = [str(r.word(f"a column name after `{command}`").value)]
-    while r.peek().kind == "COMMA" or r.peek().kind == "WORD":
+def _is_limit(r: _Reader) -> bool:
+    """`limit=` next (top's option, before or after its columns)."""
+    nxt = r.toks[r.i + 1] if r.i + 1 < len(r.toks) else None
+    return r.is_word("limit") and nxt is not None and nxt.kind == "OP" and nxt.value == "="
+
+
+def _columns(r: _Reader, command: str) -> Tuple[List[str], List[int]]:
+    """Column names and each one's position — so an unknown one is pointed
+    at, not the start of the query (second review 2026-10-16, I3)."""
+    first = r.word(f"a column name after `{command}`")
+    cols, positions = [str(first.value)], [first.pos]
+    while (r.peek().kind == "COMMA" or r.peek().kind == "WORD") and not _is_limit(r):
         if r.peek().kind == "COMMA":
             r.next()
-        cols.append(str(r.word("a column name").value))
-    return cols
+        tok = r.word("a column name")
+        cols.append(str(tok.value))
+        positions.append(tok.pos)
+    return cols, positions
 
 
 def _stats(r: _Reader, pos: int) -> Stats:
@@ -393,9 +407,10 @@ def _stats(r: _Reader, pos: int) -> Stats:
             continue
         break
     by: List[str] = []
+    by_pos: List[int] = []
     if r.is_word("by"):
         r.next()
-        by = _columns(r, "by")
+        by, by_pos = _columns(r, "by")
         if len(by) > MAX_BY:
             raise QueryError(f"`by` takes at most {MAX_BY} columns", position=pos)
     r.end("stats")
@@ -403,23 +418,31 @@ def _stats(r: _Reader, pos: int) -> Stats:
     dup = next((n for n in names if names.count(n) > 1), None)
     if dup:
         raise QueryError(f"'{dup}' names two columns of the answer — rename one with `as`", position=pos)
-    return Stats(aggregates, by, pos)
+    return Stats(aggregates, by, pos, by_pos)
 
 
 def _top(r: _Reader, pos: int) -> Top:
+    """`top [limit=N] col, … [limit=N]` — SPL takes the option on either
+    side of the columns (second review 2026-10-16, I5)."""
     limit = 10
-    if r.is_word("limit"):
+
+    def read_limit() -> int:
         r.next()
         r.expect("OP", "'=' after limit")
         tok = r.expect("NUMBER", "a number after limit=")
-        limit = int(tok.value)
-        if limit < 1:
-            raise QueryError("limit must be at least 1", position=tok.pos)
-    cols = _columns(r, "top")
+        if not isinstance(tok.value, int) or tok.value < 1:
+            raise QueryError("limit must be a whole number of at least 1", position=tok.pos)
+        return tok.value
+
+    if _is_limit(r):
+        limit = read_limit()
+    cols, positions = _columns(r, "top")
+    if _is_limit(r):
+        limit = read_limit()
     if len(cols) > MAX_BY:
         raise QueryError(f"`top` takes at most {MAX_BY} columns", position=pos)
     r.end("top")
-    return Top(cols, limit, pos)
+    return Top(cols, limit, pos, positions)
 
 
 def _sort(r: _Reader) -> List[Tuple[str, bool, int]]:
@@ -430,6 +453,13 @@ def _sort(r: _Reader) -> List[Tuple[str, bool, int]]:
             desc = r.next().value == "-"
         name = r.word("a column name after `sort`")
         out.append((str(name.value), desc, name.pos))
+        if r.is_word("desc", "asc"):
+            # SQL's word order — SPL's is a sign (second review, Q3).
+            tok = r.peek()
+            raise QueryError(
+                f"`sort` takes -{name.value} for descending, +{name.value} (or {name.value}) for ascending — "
+                f"not '{tok.value}'", position=tok.pos,
+            )
         if r.peek().kind == "COMMA":
             r.next()
             continue
@@ -488,7 +518,7 @@ def parse(text: str) -> Pipeline:
         elif command in ("fields", "table"):
             if stage > 0:
                 raise QueryError(f"`{command}` comes before stats, top, sort and head", position=cpos)
-            pipe.fields = _columns(r, command)
+            pipe.fields, pipe.fields_pos = _columns(r, command)
             r.end(command)
         elif command in ("stats", "top"):
             if stage > 0:

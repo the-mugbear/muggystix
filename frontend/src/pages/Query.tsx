@@ -12,7 +12,7 @@
  * (the server's `drilldowns`).
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { BookOpen, Loader2, Play, Save, Share2, Wrench } from 'lucide-react';
 
@@ -25,7 +25,7 @@ import {
   runQuery,
   updateSavedQuery,
 } from '../services/api';
-import type { QueryAnswer, SavedQuery } from '../services/api';
+import type { QueryAnswer, QuerySchema, SavedQuery } from '../services/api';
 import DownloadButton from '../components/DownloadButton';
 import QueryBuilder from '../components/query/QueryBuilder';
 import QueryChart, { chartMeasures } from '../components/query/QueryChart';
@@ -46,7 +46,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useProjectId } from '../hooks/useProjectId';
 import { useProjectRole } from '../hooks/useProjectRole';
-import { queryErrorText } from '../lib/query';
+import { queryErrorText, rememberFor } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { cn } from '../utils/cn';
 import { applyCompletion, completeQuery } from '../utils/queryCompletion';
@@ -82,21 +82,17 @@ const Editor: React.FC<{
   onSave: (text: string) => void;
   building: boolean;
   onBuild: () => void;
-}> = ({ initial, running, onRun, onSave, building, onBuild }) => {
-  const projectId = useProjectId();
+  /** The server's schema — completion's source (the page's one read). */
+  schema: QuerySchema | null;
+}> = ({ initial, running, onRun, onSave, building, onBuild, schema }) => {
   const [draft, setDraft] = useState(initial);
   const text = draft.trim();
-  // Completion (5.406.0): the word at the caret, from the server's schema.
-  const schema = useQuery({
-    queryKey: ['getQuerySchema', projectId],
-    queryFn: ({ signal }) => getQuerySchema(projectId, signal),
-  });
   const box = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState<number | null>(null);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const pendingCaret = useRef<number | null>(null);
-  const completion = open && caret !== null ? completeQuery(draft, caret, schema.data ?? null) : null;
+  const completion = open && caret !== null ? completeQuery(draft, caret, schema) : null;
   const activeIndex = completion ? Math.min(active, completion.items.length - 1) : 0;
   useEffect(() => {
     if (pendingCaret.current === null || !box.current) return;
@@ -150,7 +146,9 @@ const Editor: React.FC<{
           rows={3}
           maxLength={4000}
           spellCheck={false}
-          placeholder={EXAMPLE}
+          // An example, said to be one (second review, Q14: it read as a
+          // real query under a disabled Run).
+          placeholder={`e.g. ${EXAMPLE}`}
           className="font-mono text-metadata"
         />
         {completion && (
@@ -485,14 +483,8 @@ const SavedQueries: React.FC<{ onRun: (q: string) => void; onEdit: (row: SavedQu
 // The reference: datasets, columns, commands — from the server's schema
 // ---------------------------------------------------------------------------
 
-const Reference: React.FC<{ onRun: (q: string) => void }> = ({ onRun }) => {
-  const projectId = useProjectId();
+const Reference: React.FC<{ onRun: (q: string) => void; schema: UseQueryResult<QuerySchema> }> = ({ onRun, schema }) => {
   const [open, setOpen] = useState(false);
-  const schema = useQuery({
-    queryKey: ['getQuerySchema', projectId],
-    queryFn: ({ signal }) => getQuerySchema(projectId, signal),
-    enabled: open,
-  });
   return (
     <PostureSection
       title="Reference"
@@ -558,7 +550,17 @@ const Query: React.FC = () => {
   // Table or chart — list state a reader returns to, so it is in the address
   // too, and a new query keeps it.
   const view: AnswerView = params.get('view') === 'chart' ? 'chart' : 'table';
-  const run = (text: string) => setParams(text ? { q: text, ...(view === 'chart' ? { view } : {}) } : {});
+  const queryClient = useQueryClient();
+  const run = (text: string) => {
+    // Run on the query already shown asks again (second review 2026-10-16,
+    // I2: the address did not change, so nothing was read — after a
+    // promotion elsewhere Run looked broken).
+    if (text && text === q) {
+      void queryClient.invalidateQueries({ queryKey: ['runQuery', projectId, q] });
+      return;
+    }
+    setParams(text ? { q: text, ...(view === 'chart' ? { view } : {}) } : {});
+  };
   const setView = (next: AnswerView) => setParams((prev) => {
     const out = new URLSearchParams(prev);
     if (next === 'chart') out.set('view', 'chart'); else out.delete('view');
@@ -572,10 +574,13 @@ const Query: React.FC = () => {
   const [saving, setSaving] = useState<SaveForm | null>(null);
   // The builder (5.406.0): a panel that writes the query text.
   const [building, setBuilding] = useState(false);
+  // The schema: ONE read for the editor's completion, the builder and the
+  // Reference, remembered — it changes only with a deploy (second review
+  // 2026-10-16, I6: three reads, the editor's again on every Run).
   const schema = useQuery({
     queryKey: ['getQuerySchema', projectId],
     queryFn: ({ signal }) => getQuerySchema(projectId, signal),
-    enabled: building,
+    ...rememberFor(5 * 60_000),
   });
 
   return (
@@ -613,6 +618,7 @@ const Query: React.FC = () => {
           onSave={(text) => setSaving({ id: null, name: '', description: '', query: text, shared: false })}
           building={building}
           onBuild={() => setBuilding((v) => !v)}
+          schema={schema.data ?? null}
         />
         {building && (schema.data ? (
           <QueryBuilder schema={schema.data} onRun={run} />
@@ -644,7 +650,7 @@ const Query: React.FC = () => {
         onRun={run}
         onEdit={(row) => setSaving({ id: row.id, name: row.name, description: row.description ?? '', query: row.query, shared: row.shared })}
       />
-      <Reference onRun={run} />
+      <Reference onRun={run} schema={schema} />
       <SaveDialog form={saving} onClose={() => setSaving(null)} />
     </div>
   );

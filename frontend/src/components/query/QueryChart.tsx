@@ -15,7 +15,7 @@ import * as Plot from '@observablehq/plot';
 
 import type { QueryAnswer } from '../../services/api';
 import PlotFigure from '../charts/PlotFigure';
-import { useWidth } from '../oversight/GrowthCharts';
+import { useWidth } from '../charts/useWidth';
 import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 

@@ -17,13 +17,14 @@ Read-only; the statement timeout is ``get_db``'s.
 from __future__ import annotations
 
 import enum
+import ipaddress
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Float, String, and_, cast, distinct, func, or_
-from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy import Float, String, and_, cast, distinct, func, literal, or_
+from sqlalchemy.dialects.postgresql import INET, aggregate_order_by
 from sqlalchemy.dialects.postgresql import array_agg as pg_array_agg
 from sqlalchemy.orm import Session
 
@@ -48,8 +49,14 @@ EXPORT_ROW_CAP = 50_000
 def _dataset(pipe: Pipeline) -> Dataset:
     ds = DATASETS.get(pipe.dataset)
     if ds is None:
+        # `port:445` alone is a Hosts-page habit (second review, Q8): say how
+        # to write it here.
+        hint = (
+            " — to filter hosts with the Hosts language, start with `hosts`, e.g. `hosts port:445`"
+            if pipe.searches and pipe.searches[0][0].lstrip().startswith(":") else ""
+        )
         raise QueryError(
-            f"Unknown dataset '{pipe.dataset}'. Datasets: {', '.join(DATASETS)}", position=pipe.dataset_pos,
+            f"Unknown dataset '{pipe.dataset}'. Datasets: {', '.join(DATASETS)}{hint}", position=pipe.dataset_pos,
         )
     return ds
 
@@ -171,7 +178,18 @@ def _condition(ds: Dataset, cond: Cond):
         col = _column(ds, cond.column, cond.pos)
         if col.type in ("bool", "enum") and cond.op not in ("=", "!="):
             raise QueryError(f"'{col.name}' takes = or != only", position=cond.pos)
-        return _OPS[cond.op](col.expr, _coerce(col, cond.value, cond.pos))
+        value = _coerce(col, cond.value, cond.pos)
+        if col.address and cond.op not in ("=", "!="):
+            # An address is ordered as an address (second review, I1).
+            try:
+                ipaddress.ip_address(value)
+            except ValueError:
+                raise QueryError(
+                    f"'{col.name}' {cond.op} compares with an address, like \"10.0.0.9\" — "
+                    "for a range use subnet: in the search terms", position=cond.pos,
+                )
+            return _OPS[cond.op](cast(col.expr, INET), cast(literal(value), INET))
+        return _OPS[cond.op](col.expr, value)
     raise QueryError("Unreadable condition")  # pragma: no cover
 
 
@@ -202,10 +220,13 @@ def _filtered(db: Session, project_id: int, user: User, ds: Dataset, plan: "_Pla
     `where` conditions applied."""
     query = ds.base(db, project_id)
     ctx = dsl.BuildCtx(db=db, current_user=user, project_id=project_id)
-    for node in plan.search_nodes:
-        predicate = dsl.evaluate(node, ctx)
-        # A row joined to its host takes the predicate as it is; a row with
-        # several hosts (a finding) matches when one of them does.
+    if plan.search_nodes:
+        # Every search command is about the SAME host: the terms are joined
+        # before a row with several hosts (a finding) asks "does one of them
+        # match?" — `findings port:445 | search port:22` is ONE host with
+        # both, as on `hosts` (second review 2026-10-16, I4: each command was
+        # its own EXISTS, so two different hosts satisfied it).
+        predicate = and_(*[dsl.evaluate(node, ctx) for node in plan.search_nodes])
         query = query.filter(ds.host_filter(predicate) if callable(ds.host_filter) else predicate)
     for condition in plan.conditions:
         query = query.filter(condition)
@@ -240,7 +261,8 @@ class _Plan:
 
 def _plan_rows(ds: Dataset, pipe: Pipeline, row_cap: int) -> Dict[str, Any]:
     names = pipe.fields or ds.default_fields
-    cols = [_column(ds, n, pipe.dataset_pos) for n in names]
+    positions = pipe.fields_pos if pipe.fields else [pipe.dataset_pos] * len(names)
+    cols = [_column(ds, n, p) for n, p in zip(names, positions)]
     links = ds.link_exprs if ds.link else []
     order = []
     sorts = pipe.sorts or [(s.lstrip("-"), s.startswith("-"), 0) for s in ds.default_sort]
@@ -330,7 +352,7 @@ def _drilldown(pipe: Pipeline, by: List[QueryColumn], key: List[Any]) -> str:
 def _plan_grouped(ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
     agg = pipe.aggregate
     if isinstance(agg, Top):
-        by = [_column(ds, n, agg.pos) for n in agg.columns]
+        by = [_column(ds, n, p) for n, p in zip(agg.columns, agg.columns_pos or [agg.pos] * len(agg.columns))]
         count = func.count()
         selected = [c.expr for c in by] + [
             count,
@@ -345,7 +367,7 @@ def _plan_grouped(ds: Dataset, pipe: Pipeline) -> Dict[str, Any]:
         limit = min(agg.limit, pipe.head or agg.limit, GROUP_CAP)
         value_cols: List[Optional[QueryColumn]] = [None, None]
     else:
-        by = [_column(ds, n, agg.pos) for n in agg.by]
+        by = [_column(ds, n, p) for n, p in zip(agg.by, agg.by_pos or [agg.pos] * len(agg.by))]
         aggs = [_aggregate_expr(ds, a) for a in agg.aggregates]
         selected = [c.expr for c in by] + [expr for expr, _, _ in aggs]
         out_cols = [{"name": c.name, "type": c.type} for c in by] + [

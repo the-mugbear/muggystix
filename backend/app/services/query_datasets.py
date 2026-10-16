@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Type
+from urllib.parse import quote
 
 from sqlalchemy import case, cast, or_, select
 from sqlalchemy.dialects.postgresql import INET
@@ -38,6 +39,9 @@ class QueryColumn:
     # An enum kept as its VALUE in a text column (a finding's status), not a
     # database enum: compared with the member's value.
     enum_as_text: bool = False
+    # An IP address kept as text: `<` / `>` compare it as an address, never
+    # as text (second review 2026-10-16, I1: "10.0.0.10" < "10.0.0.9").
+    address: bool = False
     # Numeric columns take avg / sum.
     @property
     def numeric(self) -> bool:
@@ -87,7 +91,8 @@ _SEVERITY_RANK = case(
 def _host_columns() -> List[QueryColumn]:
     return [
         QueryColumn("host", Host.id, "int", "The host's id — what dc(host) counts."),
-        QueryColumn("ip", Host.ip_address, "text", "The host's address.", sort_expr=_ip_sort()),
+        QueryColumn("ip", Host.ip_address, "text", "The host's address (< and > compare addresses; ranges: subnet:).",
+                    sort_expr=_ip_sort(), address=True),
         QueryColumn("hostname", Host.hostname, "text", "The host's display name."),
     ]
 
@@ -227,7 +232,10 @@ DATASETS: Dict[str, Dataset] = {
         description="One row per scanner observation on a host (not yet a finding).",
         base=_observations,
         base_id=Vulnerability.id,
-        link_exprs=[Host.id], link=_host_link,
+        # The observation's own inspector, not its host (second review, I9);
+        # a row with no issue key is its own issue (`row:<id>`, as listed).
+        link_exprs=[Vulnerability.issue_key, Vulnerability.id],
+        link=lambda r: f"/observations?issue={quote(r[0] or f'row:{r[1]}', safe='')}",
         columns=_cols(
             *_host_columns(),
             QueryColumn("title", Vulnerability.title, "text", "The observation's title as the scanner wrote it."),

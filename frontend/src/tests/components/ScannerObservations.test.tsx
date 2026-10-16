@@ -400,11 +400,14 @@ describe('ScannerObservations — promoting and dismissing', () => {
     mocked.dismissObservationIssue.mockResolvedValue({ issue_key: SMB.issue_key, finding_id: 31, host_count: 3 });
     renderIt();
     await screen.findByText('SMB Signing not required');
-    // Nothing ticked, or two ticked: not offered.
+    // Nothing ticked: not offered.  Two ticked: shown, disabled, saying why
+    // (second review 2026-10-16, O8 — it vanished with no word).
     expect(screen.queryByRole('button', { name: /Mark false positive/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select SMB Signing not required' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select TLS Version 1.0 Protocol Detection' }));
-    expect(screen.queryByRole('button', { name: /Mark false positive/ })).not.toBeInTheDocument();
+    const waiting = screen.getByRole('button', { name: /Mark false positive/ });
+    expect(waiting).toBeDisabled();
+    expect(waiting).toHaveAttribute('title', expect.stringContaining('One observation at a time'));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select TLS Version 1.0 Protocol Detection' }));
 
     fireEvent.click(screen.getByRole('button', { name: /Mark false positive/ }));

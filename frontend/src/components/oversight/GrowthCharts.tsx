@@ -14,7 +14,8 @@
  * ticks. Hover or arrow keys move ONE crosshair across all three; the readout
  * above lists every value at that bucket. Every value is also in the table view.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
+import { useWidth } from '../charts/useWidth';
 import * as Plot from '@observablehq/plot';
 
 import PlotFigure from '../charts/PlotFigure';
@@ -34,32 +35,6 @@ export const bucketDate = (unit: string, start: string): string => {
   const [y, m] = start.slice(0, 7).split('-').map(Number);
   return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
 };
-
-/** Container width, with a fallback where ResizeObserver is missing (tests).
- *
- *  A CALLBACK ref, re-observing whenever the container mounts (v5.265.0):
- *  the charts' container is replaced by the "no targets" line when a filter
- *  leaves no points, and an observer attached once on first render kept
- *  watching the detached element — it reported 0 (clamped to 280 px), and the
- *  charts stayed that narrow after the filter was cleared.  A zero width
- *  (a detached or hidden element) is ignored rather than trusted. */
-export function useWidth(): [(el: HTMLDivElement | null) => void, number] {
-  const [w, setW] = useState(640);
-  const observer = useRef<ResizeObserver | null>(null);
-  const ref = useCallback((el: HTMLDivElement | null) => {
-    observer.current?.disconnect();
-    observer.current = null;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(([entry]) => {
-      const width = Math.floor(entry.contentRect.width);
-      if (width > 0) setW(Math.max(280, width));
-    });
-    ro.observe(el);
-    observer.current = ro;
-  }, []);
-  useEffect(() => () => observer.current?.disconnect(), []);
-  return [ref, w];
-}
 
 type Unit = 'day' | 'week' | 'month';
 

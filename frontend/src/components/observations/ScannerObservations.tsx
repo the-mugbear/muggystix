@@ -393,11 +393,18 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
               {/* The host page's dismissal, reached from the list (5.379.0).
                   One observation at a time: a false positive is a judgment
                   of one thing, with its own reason. */}
-              {chosen.length === 1 && (
-                <Button size="sm" variant="outline" className="shrink-0" onClick={() => openDismiss(chosen[0])}>
-                  <Ban className="size-3.5" aria-hidden /> Mark false positive…
-                </Button>
-              )}
+              {/* Shown with several ticked too, saying why it waits (second
+                  review 2026-10-16, O8: it vanished with no word). */}
+              <Button
+                size="sm"
+                variant="outline"
+                className="shrink-0"
+                disabled={chosen.length !== 1}
+                title={chosen.length !== 1 ? 'One observation at a time: a false positive is a judgment of one thing, with its own reason' : undefined}
+                onClick={() => openDismiss(chosen[0])}
+              >
+                <Ban className="size-3.5" aria-hidden /> Mark false positive…
+              </Button>
               <Button
                 size="sm"
                 variant="ghost"

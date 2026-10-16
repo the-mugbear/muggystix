@@ -272,3 +272,25 @@ describe('Query page — external review 2026-10-16', () => {
     );
   });
 });
+
+describe('Query page — second review 2026-10-16', () => {
+  it('Run on the query already shown asks again (I2)', async () => {
+    api.runQuery.mockResolvedValue(ROWS);
+    renderAt('/query?q=hosts');
+    await screen.findByTestId('query-answer');
+    expect(api.runQuery).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+    await waitFor(() => expect(api.runQuery).toHaveBeenCalledTimes(2));
+  });
+
+  it('reads the schema once for the editor, the builder and the Reference (I6)', async () => {
+    api.runQuery.mockResolvedValue(ROWS);
+    renderAt('/query?q=hosts');
+    await screen.findByTestId('query-answer');
+    fireEvent.click(screen.getByRole('button', { name: 'Builder' }));
+    await screen.findByTestId('query-builder');
+    fireEvent.click(screen.getByRole('button', { name: 'Run' }));
+    await waitFor(() => expect(api.runQuery).toHaveBeenCalledTimes(2));
+    expect(api.getQuerySchema).toHaveBeenCalledTimes(1);
+  });
+});

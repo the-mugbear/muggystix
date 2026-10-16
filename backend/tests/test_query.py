@@ -476,3 +476,74 @@ def test_the_export_says_what_the_file_holds_against_the_answer(client, test_pro
     assert r.headers["x-cap"] == str(query_service.EXPORT_ROW_CAP)
     g = client.get(_url(test_project, "/query/export.csv"), params={"q": "ports | stats count by port"})
     assert (g.headers["x-answer-kind"], g.headers["x-cap"]) == ("stats", str(query_service.GROUP_CAP))
+
+
+# ---------------------------------------------------------------------------
+# Second review 2026-10-16 (2.510.2): I1 ip ordering, I3 positions, I4 one
+# host across search commands, I5 top limit= either side, I7 blank names,
+# I9 observation links, Q3 desc/asc, Q8 a bare Hosts query
+# ---------------------------------------------------------------------------
+
+def test_ordering_on_ip_compares_addresses(client, test_project, estate):
+    """I1: `ip > "10.30.0.9"` compared TEXT, so .10, .11, .12 were "below" .9."""
+    body = _run(client, test_project, 'hosts | where ip > "10.30.0.9" | table ip').json()
+    assert [r[0] for r in body["rows"]] == ["10.30.0.10", "10.30.0.11", "10.30.0.12"]
+    assert _run(client, test_project, 'hosts | where ip <= "10.30.0.2"').json()["total"] == 2
+    bad = _run(client, test_project, 'hosts | where ip > "ten"')
+    assert bad.status_code == 400 and "compares with an address" in bad.json()["detail"]
+    assert _run(client, test_project, 'hosts | where ip = "10.30.0.3"').json()["total"] == 1
+
+
+def test_an_unknown_column_is_pointed_at_where_it_is(client, test_project, estate):
+    """I3: `hosts | table foo` pointed at character 1."""
+    for text, name in (("hosts | table ip, foo", "foo"), ("hosts | stats count by bar", "bar"),
+                       ("hosts | top limit=3 baz", "baz")):
+        r = _run(client, test_project, text)
+        assert r.status_code == 400 and r.json()["position"] == text.index(name), text
+
+
+def test_search_commands_on_findings_are_about_one_host(client, db_session, test_project, estate):
+    """I4: two `search` commands were two EXISTS — a finding with 445 on one
+    host and 3389 on another matched `port:445 | search port:3389`."""
+    from app.db.models_findings import Finding, FindingHost
+
+    f = Finding(project_id=test_project.id, title="Spread", severity="low", status="open", source="manual")
+    db_session.add(f)
+    db_session.flush()
+    # Host 2 has 445 open; host 1 has 22 open and 3389 closed — no host has 445 AND 22 … except evens.
+    db_session.add_all([FindingHost(finding_id=f.id, host_id=estate[1].id, host_status="open"),
+                        FindingHost(finding_id=f.id, host_id=estate[2].id, host_status="open")])
+    db_session.commit()
+    split = _run(client, test_project, 'findings port:445 | search NOT port:445 | where title="Spread"').json()
+    assert split["total"] == 0  # one host cannot both have and not have 445
+    same = _run(client, test_project, 'findings port:445 | search port:22 | where title="Spread"').json()
+    assert same["total"] == 1   # host 2 has both
+    # Two commands mean what one term list means.
+    as_one = _run(client, test_project, 'findings port:445 port:22 | where title="Spread"').json()
+    assert as_one["total"] == same["total"]
+
+
+def test_top_takes_limit_on_either_side(client, test_project, estate):
+    before = _run(client, test_project, "ports | top limit=1 service").json()
+    after = _run(client, test_project, "ports | top service limit=1").json()
+    assert before["rows"] == after["rows"] and len(after["rows"]) == 1
+
+
+def test_sort_desc_says_how_spl_writes_it(client, test_project, estate):
+    r = _run(client, test_project, "ports | stats count by service | sort count desc")
+    assert r.status_code == 400 and "-count for descending" in r.json()["detail"]
+
+
+def test_a_bare_hosts_query_says_to_start_with_hosts(client, test_project, estate):
+    r = _run(client, test_project, "port:445")
+    assert r.status_code == 400 and "e.g. `hosts port:445`" in r.json()["detail"]
+
+
+def test_a_saved_query_name_cannot_be_blank(client, test_project, estate):
+    r = client.post(_url(test_project, "/queries/saved"), json={"name": "   ", "query": "hosts"})
+    assert r.status_code == 422 and "needs a name" in r.json()["detail"]
+
+
+def test_an_observation_row_opens_its_inspector(client, test_project, estate):
+    body = _run(client, test_project, 'observations | where cve="CVE-2024-6387" | head 1').json()
+    assert body["links"][0] == "/observations?issue=cve%3ACVE-2024-6387"

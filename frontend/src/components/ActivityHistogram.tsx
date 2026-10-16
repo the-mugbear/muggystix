@@ -21,7 +21,8 @@
  * and the readout above names every count in that bin; Enter or a click
  * correlates that bin. The table view lists every non-empty bin.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { useWidth } from './charts/useWidth';
 import * as Plot from '@observablehq/plot';
 
 import type { ActivityItem, ActivityKind } from '../services/api';
@@ -43,25 +44,6 @@ const ROW_H = 44;          // plot height per kind
 const AXIS_H = 24;
 const MARGIN_L = 32;       // the row's y ticks
 const MARGIN_R = 8;
-
-/** Container width, with a fallback where ResizeObserver is missing (tests). */
-function useWidth(): [(el: HTMLDivElement | null) => void, number] {
-  const [w, setW] = useState(900);
-  const observer = useRef<ResizeObserver | null>(null);
-  const ref = useCallback((el: HTMLDivElement | null) => {
-    observer.current?.disconnect();
-    observer.current = null;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(([entry]) => {
-      const width = Math.floor(entry.contentRect.width);
-      if (width > 0) setW(Math.max(360, width));
-    });
-    ro.observe(el);
-    observer.current = ro;
-  }, []);
-  useEffect(() => () => observer.current?.disconnect(), []);
-  return [ref, w];
-}
 
 const binLabel = (start: number, end: number, binMs: number): string => {
   const s = new Date(start);
@@ -98,7 +80,7 @@ export const ActivityHistogram: React.FC<ActivityHistogramProps> = ({
   highlightEnd,
   onSelectBin,
 }) => {
-  const [ref, width] = useWidth();
+  const [ref, width] = useWidth(900, 360);
   const [hover, setHover] = useState<number | null>(null);
   const [showTable, setShowTable] = useState(false);
   const invertRef = useRef<((px: number) => unknown) | null>(null);
