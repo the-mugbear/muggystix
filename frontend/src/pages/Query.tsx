@@ -236,7 +236,17 @@ const Answer: React.FC<{ answer: QueryAnswer; view: AnswerView; onView: (v: Answ
   if (answer.total === 0) {
     return (
       <p className="break-words text-metadata text-muted-foreground" data-testid="query-empty">
-        Nothing matches this query.{answer.hint ? ` ${answer.hint}.` : ''}
+        Nothing matches this query.
+        {answer.hint && (
+          <>
+            {' '}
+            {/* The server writes code in backticks (an agent reads it as Markdown): drawn as code here. */}
+            {answer.hint.split(/`([^`]+)`/).map((part, i) => (
+              i % 2 ? <code key={i} className="font-mono">{part}</code> : part
+            ))}
+            .
+          </>
+        )}
       </p>
     );
   }

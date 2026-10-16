@@ -298,7 +298,11 @@ describe('Query page — second review 2026-10-16', () => {
     const hint = '`=` is exact and case-sensitive. Ignoring case, 12 rows would match — like(service, "SSH") compares ignoring case';
     api.runQuery.mockResolvedValue({ ...ROWS, query: 'ports | where service="SSH"', rows: [], total: 0, hint });
     renderAt('/query?q=ports%20%7C%20where%20service%3D%22SSH%22');
-    expect(await screen.findByTestId('query-empty')).toHaveTextContent(`Nothing matches this query. ${hint}.`);
+    const empty = await screen.findByTestId('query-empty');
+    // The backticks are drawn as code, never shown.
+    expect(empty).toHaveTextContent(`Nothing matches this query. ${hint.replace(/`/g, '')}.`);
+    expect(empty.textContent).not.toContain('`');
+    expect(within(empty).getByText('=').tagName).toBe('CODE');
   });
 
   it('an empty answer without a hint says only that', async () => {
