@@ -218,7 +218,7 @@ export const NAV_PAGES: NavPage[] = [
     palette: { Icon: ShieldAlert, keywords: ['vulnerability', 'vulnerabilities', 'vuln', 'cve', 'plugin', 'nessus', 'observation', 'issue'], order: 3.7 },
   },
   {
-    // 5.405.0 — SPL-style queries over hosts, ports and scanner observations,
+    // 5.405.0 — SPL-style queries over the inventory (and, 5.406.0, findings),
     // with saved / shared queries (the owner, 2026-10-16: "teams are used to
     // Splunk").
     id: 'query', path: '/query', label: 'Query', requiredRole: 'viewer', hub: 'inventory',

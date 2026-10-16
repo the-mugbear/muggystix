@@ -582,7 +582,8 @@ const Query: React.FC = () => {
         <p className="flex flex-wrap items-center gap-xxs text-metadata text-muted-foreground">
           {/* One flex item: the row's gap would otherwise space every snippet and comma apart. */}
           <span>
-            Ask hosts, ports and scanner observations Splunk-style: a dataset, search terms, then{' '}
+            Ask the project&apos;s hosts, ports, scanner observations, findings, web interfaces and names
+            Splunk-style: a dataset, search terms, then{' '}
             <code className="font-mono">| where</code>, <code className="font-mono">| stats … by</code>,{' '}
             <code className="font-mono">| sort</code>, <code className="font-mono">| head</code>.
           </span>

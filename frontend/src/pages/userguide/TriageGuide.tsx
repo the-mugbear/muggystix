@@ -233,7 +233,7 @@ const sections: GuideSection[] = [
     id: 'query',
     title: 'Query',
     Icon: TerminalSquare,
-    summary: 'Splunk-style questions over hosts, ports and scanner observations — counts, groups, saved queries.',
+    summary: 'Splunk-style questions over the inventory and the findings — counts, groups, charts, saved queries.',
     content: (
       <div>
         <Para>
