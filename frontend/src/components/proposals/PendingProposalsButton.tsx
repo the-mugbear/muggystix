@@ -29,7 +29,9 @@ const PendingProposalsButton: React.FC = () => {
     enabled: hasProject,
     ...pollEvery(60_000),
   });
-  // 5.318.0 — your own (proposals about findings you authored or own); a
+  // 5.318.0 — your own (proposals about findings you authored or own, and
+  // since 5.403.0 those your agents made — a proposed new finding is on no
+  // finding, and its operator saw a count of 0); a
   // project admin, who may accept any report text, sees the project's.  An
   // admin's review of every finding used to put the whole run in every
   // member's top bar.

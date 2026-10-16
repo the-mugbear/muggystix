@@ -96,8 +96,8 @@ const Proposals: React.FC = () => {
     if (!sessionKnown) next.delete('agent_session_id');
     setParams(next, { replace: true });
   }, [statusKnown, kindKnown, sessionKnown, params, setParams]);
-  // 5.318.0 — whose findings: `mine` (authored or owned — what you were
-  // notified about) or `all`.  Unset, a project admin sees all and everyone
+  // 5.318.0 — whose: `mine` (about findings you authored or own, or made by
+  // you or your agents — the server's `proposal_service.mine`) or `all`.  Unset, a project admin sees all and everyone
   // else their own; the server says which (the summary's flag).
   const scopeParam = params.get('scope');
   // The pending counts — the query the top bar's count reads too, so the two
@@ -293,8 +293,8 @@ const Proposals: React.FC = () => {
           {pending === 0
             ? 'Nothing waiting. When an agent (or an AI draft) proposes a change to what the team has concluded, it lands here for a person to accept or reject.'
             : <>
-                <strong className="text-foreground">{pending}</strong> proposed change{pending === 1 ? '' : 's'} to
-                {scope === 'mine' ? ' your findings' : ' what the team has concluded'} {pending === 1 ? 'is' : 'are'} waiting.
+                <strong className="text-foreground">{pending}</strong> proposed change{pending === 1 ? '' : 's'}
+                {scope === 'mine' ? ' to your findings or by your agents' : ' to what the team has concluded'} {pending === 1 ? 'is' : 'are'} waiting.
                 Nothing has changed yet: accepting one applies it as you.
               </>}
         </p>
@@ -317,7 +317,7 @@ const Proposals: React.FC = () => {
           <Select value={scope ?? 'mine'} onValueChange={(v) => setParam('scope', v)}>
             <SelectTrigger id="proposal-scope" className="h-8 w-44"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="mine">Mine (authored or owned)</SelectItem>
+              <SelectItem value="mine">Mine (my findings, my agents)</SelectItem>
               <SelectItem value="all">Everyone&apos;s</SelectItem>
             </SelectContent>
           </Select>

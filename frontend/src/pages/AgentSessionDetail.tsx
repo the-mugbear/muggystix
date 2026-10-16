@@ -23,6 +23,7 @@ import {
   rowOperatorName,
   sessionStateLine,
 } from '../components/agent-sessions/SessionParts';
+import SessionProposals from '../components/agent-sessions/SessionProposals';
 import SessionTests from '../components/agent-sessions/SessionTests';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import LastUpdated from '../components/LastUpdated';
@@ -224,6 +225,13 @@ const AgentSessionDetail: React.FC = () => {
         }
       >
         <SessionTests sessionId={row.id} ended={ended} />
+      </PostureSection>
+
+      <PostureSection
+        title="Proposals"
+        description="The changes this session proposed — new findings, report text, observations, endpoint states. None takes effect until a person accepts it on the Proposals page."
+      >
+        <SessionProposals sessionId={row.id} ended={ended} />
       </PostureSection>
 
       {notesError && (

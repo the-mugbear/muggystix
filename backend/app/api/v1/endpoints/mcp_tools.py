@@ -942,6 +942,8 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     "propose_finding": {
         "description": (
             "Propose a new finding on one or more hosts — a person accepts or rejects it. "
+            "No finding exists until then: tell the operator it is waiting on the Proposals "
+            "page (the answer's `note`), never that a finding was created. "
             "Cite the evidence records that support it. `report_text` holds only the "
             "sections the evidence supports — leave out one you cannot support (never a "
             "guess or a placeholder) and say what is missing in `rationale`. Its reader "

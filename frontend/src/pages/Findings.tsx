@@ -78,6 +78,7 @@ import { ViewTabs } from '../components/ui/view-tabs';
 
 const FINDINGS_VIEWS = [['findings', 'Findings'], ['observations', 'Scanner observations']] as const;
 import ScannerObservations from '../components/findings/ScannerObservations';
+import ProposedFindingsLine from '../components/findings/ProposedFindingsLine';
 import {
   HOST_STATE_FILTER_LABEL, SOURCE_LABEL, SOURCE_OPTIONS, STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates,
   matchesStatusFilter,
@@ -162,6 +163,7 @@ const Findings: React.FC = () => {
           />
         </p>
         <ViewTabs label="Findings view" value={view} options={FINDINGS_VIEWS} onChange={setView} className="mt-sm" />
+        {view === 'findings' && <ProposedFindingsLine />}
       </div>
       {view === 'observations' ? <ScannerObservations canManage={canWrite} /> : <FindingsList />}
     </div>

@@ -31,12 +31,14 @@ _Kind = Literal["finding_text", "finding_create", "observation_promote", "observ
 
 @router.get("/proposals", summary="Agent proposals in this project")
 def list_proposals(
-    status: Optional[_Status] = Query("pending"),
+    status: Optional[Literal[_Status, "any"]] = Query(
+        "pending", description="`any`: every status (an agent session's page lists all it proposed).",
+    ),
     kind: Optional[_Kind] = Query(None),
     finding_id: Optional[int] = Query(None, gt=0),
     host_id: Optional[int] = Query(None, gt=0),
     agent_session_id: Optional[int] = Query(None, gt=0),
-    mine: bool = Query(False, description="Only proposals about findings you authored or own — the ones you are notified about."),
+    mine: bool = Query(False, description="Only your proposals: those about findings you authored or own, and those you made (your agent's or your own drafts)."),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -44,7 +46,7 @@ def list_proposals(
     user: User = Depends(get_current_user),
 ):
     rows, total = proposals.list_proposals(
-        db, project.id, status=status, kind=kind, finding_id=finding_id, host_id=host_id,
+        db, project.id, status=None if status == "any" else status, kind=kind, finding_id=finding_id, host_id=host_id,
         agent_session_id=agent_session_id, mine_user_id=user.id if mine else None,
         limit=limit, offset=offset,
     )
@@ -58,7 +60,7 @@ def proposals_summary(
     user: User = Depends(get_current_user),
 ):
     """The project's pending proposals, and the caller's own (about findings
-    they authored or own).  v2.440.0: an admin's review of every finding put
+    they authored or own, or made by them — ``proposal_service.mine``).  v2.440.0: an admin's review of every finding put
     the whole run in every member's top bar; the badge shows a person their
     own, and a project admin (who may accept any report text) the project's —
     ``viewer_is_project_admin`` says which view is theirs by default."""

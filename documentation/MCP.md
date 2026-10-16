@@ -254,6 +254,11 @@ marked idempotent.
   proposal's id, field and status with `value_chars` / `base_value_chars`;
   `propose_finding` answers `report_text_chars` per section. The texts are in
   `list_proposals`.
+* **A proposed finding is not a finding yet.** `propose_finding` answers a
+  `note` saying so: nothing appears on the Findings page until a person
+  accepts it. The agent tells its operator it is waiting on the Proposals page
+  (the operator's own list and top-bar count, and the session's page, show it);
+  `list_proposals` gives `result_finding_id` once accepted.
 * **A report-text value is the complete replacement for its section**, never a
   critique or a list of suggestions.
 * **"Not enough to write this" is a valid answer**: a section the finding's data

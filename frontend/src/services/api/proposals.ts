@@ -71,12 +71,13 @@ export interface ProposalList {
 }
 
 export interface ProposalQuery {
-  status?: ProposalStatus;
+  /** `any`: every status (an agent session's page). */
+  status?: ProposalStatus | 'any';
   kind?: ProposalKind;
   finding_id?: number;
   host_id?: number;
   agent_session_id?: number;
-  /** Only proposals about findings you authored or own (5.318.0). */
+  /** Only yours: about findings you authored or own (5.318.0), or made by you or your agents (5.403.0). */
   mine?: boolean;
   limit?: number;
   offset?: number;
@@ -89,7 +90,7 @@ export interface ProposalSummary {
   /** The whole project's pending proposals. */
   pending: number;
   by_kind: Partial<Record<ProposalKind, number>>;
-  /** Those about findings you authored or own — what you were notified about. */
+  /** Yours: about findings you authored or own, or made by you or your agents. */
   pending_mine: number;
   by_kind_mine: Partial<Record<ProposalKind, number>>;
   /** A project admin (who may accept any report text) sees the project's by default. */

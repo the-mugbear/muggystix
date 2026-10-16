@@ -764,8 +764,7 @@ def list_proposals(
     agent_session_id: Optional[int] = None, mine_user_id: Optional[int] = None,
     limit: int = 100, offset: int = 0,
 ) -> Tuple[List[AgentProposal], int]:
-    """``mine_user_id``: only proposals about findings that person authored
-    or owns — the ones they were notified about (:func:`findings_of`)."""
+    """``mine_user_id``: only that person's proposals (:func:`mine`)."""
     q = db.query(AgentProposal).filter(AgentProposal.project_id == project_id)
     if status:
         q = q.filter(AgentProposal.status == status)
@@ -774,7 +773,7 @@ def list_proposals(
     if finding_id is not None:
         q = q.filter(_about_findings([finding_id]))
     if mine_user_id is not None:
-        q = q.filter(_about_findings(findings_of(project_id, mine_user_id)))
+        q = q.filter(mine(project_id, mine_user_id))
     if host_id is not None:
         # A host's proposals: its observations, and endpoints on it.
         vuln_ids = db.query(Vulnerability.id).filter(Vulnerability.host_id == host_id)
@@ -808,6 +807,17 @@ def findings_of(project_id: int, user_id: int):
         Finding.project_id == project_id,
         (Finding.created_by_id == user_id) | (Finding.owner_id == user_id),
     )
+
+
+def mine(project_id: int, user_id: int):
+    """A person's proposals — the ONE rule behind ``mine``, ``pending_mine``
+    and the top-bar count: those about findings they authored or own
+    (:func:`findings_of`), and those THEY made, through their agent's session
+    or an in-app draft.  Without the second half a proposed new finding (on no
+    finding yet) was on nobody's list but the admins': the operator whose
+    agent proposed it saw an empty Proposals page and read the call as failed
+    (2026-10-16)."""
+    return _about_findings(findings_of(project_id, user_id)) | (AgentProposal.proposed_by_user_id == user_id)
 
 
 def _about_findings(finding_ids):
@@ -873,13 +883,13 @@ def has_pending_proposal_condition():
 
 
 def pending_counts(db: Session, project_id: int, *, mine_user_id: Optional[int] = None) -> Dict[str, int]:
-    """Pending proposals per kind; with ``mine_user_id``, only those about
-    that person's findings (the same rule as the list's ``mine``)."""
+    """Pending proposals per kind; with ``mine_user_id``, only that person's
+    (:func:`mine`, the list's own rule)."""
     q = db.query(AgentProposal.kind, func.count(AgentProposal.id)).filter(
         AgentProposal.project_id == project_id, AgentProposal.status == ProposalStatus.PENDING.value,
     )
     if mine_user_id is not None:
-        q = q.filter(_about_findings(findings_of(project_id, mine_user_id)))
+        q = q.filter(mine(project_id, mine_user_id))
     return {kind: n for kind, n in q.group_by(AgentProposal.kind).all()}
 
 
@@ -973,7 +983,20 @@ def serialize_created(db: Session, proposals: List[AgentProposal]) -> List[dict]
             row["base_value_chars"] = len(row.get("base_value") or "")
             for key in ("payload", "current_value", "base_value"):
                 row.pop(key, None)
-        elif row["kind"] == ProposalKind.FINDING_CREATE.value and payload.get("report_text"):
-            payload["report_text_chars"] = {k: len(v or "") for k, v in payload.pop("report_text").items()}
-            row["payload"] = payload
+        elif row["kind"] == ProposalKind.FINDING_CREATE.value:
+            if payload.get("report_text"):
+                payload["report_text_chars"] = {k: len(v or "") for k, v in payload.pop("report_text").items()}
+                row["payload"] = payload
+            # A proposed finding is not a finding: told nothing, an operator
+            # looked for it on the Findings page and read the call as failed.
+            row["note"] = NEW_FINDING_NOTE
     return rows
+
+
+#: What the agent passes on after ``propose_finding`` (2026-10-16).
+NEW_FINDING_NOTE = (
+    "Proposed, not created: there is no finding until a person accepts this proposal. "
+    "Tell your operator it is waiting on the Proposals page (and in this session's "
+    "Proposals section) for someone to accept or reject. list_proposals shows the "
+    "decision; an accepted one carries result_finding_id, the new finding."
+)

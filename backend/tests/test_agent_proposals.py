@@ -876,3 +876,51 @@ def test_each_person_sees_the_proposals_on_their_own_findings(client, db_session
     # The project admin who ran the review: everyone's by default.
     admin = client.get(f"{base}/proposals/summary").json()
     assert admin["viewer_is_project_admin"] is True and admin["pending"] == 4
+
+
+def test_an_operator_sees_the_new_findings_their_own_agent_proposed(client, db_session, test_project):
+    """2026-10-16: an analyst's agent proposed new findings and the analyst
+    saw none of them — a proposed finding is on no finding, so ``mine`` (only
+    proposals about findings they authored or own) left it out of their list
+    and their top-bar count, only the admins were told, and the call read as
+    failed.  ``mine`` now also holds what the person proposed (``proposal_service.mine``),
+    and the create answer says where the proposal waits."""
+    host = _host(db_session, test_project)
+    alice = _member(db_session, test_project, 451, "own-alice")
+    bob = _member(db_session, test_project, 452, "own-bob")
+    base = _base(test_project)
+    as_admin = app.dependency_overrides.get(get_current_user)
+    try:
+        app.dependency_overrides[get_current_user] = lambda: alice
+        key, session_id = _start(client, test_project)  # alice's own agent
+        created = []
+        for title in ("Default credentials on the admin portal", "TLS 1.0 enabled"):
+            r = client.post("/api/v1/agent/proposals/finding", headers=key, json={
+                "title": title, "severity": "high", "host_ids": [host.id]})
+            assert r.status_code == 201, r.text
+            body = r.json()
+            assert body["kind"] == "finding_create" and "Proposals page" in body["note"]
+            created.append(body["id"])
+
+        summary = client.get(f"{base}/proposals/summary").json()
+        assert (summary["pending_mine"], summary["by_kind_mine"]) == (2, {"finding_create": 2})
+        assert summary["viewer_is_project_admin"] is False
+        mine = client.get(f"{base}/proposals", params={"mine": True}).json()
+        assert sorted(p["id"] for p in mine["items"]) == sorted(created) and mine["total"] == 2
+        # The session's page reads them by session.
+        by_session = client.get(f"{base}/proposals", params={"agent_session_id": session_id}).json()
+        assert by_session["total"] == 2
+        # ... whatever was decided: `any` keeps a rejected one on the list.
+        client.post(f"{base}/proposals/{created[0]}/reject", json={"note": "duplicate"})
+        every = client.get(f"{base}/proposals", params={"agent_session_id": session_id, "status": "any"}).json()
+        assert sorted((p["id"], p["status"]) for p in every["items"]) == sorted(
+            [(created[0], "rejected"), (created[1], "pending")])
+        assert client.get(f"{base}/proposals/summary").json()["pending_mine"] == 1
+
+        # Another analyst's own list does not carry them; the project's does.
+        app.dependency_overrides[get_current_user] = lambda: bob
+        other = client.get(f"{base}/proposals/summary").json()
+        assert (other["pending_mine"], other["pending"]) == (0, 1)
+        assert client.get(f"{base}/proposals", params={"mine": True}).json()["total"] == 0
+    finally:
+        app.dependency_overrides[get_current_user] = as_admin
