@@ -14,7 +14,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
-import { BookOpen, Loader2, Play, Save, Share2 } from 'lucide-react';
+import { BookOpen, Loader2, Play, Save, Share2, Wrench } from 'lucide-react';
 
 import {
   createSavedQuery,
@@ -27,6 +27,7 @@ import {
 } from '../services/api';
 import type { QueryAnswer, SavedQuery } from '../services/api';
 import DownloadButton from '../components/DownloadButton';
+import QueryBuilder from '../components/query/QueryBuilder';
 import QueryChart, { chartMeasures } from '../components/query/QueryChart';
 import { ViewTabs } from '../components/ui/view-tabs';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
@@ -79,7 +80,9 @@ const Editor: React.FC<{
   running: boolean;
   onRun: (text: string) => void;
   onSave: (text: string) => void;
-}> = ({ initial, running, onRun, onSave }) => {
+  building: boolean;
+  onBuild: () => void;
+}> = ({ initial, running, onRun, onSave, building, onBuild }) => {
   const projectId = useProjectId();
   const [draft, setDraft] = useState(initial);
   const text = draft.trim();
@@ -184,6 +187,9 @@ const Editor: React.FC<{
         </Button>
         <Button size="sm" variant="outline" onClick={() => onSave(text)} disabled={!text}>
           <Save className="size-4" aria-hidden /> Save…
+        </Button>
+        <Button size="sm" variant="ghost" aria-expanded={building} onClick={onBuild}>
+          <Wrench className="size-4" aria-hidden /> {building ? 'Hide the builder' : 'Builder'}
         </Button>
         <span className="text-caption text-muted-foreground">Ctrl + Enter runs it; Tab takes a suggestion.</span>
       </div>
@@ -561,6 +567,13 @@ const Query: React.FC = () => {
     enabled: q !== '',
   });
   const [saving, setSaving] = useState<SaveForm | null>(null);
+  // The builder (5.406.0): a panel that writes the query text.
+  const [building, setBuilding] = useState(false);
+  const schema = useQuery({
+    queryKey: ['getQuerySchema', projectId],
+    queryFn: ({ signal }) => getQuerySchema(projectId, signal),
+    enabled: building,
+  });
 
   return (
     <div className="flex flex-col gap-lg p-md md:p-lg">
@@ -594,7 +607,16 @@ const Query: React.FC = () => {
           running={answer.isFetching}
           onRun={run}
           onSave={(text) => setSaving({ id: null, name: '', description: '', query: text, shared: false })}
+          building={building}
+          onBuild={() => setBuilding((v) => !v)}
         />
+        {building && (schema.data ? (
+          <QueryBuilder schema={schema.data} onRun={run} />
+        ) : schema.isError ? (
+          <p role="alert" className="text-caption text-destructive">{queryErrorText(schema.error, 'Could not load the columns for the builder.')}</p>
+        ) : (
+          <p role="status" className="text-caption text-muted-foreground">Loading the columns…</p>
+        ))}
         {q === '' ? (
           <p className="text-metadata text-muted-foreground">
             Write a query, or{' '}

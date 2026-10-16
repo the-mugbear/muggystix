@@ -520,10 +520,10 @@ observations has:exploit | where severity="critical" | stats dc(host) as hosts b
 hosts site:"HQ" | top limit=5 os_family
 ```
 
-- Datasets: `hosts`, `ports`, `observations`. `GET /agent/assist/query/schema` (MCP `assist_query_schema`) lists each one's columns.
-- Terms right after the dataset (or `| search …`) are **the host query language above**, and always describe the row's HOST: on `ports`, `port:445` keeps every port of a host that has 445 open. To keep the port itself, compare its column: `| where port=445`. `where` takes `=` `!=` `<` `<=` `>` `>=`, `IN (…)`, `like(col, "%x%")`, `isnull(col)` / `isnotnull(col)`, `AND` / `OR` / `NOT`; `=` is exact and case-sensitive.
+- Datasets: `hosts`, `ports`, `observations`, `findings`, `endpoints` (a finding on one host, with that host's state), `web` (web interfaces), `names` (DNS names). `GET /agent/assist/query/schema` (MCP `assist_query_schema`) lists each one's columns.
+- Terms right after the dataset (or `| search …`) are **the host query language above**, and always describe the row's HOST: on `ports`, `port:445` keeps every port of a host that has 445 open; on `findings`, a finding matches when one of its endpoints' hosts does; `names` has no host and takes none (a `400` — use `where`). To keep the port itself, compare its column: `| where port=445`. `where` takes `=` `!=` `<` `<=` `>` `>=`, `IN (…)`, `like(col, "%x%")`, `isnull(col)` / `isnotnull(col)`, `AND` / `OR` / `NOT`; `=` is exact and case-sensitive.
 - `stats` takes `count`, `dc(col)`, `min`, `max`, `avg`, `sum`, `values`, `by` up to 5 columns; `top [limit=N] col`; then `sort -col`, `head N`. `fields` / `table` choose a listing's columns.
-- `total` is the whole answer (rows matched, or groups); at most 500 rows or 1,000 groups come back — say "the first N of `total`", never N alone. Each stats / top row's `drilldowns` entry is a query listing exactly that group's rows.
+- `total` is the whole answer (rows matched, or groups); at most 500 rows or 1,000 groups come back — say "the first N of `total`", never N alone. Each stats / top row's `drilldowns` entry is a query listing exactly that group's rows; a listing's `links` entry is each row's page in the app (cite it to your operator).
 - A query that cannot be read is a `400` with `detail` and the character `position`: fix it and ask again; do not report a number from a refused query.
 - The team's saved queries: `GET /agent/assist/saved-queries` (MCP `assist_list_saved_queries`) — yours and the shared ones; run one's `query` with `assist_query`.
 

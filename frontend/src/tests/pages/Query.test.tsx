@@ -229,3 +229,22 @@ describe('Query page — suggestions in the editor (5.406.0)', () => {
     await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent('ports | where se'));
   });
 });
+
+describe('Query page — the builder (5.406.0)', () => {
+  it('writes the query text, and Run runs exactly that text', async () => {
+    api.runQuery.mockResolvedValue(ROWS);
+    renderAt('/query');
+    fireEvent.click(screen.getByRole('button', { name: 'Builder' }));
+    const builder = await screen.findByTestId('query-builder');
+    expect(within(builder).getByTestId('builder-text')).toHaveTextContent('ports | head 20');
+    fireEvent.change(within(builder).getByLabelText('Hosts-language terms (optional)'), { target: { value: 'has:web' } });
+    fireEvent.click(within(builder).getByRole('button', { name: 'Add a condition' }));
+    expect(within(builder).getAllByTestId('builder-condition')).toHaveLength(1);
+    // An unfinished condition writes nothing.
+    expect(within(builder).getByTestId('builder-text')).toHaveTextContent('ports has:web | head 20');
+    fireEvent.click(within(builder).getByRole('button', { name: 'Run this query' }));
+    await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent('ports has:web | head 20'));
+    // The editor holds what the builder wrote.
+    await waitFor(() => expect(screen.getByLabelText('Query')).toHaveValue('ports has:web | head 20'));
+  });
+});
