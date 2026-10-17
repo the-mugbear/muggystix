@@ -530,7 +530,7 @@ def _run_grouped(query, pipe: Pipeline, plan: _Plan) -> Dict[str, Any]:
 
 def _case_hint(db: Session, project_id: int, user: User, ds: Dataset, pipe: Pipeline, plan: _Plan) -> Optional[str]:
     """Why an empty answer may be empty: `=` on text is exact and
-    case-sensitive (SPL's `where` too).  Counts what the same `where` would
+    case-sensitive.  Counts what the same `where` would
     match ignoring case — said, never done: the query's `=` stays exact, so
     a group's drill-down stays its exact list (owner, 2026-10-16, review Q4)."""
     lookup = lambda name, pos: _column(ds, name, pos)  # noqa: E731
@@ -579,8 +579,8 @@ def run(db: Session, project_id: int, user: User, text: str, *, row_cap: Optiona
     pipe, ds, plan = _plan(text, ROW_CAP if row_cap is None else row_cap)
     query = _filtered(db, project_id, user, ds, plan)
     if isinstance(pipe.aggregate, Top) and pipe.having:
-        # `top … | where …`: the percent stays of every row, as SPL's top
-        # computes it before the where (the window would be of the kept groups).
+        # `top … | where …`: the percent stays of every row — `top` computes
+        # it before the where (the window would be of the kept groups).
         rows_total = query.with_entities(func.count()).order_by(None).statement.correlate(None).scalar_subquery()
         plan = replace(plan, **_plan_grouped(ds, pipe, top_total=rows_total))
     answer = _run_grouped(query, pipe, plan) if plan.kind == "stats" else _run_rows(query, ds, plan)

@@ -1,5 +1,5 @@
 /**
- * The Query page (5.405.0; backend 2.509.0): SPL-style queries over hosts,
+ * The Query page (5.405.0; backend 2.509.0): pipe queries over hosts,
  * ports and scanner observations, and saved / shared queries.
  * Backend: app/api/v1/endpoints/queries.py.
  */

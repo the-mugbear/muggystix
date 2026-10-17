@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from app.api.v1.endpoints import (
     scans, hosts, host_follow, host_notes, host_tags, host_bulk, host_filter_views,
     host_queries, findings, findings_bulk, scanner_observations, dns_names,
-    # v2.509.0 — the Query page (SPL-style) and saved queries.
+    # v2.509.0 — the Query page (a pipe query language) and saved queries.
     queries,
     webhooks, dashboard, upload,
     scopes, subnet_labels, export, parse_errors, reports, report_drafts, client_reports,

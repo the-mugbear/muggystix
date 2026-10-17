@@ -356,7 +356,7 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
-                      {/* 5.405.0 — SPL-style queries and saved queries. */}
+                      {/* 5.405.0 — pipe queries and saved queries. */}
                       <Route
                         path="/query"
                         element={

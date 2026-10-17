@@ -1302,7 +1302,7 @@ class HostFilterView(Base):
 
 class SavedQuery(Base):
     """A Query-page pipeline saved under a name (v2.509.0; the owner,
-    2026-10-16: saved and shared searches, as the teams know them from Splunk).
+    2026-10-16: saved and shared searches, as the teams know them from their log tools).
 
     One project's.  ``shared`` = every member of the project sees it and can
     run it; otherwise only its creator.  Only the creator — or a project

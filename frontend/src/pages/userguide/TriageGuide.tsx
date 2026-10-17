@@ -233,13 +233,13 @@ const sections: GuideSection[] = [
     id: 'query',
     title: 'Query',
     Icon: TerminalSquare,
-    summary: 'Splunk-style questions over the inventory and the findings — counts, groups, charts, saved queries.',
+    summary: 'Pipe-style questions over the inventory and the findings — counts, groups, charts, saved queries, history.',
     content: (
       <div>
         <Para>
           <strong>Inventory → Query</strong> answers questions the lists do not — how many hosts run each
-          service, which critical observations are the most widespread — in the pipe syntax Splunk users
-          know: a dataset, search terms, then commands.
+          service, which critical observations are the most widespread — in a pipe query language: a
+          dataset, search terms, then commands joined by <Mono>|</Mono>.
         </Para>
         <Para>
           <Mono>ports | where state=&quot;open&quot; | stats dc(host) as hosts by service, port | sort -hosts | head 20</Mono>

@@ -1,5 +1,5 @@
 /**
- * The Query page (5.405.0): SPL-style queries, their answers, every group's
+ * The Query page (5.405.0): pipe queries, their answers, every group's
  * drill-down, and saved / shared queries.  The committed query is the
  * address; the editor is a draft of it.
  */

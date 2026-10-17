@@ -1,6 +1,6 @@
 """Saved and shared Query-page queries (v2.509.0)
 
-The owner, 2026-10-16: the teams know Splunk, so the Query page saves a
+The owner, 2026-10-16: the teams know pipe query languages, so the Query page saves a
 pipeline under a name, for oneself or shared with the project.
 
 **Upgrade**: CREATES the empty table ``saved_queries`` (project CASCADE,

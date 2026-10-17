@@ -1,4 +1,4 @@
-"""The Query page (v2.509.0): SPL-style queries over hosts, ports and scanner
+"""The Query page (v2.509.0): pipe queries over hosts, ports and scanner
 observations, and the saved / shared ones.
 
 * ``GET /query?q=`` — run one (``query_service.run``); a query that cannot be
@@ -70,7 +70,7 @@ class QueryAnswer(BaseModel):
     )
 
 
-@router.get("/query", response_model=QueryAnswer, summary="Run a query (SPL-style)")
+@router.get("/query", response_model=QueryAnswer, summary="Run a query (a pipe query language)")
 def run_query(
     q: str = QUERY_TEXT,
     db: Session = Depends(get_db),

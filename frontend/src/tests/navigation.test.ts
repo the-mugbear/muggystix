@@ -119,7 +119,7 @@ describe('navigation manifest', () => {
     const tabs = (id: string) => HUBS.find((h) => h.id === id)!.children.map((c) => c.label);
     // 5.380.0 — Ingestion Results is the Scans page's second view, not a tab.
     // 5.404.0 — Scanner observations moved here from the Findings page;
-    // 5.405.0 — Query (SPL-style).
+    // 5.405.0 — Query (a pipe query language).
     expect(tabs('inventory')).toEqual(['Hosts', 'Names', 'Scanner observations', 'Query', 'Scans', 'Scope']);
     // 5.335.0 — Remediation: who was told about each finding on each host and
     // where the fix stands (the owner's request, 2026-10-07), after the report.

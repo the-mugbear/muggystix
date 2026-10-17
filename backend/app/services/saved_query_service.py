@@ -1,7 +1,7 @@
 """Saved and shared Query-page queries (v2.509.0).
 
 The owner, 2026-10-16: saved and shared searches, as the teams know them from
-Splunk.  A saved query is one project's: its creator's alone, or — ``shared``
+their log tools.  A saved query is one project's: its creator's alone, or — ``shared``
 — every member's to see and run.  Only the creator, or a project admin,
 changes or deletes it; a shared query whose creator's account was deleted is
 then a project admin's.  Saving checks the query reads (grammar and names),

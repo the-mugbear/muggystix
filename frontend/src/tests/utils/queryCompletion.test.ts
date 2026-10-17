@@ -70,7 +70,7 @@ describe('completeQuery', () => {
   });
 });
 
-// 5.408.0 — owner, 2026-10-17: "enrich the SPL with autocomplete or suggestions".
+// 5.408.0 — owner, 2026-10-17: richer autocomplete and suggestions.
 const HOST_FIELDS: HostQueryField[] = [
   { name: 'port', aliases: [], value_source: 'port', trgm: false, enum_values: [], description: 'an open port', enum_descriptions: {} },
   { name: 'has', aliases: [], value_source: 'enum', trgm: false, enum_values: ['critical', 'exploit'], description: 'a flag',

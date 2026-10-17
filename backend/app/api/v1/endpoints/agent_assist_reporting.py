@@ -164,13 +164,13 @@ def get_assist_scanner_observation_detail(
 
 
 # ---------------------------------------------------------------------------
-# The Query page (v2.509.0) — SPL-style queries and the saved ones
+# The Query page (v2.509.0) — pipe queries and the saved ones
 # ---------------------------------------------------------------------------
 
 @router.get(
     "/assist/query",
     response_model=QueryAnswer,
-    summary="Run a Query-page query (SPL-style) over hosts, ports or scanner observations",
+    summary="Run a Query-page query (a pipe query language) over the project's inventory and findings",
 )
 def run_assist_query(
     request: Request,

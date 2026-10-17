@@ -4,7 +4,7 @@
  * function, a column's values after `=` — from the server's schema
  * (`GET /query/schema`), never a copy of it.
  *
- * 5.408.0 (owner, 2026-10-17: "enrich the SPL with autocomplete"):
+ * 5.408.0 (owner, 2026-10-17: richer autocomplete and suggestions):
  *  - after `stats` / `top`, `where` / `sort` / `fields` / `table` offer the
  *    ANSWER's columns (`count`, `hosts`, the group columns), which is what
  *    they compare there;

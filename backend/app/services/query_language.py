@@ -1,6 +1,7 @@
-"""The Query page's language — SPL-style pipes over a few datasets (v2.509.0).
+"""The Query page's language — a pipe query language over a few datasets (v2.509.0).
 
-The owner, 2026-10-16: teams are used to Splunk, so the shape is SPL's::
+The owner, 2026-10-16: the teams are used to pipe query languages, so the shape is
+a dataset, then commands joined by ``|``::
 
     observations has:exploit | where severity="critical" | stats dc(host) as hosts by title | sort -hosts | head 20
 
@@ -8,10 +9,11 @@ The owner, 2026-10-16: teams are used to Splunk, so the shape is SPL's::
 * search terms after it (or ``| search <terms>``) are the Hosts query language,
   UNCHANGED (``host_query_dsl``): they always describe the row's HOST, as on
   the Hosts page — one meaning per word.
-* ``| where`` compares the dataset's declared COLUMNS (SPL's ``where``).
+* ``| where`` compares the dataset's declared COLUMNS.
 * ``| stats`` / ``| top`` aggregate; ``| sort``, ``| head`` / ``| limit``,
   ``| fields`` / ``| table`` shape the answer.
-* After ``stats`` / ``top`` a command works on the ANSWER, as in SPL:
+* After ``stats`` / ``top`` a command works on the ANSWER (the reading pipe
+  query languages share):
   ``| where`` compares its columns (the aggregates by their names — SQL's
   HAVING) and ``| fields`` picks its columns.
 
@@ -130,7 +132,7 @@ class Pipeline:
     sorts: List[Tuple[str, bool, int]] = field(default_factory=list)   # (column, descending, pos)
     head: Optional[int] = None
     head_pos: int = 0
-    # After `stats` / `top` (SPL's reading: the command works on the answer's
+    # After `stats` / `top` (the usual reading: the command works on the answer's
     # table): `where` keeps groups (SQL's HAVING), `fields` / `table` picks
     # the answer's columns.  Owner, 2026-10-16 (second review Q3).
     having: List[Cond] = field(default_factory=list)
@@ -431,7 +433,7 @@ def _stats(r: _Reader, pos: int) -> Stats:
 
 
 def _top(r: _Reader, pos: int) -> Top:
-    """`top [limit=N] col, … [limit=N]` — SPL takes the option on either
+    """`top [limit=N] col, … [limit=N]` — the option is taken on either
     side of the columns (second review 2026-10-16, I5)."""
     limit = 10
 
@@ -463,7 +465,7 @@ def _sort(r: _Reader) -> List[Tuple[str, bool, int]]:
         name = r.word("a column name after `sort`")
         out.append((str(name.value), desc, name.pos))
         if r.is_word("desc", "asc"):
-            # SQL's word order — SPL's is a sign (second review, Q3).
+            # SQL's word order — here it is a sign (second review, Q3).
             tok = r.peek()
             raise QueryError(
                 f"`sort` takes -{name.value} for descending, +{name.value} (or {name.value}) for ascending — "

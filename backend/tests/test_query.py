@@ -1,7 +1,7 @@
-"""The Query page (v2.509.0): SPL-style queries over hosts, ports and scanner
+"""The Query page (v2.509.0): pipe queries over hosts, ports and scanner
 observations, and saved / shared queries.
 
-The owner, 2026-10-16: the teams know Splunk.  What is pinned here:
+The owner, 2026-10-16: the teams know pipe query languages.  What is pinned here:
 
 * the grammar's refusals name what is wrong and where (a 400 with position);
 * search terms are the Hosts language and describe the row's HOST;
@@ -531,7 +531,7 @@ def test_top_takes_limit_on_either_side(client, test_project, estate):
     assert before["rows"] == after["rows"] and len(after["rows"]) == 1
 
 
-def test_sort_desc_says_how_spl_writes_it(client, test_project, estate):
+def test_sort_desc_says_how_this_language_writes_it(client, test_project, estate):
     r = _run(client, test_project, "ports | stats count by service | sort count desc")
     assert r.status_code == 400 and "-count for descending" in r.json()["detail"]
 
@@ -553,7 +553,7 @@ def test_an_observation_row_opens_its_inspector(client, test_project, estate):
 
 # ---------------------------------------------------------------------------
 # Owner, 2026-10-16 (review Q3, Q4): a command after stats / top works on the
-# answer, as in SPL; `=` stays exact and an empty answer says so
+# answer; `=` stays exact and an empty answer says so
 # ---------------------------------------------------------------------------
 
 def test_where_after_stats_keeps_groups_and_each_still_opens_its_rows(client, test_project, estate):
@@ -573,7 +573,7 @@ def test_where_after_stats_keeps_groups_and_each_still_opens_its_rows(client, te
 
 
 def test_top_keeps_its_percent_of_every_row_after_a_where(client, test_project, estate):
-    """SPL's top computes the percent before the where: the kept groups do
+    """`top` computes the percent before the where: the kept groups do
     not become 100%."""
     body = _run(client, test_project, "ports | top service | where count > 1").json()
     assert body["rows"] == [["ssh", 12, round(12 * 100 / 19, 2)], ["microsoft-ds", 6, round(6 * 100 / 19, 2)]]

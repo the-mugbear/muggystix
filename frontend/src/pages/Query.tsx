@@ -1,7 +1,6 @@
 /**
- * Inventory → Query (5.405.0): SPL-style queries over hosts, ports and scanner
- * observations, and saved / shared queries — the owner, 2026-10-16: "teams are
- * used to Splunk".
+ * Inventory → Query (5.405.0): a pipe query language over hosts, ports and
+ * scanner observations, and saved / shared queries — the owner, 2026-10-16.
  *
  *   observations has:exploit | stats dc(host) as hosts by title | sort -hosts | head 20
  *
@@ -783,7 +782,7 @@ const Query: React.FC = () => {
           {/* One flex item: the row's gap would otherwise space every snippet and comma apart. */}
           <span>
             Ask the project&apos;s hosts, ports, scanner observations, findings, web interfaces and names
-            Splunk-style: a dataset, search terms, then{' '}
+            in a pipe query language: a dataset, search terms, then{' '}
             <code className="font-mono">| where</code>, <code className="font-mono">| stats … by</code>,{' '}
             <code className="font-mono">| sort</code>, <code className="font-mono">| head</code>.
           </span>
@@ -794,7 +793,7 @@ const Query: React.FC = () => {
                 Search terms right after the dataset are the Hosts query language (port:, has:, cve:, site:…) and
                 always describe the row&apos;s host — on ports, port:445 means the host has 445 open. | where compares
                 the dataset&apos;s own columns, and = is exact and case-sensitive (like() is not): where port=445 is
-                the row&apos;s port. After stats or top, | where and | fields work on the answer, as in Splunk:
+                the row&apos;s port. After stats or top, | where and | fields work on the answer:
                 … | stats count by title | where count &gt; 5. Every row of a stats or top answer opens exactly
                 its rows.
               </>

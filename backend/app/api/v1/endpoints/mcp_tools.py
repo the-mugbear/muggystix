@@ -741,7 +741,7 @@ _AUTHORED: Dict[str, Dict[str, Any]] = {
     # v2.509.0 — the Query page.
     "assist_query": {
         "description": (
-            "Run a Query-page query, Splunk SPL style: `<dataset> [Hosts-language terms] | where … | stats … "
+            "Run a Query-page query, a pipe query language: `<dataset> [Hosts-language terms] | where … | stats … "
             "by … | sort -x | head N`. Datasets: hosts, ports, observations, findings, endpoints (a "
             "finding on one host), web, names. Search terms are the Hosts query language and always "
             "describe the row's HOST (on ports, `port:445` = the host has 445 open; on findings, one of "
