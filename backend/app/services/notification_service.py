@@ -708,7 +708,10 @@ class NotificationService:
         query = self.db.query(Notification).filter(Notification.user_id == user_id)
         if unread_only:
             query = query.filter(Notification.is_read == False)
-        return query.order_by(Notification.created_at.desc()).offset(offset).limit(limit).all()
+        # `id` breaks ties: rows written in one transaction share `created_at`,
+        # and a page cut between them could repeat or skip one (review
+        # 2026-10-16, N3).
+        return query.order_by(Notification.created_at.desc(), Notification.id.desc()).offset(offset).limit(limit).all()
 
     def get_unread_count(self, user_id: int) -> int:
         """Fast count for notification badge."""

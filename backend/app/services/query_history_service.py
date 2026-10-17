@@ -12,7 +12,8 @@ page's recent queries are the same thing with a cap of 50: ONE table
   kind's cap are dropped.
 * ``run_and_record`` is the Query page's run, on both doors (the page's
   ``GET /query`` and the agents' ``/agent/assist/query``): the answer's size,
-  or the refusal (``QueryError``: its message and position), is recorded.
+  or the refusal (any ``DSLError`` the API answers as a 400: its message and
+  position), is recorded.
   A failure to record never fails the query.
 """
 from __future__ import annotations
@@ -28,7 +29,7 @@ from app.db.models import QueryHistory
 from app.db.models_auth import User
 from app.db.session import is_statement_timeout
 from app.services import query_service
-from app.services.query_language import QueryError
+from app.services.host_query_dsl import DSLError
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,10 @@ def run_and_record(db: Session, project_id: int, user: User, text: str, *, by_ag
     failure is not a query to correct, so it is not recorded."""
     try:
         answer = query_service.run(db, project_id, user, text)
-    except QueryError as exc:
+    except DSLError as exc:
+        # Every refusal the API answers as a 400: the grammar's (QueryError)
+        # and the Hosts language's raised while its terms are evaluated
+        # (`assigned:<nobody>`, `subnet:10.0.5` — review 2026-10-16, N2).
         _record_quietly(db, user, project_id, text, by_agent, error=exc.message, error_position=exc.position)
         raise
     _record_quietly(db, user, project_id, text, by_agent, result_count=answer["total"])

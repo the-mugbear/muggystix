@@ -39,6 +39,8 @@ const setup = {
 const off = { enabled: false, pending: false, unused_recovery_codes: 0 };
 const on = { enabled: true, pending: false, unused_recovery_codes: 8 };
 const refused = (detail: string) => ({ response: { status: 400, data: { detail } } });
+/** Setup asks for the account password first (5.409.0; review N9). */
+const typePassword = () => fireEvent.change(screen.getByLabelText('Your password'), { target: { value: PASSWORD } });
 
 const show = () => {
   const client = createQueryClient();
@@ -65,11 +67,14 @@ describe('TwoFactorCard — enrolling', () => {
     const client = show();
 
     expect(await screen.findByText('Not enabled')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Set up with a new secret' })).toBeDisabled();
+    typePassword();
     fireEvent.click(screen.getByRole('button', { name: 'Set up with a new secret' }));
 
     // Step 2: the material to enroll with.
     expect(await screen.findByText(SECRET)).toBeInTheDocument();
-    expect(api.startTwoFactorSetup).toHaveBeenCalledWith({});
+    expect(api.startTwoFactorSetup).toHaveBeenCalledWith({ password: PASSWORD });
+    await expectForgotten(client, PASSWORD);
     expect(screen.getByAltText('TOTP enrollment QR code')).toHaveAttribute('src', setup.qr_svg);
     expect(screen.getByText(/Scan this QR code with your authenticator app/)).toBeInTheDocument();
     // It is on screen from this component's own copy: the mutation has let go.
@@ -106,13 +111,14 @@ describe('TwoFactorCard — enrolling', () => {
     const client = show();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Import existing secret' }));
+    typePassword();
     const proceed = screen.getByRole('button', { name: 'Continue' });
     expect(proceed).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Existing base32 secret'), { target: { value: ` ${SECRET} ` } });
     fireEvent.click(proceed);
 
     expect(await screen.findByText(/Confirm your imported secret/)).toBeInTheDocument();
-    expect(api.startTwoFactorSetup).toHaveBeenCalledWith({ existing_secret: SECRET });
+    expect(api.startTwoFactorSetup).toHaveBeenCalledWith({ password: PASSWORD, existing_secret: SECRET });
     expect(screen.queryByAltText('TOTP enrollment QR code')).toBeNull();
     expect(screen.queryByText(SECRET)).toBeNull();
     await expectForgotten(client, SECRET);
@@ -133,6 +139,7 @@ describe('TwoFactorCard — enrolling', () => {
     const client = show();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Import existing secret' }));
+    typePassword();
     fireEvent.change(screen.getByLabelText('Existing base32 secret'), { target: { value: SECRET } });
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 
@@ -149,7 +156,9 @@ describe('TwoFactorCard — enrolling', () => {
     api.enableTwoFactor.mockRejectedValue(refused('Invalid authentication code'));
     const client = show();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Set up with a new secret' }));
+    await screen.findByText('Not enabled');
+    typePassword();
+    fireEvent.click(screen.getByRole('button', { name: 'Set up with a new secret' }));
     fireEvent.change(await screen.findByLabelText('Authentication code'), { target: { value: CODE } });
     fireEvent.click(screen.getByRole('button', { name: 'Verify & enable' }));
 
@@ -164,7 +173,10 @@ describe('TwoFactorCard — enrolling', () => {
     expect(screen.queryByText(SECRET)).toBeNull();
     expect(screen.queryByText('Invalid authentication code')).toBeNull();
 
-    // A second enrollment starts with an empty code field.
+    // A second enrollment starts with an empty code field — and asks for the
+    // password again.
+    expect(screen.getByLabelText('Your password')).toHaveValue('');
+    typePassword();
     fireEvent.click(screen.getByRole('button', { name: 'Set up with a new secret' }));
     expect(await screen.findByLabelText('Authentication code')).toHaveValue('');
   });

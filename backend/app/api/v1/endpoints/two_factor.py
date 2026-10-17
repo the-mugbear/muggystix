@@ -36,6 +36,10 @@ class TwoFactorStatus(BaseModel):
 
 
 class SetupRequest(BaseModel):
+    # The account password: binding an authenticator changes how the account
+    # signs in, so it re-authenticates like disabling 2FA does — a stolen
+    # session token alone cannot bind its own (review 2026-10-16, N9).
+    password: str
     # Optional: import an existing base32 secret (e.g. the PAM machine-login
     # seed) instead of generating a fresh one.  Omit to generate.
     existing_secret: Optional[str] = None
@@ -99,17 +103,23 @@ def two_factor_status(
 @router.post("/2fa/setup", response_model=SetupResponse)
 def two_factor_setup(
     body: SetupRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Begin enrollment: store an INACTIVE secret (generated or imported) and
     return the provisioning material.  Idempotent until /enable — re-calling
-    overwrites the pending secret."""
+    overwrites the pending secret.  Password-gated (``reauth_password``: wrong
+    passwords are counted, 429 once the account's budget is spent)."""
     if current_user.totp_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Two-factor authentication is already enabled. Disable it first to re-enroll.",
         )
+    if not reauth_password(
+        db, current_user, body.password, purpose="2fa_setup", **get_client_info(request),
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Incorrect password.")
 
     imported = False
     if body.existing_secret:
@@ -160,6 +170,11 @@ def two_factor_enable(
     # Spent as it is accepted, like a sign-in's: the code that confirmed the
     # enrolment does not also complete a sign-in.
     if not totp_service.accept_code(db, current_user, body.code):
+        # Recorded, as a wrong code at sign-in is (review 2026-10-16, N9: it
+        # was counted nowhere).  Not throttled: the caller chose the secret.
+        log_audit_event(
+            db=db, user_id=current_user.id, action="2fa_enable_failed", success=False, **get_client_info(request),
+        )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="That code is incorrect. Check your authenticator and try again.")
 
     current_user.totp_enabled = True

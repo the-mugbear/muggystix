@@ -65,7 +65,7 @@ from app.db.models_proposals import EvidenceRecord
 from app.db.models_reports import (
     RenderStatus, Report, ReportImage, ReportKind, ReportProfile, ReportStatus,
 )
-from app.db.models_vulnerability import Vulnerability
+from app.db.models_vulnerability import SEVERITY_KEYS, Vulnerability
 from app.services.note_attachment_service import attachment_file, store_image_bytes
 from app.services.report_text import REPORT_TEXT_FIELDS, STRIP_WHITESPACE, internal_references
 from app.services import (
@@ -74,7 +74,9 @@ from app.services import (
 
 SCHEMA_VERSION = 1
 
-SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
+# The five reportable severities, most severe first — the one ladder's
+# (review 2026-10-16, A5).
+SEVERITY_ORDER = SEVERITY_KEYS[:5]
 SEVERITY_LABEL = {
     "critical": "Critical", "high": "High", "medium": "Medium", "low": "Low",
     "info": "Informational",

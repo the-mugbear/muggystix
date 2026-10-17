@@ -6,6 +6,7 @@ import { SECRET_MUTATION, invalidateReads, queryErrorText } from '../lib/query';
 import { formatApiError } from '../utils/apiErrors';
 import { useToast } from '../contexts/ToastContext';
 import { useTwoFactorEnrolment } from '../hooks/useTwoFactorEnrolment';
+import TwoFactorPasswordField from './TwoFactorPasswordField';
 import PostureSection from './posture/PostureSection';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -106,9 +107,10 @@ const TwoFactorCard: React.FC = () => {
 
             {!status.enabled && (
               <div className="space-y-xs">
+                <TwoFactorPasswordField id="tfa-setup-password" value={enrol.password} onChange={enrol.setPassword} disabled={busy} />
                 {!showImport ? (
                   <div className="flex flex-wrap gap-xs">
-                    <Button onClick={enrol.start} disabled={busy}>
+                    <Button onClick={enrol.start} disabled={busy || !enrol.password}>
                       {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <KeyRound className="size-4" aria-hidden />}
                       Set up with a new secret
                     </Button>
@@ -130,7 +132,7 @@ const TwoFactorCard: React.FC = () => {
                       Paste the seed your authenticator already holds (e.g. your machine-login TOTP secret).
                     </p>
                     <div className="flex gap-xs">
-                      <Button onClick={enrol.start} disabled={busy || !importSecret.trim()}>
+                      <Button onClick={enrol.start} disabled={busy || !enrol.password || !importSecret.trim()}>
                         {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Continue
                       </Button>
                       <Button variant="ghost" onClick={enrol.closeImport} disabled={busy}>

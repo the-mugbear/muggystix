@@ -106,9 +106,13 @@ class NmapXMLParser:
                                 for attempt in (1, 2):
                                     host_sp = self.db.begin_nested()
                                     try:
-                                        self._process_host_with_deduplication(elem, scan_id)
+                                        recorded = self._process_host_with_deduplication(elem, scan_id)
                                         host_sp.commit()
-                                        hosts_processed += 1
+                                        # A down host with nothing to record is
+                                        # read, not processed (review 2026-10-16,
+                                        # N8: it was counted in "N hosts").
+                                        if recorded:
+                                            hosts_processed += 1
                                         break
                                     except Exception as e:
                                         try:
@@ -132,11 +136,13 @@ class NmapXMLParser:
                             # savepoint. report_progress raises ParseFailure on
                             # cancel/timeout; keeping it out here lets that signal
                             # propagate and stop the worker instead of being caught
-                            # as a per-host error.
-                            if hosts_processed and hosts_processed % 100 == 0:
-                                logger.info(f"Processed {hosts_processed} hosts so far")
+                            # as a per-host error.  Paced by the hosts READ: a
+                            # file of down hosts with nothing to record still
+                            # beats and commits.
+                            if hosts_read % 100 == 0:
+                                logger.info(f"Read {hosts_read} hosts so far ({hosts_processed} recorded)")
                                 from app.services.ingestion_service import report_progress
-                                report_progress(f"{hosts_processed} hosts")
+                                report_progress(f"{hosts_read} hosts read")
                                 # R7 — the heartbeat committed (under a job):
                                 # stop pinning every host's and port's history
                                 # row for the rest of the file.
@@ -144,7 +150,7 @@ class NmapXMLParser:
                             # Periodic commit so a 10k-host scan doesn't hold row locks
                             # on hosts/ports/host_scan_history for the full parse
                             # duration, which would block every other concurrent writer.
-                            if hosts_processed and hosts_processed % 500 == 0:
+                            if hosts_read % 500 == 0:
                                 self.db.commit()
                                 self.dedup_service.release_committed_history()
                                 if scan is not None:
@@ -322,16 +328,18 @@ class NmapXMLParser:
             address_elem = host_elem.find('address[@addrtype="ipv6"]')
         return address_elem is not None
 
-    def _process_host_with_deduplication(self, host_elem: etree.Element, scan_id: int):
-        """Process a single host using deduplication"""
+    def _process_host_with_deduplication(self, host_elem: etree.Element, scan_id: int) -> bool:
+        """Process a single host using deduplication.  True when the host was
+        recorded; False for one skipped (no address, or down with nothing to
+        record)."""
         address_elem = self._find_primary_address(host_elem)
         if address_elem is None:
             logger.warning("Host without IP address, skipping")
-            return
+            return False
 
         ip_address = address_elem.get('addr')
         if not ip_address:
-            return
+            return False
 
         host_data = self._extract_host_data(host_elem)
         ports_elem = host_elem.find('ports')
@@ -347,7 +355,7 @@ class NmapXMLParser:
                 "Nmap parser skipping down host %s with no actionable data",
                 ip_address,
             )
-            return
+            return False
 
         # Find or create deduplicated host (scoped to project)
         host = self.dedup_service.find_or_create_host(ip_address, scan_id, host_data, project_id=self._project_id)
@@ -372,6 +380,7 @@ class NmapXMLParser:
             host.mac_address = mac_elem.get('addr')[:64]
             if mac_elem.get('vendor'):
                 host.mac_vendor = mac_elem.get('vendor')[:128]
+        return True
 
     def _find_primary_address(self, host_elem: etree.Element) -> Optional[etree.Element]:
         address_elem = host_elem.find('address[@addrtype="ipv4"]')

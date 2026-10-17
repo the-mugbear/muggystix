@@ -759,6 +759,15 @@ def identify_agent_if_present(
         return None
 
 
+def _rate_buckets_missing(exc: Exception) -> bool:
+    """The limiter cannot exist yet: the dialect has no ON CONFLICT (sqlite
+    dev) or `agent_rate_buckets` is not there (migrations not run, SQLSTATE
+    42P01).  The only reasons the limiter fails open."""
+    if isinstance(exc, CompileError):
+        return True
+    return getattr(getattr(exc, "orig", None), "pgcode", None) == "42P01"
+
+
 def check_agent_rate_limit(
     agent: Agent = Depends(get_current_agent),
     db: Session = Depends(get_db),
@@ -819,13 +828,20 @@ def check_agent_rate_limit(
         # from the same agent.  get_current_agent already commits in this same
         # dependency chain, so there is no caller work to disturb.
         _commit_keeping_loaded(db)
-    except (ProgrammingError, OperationalError, CompileError):
+    except (ProgrammingError, OperationalError, CompileError) as exc:
         # No ON CONFLICT support (sqlite dev), or the table is missing because
         # migrations have not run yet.  Fail OPEN rather than locking every
         # agent out of a deployment mid-upgrade — the limiter this replaces
         # also failed open, and a boot-order problem must not present as an
         # attack.  Logged so it can never be silent.
+        #
+        # ONLY those two (review 2026-10-16, N12): a busy database, a lock or
+        # statement timeout, a lost connection is not "no limiter" — opening
+        # then switched the per-key limit off exactly under load.  Raised:
+        # the request fails as any other read would (a timeout is get_db's 503).
         db.rollback()
+        if not _rate_buckets_missing(exc):
+            raise
         logger.warning(
             "agent rate limiting unavailable (agent_rate_buckets not usable) - "
             "admitting the request; run migrations",

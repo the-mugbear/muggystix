@@ -253,6 +253,9 @@ def _issue_user_session(
     access_token = create_access_token(data=token_data)
     token_jti = verify_token(access_token)["jti"]
 
+    # A sign-in is complete when its session is issued — after the second
+    # factor, when the account has one (review 2026-10-16, N11).
+    user.last_login = datetime.now(timezone.utc)
     create_session(db=db, user=user, token_jti=token_jti, **client_info)
 
     log_audit_event(

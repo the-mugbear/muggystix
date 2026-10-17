@@ -16,14 +16,14 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Type
 from urllib.parse import quote
 
-from sqlalchemy import case, cast, or_, select
+from sqlalchemy import cast, or_, select
 from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.orm import Query, Session, aliased
 
 from app.db.models import DNSName, Host, Port, WebInterface
 from app.db.models_auth import User
 from app.db.models_findings import Finding, FindingHost, FindingHostStatus, FindingSeverity, FindingSource, FindingStatus
-from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource
+from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource, severity_rank
 
 
 @dataclass
@@ -78,14 +78,10 @@ def _ip_sort():
     return cast(Host.ip_address, INET)
 
 
-_SEVERITY_RANK = case(
-    (Vulnerability.severity == VulnerabilitySeverity.CRITICAL, 5),
-    (Vulnerability.severity == VulnerabilitySeverity.HIGH, 4),
-    (Vulnerability.severity == VulnerabilitySeverity.MEDIUM, 3),
-    (Vulnerability.severity == VulnerabilitySeverity.LOW, 2),
-    (Vulnerability.severity == VulnerabilitySeverity.INFO, 1),
-    else_=0,
-)
+# A severity sorts by rank, critical highest: the one ladder,
+# `severity_rank` (critical 0 … info 4, anything else 5), negated (review
+# 2026-10-16, A5: two hand-written copies had grown here).
+_SEVERITY_RANK = -severity_rank(Vulnerability.severity)
 
 
 def _host_columns() -> List[QueryColumn]:
@@ -121,13 +117,7 @@ def _observations(db: Session, project_id: int) -> Query:
 # A finding's owner, by name (the user row joined under its own alias).
 _Owner = aliased(User, name="finding_owner")
 
-_FINDING_SEVERITY_RANK = case(
-    *[(Finding.severity == sev.value, rank) for sev, rank in (
-        (FindingSeverity.CRITICAL, 5), (FindingSeverity.HIGH, 4), (FindingSeverity.MEDIUM, 3),
-        (FindingSeverity.LOW, 2), (FindingSeverity.INFO, 1),
-    )],
-    else_=0,
-)
+_FINDING_SEVERITY_RANK = -severity_rank(Finding.severity)
 
 
 def _findings(db: Session, project_id: int) -> Query:

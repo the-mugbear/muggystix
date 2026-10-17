@@ -193,9 +193,9 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
     if not verify_password(password, user.hashed_password):
         return None
 
-    user.last_login = datetime.now(timezone.utc)
-    db.commit()
-
+    # `last_login` is stamped when a session is issued (`auth._issue_user_session`),
+    # not here: with 2FA on, a right password is only half a sign-in (review
+    # 2026-10-16, N11).
     return user
 
 

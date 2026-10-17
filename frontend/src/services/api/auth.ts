@@ -69,8 +69,10 @@ export const getTwoFactorStatus = async (signal?: AbortSignal): Promise<TwoFacto
 };
 
 /** Begin enrollment with a new secret, or with an existing one
- *  (`existing_secret`).  Nothing is enabled until `enableTwoFactor`. */
-export const startTwoFactorSetup = async (body: { existing_secret?: string }): Promise<TwoFactorSetup> => {
+ *  (`existing_secret`).  Nothing is enabled until `enableTwoFactor`.  The
+ *  account password re-authenticates (403 when wrong, 429 once the
+ *  account's budget is spent; backend 2.513.0). */
+export const startTwoFactorSetup = async (body: { password: string; existing_secret?: string }): Promise<TwoFactorSetup> => {
   const response = await api.post<TwoFactorSetup>('/auth/2fa/setup', body);
   return response.data;
 };

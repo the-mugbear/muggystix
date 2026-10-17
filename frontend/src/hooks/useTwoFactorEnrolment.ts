@@ -36,6 +36,11 @@ export interface TwoFactorEnrolment {
   error: string | null;
   setError: (error: string | null) => void;
 
+  /** The account password, asked before a secret is made (binding an
+   *  authenticator changes how the account signs in). */
+  password: string;
+  setPassword: (password: string) => void;
+
   /** The reader chose to bring a secret their authenticator already holds. */
   showImport: boolean;
   importSecret: string;
@@ -79,24 +84,26 @@ export function useTwoFactorEnrolment(
   const [error, setError] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [importSecret, setImportSecret] = useState('');
+  const [password, setPassword] = useState('');
   const [setup, setSetup] = useState<TwoFactorSetup | null>(null);
   const [code, setCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
 
   const starting = useMutation({
     ...SECRET_MUTATION,
-    mutationFn: (body: { existing_secret?: string }) => startTwoFactorSetup(body),
+    mutationFn: (body: { password: string; existing_secret?: string }) => startTwoFactorSetup(body),
     onMutate: () => setError(null),
     onSuccess: (data) => {
       setSetup(data);
       setCode('');
+      setPassword('');
       setStep('confirm');
     },
     onError: (err) => setError(formatApiError(err, 'Could not start 2FA setup.')),
   });
   const start = () => {
     starting.mutate(
-      showImport && importSecret.trim() ? { existing_secret: importSecret.trim() } : {},
+      { password, ...(showImport && importSecret.trim() ? { existing_secret: importSecret.trim() } : {}) },
       { onSettled: () => starting.reset() },
     );
   };
@@ -136,6 +143,7 @@ export function useTwoFactorEnrolment(
 
   return {
     step, error, setError,
+    password, setPassword,
     showImport, importSecret, setImportSecret, openImport, closeImport,
     setup, code, setCode,
     recoveryCodes, copyCodes, downloadCodes,

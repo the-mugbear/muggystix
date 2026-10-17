@@ -36,6 +36,11 @@ MAX_BY = 5
 MAX_AGGREGATES = 10
 MAX_WHERE_TERMS = 30
 MAX_IN_VALUES = 100
+# Parentheses and NOTs nested in one `where` — the Hosts language's limit.
+# Each level is a Python call (and one in compiling): without a cap a deep
+# `((((…` within the length limit was a RecursionError, a 500 (review
+# 2026-10-16, N1).
+MAX_DEPTH = 10
 
 AGG_FUNCTIONS = {"count", "dc", "distinct_count", "min", "max", "avg", "sum", "values"}
 COMMANDS = ("search", "where", "stats", "top", "sort", "head", "limit", "fields", "table")
@@ -291,7 +296,12 @@ def _literal(r: _Reader) -> object:
 
 class _Where:
     def __init__(self, r: _Reader):
-        self.r, self.terms = r, 0
+        self.r, self.terms, self.depth = r, 0, 0
+
+    def _deeper(self, tok: _Tok) -> None:
+        self.depth += 1
+        if self.depth > MAX_DEPTH:
+            raise QueryError(f"`where` is nested too deep (max {MAX_DEPTH})", position=tok.pos)
 
     def parse(self) -> Cond:
         cond = self.or_()
@@ -314,16 +324,19 @@ class _Where:
 
     def not_(self) -> Cond:
         if self.r.is_word("not"):
-            self.r.next()
-            return NotCond(self.not_())
+            self._deeper(self.r.next())
+            inner = NotCond(self.not_())
+            self.depth -= 1
+            return inner
         return self.primary()
 
     def primary(self) -> Cond:
         tok = self.r.peek()
         if tok.kind == "LPAREN":
-            self.r.next()
+            self._deeper(self.r.next())
             inner = self.or_()
             self.r.expect("RPAREN", "')'")
+            self.depth -= 1
             return inner
         name = self.r.word("a column name, isnull(), isnotnull() or like()")
         self.terms += 1

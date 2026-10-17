@@ -95,7 +95,7 @@ def test_accept_code_spends_the_step_and_a_wrong_code_spends_nothing(db_session)
 
 
 def test_the_code_that_confirmed_an_enrolment_does_not_also_sign_in(client, db_session, test_user):
-    setup = client.post("/api/v1/auth/2fa/setup", json={})
+    setup = client.post("/api/v1/auth/2fa/setup", json={"password": TEST_USER_PASSWORD})
     assert setup.status_code == 200, setup.text
     totp = pyotp.TOTP(setup.json()["secret"])
     now = time.time()
@@ -110,14 +110,52 @@ def test_a_quick_re_enrolment_accepts_its_first_code(client, db_session, test_us
     """Second review 2026-10-14 (nitpick): the last step accepted outlived
     turning 2FA off, so enrolling again within the same 30 seconds refused
     the new secret's first code."""
-    setup = client.post("/api/v1/auth/2fa/setup", json={}).json()
+    setup = client.post("/api/v1/auth/2fa/setup", json={"password": TEST_USER_PASSWORD}).json()
     first = pyotp.TOTP(setup["secret"])
     assert client.post("/api/v1/auth/2fa/enable", json={"code": first.now()}).status_code == 200
     assert client.post("/api/v1/auth/2fa/disable", json={"password": TEST_USER_PASSWORD}).status_code == 200
     db_session.expire_all()
     assert db_session.get(User, test_user.id).totp_last_step is None
-    again = pyotp.TOTP(client.post("/api/v1/auth/2fa/setup", json={}).json()["secret"])
+    again = pyotp.TOTP(client.post("/api/v1/auth/2fa/setup", json={"password": TEST_USER_PASSWORD}).json()["secret"])
     assert client.post("/api/v1/auth/2fa/enable", json={"code": again.now()}).status_code == 200
+
+
+def test_last_login_is_stamped_when_the_sign_in_completes_not_at_the_password(client, db_session):
+    """Review 2026-10-16, N11: a right password on a 2FA account stamped
+    `last_login` before the second factor was given (or ever given)."""
+    from app.core.security import get_password_hash
+
+    user, totp = _totp_user(db_session)
+    user.hashed_password = get_password_hash("half-a-sign-in")
+    db_session.commit()
+
+    half = client.post("/api/v1/auth/login", json={"username": user.username, "password": "half-a-sign-in"})
+    assert half.status_code == 200 and "challenge_token" in half.json()
+    db_session.expire_all()
+    assert db_session.get(User, user.id).last_login is None
+
+    assert _second_step(client, user, totp.now()).status_code == 200
+    db_session.expire_all()
+    assert db_session.get(User, user.id).last_login is not None
+
+
+def test_binding_an_authenticator_needs_the_password_and_a_wrong_code_is_recorded(client, db_session, test_user):
+    """Review 2026-10-16, N9: /2fa/setup asked for no password, so a stolen
+    session token on an account without 2FA could bind its own authenticator;
+    a wrong code at /enable was recorded nowhere."""
+    assert client.post("/api/v1/auth/2fa/setup", json={}).status_code == 422
+    wrong = client.post("/api/v1/auth/2fa/setup", json={"password": "not-the-password"})
+    assert wrong.status_code == 403
+    assert db_session.get(User, test_user.id).totp_secret_encrypted is None
+    # The wrong password is counted by the shared re-authentication limit.
+    assert db_session.query(AuditLog).filter_by(user_id=test_user.id, action="password_reauth_failed").count() == 1
+
+    setup = client.post("/api/v1/auth/2fa/setup", json={"password": TEST_USER_PASSWORD})
+    assert setup.status_code == 200
+    totp = pyotp.TOTP(setup.json()["secret"])
+    bad = "000000" if totp.now() != "000000" else "111111"
+    assert client.post("/api/v1/auth/2fa/enable", json={"code": bad}).status_code == 400
+    assert db_session.query(AuditLog).filter_by(user_id=test_user.id, action="2fa_enable_failed").count() == 1
 
 
 # ---------------------------------------------------------------------------

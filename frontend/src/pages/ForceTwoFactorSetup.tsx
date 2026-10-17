@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { ShieldAlert, Loader2, Copy, Download } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTwoFactorEnrolment } from '../hooks/useTwoFactorEnrolment';
+import TwoFactorPasswordField from '../components/TwoFactorPasswordField';
 import { Card, CardContent } from '../components/ui/card';
 import { Label } from '../components/ui/label';
 import { Input } from '../components/ui/input';
@@ -25,6 +26,7 @@ const ForceTwoFactorSetup: React.FC = () => {
   // own frame, and where the reader goes once the codes are saved.
   const {
     step, error, showImport, importSecret, setImportSecret, openImport, closeImport,
+    password, setPassword,
     setup: setupData, code, setCode, recoveryCodes, copyCodes, downloadCodes,
     start: startSetup, confirm: confirmEnable, startOver, busy,
   } = useTwoFactorEnrolment();
@@ -57,9 +59,10 @@ const ForceTwoFactorSetup: React.FC = () => {
             {/* STEP 1 — choose generate vs import */}
             {step === 'start' && (
               <div className="flex flex-col gap-sm">
+                <TwoFactorPasswordField id="f2fa-password" value={password} onChange={setPassword} disabled={busy} />
                 {!showImport ? (
                   <>
-                    <Button size="lg" onClick={startSetup} disabled={busy}>
+                    <Button size="lg" onClick={startSetup} disabled={busy || !password}>
                       {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Set up with a new secret
                     </Button>
                     <Button variant="outline" onClick={openImport} disabled={busy}>
@@ -81,7 +84,7 @@ const ForceTwoFactorSetup: React.FC = () => {
                       same entry works here.
                     </p>
                     <div className="flex gap-xs">
-                      <Button onClick={startSetup} disabled={busy || !importSecret.trim()}>
+                      <Button onClick={startSetup} disabled={busy || !password || !importSecret.trim()}>
                         {busy && <Loader2 className="size-4 animate-spin" aria-hidden />} Continue
                       </Button>
                       <Button variant="ghost" onClick={closeImport} disabled={busy}>

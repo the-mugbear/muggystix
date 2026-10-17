@@ -284,6 +284,13 @@ def build_payload(event: str, title: str, body: str, project_id: int, context: O
     }
 
 
+#: What "send test" answers whenever the receiver did not answer.
+WEBHOOK_UNREACHABLE = (
+    "Could not reach the webhook's address. Check it, and that the receiver is "
+    "running and reachable from the BlueStick server."
+)
+
+
 def _post(
     url: str, secret: Optional[str], payload: dict, delivery_id: Optional[int] = None,
 ) -> httpx.Response:
@@ -605,7 +612,12 @@ class WebhookDispatcher:
             resp = _post(config.url, secret, payload)
             return {"ok": resp.status_code < 400, "status_code": resp.status_code}
         except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+            # One fixed text, the reason in the server's log: the exception's
+            # own text said refused / timed out / did not resolve for any
+            # private host and port — the probe the LLM provider test no
+            # longer offers (review 2026-10-16, N10).
+            logger.warning("Webhook %s test could not be delivered: %s: %s", config.id, type(exc).__name__, exc)
+            return {"ok": False, "error": WEBHOOK_UNREACHABLE}
 
 
 # ---------------------------------------------------------------------------

@@ -37,6 +37,9 @@ const setup = {
   imported: false,
 };
 const refused = (detail: string) => ({ response: { status: 400, data: { detail } } });
+const PASSWORD = 'correct horse battery';
+/** Setup asks for the account password first (5.409.0; review N9). */
+const typePassword = () => fireEvent.change(screen.getByLabelText('Your password'), { target: { value: PASSWORD } });
 
 const show = () => {
   const client = createQueryClient();
@@ -60,14 +63,18 @@ describe('ForceTwoFactorSetup', () => {
     const client = show();
 
     expect(screen.getByRole('heading', { name: 'Two-Factor Authentication Required' })).toBeInTheDocument();
+    // Nothing starts without the account password.
+    expect(screen.getByRole('button', { name: 'Set up with a new secret' })).toBeDisabled();
+    typePassword();
     fireEvent.click(screen.getByRole('button', { name: 'Set up with a new secret' }));
 
     // Step 2: the material to enroll with.
     expect(await screen.findByText(SECRET)).toBeInTheDocument();
-    expect(api.startTwoFactorSetup).toHaveBeenCalledWith({});
+    expect(api.startTwoFactorSetup).toHaveBeenCalledWith({ password: PASSWORD });
     expect(screen.getByAltText('TOTP enrollment QR code')).toHaveAttribute('src', setup.qr_svg);
-    // It is on screen from this page's own copy: the mutation has let go.
-    await expectForgotten(client, SECRET);
+    // It is on screen from this page's own copy: the mutation has let go —
+    // of the password too.
+    await expectForgotten(client, SECRET, PASSWORD);
     expect(screen.getByText(SECRET)).toBeInTheDocument();
 
     const verify = screen.getByRole('button', { name: 'Verify & enable' });
@@ -94,6 +101,7 @@ describe('ForceTwoFactorSetup', () => {
     api.enableTwoFactor.mockResolvedValue(RECOVERY);
     const client = show();
 
+    typePassword();
     fireEvent.click(screen.getByRole('button', { name: 'Import an existing authenticator secret' }));
     const proceed = screen.getByRole('button', { name: 'Continue' });
     expect(proceed).toBeDisabled();
@@ -101,7 +109,7 @@ describe('ForceTwoFactorSetup', () => {
     fireEvent.click(proceed);
 
     expect(await screen.findByText(/confirm the imported secret/)).toBeInTheDocument();
-    expect(api.startTwoFactorSetup).toHaveBeenCalledWith({ existing_secret: SECRET });
+    expect(api.startTwoFactorSetup).toHaveBeenCalledWith({ password: PASSWORD, existing_secret: SECRET });
     expect(screen.queryByAltText('TOTP enrollment QR code')).toBeNull();
     expect(screen.queryByText(SECRET)).toBeNull();
     await expectForgotten(client, SECRET);
@@ -116,6 +124,7 @@ describe('ForceTwoFactorSetup', () => {
     api.startTwoFactorSetup.mockRejectedValue(refused('That is not a base32 secret.'));
     const client = show();
 
+    typePassword();
     fireEvent.click(screen.getByRole('button', { name: 'Import an existing authenticator secret' }));
     fireEvent.change(screen.getByLabelText('Existing base32 secret'), { target: { value: SECRET } });
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
@@ -133,6 +142,7 @@ describe('ForceTwoFactorSetup', () => {
     api.enableTwoFactor.mockRejectedValue(refused('Invalid authentication code'));
     const client = show();
 
+    typePassword();
     fireEvent.click(screen.getByRole('button', { name: 'Set up with a new secret' }));
     fireEvent.change(await screen.findByLabelText('Authentication code'), { target: { value: CODE } });
     fireEvent.click(screen.getByRole('button', { name: 'Verify & enable' }));
@@ -147,7 +157,10 @@ describe('ForceTwoFactorSetup', () => {
     expect(screen.getByRole('button', { name: 'Set up with a new secret' })).toBeInTheDocument();
     expect(screen.queryByText(SECRET)).toBeNull();
 
-    // A second enrollment starts with an empty code field.
+    // A second enrollment starts with an empty code field — and asks for the
+    // password again (the first was let go once it was used).
+    expect(screen.getByLabelText('Your password')).toHaveValue('');
+    typePassword();
     fireEvent.click(screen.getByRole('button', { name: 'Set up with a new secret' }));
     expect(await screen.findByLabelText('Authentication code')).toHaveValue('');
   });
