@@ -22,7 +22,7 @@ import re
 from collections import defaultdict
 from typing import Dict, List, Optional
 
-from app.services.csv_utils import csv_safe
+from app.services.csv_utils import safe_csv_row
 
 #: The cutoff when a template does not set one: about one page of the table.
 DEFAULT_INLINE_MAX = 25
@@ -91,9 +91,9 @@ def summarise(
 
 
 # Scope text is typed by people, so a cell a spreadsheet would run as a
-# formula gets a leading apostrophe.  The rule is ``csv_utils``' — one copy
-# for every CSV BlueStick writes (review 2026-10-01 N5).
-_cell = csv_safe
+# formula gets a leading apostrophe: every row goes through ``csv_utils``'
+# ``safe_csv_row``, the one guard for every CSV BlueStick writes (review
+# 2026-10-01 N5; `test_csv_rows_are_guarded`).
 
 
 def scope_csv(scope: dict) -> bytes:
@@ -105,11 +105,10 @@ def scope_csv(scope: dict) -> bytes:
     writer = csv.writer(buf, lineterminator="\r\n")
     writer.writerow(["kind", "value", "site", "description", "subdomains"])
     for row in scope.get("subnets") or []:
-        writer.writerow(["network", _cell(row.get("cidr")), _cell(row.get("site")),
-                         _cell(row.get("description")), ""])
+        safe_csv_row(writer, ["network", row.get("cidr"), row.get("site"), row.get("description"), ""])
     for row in scope.get("domains") or []:
-        writer.writerow(["domain", _cell(row.get("domain")), "", "",
-                         "included" if row.get("include_subdomains") else "not included"])
+        safe_csv_row(writer, ["domain", row.get("domain"), "", "",
+                              "included" if row.get("include_subdomains") else "not included"])
     return ("﻿" + buf.getvalue()).encode("utf-8")
 
 

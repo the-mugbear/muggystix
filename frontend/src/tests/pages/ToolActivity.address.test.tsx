@@ -244,4 +244,27 @@ describe('Tool Activity — the asked question is the address (real router)', ()
     expect(moments()).toHaveLength(1);
     expect(ranges()).toHaveLength(0);
   });
+
+  // Review 2026-10-16, N18: the project filter was state — Back from a scan
+  // the reader opened came back unfiltered, and a link could not name it.
+  it('the project filter is in the address: Back keeps it, a new question clears it', async () => {
+    const other: ActivityItem = { ...scan(5, 9), project_id: 2, project_name: 'Other' };
+    getScansAt.mockResolvedValue(answer([scan(3, 8), other]));
+    const router = open(AT);
+    fireEvent.click(await screen.findByText('Other · 1'));
+    await waitFor(() => expect(new URLSearchParams(router.state.location.search).get('projects')).toBe('2'));
+    // The question is unchanged: nothing asked again.
+    expect(moments()).toHaveLength(1);
+
+    await act(async () => { await router.navigate('/elsewhere'); });
+    await act(async () => { await router.navigate(-1); });
+    expect(await screen.findByText('Other · 1')).toBeInTheDocument();
+    expect(new URLSearchParams(router.state.location.search).get('projects')).toBe('2');
+
+    // A new question starts with every project shown.
+    fireEvent.change(field('Tool'), { target: { value: 'masscan' } });
+    fireEvent.submit(field('Tool').closest('form')!);
+    await waitFor(() => expect(new URLSearchParams(router.state.location.search).get('tool')).toBe('masscan'));
+    expect(new URLSearchParams(router.state.location.search).get('projects')).toBeNull();
+  });
 });

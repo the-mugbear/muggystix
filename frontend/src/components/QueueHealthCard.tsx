@@ -33,6 +33,7 @@ import { Button } from './ui/button';
 import { InlineLoader } from './ui/inline-loader';
 import { cn } from '../utils/cn';
 import { importResultsPath } from '../utils/importResultsPath';
+import { formatTimestamp } from '../utils/relativeTime';
 
 /** How many projects the failed-jobs breakdown names before "and N more". */
 const MAX_FAILED_PROJECTS = 5;
@@ -378,7 +379,7 @@ export const QueueHealthCard: React.FC = () => {
             {metrics.workers.map((w) => <VerdictRow key={w.name} verdict={assessWorker(w)} />)}
             {metrics.database && <VerdictRow verdict={assessDatabase(metrics.database)} />}
             <p className="text-caption text-muted-foreground">
-              Checked {new Date(metrics.generated_at).toLocaleTimeString()}
+              Checked {formatTimestamp(metrics.generated_at)}
             </p>
           </div>
         ) : null}

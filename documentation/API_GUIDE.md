@@ -633,7 +633,7 @@ The contract agents follow is the [agent guide](AGENT_GUIDE.md), served at `GET 
 | `GET /agent/hosts` | A bare array of hosts: `limit` (1–5000, default 500) / `offset` and the discrete filters, which are the Hosts page's own (the meanings and the 422s are those of `GET /agent/assist/hosts`). No `total`. | `GET /agent/assist/hosts` (paged, `q=`) · `/agent/assist/hosts/count` |
 | `GET /agent/hosts/{host_id}` | Host detail with ports. | `GET /agent/assist/hosts/{host_id}` |
 | `GET /agent/hosts/{host_id}/notes` | A bare array of a host's notes. | `GET /agent/assist/hosts/{host_id}/notes` (paged) |
-| `GET /agent/scans` | A bare array of scans, newest first: `limit` (≤500), `tool`, `created_after` (an ISO-8601 date or timestamp; a value that is not one is a **422** naming it), `sort_by`, `sort_order`. | `GET /agent/assist/scans` (paged) |
+| `GET /agent/scans` | A bare array of scans, newest first: `limit` (≤500), `tool`, `created_after` (an ISO-8601 date or timestamp; a value that is not one is a **422** naming it; **v2.513.3:** a time with no offset is UTC, as in the Hosts language's time windows and the Query page — it was the server's zone here), `sort_by`, `sort_order`. | `GET /agent/assist/scans` (paged) |
 
 ### 5.2 Host tests
 

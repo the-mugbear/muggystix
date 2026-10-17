@@ -64,6 +64,7 @@ from app.api.v1.endpoints.agent_common import (
     batch_host_enrichment, load_agent_session, load_operator,
 )
 from app.services.host_query import build_filtered_host_query
+from app.services.instants import parse_instant
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -553,9 +554,9 @@ def list_scans(
     created_after: Optional[str] = Query(
         None,
         description=(
-            "ISO-8601 timestamp; only scans uploaded after this point "
-            "are returned — 'recent uploads' without paging the full "
-            "history."
+            "ISO-8601 date or timestamp (no offset = UTC); only scans "
+            "uploaded after this point are returned — 'recent uploads' "
+            "without paging the full history."
         ),
     ),
     sort_by: Optional[str] = Query(
@@ -586,7 +587,9 @@ def list_scans(
         # A value that is not a timestamp is refused by name: an empty list
         # would read as "no scans since then".
         try:
-            cutoff = datetime.fromisoformat(created_after.strip().replace("Z", "+00:00"))
+            # No offset is UTC, as everywhere a person or an agent types a
+            # time (`instants.parse_instant`; it was the server's zone here).
+            cutoff = parse_instant(created_after)
         except ValueError:
             raise HTTPException(
                 status_code=422,

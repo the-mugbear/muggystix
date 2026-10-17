@@ -274,15 +274,20 @@ export const HostTestRow: React.FC<{
   const projectId = useProjectId();
   const needsDecision = (test.unpromoted_findings ?? 0) > 0;
   const [open, setOpen] = useState(defaultOpen || needsDecision);
-  // A link can arrive while the row is already mounted: the address's hash
-  // can change with this host still on screen.  (Another host is another
-  // mount — the section is keyed by host.)
-  useEffect(() => { if (defaultOpen) setOpen(true); }, [defaultOpen]);
+  // The row opens when a reason to open it ARRIVES — a link to it (the
+  // address's hash can change with this host still on screen; another host
+  // is another mount, the section is keyed by host), or a result that showed
+  // an issue (the next step is inside it) — and otherwise stays as the
+  // reader left it.  Adjusted while rendering, from the previous reasons:
+  // one rule where two effects each re-rendered after paint (review
+  // 2026-10-16, N21).
+  const [reasons, setReasons] = useState({ defaultOpen, needsDecision });
+  if (reasons.defaultOpen !== defaultOpen || reasons.needsDecision !== needsDecision) {
+    if ((defaultOpen && !reasons.defaultOpen) || (needsDecision && !reasons.needsDecision)) setOpen(true);
+    setReasons({ defaultOpen, needsDecision });
+  }
   const [dismissing, setDismissing] = useState(false);
   const [reason, setReason] = useState('');
-
-  // A result that showed an issue opens the row: the next step is inside it.
-  useEffect(() => { if (needsDecision) setOpen(true); }, [needsDecision]);
   // Asked for only by an open row (the link is inside it).
   const toolReference = useToolReferenceName(test.tool, { enabled: open });
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 import enum
 import ipaddress
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional
 
@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models_auth import User
 from app.services import host_query_dsl as dsl
+from app.services.instants import parse_instant
 from app.services.query_datasets import DATASETS, Dataset, QueryColumn
 from app.services.query_language import (
     BoolOp, Compare, Cond, InList, IsNull, Like, NotCond, Pipeline, QueryError, Top, parse,
@@ -76,10 +77,9 @@ def _column(ds: Dataset, name: str, pos: int) -> QueryColumn:
 
 def _parse_time(text: str) -> datetime:
     try:
-        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parse_instant(text)
     except ValueError:
         raise ValueError("a date or time like \"2026-10-01\" or \"2026-10-01T12:00:00+00:00\"")
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def _coerce(col: QueryColumn, value: object, pos: int) -> object:

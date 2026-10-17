@@ -8,6 +8,7 @@ import React, { useMemo, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
 
 import type { OversightResponse } from '../../services/api';
+import { copyToClipboard } from '../../utils/clipboard';
 import { buildOversightSummary, type SummaryFormat } from '../../utils/oversightSummary';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
@@ -24,34 +25,6 @@ interface Props {
   filterLabels: string[];
 }
 
-/** Clipboard API where the page may use it; a selected textarea otherwise
- *  (an http:// deployment has no navigator.clipboard). */
-async function copyText(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // Fall through to the selection copy.
-  }
-  const area = document.createElement('textarea');
-  area.value = text;
-  area.setAttribute('readonly', '');
-  area.style.position = 'fixed';
-  area.style.opacity = '0';
-  document.body.appendChild(area);
-  area.select();
-  let ok = false;
-  try {
-    ok = document.execCommand('copy');
-  } catch {
-    ok = false;
-  }
-  document.body.removeChild(area);
-  return ok;
-}
-
 const ShareSummaryDialog: React.FC<Props> = ({ open, onOpenChange, data, periodLabel, filterLabels }) => {
   const [format, setFormat] = useState<SummaryFormat>('text');
   const [includeProjects, setIncludeProjects] = useState(true);
@@ -64,7 +37,7 @@ const ShareSummaryDialog: React.FC<Props> = ({ open, onOpenChange, data, periodL
   );
 
   const copy = async () => {
-    setCopied((await copyText(text)) ? 'ok' : 'failed');
+    setCopied((await copyToClipboard(text)) ? 'ok' : 'failed');
     window.setTimeout(() => setCopied(null), 2500);
   };
 

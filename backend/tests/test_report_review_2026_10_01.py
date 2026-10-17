@@ -439,7 +439,10 @@ def test_the_render_validators_refuse_a_trailing_newline():
 
 
 def test_the_scope_file_uses_the_one_formula_rule():
-    assert report_scope._cell is csv_utils.csv_safe
+    # Its rows go through the one guard (2.513.3: `safe_csv_row`, not an alias
+    # of `csv_safe`); `test_review_2026_10_16_t4.py::test_csv_rows_are_guarded`
+    # holds every CSV writer to it.
+    assert report_scope.safe_csv_row is csv_utils.safe_csv_row
     assert not hasattr(report_scope, "_FORMULA_START")
     body = report_scope.scope_csv({"subnets": [{"cidr": "10.0.0.0/8", "site": "=HYPERLINK(1)", "description": "\tx"}],
                                    "domains": [{"domain": "@x.example", "include_subdomains": False}]}).decode("utf-8")

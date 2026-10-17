@@ -33,6 +33,7 @@ from app.db import models
 from app.parsers.cut_short import settle_cut
 from app.parsers.parser_utils import announce_scan, beat_while_reading
 from app.parsers.streaming_json import cut_document_records, is_cut_last_line, json_lines
+from app.services.instants import parse_instant
 from app.db.models_attribution import (
     AttributionSource,
     NetworkAttribution,
@@ -359,7 +360,6 @@ def _parse_time(value: Any) -> Optional[datetime]:
     if not value:
         return None
     try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (ValueError, TypeError):
+        return parse_instant(value)
+    except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)

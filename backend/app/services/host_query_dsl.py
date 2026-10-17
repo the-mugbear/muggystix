@@ -463,17 +463,16 @@ def _parse_window(field: str, value: str):
     """``"<start>"`` or ``"<start>..<end>"`` (ISO 8601; quote it — a timestamp
     contains ':').  Returns (start, end|None), both timezone-aware.  The window
     is (start, end]: see host_query_predicates."""
-    from datetime import datetime, timezone
+    from app.services.instants import parse_instant
 
     def one(text: str):
         try:
-            dt = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+            return parse_instant(text)
         except ValueError:
             raise DSLError(
                 f'{field}: expects an ISO 8601 time, quoted — e.g. '
                 f'{field}:"2026-09-19T20:00:00Z" or {field}:"<start>..<end>" — got \'{value}\''
             )
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
     start_text, sep, end_text = value.partition("..")
     start = one(start_text)

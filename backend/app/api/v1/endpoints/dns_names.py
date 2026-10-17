@@ -52,6 +52,7 @@ from app.schemas.dns_names import (
 )
 from app.schemas.pagination import Paginated
 from app.services import dns_name_service as svc
+from app.services.csv_utils import safe_csv_row
 from app.services.host_query_common import escape_like
 
 logger = logging.getLogger(__name__)
@@ -209,7 +210,10 @@ def export_names(
             w = csv.writer(buf)
             for name, in_scope in rows:
                 current = ";".join(sorted(states[name.id].current)) if name.id in states else ""
-                w.writerow([
+                # Through the one formula guard, as every CSV route writes:
+                # a name was safe only because the FQDN pattern forbids a
+                # formula prefix (comprehensive review 2026-10-16, N15).
+                safe_csv_row(w, [
                     name.fqdn, name.kind, "true" if in_scope else "false", current,
                     name.last_seen.isoformat() if name.last_seen else "",
                 ])

@@ -1,4 +1,4 @@
-import { formatDate } from '../utils/relativeTime';
+import { formatClockTime, formatDate, formatTimestamp } from '../utils/relativeTime';
 import React, { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
@@ -110,10 +110,10 @@ const DateTimeCell: React.FC<{ value: string | null }> = ({ value }) => {
     return <span className="text-muted-foreground">Never</span>;
   }
   return (
-    <span title={d.toLocaleString()}>
+    <span title={formatTimestamp(d)}>
       <span className="block whitespace-nowrap">{formatDate(d)}</span>
       <span className="block whitespace-nowrap text-caption text-muted-foreground">
-        {d.toLocaleTimeString()}
+        {formatClockTime(d)}
       </span>
     </span>
   );

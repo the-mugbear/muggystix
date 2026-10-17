@@ -16,19 +16,24 @@ export async function copyToClipboard(text: string): Promise<boolean> {
   } catch {
     // Permission denied / not focused — fall through to the legacy path.
   }
+  if (typeof document === 'undefined') return false;
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  // Read-only: no on-screen keyboard or "input" event for a field that is
+  // only there to be selected (5.410.1: the Oversight share dialog's copy,
+  // which did this and removed the field even when the copy threw — the one
+  // implementation now; review 2026-10-16, N19).
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
   try {
-    if (typeof document === 'undefined') return false;
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
     ta.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return ok;
+    return document.execCommand('copy');
   } catch {
     return false;
+  } finally {
+    document.body.removeChild(ta);
   }
 }
 

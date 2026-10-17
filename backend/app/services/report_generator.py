@@ -137,7 +137,7 @@ class ReportGenerator:
         chunk_size = chunk_size or settings.REPORT_STREAM_CHUNK
         # Header row.
         _hdr = io.StringIO()
-        csv.writer(_hdr).writerow(self.INVENTORY_CSV_HEADER)
+        _safe_csv_row(csv.writer(_hdr), self.INVENTORY_CSV_HEADER)
         yield _hdr.getvalue()
 
         host_ids = [row[0] for row in self._filtered_host_id_query(filters).all()]

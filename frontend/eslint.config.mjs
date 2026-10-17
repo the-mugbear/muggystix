@@ -32,6 +32,14 @@ const BARE_MOMENT = {
     + "[callee.object.type='NewExpression'][callee.object.callee.name='Date']",
   message: 'Format a moment with formatTimestamp (utils/relativeTime), not new Date(x).toLocaleString().',
 };
+// The same for a day or a time of day — only dates have these two, so any
+// object is matched, however the date was reached (review 2026-10-16, N22:
+// five slipped past the `new Date(x)` shape).  With options it is a chosen
+// format (a chart's ticks, a day heading) and allowed.
+const BARE_DAY_OR_TIME = {
+  selector: "CallExpression[arguments.length=0][callee.property.name=/^toLocale(Date|Time)String$/]",
+  message: 'Format a day with formatDate and a time of day with formatClockTime (utils/relativeTime), not a bare toLocaleDateString() / toLocaleTimeString().',
+};
 // An object URL pins its bytes until it is revoked, and a missed one shows
 // nowhere: it is made and revoked by its two owners only — lib/objectUrls
 // (something on screen) and utils/download (a file save).  Matched by the
@@ -65,7 +73,7 @@ export default [
       // question).  The official TanStack rule; it replaced a hidden partition
       // of the cache that nothing at the call site could show.
       '@tanstack/query/exhaustive-deps': 'error',
-      'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT, OBJECT_URL],
+      'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT, BARE_DAY_OR_TIME, OBJECT_URL],
     },
   },
   {
@@ -114,9 +122,9 @@ export default [
   },
   // Each helper is exempt from its own rule only (a later entry replaces the
   // list for its files, so it names every restriction that still applies).
-  { files: ['src/utils/download.ts'], rules: { 'no-restricted-syntax': ['error', BARE_MOMENT] } },
+  { files: ['src/utils/download.ts'], rules: { 'no-restricted-syntax': ['error', BARE_MOMENT, BARE_DAY_OR_TIME] } },
   { files: ['src/utils/relativeTime.ts'], rules: { 'no-restricted-syntax': ['error', DOWNLOAD_NAME, OBJECT_URL] } },
-  { files: ['src/lib/objectUrls.ts'], rules: { 'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT] } },
+  { files: ['src/lib/objectUrls.ts'], rules: { 'no-restricted-syntax': ['error', DOWNLOAD_NAME, BARE_MOMENT, BARE_DAY_OR_TIME] } },
   // Tests build fixtures and expected values with the primitives themselves.
   { files: ['src/tests/**'], rules: { 'no-restricted-syntax': 'off' } },
 ];

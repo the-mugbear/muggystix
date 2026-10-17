@@ -279,6 +279,18 @@ function withQuestion(
   return next;
 }
 
+/** The projects the reader narrowed the answer to (`?projects=1,4`); an
+ *  empty set is every project. */
+const projectsOf = (params: URLSearchParams): Set<number> =>
+  new Set((params.get('projects') ?? '').split(',').filter((v) => /^\d+$/.test(v)).map(Number));
+
+const withProjects = (prev: URLSearchParams, projects: Set<number>): URLSearchParams => {
+  const next = new URLSearchParams(prev);
+  if (projects.size) next.set('projects', [...projects].sort((a, b) => a - b).join(','));
+  else next.delete('projects');
+  return next;
+};
+
 /** The address as this page writes it: what it can read of the one given, and
  *  nothing else of the question. */
 const canonical = (params: URLSearchParams): URLSearchParams => {
@@ -446,8 +458,12 @@ export const ToolActivity: React.FC = () => {
   const error = queryErrorText(focusedQuery.error, 'Failed to load activity');
   // Post-search client-side project filter.  Empty set = show all
   // (we apply this AFTER the query so the analyst can drill in
-  // without re-fetching).
-  const [projectFilter, setProjectFilter] = useState<Set<number>>(new Set());
+  // without re-fetching).  In the address (`?projects=1,4`; review
+  // 2026-10-16, N18): a link or Back keeps it with its question.
+  const projectFilter = useMemo(() => projectsOf(searchParams), [searchParams]);
+  const setProjectFilter = useCallback((next: Set<number>) => {
+    setSearchParams((prev) => withProjects(prev, next), { replace: true });
+  }, [setSearchParams]);
 
   const { refetch: askAgain } = focusedQuery;
 
@@ -460,7 +476,8 @@ export const ToolActivity: React.FC = () => {
   // snapshot ran with), with the form's tool and target.  One write per
   // action, with replace — a question is not a place Back should stop at.
   const writeAsked = useCallback((window: FocusedQuestion | null) => {
-    const next = withQuestion(searchParams, window, usedTool, usedTarget);
+    // A new question starts with every project shown — in the same write.
+    const next = withProjects(withQuestion(searchParams, window, usedTool, usedTarget), new Set());
     setAgreed(askedKey(next));
     if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams, usedTool, usedTarget]);
@@ -489,7 +506,7 @@ export const ToolActivity: React.FC = () => {
     setToLocal(draft.toLocal);
     setTool(draft.tool);
     setTarget(draft.target);
-    setProjectFilter(new Set());
+    // (The project filter is the address's own: it came with this address.)
     if ((weekAsked.tool ?? '') !== address.tool || (weekAsked.target ?? '') !== address.target) {
       setWeekAsked(pastWeek({ tool: address.tool || undefined, target: address.target || undefined }));
     }
@@ -502,19 +519,20 @@ export const ToolActivity: React.FC = () => {
     // The form's own range, backwards: not a question (Enter in a field
     // submits the form whatever the button's state).
     if (!range && rangeBackwards) return;
-    setProjectFilter(new Set()); // a new search starts with every project shown
     if (withWeek) setWeekAsked(pastWeek(filters));
     const next: FocusedQuestion = range
       ? { fn: 'getScansBetween', params: { from: range.from, to: range.to, ...filters } }
       : formQuestion();
-    // The same question again (Correlate twice, Refresh) is asked again.
+    // The same question again (Correlate twice, Refresh) is asked again,
+    // with every project shown as a new search starts.
     if (sameQuestion(question, next)) {
+      if (projectFilter.size) setProjectFilter(new Set());
       void askAgain();
       return;
     }
     // The address is given the question, and the question is then read from it.
     writeAsked(next);
-  }, [askAgain, filters, formQuestion, question, rangeBackwards, writeAsked]);
+  }, [askAgain, filters, formQuestion, projectFilter.size, question, rangeBackwards, setProjectFilter, writeAsked]);
 
   const weekQuery = useQuery({
     queryKey: ['getScansBetween', weekAsked],
@@ -625,15 +643,10 @@ export const ToolActivity: React.FC = () => {
   }, [queryWindow, weekRange]);
 
   const toggleProject = (id: number) => {
-    setProjectFilter((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
+    const next = new Set(projectFilter);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setProjectFilter(next);
   };
 
   return (

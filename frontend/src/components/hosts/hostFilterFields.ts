@@ -1,5 +1,6 @@
 import type { HostFilterData } from '../../services/api';
 import type { HostFilterOptions } from '../HostFilters';
+import { formatDate } from '../../utils/relativeTime';
 
 /**
  * The Hosts filter catalog: every structured filter as one described FIELD.
@@ -147,7 +148,7 @@ export const scanOptions = (data: HostFilterData | null): FilterValueOption[] =>
   counted(data?.scans, (scan) => ({
     value: String(scan.id),
     label: scan.filename || `Scan #${scan.id}`,
-    description: [scan.tool_name ?? 'unknown tool', scan.created_at && new Date(scan.created_at).toLocaleDateString()]
+    description: [scan.tool_name ?? 'unknown tool', formatDate(scan.created_at, '')]
       .filter(Boolean)
       .join(' · '),
     keywords: scan.tool_name ? [scan.tool_name] : undefined,

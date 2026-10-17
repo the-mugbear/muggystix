@@ -27,6 +27,7 @@ import { useProjectId } from '../../hooks/useProjectId';
 import { useBlobUrl } from '../../lib/objectUrls';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
+import { formatDate } from '../../utils/relativeTime';
 
 
 /** The declared, required images whose file is not installed. */
@@ -121,7 +122,7 @@ const uploadLine = (a: ReportTemplateAsset): string | null => {
   if (!u) return null;
   const bits = [
     u.uploaded_by ? `Uploaded by ${u.uploaded_by}` : 'Uploaded',
-    u.uploaded_at ? `on ${new Date(u.uploaded_at).toLocaleDateString()}` : null,
+    u.uploaded_at ? `on ${formatDate(u.uploaded_at)}` : null,
   ].filter(Boolean).join(' ');
   const facts = [
     u.width && u.height ? `${u.width} × ${u.height} px` : null,
