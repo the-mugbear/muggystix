@@ -57,6 +57,9 @@ export const notificationHref = (n: Linkable): string | null => {
   // N13: one notification per person, not one per finding): the project's
   // retest list.
   if (n.source_type === 'finding_retests') return '/findings?host_state=retest&status=all';
+  // The installation's own alerts (B-OPS-3: disk, import backlog, a silent
+  // worker) and the reaper's unrecoverable jobs open where those are shown.
+  if (n.source_type?.startsWith('operational:') || n.source_type === 'ingestion_jobs') return '/system-settings';
   if (n.source_type === 'scan' && n.source_id) return `/hosts?scan_ids=${n.source_id}`;
   if (n.source_type === 'report_job' && n.source_id) return `/hosts?reports=1&job=${n.source_id}`;
   if (n.source_type === 'note' && n.finding_id && n.source_id) return `/findings/${n.finding_id}#note-${n.source_id}`;

@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from app.db.models_project import (
     Notification, NoteMention, Project, ProjectMembership,
 )
-from app.db.models_auth import User, UserRole
+from app.db.models_auth import User
 from app.db.models import Annotation
 from app.schemas.schemas import MentionNotified
 
@@ -458,12 +458,10 @@ class NotificationService:
         once per reap cycle, and a failed job leaves the reaper's scan set so it
         never re-alerts.  Best-effort — the caller wraps it.
         """
-        admin_ids = [
-            r[0] for r in self.db.query(User.id)
-            .filter(User.role == UserRole.ADMIN, User.is_active.is_(True)).all()
-        ]
+        from app.services.operational_alerts import _global_admin_ids
+
         notifications = []
-        for uid in admin_ids:
+        for uid in _global_admin_ids(self.db):
             notification = Notification(
                 user_id=uid,
                 project_id=None,

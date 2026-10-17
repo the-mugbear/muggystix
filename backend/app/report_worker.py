@@ -73,13 +73,23 @@ def main() -> None:
         except Exception:
             logger.exception("Attachment reconcile failed")
 
+    def _alert_silent_workers() -> None:
+        # B-OPS-3 — the import worker cannot say it went silent; this one can.
+        from app.db.session import SessionLocal
+        from app.services.operational_alerts import alert_silent_workers
+        from app.services.resource_metrics import worker_reports
+
+        with SessionLocal() as db:
+            alert_silent_workers(db, "report_jobs", worker_reports())
+            db.commit()
+
     worker_loop.run_listen_loop(
         channel="report_jobs",
         poll_one=service.poll_and_run_one,
         heartbeat_path=HEARTBEAT_PATH,
         logger=logger,
         poll_interval=POLL_INTERVAL,
-        periodic=[_reap, _cleanup],
+        periodic=[_reap, _cleanup, _alert_silent_workers],
     )
     logger.info("Report worker stopped")
 

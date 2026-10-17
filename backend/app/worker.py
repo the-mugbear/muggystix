@@ -150,11 +150,21 @@ def main() -> None:
         # worker process, so no leader election; per-callback exceptions are
         # isolated by run_listen_loop.
         from app.db.session import SessionLocal
+        from app.services import operational_alerts
         from app.services.queue_metrics_service import warn_if_disk_low, warn_if_ingestion_backlog_high
+        from app.services.resource_metrics import worker_reports
 
         with SessionLocal() as db:
-            warn_if_ingestion_backlog_high(db)
-        warn_if_disk_low()
+            # B-OPS-3 — what was a log line nobody tails is also in the
+            # global admins' bell, once a day per kind.
+            backlog = warn_if_ingestion_backlog_high(db)
+            if backlog:
+                operational_alerts.alert_ingestion_backlog(db, backlog)
+            disk = warn_if_disk_low()
+            if disk:
+                operational_alerts.alert_disk_low(db, disk)
+            operational_alerts.alert_silent_workers(db, "ingestion_jobs", worker_reports())
+            db.commit()
 
     def _sweep_webhooks() -> None:
         # v2.233.0 — retry the durable webhook outbox. Rides this worker's tick
