@@ -21,6 +21,8 @@ from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.orm import Session, aliased
 
 from app.db import models
+from app.services import host_query_dsl as dsl
+from app.services import host_query_predicates as P
 
 
 class ScanNotInProject(LookupError):
@@ -170,22 +172,20 @@ def compute_scan_diff(
     PSH = models.PortScanHistory
     address = _address_order(db)
 
-    # --- Hosts: a row of one scan, and whether the other scan saw the host ---
-    def host_seen(scan_id: int, host_col):
-        other = aliased(HSH)
-        return exists().where(other.scan_id == scan_id, other.host_id == host_col)
-
+    # --- Hosts seen by one scan and not the other ---
     def host_presence(present_in: int, absent_in: int):
-        row = aliased(HSH)
-        condition = and_(row.scan_id == present_in, ~host_seen(absent_in, row.host_id))
-        count = (
-            db.query(func.count(distinct(row.host_id))).select_from(row).filter(condition).scalar()
-        ) or 0
+        # The Hosts language's own `scan:<present> AND NOT scan:<absent>` — the
+        # list "View all on Hosts" opens, so the count IS that list's total
+        # (review 2026-10-16, C1: the button opened every host of the scan).
+        condition = and_(
+            Host.project_id == project_id,
+            P.scan_predicate([present_in]),
+            dsl.negate(P.scan_predicate([absent_in])),
+        )
+        count = db.query(func.count(Host.id)).filter(condition).scalar() or 0
         sample = (
             db.query(Host.id, Host.ip_address, Host.hostname)
-            .join(row, row.host_id == Host.id)
             .filter(condition)
-            .group_by(Host.id, Host.ip_address, Host.hostname)
             .order_by(address, Host.id)
             .limit(cap)
             .all()

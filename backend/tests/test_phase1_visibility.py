@@ -267,6 +267,47 @@ def test_agent_activity_summary_empty_window(client, db_session, test_project):
     assert body["busiest_sessions"] == []
 
 
+def test_new_and_dropped_hosts_are_the_lists_their_links_open(client, db_session, test_project):
+    """Comprehensive review 2026-10-16, C1: "View in Inventory" opened every
+    host of the scan.  The page now links New hosts to the Hosts query
+    `scan:<B> AND NOT scan:<A>` and Dropped to `scan:<A> AND NOT scan:<B>`, and the
+    compare counts with that same condition — so each count IS the total of
+    the list it opens, past the sample's cap too."""
+    pid = test_project.id
+    scan_a = _mk_scan(db_session, pid, "a.xml")
+    scan_b = _mk_scan(db_session, pid, "b.xml")
+    earlier = _mk_scan(db_session, pid, "earlier.xml")
+    for i in range(1, 8):           # 7 hosts only in B — 3 of them first seen by an EARLIER scan
+        h = _mk_host(db_session, pid, f"10.7.0.{i}")
+        _seen_host(db_session, h, scan_b, "up")
+        if i <= 3:
+            db_session.add(models.HostScanHistory(
+                host_id=h.id, scan_id=earlier.id, state_at_scan="up",
+                discovered_at=datetime.now(timezone.utc) - timedelta(days=1),
+            ))
+    for i in range(1, 5):           # 4 hosts only in A
+        _seen_host(db_session, _mk_host(db_session, pid, f"10.7.1.{i}"), scan_a, "up")
+    both = _mk_host(db_session, pid, "10.7.2.1")
+    _seen_host(db_session, both, scan_a, "up")
+    _seen_host(db_session, both, scan_b, "up")
+    db_session.commit()
+
+    body = client.get(f"/api/v1/projects/{pid}/scans/compare", params={"a": scan_a.id, "b": scan_b.id}).json()
+
+    def total(q):
+        r = client.get(f"/api/v1/projects/{pid}/hosts/", params={"q": q, "limit": 1})
+        assert r.status_code == 200, r.text
+        return r.json()["total"]
+
+    assert body["counts"]["new_hosts"] == 7 == total(f"scan:{scan_b.id} AND NOT scan:{scan_a.id}")
+    assert body["counts"]["dropped_hosts"] == 4 == total(f"scan:{scan_a.id} AND NOT scan:{scan_b.id}")
+    # The review's suggested `first_seen_in_scan` would have missed the three
+    # an earlier scan found first: "new since A" is not "new to the project".
+    first_seen = client.get(f"/api/v1/projects/{pid}/hosts/",
+                            params={"scan_ids": str(scan_b.id), "first_seen_in_scan": "true", "limit": 1}).json()
+    assert first_seen["total"] != body["counts"]["new_hosts"]
+
+
 def test_scan_compare_counts_past_the_cap_and_lists_the_first_by_address(db_session, test_project):
     """External review 2026-10-16, A5: counts are SQL (exact past the cap) and
     each list is the FIRST ``row_cap`` by address, then port — it was an

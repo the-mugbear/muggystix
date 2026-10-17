@@ -40,9 +40,9 @@ type RouteSkeletonKind = 'list' | 'detail' | 'cards';
 const ROUTE_SKELETON: Array<{ pattern: string; kind: RouteSkeletonKind }> = [
   // detail
   { pattern: '/hosts/:id', kind: 'detail' },
-  // /scans/compare must precede /scans/:id so the picker gets the
-  // card skeleton rather than the detail skeleton.
-  { pattern: '/scans/compare', kind: 'cards' },
+  // /scans/compare must precede /scans/:id; it is sections, not cards, since
+  // 5.410.0 (review 2026-10-16, A8) — the list skeleton.
+  { pattern: '/scans/compare', kind: 'list' },
   { pattern: '/scans/:id', kind: 'detail' },
   { pattern: '/agent-sessions/:id', kind: 'detail' },
   { pattern: '/findings/:id', kind: 'detail' },
